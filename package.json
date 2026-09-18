@@ -1,0 +1,28 @@
+{
+  "name": "pi-desktop",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Pi Desktop — a standalone desktop app for the Pi coding agent (with zero-touch Pi for Office)",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "office:doctor": "vitest run tests/office/detect.live.test.ts --disable-console-intercept",
+    "office:manifest:check": "node scripts/sync-office-manifest.mjs --check",
+    "office:manifest:sync": "node scripts/sync-office-manifest.mjs --source ../pi-for-office/packages/add-in/manifest.prod.xml"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/semver": "^7.8.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "semver": "^7.8.5"
+  }
+}

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Test fixture trimmed from packages/add-in/manifest.prod.xml (pi-for-office). -->
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+  xsi:type="TaskPaneApp">
+
+  <Id>BC61CAF2-821A-47FD-9D6A-9D96C8F852FE</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>Pi for Office</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Pi for Office" />
+  <Description DefaultValue="Open-source, multi-model AI sidebar add-in for Excel, Word, and PowerPoint. Powered by Pi." />
+  <IconUrl DefaultValue="https://dieuluucanh.github.io/pi-for-office/assets/icon-32.png" />
+  <SupportUrl DefaultValue="https://github.com/dieuluucanh/pi-for-office/issues/new/choose" />
+
+  <Hosts>
+    <Host Name="Workbook" />
+    <Host Name="Document" />
+    <Host Name="Presentation" />
+  </Hosts>
+
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://dieuluucanh.github.io/pi-for-office/src/taskpane.html" />
+  </DefaultSettings>
+
+  <Permissions>ReadWriteDocument</Permissions>
+
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Resources>
+      <bt:Urls>
+        <bt:Url id="TaskpaneUrl" DefaultValue="https://dieuluucanh.github.io/pi-for-office/src/taskpane.html" />
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="ButtonLabel" DefaultValue="Open Pi" />
+      </bt:ShortStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>
