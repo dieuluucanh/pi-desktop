@@ -1,0 +1,320 @@
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { normalize } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import {
+  HostTimeoutError,
+  OFFICE_BRIDGE_PORT,
+  createHostSupervisor,
+  type HostSpawner,
+  type SpawnedHostProcess,
+} from "../../src/main/host-supervisor";
+import { createMemoryFsPort } from "../../src/main/fs-port";
+import {
+  HOST_PROTOCOL_VERSION,
+  encodeFrame,
+  type HostRequestFrame,
+  type HostResponseFrame,
+} from "../../src/shared/host-protocol";
+
+/**
+ * Supervisor tests against a scripted fake host process: correlation, timeouts,
+ * crash recovery, port assignment, the host cap and clean shutdown.
+ */
+
+const HOST_PATH = normalize("C:/app/out/host/index.mjs");
+const NODE_PATH = normalize("C:/app/runtime/node/node.exe");
+
+interface FakeBehaviour {
+  /** Methods that never get an answer (timeout tests). */
+  silent?: readonly string[];
+  /** Answer for a method; `undefined` falls back to the default answer. */
+  answer?: (request: HostRequestFrame) => unknown;
+}
+
+class FakeHost implements SpawnedHostProcess {
+  readonly stdin = new PassThrough();
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  readonly requests: HostRequestFrame[] = [];
+  readonly pid: number;
+  killed = false;
+  private readonly emitter = new EventEmitter();
+  private readonly behaviour: FakeBehaviour;
+
+  constructor(pid: number, behaviour: FakeBehaviour = {}) {
+    this.pid = pid;
+    this.behaviour = behaviour;
+    this.stdin.on("data", (chunk: Buffer) => this.onInput(chunk.toString()));
+  }
+
+  on(event: "exit" | "error", listener: (...args: unknown[]) => void): SpawnedHostProcess {
+    this.emitter.on(event, listener);
+    return this;
+  }
+
+  kill(): boolean {
+    this.killed = true;
+    this.emitter.emit("exit", 0, "SIGTERM");
+    return true;
+  }
+
+  /** Simulates an unexpected process death (e.g. the SDK calling exit). */
+  crash(code = 3, signal = ""): void {
+    this.emitter.emit("exit", code, signal);
+  }
+
+  emitEvent(event: string, payload?: unknown): void {
+    this.stdout.write(encodeFrame({ event, payload }));
+  }
+
+  private onInput(chunk: string): void {
+    for (const line of chunk.split("\n")) {
+      if (line.trim().length === 0) continue;
+      const request = JSON.parse(line) as HostRequestFrame;
+      this.requests.push(request);
+      if (this.behaviour.silent?.includes(request.method)) continue;
+      const custom = this.behaviour.answer?.(request);
+      const result = custom !== undefined ? custom : defaultAnswer(request);
+      this.respond({ id: request.id, ok: true, result });
+    }
+  }
+
+  private respond(frame: HostResponseFrame): void {
+    this.stdout.write(encodeFrame(frame));
+  }
+}
+
+function defaultAnswer(request: HostRequestFrame): unknown {
+  switch (request.method) {
+    case "host.hello":
+      return {
+        protocolVersion: HOST_PROTOCOL_VERSION,
+        nodeVersion: "v24.21.0",
+        piVersion: "0.85.1",
+        sessionId: (request.params as { sessionId?: string } | undefined)?.sessionId ?? "fake",
+        cwd: normalize("C:/work"),
+        bridgePort: 38618,
+        pids: { pid: 1234, ppid: 1 },
+        startedAt: 1,
+      };
+    case "host.ping":
+      return { pong: true };
+    case "host.shutdown":
+      return { ok: true };
+    default:
+      return { echoed: request.method };
+  }
+}
+
+function harness(
+  options: { behaviours?: FakeBehaviour[]; sessionFile?: string | null; maxHosts?: number } = {},
+) {
+  const spawned: FakeHost[] = [];
+  const spawner: HostSpawner = () => {
+    const child = new FakeHost(1000 + spawned.length, options.behaviours?.[spawned.length] ?? {});
+    spawned.push(child);
+    return child;
+  };
+  const fs = createMemoryFsPort();
+
+  const supervisor = createHostSupervisor({
+    nodePath: NODE_PATH,
+    hostPath: HOST_PATH,
+    binDir: normalize("C:/app/resources/runtime/bin"),
+    logDir: normalize("C:/user-data/logs"),
+    blobDir: normalize("C:/user-data/blob-cache"),
+    profileDir: normalize("C:/Users/Test/.pi/agent"),
+    env: { PATH: normalize("C:/Windows/System32") },
+    spawner,
+    fs,
+    requestTimeoutMs: 1_000,
+    maxHosts: options.maxHosts ?? 8,
+    idleTimeoutMs: 0,
+  });
+
+  return { supervisor, spawned, fs };
+}
+
+describe("host supervisor startup", () => {
+  it("spawns with the bundled runtime, the shim PATH and the session env", async () => {
+    const { supervisor, spawned } = harness();
+
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]?.requests.at(0)?.method).toBe("host.hello");
+    expect(host.status()).toBe("ready");
+    expect(await host.ready()).toMatchObject({
+      protocolVersion: HOST_PROTOCOL_VERSION,
+      piVersion: "0.85.1",
+    });
+    expect(host.port).toBe(38618);
+    expect(supervisor.list()).toHaveLength(1);
+  });
+
+  it("reserves port 38617 for the Office host and hands out 38618+ to everyone else", async () => {
+    const { supervisor } = harness();
+
+    const office = await supervisor.start({
+      sessionId: "office",
+      cwd: normalize("C:/work"),
+      officeHost: true,
+    });
+    const first = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    const second = await supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
+
+    expect(office.port).toBe(OFFICE_BRIDGE_PORT);
+    expect(first.port).toBe(38618);
+    expect(second.port).toBe(38619);
+    expect(supervisor.allocatedPorts()).toEqual([OFFICE_BRIDGE_PORT, 38618, 38619]);
+  });
+
+  it("enforces the host cap with a readable error", async () => {
+    const { supervisor } = harness({ maxHosts: 1 });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    await expect(supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") })).rejects.toThrow(
+      /host limit reached \(1\)/,
+    );
+  });
+});
+
+describe("host supervisor requests", () => {
+  it("correlates responses that arrive out of order", async () => {
+    const { supervisor, spawned } = harness({
+      behaviours: [
+        {
+          answer: (request) => (request.method === "prompt" ? "prompt-result" : undefined),
+        },
+      ],
+    });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    const child = spawned.at(-1);
+    if (!child) throw new Error("no child spawned");
+
+    // Answer the second request first by hand, after letting the first through.
+    const promptPromise = host.request("prompt", { text: "hi" });
+    const statePromise = host.request("state.get");
+    child.stdout.write(encodeFrame({ id: 99, ok: true, result: { ignored: true } }));
+
+    await expect(promptPromise).resolves.toBe("prompt-result");
+    await expect(statePromise).resolves.toEqual({ echoed: "state.get" });
+  });
+
+  it("rejects with a timeout instead of hanging forever", async () => {
+    const { supervisor } = harness({ behaviours: [{ silent: ["compact"] }] });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    await expect(host.request("compact", {}, { timeoutMs: 20 })).rejects.toBeInstanceOf(
+      HostTimeoutError,
+    );
+  });
+
+  it("forwards host events to listeners", async () => {
+    const { supervisor, spawned } = harness();
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    const listener = vi.fn();
+    host.on("message_update", listener);
+
+    spawned[0]?.emitEvent("message_update", { text: "hello" });
+
+    expect(listener).toHaveBeenCalledWith({ text: "hello" });
+  });
+});
+
+describe("host supervisor recovery", () => {
+  it("restarts a crashed host and resumes the session", async () => {
+    const { supervisor, spawned } = harness({
+      sessionFile: normalize("C:/profile/sessions/s1.jsonl"),
+    });
+    const host = await supervisor.start({
+      sessionId: "s1",
+      cwd: normalize("C:/work"),
+      sessionFile: normalize("C:/profile/sessions/s1.jsonl"),
+    });
+    const crashed = vi.fn();
+    const resumed = vi.fn();
+    host.on("crashed", crashed);
+    host.on("resumed", resumed);
+
+    spawned[0]?.crash(3);
+
+    await vi.waitFor(() => {
+      expect(spawned.length).toBe(2);
+    });
+    await vi.waitFor(() => {
+      expect(resumed).toHaveBeenCalledWith({
+        sessionFile: normalize("C:/profile/sessions/s1.jsonl"),
+      });
+    });
+
+    expect(crashed).toHaveBeenCalledWith(expect.objectContaining({ code: 3, sessionId: "s1" }));
+    expect(host.status()).toBe("ready");
+    expect(spawned[1]?.requests.map((request) => request.method)).toEqual([
+      "host.hello",
+      "session.resume",
+    ]);
+  });
+
+  it("gives up after the restart budget is exhausted", async () => {
+    const { supervisor, spawned } = harness({ behaviours: [{}, {}, {}, {}] });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const child = spawned.at(-1);
+      if (!child) break;
+      child.crash(9);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(host.status()).toBe("failed");
+    expect(supervisor.get("s1")?.status()).toBe("failed");
+  });
+
+  it("marks a host failed when a frame exceeds the size limit", async () => {
+    const { supervisor, spawned } = harness();
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    spawned[0]?.stdout.write(`${"x".repeat(6 * 1024 * 1024)}\n`);
+
+    await vi.waitFor(() => {
+      expect(host.status()).toBe("failed");
+    });
+  });
+});
+
+describe("host supervisor shutdown", () => {
+  it("asks the host to shut down, kills it and releases its port", async () => {
+    const { supervisor, spawned } = harness();
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    await supervisor.stop("s1");
+
+    expect(spawned[0]?.requests.some((request) => request.method === "host.shutdown")).toBe(true);
+    expect(spawned[0]?.killed).toBe(true);
+    expect(host.status()).toBe("stopped");
+    expect(supervisor.list()).toHaveLength(0);
+    expect(supervisor.allocatedPorts()).toEqual([]);
+  });
+
+  it("stops every host", async () => {
+    const { supervisor, spawned } = harness();
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    await supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
+
+    await supervisor.stopAll();
+
+    expect(spawned.every((child) => child.killed)).toBe(true);
+    expect(supervisor.list()).toHaveLength(0);
+  });
+
+  it("writes a per-session log", async () => {
+    const { supervisor, fs } = harness();
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    const logFile = [...fs.files.keys()].find((file) => file.endsWith("s1.log"));
+    expect(logFile, "a log file per session").toBeDefined();
+    expect(fs.files.get(logFile ?? "") ?? "").toContain("spawned");
+  });
+});

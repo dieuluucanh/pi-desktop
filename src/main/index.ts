@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, shell } from "electron";
 import { IPC, type AppInfo, type WindowState } from "../shared/ipc";
+import { createHostSupervisor } from "./host-supervisor";
 import { broadcastToWindows, registerIpcHandlers } from "./ipc";
 import { createOfficeSetupService } from "./office/setup-service";
 import { appPaths, isSafeMode, resolveAppRoots, type AppPaths, type AppRoots } from "./paths";
@@ -31,6 +32,21 @@ const runtime: RuntimeResolution = resolveAppRuntime({
 });
 
 let mainWindow: BrowserWindow | null = null;
+
+/**
+ * One host process per session tab (plan step 4). Hosts are started by the tab
+ * layer (plan step 11); main owns their lifetime so a quit always cleans up.
+ */
+const hosts = runtime.nodePath
+  ? createHostSupervisor({
+      nodePath: runtime.nodePath,
+      hostPath: runtime.piHostPath,
+      binDir: runtime.binDir,
+      logDir: paths.logs,
+      blobDir: paths.blobCache,
+      profileDir: paths.profileDir,
+    })
+  : null;
 
 /** Only these schemes may be handed to the operating system (plan step 22). */
 const EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
@@ -180,5 +196,9 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
+  });
+
+  app.on("before-quit", () => {
+    void hosts?.stopAll();
   });
 }
