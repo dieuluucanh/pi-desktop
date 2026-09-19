@@ -50,7 +50,7 @@ and fails loudly instead.
 `PI_DESKTOP_RUNTIME_DIR` relocates the runtime root, `PI_DESKTOP_HOST_ENTRY`
 relocates the host bundle (the supervisor sets both for every host it spawns).
 
-Every candidate is *probed* (`<node> --version`) and rejected unless it satisfies
+Every candidate is _probed_ (`<node> --version`) and rejected unless it satisfies
 the gate from `layout.ts`; a resolution never reports `ok` for a runtime that
 cannot run the SDK. When nothing qualifies, the result carries `problems` and a
 one-line `hint` (`npm run runtime:fetch`).
@@ -66,7 +66,7 @@ first on `PATH`, plus `PI_DESKTOP_NODE` / `PI_DESKTOP_HOST_ENTRY`.
 
 - **Windows `tar`.** `fetch-runtime.mjs` calls `%SystemRoot%\System32\tar.exe`
   explicitly: a Git-Bash GNU tar earlier on PATH reads `C:\…` as a remote host and
-  fails with *Cannot connect to C*. PowerShell `Expand-Archive` is the fallback.
+  fails with _Cannot connect to C_. PowerShell `Expand-Archive` is the fallback.
 - **Cold start.** The first host launch on Windows can take >10 s while Defender
   and NTFS walk thousands of SDK files; the live tests therefore use a 90 s spawn
   timeout. Warm starts are ~1.2 s. Step 23 (performance) owns making this visible

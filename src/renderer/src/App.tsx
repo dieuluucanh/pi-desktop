@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import type { AppInfo, WindowState } from "../../shared/ipc";
+import { OfficeSetupPanel } from "./office/OfficeSetupPanel";
 
 /**
  * App shell.
  *
- * This step deliberately ships only the chrome: window/tab frame, the app-info
- * panel and the preload bridge wiring. Session tabs, the chat transcript, the
- * Office wizard panel and the settings surfaces are added by later plan steps.
+ * Session tabs, the chat transcript and the settings surfaces are added by later
+ * plan steps; this step ships the chrome plus the Office setup wizard panel.
  */
 
 type TabKind = "session" | "office" | "settings";
@@ -24,9 +24,9 @@ const SHELL_TABS: readonly ShellTab[] = [
 ];
 
 const NEXT_STEPS: readonly string[] = [
-  "Step 2 — bundle the pinned Node 24 + npm runtime with pi/npm PATH shims",
-  "Step 3 — Office setup wizard panel on top of the finished backend",
-  "Step 4 — Pi host process, supervisor and the real IPC surface",
+  "Step 4 — Pi host process, supervisor and the real host IPC surface",
+  "Step 5 — sessions, settings, project trust and events in the host",
+  "Step 6 — extension UI host: dialogs, status, widgets, theme",
 ];
 
 export function App() {
@@ -57,8 +57,6 @@ export function App() {
       unsubscribe();
     };
   }, []);
-
-  const active = SHELL_TABS.find((tab) => tab.id === activeTab) ?? SHELL_TABS[0];
 
   return (
     <div className="app">
@@ -97,55 +95,65 @@ export function App() {
           </section>
         ) : null}
 
-        <section className="card">
-          <h2>Scaffold is running</h2>
-          <p>
-            The Electron shell, the allowlisted IPC surface and the build pipeline work. Everything
-            below comes from the main process over <code>window.pi</code>.
-          </p>
-          <dl className="facts">
-            <Fact label="App" value={info ? `${info.name} ${info.version}` : "…"} />
-            <Fact
-              label="Electron"
-              value={info ? `${info.electron} (Chromium ${info.chrome})` : "…"}
-            />
-            <Fact label="App Node" value={info?.node ?? "…"} />
-            <Fact label="Platform" value={info ? `${info.platform}/${info.arch}` : "…"} />
-            <Fact label="Mode" value={modeLabel(info)} />
-            <Fact label="Safe mode" value={info ? String(info.safeMode) : "…"} />
-            <Fact label="Pi profile" value={info?.profileDir ?? "…"} />
-            <Fact label="App state" value={info?.appStateFile ?? "…"} />
-          </dl>
-        </section>
+        {activeTab === "office" ? <OfficeSetupPanel /> : null}
 
-        <section className="card">
-          <h2>Already implemented</h2>
-          <ul>
-            <li>
-              Office setup backend: detection, bridge install, sideload, verify, troubleshooting
-              (151 tests).
-            </li>
-            <li>
-              Pi-compatible package plumbing: source parsing, atomic settings writes, npm root.
-            </li>
-            <li>
-              Bundled Pi SDK 0.85.1, typed preload bridge, strict TS, ESLint/Prettier, CI on three
-              platforms.
-            </li>
-          </ul>
-        </section>
+        {activeTab === "settings" ? (
+          <section className="card">
+            <h2>Settings</h2>
+            <p>
+              The full settings mirror (every key in Pi's <code>settings.json</code>) lands in step
+              14. The connection settings that exist today are the Office setup wizard.
+            </p>
+            <button type="button" onClick={() => setActiveTab("office")}>
+              Set up Pi for Office
+            </button>
+          </section>
+        ) : null}
 
-        <section className="card">
-          <h2>Next up</h2>
-          <ol>
-            {NEXT_STEPS.map((step) => (
-              <li key={step}>{step}</li>
-            ))}
-          </ol>
-          <p className="muted">
-            Active tab: {active ? `${active.title} (${active.kind})` : "none"}
-          </p>
-        </section>
+        {activeTab === "session-1" ? (
+          <>
+            <section className="card">
+              <h2>Scaffold is running</h2>
+              <p>
+                The Electron shell, the bundled Node runtime and the Office setup backend are wired.
+                Chat, sessions and the extension UI host arrive in the next steps.
+              </p>
+              <dl className="facts">
+                <Fact label="App" value={info ? `${info.name} ${info.version}` : "…"} />
+                <Fact
+                  label="Electron"
+                  value={info ? `${info.electron} (Chromium ${info.chrome})` : "…"}
+                />
+                <Fact label="App Node" value={info?.node ?? "…"} />
+                <Fact label="Platform" value={info ? `${info.platform}/${info.arch}` : "…"} />
+                <Fact label="Mode" value={modeLabel(info)} />
+                <Fact label="Safe mode" value={info ? String(info.safeMode) : "…"} />
+                <Fact
+                  label="Pi runtime"
+                  value={
+                    info
+                      ? `${info.runtimeSource ?? "unavailable"}${info.runtimeNodeVersion ? ` · node ${info.runtimeNodeVersion}` : ""}`
+                      : "…"
+                  }
+                />
+                <Fact label="Pi profile" value={info?.profileDir ?? "…"} />
+                <Fact label="App state" value={info?.appStateFile ?? "…"} />
+              </dl>
+              {info?.runtimeProblems.length ? (
+                <div className="banner banner--warn">{info.runtimeProblems.join(" · ")}</div>
+              ) : null}
+            </section>
+
+            <section className="card">
+              <h2>Next up</h2>
+              <ol>
+                {NEXT_STEPS.map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ol>
+            </section>
+          </>
+        ) : null}
       </main>
     </div>
   );

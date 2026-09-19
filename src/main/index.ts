@@ -1,21 +1,34 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, shell } from "electron";
 import { IPC, type AppInfo, type WindowState } from "../shared/ipc";
-import { appPaths, isSafeMode, type AppPaths } from "./paths";
+import { broadcastToWindows, registerIpcHandlers } from "./ipc";
+import { createOfficeSetupService } from "./office/setup-service";
+import { appPaths, isSafeMode, resolveAppRoots, type AppPaths, type AppRoots } from "./paths";
+import { resolveAppRuntime, type RuntimeResolution } from "./runtime";
 
 /**
  * Electron main process entry.
  *
- * Responsibilities for this step: window lifecycle, the allowlisted IPC surface,
- * app/profile paths and safe-mode detection. Tab management, web tabs, the host
- * supervisor and the Office wizard panel are wired into this file by later steps.
+ * Responsibilities: window lifecycle, the allowlisted IPC surface, app/profile
+ * paths, the bundled-runtime resolution and the Office setup service. Tab
+ * management, web tabs and the Pi host supervisor are wired in by later steps.
  */
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
 const safeMode = isSafeMode();
 const paths: AppPaths = appPaths();
+const roots: AppRoots = resolveAppRoots({
+  isPackaged: app.isPackaged,
+  resourcesPath: process.resourcesPath,
+  mainDir: currentDir,
+});
+const runtime: RuntimeResolution = resolveAppRuntime({
+  isPackaged: app.isPackaged,
+  resourcesPath: roots.resourcesDir,
+  appRoot: roots.appRoot,
+});
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -51,6 +64,9 @@ function currentAppInfo(): AppInfo {
     blobCacheDir: paths.blobCache,
     profileDir: paths.profileDir,
     appStateFile: paths.appStateFile,
+    runtimeSource: runtime.source,
+    runtimeNodeVersion: runtime.nodeVersion,
+    runtimeProblems: runtime.problems,
   };
 }
 
@@ -115,10 +131,30 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
-function registerIpc(): void {
-  ipcMain.handle(IPC.appInfo, () => currentAppInfo());
-  ipcMain.handle(IPC.openExternal, (_event, url: unknown) => openExternal(url));
-}
+const officeSetup = createOfficeSetupService({
+  agentDir: paths.profileDir,
+  cwd: app.getPath("home"),
+  manifestPath: roots.manifestPath,
+  nodePath: runtime.nodePath,
+  npmCliPath: runtime.npmCliPath,
+  dryRun: process.env.PI_DESKTOP_OFFICE_DRY_RUN === "1",
+  backupDir: join(paths.userData, "backups"),
+  openPath: (target) => shell.openPath(target),
+  openExternal: async (url) => {
+    await shell.openExternal(url);
+  },
+  appInfo: {
+    name: app.getName(),
+    version: app.getVersion(),
+    electron: process.versions.electron ?? null,
+    node: process.versions.node,
+    chrome: process.versions.chrome ?? null,
+    platform: process.platform,
+    arch: process.arch,
+    osRelease: process.getSystemVersion?.() ?? null,
+  },
+  onView: (view) => broadcastToWindows(IPC.officeState, view),
+});
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -130,7 +166,11 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(() => {
-    registerIpc();
+    registerIpcHandlers({
+      appInfo: currentAppInfo,
+      openExternal,
+      officeSetup,
+    });
     mainWindow = createWindow();
 
     app.on("activate", () => {

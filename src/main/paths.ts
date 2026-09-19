@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { app } from "electron";
 
 /**
@@ -29,6 +29,39 @@ export interface ResolveAppPathsInput {
   userDataDir: string;
   env?: Record<string, string | undefined>;
   homeDir?: string;
+}
+
+export interface AppRoots {
+  /** Repository root in development, the resources directory when packaged. */
+  appRoot: string;
+  /** Where `resources/…` lives (the asar sibling when packaged). */
+  resourcesDir: string;
+  manifestPath: string;
+  runtimeDir: string;
+  officeDir: string;
+}
+
+/**
+ * Resolves the bundled resources (plan step 2/3). Pure so it can be unit tested:
+ * the caller passes `app.isPackaged`, `process.resourcesPath` and the directory
+ * of the running main bundle.
+ */
+export function resolveAppRoots(input: {
+  isPackaged: boolean;
+  resourcesPath: string;
+  mainDir: string;
+}): AppRoots {
+  const appRoot = input.isPackaged ? input.resourcesPath : resolve(input.mainDir, "..", "..");
+  const resourcesDir = input.isPackaged ? input.resourcesPath : join(appRoot, "resources");
+  const officeDir = join(resourcesDir, "office");
+
+  return {
+    appRoot,
+    resourcesDir,
+    officeDir,
+    runtimeDir: join(resourcesDir, "runtime"),
+    manifestPath: join(officeDir, "manifest.prod.xml"),
+  };
 }
 
 /**

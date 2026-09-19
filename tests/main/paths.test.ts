@@ -7,6 +7,7 @@ import {
   appPaths,
   isSafeMode,
   resolveAppPaths,
+  resolveAppRoots,
 } from "../../src/main/paths";
 
 vi.mock("electron", () => ({
@@ -50,6 +51,34 @@ describe("resolveAppPaths", () => {
 
   it("resolves the Electron-bound wrapper through app.getPath", () => {
     expect(appPaths().userData).toBe(join("C:", "user-data"));
+  });
+});
+
+describe("resolveAppRoots", () => {
+  it("resolves the repository root in development", () => {
+    const roots = resolveAppRoots({
+      isPackaged: false,
+      resourcesPath: join("D:", "unused"),
+      mainDir: join("C:", "repo", "out", "main"),
+    });
+
+    expect(roots.appRoot).toBe(join("C:", "repo"));
+    expect(roots.resourcesDir).toBe(join("C:", "repo", "resources"));
+    expect(roots.runtimeDir).toBe(join("C:", "repo", "resources", "runtime"));
+    expect(roots.manifestPath).toBe(join("C:", "repo", "resources", "office", "manifest.prod.xml"));
+  });
+
+  it("resolves the resources directory when packaged", () => {
+    const resources = join("C:", "Program Files", "Pi Desktop", "resources");
+    const roots = resolveAppRoots({
+      isPackaged: true,
+      resourcesPath: resources,
+      mainDir: "ignored",
+    });
+
+    expect(roots.appRoot).toBe(resources);
+    expect(roots.runtimeDir).toBe(join(resources, "runtime"));
+    expect(roots.manifestPath).toBe(join(resources, "office", "manifest.prod.xml"));
   });
 });
 
