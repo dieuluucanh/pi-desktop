@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { Composer } from "../session/Composer";
 import { Transcript } from "../session/Transcript";
 import { Badge } from "../ui/badge";
 import { WelcomeView } from "./WelcomeView";
@@ -54,7 +55,14 @@ export function SessionView() {
   const transcripts = useAppStore((state) => state.transcripts);
   const activateTab = useAppStore((state) => state.activateTab);
   const hydrateTranscript = useAppStore((state) => state.hydrateTranscript);
-  const abortTab = useAppStore((state) => state.abortTab);
+  const sendPrompt = useAppStore((state) => state.sendPrompt);
+  const stopRun = useAppStore((state) => state.stopRun);
+  const clearQueue = useAppStore((state) => state.clearQueue);
+  const setDraft = useAppStore((state) => state.setDraft);
+  const setSendMode = useAppStore((state) => state.setSendMode);
+  const historyStep = useAppStore((state) => state.historyStep);
+  const drafts = useAppStore((state) => state.prefs.drafts);
+  const sendModes = useAppStore((state) => state.sendModes);
 
   const active = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeId = active?.id ?? null;
@@ -98,10 +106,40 @@ export function SessionView() {
         <Transcript
           items={transcript?.items ?? []}
           running={active.status === "running"}
-          onAbort={() => void abortTab(active.id)}
+          onAbort={() => void stopRun(active.id)}
           empty={{ cwd: active.cwd, project: project?.path ?? null, model: active.model }}
         />
       </div>
+
+      <Composer
+        tabId={active.id}
+        running={active.status === "running"}
+        enabled={active.status === "running" || active.status === "idle"}
+        draft={drafts[active.id] ?? ""}
+        queue={transcript?.queue ?? { steering: [], followUp: [] }}
+        sendMode={sendModes[active.id] ?? "steer"}
+        contextLabel={usage}
+        onDraftChange={(text) => setDraft(active.id, text)}
+        onSend={async (text, images) => {
+          const mode = sendModes[active.id] ?? "steer";
+          return sendPrompt(active.id, text, {
+            ...(active.status === "running" ? { mode } : {}),
+            ...(images.length > 0
+              ? {
+                  images: images.map((image) => ({
+                    type: "image" as const,
+                    data: image.data,
+                    mimeType: image.mimeType,
+                  })),
+                }
+              : {}),
+          });
+        }}
+        onStop={() => void stopRun(active.id)}
+        onClearQueue={() => void clearQueue(active.id)}
+        onSendModeChange={(mode) => setSendMode(active.id, mode)}
+        onHistoryStep={(direction) => historyStep(active.id, direction)}
+      />
     </div>
   );
 }

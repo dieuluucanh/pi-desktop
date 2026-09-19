@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_PREFS,
+  MAX_DRAFT_LENGTH,
+  MAX_DRAFT_TABS,
   MAX_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
   mergePrefs,
+  sanitizeDrafts,
   sanitizePrefs,
 } from "../../src/shared/prefs";
 
@@ -17,7 +20,7 @@ describe("sanitizePrefs", () => {
   it("ignores unknown keys", () => {
     const result = sanitizePrefs({ theme: "light", somethingElse: true });
     expect(Object.keys(result).sort()).toEqual(
-      ["sidebarCollapsed", "sidebarWidth", "theme", "viewMode"].sort(),
+      ["drafts", "sidebarCollapsed", "sidebarWidth", "theme", "viewMode"].sort(),
     );
     expect(result.theme).toBe("light");
   });
@@ -70,5 +73,34 @@ describe("mergePrefs", () => {
 
   it("survives a non-object patch", () => {
     expect(mergePrefs(DEFAULT_PREFS, null)).toEqual(DEFAULT_PREFS);
+  });
+});
+
+describe("drafts (plan step 6)", () => {
+  it("keeps string drafts and drops everything else", () => {
+    expect(sanitizeDrafts({ "tab-1": "hello", "tab-2": 42, "tab-3": "" })).toEqual({
+      "tab-1": "hello",
+    });
+  });
+
+  it("truncates a long draft and caps how many tabs hold one", () => {
+    const long = sanitizeDrafts({ "tab-1": "x".repeat(MAX_DRAFT_LENGTH + 500) });
+    expect(long["tab-1"]?.length).toBe(MAX_DRAFT_LENGTH);
+
+    const many = Object.fromEntries(
+      Array.from({ length: MAX_DRAFT_TABS + 10 }, (_, index) => [`tab-${index}`, "draft"]),
+    );
+    expect(Object.keys(sanitizeDrafts(many))).toHaveLength(MAX_DRAFT_TABS);
+  });
+
+  it("returns an empty map for junk", () => {
+    expect(sanitizeDrafts(null)).toEqual({});
+    expect(sanitizeDrafts("nope")).toEqual({});
+  });
+
+  it("round-trips through the preference sanitiser", () => {
+    const prefs = sanitizePrefs({ theme: "light", drafts: { "tab-1": "a draft" } });
+    expect(prefs.drafts).toEqual({ "tab-1": "a draft" });
+    expect(sanitizePrefs({}).drafts).toEqual({});
   });
 });
