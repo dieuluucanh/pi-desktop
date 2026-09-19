@@ -68,6 +68,8 @@ export interface HostService {
   /** Subscribes to stdin until it closes. */
   start(): void;
   stop(): void;
+  /** Pushes an unsolicited event frame (session events, extension UI requests). */
+  emit(event: string, payload?: unknown, sessionId?: string): void;
 }
 
 class HostError extends Error {
@@ -227,5 +229,7 @@ export function createHostService(options: HostServiceOptions): HostService {
       closed = true;
       stdin.pause();
     },
+
+    emit,
   };
 }

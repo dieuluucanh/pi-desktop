@@ -2,7 +2,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BLOB_DIR_ENV, SERVICE_ENV, SERVICE_FLAG, SESSION_ID_ENV } from "../shared/host-protocol";
-import { createHostService } from "./service";
+import { createSessionCore, type SessionCore } from "./session-core";
+import { createHostService, type HostHandler, type HostService } from "./service";
+import {
+  ProjectTrustStore,
+  SessionManager,
+  createSdkSessionRuntime,
+  hasTrustRequiringProjectResources,
+} from "./sdk";
 
 /**
  * Pi host entry point — the process that runs the Pi SDK (plan D4, D16).
@@ -52,6 +59,46 @@ function flagValue(args: readonly string[], flag: string): string | null {
 }
 
 /**
+ * Builds the session core with the real SDK adapters. Split out so the service
+ * loop stays readable and the SDK import stays inside `src/host/sdk`.
+ */
+function createCore(options: {
+  cwd: string;
+  agentDir: string;
+  emit: (event: string, payload?: unknown, sessionId?: string) => void;
+  npmCommand?: readonly string[] | null;
+  bindSession?: (session: never) => Promise<void>;
+}): SessionCore {
+  const trustStore = new ProjectTrustStore(options.agentDir);
+
+  return createSessionCore({
+    cwd: options.cwd,
+    agentDir: options.agentDir,
+    ...(options.npmCommand ? { npmCommand: options.npmCommand } : {}),
+    ...(options.bindSession ? { bindSession: options.bindSession as never } : {}),
+    emit: options.emit,
+    trustStore,
+    requiresTrust: (cwd) => hasTrustRequiringProjectResources(cwd),
+    newSessionManager: (cwd, sessionDir) => SessionManager.create(cwd, sessionDir) as never,
+    openSessionManager: (sessionFile, cwd, sessionDir) =>
+      SessionManager.open(sessionFile, sessionDir, cwd) as never,
+    listSessions: (cwd) => SessionManager.list(cwd) as Promise<never[]>,
+    createRuntime: async (request) => {
+      // Annotated with the adapter's own parameter type: if the SDK adapter ever
+      // requires another field, this line fails to compile instead of drifting.
+      const runtimeRequest: Parameters<typeof createSdkSessionRuntime>[0] = {
+        cwd: request.cwd,
+        agentDir: request.agentDir,
+        sessionManager: request.sessionManager as never,
+        ...(request.npmCommand ? { npmCommand: request.npmCommand } : {}),
+      };
+      const created = await createSdkSessionRuntime(runtimeRequest);
+      return { runtime: created.runtime, session: created.session };
+    },
+  });
+}
+
+/**
  * Runs the host protocol service on stdio until the supervisor shuts it down.
  * Returns only when the process is about to exit.
  */
@@ -60,16 +107,33 @@ export function runService(
   env: Record<string, string | undefined> = process.env,
 ): Promise<void> {
   const blobDir = env[BLOB_DIR_ENV]?.trim() || BLOB_DIR_DEFAULT;
+  const agentDir = env.PI_CODING_AGENT_DIR?.trim() || join(process.cwd(), ".pi", "agent");
   const bridgePort = flagValue(args, "--port") ?? env.PI_OFFICE_BRIDGE_PORT ?? null;
+  const cwd = flagValue(args, "--cwd") ?? process.cwd();
 
   return new Promise<void>((resolve) => {
-    const service = createHostService({
+    // The core is built before the service (which owns the frame writer), so the
+    // emitter is forwarded through this small indirection.
+    const forward = {
+      emit: (_event: string, _payload?: unknown, _sessionId?: string): void => undefined,
+    };
+
+    const core = createCore({
+      cwd,
+      agentDir,
+      emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
+    });
+
+    const handlers: Partial<Record<string, HostHandler>> = { ...core.handlers() };
+
+    const service: HostService = createHostService({
       stdin: process.stdin,
       stdout: process.stdout,
       blobDir,
+      handlers,
       info: {
         sessionId: flagValue(args, "--session") ?? env[SESSION_ID_ENV] ?? null,
-        cwd: flagValue(args, "--cwd") ?? process.cwd(),
+        cwd,
         bridgePort: bridgePort === null ? null : Number(bridgePort),
         nodeVersion: process.version,
         piVersion: null,
@@ -77,11 +141,13 @@ export function runService(
       },
       onShutdown: () => {
         service.stop();
+        void core.dispose();
         // Give the response frame a tick to flush before the process ends.
         setTimeout(() => resolve(), 10);
       },
     });
 
+    forward.emit = (event, payload, sessionId) => service.emit(event, payload, sessionId);
     service.start();
   });
 }

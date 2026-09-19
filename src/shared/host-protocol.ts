@@ -76,6 +76,7 @@ export const HOST_METHODS = [
   "session.delete",
   "session.rename",
   "session.exportHtml",
+  "session.reload",
   // conversation
   "prompt",
   "steer",
