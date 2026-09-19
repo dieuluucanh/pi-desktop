@@ -13,6 +13,7 @@ import {
   type HostFrame,
   type HostMethod,
   type HostRequestFrame,
+  type HostRole,
 } from "../shared/host-protocol";
 
 /**
@@ -46,6 +47,8 @@ export interface HostServiceInfo {
   nodeVersion: string;
   piVersion: string | null;
   startedAt: number;
+  /** `control` hosts serve app-wide state and own no `AgentSession` (plan D-A3). */
+  role?: HostRole;
 }
 
 export interface HostServiceOptions {
@@ -151,6 +154,7 @@ export function createHostService(options: HostServiceOptions): HostService {
     protocolVersion: HOST_PROTOCOL_VERSION,
     nodeVersion: options.info.nodeVersion,
     piVersion: options.info.piVersion,
+    role: options.info.role ?? "session",
     sessionId: options.info.sessionId,
     cwd: options.info.cwd,
     bridgePort: options.info.bridgePort,

@@ -1,14 +1,26 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { BLOB_DIR_ENV, SERVICE_ENV, SERVICE_FLAG, SESSION_ID_ENV } from "../shared/host-protocol";
+import {
+  BLOB_DIR_ENV,
+  HOST_ROLE_ENV,
+  ROLE_FLAG,
+  SERVICE_ENV,
+  SERVICE_FLAG,
+  SESSION_ID_ENV,
+  isHostRole,
+  type HostRole,
+} from "../shared/host-protocol";
+import { createControlCore } from "./control-core";
 import { createSessionCore, type SessionCore } from "./session-core";
 import { createHostService, type HostHandler, type HostService } from "./service";
 import {
   ProjectTrustStore,
   SessionManager,
   createSdkSessionRuntime,
+  createSdkSettings,
   hasTrustRequiringProjectResources,
+  listAllSessions,
 } from "./sdk";
 
 /**
@@ -98,6 +110,28 @@ function createCore(options: {
   });
 }
 
+/** Which core a host process builds (plan D-A3): flag first, then environment. */
+export function resolveHostRole(
+  args: readonly string[] = [],
+  env: Record<string, string | undefined> = {},
+): HostRole {
+  const fromFlag = flagValue(args, ROLE_FLAG);
+  if (isHostRole(fromFlag)) return fromFlag;
+  const fromEnv = env[HOST_ROLE_ENV];
+  return isHostRole(fromEnv) ? fromEnv : "session";
+}
+
+/**
+ * The control core's real adapters: settings and the profile-wide session list.
+ * Deliberately no session runtime — a control host never owns an `AgentSession`.
+ */
+function createControlHostCore(options: { cwd: string; agentDir: string }) {
+  return createControlCore({
+    createSettings: () => createSdkSettings(options.cwd, options.agentDir),
+    listSessions: () => listAllSessions(),
+  });
+}
+
 /**
  * Runs the host protocol service on stdio until the supervisor shuts it down.
  * Returns only when the process is about to exit.
@@ -110,6 +144,7 @@ export function runService(
   const agentDir = env.PI_CODING_AGENT_DIR?.trim() || join(process.cwd(), ".pi", "agent");
   const bridgePort = flagValue(args, "--port") ?? env.PI_OFFICE_BRIDGE_PORT ?? null;
   const cwd = flagValue(args, "--cwd") ?? process.cwd();
+  const role = resolveHostRole(args, env);
 
   return new Promise<void>((resolve) => {
     // The core is built before the service (which owns the frame writer), so the
@@ -118,11 +153,14 @@ export function runService(
       emit: (_event: string, _payload?: unknown, _sessionId?: string): void => undefined,
     };
 
-    const core = createCore({
-      cwd,
-      agentDir,
-      emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
-    });
+    const core =
+      role === "control"
+        ? createControlHostCore({ cwd, agentDir })
+        : createCore({
+            cwd,
+            agentDir,
+            emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
+          });
 
     const handlers: Partial<Record<string, HostHandler>> = { ...core.handlers() };
 
@@ -137,6 +175,7 @@ export function runService(
         bridgePort: bridgePort === null ? null : Number(bridgePort),
         nodeVersion: process.version,
         piVersion: null,
+        role,
         startedAt: Date.now(),
       },
       onShutdown: () => {

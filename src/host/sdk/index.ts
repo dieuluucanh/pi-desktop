@@ -89,3 +89,25 @@ export const createSdkSessionRuntime: SessionRuntimeFactory = async (options) =>
 
   return { runtime, session: runtime.session, services: runtime.services };
 };
+
+/**
+ * Settings for a control host (plan D-A3). The bundled npm is injected as a
+ * runtime-only override (plan D20) exactly as the session path does, so package
+ * operations in the control host use the same npm.
+ */
+export function createSdkSettings(
+  cwd: string,
+  agentDir: string,
+  npmCommand?: readonly string[] | null,
+): SettingsManager {
+  const manager = SettingsManager.create(cwd, agentDir);
+  if (npmCommand && npmCommand.length > 0) {
+    manager.applyOverrides({ npmCommand: [...npmCommand] });
+  }
+  return manager;
+}
+
+/** Every session of the profile across projects — the session browser's source. */
+export function listAllSessions(): Promise<unknown[]> {
+  return SessionManager.listAll() as Promise<unknown[]>;
+}

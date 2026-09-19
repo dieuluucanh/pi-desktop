@@ -26,6 +26,23 @@ export const SERVICE_ENV = "PI_DESKTOP_HOST_MODE";
 /** Identifies which session tab a host belongs to. */
 export const SESSION_ID_ENV = "PI_DESKTOP_SESSION_ID";
 
+/**
+ * Which kind of host a process is (plan D-A3).
+ *
+ * `control` hosts serve app-wide state (settings, providers, packages, session
+ * and file listings) and deliberately never construct an `AgentSession`;
+ * `session` hosts own exactly one Pi session. The role travels in the child's
+ * environment because the host process decides which core to build.
+ */
+export const HOST_ROLE_ENV = "PI_DESKTOP_HOST_ROLE";
+export const ROLE_FLAG = "--role";
+
+export type HostRole = "control" | "session";
+
+export function isHostRole(value: unknown): value is HostRole {
+  return value === "control" || value === "session";
+}
+
 export interface HostRequestFrame {
   id: number;
   method: string;

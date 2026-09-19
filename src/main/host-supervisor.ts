@@ -4,12 +4,14 @@ import { basename, join } from "node:path";
 import {
   BLOB_DIR_ENV,
   HOST_PROTOCOL_VERSION,
+  HOST_ROLE_ENV,
   JsonlFrameDecoder,
   encodeFrame,
   isEventFrame,
   isResponseFrame,
   type HostMethod,
   type HostRequestFrame,
+  type HostRole,
 } from "../shared/host-protocol";
 import { createNodeFsPort, type FsPort } from "./fs-port";
 import { SESSION_ID_ENV, SERVICE_ENV, SERVICE_FLAG } from "../host/index";
@@ -51,6 +53,8 @@ export type HostSpawner = (
 export interface HostSpawnSpec {
   sessionId: string;
   cwd: string;
+  /** Which core the child builds: app-wide control, or one Pi session (D-A3). */
+  role?: HostRole;
   /** The Office tab owns port 38617; every other host gets 38618+. */
   officeHost?: boolean;
   /** Session JSONL to resume after a crash (plan step 5 fills this in). */
@@ -260,6 +264,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       const env: Record<string, string | undefined> = {
         ...(options.env ?? process.env),
         [SESSION_ID_ENV]: this.sessionId,
+        [HOST_ROLE_ENV]: this.spec.role ?? "session",
         [BLOB_DIR_ENV]: options.blobDir,
         [SERVICE_ENV]: "service",
         PI_CODING_AGENT_DIR: options.profileDir,
