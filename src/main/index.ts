@@ -3,10 +3,22 @@ import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, shell } from "electron";
 import { IPC, type AppInfo, type WindowState } from "../shared/ipc";
 import type { OfficeStopResult } from "../shared/office-bridge";
+import type { CreateTabInput } from "../shared/session-ipc";
 import { createAppStore } from "./app-store";
 import { createHostSupervisor } from "./host-supervisor";
-import { broadcastToWindows, registerIpcHandlers, revealPathWithShell, sanitizeTitle } from "./ipc";
+import {
+  broadcastToWindows,
+  registerIpcHandlers,
+  revealPathWithShell,
+  sanitizeTitle,
+  type IpcSessionDeps,
+} from "./ipc";
 import { installAppMenu } from "./menu";
+import {
+  createSessionService,
+  type SessionEmitChannel,
+  type SessionService,
+} from "./session-service";
 import { createOfficeSetupService } from "./office/setup-service";
 import { appPaths, isSafeMode, resolveAppRoots, type AppPaths, type AppRoots } from "./paths";
 import { resolveAppRuntime, type RuntimeResolution } from "./runtime";
@@ -59,6 +71,13 @@ const appState = createAppStore({
 
 let mainWindow: BrowserWindow | null = null;
 
+/** The IPC channel each session push channel maps to. */
+const SESSION_CHANNELS: Record<SessionEmitChannel, string> = {
+  event: IPC.sessionEvent,
+  state: IPC.sessionState,
+  tabs: IPC.sessionTabsChanged,
+};
+
 /**
  * One host process per session tab (plan step 4). Hosts are started by the tab
  * layer (plan step 11); main owns their lifetime so a quit always cleans up.
@@ -73,6 +92,38 @@ const hosts = runtime.nodePath
       profileDir: paths.profileDir,
     })
   : null;
+
+/**
+ * The session service (plan step 3): the app's only path to a Pi host. It needs a
+ * supervisor, so it is absent when the bundled runtime could not be resolved —
+ * in which case the renderer gets a precise error instead of a silent no-op.
+ */
+const sessions: SessionService | null = hosts
+  ? createSessionService({
+      supervisor: hosts,
+      store: appState,
+      controlCwd: app.getPath("home"),
+      emit: (channel, payload) => broadcastToWindows(SESSION_CHANNELS[channel], payload),
+    })
+  : null;
+
+function requireSessions(): SessionService {
+  if (!sessions) {
+    throw new Error("The bundled Pi runtime is unavailable, so no session can start.");
+  }
+  return sessions;
+}
+
+/** The validated session surface the IPC layer drives. */
+const sessionsIpc: IpcSessionDeps = {
+  knownTabIds: () => sessions?.tabs().map((tab) => tab.id) ?? [],
+  list: () => sessions?.envelope() ?? { tabs: [], activeTabId: null },
+  create: (input: CreateTabInput) => requireSessions().createTab(input),
+  close: (tabId: string) => requireSessions().closeTab(tabId),
+  activate: (tabId: string) => requireSessions().activateTab(tabId),
+  restore: () => requireSessions().restoreTabs(),
+  request: (input) => requireSessions().request(input.tabId, input.method, input.params),
+};
 
 /** Only these schemes may be handed to the operating system (plan step 22). */
 const EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
@@ -253,6 +304,7 @@ if (!app.requestSingleInstanceLock()) {
         get: async () => (await appState.read()).prefs,
         set: (patch) => appState.updatePrefs(patch),
       },
+      sessions: sessionsIpc,
       officeSetup,
       // The Office session owns the bridge and the app owns the session, so Stop
       // aborts that session's run — which ends a pane's answer for every bridge
@@ -276,6 +328,10 @@ if (!app.requestSingleInstanceLock()) {
     });
     mainWindow = createWindow();
 
+    // Restore the tab table without spawning anything, then warm the most
+    // recently used tab in the background (plan step 24 pre-warm).
+    void sessions?.restoreTabs().then(() => sessions?.prewarmLast());
+
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();
     });
@@ -286,6 +342,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on("before-quit", () => {
-    void hosts?.stopAll();
+    // `dispose` flushes the tab table and stops every host, including control.
+    void (sessions ? sessions.dispose() : hosts?.stopAll());
   });
 }

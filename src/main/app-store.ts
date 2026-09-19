@@ -5,6 +5,7 @@ import {
   type SettingsDocument,
 } from "./packages/settings";
 import { DEFAULT_PREFS, mergePrefs, sanitizePrefs, type UiPrefs } from "../shared/prefs";
+import { sanitizeTabs, type TabRecord } from "../shared/session-ipc";
 
 /**
  * The app's own persisted state (plan D14): which project is open, recent
@@ -24,8 +25,10 @@ export interface AppState {
   recentProjects: string[];
   /** Window chrome and session-view preferences (plan step 1). */
   prefs: UiPrefs;
-  /** Session/web/office tab descriptors; populated in plan step 11. */
-  tabs: unknown[];
+  /** Session/web/office tabs, restored on launch (plan step 3). */
+  tabs: TabRecord[];
+  /** The tab the window should select after a relaunch. */
+  activeTabId: string | null;
 }
 
 export function defaultAppState(): AppState {
@@ -35,6 +38,7 @@ export function defaultAppState(): AppState {
     recentProjects: [],
     prefs: { ...DEFAULT_PREFS },
     tabs: [],
+    activeTabId: null,
   };
 }
 
@@ -73,7 +77,8 @@ export function normalizeAppState(doc: SettingsDocument): AppState {
     activeProject,
     recentProjects: stringArray(doc.recentProjects),
     prefs: sanitizePrefs(doc.prefs),
-    tabs: Array.isArray(doc.tabs) ? doc.tabs : defaults.tabs,
+    tabs: sanitizeTabs(doc.tabs),
+    activeTabId: typeof doc.activeTabId === "string" ? doc.activeTabId : null,
   };
 }
 

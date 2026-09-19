@@ -37,6 +37,8 @@ export interface SupervisorHostLike {
   status(): string;
   request(method: HostMethod, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
   on(event: string, listener: (payload: unknown) => void): () => void;
+  /** Optional so simple test doubles stay simple; the real host implements it. */
+  rememberSessionFile?(sessionFile: string): void;
   shutdown(): Promise<void>;
 }
 
@@ -233,9 +235,19 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     try {
       const snapshot = await host.request("state.get");
       applySnapshot(tab, snapshot);
+      rememberSession(host, tab);
     } catch {
       // A state refresh is best effort: the tab keeps the status it had.
     }
+  };
+
+  /**
+   * Tells the supervisor which session file to resume after a crash. Without
+   * this a restarted host would silently come back with an empty session, because
+   * the spawn spec predates the session file.
+   */
+  const rememberSession = (host: SupervisorHostLike, tab: TabRecord): void => {
+    if (tab.sessionFile) host.rememberSessionFile?.(tab.sessionFile);
   };
 
   const subscribe = (tab: TabRecord, host: SupervisorHostLike): void => {
@@ -299,6 +311,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         ? await host.request("session.resume", { sessionFile: tab.sessionFile })
         : await host.request("session.create", { cwd: tab.cwd });
       applySnapshot(tab, snapshot);
+      rememberSession(host, tab);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(tab, "failed", message);

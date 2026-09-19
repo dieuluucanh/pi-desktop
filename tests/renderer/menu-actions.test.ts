@@ -4,7 +4,6 @@ import {
   handleMenuCommand,
   newSessionAction,
   openProjectAction,
-  SESSION_TABS_HINT,
 } from "../../src/renderer/src/menu-actions";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { installBridge } from "./fixtures";
@@ -24,6 +23,10 @@ beforeEach(() => {
     paletteOpen: false,
     info: null,
     hint: null,
+    tabs: [],
+    activeTabId: null,
+    sessionEvents: {},
+    sessionStates: {},
   });
 });
 
@@ -33,10 +36,20 @@ describe("new session", () => {
     expect(useAppStore.getState().hint).toMatch(/choose a project first/i);
   });
 
-  it("names the step that adds session tabs once a project is open", () => {
-    useAppStore.getState().openProject("C:\\work\\pi-desktop");
+  it("asks for a project first when none is open", () => {
     newSessionAction();
-    expect(useAppStore.getState().hint).toBe(SESSION_TABS_HINT);
+    expect(useAppStore.getState().hint).toMatch(/choose a project first/i);
+  });
+
+  it("creates a session tab for the open project (plan step 3)", async () => {
+    const create = vi.fn(async () => ({ tabs: [], activeTabId: null }));
+    (window.pi as unknown as { sessions: { create: unknown } }).sessions.create = create;
+    useAppStore.getState().openProject("C:\\work\\pi-desktop");
+
+    await useAppStore.getState().createSessionTab();
+
+    expect(create).toHaveBeenCalledWith({ cwd: "C:\\work\\pi-desktop" });
+    expect(useAppStore.getState().view).toBe("session");
   });
 });
 
@@ -86,11 +99,11 @@ describe("handleMenuCommand", () => {
     expect(useAppStore.getState().prefs.sidebarCollapsed).toBe(true);
   });
 
-  it("explains commands that belong to a later step", () => {
+  it("routes close and tab cycling at the tab table instead of a hint", () => {
     for (const command of ["close-session", "next-tab", "previous-tab"] as const) {
-      useAppStore.setState({ hint: null });
+      useAppStore.setState({ hint: null, tabs: [], activeTabId: null });
       handleMenuCommand(command);
-      expect(useAppStore.getState().hint, command).toMatch(/step 11/);
+      expect(useAppStore.getState().hint, command).toBeNull();
     }
   });
 

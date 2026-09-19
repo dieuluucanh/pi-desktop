@@ -69,6 +69,8 @@ export interface HostInfo {
   protocolVersion: number;
   nodeVersion: string;
   piVersion: string | null;
+  /** `control` hosts own no session; `session` hosts own exactly one (D-A3). */
+  role?: HostRole;
   sessionId: string | null;
   cwd: string;
   bridgePort: number | null;
@@ -91,6 +93,12 @@ export interface HostHandle {
   request(method: HostMethod, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
   on(event: string, listener: HostEventListener): () => void;
   restart(reason?: string): Promise<HostInfo>;
+  /**
+   * Records the session file so a later crash-restart resumes *this* session.
+   * The spawn spec is created before the session exists, so without this a
+   * recovered host would come back with an empty session (plan step 3).
+   */
+  rememberSessionFile(sessionFile: string): void;
   shutdown(): Promise<void>;
 }
 
@@ -402,6 +410,10 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       this.readyResolve?.(info);
       this.scheduleIdleCheck();
       return info;
+    }
+
+    rememberSessionFile(sessionFile: string): void {
+      this.spec = { ...this.spec, sessionFile };
     }
 
     private scheduleIdleCheck(): void {

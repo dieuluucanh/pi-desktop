@@ -12,6 +12,8 @@ import { describe, expect, it } from "vitest";
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 const CORE_DIRS = ["src/host", "src/main/office", "src/main/packages", "src/main/runtime"] as const;
+/** Electron-free *modules* that live outside those directories (plan step 3). */
+const CORE_FILES = ["src/main/session-service.ts"] as const;
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js"] as const;
 
 const ELECTRON_IMPORT =
@@ -46,6 +48,13 @@ describe("electron-free core modules", () => {
         if (ELECTRON_IMPORT.test(await readFile(file, "utf8"))) {
           offenders.push(relative(repoRoot, file));
         }
+      }
+    }
+
+    for (const file of CORE_FILES) {
+      inspected += 1;
+      if (ELECTRON_IMPORT.test(await readFile(join(repoRoot, file), "utf8"))) {
+        offenders.push(file);
       }
     }
 

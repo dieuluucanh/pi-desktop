@@ -22,13 +22,12 @@ export const SESSION_TABS_HINT = "Session tabs land in step 3 (session service).
 export const SHORTCUTS_HINT =
   "Ctrl/Cmd+K palette · Ctrl/Cmd+N new session · Ctrl/Cmd+W close · Ctrl/Cmd+B sidebar · Ctrl/Cmd+/ shortcuts";
 
+/**
+ * New session: with a project open the tab is created and its host spawned
+ * (plan step 3); without one the user is told what to do first.
+ */
 export function newSessionAction(): void {
-  const { project, setHint } = useAppStore.getState();
-  setHint(
-    project
-      ? SESSION_TABS_HINT
-      : "Choose a project first — open a folder with “Open project…”, then start a session.",
-  );
+  void useAppStore.getState().createSessionTab();
 }
 
 export async function openProjectAction(deps?: Partial<MenuActionDeps>): Promise<void> {
@@ -54,11 +53,13 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
       void openProjectAction(deps);
       return;
     case "close-session":
-      store.setHint("Close Session arrives with session tabs (step 11).");
+      void store.closeActiveTab();
       return;
     case "next-tab":
+      void store.cycleTab(1);
+      return;
     case "previous-tab":
-      store.setHint("Tab cycling arrives with session tabs (step 11).");
+      void store.cycleTab(-1);
       return;
     case "command-palette":
       store.togglePalette();

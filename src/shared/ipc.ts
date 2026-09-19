@@ -1,6 +1,13 @@
 import type { OfficeSetupStepId, OfficeSetupView } from "./office-setup";
 import type { OfficeStopResult } from "./office-bridge";
 import type { UiPrefs } from "./prefs";
+import type {
+  CreateTabInput,
+  SessionEventEnvelope,
+  SessionRequestInput,
+  SessionStateEnvelope,
+  SessionTabsEnvelope,
+} from "./session-ipc";
 
 /**
  * The IPC surface between the Electron main process and the renderer.
@@ -30,6 +37,20 @@ export const IPC = {
   windowState: "app:window-state",
   /** Main → renderer: an application-menu command (New Session, Settings, …). */
   appMenuCommand: "app:menu-command",
+
+  /** Sessions (plan step 3): tabs are the renderer's handle on a Pi host. */
+  sessionTabs: "session:tabs",
+  sessionCreate: "session:create",
+  sessionClose: "session:close",
+  sessionActivate: "session:activate",
+  sessionRestore: "session:restore",
+  sessionRequest: "session:request",
+  /** Main → renderer: a batch of host events for one tab. */
+  sessionEvent: "session:event",
+  /** Main → renderer: the latest state snapshot for one tab. */
+  sessionState: "session:state",
+  /** Main → renderer: the tab table changed (created, closed, status). */
+  sessionTabsChanged: "session:tabs-changed",
 
   /** Office wizard (plan step 1 UI, step 19 card). */
   officeGet: "office:get",
@@ -104,6 +125,20 @@ export interface WindowState {
   fullScreen: boolean;
 }
 
+/** Session tabs and host events (plan step 3). */
+export interface SessionsBridge {
+  list(): Promise<SessionTabsEnvelope>;
+  create(input: CreateTabInput): Promise<SessionTabsEnvelope>;
+  close(tabId: string): Promise<SessionTabsEnvelope>;
+  activate(tabId: string): Promise<SessionTabsEnvelope>;
+  restore(): Promise<SessionTabsEnvelope>;
+  /** Runs any host protocol method against a tab's host. */
+  request(input: SessionRequestInput): Promise<unknown>;
+  onEvent(listener: (envelope: SessionEventEnvelope) => void): () => void;
+  onState(listener: (envelope: SessionStateEnvelope) => void): () => void;
+  onTabs(listener: (envelope: SessionTabsEnvelope) => void): () => void;
+}
+
 /** Pi for Office setup wizard (plan step 1 UI, step 19 card). */
 export interface OfficeBridge {
   get(): Promise<OfficeSetupView>;
@@ -141,5 +176,6 @@ export interface PiDesktopBridge {
   onWindowState(listener: (state: WindowState) => void): () => void;
   onMenuCommand(listener: (command: MenuCommand) => void): () => void;
   prefs: PrefsBridge;
+  sessions: SessionsBridge;
   office: OfficeBridge;
 }

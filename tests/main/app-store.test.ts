@@ -32,7 +32,35 @@ describe("normalizeAppState", () => {
     expect(state.version).toBe(7);
     expect(state.activeProject).toBe("C:/projects/demo");
     expect(state.recentProjects).toEqual(["C:/a", "C:/b"]);
-    expect(state.tabs).toEqual(["not really a tab"]);
+    // A tab without a cwd could never be restored, so it is dropped, not trusted.
+    expect(state.tabs).toEqual([]);
+    expect(state.activeTabId).toBeNull();
+  });
+
+  it("keeps well-formed tabs and the active tab id (plan step 3)", () => {
+    const state = normalizeAppState({
+      tabs: [
+        {
+          id: "tab-1",
+          cwd: "C:/work/app",
+          title: "app",
+          status: "running",
+          sessionFile: "/profile/sessions/s1.jsonl",
+        },
+        { id: "tab-broken" },
+      ],
+      activeTabId: "tab-1",
+    });
+
+    expect(state.tabs).toHaveLength(1);
+    expect(state.tabs[0]).toMatchObject({
+      id: "tab-1",
+      kind: "session",
+      title: "app",
+      status: "running",
+      sessionFile: "/profile/sessions/s1.jsonl",
+    });
+    expect(state.activeTabId).toBe("tab-1");
   });
 
   it("rejects wrong-typed scalars and non-array collections", () => {

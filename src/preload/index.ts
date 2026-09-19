@@ -6,9 +6,17 @@ import {
   type OfficeBridge,
   type PiDesktopBridge,
   type PrefsBridge,
+  type SessionsBridge,
   type WindowState,
 } from "../shared/ipc";
 import type { UiPrefs } from "../shared/prefs";
+import type {
+  CreateTabInput,
+  SessionEventEnvelope,
+  SessionRequestInput,
+  SessionStateEnvelope,
+  SessionTabsEnvelope,
+} from "../shared/session-ipc";
 import type { OfficeSetupStepId, OfficeSetupView } from "../shared/office-setup";
 import type { OfficeStopResult } from "../shared/office-bridge";
 
@@ -26,6 +34,25 @@ function subscribe<T>(channel: string, listener: (payload: T) => void): () => vo
     ipcRenderer.removeListener(channel, handler);
   };
 }
+
+const sessions: SessionsBridge = {
+  list: () => ipcRenderer.invoke(IPC.sessionTabs) as Promise<SessionTabsEnvelope>,
+  create: (input: CreateTabInput) =>
+    ipcRenderer.invoke(IPC.sessionCreate, input) as Promise<SessionTabsEnvelope>,
+  close: (tabId: string) =>
+    ipcRenderer.invoke(IPC.sessionClose, tabId) as Promise<SessionTabsEnvelope>,
+  activate: (tabId: string) =>
+    ipcRenderer.invoke(IPC.sessionActivate, tabId) as Promise<SessionTabsEnvelope>,
+  restore: () => ipcRenderer.invoke(IPC.sessionRestore) as Promise<SessionTabsEnvelope>,
+  request: (input: SessionRequestInput) =>
+    ipcRenderer.invoke(IPC.sessionRequest, input) as Promise<unknown>,
+  onEvent: (listener: (envelope: SessionEventEnvelope) => void) =>
+    subscribe<SessionEventEnvelope>(IPC.sessionEvent, listener),
+  onState: (listener: (envelope: SessionStateEnvelope) => void) =>
+    subscribe<SessionStateEnvelope>(IPC.sessionState, listener),
+  onTabs: (listener: (envelope: SessionTabsEnvelope) => void) =>
+    subscribe<SessionTabsEnvelope>(IPC.sessionTabsChanged, listener),
+};
 
 const office: OfficeBridge = {
   get: () => ipcRenderer.invoke(IPC.officeGet) as Promise<OfficeSetupView>,
@@ -58,6 +85,7 @@ const bridge: PiDesktopBridge = {
   onMenuCommand: (listener: (command: MenuCommand) => void) =>
     subscribe<MenuCommand>(IPC.appMenuCommand, listener),
   prefs,
+  sessions,
   office,
 };
 

@@ -88,6 +88,17 @@ export function installBridge(options: BridgeOptions = {}): {
         return { ...prefs };
       },
     },
+    sessions: {
+      list: async () => ({ tabs: [], activeTabId: null }),
+      create: async () => ({ tabs: [], activeTabId: null }),
+      close: async () => ({ tabs: [], activeTabId: null }),
+      activate: async () => ({ tabs: [], activeTabId: null }),
+      restore: async () => ({ tabs: [], activeTabId: null }),
+      request: async () => ({}),
+      onEvent: () => () => undefined,
+      onState: () => () => undefined,
+      onTabs: () => () => undefined,
+    },
     office: {
       get: async () => view,
       start: async () => view,

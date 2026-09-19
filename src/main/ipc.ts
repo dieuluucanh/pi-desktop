@@ -1,6 +1,8 @@
 import { BrowserWindow, ipcMain, shell } from "electron";
+import { isHostMethod, type HostMethod } from "../shared/host-protocol";
 import { IPC, type AppInfo } from "../shared/ipc";
 import type { UiPrefs } from "../shared/prefs";
+import { isTabKind, type CreateTabInput, type SessionTabsEnvelope } from "../shared/session-ipc";
 import { isOfficeSetupStepId } from "../shared/office-setup";
 import type { OfficeStopResult } from "../shared/office-bridge";
 import type { OfficeSetupService } from "./office/setup-service";
@@ -9,12 +11,23 @@ import type { OfficeSetupService } from "./office/setup-service";
  * The Electron glue for the allowlisted IPC surface.
  *
  * All validation lives here: the renderer may only ask for channels listed in
- * `src/shared/ipc.ts`, only pass a known wizard step id, only reveal paths that
- * exist on disk, only set a bounded window title and only write a preference
- * patch (the closed key set is enforced by `mergePrefs`). Behaviour that needs a
- * window or a native dialog is injected, so this file stays the only place that
- * touches Electron APIs for IPC.
+ * `src/shared/ipc.ts`, only pass a known wizard step id or a live tab id, only
+ * reveal paths that exist, only set a bounded window title, and only call a host
+ * method that `isHostMethod` accepts. The services behind these handlers stay
+ * Electron-free.
  */
+
+/** The session surface the IPC layer drives (the service in main wires this up). */
+export interface IpcSessionDeps {
+  /** Tab ids that currently exist; used to reject stale renderer state. */
+  knownTabIds(): readonly string[];
+  list(): SessionTabsEnvelope;
+  create(input: CreateTabInput): Promise<SessionTabsEnvelope>;
+  close(tabId: string): Promise<SessionTabsEnvelope>;
+  activate(tabId: string): Promise<SessionTabsEnvelope>;
+  restore(): Promise<SessionTabsEnvelope>;
+  request(input: { tabId: string; method: HostMethod; params?: unknown }): Promise<unknown>;
+}
 
 export interface IpcDependencies {
   appInfo: () => AppInfo;
@@ -29,6 +42,7 @@ export interface IpcDependencies {
     get: () => Promise<UiPrefs>;
     set: (patch: unknown) => Promise<UiPrefs>;
   };
+  sessions: IpcSessionDeps;
   officeSetup: OfficeSetupService;
   /**
    * The Office run the app can stop. Idle (no Office session, or nothing in
@@ -46,6 +60,58 @@ export function broadcastToWindows(channel: string, payload: unknown): void {
   }
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+/** Rejects a tab id that is missing, malformed, or no longer open. */
+function requireTabId(deps: IpcDependencies, value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("session: a tab id is required");
+  }
+  if (!deps.sessions.knownTabIds().includes(value)) {
+    throw new Error(`session: unknown tab ${value}`);
+  }
+  return value;
+}
+
+/** Validates a `session.request` envelope: a live tab and a real host method. */
+function parseSessionRequest(
+  deps: IpcDependencies,
+  value: unknown,
+): { tabId: string; method: HostMethod; params?: unknown } {
+  const record = asRecord(value);
+  const tabId = requireTabId(deps, record.tabId);
+  const method = record.method;
+  if (!isHostMethod(method)) {
+    throw new Error(`session: unsupported host method ${String(method)}`);
+  }
+  return "params" in record ? { tabId, method, params: record.params } : { tabId, method };
+}
+
+/** Validates the create-tab input; unknown fields are dropped, not forwarded. */
+function parseCreateTab(value: unknown): CreateTabInput {
+  const record = asRecord(value);
+  const cwd = record.cwd;
+  if (typeof cwd !== "string" || cwd.length === 0) {
+    throw new Error("session: a project folder (cwd) is required");
+  }
+  const kind = record.kind;
+  if (kind !== undefined && !isTabKind(kind)) {
+    throw new Error(`session: unsupported tab kind ${String(kind)}`);
+  }
+  const input: CreateTabInput = { cwd };
+  if (isTabKind(kind)) input.kind = kind;
+  if (typeof record.sessionFile === "string" && record.sessionFile.length > 0) {
+    input.sessionFile = record.sessionFile;
+  }
+  if (typeof record.model === "string" && record.model.length > 0) input.model = record.model;
+  if (typeof record.thinking === "string" && record.thinking.length > 0) {
+    input.thinking = record.thinking;
+  }
+  return input;
+}
+
 export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.appInfo, () => deps.appInfo());
   ipcMain.handle(IPC.openExternal, (_event, url: unknown) => deps.openExternal(url));
@@ -54,6 +120,21 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.appSetTitle, (_event, title: unknown) => deps.setTitle(title));
   ipcMain.handle(IPC.prefsGet, () => deps.prefs.get());
   ipcMain.handle(IPC.prefsSet, (_event, patch: unknown) => deps.prefs.set(patch));
+
+  ipcMain.handle(IPC.sessionTabs, () => deps.sessions.list());
+  ipcMain.handle(IPC.sessionRestore, () => deps.sessions.restore());
+  ipcMain.handle(IPC.sessionCreate, (_event, input: unknown) =>
+    deps.sessions.create(parseCreateTab(input)),
+  );
+  ipcMain.handle(IPC.sessionClose, (_event, tabId: unknown) =>
+    deps.sessions.close(requireTabId(deps, tabId)),
+  );
+  ipcMain.handle(IPC.sessionActivate, (_event, tabId: unknown) =>
+    deps.sessions.activate(requireTabId(deps, tabId)),
+  );
+  ipcMain.handle(IPC.sessionRequest, (_event, input: unknown) =>
+    deps.sessions.request(parseSessionRequest(deps, input)),
+  );
 
   ipcMain.handle(IPC.officeGet, () => deps.officeSetup.getView());
   ipcMain.handle(IPC.officeStart, () => deps.officeSetup.start());

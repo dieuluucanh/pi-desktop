@@ -48,6 +48,7 @@ export function App() {
   const view = useAppStore((state) => state.view);
   const theme = useAppStore((state) => state.prefs.theme);
   const loadPrefs = useAppStore((state) => state.loadPrefs);
+  const loadTabs = useAppStore((state) => state.loadTabs);
   const setInfo = useAppStore((state) => state.setInfo);
 
   useEffect(() => {
@@ -65,11 +66,24 @@ export function App() {
       })
       .catch(() => undefined);
     const offMenu = api.onMenuCommand((command) => handleMenuCommand(command));
+    // Session pushes (plan step 3): the tab table, per-tab state snapshots and
+    // the host event batches the transcript will consume in step 5.
+    void loadTabs();
+    const offTabs = api.sessions.onTabs((envelope) => useAppStore.getState().applyTabs(envelope));
+    const offState = api.sessions.onState((envelope) =>
+      useAppStore.getState().applySessionState(envelope),
+    );
+    const offEvents = api.sessions.onEvent((envelope) =>
+      useAppStore.getState().applySessionEvents(envelope),
+    );
     return () => {
       cancelled = true;
       offMenu();
+      offTabs();
+      offState();
+      offEvents();
     };
-  }, [setInfo]);
+  }, [loadTabs, setInfo]);
 
   useEffect(() => {
     const resolved = theme === "system" ? (prefersLight() ? "light" : "dark") : theme;
