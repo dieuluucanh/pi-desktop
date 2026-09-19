@@ -1,0 +1,438 @@
+import { useEffect, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { diffLines } from "diff";
+import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
+import { cn } from "../ui/cn";
+import { Markdown } from "./Markdown";
+import type {
+  TranscriptBlock,
+  TranscriptItem,
+  TranscriptMessage,
+  TranscriptNotice,
+  TranscriptToolRun,
+} from "./session-events";
+
+/**
+ * The chat transcript (plan step 5).
+ *
+ * Virtualized, because a long session is thousands of items, and each item kind
+ * has its own renderer: markdown prose, collapsible thinking, tool cards with
+ * diffs, notices, and compaction cards. Custom messages fall back to their text
+ * until step 18 supplies an extension renderer.
+ */
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function isAbsoluteOrRelativePath(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+/** One-line summary of a tool call, the way a terminal client shows it. */
+export function toolSummary(tool: TranscriptToolRun): string {
+  const args = asRecord(tool.args);
+  const candidate =
+    args.path ?? args.file ?? args.command ?? args.query ?? args.pattern ?? args.name ?? args.url;
+  if (isAbsoluteOrRelativePath(candidate)) return candidate;
+  const first = Object.entries(args)[0];
+  return first ? `${first[0]}=${String(first[1]).slice(0, 60)}` : "";
+}
+
+function textOf(blocks: readonly TranscriptBlock[]): string {
+  return blocks.map((block) => (block.kind === "text" ? block.text : "")).join("");
+}
+
+export function ThinkingBlock({ text, label }: { text: string; label?: string }) {
+  if (text.trim().length === 0) return null;
+  return (
+    <details className="my-2 rounded-sm border border-line bg-sunken/60 px-3 py-2">
+      <summary className="cursor-pointer text-xs text-ink-muted">{label ?? "Thinking"}</summary>
+      <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-mono text-xs text-ink-muted">
+        {text}
+      </pre>
+    </details>
+  );
+}
+
+/** Unified diff rows for an `edit`/`write` tool call, in the theme's diff colours. */
+export function DiffView({ before, after }: { before: string; after: string }) {
+  const parts = diffLines(before, after);
+  return (
+    <pre className="overflow-x-auto rounded-sm border border-line bg-sunken p-2 font-mono text-xs">
+      <code>
+        {parts.map((part, index) => (
+          <span
+            key={index}
+            className={cn(
+              "block whitespace-pre-wrap",
+              part.added && "bg-ok/10 text-ok",
+              part.removed && "bg-danger/10 text-danger",
+            )}
+          >
+            {part.value
+              .replace(/\n$/, "")
+              .split("\n")
+              .map((line, lineIndex) => (
+                <span key={lineIndex} className="block">
+                  {part.added ? "+" : part.removed ? "-" : " "}
+                  {line}
+                </span>
+              ))}
+          </span>
+        ))}
+      </code>
+    </pre>
+  );
+}
+
+function diffPropsFor(tool: TranscriptToolRun): { before: string; after: string } | null {
+  const args = asRecord(tool.args);
+  if (
+    tool.toolName === "edit" &&
+    typeof args.oldString === "string" &&
+    typeof args.newString === "string"
+  ) {
+    return { before: args.oldString, after: args.newString };
+  }
+  if (tool.toolName === "write" && typeof args.content === "string") {
+    return { before: "", after: args.content };
+  }
+  return null;
+}
+
+export function ToolCard({ tool }: { tool: TranscriptToolRun }) {
+  const [open, setOpen] = useState(tool.isError);
+  const diff = diffPropsFor(tool);
+  const output = tool.resultText ?? tool.partial ?? "";
+  const summary = toolSummary(tool);
+
+  return (
+    <div
+      className={cn(
+        "my-2 rounded-sm border bg-raised/60",
+        tool.isError ? "border-danger/60" : "border-line",
+      )}
+    >
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+      >
+        <Badge tone={tool.isError ? "danger" : tool.done ? "ok" : "accent"}>{tool.toolName}</Badge>
+        {summary ? <span className="truncate text-ink-muted">{summary}</span> : null}
+        <span className="ml-auto text-ink-faint">
+          {tool.done ? (open ? "hide" : "show") : "running…"}
+        </span>
+      </button>
+      {open ? (
+        <div className="border-t border-line px-3 py-2">
+          {diff ? <DiffView {...diff} /> : null}
+          {output ? (
+            <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap font-mono text-xs text-ink-muted">
+              {output}
+            </pre>
+          ) : null}
+          {!diff && !output ? (
+            <p className="text-xs text-ink-faint">No output captured yet.</p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function NoticeView({
+  notice,
+  onAbort,
+  running,
+}: {
+  notice: TranscriptNotice;
+  onAbort?: () => void;
+  running?: boolean;
+}) {
+  const tone =
+    notice.severity === "error" ? "danger" : notice.severity === "warning" ? "warn" : "neutral";
+  return (
+    <div className="my-2 flex items-start gap-3 rounded-sm border border-line bg-surface px-3 py-2 text-xs">
+      <Badge tone={tone}>{notice.severity}</Badge>
+      <div className="flex-1">
+        <div>{notice.text}</div>
+        {notice.detail ? (
+          <pre className="mt-1 whitespace-pre-wrap font-mono text-[11px] text-ink-faint">
+            {notice.detail}
+          </pre>
+        ) : null}
+      </div>
+      {notice.severity === "error" && running && onAbort ? (
+        <Button size="sm" variant="ghost" onClick={onAbort}>
+          Abort run
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Message actions (plan step 5).
+ *
+ * Only what works today: copying a message's text. “Fork from here” and “revert
+ * to here” need the session *tree* (entry ids, branch navigation) and land with
+ * step 11; “retry” is a composer concern (step 6). Shipping dead buttons would
+ * teach users not to trust the transcript's controls.
+ */
+function MessageActions({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="mt-1 flex gap-2 text-[11px] text-ink-faint">
+      <button
+        type="button"
+        className="hover:text-ink"
+        onClick={() => {
+          const clipboard = navigator.clipboard;
+          if (!clipboard) return;
+          void clipboard.writeText(text).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1_500);
+          });
+        }}
+      >
+        {copied ? "copied" : "copy"}
+      </button>
+    </div>
+  );
+}
+
+function MessageView({ message }: { message: TranscriptMessage }) {
+  if (message.role === "compaction" || message.role === "branchSummary") {
+    return (
+      <details className="my-2 rounded-sm border border-line bg-sunken/60 px-3 py-2">
+        <summary className="cursor-pointer text-xs text-ink-muted">
+          {message.role === "compaction" ? "Context compacted" : "Branch summary"}
+        </summary>
+        <Markdown className="mt-2 text-xs text-ink-muted">{textOf(message.blocks)}</Markdown>
+      </details>
+    );
+  }
+
+  if (message.role === "custom") {
+    return (
+      <div className="my-2 rounded-sm border border-dashed border-line px-3 py-2">
+        <div className="text-[11px] text-ink-faint">{message.customType ?? "custom message"}</div>
+        <Markdown className="mt-1">{textOf(message.blocks)}</Markdown>
+      </div>
+    );
+  }
+
+  if (message.role === "bashExecution") {
+    return (
+      <pre className="my-2 overflow-x-auto rounded-sm border border-line bg-sunken p-2 font-mono text-xs">
+        {textOf(message.blocks)}
+      </pre>
+    );
+  }
+
+  const thinking = message.blocks.filter(
+    (block): block is { kind: "thinking"; text: string } => block.kind === "thinking",
+  );
+  const text = message.blocks.filter(
+    (block): block is { kind: "text"; text: string } => block.kind === "text",
+  );
+  const images = message.blocks.filter((block) => block.kind === "image");
+  const calls = message.blocks.filter((block) => block.kind === "toolCall");
+
+  const body = (
+    <>
+      {thinking.map((block, index) => (
+        <ThinkingBlock key={`thinking-${index}`} text={block.text} />
+      ))}
+      {text.length > 0 ? <Markdown>{text.map((block) => block.text).join("")}</Markdown> : null}
+      {images.map((block, index) => (
+        <img
+          key={`image-${index}`}
+          alt="attachment"
+          className="my-2 max-h-64 rounded-sm border border-line"
+          src={`data:${block.mimeType};base64,${block.data}`}
+        />
+      ))}
+      {calls.map((call, index) => (
+        <div key={`call-${index}`} className="my-1 text-xs text-ink-muted">
+          <Badge tone="accent">{call.name || "tool"}</Badge>{" "}
+          <span className="font-mono">{call.arguments}</span>
+        </div>
+      ))}
+      {message.streaming ? <span className="ml-0.5 animate-pulse text-accent">▍</span> : null}
+      {!message.streaming && text.length > 0 ? (
+        <MessageActions text={textOf(message.blocks)} />
+      ) : null}
+    </>
+  );
+
+  if (message.role === "user") {
+    return (
+      <div className="my-3 ml-auto max-w-[85%] rounded-md border border-line bg-surface px-3 py-2">
+        {body}
+      </div>
+    );
+  }
+
+  return <div className="my-3 max-w-[95%]">{body}</div>;
+}
+
+function TranscriptItemView({
+  item,
+  onAbort,
+  running,
+}: {
+  item: TranscriptItem;
+  onAbort?: () => void;
+  running?: boolean;
+}) {
+  if (item.kind === "message") return <MessageView message={item.message} />;
+  if (item.kind === "tool") return <ToolCard tool={item.tool} />;
+  return (
+    <NoticeView
+      notice={item.notice}
+      {...(onAbort ? { onAbort } : {})}
+      {...(running === undefined ? {} : { running })}
+    />
+  );
+}
+
+export function TranscriptEmptyState({
+  cwd,
+  project,
+  model,
+}: {
+  cwd?: string;
+  project?: string | null;
+  model?: string | null;
+}) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
+      <h2 className="text-sm font-semibold">This session is ready</h2>
+      <p className="max-w-md text-xs text-ink-muted">
+        Ask for a change, a review, or an explanation. Sessions run in{" "}
+        <span className="font-mono">{cwd ?? "the project folder"}</span> with the shared Pi profile,
+        so their history and settings are the same as terminal Pi.
+      </p>
+      {project ? (
+        <p className="text-xs text-ink-faint">
+          Project: <span className="font-mono">{project}</span>
+          {model ? ` · model: ${model}` : ""}
+        </p>
+      ) : null}
+      <ul className="mt-2 space-y-1 text-left text-xs text-ink-faint">
+        <li>
+          <span className="font-mono">/</span> commands · extension commands, templates, skills
+        </li>
+        <li>
+          <span className="font-mono">@</span> files · attach a file to the prompt
+        </li>
+        <li>
+          <span className="font-mono">#</span> documents · Office documents, once the bridge is set
+          up
+        </li>
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * Below this many items the transcript renders plainly: virtualizing five
+ * messages costs more than it saves, and a plain list is what tests and small
+ * sessions exercise. The 10k-item acceptance path still virtualizes.
+ */
+export const VIRTUALIZE_THRESHOLD = 50;
+
+export function Transcript({
+  items,
+  onAbort,
+  running,
+  empty,
+}: {
+  items: readonly TranscriptItem[];
+  onAbort?: () => void;
+  running?: boolean;
+  empty?: { cwd?: string; project?: string | null; model?: string | null };
+}) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottom = useRef(true);
+
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 96,
+    overscan: 8,
+  });
+
+  const lastLength = useRef(items.length);
+  useEffect(() => {
+    if (items.length === lastLength.current) return;
+    lastLength.current = items.length;
+    if (stickToBottom.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [items.length]);
+
+  if (items.length === 0 && empty) {
+    return <TranscriptEmptyState {...empty} />;
+  }
+
+  const trackScroll = (element: HTMLDivElement): void => {
+    stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+  };
+
+  if (items.length <= VIRTUALIZE_THRESHOLD) {
+    return (
+      <div
+        ref={scrollRef}
+        className="h-full overflow-y-auto px-4 py-3"
+        onScroll={(event) => trackScroll(event.currentTarget)}
+        data-testid="transcript"
+      >
+        {items.map((item) => (
+          <TranscriptItemView
+            key={item.id}
+            item={item}
+            {...(onAbort ? { onAbort } : {})}
+            {...(running === undefined ? {} : { running })}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={scrollRef}
+      className="h-full overflow-y-auto px-4 py-3"
+      onScroll={(event) => trackScroll(event.currentTarget)}
+      data-testid="transcript"
+    >
+      <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
+        {virtualizer.getVirtualItems().map((row) => {
+          const item = items[row.index];
+          if (!item) return null;
+          return (
+            <div
+              key={item.id}
+              ref={virtualizer.measureElement}
+              data-index={row.index}
+              className="absolute left-0 top-0 w-full"
+              style={{ transform: `translateY(${row.start}px)` }}
+            >
+              <TranscriptItemView
+                item={item}
+                {...(onAbort ? { onAbort } : {})}
+                {...(running === undefined ? {} : { running })}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

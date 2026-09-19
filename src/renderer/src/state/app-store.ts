@@ -7,6 +7,12 @@ import type {
   SessionTabsEnvelope,
   TabRecord,
 } from "../../../shared/session-ipc";
+import {
+  createTranscriptState,
+  hydrateMessages,
+  reduceSessionEvents,
+  type TranscriptState,
+} from "../session/session-events";
 
 /**
  * The renderer's view state (plan step 1).
@@ -60,7 +66,7 @@ export interface AppStateShape {
   tabs: TabRecord[];
   activeTabId: string | null;
   /** Per-tab event counter/last event: proof the host pipe is live (step 5 renders it). */
-  sessionEvents: Record<string, { count: number; last: string | null }>;
+  transcripts: Record<string, TranscriptState>;
   /** Latest `state.get` snapshot per tab (opaque to the renderer). */
   sessionStates: Record<string, unknown>;
 
@@ -80,6 +86,10 @@ export interface AppStateShape {
   applyTabs: (envelope: SessionTabsEnvelope) => void;
   applySessionEvents: (envelope: SessionEventEnvelope) => void;
   applySessionState: (envelope: SessionStateEnvelope) => void;
+  /** Loads history from `messages.get` once per tab (plan step 5). */
+  hydrateTranscript: (tabId: string) => Promise<void>;
+  /** Aborts the run of a tab (the transcript's error banner action). */
+  abortTab: (tabId: string) => Promise<void>;
   createSessionTab: () => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
@@ -108,7 +118,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   hint: null,
   tabs: [],
   activeTabId: null,
-  sessionEvents: {},
+  transcripts: {},
   sessionStates: {},
 
   setView: (view) => set({ view, hint: null }),
@@ -164,18 +174,52 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   applyTabs: (envelope) => set({ tabs: envelope.tabs, activeTabId: envelope.activeTabId }),
 
   applySessionEvents: (envelope) => {
-    const current = get().sessionEvents[envelope.tabId] ?? { count: 0, last: null };
-    const last = envelope.events.at(-1)?.event ?? current.last;
+    const current = get().transcripts[envelope.tabId] ?? createTranscriptState();
     set({
-      sessionEvents: {
-        ...get().sessionEvents,
-        [envelope.tabId]: { count: current.count + envelope.events.length, last },
+      transcripts: {
+        ...get().transcripts,
+        [envelope.tabId]: reduceSessionEvents(current, envelope.events, envelope.seq),
       },
     });
   },
 
   applySessionState: (envelope) =>
     set({ sessionStates: { ...get().sessionStates, [envelope.tabId]: envelope.state } }),
+
+  hydrateTranscript: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    const current = get().transcripts[tabId];
+    if (current?.hydrated) return;
+    try {
+      const result = (await api.sessions.request({ tabId, method: "messages.get" })) as {
+        messages?: unknown[];
+      };
+      const base = get().transcripts[tabId] ?? createTranscriptState();
+      set({
+        transcripts: {
+          ...get().transcripts,
+          [tabId]: hydrateMessages(base, result.messages ?? []),
+        },
+      });
+    } catch {
+      // A session that cannot report history still streams; hydration is best effort.
+      const base = get().transcripts[tabId] ?? createTranscriptState();
+      set({
+        transcripts: { ...get().transcripts, [tabId]: { ...base, hydrated: true } },
+      });
+    }
+  },
+
+  abortTab: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      await api.sessions.request({ tabId, method: "abort" });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
 
   createSessionTab: async () => {
     const { project, setHint } = get();

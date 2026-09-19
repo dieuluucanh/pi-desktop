@@ -25,7 +25,7 @@ beforeEach(() => {
     hint: null,
     tabs: [],
     activeTabId: null,
-    sessionEvents: {},
+    transcripts: {},
     sessionStates: {},
   });
 });

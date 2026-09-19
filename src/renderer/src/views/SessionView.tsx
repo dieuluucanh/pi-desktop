@@ -1,14 +1,16 @@
-import { WelcomeView } from "./WelcomeView";
+import { useEffect } from "react";
+import { Transcript } from "../session/Transcript";
 import { Badge } from "../ui/badge";
+import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
 import type { TabStatus } from "../../../shared/session-ipc";
 
 /**
- * Session view (plan step 3).
+ * Session view (plan step 5).
  *
- * The session host is live now, so this view reports what is really running —
- * status, project, session file, model and the event counter that proves the host
- * pipe works. The transcript and composer replace the body in steps 5–6.
+ * A compact header (status, model, usage, restart) and then the transcript —
+ * which is where the session actually lives now. With no open tab it stays the
+ * welcome state, so the app never shows an empty chat box with nowhere to send.
  */
 
 const STATUS_TONE: Record<TabStatus, "neutral" | "accent" | "ok" | "warn" | "danger"> = {
@@ -20,24 +22,28 @@ const STATUS_TONE: Record<TabStatus, "neutral" | "accent" | "ok" | "warn" | "dan
   stopped: "neutral",
 };
 
-function snapshotFacts(state: unknown): Array<[string, string]> {
-  if (!state || typeof state !== "object") return [];
+/** "42% ctx · 12.3k tokens · $0.04" from the host's state snapshot. */
+export function usageLine(state: unknown): string | null {
+  if (!state || typeof state !== "object") return null;
   const record = state as Record<string, unknown>;
-  const model = record.model;
-  const modelId =
-    model && typeof model === "object" && typeof (model as { id?: unknown }).id === "string"
-      ? String((model as { id: string }).id)
-      : null;
-  const facts: Array<[string, string]> = [];
-  if (modelId) facts.push(["Model", modelId]);
-  if (typeof record.thinkingLevel === "string") facts.push(["Thinking", record.thinkingLevel]);
-  if (typeof record.messageCount === "number") {
-    facts.push(["Messages", String(record.messageCount)]);
+  const parts: string[] = [];
+  const usage = record.contextUsage;
+  if (usage && typeof usage === "object") {
+    const percent = (usage as { percent?: unknown }).percent;
+    if (typeof percent === "number") parts.push(`${Math.round(percent * 100)}% ctx`);
   }
-  if (typeof record.streaming === "boolean") {
-    facts.push(["Streaming", record.streaming ? "yes" : "no"]);
+  const tokens = record.tokens;
+  if (tokens && typeof tokens === "object") {
+    const total = (tokens as { total?: unknown }).total;
+    const cost = (tokens as { cost?: unknown }).cost;
+    if (typeof total === "number" && total > 0) {
+      parts.push(`${total >= 1000 ? `${(total / 1000).toFixed(1)}k` : total} tokens`);
+    }
+    if (typeof cost === "number" && cost > 0) parts.push(`$${cost.toFixed(4)}`);
   }
-  return facts;
+  const count = record.messageCount;
+  if (typeof count === "number" && count > 0) parts.push(`${count} messages`);
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 export function SessionView() {
@@ -45,28 +51,33 @@ export function SessionView() {
   const tabs = useAppStore((state) => state.tabs);
   const activeTabId = useAppStore((state) => state.activeTabId);
   const sessionStates = useAppStore((state) => state.sessionStates);
-  const sessionEvents = useAppStore((state) => state.sessionEvents);
+  const transcripts = useAppStore((state) => state.transcripts);
   const activateTab = useAppStore((state) => state.activateTab);
-  const info = useAppStore((state) => state.info);
+  const hydrateTranscript = useAppStore((state) => state.hydrateTranscript);
+  const abortTab = useAppStore((state) => state.abortTab);
 
   const active = tabs.find((tab) => tab.id === activeTabId) ?? null;
+  const activeId = active?.id ?? null;
+
+  // Hooks run before the early return: `messages.get` seeds the transcript of the
+  // tab being shown (once per tab; live batches append after that).
+  useEffect(() => {
+    if (activeId) void hydrateTranscript(activeId);
+  }, [activeId, hydrateTranscript]);
+
   if (!active) return <WelcomeView />;
 
-  const events = sessionEvents[active.id] ?? { count: 0, last: null };
-  const facts: Array<[string, string]> = [
-    ["Project", active.cwd],
-    ["Session file", active.sessionFile ?? "not created yet"],
-    ...snapshotFacts(sessionStates[active.id]),
-  ];
+  const transcript = transcripts[active.id];
+  const usage = usageLine(sessionStates[active.id]);
+  const needsRestart =
+    active.status === "stopped" || active.status === "crashed" || active.status === "failed";
 
   return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col gap-5 overflow-y-auto px-8 py-6">
-      <header className="flex items-center gap-3">
-        <h1 className="text-lg font-semibold">{active.title}</h1>
+    <div className="flex h-full flex-col">
+      <header className="flex shrink-0 items-center gap-3 border-b border-line px-4 py-2">
+        <h1 className="truncate text-sm font-semibold">{active.title}</h1>
         <Badge tone={STATUS_TONE[active.status]}>{active.status}</Badge>
-        {active.status === "stopped" ||
-        active.status === "crashed" ||
-        active.status === "failed" ? (
+        {needsRestart ? (
           <button
             type="button"
             className="text-xs text-accent underline"
@@ -75,46 +86,22 @@ export function SessionView() {
             {active.status === "stopped" ? "Start session" : "Restart session"}
           </button>
         ) : null}
+        <span className="ml-auto truncate text-[11px] text-ink-faint" title={active.cwd}>
+          {usage ? `${usage} · ` : ""}
+          {active.model ?? ""}
+        </span>
       </header>
 
-      {active.error ? <div className="banner banner--error">{active.error}</div> : null}
+      {active.error ? <div className="banner banner--error mx-4 mt-2">{active.error}</div> : null}
 
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
-        {facts.map(([label, value]) => (
-          <div key={label} className="contents">
-            <dt className="text-ink-faint">{label}</dt>
-            <dd className="truncate" title={value}>
-              {value}
-            </dd>
-          </div>
-        ))}
-        <dt className="text-ink-faint">Host events</dt>
-        <dd>
-          {events.count} received{events.last ? ` · last: ${events.last}` : ""}
-        </dd>
-      </dl>
-
-      <p className="text-sm text-ink-muted">
-        This session runs in its own Pi host process with the shared profile. The transcript and the
-        prompt composer arrive with steps 5–6; until then the host is verified here by its state and
-        event stream rather than by a chat box that cannot work yet.
-      </p>
-
-      {info?.runtimeProblems.length ? (
-        <p className="text-xs text-warn">{info.runtimeProblems.join(" · ")}</p>
-      ) : null}
-
-      {tabs.length > 1 ? (
-        <p className="text-xs text-ink-faint">
-          {tabs.length} open sessions. Use Ctrl+Tab, or the sidebar strip, to switch.
-        </p>
-      ) : null}
-
-      {project && project.path !== active.cwd ? (
-        <p className="text-xs text-ink-faint">
-          This tab runs in {active.cwd}, not the project selected in the sidebar ({project.path}).
-        </p>
-      ) : null}
+      <div className="min-h-0 flex-1">
+        <Transcript
+          items={transcript?.items ?? []}
+          running={active.status === "running"}
+          onAbort={() => void abortTab(active.id)}
+          empty={{ cwd: active.cwd, project: project?.path ?? null, model: active.model }}
+        />
+      </div>
     </div>
   );
 }
