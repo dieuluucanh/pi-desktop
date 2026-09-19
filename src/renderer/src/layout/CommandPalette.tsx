@@ -1,0 +1,121 @@
+import { Command } from "cmdk";
+import { useAppStore, type AppView } from "../state/app-store";
+import { newSessionAction, openProjectAction, SHORTCUTS_HINT } from "../menu-actions";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
+import { Kbd } from "../ui/kbd";
+
+/**
+ * Command palette (plan step 1) — the universal entry point: actions first, then
+ * navigation. It is intentionally the only place the renderer owns a global
+ * shortcut (nothing here duplicates the menu accelerators).
+ */
+
+interface GoTarget {
+  view: AppView;
+  label: string;
+}
+
+const GO_TARGETS: readonly GoTarget[] = [
+  { view: "settings", label: "Settings" },
+  { view: "extensions", label: "Extensions" },
+  { view: "connections", label: "Connections (providers & keys)" },
+  { view: "skills", label: "Skills, themes & keybindings" },
+  { view: "diagnostics", label: "Diagnostics" },
+  { view: "office", label: "Pi for Office" },
+];
+
+export function CommandPalette() {
+  const open = useAppStore((state) => state.paletteOpen);
+  const closePalette = useAppStore((state) => state.closePalette);
+  const setView = useAppStore((state) => state.setView);
+  const setHint = useAppStore((state) => state.setHint);
+  const toggleSidebar = useAppStore((state) => state.toggleSidebar);
+
+  const run = (action: () => void): void => {
+    closePalette();
+    action();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => (next ? undefined : closePalette())}>
+      <DialogContent aria-describedby={undefined}>
+        <DialogTitle className="sr-only">Command palette</DialogTitle>
+        <DialogDescription className="sr-only">
+          Run an app action or jump to a view.
+        </DialogDescription>
+        <Command
+          label="Command palette"
+          className="[&_[cmdk-group-heading]]:px-4 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-ink-faint"
+        >
+          <div className="flex items-center gap-2 border-b border-line px-4 py-3">
+            <Command.Input
+              autoFocus
+              placeholder="Type a command or a view…"
+              className="w-full bg-transparent text-sm outline-none placeholder:text-ink-faint"
+            />
+            <Kbd>Esc</Kbd>
+          </div>
+          <Command.List className="max-h-[52vh] overflow-y-auto py-2">
+            <Command.Empty className="px-4 py-6 text-sm text-ink-muted">
+              No matching command.
+            </Command.Empty>
+
+            <Command.Group heading="Actions">
+              <PaletteItem
+                label="New session"
+                shortcut="Ctrl+N"
+                onSelect={() => run(newSessionAction)}
+              />
+              <PaletteItem
+                label="Open project…"
+                shortcut="Ctrl+O"
+                onSelect={() => run(() => void openProjectAction())}
+              />
+              <PaletteItem
+                label="Toggle sidebar"
+                shortcut="Ctrl+B"
+                onSelect={() => run(toggleSidebar)}
+              />
+              <PaletteItem
+                label="Show keyboard shortcuts"
+                shortcut="Ctrl+/"
+                onSelect={() => run(() => setHint(SHORTCUTS_HINT))}
+              />
+            </Command.Group>
+
+            <Command.Group heading="Go to">
+              {GO_TARGETS.map((target) => (
+                <PaletteItem
+                  key={target.view}
+                  label={target.label}
+                  onSelect={() => run(() => setView(target.view))}
+                />
+              ))}
+            </Command.Group>
+          </Command.List>
+        </Command>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PaletteItem({
+  label,
+  shortcut,
+  onSelect,
+}: {
+  label: string;
+  shortcut?: string;
+  onSelect: () => void;
+}) {
+  return (
+    <Command.Item
+      value={label}
+      onSelect={onSelect}
+      className="flex cursor-pointer items-center gap-3 px-4 py-2 text-sm data-[selected=true]:bg-raised"
+    >
+      <span className="flex-1">{label}</span>
+      {shortcut ? <Kbd>{shortcut}</Kbd> : null}
+    </Command.Item>
+  );
+}

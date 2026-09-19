@@ -4,11 +4,12 @@ import {
   writeSettingsDocument,
   type SettingsDocument,
 } from "./packages/settings";
+import { DEFAULT_PREFS, mergePrefs, sanitizePrefs, type UiPrefs } from "../shared/prefs";
 
 /**
  * The app's own persisted state (plan D14): which project is open, recent
- * projects, and — from step 11 — the tab layout. Nothing Pi-related is stored
- * here; sessions and settings stay in the Pi profile.
+ * projects, UI preferences and — from step 11 — the tab layout. Nothing
+ * Pi-related is stored here; sessions and settings stay in the Pi profile.
  *
  * Writes reuse the atomic settings writer (temp file + rename) and never repair
  * a malformed file silently: a corrupt store is reported and replaced in memory
@@ -21,17 +22,27 @@ export interface AppState {
   version: number;
   activeProject: string | null;
   recentProjects: string[];
+  /** Window chrome and session-view preferences (plan step 1). */
+  prefs: UiPrefs;
   /** Session/web/office tab descriptors; populated in plan step 11. */
   tabs: unknown[];
 }
 
 export function defaultAppState(): AppState {
-  return { version: APP_STATE_VERSION, activeProject: null, recentProjects: [], tabs: [] };
+  return {
+    version: APP_STATE_VERSION,
+    activeProject: null,
+    recentProjects: [],
+    prefs: { ...DEFAULT_PREFS },
+    tabs: [],
+  };
 }
 
 export interface AppStore {
   read(): Promise<AppState>;
   update(patch: Partial<AppState>): Promise<AppState>;
+  /** Merges a validated, partial preference patch (unknown keys are ignored). */
+  updatePrefs(patch: unknown): Promise<UiPrefs>;
 }
 
 export interface CreateAppStoreOptions {
@@ -61,6 +72,7 @@ export function normalizeAppState(doc: SettingsDocument): AppState {
     version,
     activeProject,
     recentProjects: stringArray(doc.recentProjects),
+    prefs: sanitizePrefs(doc.prefs),
     tabs: Array.isArray(doc.tabs) ? doc.tabs : defaults.tabs,
   };
 }
@@ -97,6 +109,13 @@ export function createAppStore(options: CreateAppStoreOptions): AppStore {
       }
       cached = next;
       return next;
+    },
+    updatePrefs: async (patch: unknown): Promise<UiPrefs> => {
+      const current = await read();
+      const prefs = mergePrefs(current.prefs, patch);
+      await writeSettingsDocument(fs, options.file, { ...current, prefs });
+      cached = { ...current, prefs };
+      return prefs;
     },
   };
 }

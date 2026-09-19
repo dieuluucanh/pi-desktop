@@ -1,0 +1,337 @@
+/*
+ * Styles for the Pi for Office wizard panel (plan step 1).
+ *
+ * The panel is shipped, tested functionality that is only *re-homed* in step 19,
+ * so its class contract is kept as-is; the rules below were re-expressed on the
+ * step-1 theme tokens. Step 19 migrates the markup to `ui/*` primitives and this
+ * file disappears.
+ */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.panel__head h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.panel__head p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.panel__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .panel__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.card {
+  padding: 16px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-raised);
+}
+
+.card h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.muted {
+  color: var(--color-ink-muted);
+  font-size: 13px;
+}
+
+.banner {
+  padding: 10px 12px;
+  border: 1px solid var(--color-line);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.banner--info {
+  border-left-color: var(--color-info);
+  color: var(--color-ink-muted);
+}
+
+.banner--warn {
+  border-left-color: var(--color-warn);
+}
+
+.banner--error {
+  border-left-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.pill,
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 999px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-ink-muted);
+}
+
+.chip {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.chip--live {
+  border-color: var(--color-ok);
+  color: var(--color-ok);
+}
+
+.pill--running {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.pill--ready,
+.pill--ok,
+.pill--done {
+  border-color: var(--color-ok);
+  color: var(--color-ok);
+}
+
+.pill--error {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  background: var(--color-raised);
+}
+
+.step--active {
+  border-color: var(--color-accent);
+}
+
+.step--error,
+.step--failed {
+  border-color: var(--color-danger);
+}
+
+.step__glyph {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--color-ink-faint);
+}
+
+.step--done .step__glyph,
+.step--ok .step__glyph {
+  color: var(--color-ok);
+}
+
+.step--error .step__glyph,
+.step--failed .step__glyph {
+  color: var(--color-danger);
+}
+
+.step__title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.step__detail {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--color-ink-muted);
+  word-break: break-word;
+}
+
+.step__actions,
+.finding__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--color-ink-muted);
+}
+
+.findings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.finding {
+  padding: 10px 12px;
+  border: 1px solid var(--color-line);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--color-raised);
+}
+
+.finding--warning {
+  border-left-color: var(--color-warn);
+}
+
+.finding--error {
+  border-left-color: var(--color-danger);
+}
+
+.finding--info {
+  border-left-color: var(--color-info);
+}
+
+.finding__title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.finding__detail {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--color-ink-muted);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.facts dt {
+  color: var(--color-ink-faint);
+}
+
+.facts dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log {
+  max-height: 260px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  background: var(--color-sunken);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.panes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.panes li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.pane__host {
+  font-weight: 600;
+}
+
+.pane__name {
+  color: var(--color-ink-muted);
+}
+
+.ghost,
+button.ghost {
+  padding: 4px 10px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ghost:hover:not(:disabled) {
+  border-color: var(--color-accent);
+}
+
+button.danger {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

@@ -2,10 +2,13 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import {
   IPC,
   type AppInfo,
+  type MenuCommand,
   type OfficeBridge,
   type PiDesktopBridge,
+  type PrefsBridge,
   type WindowState,
 } from "../shared/ipc";
+import type { UiPrefs } from "../shared/prefs";
 import type { OfficeSetupStepId, OfficeSetupView } from "../shared/office-setup";
 import type { OfficeStopResult } from "../shared/office-bridge";
 
@@ -39,11 +42,22 @@ const office: OfficeBridge = {
     subscribe<OfficeSetupView>(IPC.officeState, listener),
 };
 
+const prefs: PrefsBridge = {
+  get: () => ipcRenderer.invoke(IPC.prefsGet) as Promise<UiPrefs>,
+  set: (patch: Partial<UiPrefs>) => ipcRenderer.invoke(IPC.prefsSet, patch) as Promise<UiPrefs>,
+};
+
 const bridge: PiDesktopBridge = {
   getAppInfo: () => ipcRenderer.invoke(IPC.appInfo) as Promise<AppInfo>,
   openExternal: (url: string) => ipcRenderer.invoke(IPC.openExternal, url) as Promise<boolean>,
+  pickDirectory: () => ipcRenderer.invoke(IPC.appPickDirectory) as Promise<string | null>,
+  revealPath: (path: string) => ipcRenderer.invoke(IPC.appRevealPath, path) as Promise<boolean>,
+  setTitle: (title: string) => ipcRenderer.invoke(IPC.appSetTitle, title) as Promise<boolean>,
   onWindowState: (listener: (state: WindowState) => void) =>
     subscribe<WindowState>(IPC.windowState, listener),
+  onMenuCommand: (listener: (command: MenuCommand) => void) =>
+    subscribe<MenuCommand>(IPC.appMenuCommand, listener),
+  prefs,
   office,
 };
 

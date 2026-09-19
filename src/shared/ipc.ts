@@ -1,5 +1,6 @@
 import type { OfficeSetupStepId, OfficeSetupView } from "./office-setup";
 import type { OfficeStopResult } from "./office-bridge";
+import type { UiPrefs } from "./prefs";
 
 /**
  * The IPC surface between the Electron main process and the renderer.
@@ -7,7 +8,7 @@ import type { OfficeStopResult } from "./office-bridge";
  * Everything the renderer is allowed to do must be listed here:
  * `src/preload/index.ts` exposes exactly these calls on `window.pi`, and
  * `src/main/ipc.ts` registers exactly these channels. Adding a channel means
- * touching all three files — that is the allowlist (plan step 22).
+ * touching all three files — that is the allowlist (plan step 23).
  */
 
 export const IPC = {
@@ -15,10 +16,22 @@ export const IPC = {
   appInfo: "app:info",
   /** Renderer → main: open a URL in the user's browser (validated in main). */
   openExternal: "app:open-external",
+  /** Renderer → main: native folder picker; resolves to null when cancelled. */
+  appPickDirectory: "app:pick-directory",
+  /** Renderer → main: reveal a path in the OS file manager. */
+  appRevealPath: "app:reveal-path",
+  /** Renderer → main: set the window title (app chrome owns it, not the menu). */
+  appSetTitle: "app:set-title",
+  /** Renderer → main: read the persisted UI preferences. */
+  prefsGet: "prefs:get",
+  /** Renderer → main: merge a partial preference patch (closed key set). */
+  prefsSet: "prefs:set",
   /** Main → renderer: window focus / maximise / fullscreen changes. */
   windowState: "app:window-state",
+  /** Main → renderer: an application-menu command (New Session, Settings, …). */
+  appMenuCommand: "app:menu-command",
 
-  /** Office wizard (plan step 3). */
+  /** Office wizard (plan step 1 UI, step 19 card). */
   officeGet: "office:get",
   officeStart: "office:start",
   officeRetry: "office:retry",
@@ -33,6 +46,30 @@ export const IPC = {
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
+
+/** Commands the application menu can send to the renderer. */
+export const MENU_COMMANDS = [
+  "new-session",
+  "open-project",
+  "close-session",
+  "next-tab",
+  "previous-tab",
+  "command-palette",
+  "toggle-sidebar",
+  "view-settings",
+  "view-extensions",
+  "view-connections",
+  "view-skills",
+  "view-diagnostics",
+  "view-office",
+  "shortcuts",
+] as const;
+
+export type MenuCommand = (typeof MENU_COMMANDS)[number];
+
+export function isMenuCommand(value: unknown): value is MenuCommand {
+  return typeof value === "string" && (MENU_COMMANDS as readonly string[]).includes(value);
+}
 
 export interface AppInfo {
   name: string;
@@ -50,6 +87,10 @@ export interface AppInfo {
   blobCacheDir: string;
   /** `~/.pi/agent` unless `PI_CODING_AGENT_DIR` overrides it (plan D8). */
   profileDir: string;
+  /** Pi files inside the profile, resolved by the main process (plan step 1). */
+  settingsFile: string;
+  authFile: string;
+  modelsFile: string;
   appStateFile: string;
   /** Bundled runtime status (plan step 2). */
   runtimeSource: string | null;
@@ -63,7 +104,7 @@ export interface WindowState {
   fullScreen: boolean;
 }
 
-/** Pi for Office setup wizard (plan step 3). */
+/** Pi for Office setup wizard (plan step 1 UI, step 19 card). */
 export interface OfficeBridge {
   get(): Promise<OfficeSetupView>;
   start(): Promise<OfficeSetupView>;
@@ -83,10 +124,22 @@ export interface OfficeBridge {
   onState(listener: (view: OfficeSetupView) => void): () => void;
 }
 
+/** UI preferences persisted by the main process (plan step 1). */
+export interface PrefsBridge {
+  get(): Promise<UiPrefs>;
+  set(patch: Partial<UiPrefs>): Promise<UiPrefs>;
+}
+
 /** The complete API exposed to the renderer as `window.pi`. */
 export interface PiDesktopBridge {
   getAppInfo(): Promise<AppInfo>;
   openExternal(url: string): Promise<boolean>;
+  /** Native folder picker; resolves to null when the user cancels. */
+  pickDirectory(): Promise<string | null>;
+  revealPath(path: string): Promise<boolean>;
+  setTitle(title: string): Promise<boolean>;
   onWindowState(listener: (state: WindowState) => void): () => void;
+  onMenuCommand(listener: (command: MenuCommand) => void): () => void;
+  prefs: PrefsBridge;
   office: OfficeBridge;
 }

@@ -1,10 +1,12 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, dialog, shell } from "electron";
 import { IPC, type AppInfo, type WindowState } from "../shared/ipc";
 import type { OfficeStopResult } from "../shared/office-bridge";
+import { createAppStore } from "./app-store";
 import { createHostSupervisor } from "./host-supervisor";
-import { broadcastToWindows, registerIpcHandlers } from "./ipc";
+import { broadcastToWindows, registerIpcHandlers, revealPathWithShell, sanitizeTitle } from "./ipc";
+import { installAppMenu } from "./menu";
 import { createOfficeSetupService } from "./office/setup-service";
 import { appPaths, isSafeMode, resolveAppRoots, type AppPaths, type AppRoots } from "./paths";
 import { resolveAppRuntime, type RuntimeResolution } from "./runtime";
@@ -30,6 +32,14 @@ const runtime: RuntimeResolution = resolveAppRuntime({
   isPackaged: app.isPackaged,
   resourcesPath: roots.resourcesDir,
   appRoot: roots.appRoot,
+});
+
+/** The app's own state (tabs, recents, UI preferences) — never Pi state. */
+const appState = createAppStore({
+  file: paths.appStateFile,
+  onError: (error) => {
+    console.error("[pi-desktop] app state:", error instanceof Error ? error.message : error);
+  },
 });
 
 let mainWindow: BrowserWindow | null = null;
@@ -80,6 +90,9 @@ function currentAppInfo(): AppInfo {
     logsDir: paths.logs,
     blobCacheDir: paths.blobCache,
     profileDir: paths.profileDir,
+    settingsFile: join(paths.profileDir, "settings.json"),
+    authFile: join(paths.profileDir, "auth.json"),
+    modelsFile: join(paths.profileDir, "models.json"),
     appStateFile: paths.appStateFile,
     runtimeSource: runtime.source,
     runtimeNodeVersion: runtime.nodeVersion,
@@ -93,6 +106,24 @@ function windowStateOf(window: BrowserWindow): WindowState {
     maximized: window.isMaximized(),
     fullScreen: window.isFullScreen(),
   };
+}
+
+/** Native folder picker used by “Open project…” (plan step 1). */
+async function pickProjectDirectory(): Promise<string | null> {
+  const result = await dialog.showOpenDialog({
+    title: "Open project folder",
+    properties: ["openDirectory", "createDirectory"],
+  });
+  const first = result.filePaths[0];
+  return result.canceled || !first ? null : first;
+}
+
+/** The renderer owns the window title; this bounds and applies it. */
+function setWindowTitle(title: unknown): boolean {
+  const clean = sanitizeTitle(title);
+  if (!clean || !mainWindow || mainWindow.isDestroyed()) return false;
+  mainWindow.setTitle(clean);
+  return true;
 }
 
 function createWindow(): BrowserWindow {
@@ -182,10 +213,28 @@ if (!app.requestSingleInstanceLock()) {
     mainWindow.focus();
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    // The application menu is the app's command surface; its items never touch
+    // windows directly — they forward a MenuCommand to the renderer.
+    await installAppMenu({
+      appName: app.getName(),
+      isMac: process.platform === "darwin",
+      onCommand: (command) => broadcastToWindows(IPC.appMenuCommand, command),
+      onOpenExternal: (url) => {
+        void openExternal(url);
+      },
+    });
+
     registerIpcHandlers({
       appInfo: currentAppInfo,
       openExternal,
+      pickDirectory: pickProjectDirectory,
+      revealPath: revealPathWithShell,
+      setTitle: setWindowTitle,
+      prefs: {
+        get: async () => (await appState.read()).prefs,
+        set: (patch) => appState.updatePrefs(patch),
+      },
       officeSetup,
       // The Office session owns the bridge and the app owns the session, so Stop
       // aborts that session's run — which ends a pane's answer for every bridge

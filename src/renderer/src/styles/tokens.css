@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+/*
+ * Theme tokens (plan step 1).
+ *
+ * This file is the single source of truth for the app's colours, radii and
+ * fonts. Tailwind utilities compile to `var(--color-*)`, so the Pi theme
+ * (step 15) and the light/dark switch below only have to redefine these
+ * variables — no component knows a hex value.
+ */
+
+@theme {
+  --color-canvas: #0f1115;
+  --color-surface: #161a21;
+  --color-raised: #1b2029;
+  --color-sunken: #0b0d11;
+  --color-line: #232936;
+  --color-line-strong: #313a4b;
+  --color-ink: #e6e9ef;
+  --color-ink-muted: #98a1b3;
+  --color-ink-faint: #6b7487;
+  --color-accent: #7aa2f7;
+  --color-accent-ink: #0b0d11;
+  --color-danger: #f7768e;
+  --color-warn: #e0af68;
+  --color-ok: #9ece6a;
+  --color-info: #7dcfff;
+
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, "SF Mono", monospace;
+}
+
+/* Light palette: same token names, different values. */
+[data-theme="light"] {
+  --color-canvas: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-raised: #ffffff;
+  --color-sunken: #eceef2;
+  --color-line: #dcdfe6;
+  --color-line-strong: #c3c8d4;
+  --color-ink: #1c2128;
+  --color-ink-muted: #5b6472;
+  --color-ink-faint: #8b94a3;
+  --color-accent: #3b6fd4;
+  --color-accent-ink: #ffffff;
+  --color-danger: #c33c54;
+  --color-warn: #9a6700;
+  --color-ok: #3f7d2c;
+  --color-info: #16689b;
+}

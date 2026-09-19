@@ -1,17 +1,24 @@
 # Pi Desktop
 
-A standalone desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global
-installs. Sessions, extensions, packages, providers and settings are managed through a UI, and the
-same app can drive Microsoft Office through the [Pi for Office](https://github.com/dieuluucanh/pi-for-office)
-add-in with zero-touch setup.
+A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global installs. Projects,
+sessions, chat, providers, models, extensions, packages, skills, themes and settings are managed
+through a UI, using the **same `~/.pi/agent` profile as terminal Pi**, so the two are
+interchangeable.
 
-> **Status:** early. The Office setup backend (detect → install bridge → sideload → verify →
-> troubleshoot) is implemented and tested. The Electron shell, chat UI and the wizard's React panel
-> are next (see [Roadmap](#roadmap)).
+> **Status:** core-first rebuild in progress. The bundled runtime, the Pi host process + supervisor,
+> the session core and the Office setup backend are implemented and tested (351 tests). The app shell
+> (plan step 1) is live: sidebar + session tabs + full-page views, an application menu with real
+> actions, and no placeholder screens. Sessions, chat, providers and the extension hub land next — see
+> [the execution plan](.pi/plans/2026-09-19-pi-desktop-core-first-rebaseline.md).
+>
+> **Pi for Office is an optional integration.** It installs from Extensions → Integrations like any
+> other Pi extension, and no Office surface appears unless you set it up — see
+> [docs/product/parity.md](docs/product/parity.md).
 
 ## Current state
 
-Implemented and covered by tests (`npm test`, 151 tests):
+Implemented and covered by tests (`npm test`: **351 tests** in 36 files — a node project and a jsdom
+renderer project):
 
 | Area              | Module                                | What it does                                                                                                                                                                                                                                                                                   |
 | ----------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -27,21 +34,34 @@ Implemented and covered by tests (`npm test`, 151 tests):
 
 ### Deliberately not done yet
 
-- The React panel that renders `OfficeSetupController` state, and the Electron shell that supplies
-  `shell.openPath` / `shell.openExternal` and the real bundled Node + npm paths. The controller is
-  UI-free by design so the panel is a thin binding.
-- Bundling the Pi runtime and the managed Node 24 runtime (see the plan).
+- **Sessions and chat.** The session service (one Pi host per session tab) is step 3; the transcript
+  and composer are steps 5–6. Until then the session view states exactly that instead of showing a
+  prompt box that cannot work.
+- **Providers, models and settings.** Connections (step 9), the model/thinking pickers (step 8) and
+  the full settings mirror (step 12). Credentials are already shared with terminal Pi today — the UI
+  to manage them is what is missing.
+- **Extension UI fidelity.** Extension dialogs, widgets and the TUI rendering surface are steps
+  16–18; the extension/package hub is steps 13–14.
+
+See [docs/product/parity.md](docs/product/parity.md) for the row-by-row plan against terminal Pi.
 
 ## Layout
 
-```
-src/shared/office.ts          Pi for Office constants (add-in id, bridge package, ports, hosts)
+```text
+src/main/                     Electron main: window, app menu, IPC router, supervisor, Office wiring
+src/main/menu.ts              the application menu (pure template + installer)
+src/main/session-service.ts   control host + one Pi host per session tab (plan step 3)
 src/main/fs-port.ts           FsPort + Node and in-memory implementations
 src/main/office/*             detection, registry, manifest, sideload, verify, troubleshoot, wizard
 src/main/packages/*           spec parsing, settings.json, npm root, installer
+src/preload/index.ts          the only place that touches contextBridge/ipcRenderer
+src/renderer/src/             React app: layout/, views/, ui/ primitives, state/ (zustand), styles/
+src/host/                     Pi host process (dual-mode: `pi` CLI passthrough or JSONL service)
+src/shared/                   types, constants, the IPC allowlist, preference schema
 resources/office/             vendored manifest.prod.xml + lockfile (hash-checked)
+resources/runtime/            pinned Node 24 + npm + PATH shims
 scripts/sync-office-manifest.mjs   re-vendor the manifest from the pi-for-office repo
-tests/                        vitest suites, including a live probe of this machine
+tests/                        vitest: node project (tests/**) + jsdom renderer project
 ```
 
 ## Verifying
@@ -49,7 +69,9 @@ tests/                        vitest suites, including a live probe of this mach
 ```bash
 npm ci
 npm run typecheck
-npm test                       # 151 unit + integration tests
+npm run lint
+npm test                       # node + renderer suites
+npm run build                  # host bundle + main/preload/renderer
 
 npm run office:doctor          # probe THIS machine: OS, Office install, sideload state, bridge health
 npm run office:manifest:check  # verify the vendored manifest against its recorded hash
@@ -59,7 +81,7 @@ npm run office:manifest:check  # verify the vendored manifest against its record
 (registry, filesystem, `/health`) and prints a report. On a Windows machine with Office it prints
 something like:
 
-```
+```text
 os: windows
 office: 16.0.20326.20144 (x64) via HKLM\SOFTWARE\Microsoft\Office\ClickToRun\Configuration
 products: O365HomePremRetail
@@ -86,12 +108,16 @@ sideloaded: no
 
 ## Roadmap
 
-1. Electron shell (main/preload/renderer) + the setup wizard panel wired to `OfficeSetupController`.
-2. Bundled Node 24 + npm + Pi runtime, and the `pi` PATH shim so extensions that shell out to `pi`
-   keep working.
-3. Session host per tab, extension UI host (dialogs + TUI surface), chat UI, providers, settings.
-4. Packages/extensions hub, Plannotator webview tabs, Office session tab.
-5. Hardening, packaging (Windows NSIS + portable), auto-update, docs.
+1. **Re-baseline** — product framing, IA, design system, app shell, application menu (step 1), then
+   renderer tests + E2E harness (step 2). ✅ shipped
+2. **Sessions and chat** — session service, protocol completion, transcript, composer, `/` `@` `#`,
+   model & thinking, providers, projects, session browser (steps 3–11).
+3. **Configuration and extensions** — settings mirror, extensions hub, packages, skills/themes/keys,
+   extension UI host + TUI surface + custom renderers (steps 12–18).
+4. **Office and polish** — Pi for Office as an integration, documents panel, web tabs (steps 19–21),
+   then reliability, security, performance, tests, packaging (steps 22–27).
+
+The full executable plan is [`.pi/plans/2026-09-19-pi-desktop-core-first-rebaseline.md`](.pi/plans/2026-09-19-pi-desktop-core-first-rebaseline.md).
 
 ## License
 
