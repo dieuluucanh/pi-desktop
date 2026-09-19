@@ -34,7 +34,12 @@ import {
   manifestSourceMatchesProd,
   parseManifest,
 } from "./manifest";
-import { queryRegistryKey, queryRegistryTree, readRegistryValue, type RegistryValue } from "./registry";
+import {
+  queryRegistryKey,
+  queryRegistryTree,
+  readRegistryValue,
+  type RegistryValue,
+} from "./registry";
 import type {
   DetectedOfficeInstall,
   OfficeAppInfo,
@@ -365,7 +370,11 @@ async function detectMacSideload(deps: DetectDeps): Promise<OfficeSideloadState>
       entries.push(
         await buildSideloadEntry(
           deps,
-          { channel: "wef-folder", location: location.dir, manifestPath: path.join(location.dir, file.name) },
+          {
+            channel: "wef-folder",
+            location: location.dir,
+            manifestPath: path.join(location.dir, file.name),
+          },
           problems,
         ),
       );
@@ -422,7 +431,9 @@ async function readManifestText(
     return null;
   }
   if (xml.length > MAX_MANIFEST_BYTES) {
-    problems.push(`Sideloaded manifest is unexpectedly large (${xml.length} bytes): ${manifestPath}`);
+    problems.push(
+      `Sideloaded manifest is unexpectedly large (${xml.length} bytes): ${manifestPath}`,
+    );
     return null;
   }
   return xml;
@@ -541,7 +552,10 @@ export function formatDetectionReport(result: OfficeDetectionResult): string {
   }
   lines.push(
     `apps: ${result.apps
-      .map((app) => `${app.label}=${app.installed ? (app.executablePath ?? app.evidence ?? "yes") : "no"}`)
+      .map(
+        (app) =>
+          `${app.label}=${app.installed ? (app.executablePath ?? app.evidence ?? "yes") : "no"}`,
+      )
       .join(", ")}`,
   );
   lines.push(`sideloaded: ${result.sideload.installed ? "yes" : "no"}`);

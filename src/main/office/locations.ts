@@ -20,7 +20,10 @@ export interface WindowsPathContext {
   installRoot?: string | null;
 }
 
-export function dedupePaths(paths: readonly string[], caseInsensitive = process.platform === "win32"): string[] {
+export function dedupePaths(
+  paths: readonly string[],
+  caseInsensitive = process.platform === "win32",
+): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const candidate of paths) {

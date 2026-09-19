@@ -164,8 +164,12 @@ export function planSideload(deps: SideloadDeps, options: SideloadOptions): Side
     for (const version of versions) {
       const key = `HKCU\\SOFTWARE\\Microsoft\\Office\\${version}\\WEF\\Developer`;
       if (!knownKeys.has(key)) {
-        const supported = windowsDeveloperRegistryKeys().map((k) => k.split("\\")[4]).join(", ");
-        throw new Error(`Unsupported Office registry version "${version}" (expected one of: ${supported})`);
+        const supported = windowsDeveloperRegistryKeys()
+          .map((k) => k.split("\\")[4])
+          .join(", ");
+        throw new Error(
+          `Unsupported Office registry version "${version}" (expected one of: ${supported})`,
+        );
       }
       // Register the stable wef-folder copy when we made one, so an app update
       // that relocates its bundled resource cannot break the entry.
@@ -192,8 +196,7 @@ export function planSideload(deps: SideloadDeps, options: SideloadOptions): Side
     copyTargets,
     registryEntries,
     notes,
-    manualFallback:
-      platform === "windows" ? windowsUploadInstruction(options.manifestPath) : null,
+    manualFallback: platform === "windows" ? windowsUploadInstruction(options.manifestPath) : null,
   };
 }
 
@@ -206,7 +209,14 @@ export async function sideloadAddIn(
 
   const text = await deps.fs.readTextFile(options.manifestPath);
   if (text === null) {
-    return failure(platform, options.manifestPath, null, null, plan, `Manifest not found: ${options.manifestPath}`);
+    return failure(
+      platform,
+      options.manifestPath,
+      null,
+      null,
+      plan,
+      `Manifest not found: ${options.manifestPath}`,
+    );
   }
 
   const manifest = parseManifest(text);
@@ -267,7 +277,7 @@ export async function sideloadAddIn(
       detail:
         result.code === 0
           ? `Registered ${entry.manifestPath}`
-          : (result.stderr.trim() || `reg.exe exited with ${result.code}`),
+          : result.stderr.trim() || `reg.exe exited with ${result.code}`,
     });
   }
 
@@ -304,7 +314,6 @@ export async function unsideloadAddIn(
   deps: SideloadDeps,
   options: { verify?: boolean } = {},
 ): Promise<UnsideloadResult> {
-  const platform = toOfficeOs(deps.detect.platform);
   const before = await detectOfficeWith(deps.detect);
   const ours = before.sideload.entries.filter((entry) => entry.matchesPiForOffice);
   const actions: SideloadAction[] = [];
@@ -317,7 +326,10 @@ export async function unsideloadAddIn(
         kind: "registry",
         target: `${entry.location} [${valueName}]`,
         ok: result.code === 0,
-        detail: result.code === 0 ? "Removed registry entry" : result.stderr.trim() || `reg.exe exited with ${result.code}`,
+        detail:
+          result.code === 0
+            ? "Removed registry entry"
+            : result.stderr.trim() || `reg.exe exited with ${result.code}`,
       });
       continue;
     }
@@ -358,7 +370,9 @@ function nextStepsFor(platform: OfficeOs): string[] {
       "Open Insert → My Add-ins and pick “Pi for Office”, then the Add-ins button on the Home ribbon.",
     ];
   }
-  return ["Upload the manifest in Office on the web (Insert → Add-ins → More Add-ins → My Add-ins)."];
+  return [
+    "Upload the manifest in Office on the web (Insert → Add-ins → More Add-ins → My Add-ins).",
+  ];
 }
 
 function webUploadInstruction(manifestPath: string): string {

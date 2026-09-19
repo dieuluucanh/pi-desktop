@@ -69,10 +69,24 @@ describe("detectOfficeWith — Windows", () => {
       files: { [EXCEL_EXE]: "MZ", [MANIFEST_PATH]: PI_MANIFEST },
       paths: { [MANIFEST_PATH]: "file" },
       commands: [
-        { command: "reg.exe", args: ["query", CTR_KEY], exact: true, stdout: ctrOutput("ProPlus2021Volume,Excel2021Volume") },
+        {
+          command: "reg.exe",
+          args: ["query", CTR_KEY],
+          exact: true,
+          stdout: ctrOutput("ProPlus2021Volume,Excel2021Volume"),
+        },
         { command: "reg.exe", args: ["query", CTR_KEY_X86], exact: true, code: 1 },
-        { command: "reg.exe", args: ["query", INSTALL_ROOT_KEY], exact: true, stdout: installRootOutput() },
-        { command: "reg.exe", args: ["query", DEVELOPER_KEY_16, "/s"], stdout: developerOutput(MANIFEST_PATH) },
+        {
+          command: "reg.exe",
+          args: ["query", INSTALL_ROOT_KEY],
+          exact: true,
+          stdout: installRootOutput(),
+        },
+        {
+          command: "reg.exe",
+          args: ["query", DEVELOPER_KEY_16, "/s"],
+          stdout: developerOutput(MANIFEST_PATH),
+        },
         { command: "reg.exe", args: ["query", DEVELOPER_KEY_15, "/s"], code: 1 },
       ],
     });
@@ -163,8 +177,17 @@ describe("detectOfficeWith — Windows", () => {
       commands: [
         { command: "reg.exe", args: ["query", CTR_KEY], exact: true, code: 1 },
         { command: "reg.exe", args: ["query", CTR_KEY_X86], exact: true, code: 1 },
-        { command: "reg.exe", args: ["query", INSTALL_ROOT_KEY], exact: true, stdout: installRootOutput() },
-        { command: "reg.exe", args: ["query", DEVELOPER_KEY_16, "/s"], stdout: developerOutput(missingPath) },
+        {
+          command: "reg.exe",
+          args: ["query", INSTALL_ROOT_KEY],
+          exact: true,
+          stdout: installRootOutput(),
+        },
+        {
+          command: "reg.exe",
+          args: ["query", DEVELOPER_KEY_16, "/s"],
+          stdout: developerOutput(missingPath),
+        },
         { command: "reg.exe", args: ["query", DEVELOPER_KEY_15, "/s"], code: 1 },
       ],
     });
@@ -194,7 +217,11 @@ describe("detectOfficeWith — Windows", () => {
         { command: "reg.exe", args: ["query", CTR_KEY], exact: true, code: 1 },
         { command: "reg.exe", args: ["query", CTR_KEY_X86], exact: true, code: 1 },
         { command: "reg.exe", args: ["query", INSTALL_ROOT_KEY], exact: true, code: 1 },
-        { command: "reg.exe", args: ["query", DEVELOPER_KEY_16, "/s"], stdout: developerOutput(MANIFEST_PATH) },
+        {
+          command: "reg.exe",
+          args: ["query", DEVELOPER_KEY_16, "/s"],
+          stdout: developerOutput(MANIFEST_PATH),
+        },
         { command: "reg.exe", args: ["query", DEVELOPER_KEY_15, "/s"], code: 1 },
       ],
     });
@@ -240,7 +267,10 @@ describe("detectOfficeWith — Windows", () => {
     const result = await detectOfficeWith(deps);
 
     expect(result.sideload.entries).toHaveLength(2);
-    expect(result.sideload.entries.map((entry) => entry.channel)).toEqual(["registry", "wef-folder"]);
+    expect(result.sideload.entries.map((entry) => entry.channel)).toEqual([
+      "registry",
+      "wef-folder",
+    ]);
     expect(result.sideload.installed).toBe(true);
     // The wef-folder copy is unreadable (not in `files`) -> reported, not fatal.
     expect(result.sideload.problems).toHaveLength(1);
@@ -373,7 +403,12 @@ describe("helpers", () => {
         { host: "powerpoint", label: "PowerPoint", installed: false },
       ],
       anyAppInstalled: true,
-      office: { version: "16.0.1", platform: "x64", products: ["Excel2021Volume"], source: CTR_KEY },
+      office: {
+        version: "16.0.1",
+        platform: "x64",
+        products: ["Excel2021Volume"],
+        source: CTR_KEY,
+      },
       sideload: {
         installed: true,
         entries: [

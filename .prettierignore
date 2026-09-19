@@ -1,0 +1,11 @@
+node_modules
+out
+dist
+release
+coverage
+test-results
+playwright-report
+resources/runtime
+resources/office/manifest.prod.xml
+package-lock.json
+.pi

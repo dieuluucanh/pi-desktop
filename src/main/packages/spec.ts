@@ -104,7 +104,9 @@ export function parsePackageSource(input: string): ParsedPackageSource {
 
   if (/^(https?|ssh|git):\/\//i.test(raw)) {
     const { base, ref } = splitRef(raw);
-    let identity = base;
+    // Assigned on both branches below; the uninitialised declaration keeps the
+    // "assigned but never used" case impossible to write by accident.
+    let identity: string;
     try {
       const parsed = new URL(base);
       // Strip a trailing .git so `repo` and `repo.git` dedupe together.

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
 
@@ -25,7 +26,13 @@ const LOCALAPPDATA = path.join(HOME, "AppData", "Local");
 const WEF_DIR = path.join(LOCALAPPDATA, "Microsoft", "Office", "16.0", "Wef");
 const MANIFEST_SOURCE = path.join("C:", "app", "resources", "office", "manifest.prod.xml");
 const COPIED = path.join(WEF_DIR, "manifest.prod.xml");
-const EXCEL_EXE = path.join("C:\\Program Files", "Microsoft Office", "root", "Office16", "EXCEL.EXE");
+const EXCEL_EXE = path.join(
+  "C:\\Program Files",
+  "Microsoft Office",
+  "root",
+  "Office16",
+  "EXCEL.EXE",
+);
 const WIN_ENV = { LOCALAPPDATA, ProgramFiles: "C:\\Program Files" };
 /** Windows registry paths are case-insensitive; the double stores them normalised. */
 const DEVELOPER_KEY = normalizeRegistryPath(
@@ -34,8 +41,8 @@ const DEVELOPER_KEY = normalizeRegistryPath(
 
 describe("vendored manifest resource", () => {
   it("matches the recorded lock hash and is the Pi for Office add-in", () => {
-    const { createHash } = require("node:crypto") as typeof import("node:crypto");
-    expect(createHash("sha256").update(MANIFEST).digest("hex")).toBe(MANIFEST_LOCK.sha256);
+    const { createHash: hash } = { createHash };
+    expect(hash("sha256").update(MANIFEST).digest("hex")).toBe(MANIFEST_LOCK.sha256);
     expect(Buffer.byteLength(MANIFEST)).toBe(MANIFEST_LOCK.bytes);
     expect(MANIFEST.toLowerCase()).toContain(PI_FOR_OFFICE.addInId.toLowerCase());
     expect(MANIFEST).toContain(PI_FOR_OFFICE.sourceLocation);
@@ -46,7 +53,12 @@ describe("planSideload", () => {
   it("plans the Windows developer catalog plus the wef copy", () => {
     const fs = createMemoryFsPort();
     const registry = createStatefulRegistryFake();
-    const detect = detectDepsFromFsPort(fs, { platform: "win32", env: WIN_ENV, homedir: HOME, runner: registry });
+    const detect = detectDepsFromFsPort(fs, {
+      platform: "win32",
+      env: WIN_ENV,
+      homedir: HOME,
+      runner: registry,
+    });
 
     const plan = planSideload({ fs, detect }, { manifestPath: MANIFEST_SOURCE });
 
@@ -66,7 +78,12 @@ describe("planSideload", () => {
   it("rejects an unsupported Office registry version", () => {
     const fs = createMemoryFsPort();
     const registry = createStatefulRegistryFake();
-    const detect = detectDepsFromFsPort(fs, { platform: "win32", env: WIN_ENV, homedir: HOME, runner: registry });
+    const detect = detectDepsFromFsPort(fs, {
+      platform: "win32",
+      env: WIN_ENV,
+      homedir: HOME,
+      runner: registry,
+    });
     expect(() =>
       planSideload({ fs, detect }, { manifestPath: MANIFEST_SOURCE, registryVersions: ["14.0"] }),
     ).toThrow(/Unsupported Office registry version/);
@@ -75,9 +92,17 @@ describe("planSideload", () => {
   it("plans macOS container copies only", () => {
     const fs = createMemoryFsPort();
     const registry = createStatefulRegistryFake();
-    const detect = detectDepsFromFsPort(fs, { platform: "darwin", env: {}, homedir: "/Users/test", runner: registry });
+    const detect = detectDepsFromFsPort(fs, {
+      platform: "darwin",
+      env: {},
+      homedir: "/Users/test",
+      runner: registry,
+    });
 
-    const plan = planSideload({ fs, detect }, { manifestPath: MANIFEST_SOURCE, hosts: ["excel", "word"] });
+    const plan = planSideload(
+      { fs, detect },
+      { manifestPath: MANIFEST_SOURCE, hosts: ["excel", "word"] },
+    );
 
     expect(plan.copyTargets).toHaveLength(2);
     expect(plan.copyTargets[0]).toContain(path.join("Containers", "com.microsoft.Excel"));
@@ -87,7 +112,12 @@ describe("planSideload", () => {
   it("reports Linux as unsupported with a web fallback", () => {
     const fs = createMemoryFsPort();
     const registry = createStatefulRegistryFake();
-    const detect = detectDepsFromFsPort(fs, { platform: "linux", env: {}, homedir: "/home/test", runner: registry });
+    const detect = detectDepsFromFsPort(fs, {
+      platform: "linux",
+      env: {},
+      homedir: "/home/test",
+      runner: registry,
+    });
 
     const plan = planSideload({ fs, detect }, { manifestPath: MANIFEST_SOURCE });
     expect(plan.supported).toBe(false);
@@ -144,7 +174,7 @@ describe("sideloadAddIn — Windows", () => {
   });
 
   it("can sideload with the wef copy only", async () => {
-    const { fs, registry, deps } = windowsDeps();
+    const { registry, deps } = windowsDeps();
 
     const result = await sideloadAddIn(deps, { manifestPath: MANIFEST_SOURCE, useRegistry: false });
 
@@ -158,7 +188,10 @@ describe("sideloadAddIn — Windows", () => {
   it("can sideload with the registry entry only", async () => {
     const { fs, registry, deps } = windowsDeps();
 
-    const result = await sideloadAddIn(deps, { manifestPath: MANIFEST_SOURCE, copyToWefFolder: false });
+    const result = await sideloadAddIn(deps, {
+      manifestPath: MANIFEST_SOURCE,
+      copyToWefFolder: false,
+    });
 
     expect(result.ok).toBe(true);
     expect(result.actions.map((action) => action.kind)).toEqual(["registry"]);
@@ -202,7 +235,10 @@ describe("sideloadAddIn — Windows", () => {
     const { deps } = windowsDeps();
     // Verify against a manifest whose source no longer matches prod, so the
     // detector deliberately does not count it as installed.
-    const devManifest = MANIFEST.replaceAll(PI_FOR_OFFICE.sourceLocation, "https://localhost:3141/pi-for-office/taskpane.html");
+    const devManifest = MANIFEST.replaceAll(
+      PI_FOR_OFFICE.sourceLocation,
+      "https://localhost:3141/pi-for-office/taskpane.html",
+    );
     const fs = createMemoryFsPort({
       files: { [MANIFEST_SOURCE]: devManifest },
       dirs: [LOCALAPPDATA],
@@ -219,7 +255,9 @@ describe("sideloadAddIn — Windows", () => {
 
     // The id still matches, so it is installed, but the prod-source note fires.
     expect(result.ok).toBe(true);
-    expect(result.verification?.notes.join(" ")).toContain("does not point at the current hosted task pane");
+    expect(result.verification?.notes.join(" ")).toContain(
+      "does not point at the current hosted task pane",
+    );
     expect(deps.detect.platform).toBe("win32");
   });
 });
@@ -227,13 +265,37 @@ describe("sideloadAddIn — Windows", () => {
 describe("sideloadAddIn — macOS and Linux", () => {
   it("copies the manifest into the selected containers without touching the registry", async () => {
     const home = "/Users/test";
-    const excelDir = path.join(home, "Library", "Containers", "com.microsoft.Excel", "Data", "Documents", "wef");
-    const wordDir = path.join(home, "Library", "Containers", "com.microsoft.Word", "Data", "Documents", "wef");
+    const excelDir = path.join(
+      home,
+      "Library",
+      "Containers",
+      "com.microsoft.Excel",
+      "Data",
+      "Documents",
+      "wef",
+    );
+    const wordDir = path.join(
+      home,
+      "Library",
+      "Containers",
+      "com.microsoft.Word",
+      "Data",
+      "Documents",
+      "wef",
+    );
     const fs = createMemoryFsPort({ files: { [MANIFEST_SOURCE]: MANIFEST } });
     const registry = createStatefulRegistryFake();
-    const detect = detectDepsFromFsPort(fs, { platform: "darwin", env: {}, homedir: home, runner: registry });
+    const detect = detectDepsFromFsPort(fs, {
+      platform: "darwin",
+      env: {},
+      homedir: home,
+      runner: registry,
+    });
 
-    const result = await sideloadAddIn({ fs, detect }, { manifestPath: MANIFEST_SOURCE, hosts: ["excel"] });
+    const result = await sideloadAddIn(
+      { fs, detect },
+      { manifestPath: MANIFEST_SOURCE, hosts: ["excel"] },
+    );
 
     expect(result.ok).toBe(true);
     expect(result.actions.map((action) => action.kind)).toEqual(["file-copy"]);
@@ -247,7 +309,12 @@ describe("sideloadAddIn — macOS and Linux", () => {
   it("explains that Linux has nothing to sideload into", async () => {
     const fs = createMemoryFsPort({ files: { [MANIFEST_SOURCE]: MANIFEST } });
     const registry = createStatefulRegistryFake();
-    const detect = detectDepsFromFsPort(fs, { platform: "linux", env: {}, homedir: "/home/test", runner: registry });
+    const detect = detectDepsFromFsPort(fs, {
+      platform: "linux",
+      env: {},
+      homedir: "/home/test",
+      runner: registry,
+    });
 
     const result = await sideloadAddIn({ fs, detect }, { manifestPath: MANIFEST_SOURCE });
 

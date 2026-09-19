@@ -98,7 +98,9 @@ export function sourceLocationMatchesHostedProd(url: string): boolean {
 }
 
 /** Best-effort host list in the order Excel, Word, PowerPoint. */
-export function manifestHostsToOfficeHosts(manifest: ParsedManifest): Array<"excel" | "word" | "powerpoint"> {
+export function manifestHostsToOfficeHosts(
+  manifest: ParsedManifest,
+): Array<"excel" | "word" | "powerpoint"> {
   const out: Array<"excel" | "word" | "powerpoint"> = [];
   const normalized = manifest.hosts.map((host) => host.toLowerCase());
   if (normalized.some((host) => host.includes("workbook"))) out.push("excel");

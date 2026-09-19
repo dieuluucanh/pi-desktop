@@ -9,3 +9,12 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Bundled Node/npm runtime and generated PATH shims are fetched, never committed.
+resources/runtime/*
+!resources/runtime/README.md
+
+# Playwright artifacts
+/test-results/
+/playwright-report/
+/blob-report/

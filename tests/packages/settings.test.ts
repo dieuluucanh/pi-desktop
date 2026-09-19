@@ -38,7 +38,11 @@ describe("upsertPackageSource", () => {
   });
 
   it("preserves per-package filters when re-pinning an object entry", () => {
-    const entry = { source: "npm:@dieulc/pi-office-bridge", skills: [], extensions: ["extensions/*.ts"] };
+    const entry = {
+      source: "npm:@dieulc/pi-office-bridge",
+      skills: [],
+      extensions: ["extensions/*.ts"],
+    };
     const result = upsertPackageSource([entry], "npm:@dieulc/pi-office-bridge@^0.4.1");
     expect(result.packages[0]).toEqual({
       source: "npm:@dieulc/pi-office-bridge@^0.4.1",
@@ -125,7 +129,9 @@ describe("addPackageToSettings", () => {
     const second = await addPackageToSettings(fs, SETTINGS, "npm:@dieulc/pi-office-bridge@^0.4.1");
     expect(second.changed).toBe(false);
     expect(second.action).toBe("unchanged");
-    expect(readPackageEntries(JSON.parse((await fs.readTextFile(SETTINGS)) ?? "{}"))).toHaveLength(1);
+    expect(readPackageEntries(JSON.parse((await fs.readTextFile(SETTINGS)) ?? "{}"))).toHaveLength(
+      1,
+    );
   });
 
   it("does not modify the file when settings.json is invalid", async () => {
@@ -142,7 +148,9 @@ describe("removePackageFromSettings", () => {
   it("removes the package and reports it", async () => {
     const fs = createMemoryFsPort({
       files: {
-        [SETTINGS]: JSON.stringify({ packages: ["npm:pi-lens", "npm:@dieulc/pi-office-bridge@^0.4.1"] }),
+        [SETTINGS]: JSON.stringify({
+          packages: ["npm:pi-lens", "npm:@dieulc/pi-office-bridge@^0.4.1"],
+        }),
       },
     });
     const result = await removePackageFromSettings(fs, SETTINGS, "@dieulc/pi-office-bridge");

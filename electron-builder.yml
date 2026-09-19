@@ -1,0 +1,58 @@
+appId: dev.pi.desktop
+productName: Pi Desktop
+copyright: Copyright (c) 2026 Pi Desktop contributors
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - out/**/*
+  - package.json
+  - "!**/*.map"
+
+# jiti-based extension loading, dynamic TypeScript extension resolution and the
+# SDK's asset reads all need real files on disk (plan D2).
+asarUnpack:
+  - "**/node_modules/@earendil-works/**"
+  - "**/node_modules/jiti/**"
+  - "**/node_modules/typebox/**"
+  - resources/runtime/**
+
+# The bundled runtime and the vendored Office manifest are read by path, so
+# they must live outside the asar.
+extraResources:
+  - from: resources/runtime
+    to: runtime
+    filter: ["**/*"]
+  - from: resources/office
+    to: office
+    filter: ["**/*"]
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+
+linux:
+  category: Development
+  target: [AppImage, deb]
+
+publish:
+  provider: github
+  releaseType: release

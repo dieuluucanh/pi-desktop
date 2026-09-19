@@ -111,7 +111,9 @@ export async function queryRegistryKey(
   if (result.code !== 0) return null;
   const keys = parseRegQueryOutput(result.stdout);
   const wanted = normalizeRegistryPath(key);
-  return keys.find((candidate) => normalizeRegistryPath(candidate.path) === wanted) ?? keys[0] ?? null;
+  return (
+    keys.find((candidate) => normalizeRegistryPath(candidate.path) === wanted) ?? keys[0] ?? null
+  );
 }
 
 /** Reads a key and all of its subkeys (`reg query <key> /s`). */

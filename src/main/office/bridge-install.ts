@@ -197,9 +197,11 @@ export async function ensureBridgePackage(deps: BridgeInstallDeps): Promise<Brid
 
   // 1. Pin the package in settings.json.
   progress("settings", `Ensuring ${spec} is configured`);
-  let previousSpec: string | null = null;
-  let settingsChanged = false;
-  let configuredSources: string[] = [];
+  // Declared without initialisers: the catch below returns, so every path that
+  // reaches the code after the try has assigned all three.
+  let previousSpec: string | null;
+  let settingsChanged: boolean;
+  let configuredSources: string[];
   try {
     const doc = await readSettingsDocument(deps.fs, settingsPath);
     const before = readPackageEntries(doc);
@@ -212,9 +214,7 @@ export async function ensureBridgePackage(deps: BridgeInstallDeps): Promise<Brid
 
     if (settingsChanged) {
       if (deps.backupDir) {
-        const stamp = (deps.now?.() ?? new Date())
-          .toISOString()
-          .replace(/[:.]/g, "-");
+        const stamp = (deps.now?.() ?? new Date()).toISOString().replace(/[:.]/g, "-");
         await backupFile(deps.fs, settingsPath, deps.backupDir, stamp);
       }
       await writeSettingsDocument(deps.fs, settingsPath, { ...doc, packages: outcome.packages });
@@ -238,11 +238,16 @@ export async function ensureBridgePackage(deps: BridgeInstallDeps): Promise<Brid
 
   // 2. Decide whether an install is actually needed.
   const before = await readBridgePackageState(deps.fs, paths.root, packageName);
-  const versionOk = before.version !== null && safeSatisfies(satisfies, before.version, versionRange);
+  const versionOk =
+    before.version !== null && safeSatisfies(satisfies, before.version, versionRange);
   const needsInstall = !before.installed || !versionOk || settingsChanged;
 
   if (!needsInstall) {
-    steps.push({ name: "install", ok: true, detail: `${packageName}@${before.version} already installed` });
+    steps.push({
+      name: "install",
+      ok: true,
+      detail: `${packageName}@${before.version} already installed`,
+    });
     steps.push({ name: "verify", ok: true, detail: `Extension entry: ${before.extensionEntry}` });
     progress("done", `${packageName}@${before.version} is ready`);
     return {
@@ -260,7 +265,6 @@ export async function ensureBridgePackage(deps: BridgeInstallDeps): Promise<Brid
   }
 
   // 3. Materialize the npm root manifest and run npm install.
-  let installLog = "";
   try {
     await ensureNpmRoot(deps.fs, paths);
     await syncNpmRootManifest(deps.fs, paths, configuredSources);
@@ -275,7 +279,7 @@ export async function ensureBridgePackage(deps: BridgeInstallDeps): Promise<Brid
 
   progress("install", `Installing ${spec} with ${deps.installer.description}`);
   const install = await deps.installer.installAll(paths.root);
-  installLog = tailLog([install.stdout, install.stderr].filter(Boolean).join("\n"));
+  const installLog = tailLog([install.stdout, install.stderr].filter(Boolean).join("\n"));
 
   if (!install.ok) {
     const detail = install.missingRuntime

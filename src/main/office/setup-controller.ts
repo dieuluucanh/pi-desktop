@@ -196,7 +196,13 @@ export class OfficeSetupController {
     });
 
     const troubleshooting = buildTroubleshooting({
-      platform: this.state.detection?.os ?? (this.options.detect.platform === "win32" ? "windows" : this.options.detect.platform === "darwin" ? "macos" : "linux"),
+      platform:
+        this.state.detection?.os ??
+        (this.options.detect.platform === "win32"
+          ? "windows"
+          : this.options.detect.platform === "darwin"
+            ? "macos"
+            : "linux"),
       isWsl: this.state.detection?.isWsl ?? false,
       detection: this.state.detection,
       bridge: this.state.bridge,
@@ -223,7 +229,11 @@ export class OfficeSetupController {
   ): { text: string; redactions: number } {
     const settingsPath =
       this.options.settingsPath ??
-      defaultBridgeSettingsPath(this.options.agentDir, this.options.cwd, this.options.scope ?? "user");
+      defaultBridgeSettingsPath(
+        this.options.agentDir,
+        this.options.cwd,
+        this.options.scope ?? "user",
+      );
     const appInfo: OfficeSetupAppInfo = this.options.appInfo ?? {
       name: "Pi Desktop",
       version: "0.0.1",
@@ -277,7 +287,10 @@ export class OfficeSetupController {
     this.update({ currentStep: "detect", status: "running" });
     try {
       const detection = await detectOfficeWith(this.options.detect);
-      this.addLog("info", `Detected ${detection.apps.filter((app) => app.installed).length} Office app(s) on ${detection.os}`);
+      this.addLog(
+        "info",
+        `Detected ${detection.apps.filter((app) => app.installed).length} Office app(s) on ${detection.os}`,
+      );
       return this.update({ detection, error: null });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

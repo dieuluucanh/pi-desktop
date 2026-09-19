@@ -25,11 +25,7 @@ export interface CommandOptions {
 }
 
 export interface CommandRunner {
-  run(
-    command: string,
-    args: readonly string[],
-    options?: CommandOptions,
-  ): Promise<CommandResult>;
+  run(command: string, args: readonly string[], options?: CommandOptions): Promise<CommandResult>;
 }
 
 export const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
@@ -88,9 +84,7 @@ export interface FakeCommandSpec {
   missing?: boolean;
 }
 
-export function createFakeCommandRunner(
-  specs: readonly FakeCommandSpec[],
-): CommandRunner & {
+export function createFakeCommandRunner(specs: readonly FakeCommandSpec[]): CommandRunner & {
   calls: Array<{ command: string; args: readonly string[]; cwd?: string }>;
 } {
   const calls: Array<{ command: string; args: readonly string[]; cwd?: string }> = [];

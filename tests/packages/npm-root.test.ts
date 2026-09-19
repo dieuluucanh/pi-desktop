@@ -33,7 +33,9 @@ describe("npmRootPaths", () => {
 
 describe("buildNpmRootPackageJson", () => {
   it("mirrors Pi's generated manifest shape", () => {
-    expect(buildNpmRootPackageJson(["npm:pi-lens@4.2.1", "npm:@dieulc/pi-office-bridge@^0.4.1"])).toEqual({
+    expect(
+      buildNpmRootPackageJson(["npm:pi-lens@4.2.1", "npm:@dieulc/pi-office-bridge@^0.4.1"]),
+    ).toEqual({
       name: "pi-extensions",
       private: true,
       dependencies: { "pi-lens": "4.2.1", "@dieulc/pi-office-bridge": "^0.4.1" },
@@ -41,11 +43,13 @@ describe("buildNpmRootPackageJson", () => {
   });
 
   it("uses latest for unpinned npm packages and skips non-npm sources", () => {
-    expect(buildNpmRootPackageJson(["npm:pi-lens", "git:github.com/u/r@v1", "/local/ext"])).toEqual({
-      name: "pi-extensions",
-      private: true,
-      dependencies: { "pi-lens": "latest" },
-    });
+    expect(buildNpmRootPackageJson(["npm:pi-lens", "git:github.com/u/r@v1", "/local/ext"])).toEqual(
+      {
+        name: "pi-extensions",
+        private: true,
+        dependencies: { "pi-lens": "latest" },
+      },
+    );
   });
 });
 

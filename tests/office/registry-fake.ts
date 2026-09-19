@@ -57,7 +57,12 @@ export function createStatefulRegistryFake(
     }
   }
 
-  const respond = (args: readonly string[], code: number, stdout = "", stderr = ""): CommandResult => ({
+  const respond = (
+    args: readonly string[],
+    code: number,
+    stdout = "",
+    stderr = "",
+  ): CommandResult => ({
     command: "reg.exe",
     args: [...args],
     code,
@@ -78,14 +83,18 @@ export function createStatefulRegistryFake(
         const recursive = args.includes("/s");
         if (!keys.has(normalized)) {
           return Promise.resolve(
-            respond(args, 1, "", "ERROR: The system was unable to find the specified registry key or value."),
+            respond(
+              args,
+              1,
+              "",
+              "ERROR: The system was unable to find the specified registry key or value.",
+            ),
           );
         }
 
         const targets = [...keys.keys()].filter(
           (candidate) =>
-            candidate === normalized ||
-            (recursive && candidate.startsWith(`${normalized}\\`)),
+            candidate === normalized || (recursive && candidate.startsWith(`${normalized}\\`)),
         );
         const lines: string[] = [];
         for (const target of targets) {
@@ -122,14 +131,23 @@ export function createStatefulRegistryFake(
         const normalized = normalizeRegistryPath(keyPath);
         const values = keys.get(normalized);
         if (!values || (name !== undefined && !values.has(name))) {
-          return Promise.resolve(respond(args, 1, "", "ERROR: The system was unable to find the specified registry key or value."));
+          return Promise.resolve(
+            respond(
+              args,
+              1,
+              "",
+              "ERROR: The system was unable to find the specified registry key or value.",
+            ),
+          );
         }
         if (name !== undefined) values.delete(name);
         else keys.delete(normalized);
         return Promise.resolve(respond(args, 0, "The operation completed successfully.\r\n"));
       }
 
-      return Promise.resolve(respond(args, 1, "", `ERROR: unsupported reg.exe invocation: ${args.join(" ")}`));
+      return Promise.resolve(
+        respond(args, 1, "", `ERROR: unsupported reg.exe invocation: ${args.join(" ")}`),
+      );
     },
   };
 }

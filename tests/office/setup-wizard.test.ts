@@ -26,7 +26,13 @@ const MANIFEST = readFileSync(
 const HOME = "C:\\Users\\Test";
 const LOCALAPPDATA = path.join(HOME, "AppData", "Local");
 const WEF_DIR = path.join(LOCALAPPDATA, "Microsoft", "Office", "16.0", "Wef");
-const EXCEL_EXE = path.join("C:\\Program Files", "Microsoft Office", "root", "Office16", "EXCEL.EXE");
+const EXCEL_EXE = path.join(
+  "C:\\Program Files",
+  "Microsoft Office",
+  "root",
+  "Office16",
+  "EXCEL.EXE",
+);
 const AGENT_DIR = path.join("C:", "agent");
 const CWD = path.join("C:", "work", "proj");
 const MANIFEST_SOURCE = path.join("C:", "app", "resources", "office", "manifest.prod.xml");
@@ -35,7 +41,11 @@ const BRIDGE_PKG_JSON = path.join(
   bridgePackageDir(NPM_ROOT, PI_OFFICE_BRIDGE.packageName),
   "package.json",
 );
-const BRIDGE_ENTRY = path.join(bridgePackageDir(NPM_ROOT, PI_OFFICE_BRIDGE.packageName), "src", "index.ts");
+const BRIDGE_ENTRY = path.join(
+  bridgePackageDir(NPM_ROOT, PI_OFFICE_BRIDGE.packageName),
+  "src",
+  "index.ts",
+);
 const WIN_ENV = { LOCALAPPDATA, ProgramFiles: "C:\\Program Files" };
 
 const EMPTY_HEALTH = {
@@ -219,7 +229,14 @@ describe("OfficeSetupController.run — happy path", () => {
     expect(state.panes[0]?.documentName).toBe("Budget.xlsx");
     expect(state.finishedAt).toBe("2026-09-18T10:00:00.000Z");
 
-    expect(state.checklist.map((step) => step.status)).toEqual(["ok", "ok", "ok", "ok", "ok", "ok"]);
+    expect(state.checklist.map((step) => step.status)).toEqual([
+      "ok",
+      "ok",
+      "ok",
+      "ok",
+      "ok",
+      "ok",
+    ]);
     expect(state.troubleshooting.some((item) => item.id === "connected")).toBe(true);
 
     // Real writes: settings pinned, npm root built, manifest registered+detected.
@@ -444,7 +461,15 @@ describe("buildTroubleshooting", () => {
         manifestPath: "C:\\app\\manifest.prod.xml",
         manifestId: "BC61CAF2-821A-47FD-9D6A-9D96C8F852FE",
         manifestDisplayName: "Pi for Office",
-        plan: { platform: "windows", supported: true, fileName: "manifest.prod.xml", copyTargets: [], registryEntries: [], notes: [], manualFallback: null },
+        plan: {
+          platform: "windows",
+          supported: true,
+          fileName: "manifest.prod.xml",
+          copyTargets: [],
+          registryEntries: [],
+          notes: [],
+          manualFallback: null,
+        },
         actions: [],
         verification: detection,
         nextSteps: [],
@@ -489,7 +514,15 @@ describe("buildTroubleshooting", () => {
         manifestPath: "m",
         manifestId: null,
         manifestDisplayName: null,
-        plan: { platform: "windows", supported: true, fileName: "m", copyTargets: [], registryEntries: [], notes: [], manualFallback: null },
+        plan: {
+          platform: "windows",
+          supported: true,
+          fileName: "m",
+          copyTargets: [],
+          registryEntries: [],
+          notes: [],
+          manualFallback: null,
+        },
         actions: [],
         verification: null,
         nextSteps: [],
@@ -522,7 +555,14 @@ describe("buildTroubleshooting", () => {
         os: "macos",
         supported: true,
         isWsl: false,
-        apps: [{ host: "excel", label: "Excel", installed: true, executablePath: "/Applications/Microsoft Excel.app" }],
+        apps: [
+          {
+            host: "excel",
+            label: "Excel",
+            installed: true,
+            executablePath: "/Applications/Microsoft Excel.app",
+          },
+        ],
         anyAppInstalled: true,
         office: { version: null, platform: null, products: [], source: null },
         sideload: { installed: false, entries: [], searched: [], problems: [] },
@@ -619,10 +659,22 @@ describe("buildDiagnosticsBundle", () => {
         },
       ],
       troubleshooting: [
-        { id: "x", severity: "warning", title: "Something", detail: "Details", actions: ["Do a thing"] },
+        {
+          id: "x",
+          severity: "warning",
+          title: "Something",
+          detail: "Details",
+          actions: ["Do a thing"],
+        },
       ],
       checklist: [
-        { id: "detect", title: "Detect Office", status: "ok", detail: "Excel detected", actions: [] },
+        {
+          id: "detect",
+          title: "Detect Office",
+          status: "ok",
+          detail: "Excel detected",
+          actions: [],
+        },
       ],
     });
 

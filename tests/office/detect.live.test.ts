@@ -38,7 +38,6 @@ describe("live environment probe", () => {
       expect(ours.every((entry) => entry.manifestExists)).toBe(true);
     }
 
-    // eslint-disable-next-line no-console
     console.log(`\n${formatDetectionReport(result)}\n`);
   }, 30_000);
 
@@ -55,7 +54,6 @@ describe("live environment probe", () => {
       expect(check.health).toBeNull();
     }
 
-    // eslint-disable-next-line no-console
     console.log(
       `\nbridge ${check.url}\n  status: ${check.status}\n  portConflict: ${check.portConflict}\n  panes: ${
         check.health?.panes.length ?? 0

@@ -60,8 +60,10 @@ function makeInstaller(
         const version = options.installVersion ?? "0.4.1";
         if (version !== null) {
           const extensions = options.extensions ?? ["./src/index.ts"];
-          await fs.writeTextFile(path.join(root, "node_modules", "@dieulc", "pi-office-bridge", "package.json"),
-            packageJsonText(version, extensions));
+          await fs.writeTextFile(
+            path.join(root, "node_modules", "@dieulc", "pi-office-bridge", "package.json"),
+            packageJsonText(version, extensions),
+          );
           if (Array.isArray(extensions) && extensions.length > 0) {
             await fs.writeTextFile(
               path.join(root, "node_modules", "@dieulc", "pi-office-bridge", "src", "index.ts"),
@@ -154,7 +156,11 @@ describe("ensureBridgePackage", () => {
     expect(result.spec).toBe(PINNED);
     expect(result.error).toBeNull();
     expect(result.settingsChanged).toBe(true);
-    expect(result.state).toMatchObject({ installed: true, version: "0.4.1", extensionEntry: ENTRY });
+    expect(result.state).toMatchObject({
+      installed: true,
+      version: "0.4.1",
+      extensionEntry: ENTRY,
+    });
     expect(result.steps.map((step) => [step.name, step.ok])).toEqual([
       ["settings", true],
       ["npm-root", true],
@@ -167,7 +173,9 @@ describe("ensureBridgePackage", () => {
     expect(calls).toEqual([{ root: NPM_ROOT }]);
 
     // settings.json is pinned, and unrelated content is preserved.
-    const settings = JSON.parse((await fs.readTextFile(SETTINGS)) ?? "{}") as { packages: string[] };
+    const settings = JSON.parse((await fs.readTextFile(SETTINGS)) ?? "{}") as {
+      packages: string[];
+    };
     expect(settings.packages).toEqual([PINNED]);
 
     // The npm root matches Pi's layout.
@@ -209,7 +217,9 @@ describe("ensureBridgePackage", () => {
     expect(result.previousSpec).toBe("npm:@dieulc/pi-office-bridge");
     expect(result.status).toBe("updated");
     expect(calls).toHaveLength(1);
-    const settings = JSON.parse((await fs.readTextFile(SETTINGS)) ?? "{}") as { packages: string[] };
+    const settings = JSON.parse((await fs.readTextFile(SETTINGS)) ?? "{}") as {
+      packages: string[];
+    };
     expect(settings.packages).toEqual([PINNED, "npm:pi-lens"]);
   });
 
@@ -243,7 +253,11 @@ describe("ensureBridgePackage", () => {
 
   it("fails when the bundled runtime cannot be launched", async () => {
     const fs = createMemoryFsPort();
-    const { installer } = makeInstaller(fs, { ok: false, missingRuntime: true, installVersion: null });
+    const { installer } = makeInstaller(fs, {
+      ok: false,
+      missingRuntime: true,
+      installVersion: null,
+    });
 
     const result = await ensureBridgePackage({ fs, installer, agentDir: AGENT_DIR, cwd: CWD });
 
@@ -293,8 +307,11 @@ describe("ensureBridgePackage", () => {
 
     expect(result.status).toBe("installed");
     const backupPath = path.join(backupDir, "settings.json.2026-09-18T10-00-00-000Z.bak");
-    expect(await fs.readTextFile(backupPath)).toContain("\"theme\": \"dark\"");
-    const settings = JSON.parse((await fs.readTextFile(SETTINGS)) ?? "{}") as Record<string, unknown>;
+    expect(await fs.readTextFile(backupPath)).toContain('"theme": "dark"');
+    const settings = JSON.parse((await fs.readTextFile(SETTINGS)) ?? "{}") as Record<
+      string,
+      unknown
+    >;
     expect(settings.theme).toBe("dark");
     expect(settings.packages).toEqual([PINNED]);
   });

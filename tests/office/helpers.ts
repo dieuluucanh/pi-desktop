@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 
 import type { DetectDeps, DirectoryEntry, PathKind } from "../../src/main/office/detect";
-import { createFakeCommandRunner, type CommandRunner, type FakeCommandSpec } from "../../src/main/office/exec";
+import {
+  createFakeCommandRunner,
+  type CommandRunner,
+  type FakeCommandSpec,
+} from "../../src/main/office/exec";
 import type { FsPort } from "../../src/main/fs-port";
 
 const FIXTURES = new URL("../fixtures/", import.meta.url);

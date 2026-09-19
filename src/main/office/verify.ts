@@ -7,7 +7,12 @@
  * pure function of the wizard state, so the UI can render progress live.
  */
 
-import { PI_FOR_OFFICE, PI_OFFICE_BRIDGE, officeHostLabel, type OfficeHost } from "../../shared/office";
+import {
+  PI_FOR_OFFICE,
+  PI_OFFICE_BRIDGE,
+  officeHostLabel,
+  type OfficeHost,
+} from "../../shared/office";
 import type { BridgeInstallStatus } from "./bridge-install";
 import type { OfficeDetectionResult, OfficeOs } from "./types";
 
@@ -65,6 +70,9 @@ export interface VerifyDeps {
 
 export function createDefaultVerifyDeps(overrides: Partial<VerifyDeps> = {}): VerifyDeps {
   return {
+    // SAFETY: global fetch matches FetchLike at runtime; the double cast only
+    // bridges the wider DOM/undici `Response` return type (non-optional
+    // `headers`, `json(): Promise<any>`), which fails structural comparison.
     fetch: globalThis.fetch as unknown as FetchLike,
     now: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -309,7 +317,14 @@ export async function openOfficeHost(options: OpenOfficeOptions): Promise<OpenOf
     try {
       const failure = await options.openPath(app.executablePath);
       if (!failure) {
-        return { ...base, ok: true, path: app.executablePath, usedWebFallback: false, note: null, error: null };
+        return {
+          ...base,
+          ok: true,
+          path: app.executablePath,
+          usedWebFallback: false,
+          note: null,
+          error: null,
+        };
       }
       return {
         ...base,
@@ -375,7 +390,8 @@ export async function openOfficeHost(options: OpenOfficeOptions): Promise<OpenOf
 export type ChecklistStatus = "pending" | "running" | "ok" | "failed" | "skipped";
 
 export interface ChecklistStep {
-  id: "detect" | "bridge-package" | "sideload" | "open-office" | "bridge-listening" | "pane-attached";
+  id:
+    "detect" | "bridge-package" | "sideload" | "open-office" | "bridge-listening" | "pane-attached";
   title: string;
   status: ChecklistStatus;
   detail: string;
@@ -412,9 +428,12 @@ export function buildSetupChecklist(input: ChecklistInput): ChecklistStep[] {
     status: detection === null ? "pending" : detection.supported ? "ok" : "failed",
     detail: detection
       ? detection.supported
-        ? `${detection.apps.filter((app) => app.installed).map((app) => app.label).join(", ") || "no Office apps"} detected${
-            detection.office.version ? ` (Office ${detection.office.version})` : ""
-          }`
+        ? `${
+            detection.apps
+              .filter((app) => app.installed)
+              .map((app) => app.label)
+              .join(", ") || "no Office apps"
+          } detected${detection.office.version ? ` (Office ${detection.office.version})` : ""}`
         : "Desktop Office is unavailable on this platform."
       : "Not started.",
     actions: detection?.officeOnTheWeb.recommended
@@ -449,13 +468,11 @@ export function buildSetupChecklist(input: ChecklistInput): ChecklistStep[] {
   const sideload = input.sideload;
   steps.push({
     id: "sideload",
-    title: sideload?.platform === "macos" ? "Add the add-in to Office (macOS wef folder)" : "Add the add-in to Office (sideload)",
-    status:
-      sideload === null
-        ? "pending"
-        : sideload.ok && sideload.verified
-          ? "ok"
-          : "failed",
+    title:
+      sideload?.platform === "macos"
+        ? "Add the add-in to Office (macOS wef folder)"
+        : "Add the add-in to Office (sideload)",
+    status: sideload === null ? "pending" : sideload.ok && sideload.verified ? "ok" : "failed",
     detail:
       sideload === null
         ? "Not started."
@@ -505,14 +522,13 @@ export function buildSetupChecklist(input: ChecklistInput): ChecklistStep[] {
         : health.status === "ok"
           ? `${health.health?.serverName}${health.health?.serverVersion ? ` v${health.health.serverVersion}` : ""} (protocol v${health.health?.protocolVersion ?? "?"}, catalog v${health.health?.catalogVersion ?? "?"})`
           : (health.error ?? "Not reachable yet."),
-    actions:
-      health?.portConflict
-        ? [
-            `Something else is using port ${PI_OFFICE_BRIDGE.defaultPort}. Close it, or set ${PI_OFFICE_BRIDGE.envPort} for the Office session.`,
-          ]
-        : health && health.status === "unreachable"
-          ? ["Make sure the Pi for Office session is running (a session hosts the bridge)."]
-          : [],
+    actions: health?.portConflict
+      ? [
+          `Something else is using port ${PI_OFFICE_BRIDGE.defaultPort}. Close it, or set ${PI_OFFICE_BRIDGE.envPort} for the Office session.`,
+        ]
+      : health && health.status === "unreachable"
+        ? ["Make sure the Pi for Office session is running (a session hosts the bridge)."]
+        : [],
   });
 
   const panes = input.panes;

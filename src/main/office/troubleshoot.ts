@@ -8,11 +8,7 @@
  * an issue.
  */
 
-import {
-  PI_FOR_OFFICE,
-  PI_OFFICE_BRIDGE,
-  officeHostLabel,
-} from "../../shared/office";
+import { PI_FOR_OFFICE, PI_OFFICE_BRIDGE, officeHostLabel } from "../../shared/office";
 import type { OfficeDetectionResult, OfficeOs } from "./types";
 import type { BridgeInstallResult } from "./bridge-install";
 import type { SideloadResult } from "./sideload";
@@ -106,7 +102,8 @@ export function buildTroubleshooting(input: TroubleshootInput): TroubleshootItem
   }
 
   if (input.sideload) {
-    const stale = input.sideload.verification?.sideload.entries.filter((entry) => !entry.manifestExists) ?? [];
+    const stale =
+      input.sideload.verification?.sideload.entries.filter((entry) => !entry.manifestExists) ?? [];
     if (stale.length > 0) {
       items.push({
         id: "sideload-stale",
@@ -117,7 +114,9 @@ export function buildTroubleshooting(input: TroubleshootInput): TroubleshootItem
       });
     }
 
-    const ours = input.sideload.verification?.sideload.entries.filter((entry) => entry.matchesPiForOffice) ?? [];
+    const ours =
+      input.sideload.verification?.sideload.entries.filter((entry) => entry.matchesPiForOffice) ??
+      [];
     if (ours.length > 0 && ours.every((entry) => !entry.matchesProdSource)) {
       items.push({
         id: "sideload-outdated",
@@ -194,7 +193,10 @@ export function buildTroubleshooting(input: TroubleshootInput): TroubleshootItem
         actions: [`Update the bridge: npm install ${PI_OFFICE_BRIDGE.packageName}@latest`],
       });
     }
-    if (health.catalogVersion !== null && health.catalogVersion < PI_OFFICE_BRIDGE.knownCatalogVersion) {
+    if (
+      health.catalogVersion !== null &&
+      health.catalogVersion < PI_OFFICE_BRIDGE.knownCatalogVersion
+    ) {
       items.push({
         id: "catalog-version-skew",
         severity: "info",
@@ -213,19 +215,26 @@ export function buildTroubleshooting(input: TroubleshootInput): TroubleshootItem
       id: "other-addins",
       severity: "info",
       title: `${foreign.length} other sideloaded add-in${foreign.length === 1 ? "" : "s"} found`,
-      detail: foreign.map((entry) => `${entry.manifestDisplayName ?? entry.manifestPath}`).join("\n"),
+      detail: foreign
+        .map((entry) => `${entry.manifestDisplayName ?? entry.manifestPath}`)
+        .join("\n"),
       actions: ["Pi Desktop never modifies other add-ins; they are listed for context only."],
     });
   }
 
   if (input.panes.length > 0) {
-    const hosts = [...new Set(input.panes.map((pane) => (pane.host ? officeHostLabel(pane.host) : "Office")))];
+    const hosts = [
+      ...new Set(input.panes.map((pane) => (pane.host ? officeHostLabel(pane.host) : "Office"))),
+    ];
     items.push({
       id: "connected",
       severity: "info",
       title: `Connected to ${hosts.join(", ")}`,
       detail: input.panes
-        .map((pane) => `${pane.host ? officeHostLabel(pane.host) : "Office"} · ${pane.documentName ?? pane.documentId ?? "document"}`)
+        .map(
+          (pane) =>
+            `${pane.host ? officeHostLabel(pane.host) : "Office"} · ${pane.documentName ?? pane.documentId ?? "document"}`,
+        )
         .join("\n"),
       actions: ["You can close this wizard; the Office session keeps the bridge alive."],
     });
@@ -238,8 +247,8 @@ export function buildTroubleshooting(input: TroubleshootInput): TroubleshootItem
 /* -------------------------------------------------------------- redaction */
 
 const SECRET_PATTERNS: ReadonlyArray<{ name: string; re: RegExp; replace: string }> = [
-  { name: "anthropic-key", re: /sk-ant-[A-Za-z0-9_\-]{8,}/g, replace: "sk-ant-***REDACTED***" },
-  { name: "openai-key", re: /sk-[A-Za-z0-9_\-]{16,}/g, replace: "sk-***REDACTED***" },
+  { name: "anthropic-key", re: /sk-ant-[A-Za-z0-9_-]{8,}/g, replace: "sk-ant-***REDACTED***" },
+  { name: "openai-key", re: /sk-[A-Za-z0-9_-]{16,}/g, replace: "sk-***REDACTED***" },
   { name: "github-pat", re: /github_pat_[A-Za-z0-9_]{20,}/g, replace: "github_pat_***REDACTED***" },
   { name: "github-token", re: /gh[pousr]_[A-Za-z0-9]{20,}/g, replace: "gh***_REDACTED***" },
   { name: "slack-token", re: /xox[abprs]-[A-Za-z0-9-]{10,}/g, replace: "xox*-***REDACTED***" },
@@ -332,8 +341,12 @@ export function buildDiagnosticsBundle(input: DiagnosticsInput): {
   lines.push("");
   lines.push("## App");
   lines.push(`name: ${input.app.name} ${input.app.version}`);
-  lines.push(`electron: ${input.app.electron ?? "?"} · node: ${input.app.node ?? "?"} · chrome: ${input.app.chrome ?? "?"}`);
-  lines.push(`os: ${input.app.platform} ${input.app.arch}${input.app.isWsl ? " (WSL)" : ""}${input.app.osRelease ? ` · ${input.app.osRelease}` : ""}`);
+  lines.push(
+    `electron: ${input.app.electron ?? "?"} · node: ${input.app.node ?? "?"} · chrome: ${input.app.chrome ?? "?"}`,
+  );
+  lines.push(
+    `os: ${input.app.platform} ${input.app.arch}${input.app.isWsl ? " (WSL)" : ""}${input.app.osRelease ? ` · ${input.app.osRelease}` : ""}`,
+  );
   lines.push("");
   lines.push("## Profile");
   lines.push(`agentDir: ${input.profile.agentDir}`);
@@ -366,9 +379,13 @@ export function buildDiagnosticsBundle(input: DiagnosticsInput): {
     lines.push(`status: ${input.bridge.status}`);
     lines.push(`spec: ${input.bridge.spec}`);
     if (input.bridge.previousSpec) lines.push(`previous: ${input.bridge.previousSpec}`);
-    lines.push(`installed: ${input.bridge.state.installed ? "yes" : "no"}${input.bridge.state.version ? ` v${input.bridge.state.version}` : ""}`);
-    if (input.bridge.state.extensionEntry) lines.push(`extension: ${input.bridge.state.extensionEntry}`);
-    for (const step of input.bridge.steps) lines.push(`  - ${step.name}: ${step.ok ? "ok" : "FAILED"} — ${step.detail}`);
+    lines.push(
+      `installed: ${input.bridge.state.installed ? "yes" : "no"}${input.bridge.state.version ? ` v${input.bridge.state.version}` : ""}`,
+    );
+    if (input.bridge.state.extensionEntry)
+      lines.push(`extension: ${input.bridge.state.extensionEntry}`);
+    for (const step of input.bridge.steps)
+      lines.push(`  - ${step.name}: ${step.ok ? "ok" : "FAILED"} — ${step.detail}`);
     if (input.bridge.error) lines.push(`error: ${input.bridge.error}`);
     if (input.bridge.installLog) lines.push(`install log (tail):\n${input.bridge.installLog}`);
   } else {
@@ -382,7 +399,9 @@ export function buildDiagnosticsBundle(input: DiagnosticsInput): {
     lines.push(`manifest: ${input.sideload.manifestPath} (id ${input.sideload.manifestId ?? "?"})`);
     for (const note of input.sideload.plan.notes) lines.push(`  plan: ${note}`);
     for (const action of input.sideload.actions) {
-      lines.push(`  - ${action.kind} ${action.target}: ${action.ok ? "ok" : "FAILED"} — ${action.detail}`);
+      lines.push(
+        `  - ${action.kind} ${action.target}: ${action.ok ? "ok" : "FAILED"} — ${action.detail}`,
+      );
     }
     if (input.sideload.error) lines.push(`error: ${input.sideload.error}`);
   } else {
@@ -393,11 +412,17 @@ export function buildDiagnosticsBundle(input: DiagnosticsInput): {
   lines.push("## Bridge health");
   if (input.health) {
     lines.push(`url: ${input.health.url}`);
-    lines.push(`status: ${input.health.status} · http: ${input.health.httpStatus ?? "?"} · portConflict: ${input.health.portConflict}`);
+    lines.push(
+      `status: ${input.health.status} · http: ${input.health.httpStatus ?? "?"} · portConflict: ${input.health.portConflict}`,
+    );
     if (input.health.health) {
       const health = input.health.health;
-      lines.push(`server: ${health.serverName} ${health.serverVersion ?? "?"} · pi ${health.piVersion ?? "?"}`);
-      lines.push(`protocol: v${health.protocolVersion ?? "?"} · catalog: v${health.catalogVersion ?? "?"}`);
+      lines.push(
+        `server: ${health.serverName} ${health.serverVersion ?? "?"} · pi ${health.piVersion ?? "?"}`,
+      );
+      lines.push(
+        `protocol: v${health.protocolVersion ?? "?"} · catalog: v${health.catalogVersion ?? "?"}`,
+      );
       lines.push(`capabilities: ${health.capabilities.join(", ") || "(none)"}`);
     }
     if (input.health.error) lines.push(`error: ${input.health.error}`);
@@ -417,7 +442,8 @@ export function buildDiagnosticsBundle(input: DiagnosticsInput): {
   lines.push("");
 
   lines.push("## Checklist");
-  for (const step of input.checklist) lines.push(`- [${step.status}] ${step.title}: ${step.detail}`);
+  for (const step of input.checklist)
+    lines.push(`- [${step.status}] ${step.title}: ${step.detail}`);
   lines.push("");
 
   lines.push("## Troubleshooting");
@@ -433,16 +459,22 @@ export function buildDiagnosticsBundle(input: DiagnosticsInput): {
 
 function formatDetectionSection(detection: OfficeDetectionResult): string {
   const lines: string[] = [];
-  lines.push(`os: ${detection.os}${detection.isWsl ? " (WSL)" : ""} · supported: ${detection.supported}`);
+  lines.push(
+    `os: ${detection.os}${detection.isWsl ? " (WSL)" : ""} · supported: ${detection.supported}`,
+  );
   lines.push(
     `office: ${detection.office.version ?? "unknown"}${detection.office.platform ? ` (${detection.office.platform})` : ""}${
       detection.office.source ? ` via ${detection.office.source}` : ""
     }`,
   );
-  if (detection.office.products.length > 0) lines.push(`products: ${detection.office.products.join(", ")}`);
+  if (detection.office.products.length > 0)
+    lines.push(`products: ${detection.office.products.join(", ")}`);
   lines.push(
     `apps: ${detection.apps
-      .map((app) => `${app.label}=${app.installed ? (app.executablePath ?? app.evidence ?? "yes") : "no"}`)
+      .map(
+        (app) =>
+          `${app.label}=${app.installed ? (app.executablePath ?? app.evidence ?? "yes") : "no"}`,
+      )
       .join(", ")}`,
   );
   lines.push(`sideloaded: ${detection.sideload.installed ? "yes" : "no"}`);

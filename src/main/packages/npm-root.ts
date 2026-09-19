@@ -70,7 +70,10 @@ export function serializeNpmRootPackageJson(doc: Record<string, unknown>): strin
   return `${JSON.stringify(doc, null, 2)}\n`;
 }
 
-export async function ensureNpmRoot(fs: FsPort, paths: NpmRootPaths): Promise<{ created: boolean }> {
+export async function ensureNpmRoot(
+  fs: FsPort,
+  paths: NpmRootPaths,
+): Promise<{ created: boolean }> {
   const existed = (await fs.pathKind(paths.root)) === "directory";
   await fs.ensureDir(paths.root);
   if ((await fs.pathKind(paths.gitignorePath)) === null) {
@@ -108,7 +111,11 @@ export async function syncNpmRootManifest(
   const generated = buildNpmRootPackageJson(specs);
   const currentDependencies = existing.dependencies;
   const merged: Record<string, string> = {};
-  if (currentDependencies && typeof currentDependencies === "object" && !Array.isArray(currentDependencies)) {
+  if (
+    currentDependencies &&
+    typeof currentDependencies === "object" &&
+    !Array.isArray(currentDependencies)
+  ) {
     for (const [name, version] of Object.entries(currentDependencies as Record<string, unknown>)) {
       if (typeof version === "string") merged[name] = version;
     }
@@ -117,7 +124,10 @@ export async function syncNpmRootManifest(
 
   const next: Record<string, unknown> = {
     ...existing,
-    name: typeof existing.name === "string" && existing.name.length > 0 ? existing.name : generated.name,
+    name:
+      typeof existing.name === "string" && existing.name.length > 0
+        ? existing.name
+        : generated.name,
     private: true,
     dependencies: merged,
   };

@@ -34,7 +34,11 @@ export function readPackageEntries(doc: SettingsDocument): PackageEntry[] {
       out.push(entry);
       continue;
     }
-    if (entry && typeof entry === "object" && typeof (entry as { source?: unknown }).source === "string") {
+    if (
+      entry &&
+      typeof entry === "object" &&
+      typeof (entry as { source?: unknown }).source === "string"
+    ) {
       out.push(entry as { source: string });
     }
   }
@@ -119,7 +123,10 @@ export function hasPackageSource(
   });
 }
 
-export async function readSettingsDocument(fs: FsPort, filePath: string): Promise<SettingsDocument> {
+export async function readSettingsDocument(
+  fs: FsPort,
+  filePath: string,
+): Promise<SettingsDocument> {
   const text = await fs.readTextFile(filePath);
   if (text === null || text.trim().length === 0) return {};
   try {

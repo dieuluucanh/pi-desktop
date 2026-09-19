@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { parseRegQueryOutput, queryRegistryKey, queryRegistryTree, readRegistryValue } from "../../src/main/office/registry";
+import {
+  parseRegQueryOutput,
+  queryRegistryKey,
+  queryRegistryTree,
+  readRegistryValue,
+} from "../../src/main/office/registry";
 import { createFakeCommandRunner } from "../../src/main/office/exec";
 
 const DEVELOPER_KEY = "HKCU\\SOFTWARE\\Microsoft\\Office\\16.0\\WEF\\Developer";
@@ -72,9 +77,9 @@ describe("parseRegQueryOutput", () => {
         "    \\manifest.pi-for-office.xml",
       ].join("\n"),
     );
-    expect(readRegistryValue(keys[0] ?? null, "C:\\very\\long\\path\\to\\manifest.pi-for-office.xml")).toBe(
-      "C:\\very\\long\\path\\to\\manifest.pi-for-office.xml",
-    );
+    expect(
+      readRegistryValue(keys[0] ?? null, "C:\\very\\long\\path\\to\\manifest.pi-for-office.xml"),
+    ).toBe("C:\\very\\long\\path\\to\\manifest.pi-for-office.xml");
   });
 
   it("ignores empty input", () => {

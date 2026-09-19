@@ -67,7 +67,9 @@ function fakeDeps(steps: readonly FetchStep[]): { deps: VerifyDeps; fetchCount: 
   };
 }
 
-async function windowsDetection(installedHosts: readonly ("excel" | "word" | "powerpoint")[] = ["excel"]): Promise<OfficeDetectionResult> {
+async function windowsDetection(
+  installedHosts: readonly ("excel" | "word" | "powerpoint")[] = ["excel"],
+): Promise<OfficeDetectionResult> {
   const programFiles = "C:\\Program Files";
   const excelExe = path.join(programFiles, "Microsoft Office", "root", "Office16", "EXCEL.EXE");
   const wordExe = path.join(programFiles, "Microsoft Office", "root", "Office16", "WINWORD.EXE");
@@ -117,7 +119,10 @@ describe("parseBridgeHealth", () => {
   });
 
   it("tolerates missing panes and odd values", () => {
-    const health = parseBridgeHealth({ serverName: "pi-office-bridge", panes: [42, {}, { host: "nope" }] });
+    const health = parseBridgeHealth({
+      serverName: "pi-office-bridge",
+      panes: [42, {}, { host: "nope" }],
+    });
     expect(health?.panes).toHaveLength(2);
     expect(health?.panes[0]?.host).toBeNull();
     expect(health?.panes[1]?.host).toBeNull();
@@ -197,10 +202,18 @@ describe("waitForPane", () => {
     });
     const { deps } = fakeDeps([{ body: wordOnly }]);
 
-    const excel = await waitForPane(deps, { hosts: ["excel"], timeoutMs: 2_000, pollIntervalMs: 1_000 });
+    const excel = await waitForPane(deps, {
+      hosts: ["excel"],
+      timeoutMs: 2_000,
+      pollIntervalMs: 1_000,
+    });
     expect(excel.status).toBe("timeout");
 
-    const word = await waitForPane(deps, { hosts: ["word"], timeoutMs: 2_000, pollIntervalMs: 1_000 });
+    const word = await waitForPane(deps, {
+      hosts: ["word"],
+      timeoutMs: 2_000,
+      pollIntervalMs: 1_000,
+    });
     expect(word.status).toBe("attached");
     expect(word.panes[0]?.documentName).toBe("Report.docx");
   });
@@ -312,9 +325,21 @@ describe("buildSetupChecklist", () => {
     const detection = await windowsDetection(["excel"]);
     const steps = buildSetupChecklist({
       detection,
-      bridge: { status: "installed", packageName: "@dieulc/pi-office-bridge", version: "0.4.1", error: null },
+      bridge: {
+        status: "installed",
+        packageName: "@dieulc/pi-office-bridge",
+        version: "0.4.1",
+        error: null,
+      },
       sideload: { ok: true, verified: true, error: null, platform: "windows" },
-      openOffice: { ok: true, host: "excel", path: "EXCEL.EXE", usedWebFallback: false, note: null, error: null },
+      openOffice: {
+        ok: true,
+        host: "excel",
+        path: "EXCEL.EXE",
+        usedWebFallback: false,
+        note: null,
+        error: null,
+      },
       health: okCheck,
       panes: okHealth?.panes ?? [],
     });
@@ -357,7 +382,13 @@ describe("buildSetupChecklist", () => {
       bridge: null,
       sideload: null,
       openOffice: null,
-      health: { ...okCheck, status: "not-our-bridge", portConflict: true, health: null, error: "Port 38617 is served by x" },
+      health: {
+        ...okCheck,
+        status: "not-our-bridge",
+        portConflict: true,
+        health: null,
+        error: "Port 38617 is served by x",
+      },
       panes: [],
     });
     const step = steps.find((candidate) => candidate.id === "bridge-listening");
@@ -370,7 +401,14 @@ describe("buildSetupChecklist", () => {
       detection: await windowsDetection(["excel"]),
       bridge: null,
       sideload: { ok: true, verified: true, error: null, platform: "windows" },
-      openOffice: { ok: true, host: "excel", path: "EXCEL.EXE", usedWebFallback: false, note: null, error: null },
+      openOffice: {
+        ok: true,
+        host: "excel",
+        path: "EXCEL.EXE",
+        usedWebFallback: false,
+        note: null,
+        error: null,
+      },
       health: okCheck,
       panes: [],
     });
