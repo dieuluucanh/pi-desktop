@@ -84,7 +84,9 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
 
 /** Electron-bound wrapper around {@link resolveAppPaths}. */
 export function appPaths(): AppPaths {
-  return resolveAppPaths({ userDataDir: app.getPath("userData") });
+  // `process.env` is passed explicitly: without it the documented
+  // `PI_CODING_AGENT_DIR` override (plan D8) would be ignored by the real app.
+  return resolveAppPaths({ userDataDir: app.getPath("userData"), env: process.env });
 }
 
 /**

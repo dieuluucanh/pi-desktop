@@ -43,3 +43,39 @@ jobs:
 
       - name: Office manifest is in sync
         run: npm run office:manifest:check
+
+  e2e:
+    name: e2e smoke (windows)
+    runs-on: windows-latest
+    # This job launches Electron, so it must NOT inherit the checks job's
+    # ELECTRON_SKIP_BINARY_DOWNLOAD=1 — the Electron binary is the app under
+    # test.
+    env:
+      # Playwright drives Electron, not its own bundled browsers.
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Shell smoke (Playwright + Electron)
+        run: npm run e2e:smoke
+
+      - name: Upload traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            test-results
+            playwright-report
+          if-no-files-found: ignore

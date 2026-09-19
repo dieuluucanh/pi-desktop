@@ -22,7 +22,22 @@ import { resolveAppRuntime, type RuntimeResolution } from "./runtime";
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
 const safeMode = isSafeMode();
+
+// Electron's own state directory can be redirected from the environment. The E2E
+// harness needs a guaranteed-private userData (a Chromium switch after the app
+// path is not reliably honoured), and it doubles as profile isolation later.
+const userDataOverride = process.env.PI_DESKTOP_USER_DATA_DIR?.trim();
+if (userDataOverride) app.setPath("userData", userDataOverride);
+
 const paths: AppPaths = appPaths();
+
+// E2E runs print where they landed so a failed launch is diagnosable from the
+// harness output (the app is otherwise silent on a successful start).
+if (process.env.PI_DESKTOP_E2E === "1") {
+  console.error(
+    `[pi-desktop] e2e userData=${paths.userData} profile=${paths.profileDir} safeMode=${safeMode}`,
+  );
+}
 const roots: AppRoots = resolveAppRoots({
   isPackaged: app.isPackaged,
   resourcesPath: process.resourcesPath,
@@ -205,6 +220,9 @@ const officeSetup = createOfficeSetupService({
 });
 
 if (!app.requestSingleInstanceLock()) {
+  // Another instance owns this userData directory (including a developer's dev
+  // window or a stale E2E run). Say so instead of vanishing.
+  console.error(`[pi-desktop] another instance owns ${paths.userData}; exiting.`);
   app.quit();
 } else {
   app.on("second-instance", () => {

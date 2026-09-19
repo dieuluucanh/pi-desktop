@@ -10,6 +10,14 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
+    // Coverage spans both projects (`npm run test:coverage`); thresholds are
+    // enforced in plan step 25.
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "lcov"],
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: ["src/renderer/src/**/*.d.ts", "src/renderer/src/main.tsx"],
+    },
     projects: [
       {
         test: {
