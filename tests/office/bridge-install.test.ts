@@ -20,7 +20,7 @@ const NPM_ROOT_MANIFEST = path.join(NPM_ROOT, "package.json");
 const PKG_DIR = bridgePackageDir(NPM_ROOT, PI_OFFICE_BRIDGE.packageName);
 const PKG_JSON = path.join(PKG_DIR, "package.json");
 const ENTRY = path.join(PKG_DIR, "src", "index.ts");
-const PINNED = "npm:@dieulc/pi-office-bridge@^0.4.1";
+const PINNED = "npm:@dieulc/pi-office-bridge@^0.5.0";
 
 interface FakeInstallerOptions {
   ok?: boolean;
@@ -187,13 +187,13 @@ describe("ensureBridgePackage", () => {
     expect(rootManifest).toMatchObject({
       name: "pi-extensions",
       private: true,
-      dependencies: { "@dieulc/pi-office-bridge": "^0.4.1" },
+      dependencies: { "@dieulc/pi-office-bridge": "^0.5.0" },
     });
     expect(await fs.readTextFile(path.join(NPM_ROOT, ".gitignore"))).toBe("*\n!.gitignore\n");
   });
 
   it("does nothing when the pinned bridge is already installed", async () => {
-    const fs = installedProfile("0.4.1");
+    const fs = installedProfile("0.5.0");
     const { installer, calls } = makeInstaller(fs);
 
     const result = await ensureBridgePackage({ fs, installer, agentDir: AGENT_DIR, cwd: CWD });

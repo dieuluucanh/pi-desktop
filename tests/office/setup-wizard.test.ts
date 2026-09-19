@@ -50,7 +50,7 @@ const WIN_ENV = { LOCALAPPDATA, ProgramFiles: "C:\\Program Files" };
 
 const EMPTY_HEALTH = {
   serverName: "pi-office-bridge",
-  serverVersion: "0.4.1",
+  serverVersion: "0.5.0",
   piVersion: "0.85.1",
   protocolVersion: 2,
   catalogVersion: 3,
@@ -107,7 +107,7 @@ function fakeInstaller(fs: MemoryFsPort, options: InstallerOptions = {}): Packag
     description: "fake npm",
     async installAll(root): Promise<InstallResult> {
       const ok = options.ok ?? true;
-      const version = options.installVersion ?? "0.4.1";
+      const version = options.installVersion ?? "0.5.0";
       if (ok && version !== null) {
         await fs.writeTextFile(
           BRIDGE_PKG_JSON,
@@ -222,7 +222,7 @@ describe("OfficeSetupController.run — happy path", () => {
     expect(state.error).toBeNull();
     expect(state.detection?.sideload.installed).toBe(true);
     expect(state.bridge?.status).toBe("installed");
-    expect(state.bridge?.state.version).toBe("0.4.1");
+    expect(state.bridge?.state.version).toBe("0.5.0");
     expect(state.sideload?.verified).toBe(true);
     expect(state.openOffice?.ok).toBe(true);
     expect(state.panes).toHaveLength(1);
@@ -241,7 +241,7 @@ describe("OfficeSetupController.run — happy path", () => {
 
     // Real writes: settings pinned, npm root built, manifest registered+detected.
     expect(await fs.readTextFile(path.join(AGENT_DIR, "settings.json"))).toContain(
-      "npm:@dieulc/pi-office-bridge@^0.4.1",
+      "npm:@dieulc/pi-office-bridge@^0.5.0",
     );
     expect(await fs.readTextFile(path.join(WEF_DIR, "manifest.prod.xml"))).toBe(MANIFEST);
 

@@ -184,13 +184,36 @@ export function buildTroubleshooting(input: TroubleshootInput): TroubleshootItem
 
   const health = input.health?.health;
   if (health?.protocolVersion !== null && health?.protocolVersion !== undefined) {
-    if (health.protocolVersion < PI_OFFICE_BRIDGE.knownProtocolVersion) {
+    const protocol = health.protocolVersion;
+    const known = PI_OFFICE_BRIDGE.knownProtocolVersion;
+    if (protocol > known) {
+      // Additive protocol changes keep old clients working, so a newer bridge is
+      // informational: it may simply offer features this app does not use yet.
+      items.push({
+        id: "bridge-newer",
+        severity: "info",
+        title: "The bridge is newer than this app",
+        detail: `Bridge protocol v${protocol}; this app targets v${known}. Additive changes stay compatible, so everything keeps working.`,
+        actions: [],
+      });
+    } else if (protocol < 2) {
+      items.push({
+        id: "bridge-version-skew",
+        severity: "error",
+        title: "The bridge is too old to connect",
+        detail: `Bridge protocol v${protocol} — this app speaks v2 or newer, so the add-in handshake is rejected with protocol_mismatch.`,
+        actions: [`Update the bridge: npm install ${PI_OFFICE_BRIDGE.packageName}@latest`],
+      });
+    } else if (protocol < known) {
       items.push({
         id: "bridge-version-skew",
         severity: "warning",
         title: "The bridge uses an older protocol",
-        detail: `Bridge protocol v${health.protocolVersion}; this app targets v${PI_OFFICE_BRIDGE.knownProtocolVersion}. Some tools may be unavailable.`,
-        actions: [`Update the bridge: npm install ${PI_OFFICE_BRIDGE.packageName}@latest`],
+        detail: `Bridge protocol v${protocol}; this app targets v${known}. The bridge still connects, but replies arrive only as a single final message — no streamed text while the agent works, and the add-in cannot stop a run from the task pane.`,
+        actions: [
+          `Update the bridge for streaming replies: npm install ${PI_OFFICE_BRIDGE.packageName}@latest`,
+          "Restart the Office session afterwards so the extension reloads.",
+        ],
       });
     }
     if (

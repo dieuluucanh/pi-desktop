@@ -73,9 +73,9 @@ export const PI_FOR_OFFICE = {
 export const PI_OFFICE_BRIDGE = {
   packageName: "@dieulc/pi-office-bridge",
   /** Pinned version range the app installs and tests against. */
-  pinnedVersion: "^0.4.1",
+  pinnedVersion: "^0.5.0",
   /** Last known protocol/catalog versions of the bridge (diagnostics only). */
-  knownProtocolVersion: 2,
+  knownProtocolVersion: 3,
   knownCatalogVersion: 3,
   defaultPort: 38617,
   flag: "office-bridge-port",
