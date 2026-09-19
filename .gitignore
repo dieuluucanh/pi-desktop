@@ -11,8 +11,10 @@ Thumbs.db
 !.env.example
 
 # Bundled Node/npm runtime and generated PATH shims are fetched, never committed.
+# The lockfile is the exception: it pins the version and checksums.
 resources/runtime/*
 !resources/runtime/README.md
+!resources/runtime/node.lock.json
 
 # Playwright artifacts
 /test-results/

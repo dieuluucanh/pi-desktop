@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
-const CORE_DIRS = ["src/host", "src/main/office", "src/main/packages"] as const;
+const CORE_DIRS = ["src/host", "src/main/office", "src/main/packages", "src/main/runtime"] as const;
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js"] as const;
 
 const ELECTRON_IMPORT =
