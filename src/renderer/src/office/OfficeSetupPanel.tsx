@@ -1,5 +1,6 @@
 import type { OfficeChecklistStatus, OfficeSetupStepId } from "../../../shared/office-setup";
 import { OFFICE_SETUP_STEP_ORDER } from "../../../shared/office-setup";
+import { bridgeReplyLabel, bridgeStopLabel } from "../../../shared/office-bridge";
 import { useOfficeSetup } from "./useOfficeSetup";
 
 /**
@@ -169,26 +170,8 @@ export function OfficeSetupPanel() {
               <Fact label="Server" value={view?.health?.serverVersion ?? "—"} />
               <Fact label="Protocol" value={view?.health?.protocolVersion?.toString() ?? "—"} />
               <Fact label="Catalog" value={view?.health?.catalogVersion?.toString() ?? "—"} />
-              <Fact
-                label="Replies"
-                value={
-                  view?.compatibility
-                    ? view.compatibility.supportsDeltas
-                      ? "streamed (protocol v3)"
-                      : "final message only"
-                    : "—"
-                }
-              />
-              <Fact
-                label="Stop"
-                value={
-                  view?.compatibility
-                    ? view.compatibility.supportsAbort
-                      ? "app and task pane"
-                      : "app only"
-                    : "—"
-                }
-              />
+              <Fact label="Replies" value={bridgeReplyLabel(view?.compatibility ?? null)} />
+              <Fact label="Stop" value={bridgeStopLabel(view?.compatibility ?? null)} />
               <Fact
                 label="Package"
                 value={

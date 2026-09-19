@@ -69,6 +69,23 @@ export interface BridgeCompatibility {
   summary: string;
 }
 
+/**
+ * How replies arrive, in the words the UI shows. Kept here so the panel and the
+ * tests cannot drift apart on the one decision that matters to a user.
+ */
+export function bridgeReplyLabel(compatibility: BridgeCompatibility | null): string {
+  if (!compatibility) return "—";
+  if (compatibility.shape === "unsupported" || compatibility.shape === "unknown") return "—";
+  return compatibility.supportsDeltas ? "streamed (protocol v3)" : "final message only";
+}
+
+/** Who can stop a run: the app always can (it owns the session). */
+export function bridgeStopLabel(compatibility: BridgeCompatibility | null): string {
+  if (!compatibility) return "—";
+  if (compatibility.shape === "unsupported" || compatibility.shape === "unknown") return "—";
+  return compatibility.supportsAbort ? "app and task pane" : "app only";
+}
+
 /** Read a capability flag, treating an absent array as "not advertised". */
 function advertises(input: BridgeCompatibilityInput, capability: string): boolean {
   return input.capabilities?.includes(capability) ?? false;
