@@ -7,8 +7,10 @@
 - `architecture/host-protocol.md` — main ⇄ Pi host JSONL protocol (plan step 4).
 - `architecture/extension-ui.md` — `ExtensionUIContext` behaviour and the TUI
   rendering surface (added in plan steps 6–7).
-- `architecture/office-integration.md` — bridge, port assignment, sideload paths
-  (added in plan step 19).
+- [`architecture/office-integration.md`](architecture/office-integration.md) —
+  the Office bridge: processes and flows, the protocol v2/v3 compatibility
+  matrix, the streaming and stop rules, `/health` usage, release order and test
+  coverage.
 - `guide/troubleshooting.md` — user-facing troubleshooting (added in plan step 26).
 
 The two plans under `.pi/plans/` remain the design authority for anything not
