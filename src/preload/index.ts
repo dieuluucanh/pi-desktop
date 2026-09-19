@@ -7,6 +7,7 @@ import {
   type WindowState,
 } from "../shared/ipc";
 import type { OfficeSetupStepId, OfficeSetupView } from "../shared/office-setup";
+import type { OfficeStopResult } from "../shared/office-bridge";
 
 /**
  * The preload is the only place that touches `ipcRenderer`. It exposes a fixed,
@@ -33,6 +34,7 @@ const office: OfficeBridge = {
   unsideload: () => ipcRenderer.invoke(IPC.officeUnsideload) as Promise<OfficeSetupView>,
   diagnostics: () => ipcRenderer.invoke(IPC.officeDiagnostics) as Promise<string>,
   reveal: (path: string) => ipcRenderer.invoke(IPC.officeReveal, path) as Promise<boolean>,
+  stopRun: () => ipcRenderer.invoke(IPC.officeStopRun) as Promise<OfficeStopResult>,
   onState: (listener: (view: OfficeSetupView) => void) =>
     subscribe<OfficeSetupView>(IPC.officeState, listener),
 };

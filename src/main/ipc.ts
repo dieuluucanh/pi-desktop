@@ -1,6 +1,7 @@
 import { BrowserWindow, ipcMain, shell } from "electron";
 import { IPC, type AppInfo } from "../shared/ipc";
 import { isOfficeSetupStepId } from "../shared/office-setup";
+import type { OfficeStopResult } from "../shared/office-bridge";
 import type { OfficeSetupService } from "./office/setup-service";
 
 /**
@@ -16,6 +17,11 @@ export interface IpcDependencies {
   appInfo: () => AppInfo;
   openExternal: (url: unknown) => Promise<boolean>;
   officeSetup: OfficeSetupService;
+  /**
+   * The Office run the app can stop. Idle (no Office session, or nothing in
+   * flight) until the app owns one — the wizard's health probe is unaffected.
+   */
+  officeRun: { stop: () => Promise<OfficeStopResult> };
 }
 
 /** Pushes a main → renderer event to every live window. */
@@ -41,6 +47,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.officeRefreshHealth, () => deps.officeSetup.refreshHealth());
   ipcMain.handle(IPC.officeUnsideload, () => deps.officeSetup.unsideload());
   ipcMain.handle(IPC.officeDiagnostics, () => deps.officeSetup.diagnostics());
+  ipcMain.handle(IPC.officeStopRun, () => deps.officeRun.stop());
   ipcMain.handle(IPC.officeReveal, (_event, target: unknown) => {
     if (typeof target !== "string" || target.length === 0) return false;
     try {

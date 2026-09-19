@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, shell } from "electron";
 import { IPC, type AppInfo, type WindowState } from "../shared/ipc";
+import type { OfficeStopResult } from "../shared/office-bridge";
 import { createHostSupervisor } from "./host-supervisor";
 import { broadcastToWindows, registerIpcHandlers } from "./ipc";
 import { createOfficeSetupService } from "./office/setup-service";
@@ -186,6 +187,25 @@ if (!app.requestSingleInstanceLock()) {
       appInfo: currentAppInfo,
       openExternal,
       officeSetup,
+      // The Office session owns the bridge and the app owns the session, so Stop
+      // aborts that session's run — which ends a pane's answer for every bridge
+      // version (protocol v3 additionally lets a pane stop its own run).
+      officeRun: {
+        stop: async (): Promise<OfficeStopResult> => {
+          const host = hosts?.get("office");
+          if (!host) return { ok: false, reason: "idle" };
+          try {
+            await host.request("abort");
+            return { ok: true };
+          } catch (error) {
+            return {
+              ok: false,
+              reason: "failed",
+              error: error instanceof Error ? error.message : String(error),
+            };
+          }
+        },
+      },
     });
     mainWindow = createWindow();
 

@@ -1,4 +1,5 @@
 import type { OfficeSetupView } from "../../shared/office-setup";
+import { projectBridgeCompatibility, type OfficeRunState } from "../../shared/office-bridge";
 import type { OfficeSetupState } from "./setup-controller";
 
 /**
@@ -13,6 +14,11 @@ export interface ToOfficeSetupViewOptions {
   port: number;
   /** Log lines to keep (the tail is what the panel shows). */
   logLimit?: number;
+  /**
+   * Live Office run, when this process owns an Office session. Omitted until the
+   * app starts one, which the view reports as `{ available: false }`.
+   */
+  run?: OfficeRunState | null;
 }
 
 const DEFAULT_LOG_LIMIT = 60;
@@ -98,8 +104,18 @@ export function toOfficeSetupView(
           serverVersion: state.health.health?.serverVersion ?? null,
           protocolVersion: state.health.health?.protocolVersion ?? null,
           catalogVersion: state.health.health?.catalogVersion ?? null,
+          capabilities: [...(state.health.health?.capabilities ?? [])],
         }
       : null,
+    compatibility: state.health?.health
+      ? projectBridgeCompatibility({
+          protocolVersion: state.health.health.protocolVersion,
+          capabilities: state.health.health.capabilities,
+          serverVersion: state.health.health.serverVersion,
+          catalogVersion: state.health.health.catalogVersion,
+        })
+      : null,
+    run: options.run ?? { available: false, run: null, compatibility: null },
     panes: state.panes.map((pane) => ({
       host: pane.host,
       clientName: pane.clientName,

@@ -57,8 +57,10 @@ describe.skipIf(!buildReady)("live host process", () => {
 
     await expect(host.request("host.ping")).resolves.toMatchObject({ pong: true });
 
-    // Session semantics land in plan step 5; the host must say so, not hang.
-    await expect(host.request("session.create")).rejects.toThrow(/not implemented/i);
+    // Session semantics landed in plan step 5, so creating a session now works…
+    await expect(host.request("session.create")).resolves.toBeDefined();
+    // …while a method no step has wired yet still answers instead of hanging.
+    await expect(host.request("providers.list")).rejects.toThrow(/not implemented/i);
 
     await supervisor.stopAll();
     expect(supervisor.list()).toHaveLength(0);

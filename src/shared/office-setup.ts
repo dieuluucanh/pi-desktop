@@ -8,6 +8,7 @@
  */
 
 import type { OfficeHost } from "./office";
+import type { BridgeCompatibility, OfficeRunState } from "./office-bridge";
 
 export type OfficeSetupStatus = "idle" | "running" | "attention" | "done" | "failed" | "cancelled";
 
@@ -97,6 +98,8 @@ export interface OfficeSetupHealthView {
   serverVersion: string | null;
   protocolVersion: number | null;
   catalogVersion: number | null;
+  /** Capabilities the bridge advertised (`agent-deltas`, `client-abort`, …). */
+  capabilities: string[];
 }
 
 export interface OfficeSetupPaneView {
@@ -133,6 +136,17 @@ export interface OfficeSetupView {
   sideload: OfficeSetupSideloadView | null;
   openOffice: OfficeSetupOpenOfficeView | null;
   health: OfficeSetupHealthView | null;
+  /**
+   * What the connected bridge can actually do. Protocol v3 (bridge 0.5.0) adds
+   * streamed deltas and a pane-side Stop; an older bridge connects and answers
+   * with a single final message instead. Null until `/health` has been probed.
+   */
+  compatibility: BridgeCompatibility | null;
+  /**
+   * Live Office run (streamed text + the Stop target). Null until this app owns
+   * an Office session; `available` is false in that case.
+   */
+  run: OfficeRunState | null;
   panes: OfficeSetupPaneView[];
   troubleshooting: OfficeSetupTroubleshootView[];
   diagnostics: string;

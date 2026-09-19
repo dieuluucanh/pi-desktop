@@ -16,6 +16,8 @@ export interface OfficeSetupApi {
   diagnostics: string | null;
   started(): boolean;
   run(): void;
+  /** Stops the Office session's current run (the task pane's run). */
+  stopRun(): void;
   retry(step: OfficeSetupStepId): void;
   cancel(): void;
   refreshHealth(): void;
@@ -89,6 +91,38 @@ export function useOfficeSetup(): OfficeSetupApi {
     run: () => call((office) => office.start()),
     retry: (step) => call((office) => office.retry(step)),
     cancel: () => call((office) => office.cancel()),
+    stopRun: () => {
+      const bridge = window.pi?.office;
+      if (!bridge) {
+        setError("The preload bridge is unavailable (window.pi.office is missing).");
+        return;
+      }
+      setBusy(true);
+      setError(null);
+      bridge
+        .stopRun()
+        .then((result) => {
+          if (!mounted.current) return;
+          if (!result.ok) {
+            setError(
+              result.reason === "idle"
+                ? "Nothing is running in the Office session."
+                : `Stop failed: ${result.error ?? "the host did not answer"}`,
+            );
+            return;
+          }
+          // An aborted run does not broadcast a view of its own, so pull one.
+          void bridge.refreshHealth().then((next) => {
+            if (mounted.current) setView(next);
+          });
+        })
+        .catch((cause: unknown) => {
+          if (mounted.current) setError(describe(cause));
+        })
+        .finally(() => {
+          if (mounted.current) setBusy(false);
+        });
+    },
     refreshHealth: () => call((office) => office.refreshHealth()),
     unsideload: () => call((office) => office.unsideload()),
     loadDiagnostics: () => {

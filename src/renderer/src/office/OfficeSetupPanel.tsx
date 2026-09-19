@@ -170,6 +170,26 @@ export function OfficeSetupPanel() {
               <Fact label="Protocol" value={view?.health?.protocolVersion?.toString() ?? "—"} />
               <Fact label="Catalog" value={view?.health?.catalogVersion?.toString() ?? "—"} />
               <Fact
+                label="Replies"
+                value={
+                  view?.compatibility
+                    ? view.compatibility.supportsDeltas
+                      ? "streamed (protocol v3)"
+                      : "final message only"
+                    : "—"
+                }
+              />
+              <Fact
+                label="Stop"
+                value={
+                  view?.compatibility
+                    ? view.compatibility.supportsAbort
+                      ? "app and task pane"
+                      : "app only"
+                    : "—"
+                }
+              />
+              <Fact
                 label="Package"
                 value={
                   view?.bridge
@@ -184,6 +204,61 @@ export function OfficeSetupPanel() {
                 port.
               </div>
             ) : null}
+            {view?.compatibility && view.compatibility.shape !== "current" ? (
+              <div
+                className={
+                  view.compatibility.shape === "unsupported"
+                    ? "banner banner--error"
+                    : "banner banner--warn"
+                }
+              >
+                {view.compatibility.summary}
+              </div>
+            ) : null}
+          </Section>
+
+          <Section title="Current run">
+            {view?.run?.run ? (
+              <div className="stack">
+                <div className="toolbar">
+                  <span className="muted">
+                    {view.run.run.paneInitiated ? "task pane" : "this app"}
+                    {view.run.run.document
+                      ? ` · ${view.run.run.document.host ?? "office"} · ${
+                          view.run.run.document.documentName ?? "untitled"
+                        }`
+                      : ""}
+                  </span>
+                  {view.run.run.streaming ? (
+                    <span className="chip chip--live">streaming</span>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={office.stopRun}
+                    disabled={office.busy || !view.run.run.active}
+                  >
+                    Stop
+                  </button>
+                </div>
+                {view.run.run.text ? <pre className="log">{view.run.run.text}</pre> : null}
+                {view.run.run.truncated ? (
+                  <p className="muted">Preview truncated — the final reply is complete.</p>
+                ) : null}
+                {view.compatibility && !view.compatibility.supportsDeltas ? (
+                  <p className="muted">
+                    This bridge (protocol v{view.compatibility.protocolVersion ?? "?"}) answers with
+                    a single final message, so text appears only when the reply is complete.
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <p className="muted">
+                {view?.run?.available
+                  ? "No run yet — ask in the Office task pane or in the Office tab."
+                  : "Start an Office session to stream replies here and stop a run from the app."}
+              </p>
+            )}
           </Section>
 
           <Section title="Attached documents">

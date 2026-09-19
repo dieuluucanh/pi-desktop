@@ -1,4 +1,5 @@
 import type { OfficeSetupStepId, OfficeSetupView } from "./office-setup";
+import type { OfficeStopResult } from "./office-bridge";
 
 /**
  * The IPC surface between the Electron main process and the renderer.
@@ -26,6 +27,7 @@ export const IPC = {
   officeUnsideload: "office:unsideload",
   officeDiagnostics: "office:diagnostics",
   officeReveal: "office:reveal",
+  officeStopRun: "office:stop-run",
   /** Main → renderer: a new wizard state. */
   officeState: "office:state",
 } as const;
@@ -72,6 +74,12 @@ export interface OfficeBridge {
   diagnostics(): Promise<string>;
   /** Reveals a generated file (manifest copy, settings.json) in the file manager. */
   reveal(path: string): Promise<boolean>;
+  /**
+   * Stops the Office session's current run — the one a task pane started. The app
+   * owns that session, so this works against every bridge version; protocol v3
+   * additionally lets a pane stop its own run.
+   */
+  stopRun(): Promise<OfficeStopResult>;
   onState(listener: (view: OfficeSetupView) => void): () => void;
 }
 
