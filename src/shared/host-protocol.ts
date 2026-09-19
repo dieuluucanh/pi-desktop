@@ -135,6 +135,23 @@ export const HOST_METHODS = [
   "files.list",
   "files.read",
   "files.write",
+  // RPC-aligned additions (plan step 4). Names deliberately mirror Pi's RPC
+  // commands (in parentheses) so the parity test can pin the mapping, while
+  // operations that already have a protocol name keep that name.
+  "session.new", // new_session
+  "session.switch", // switch_session
+  "session.forkMessages", // get_fork_messages
+  "session.lastAssistantText", // get_last_assistant_text
+  "session.queueMode", // set_steering_mode / set_follow_up_mode
+  "session.autoCompaction", // set_auto_compaction
+  "session.autoRetry", // set_auto_retry
+  "session.abortRetry", // abort_retry
+  "model.available", // get_available_models
+  "bash.run", // bash
+  "bash.abort", // abort_bash
+  "providers.runtimeKey", // setRuntimeApiKey (no RPC equivalent)
+  "providers.refresh", // refresh (no RPC equivalent)
+  "providers.custom", // models.json gateway editor (no RPC equivalent)
 ] as const;
 
 export type HostMethod = (typeof HOST_METHODS)[number];

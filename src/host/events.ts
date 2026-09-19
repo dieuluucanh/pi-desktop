@@ -12,6 +12,24 @@ export interface ModelSummary {
   name: string | null;
 }
 
+/** Context-window usage for the session header (plan step 8 renders it). */
+export interface ContextUsageSummary {
+  /** Estimated tokens, or null right after compaction (Pi reports null then). */
+  tokens: number | null;
+  contextWindow: number;
+  percent: number | null;
+}
+
+/** Token and cost totals accumulated by the session (plan step 8). */
+export interface TokenTotals {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
+  cost: number;
+}
+
 export interface SessionSnapshot {
   sessionId: string | null;
   sessionFile: string | null;
@@ -31,6 +49,12 @@ export interface SessionSnapshot {
   activeTools: string[];
   toolCount: number;
   autoCompaction: boolean;
+  /** Plan step 4: usage and queue modes the transcript/header need. */
+  contextUsage: ContextUsageSummary | null;
+  tokens: TokenTotals | null;
+  steeringMode: string | null;
+  followUpMode: string | null;
+  autoRetry: boolean;
 }
 
 /** The narrow `AgentSession` surface `sessionSnapshot` reads. */
@@ -52,6 +76,29 @@ export interface SessionStateLike {
   getAllTools?: () => readonly unknown[];
   getAvailableThinkingLevels?: () => string[];
   autoCompactionEnabled?: boolean;
+  /** Plan step 4: usage, queue modes and retry state. */
+  getContextUsage?: () => ContextUsageLike | undefined;
+  getSessionStats?: () => SessionStatsLike | undefined;
+  getSteeringMode?: () => string;
+  getFollowUpMode?: () => string;
+  autoRetryEnabled?: boolean;
+}
+
+export interface ContextUsageLike {
+  tokens?: number | null;
+  contextWindow?: number;
+  percent?: number | null;
+}
+
+export interface SessionStatsLike {
+  tokens?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
+  cost?: number;
 }
 
 function safe<T>(read: () => T, fallback: T): T {
@@ -68,6 +115,40 @@ export function summarizeModel(model: SessionStateLike["model"]): ModelSummary |
     id: model.id,
     provider: typeof model.provider === "string" ? model.provider : "unknown",
     name: typeof model.name === "string" ? model.name : null,
+  };
+}
+
+function toNumber(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+/** Context usage, when the session can report it. */
+export function summarizeContextUsage(
+  usage: ContextUsageLike | undefined,
+): ContextUsageSummary | null {
+  if (!usage || typeof usage.contextWindow !== "number") return null;
+  return {
+    tokens: typeof usage.tokens === "number" ? usage.tokens : null,
+    contextWindow: usage.contextWindow,
+    percent: typeof usage.percent === "number" ? usage.percent : null,
+  };
+}
+
+/** Token/cost totals, when the session can report them. */
+export function summarizeTokens(stats: SessionStatsLike | undefined): TokenTotals | null {
+  const tokens = stats?.tokens;
+  if (!tokens) return null;
+  const input = toNumber(tokens.input);
+  const output = toNumber(tokens.output);
+  const cacheRead = toNumber(tokens.cacheRead);
+  const cacheWrite = toNumber(tokens.cacheWrite);
+  return {
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    total: toNumber(tokens.total, input + output + cacheRead + cacheWrite),
+    cost: toNumber(stats?.cost),
   };
 }
 
@@ -93,6 +174,11 @@ export function sessionSnapshot(session: SessionStateLike, cwd: string): Session
     activeTools: [...safe(() => session.getActiveToolNames?.() ?? [], [])],
     toolCount: tools.length,
     autoCompaction: session.autoCompactionEnabled === true,
+    contextUsage: summarizeContextUsage(safe(() => session.getContextUsage?.(), undefined)),
+    tokens: summarizeTokens(safe(() => session.getSessionStats?.(), undefined)),
+    steeringMode: safe(() => session.getSteeringMode?.() ?? null, null) as string | null,
+    followUpMode: safe(() => session.getFollowUpMode?.() ?? null, null) as string | null,
+    autoRetry: session.autoRetryEnabled === true,
   };
 }
 

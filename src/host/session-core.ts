@@ -35,6 +35,13 @@ export interface SessionListEntry {
   [key: string]: unknown;
 }
 
+/**
+ * Opaque, Pi-owned payloads forwarded verbatim (session tree nodes, `Settings`
+ * objects, statistics). Their fields belong to the SDK, so the host hands them
+ * through instead of re-declaring a shape it would then have to keep in sync.
+ */
+export type PiPayload = object;
+
 /** The narrow `AgentSession` surface the core drives. */
 export interface HostSession extends SessionStateLike {
   subscribe?(listener: (event: { type: string; [key: string]: unknown }) => void): () => void;
@@ -44,8 +51,21 @@ export interface HostSession extends SessionStateLike {
   abort?(): Promise<void>;
   clearQueue?(): ClearedQueue;
   setModel?(model: unknown, options?: unknown): Promise<void>;
+  cycleModel?(direction?: "forward" | "backward", options?: unknown): Promise<unknown>;
   setThinkingLevel?(level: string, options?: unknown): void;
+  /** Returns the new level upstream; the host reports it through the snapshot. */
+  cycleThinkingLevel?(options?: unknown): void;
   setActiveToolsByName?(names: string[]): void;
+  setAutoCompactionEnabled?(enabled: boolean): void;
+  setAutoRetryEnabled?(enabled: boolean): void;
+  abortRetry?(): void;
+  setSteeringMode?(mode: string): void;
+  setFollowUpMode?(mode: string): void;
+  getLastAssistantText?(): string | undefined;
+  /** Command/template/skill sources, mirroring Pi's RPC `get_commands`. */
+  extensionRunner?: { getRegisteredCommands?: () => readonly unknown[] };
+  promptTemplates?: readonly unknown[];
+  resourceLoader?: { getSkills?: () => { skills?: readonly unknown[] } };
   compact?(instructions?: string): Promise<unknown>;
   reload?(options?: unknown): Promise<void>;
 }
@@ -61,6 +81,11 @@ export interface SessionManagerHandle {
   /** Persists the session (the SDK writes the v3 JSONL header) and names it. */
   appendSessionInfo?(name: string): string;
   getSessionFile?(): string | undefined;
+  /** Session tree access for `entries.get` / `tree.get` / `session.forkMessages`. */
+  getEntries?(): readonly unknown[];
+  getBranch?(fromId?: string): readonly unknown[];
+  getTree?(): PiPayload;
+  getLeafId?(): string | undefined;
   [key: string]: unknown;
 }
 
@@ -74,13 +99,16 @@ export interface RuntimeLike {
   get services(): { settingsManager?: SettingsLike; cwd?: string };
   newSession?(options?: unknown): Promise<{ cancelled: boolean }>;
   switchSession?(path: string, options?: unknown): Promise<{ cancelled: boolean }>;
+  clone?(options?: unknown): Promise<{ cancelled: boolean }>;
   fork?(entryId: string, options?: unknown): Promise<{ cancelled: boolean; selectedText?: string }>;
   setRebindSession?(rebind?: () => Promise<void>): void;
   dispose?(): Promise<void>;
 }
 
 export interface SettingsLike {
-  get?(): Record<string, unknown>;
+  /** Pi's `Settings` objects, forwarded verbatim (see the control core). */
+  getGlobalSettings?(): PiPayload;
+  getProjectSettings?(): PiPayload;
   flush?(): Promise<void>;
   drainErrors?(): unknown[];
 }
@@ -212,6 +240,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         activeTools: [],
         toolCount: 0,
         autoCompaction: false,
+        contextUsage: null,
+        tokens: null,
+        steeringMode: null,
+        followUpMode: null,
+        autoRetry: false,
       };
     }
     return sessionSnapshot(session, cwd);
@@ -337,7 +370,26 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const current = ensure();
       const input = asRecord(params);
       const text = requireString(input.text, "text");
-      await current.prompt(text, input.images ? { images: input.images } : undefined);
+      const behavior = input.streamingBehavior;
+      if (behavior !== undefined && behavior !== "steer" && behavior !== "followUp") {
+        throw new SessionCoreError(
+          'streamingBehavior must be "steer" or "followUp"',
+          "bad_request",
+        );
+      }
+      // Same rule as Pi's RPC mode: while streaming you must say what the message
+      // is, otherwise the client cannot tell a steer from a follow-up.
+      if (current.isStreaming === true && behavior === undefined) {
+        throw new SessionCoreError(
+          "the agent is already streaming; pass streamingBehavior to steer or follow up",
+          "bad_request",
+        );
+      }
+      const options = {
+        ...(input.images ? { images: input.images } : {}),
+        ...(behavior ? { streamingBehavior: behavior } : {}),
+      };
+      await current.prompt(text, Object.keys(options).length > 0 ? options : undefined);
       return snapshot();
     },
 
@@ -389,15 +441,169 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         thinkingLevel: current.thinkingLevel,
         streaming: current.streaming,
         pendingMessages: current.pendingMessages,
+        contextUsage: current.contextUsage,
+        tokens: current.tokens,
+        steeringMode: current.steeringMode,
+        followUpMode: current.followUpMode,
+        autoCompaction: current.autoCompaction,
+        autoRetry: current.autoRetry,
+        // The full SDK stats object (message/tool counts, tokens, cost).
+        stats: readStats(ensure()),
       };
     },
 
-    "settings.get": () => {
-      const settings = settingsManager?.get?.() ?? {};
-      return { settings, errors: settingsManager?.drainErrors?.() ?? [] };
+    "entries.get": (params) => {
+      const input = asRecord(params);
+      const entries = [...(manager?.getEntries?.() ?? [])];
+      const since = input.since;
+      let slice = entries;
+      if (typeof since === "string" && since.length > 0) {
+        const index = entries.findIndex((entry) => asRecord(entry).id === since);
+        if (index === -1) {
+          throw new SessionCoreError(`no session entry with id ${since}`, "bad_request");
+        }
+        slice = entries.slice(index + 1);
+      }
+      return { entries: slice, leafId: manager?.getLeafId?.() ?? null };
     },
 
-    "settings.raw": () => ({ settings: settingsManager?.get?.() ?? {} }),
+    "tree.get": () => ({
+      tree: manager?.getTree?.() ?? [],
+      leafId: manager?.getLeafId?.() ?? null,
+    }),
+
+    "commands.list": () => ({ commands: collectCommands(ensure()) }),
+
+    "session.new": async (params) => {
+      if (!runtime?.newSession) {
+        throw new SessionCoreError("starting a new session is not supported", "unsupported");
+      }
+      const parent = asRecord(params).parentSession;
+      const result = await runtime.newSession(
+        typeof parent === "string" && parent.length > 0 ? { parentSession: parent } : undefined,
+      );
+      await rebind();
+      return { ...snapshot(), cancelled: result.cancelled };
+    },
+
+    "session.switch": async (params) => {
+      const input = asRecord(params);
+      const sessionFile = requireString(input.sessionFile ?? input.path, "sessionFile");
+      if (!runtime?.switchSession) {
+        throw new SessionCoreError("switching sessions is not supported", "unsupported");
+      }
+      const result = await runtime.switchSession(sessionFile);
+      await rebind();
+      return { ...snapshot(), cancelled: result.cancelled };
+    },
+
+    "session.clone": async () => {
+      if (!runtime?.clone) {
+        throw new SessionCoreError("cloning is not supported by this runtime", "unsupported");
+      }
+      const result = await runtime.clone();
+      await rebind();
+      return { ...snapshot(), cancelled: result.cancelled };
+    },
+
+    "session.forkMessages": () => ({ messages: collectForkMessages(manager) }),
+
+    "session.lastAssistantText": () => {
+      const current = ensure();
+      const text = current.getLastAssistantText?.();
+      return { text: typeof text === "string" ? text : lastAssistantTextOf(current) };
+    },
+
+    "session.queueMode": (params) => {
+      const input = asRecord(params);
+      const mode = requireString(input.mode, "mode");
+      if (mode !== "all" && mode !== "one-at-a-time") {
+        throw new SessionCoreError('mode must be "all" or "one-at-a-time"', "bad_request");
+      }
+      const kind = input.kind === "followUp" ? "followUp" : "steering";
+      const current = ensure();
+      if (kind === "followUp") current.setFollowUpMode?.(mode);
+      else current.setSteeringMode?.(mode);
+      emitState();
+      return { kind, mode, state: snapshot() };
+    },
+
+    "session.autoCompaction": (params) => {
+      const enabled = asRecord(params).enabled;
+      if (typeof enabled !== "boolean") {
+        throw new SessionCoreError("enabled must be a boolean", "bad_request");
+      }
+      ensure().setAutoCompactionEnabled?.(enabled);
+      emitState();
+      return snapshot();
+    },
+
+    "session.autoRetry": (params) => {
+      const enabled = asRecord(params).enabled;
+      if (typeof enabled !== "boolean") {
+        throw new SessionCoreError("enabled must be a boolean", "bad_request");
+      }
+      ensure().setAutoRetryEnabled?.(enabled);
+      emitState();
+      return snapshot();
+    },
+
+    "session.abortRetry": () => {
+      ensure().abortRetry?.();
+      emitState();
+      return { aborted: true };
+    },
+
+    "model.cycle": async (params) => {
+      const input = asRecord(params);
+      const current = ensure();
+      if (!current.cycleModel) {
+        throw new SessionCoreError("cycling models is not supported", "unsupported");
+      }
+      await current.cycleModel(input.direction === "backward" ? "backward" : "forward", {
+        persist: input.persist === true,
+      });
+      emitState();
+      return snapshot();
+    },
+
+    "thinking.cycle": (params) => {
+      ensure().cycleThinkingLevel?.({ persist: asRecord(params).persist === true });
+      emitState();
+      return snapshot();
+    },
+
+    "model.available": () => {
+      const current = ensure();
+      const scoped = (current as { scopedModels?: readonly unknown[] }).scopedModels ?? [];
+      const all = (current as { availableModels?: readonly unknown[] }).availableModels ?? scoped;
+      return { models: all, current: snapshot().model };
+    },
+
+    "settings.get": () => ({
+      settings: readSettingsScopes(settingsManager),
+      errors: settingsManager?.drainErrors?.() ?? [],
+    }),
+
+    "settings.raw": () => ({ settings: readSettingsScopes(settingsManager) }),
+
+    "settings.flush": async () => {
+      await settingsManager?.flush?.();
+      return { flushed: true, errors: settingsManager?.drainErrors?.() ?? [] };
+    },
+
+    // Pi's manager exposes named setters, not a generic set(key, value); the
+    // per-key schema and writers belong to the settings mirror (step 12).
+    "settings.set": () =>
+      notImplemented("settings.set", "the per-key settings schema lands in step 12"),
+    "session.delete": () =>
+      notImplemented("session.delete", "the app deletes session files to the OS trash (step 11)"),
+    "session.exportHtml": () =>
+      notImplemented("session.exportHtml", "HTML export lands with the session browser (step 11)"),
+    "bash.run": () =>
+      notImplemented("bash.run", "direct bash runs land with the composer (step 6)"),
+    "bash.abort": () =>
+      notImplemented("bash.abort", "direct bash runs land with the composer (step 6)"),
 
     "model.list": () => {
       const current = ensure();
@@ -471,6 +677,120 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       session = null;
     },
   };
+}
+
+/** A handler that is deliberately not wired yet, with the step that owns it. */
+function notImplemented(method: string, note: string): never {
+  throw new SessionCoreError(`${method} is not implemented yet: ${note}`, "not_implemented");
+}
+
+/**
+ * Both settings scopes, never a merged object: Pi keeps global and project
+ * settings apart with nested-merge semantics, and the settings UI (step 12)
+ * needs to show and edit each scope.
+ */
+function readSettingsScopes(manager: SettingsLike | null): {
+  global: PiPayload;
+  project: PiPayload;
+} {
+  return {
+    global: manager?.getGlobalSettings?.() ?? {},
+    project: manager?.getProjectSettings?.() ?? {},
+  };
+}
+
+/** Pi's `SessionStats` object, forwarded verbatim (its fields belong to Pi). */
+type SessionStatsSummary = object;
+
+/** The full SDK stats object, or null when the session cannot report it. */
+function readStats(session: HostSession): SessionStatsSummary | null {
+  const stats = (session as { getSessionStats?: () => SessionStatsSummary }).getSessionStats;
+  if (typeof stats !== "function") return null;
+  try {
+    return stats.call(session) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Slash commands exactly as Pi's RPC `get_commands` builds them: extension
+ * commands, then prompt templates, then skills (prefixed `skill:`).
+ */
+function collectCommands(session: HostSession): unknown[] {
+  const commands: unknown[] = [];
+  for (const command of session.extensionRunner?.getRegisteredCommands?.() ?? []) {
+    const record = asRecord(command);
+    commands.push({
+      name: record.invocationName ?? record.name,
+      description: record.description,
+      source: "extension",
+      sourceInfo: record.sourceInfo,
+    });
+  }
+  for (const template of session.promptTemplates ?? []) {
+    const record = asRecord(template);
+    commands.push({
+      name: record.name,
+      description: record.description,
+      argumentHint: record.argumentHint,
+      source: "prompt",
+      sourceInfo: record.sourceInfo,
+    });
+  }
+  for (const skill of session.resourceLoader?.getSkills?.().skills ?? []) {
+    const record = asRecord(skill);
+    commands.push({
+      name: `skill:${String(record.name ?? "")}`,
+      description: record.description,
+      source: "skill",
+      sourceInfo: record.sourceInfo,
+    });
+  }
+  return commands;
+}
+
+/** Text of a message content field (string or text blocks). */
+function textOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => (asRecord(block).type === "text" ? String(asRecord(block).text ?? "") : ""))
+    .join("")
+    .trim();
+}
+
+/**
+ * User messages available for forking (Pi's `get_fork_messages`): the entries of
+ * the active branch that are user messages, with the ids the fork call needs.
+ */
+function collectForkMessages(
+  manager: SessionManagerHandle | null,
+): Array<{ entryId: string; text: string }> {
+  const entries = manager?.getBranch?.() ?? manager?.getEntries?.() ?? [];
+  const messages: Array<{ entryId: string; text: string }> = [];
+  for (const entry of entries) {
+    const record = asRecord(entry);
+    const message = asRecord(record.message);
+    if (record.type !== "message" || message.role !== "user") continue;
+    const text = textOf(message.content);
+    if (typeof record.id === "string" && text.length > 0) {
+      messages.push({ entryId: record.id, text });
+    }
+  }
+  return messages;
+}
+
+/** Fallback for `session.lastAssistantText` when the session does not provide it. */
+function lastAssistantTextOf(session: HostSession): string {
+  const messages = session.messages ?? [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = asRecord(messages[index]);
+    if (message.role !== "assistant") continue;
+    const text = textOf(message.content);
+    if (text.length > 0) return text;
+  }
+  return "";
 }
 
 function openManager(

@@ -12,6 +12,7 @@ import {
   type HostRole,
 } from "../shared/host-protocol";
 import { createControlCore } from "./control-core";
+import { createExtensionUiBridge } from "./extension-ui";
 import { createSessionCore, type SessionCore } from "./session-core";
 import { createHostService, type HostHandler, type HostService } from "./service";
 import {
@@ -164,6 +165,14 @@ export function runService(
 
     const handlers: Partial<Record<string, HostHandler>> = { ...core.handlers() };
 
+    // Extension dialogs block until the app answers `oi.respond`. The bridge owns
+    // those promises, emits `oi.request`, and is torn down with the session so a
+    // closing host never leaves an extension hanging (step 16 renders the dialogs).
+    const ui = createExtensionUiBridge({
+      emit: (event, payload) => forward.emit(event, payload, undefined),
+    });
+    Object.assign(handlers, ui.handlers());
+
     const service: HostService = createHostService({
       stdin: process.stdin,
       stdout: process.stdout,
@@ -180,6 +189,7 @@ export function runService(
       },
       onShutdown: () => {
         service.stop();
+        ui.dispose("the host is shutting down");
         void core.dispose();
         // Give the response frame a tick to flush before the process ends.
         setTimeout(() => resolve(), 10);

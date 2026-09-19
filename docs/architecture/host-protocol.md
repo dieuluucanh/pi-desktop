@@ -14,10 +14,11 @@ host → main   {"event":"message_update","sessionId":"s1","payload":{"text":"he
 
 ## Methods
 
-`HOST_METHODS` is the complete list; `isHostMethod` validates it. Step 4 ships the
-transport level and answers everything else with
-`{"ok":false,"error":{"code":"not_implemented"}}` — sessions, prompts and settings
-are wired in steps 5/9/14 by injecting handlers into `createHostService`.
+`HOST_METHODS` is the complete list; `isHostMethod` validates it. Everything that
+is declared but not yet wired answers
+`{"ok":false,"error":{"code":"not_implemented"}}` **with the plan step that owns
+it** in the message — see “Implementation status” below, which is the current
+truth and supersedes the group table's implications.
 
 | Group         | Methods                                                                                                                             |
 | ------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -46,6 +47,8 @@ are wired in steps 5/9/14 by injecting handlers into `createHostService`.
   argument, so the same entry point can stand in for the `pi` binary (plan D16).
 - Injected env: `PI_CODING_AGENT_DIR` (shared profile), `PI_OFFICE_BRIDGE_PORT`
   (38617 for the Office host, 38618+ otherwise, plan D10), `PI_DESKTOP_SESSION_ID`,
+  `PI_DESKTOP_HOST_ROLE` (`control` = app-wide state and no `AgentSession`,
+  `session` = one Pi session; plan D-A3),
   `PI_DESKTOP_BLOB_DIR`, `PI_DESKTOP_NODE` / `PI_DESKTOP_HOST_ENTRY`, and `PATH`
   prefixed with the shim directory.
 - `host.hello` reports protocol version, node/pi version, cwd, bridge port and
@@ -69,3 +72,54 @@ are wired in steps 5/9/14 by injecting handlers into `createHostService`.
 so the whole supervisor is unit tested against a scripted fake host
 (`tests/main/host-supervisor.test.ts`), and `tests/host/service.live.test.ts`
 drives the real bundle when `out/host/index.mjs` has been built.
+
+## Implementation status (2026-09-20, after plan step 4)
+
+### Wired and tested
+
+| Group             | Methods                                                                                                                                                                                                                       | Where                                                  |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| transport         | `host.hello` (reports `role`), `host.ping`, `host.shutdown`, `host.blobs.read`                                                                                                                                                | `src/host/service.ts`                                  |
+| sessions          | `session.create`, `session.open`, `session.resume`, `session.list`, `session.new`, `session.switch`, `session.clone`, `session.fork`, `session.forkMessages`, `session.rename`, `session.reload`, `session.lastAssistantText` | `src/host/session-core.ts`                             |
+| conversation      | `prompt` (images + `streamingBehavior`), `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                           | `src/host/session-core.ts`                             |
+| state             | `state.get`, `messages.get`, `entries.get` (`since` cursor), `tree.get`, `stats.get` (`contextUsage`, `tokens`, queue modes), `compact`, `tools.list`, `tools.setActive`, `commands.list`                                     | `src/host/session-core.ts`                             |
+| models & thinking | `model.list`, `model.available`, `model.set`, `model.cycle`, `thinking.levels`, `thinking.set`, `thinking.cycle`                                                                                                              | `src/host/session-core.ts`                             |
+| session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`                                                                                                                                      | `src/host/session-core.ts`                             |
+| settings          | `settings.get`, `settings.raw`, `settings.flush` (returns **both** scopes: `{global, project}`)                                                                                                                               | `src/host/session-core.ts`, `src/host/control-core.ts` |
+| control host      | `settings.get/raw`, `session.list` (all projects)                                                                                                                                                                             | `src/host/control-core.ts`                             |
+| extension UI      | `oi.respond` + `oi.request` events                                                                                                                                                                                            | `src/host/extension-ui.ts`                             |
+
+### Declared and answering `not_implemented` (with the owning step)
+
+| Methods                                | Step       |
+| -------------------------------------- | ---------- |
+| `settings.set`                         | 12         |
+| `session.delete`, `session.exportHtml` | 11         |
+| `bash.run`, `bash.abort`               | 6          |
+| `providers.*`, `packages.*`, `files.*` | 9 / 14 / 7 |
+
+### RPC mapping (the parity test pins this)
+
+`tests/host/rpc-parity.test.ts` types each mirrored host method against
+`RpcCommand["type"]`, so an upstream rename breaks the build instead of drifting.
+
+| Host method                                                           | Pi RPC command                                                    |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `prompt` / `steer` / `followUp` / `abort` / `clearQueue`              | `prompt` / `steer` / `follow_up` / `abort` / `clear_queue`        |
+| `state.get` / `messages.get` / `stats.get`                            | `get_state` / `get_messages` / `get_session_stats`                |
+| `entries.get` (`since`) / `tree.get`                                  | `get_entries` / `get_tree`                                        |
+| `commands.list`                                                       | `get_commands`                                                    |
+| `model.available` / `model.cycle`                                     | `get_available_models` / `cycle_model`                            |
+| `thinking.cycle` / `thinking.set`                                     | `cycle_thinking_level` / `set_thinking_level`                     |
+| `session.new` / `session.switch` / `session.clone` / `session.fork`   | `new_session` / `switch_session` / `clone` / `fork`               |
+| `session.forkMessages` / `session.lastAssistantText`                  | `get_fork_messages` / `get_last_assistant_text`                   |
+| `session.rename`                                                      | `set_session_name`                                                |
+| `session.queueMode` (steering / follow-up)                            | `set_steering_mode` / `set_follow_up_mode`                        |
+| `session.autoCompaction` / `session.autoRetry` / `session.abortRetry` | `set_auto_compaction` / `set_auto_retry` / `abort_retry`          |
+| `bash.run` / `bash.abort` (declared)                                  | `bash` / `abort_bash`                                             |
+| `oi.request` / `oi.respond`                                           | the `extension_ui_request` / `extension_ui_response` sub-protocol |
+
+Host methods with **no** RPC equivalent (the app needs them, RPC does not):
+`host.*`, `session.list`, `session.create/open/resume/reload/delete/exportHtml`,
+`session.queueMode`'s single envelope, `providers.runtimeKey/refresh/custom`,
+`packages.*`, `files.*`, `settings.*`.

@@ -113,7 +113,8 @@ function fakeRuntime(initial: HostSession, nextSession?: () => HostSession) {
         return {
           cwd: CWD,
           settingsManager: {
-            get: () => ({ theme: "dark", npmCommand: ["node", "npm-cli.js"] }),
+            getGlobalSettings: () => ({ theme: "dark", npmCommand: ["node", "npm-cli.js"] }),
+            getProjectSettings: () => ({ defaultTools: ["read"] }),
             drainErrors: () => [{ message: "one warning" }],
           },
         };
@@ -308,7 +309,10 @@ describe("session core configuration", () => {
     await call("session.create");
 
     expect(await call("settings.get")).toEqual({
-      settings: { theme: "dark", npmCommand: ["node", "npm-cli.js"] },
+      settings: {
+        global: { theme: "dark", npmCommand: ["node", "npm-cli.js"] },
+        project: { defaultTools: ["read"] },
+      },
       errors: [{ message: "one warning" }],
     });
   });
