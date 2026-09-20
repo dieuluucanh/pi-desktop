@@ -44,7 +44,8 @@ function fakeSession(overrides: Record<string, unknown> = {}): TestSession {
     getAvailableThinkingLevels: () => ["off", "medium", "high"],
     getSteeringMessages: () => [],
     getFollowUpMessages: () => [],
-    getContextUsage: () => ({ tokens: 1200, contextWindow: 200_000, percent: 0.6 }),
+    // Pi reports context usage as 0-100 (`(tokens / contextWindow) * 100`).
+    getContextUsage: () => ({ tokens: 1200, contextWindow: 200_000, percent: 60 }),
     getSessionStats: () => ({
       tokens: { input: 100, output: 20, cacheRead: 5, cacheWrite: 1, total: 126 },
       cost: 0.03,
@@ -169,7 +170,7 @@ describe("stats.get", () => {
     expect(stats.contextUsage).toEqual({
       tokens: 1200,
       contextWindow: 200_000,
-      percent: 0.6,
+      percent: 60,
     });
     expect(stats.tokens).toMatchObject({
       input: 100,
@@ -255,6 +256,43 @@ describe("model & thinking", () => {
     const result = (await call("model.available")) as { models: unknown[]; current: unknown };
     expect(result.models).toHaveLength(1);
     expect(result.current).toMatchObject({ id: "test-model" });
+  });
+
+  it("reports the runtime catalog with per-provider auth for the picker", async () => {
+    const { call } = await started({
+      modelRuntime: {
+        getAvailableSnapshot: () => [
+          { id: "claude-sonnet-4-5", provider: "anthropic" },
+          { id: "gpt-5", provider: "openai" },
+        ],
+        getProviderAuthStatus: (provider: string) =>
+          provider === "anthropic" ? { configured: true, source: "stored" } : { configured: false },
+      },
+    });
+
+    const result = (await call("model.available")) as {
+      models: Array<{ id: string }>;
+      auth: Record<string, { configured: boolean; source?: string }>;
+      thinkingLevels: string[];
+    };
+    expect(result.models.map((model) => model.id)).toEqual(["claude-sonnet-4-5", "gpt-5"]);
+    expect(result.auth["anthropic"]).toMatchObject({ configured: true, source: "stored" });
+    // The unconfigured provider is reported as such, which is what "Sign in" reads.
+    expect(result.auth["openai"]?.configured).toBe(false);
+    expect(Array.isArray(result.thinkingLevels)).toBe(true);
+  });
+
+  it("prefers the runtime catalog and falls back to the scoped set", async () => {
+    const { call } = await started({
+      scopedModels: [{ model: { id: "only-scoped" } }],
+      modelRuntime: { getAvailableSnapshot: () => [] },
+    });
+    const result = (await call("model.available")) as {
+      models: Array<{ model?: { id?: string } }>;
+      auth: Record<string, unknown>;
+    };
+    expect(result.models).toHaveLength(1);
+    expect(result.auth).toEqual({});
   });
 });
 

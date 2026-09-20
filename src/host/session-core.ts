@@ -63,6 +63,19 @@ export interface HostSession extends SessionStateLike {
   setSteeringMode?(mode: string): void;
   setFollowUpMode?(mode: string): void;
   getLastAssistantText?(): string | undefined;
+  /** Models the user has scoped through `enabledModels`, with their own thinking level. */
+  scopedModels?: readonly unknown[];
+  /**
+   * Pi's `ModelRuntime`, reached the way the RPC mode does: the picker needs the
+   * available catalog and the per-provider credential state (plan step 8), and
+   * both are forwarded rather than re-derived from the environment.
+   */
+  modelRuntime?: {
+    getAvailableSnapshot?(): readonly unknown[];
+    getProviderAuthStatus?(
+      providerId: string,
+    ): { configured?: boolean; source?: string; label?: string } | undefined;
+  };
   /** Command/template/skill sources, mirroring Pi's RPC `get_commands`. */
   extensionRunner?: { getRegisteredCommands?: () => readonly unknown[] };
   promptTemplates?: readonly unknown[];
@@ -594,9 +607,18 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     "model.available": () => {
       const current = ensure();
-      const scoped = (current as { scopedModels?: readonly unknown[] }).scopedModels ?? [];
-      const all = (current as { availableModels?: readonly unknown[] }).availableModels ?? scoped;
-      return { models: all, current: snapshot().model };
+      // Parity with Pi's RPC `get_available_models`, which reads the runtime
+      // snapshot; the scoped set is the fallback for a session without one.
+      const catalog = current.modelRuntime?.getAvailableSnapshot?.() ?? [];
+      const scoped = current.scopedModels ?? [];
+      const models = catalog.length > 0 ? catalog : scoped;
+      return {
+        models,
+        scoped,
+        auth: providerAuthStatus(current, models),
+        thinkingLevels: snapshot().thinkingLevels,
+        current: snapshot().model,
+      };
     },
 
     "settings.get": () => ({
@@ -626,8 +648,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     "model.list": () => {
       const current = ensure();
-      const scoped = (current as { scopedModels?: readonly unknown[] }).scopedModels ?? [];
-      return { scoped, current: snapshot().model };
+      return { scoped: current.scopedModels ?? [], current: snapshot().model };
     },
 
     "model.set": async (params) => {
@@ -701,6 +722,27 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 /** A handler that is deliberately not wired yet, with the step that owns it. */
 function notImplemented(method: string, note: string): never {
   throw new SessionCoreError(`${method} is not implemented yet: ${note}`, "not_implemented");
+}
+
+/**
+ * Per-provider credential state for the model picker's auth badges (plan step 8).
+ * Reported from Pi's own runtime, so "Sign in" reflects what Pi knows instead of
+ * the app guessing from an environment variable's presence.
+ */
+function providerAuthStatus(
+  session: HostSession,
+  models: readonly unknown[],
+): Record<string, unknown> {
+  const runtime = session.modelRuntime;
+  if (!runtime?.getProviderAuthStatus) return {};
+  const statuses: Record<string, unknown> = {};
+  for (const model of models) {
+    const provider = asRecord(model).provider;
+    if (typeof provider !== "string" || provider.length === 0) continue;
+    if (provider in statuses) continue;
+    statuses[provider] = runtime.getProviderAuthStatus(provider) ?? null;
+  }
+  return statuses;
 }
 
 /**

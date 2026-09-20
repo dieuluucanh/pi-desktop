@@ -53,6 +53,10 @@ beforeEach(() => {
     historyIndex: {},
     completionCommands: {},
     completionFiles: {},
+    modelCatalog: {},
+    providerAuth: {},
+    thinkingLevels: {},
+    picker: null,
     view: "session",
     hint: null,
   });
@@ -120,9 +124,9 @@ describe("runCommandInput", () => {
 
   it("resolves a collision with the source the user picked", async () => {
     const request = stubRequest();
-    // The app reserves /model (its picker lands in step 8) …
+    // The app reserves /model: its own picker opens and nothing is sent …
     await useAppStore.getState().runCommandInput("tab-1", "/model");
-    expect(useAppStore.getState().hint).toMatch(/step 8/);
+    expect(useAppStore.getState().picker).toBe("model");
     expect(request.mock.calls.some((call) => call[0]?.method === "prompt")).toBe(false);
 
     // …but picking the extension's entry sends it to the prompt instead.

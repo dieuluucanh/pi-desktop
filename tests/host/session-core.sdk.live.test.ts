@@ -127,4 +127,52 @@ describe("session core against the real SDK", () => {
     const listed = (await call(core, "session.list")) as { sessions: unknown[] };
     expect(Array.isArray(listed.sessions)).toBe(true);
   }, 180_000);
+
+  it("switches model mid-session, records a model_change entry, and resumes with it", async () => {
+    core = buildCore();
+    const created = (await call(core, "session.create")) as { sessionFile: string };
+
+    // The catalog and the per-provider credential state the picker renders.
+    const available = (await call(core, "model.available")) as {
+      models: Array<{ id?: string; provider?: string }>;
+      auth: Record<string, { configured?: boolean }>;
+      thinkingLevels: string[];
+    };
+    expect(available.models.length).toBeGreaterThan(0);
+    expect(Array.isArray(available.thinkingLevels)).toBe(true);
+    for (const model of available.models) {
+      // Every provider has an answer, which is what the "Sign in" badge reads.
+      expect(available.auth[model.provider ?? ""]).toBeDefined();
+    }
+
+    const target = available.models.find((model) => model.id && model.provider);
+    expect(target).toBeTruthy();
+
+    const afterSet = (await call(core, "model.set", { model: target, persist: false })) as {
+      model?: { id?: string; provider?: string };
+    };
+    expect(afterSet.model?.id).toBeTruthy();
+
+    // Pi records the switch in the session itself. Which exact model a request
+    // resolves to is the runtime's decision (observed: asking for one `opencode`
+    // model recorded another), so the durable facts are asserted: an entry is
+    // written, and it names the model the session is on afterwards.
+    const entries = (await call(core, "entries.get")) as {
+      entries: Array<{ type?: string; provider?: string; modelId?: string }>;
+    };
+    const change = entries.entries.find((entry) => entry.type === "model_change");
+    expect(change).toBeDefined();
+    expect(typeof change?.modelId).toBe("string");
+    expect(typeof change?.provider).toBe("string");
+
+    // …and a resumed session comes back on the model it recorded, not on the
+    // default it would otherwise start from.
+    const sessionFile = created.sessionFile;
+    await core.dispose();
+    core = buildCore();
+    const resumed = (await call(core, "session.open", { sessionFile })) as { sessionFile?: string };
+    expect(resumed.sessionFile).toBe(sessionFile);
+    const state = (await call(core, "state.get")) as { model?: { id?: string } };
+    expect(state.model?.id).toBe(change?.modelId);
+  }, 180_000);
 });

@@ -13,6 +13,7 @@ export const PREF_KEYS = [
   "sidebarWidth",
   "viewMode",
   "drafts",
+  "favoriteModels",
 ] as const;
 
 export type PrefKey = (typeof PREF_KEYS)[number];
@@ -31,6 +32,26 @@ export interface UiPrefs {
    * tab switch or an app restart. Bounded below: a draft is not a document.
    */
   drafts: Record<string, string>;
+  /**
+   * Favourite models as `provider/id` keys (plan step 8), so the picker can keep
+   * the handful of models a project actually uses at the top without inventing a
+   * second settings file — these are app preferences, not Pi state.
+   */
+  favoriteModels: string[];
+}
+
+/** How many favourites are kept; the picker is a shortlist, not a catalogue. */
+export const MAX_FAVORITE_MODELS = 12;
+
+/** The preference key for a model, matching the catalog's stable key. */
+export function favoriteModelKey(provider: string, id: string): string {
+  return `${provider}/${id}`;
+}
+
+/** Adds or removes a favourite, preserving order and the cap. */
+export function toggleFavoriteModel(favorites: readonly string[], key: string): string[] {
+  if (favorites.includes(key)) return favorites.filter((entry) => entry !== key);
+  return [...favorites, key].slice(-MAX_FAVORITE_MODELS);
 }
 
 /** Longest draft kept per tab, and how many tabs may hold one. */
@@ -47,6 +68,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   viewMode: "normal",
   drafts: {},
+  favoriteModels: [],
 };
 
 const THEMES: readonly ThemeSetting[] = ["dark", "light", "system"];
@@ -69,6 +91,19 @@ export function sanitizeDrafts(input: unknown): Record<string, string> {
   return drafts;
 }
 
+/** Keeps the favourite list to unique, non-empty keys of a bounded length. */
+export function sanitizeFavorites(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const favorites: string[] = [];
+  for (const entry of input) {
+    if (typeof entry !== "string" || entry.length === 0 || entry.length > 200) continue;
+    if (favorites.includes(entry)) continue;
+    favorites.push(entry);
+    if (favorites.length >= MAX_FAVORITE_MODELS) break;
+  }
+  return favorites;
+}
+
 /** Coerces an untrusted value into a valid `UiPrefs`, ignoring unknown keys. */
 export function sanitizePrefs(input: unknown): UiPrefs {
   const source = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
@@ -88,6 +123,7 @@ export function sanitizePrefs(input: unknown): UiPrefs {
       ? (viewMode as ViewMode)
       : DEFAULT_PREFS.viewMode,
     drafts: sanitizeDrafts(source.drafts),
+    favoriteModels: sanitizeFavorites(source.favoriteModels),
   };
 }
 

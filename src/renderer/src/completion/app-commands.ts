@@ -37,7 +37,9 @@ export type AppCommandAction =
   /** Shows the command list. */
   | { kind: "help" }
   /** Not wired yet; the message names the owning step. */
-  | { kind: "pending"; message: string };
+  | { kind: "pending"; message: string }
+  /** Opens one of the app's pickers (plan step 8). */
+  | { kind: "picker"; picker: "model" | "thinking" };
 
 export interface AppCommand {
   /** Without the leading slash. */
@@ -132,12 +134,12 @@ export const APP_COMMANDS: readonly AppCommand[] = [
   {
     name: "model",
     description: "Choose the model",
-    action: { kind: "pending", message: "the model picker arrives in step 8" },
+    action: { kind: "picker", picker: "model" },
   },
   {
     name: "thinking",
     description: "Choose the thinking level",
-    action: { kind: "pending", message: "the thinking picker arrives in step 8" },
+    action: { kind: "picker", picker: "thinking" },
   },
   {
     name: "trust",

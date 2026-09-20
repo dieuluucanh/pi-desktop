@@ -1,6 +1,11 @@
 import { create } from "zustand";
 import type { AppInfo } from "../../../shared/ipc";
-import { DEFAULT_PREFS, type UiPrefs } from "../../../shared/prefs";
+import {
+  DEFAULT_PREFS,
+  toggleFavoriteModel,
+  type UiPrefs,
+  type ViewMode,
+} from "../../../shared/prefs";
 import type {
   SessionEventEnvelope,
   SessionStateEnvelope,
@@ -17,6 +22,7 @@ import { appCommandNames, resolveCommandInput } from "../completion/dispatch";
 import type { HostCommandEntry } from "../completion/command-source";
 import type { FileListSnapshot } from "../completion/file-source";
 import type { CompletionSource } from "../completion/types";
+import { thinkingLevelsOf, toCatalog, type ModelCatalogEntry } from "../session/model-catalog";
 
 /**
  * The renderer's view state (plan step 1).
@@ -151,6 +157,26 @@ export interface AppStateShape {
     text: string,
     preferredSource?: CompletionSource,
   ) => Promise<CommandOutcome>;
+
+  /** Model, thinking and usage UX (plan step 8). */
+  modelCatalog: Record<string, ModelCatalogEntry[]>;
+  providerAuth: Record<string, Record<string, unknown>>;
+  thinkingLevels: Record<string, string[]>;
+  picker: PickerKind | null;
+  loadModels: (tabId: string) => Promise<void>;
+  setModel: (
+    tabId: string,
+    entry: ModelCatalogEntry,
+    options?: { persist?: boolean },
+  ) => Promise<void>;
+  setThinking: (tabId: string, level: string, options?: { persist?: boolean }) => Promise<void>;
+  cycleModel: (tabId: string, direction: 1 | -1) => Promise<void>;
+  cycleThinking: (tabId: string) => Promise<void>;
+  renameSession: (tabId: string, name: string) => Promise<void>;
+  toggleFavorite: (key: string) => void;
+  setViewMode: (mode: ViewMode) => void;
+  openPicker: (picker: PickerKind) => void;
+  closePicker: () => void;
   createSessionTab: () => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
@@ -175,6 +201,9 @@ export interface CommandOutcome {
   /** True when something was actually sent to the agent (or a host method ran). */
   sent: boolean;
 }
+
+/** Which model/thinking dialog is open (plan step 8). */
+export type PickerKind = "model" | "thinking";
 
 /** The last path segment of a project directory, used as its display name. */
 export function projectNameOf(path: string): string {
@@ -204,6 +233,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   historyIndex: {},
   completionCommands: {},
   completionFiles: {},
+  modelCatalog: {},
+  providerAuth: {},
+  thinkingLevels: {},
+  picker: null,
 
   setView: (view) => set({ view, hint: null }),
   openPalette: () => set({ paletteOpen: true }),
@@ -315,6 +348,117 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       draftPersistTimer = null;
       void bridge()?.prefs.set({ drafts: useAppStore.getState().prefs.drafts });
     }, DRAFT_PERSIST_DELAY_MS);
+  },
+
+  openPicker: (picker) => set({ picker }),
+  closePicker: () => set({ picker: null }),
+
+  loadModels: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      const response = (await api.sessions.request({ tabId, method: "model.available" })) as
+        | {
+            models?: unknown[];
+            auth?: Record<string, unknown>;
+            thinkingLevels?: unknown[];
+          }
+        | undefined;
+      set({
+        modelCatalog: {
+          ...get().modelCatalog,
+          [tabId]: toCatalog(Array.isArray(response?.models) ? response.models : []),
+        },
+        providerAuth: { ...get().providerAuth, [tabId]: response?.auth ?? {} },
+        thinkingLevels: {
+          ...get().thinkingLevels,
+          [tabId]: thinkingLevelsOf({ thinkingLevels: response?.thinkingLevels }),
+        },
+      });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  setModel: async (tabId, entry, options = {}) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      const response = await api.sessions.request({
+        tabId,
+        method: "model.set",
+        params: { model: entry.raw, persist: options.persist === true },
+      });
+      // A different model can mean a different set of thinking levels, so the
+      // clamp is re-read from the state the host returns instead of cached.
+      set({
+        picker: null,
+        thinkingLevels: { ...get().thinkingLevels, [tabId]: thinkingLevelsOf(response) },
+      });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  setThinking: async (tabId, level, options = {}) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      await api.sessions.request({
+        tabId,
+        method: "thinking.set",
+        params: { level, persist: options.persist === true },
+      });
+      set({ picker: null });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  cycleModel: async (tabId, direction) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      await api.sessions.request({
+        tabId,
+        method: "model.cycle",
+        params: { direction: direction === -1 ? "backward" : "forward", persist: false },
+      });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  cycleThinking: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      await api.sessions.request({ tabId, method: "thinking.cycle", params: { persist: false } });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  renameSession: async (tabId, name) => {
+    const api = bridge();
+    const trimmed = name.trim();
+    if (!api?.sessions || trimmed.length === 0) return;
+    try {
+      await api.sessions.request({ tabId, method: "session.rename", params: { name: trimmed } });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  toggleFavorite: (key) => {
+    const favorites = toggleFavoriteModel(get().prefs.favoriteModels, key);
+    set({ prefs: { ...get().prefs, favoriteModels: favorites } });
+    void bridge()?.prefs.set({ favoriteModels: favorites });
+  },
+
+  setViewMode: (mode) => {
+    set({ prefs: { ...get().prefs, viewMode: mode } });
+    void bridge()?.prefs.set({ viewMode: mode });
   },
 
   sendPromptNow: async (tabId, text, options = {}) => {
@@ -432,6 +576,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
     if (action.kind === "view") {
       set({ view: action.view, hint: null });
+      return { handled: true, sent: false };
+    }
+    if (action.kind === "picker") {
+      // The model picker needs the catalog, so it is fetched as the dialog opens.
+      set({ picker: action.picker, hint: null });
+      if (action.picker === "model") void get().loadModels(tabId);
       return { handled: true, sent: false };
     }
     if (action.requiresArgument && argument.length === 0) {

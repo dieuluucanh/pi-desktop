@@ -20,7 +20,7 @@ describe("sanitizePrefs", () => {
   it("ignores unknown keys", () => {
     const result = sanitizePrefs({ theme: "light", somethingElse: true });
     expect(Object.keys(result).sort()).toEqual(
-      ["drafts", "sidebarCollapsed", "sidebarWidth", "theme", "viewMode"].sort(),
+      ["drafts", "favoriteModels", "sidebarCollapsed", "sidebarWidth", "theme", "viewMode"].sort(),
     );
     expect(result.theme).toBe("light");
   });

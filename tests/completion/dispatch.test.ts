@@ -108,8 +108,16 @@ describe("help", () => {
     expect(names.every((name) => name.startsWith("/"))).toBe(true);
   });
 
+  it("reports the picker for a reserved command it can now run", () => {
+    for (const name of ["/model", "/thinking"]) {
+      const result = resolveCommandInput(name, { hostCommands: [] });
+      expect(result.kind, name).toBe("app");
+      if (result.kind === "app") expect(result.command.action.kind, name).toBe("picker");
+    }
+  });
+
   it("does not advertise a command it cannot run without saying so", () => {
-    for (const name of ["/tree", "/fork", "/resume", "/export", "/model", "/thinking", "/trust"]) {
+    for (const name of ["/tree", "/fork", "/resume", "/export", "/trust"]) {
       const result = resolveCommandInput(name, { hostCommands: [] });
       expect(result.kind, name).toBe("app");
       if (result.kind === "app") expect(result.command.action.kind, name).toBe("pending");

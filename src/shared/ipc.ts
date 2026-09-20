@@ -84,6 +84,11 @@ export const MENU_COMMANDS = [
   "view-diagnostics",
   "view-office",
   "shortcuts",
+  // Model / thinking cycling (plan step 8). The Electron menu owns the
+  // accelerators; the renderer never registers a second key handler for them.
+  "model-cycle-forward",
+  "model-cycle-backward",
+  "thinking-cycle",
 ] as const;
 
 export type MenuCommand = (typeof MENU_COMMANDS)[number];

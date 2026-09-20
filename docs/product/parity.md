@@ -23,15 +23,16 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 
 ## Models, providers, settings
 
-| Capability                                           | Terminal Pi                | Pi Desktop                              |
-| ---------------------------------------------------- | -------------------------- | --------------------------------------- |
-| Model switching, per-model thinking levels           | ✅ (`/model`, `/thinking`) | 🚧 step 8                               |
-| Provider auth: OAuth subscriptions                   | ✅ (`/login`)              | 🚧 step 9 (system browser + code paste) |
-| Provider auth: API keys / env vars                   | ✅ (`auth.json`)           | 🚧 step 9 (write-only UI)               |
-| Custom models & gateways (`models.json`)             | ✅                         | 🚧 step 9                               |
-| Every `settings.json` key, global + project          | ✅                         | 🚧 step 12                              |
-| `keybindings.json`, themes, skills, prompt templates | ✅                         | 🚧 step 15                              |
-| Proxy / offline (`httpProxy`, `PI_OFFLINE`)          | ✅                         | 🚧 steps 9, 12                          |
+| Capability                                               | Terminal Pi                | Pi Desktop                                                                                                  |
+| -------------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Model switching, per-model thinking levels               | ✅ (`/model`, `/thinking`) | ✅ step 8 (picker: grouped by provider, auth badges, search, favourites, “save as default” vs session-only) |
+| Context-usage ring, token/cost totals, rename, view mode | ✅                         | ✅ step 8                                                                                                   |
+| Provider auth: OAuth subscriptions                       | ✅ (`/login`)              | 🚧 step 9 (system browser + code paste)                                                                     |
+| Provider auth: API keys / env vars                       | ✅ (`auth.json`)           | 🚧 step 9 (write-only UI)                                                                                   |
+| Custom models & gateways (`models.json`)                 | ✅                         | 🚧 step 9                                                                                                   |
+| Every `settings.json` key, global + project              | ✅                         | 🚧 step 12                                                                                                  |
+| `keybindings.json`, themes, skills, prompt templates     | ✅                         | 🚧 step 15                                                                                                  |
+| Proxy / offline (`httpProxy`, `PI_OFFLINE`)              | ✅                         | 🚧 steps 9, 12                                                                                              |
 
 ## Extensions and packages
 

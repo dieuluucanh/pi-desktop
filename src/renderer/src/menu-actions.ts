@@ -58,6 +58,26 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "next-tab":
       void store.cycleTab(1);
       return;
+    case "model-cycle-forward":
+    case "model-cycle-backward": {
+      // Cycling acts on the active session; without one there is nothing to cycle.
+      const tabId = store.activeTabId;
+      if (!tabId) {
+        store.setHint("Open a session first — model cycling applies to a session.");
+        return;
+      }
+      void store.cycleModel(tabId, command === "model-cycle-forward" ? 1 : -1);
+      return;
+    }
+    case "thinking-cycle": {
+      const tabId = store.activeTabId;
+      if (!tabId) {
+        store.setHint("Open a session first — thinking applies to a session.");
+        return;
+      }
+      void store.cycleThinking(tabId);
+      return;
+    }
     case "previous-tab":
       void store.cycleTab(-1);
       return;

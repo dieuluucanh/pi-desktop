@@ -42,6 +42,12 @@ const VIEW_ITEMS: readonly ItemSpec[] = [
   { command: "previous-tab", label: "Previous Session Tab", accelerator: "Ctrl+Shift+Tab" },
 ];
 
+const SESSION_ITEMS: readonly ItemSpec[] = [
+  { command: "model-cycle-forward", label: "Next Model", accelerator: "CmdOrCtrl+Alt+Down" },
+  { command: "model-cycle-backward", label: "Previous Model", accelerator: "CmdOrCtrl+Alt+Up" },
+  { command: "thinking-cycle", label: "Cycle Thinking Level", accelerator: "CmdOrCtrl+Alt+T" },
+];
+
 const GO_ITEMS: readonly ItemSpec[] = [
   { command: "view-extensions", label: "Extensions" },
   { command: "view-connections", label: "Connections" },
@@ -119,6 +125,8 @@ export function menuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
     label: "View",
     submenu: [
       ...toItems(VIEW_ITEMS, onCommand),
+      { type: "separator" },
+      ...toItems(SESSION_ITEMS, onCommand),
       { type: "separator" },
       { role: "reload" },
       { role: "toggleDevTools" },

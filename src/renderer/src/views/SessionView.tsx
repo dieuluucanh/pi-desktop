@@ -1,13 +1,19 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Composer } from "../session/Composer";
 import { Transcript } from "../session/Transcript";
 import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
 import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
 import { createCommandProvider } from "../completion/command-source";
 import { createDocumentProvider } from "../completion/document-source";
 import { createFileProvider } from "../completion/file-source";
 import { createCompletionProvider } from "../completion/stack";
+import { ContextRing } from "../session/ContextRing";
+import { ModelPicker } from "../session/ModelPicker";
+import { ThinkingPicker } from "../session/ThinkingPicker";
+import { contextUsageOf, modelKeyOf, thinkingLevelsOf } from "../session/model-catalog";
+import type { ViewMode } from "../../../shared/prefs";
 import type { TabStatus } from "../../../shared/session-ipc";
 
 /**
@@ -34,8 +40,10 @@ export function usageLine(state: unknown): string | null {
   const parts: string[] = [];
   const usage = record.contextUsage;
   if (usage && typeof usage === "object") {
+    // Pi reports context usage as 0-100 (`(tokens / contextWindow) * 100`), so
+    // this is a percentage already — scaling it again claimed "4200% ctx".
     const percent = (usage as { percent?: unknown }).percent;
-    if (typeof percent === "number") parts.push(`${Math.round(percent * 100)}% ctx`);
+    if (typeof percent === "number") parts.push(`${Math.round(percent)}% ctx`);
   }
   const tokens = record.tokens;
   if (tokens && typeof tokens === "object") {
@@ -69,6 +77,23 @@ export function SessionView() {
   const sendModes = useAppStore((state) => state.sendModes);
   const loadCommands = useAppStore((state) => state.loadCommands);
   const loadFiles = useAppStore((state) => state.loadFiles);
+  const modelCatalog = useAppStore((state) => state.modelCatalog);
+  const providerAuth = useAppStore((state) => state.providerAuth);
+  const thinkingLevels = useAppStore((state) => state.thinkingLevels);
+  const picker = useAppStore((state) => state.picker);
+  const loadModels = useAppStore((state) => state.loadModels);
+  const setModel = useAppStore((state) => state.setModel);
+  const setThinking = useAppStore((state) => state.setThinking);
+  const toggleFavorite = useAppStore((state) => state.toggleFavorite);
+  const renameSession = useAppStore((state) => state.renameSession);
+  const setViewMode = useAppStore((state) => state.setViewMode);
+  const openPicker = useAppStore((state) => state.openPicker);
+  const closePicker = useAppStore((state) => state.closePicker);
+  const setView = useAppStore((state) => state.setView);
+  const setHint = useAppStore((state) => state.setHint);
+  const favorites = useAppStore((state) => state.prefs.favoriteModels);
+  const viewMode = useAppStore((state) => state.prefs.viewMode);
+  const [editingName, setEditingName] = useState(false);
 
   /**
    * The completion stack for this tab (plan step 7): commands from the host's
@@ -101,13 +126,47 @@ export function SessionView() {
 
   const transcript = transcripts[active.id];
   const usage = usageLine(sessionStates[active.id]);
+  const contextUsage = contextUsageOf(sessionStates[active.id]);
+  const levels = thinkingLevels[active.id] ?? thinkingLevelsOf(sessionStates[active.id]);
+  const activeState = sessionStates[active.id] as
+    { model?: unknown; thinkingLevel?: unknown; tokens?: { cost?: unknown } } | undefined;
+  const cost = typeof activeState?.tokens?.cost === "number" ? activeState.tokens.cost : null;
+  const thinkingLevel =
+    typeof activeState?.thinkingLevel === "string" ? activeState.thinkingLevel : null;
+  const currentModelKey = modelKeyOf(activeState?.model);
   const needsRestart =
     active.status === "stopped" || active.status === "crashed" || active.status === "failed";
 
   return (
     <div className="flex h-full flex-col">
       <header className="flex shrink-0 items-center gap-3 border-b border-line px-4 py-2">
-        <h1 className="truncate text-sm font-semibold">{active.title}</h1>
+        {editingName ? (
+          <input
+            aria-label="Session name"
+            autoFocus
+            defaultValue={active.title}
+            onBlur={(event) => {
+              setEditingName(false);
+              void renameSession(active.id, event.target.value);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                setEditingName(false);
+                void renameSession(active.id, event.currentTarget.value);
+              }
+              if (event.key === "Escape") setEditingName(false);
+            }}
+            className="min-w-0 flex-1 rounded-sm border border-line bg-raised px-2 py-0.5 text-sm text-ink outline-none"
+          />
+        ) : (
+          <h1
+            className="truncate text-sm font-semibold"
+            title="Double-click to rename"
+            onDoubleClick={() => setEditingName(true)}
+          >
+            {active.title}
+          </h1>
+        )}
         <Badge tone={STATUS_TONE[active.status]}>{active.status}</Badge>
         {needsRestart ? (
           <button
@@ -118,10 +177,46 @@ export function SessionView() {
             {active.status === "stopped" ? "Start session" : "Restart session"}
           </button>
         ) : null}
-        <span className="ml-auto truncate text-[11px] text-ink-faint" title={active.cwd}>
-          {usage ? `${usage} · ` : ""}
-          {active.model ?? ""}
-        </span>
+
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-label="Change model"
+            title={active.model ?? "Choose a model"}
+            onClick={() => {
+              openPicker("model");
+              void loadModels(active.id);
+            }}
+          >
+            <span className="max-w-40 truncate">{active.model ?? "Choose model"}</span>
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-label="Change thinking level"
+            title={thinkingLevel ? `Thinking: ${thinkingLevel}` : "Thinking level"}
+            onClick={() => openPicker("thinking")}
+          >
+            {thinkingLevel ?? "thinking"}
+          </Button>
+          <ContextRing usage={contextUsage} cost={cost} />
+          <select
+            aria-label="View mode"
+            value={viewMode}
+            onChange={(event) => setViewMode(event.target.value as ViewMode)}
+            className="rounded-sm border border-line bg-raised px-1 py-0.5 text-[11px] text-ink-faint"
+          >
+            <option value="normal">Normal</option>
+            <option value="verbose">Verbose</option>
+            <option value="summary">Summary</option>
+          </select>
+          {active.status === "running" ? (
+            <Button size="sm" variant="secondary" onClick={() => void stopRun(active.id)}>
+              Stop
+            </Button>
+          ) : null}
+        </div>
       </header>
 
       {active.error ? <div className="banner banner--error mx-4 mt-2">{active.error}</div> : null}
@@ -165,6 +260,35 @@ export function SessionView() {
         onClearQueue={() => void clearQueue(active.id)}
         onSendModeChange={(mode) => setSendMode(active.id, mode)}
         onHistoryStep={(direction) => historyStep(active.id, direction)}
+      />
+
+      <ModelPicker
+        open={picker === "model"}
+        entries={modelCatalog[active.id] ?? []}
+        auth={providerAuth[active.id] ?? {}}
+        currentKey={currentModelKey}
+        favorites={favorites}
+        onPick={(entry, options) => void setModel(active.id, entry, options)}
+        onToggleFavorite={toggleFavorite}
+        onSignIn={(provider) => {
+          closePicker();
+          setView("connections");
+          setHint(`${provider} needs credentials — sign in here, then pick the model again.`);
+        }}
+        onOpenModelsJson={() => {
+          closePicker();
+          setView("settings");
+          setHint("Editing models.json arrives with the Connections work (step 9).");
+        }}
+        onClose={closePicker}
+      />
+
+      <ThinkingPicker
+        open={picker === "thinking"}
+        levels={levels}
+        current={thinkingLevel}
+        onPick={(level, options) => void setThinking(active.id, level, options)}
+        onClose={closePicker}
       />
     </div>
   );
