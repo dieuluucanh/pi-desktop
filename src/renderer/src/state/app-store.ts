@@ -57,6 +57,14 @@ import {
   type TuiSurfaceSnapshot,
 } from "../../../shared/tui-surface";
 import {
+  sanitizeMarkdownTransformResult,
+  sanitizeRenderedFrame,
+  type MarkdownTransformRequest,
+  type MarkdownTransformResult,
+  type RenderRequest,
+  type RenderedFrame,
+} from "../../../shared/extension-render";
+import {
   EMPTY_EXTENSION_UI,
   EXTENSION_UI_NOTIFY_EVENT,
   EXTENSION_UI_REQUEST_EVENT,
@@ -537,6 +545,27 @@ export interface AppStateShape {
   /** Sends raw terminal bytes to the tab's focused component. */
   sendTuiInput: (tabId: string, data: string) => void;
 
+  /**
+   * Extension-owned renderers (plan step 18). `extensionRender` runs a
+   * registered `renderCall`/`renderResult`/message/entry renderer in the host
+   * and returns its ANSI frame; `null`/`rendered:false` means the item has no
+   * renderer and the native card stays. `extensionMarkdown` applies the
+   * registered markdown transformers before the renderer parses assistant text.
+   */
+  extensionRender: (tabId: string, request: RenderRequest) => Promise<RenderedFrame | null>;
+  extensionMarkdown: (
+    tabId: string,
+    request: MarkdownTransformRequest,
+  ) => Promise<MarkdownTransformResult | null>;
+  /**
+   * The app's expand-all state per tab (plan step 18). `null`/absent means each
+   * card keeps its own default (an error card starts open); a boolean forces
+   * every tool card. `app.tools.expand` and the view mode drive it.
+   */
+  toolsExpanded: Record<string, boolean | null>;
+  /** Flips expand-all for a tab and mirrors it to `ctx.ui.getToolsExpanded()`. */
+  toggleToolsExpanded: (tabId: string) => void;
+
   createSessionTab: () => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
@@ -811,6 +840,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   extensionDialogs: [],
   extensionNotifications: [],
   tuiSurfaces: {},
+  toolsExpanded: {},
 
   setView: (view) => set({ view, hint: null }),
   openPalette: () => set({ paletteOpen: true }),
@@ -1181,6 +1211,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       const snapshot = sanitizeExtensionUiSnapshot(entry.payload);
       const previousTitle = get().extensionUi[tabId]?.title ?? null;
       set({ extensionUi: { ...get().extensionUi, [tabId]: snapshot } });
+      // An extension can force the expand state (`ctx.ui.setToolsExpanded`), so
+      // the app's Ctrl+O state follows a non-null snapshot value (plan step 18).
+      if (snapshot.toolsExpanded !== null) {
+        set({ toolsExpanded: { ...get().toolsExpanded, [tabId]: snapshot.toolsExpanded } });
+      }
       // `ctx.ui.setTitle` sets the window title while its tab is focused.
       if (snapshot.title && snapshot.title !== previousTitle && get().activeTabId === tabId) {
         void bridge()?.setTitle(snapshot.title);
@@ -1320,6 +1355,51 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       tabId,
       method: "tui.input",
       params: { data },
+    });
+    if (request) void request.then(undefined, () => undefined);
+  },
+
+  extensionRender: async (tabId, request) => {
+    const api = bridge();
+    if (!api?.sessions || tabId === CONTROL_TAB_ID) return null;
+    try {
+      const result = await api.sessions.request({
+        tabId,
+        method: "render.request",
+        params: request,
+      });
+      return sanitizeRenderedFrame(result);
+    } catch {
+      // A host without the renderer registry (or a renderer that threw before
+      // answering) leaves the native card in place, exactly as Pi falls back.
+      return null;
+    }
+  },
+
+  extensionMarkdown: async (tabId, request) => {
+    const api = bridge();
+    if (!api?.sessions || tabId === CONTROL_TAB_ID) return null;
+    try {
+      const result = await api.sessions.request({
+        tabId,
+        method: "render.markdown",
+        params: request,
+      });
+      return sanitizeMarkdownTransformResult(result);
+    } catch {
+      return null;
+    }
+  },
+
+  toggleToolsExpanded: (tabId) => {
+    const next = !(get().toolsExpanded[tabId] ?? false);
+    set({ toolsExpanded: { ...get().toolsExpanded, [tabId]: next } });
+    // Mirror it to the host so `ctx.ui.getToolsExpanded()` is truthful; the
+    // host pushes the same value back through `oi.state`, which is idempotent.
+    const request = bridge()?.sessions?.request({
+      tabId,
+      method: "oi.setToolsExpanded",
+      params: { expanded: next },
     });
     if (request) void request.then(undefined, () => undefined);
   },

@@ -4,6 +4,7 @@ import {
   domKeyId,
   isEditableTarget,
   matchShortcut,
+  matchesBinding,
 } from "../../src/renderer/src/shortcuts/dom-keys";
 
 function key(overrides: Partial<Parameters<typeof domKeyId>[0]> = {}) {
@@ -43,6 +44,19 @@ describe("matchShortcut", () => {
       "shift+ctrl+o",
     );
     expect(matchShortcut(key({ key: "z", ctrlKey: true }), shortcuts)).toBeNull();
+  });
+});
+
+describe("matchesBinding (plan step 18)", () => {
+  it("matches an app binding canonically", () => {
+    expect(matchesBinding(key({ key: "o", ctrlKey: true }), ["ctrl+o"])).toBe(true);
+    expect(matchesBinding(key({ key: "O", ctrlKey: true, shiftKey: true }), ["shift+ctrl+o"])).toBe(
+      true,
+    );
+    expect(matchesBinding(key({ key: "o", ctrlKey: true }), ["ctrl+shift+o"])).toBe(false);
+    expect(matchesBinding(key({ key: "o", ctrlKey: true }), [])).toBe(false);
+    // Meta chords belong to the OS and are never claimed.
+    expect(matchesBinding(key({ key: "o", metaKey: true }), ["ctrl+o"])).toBe(false);
   });
 });
 

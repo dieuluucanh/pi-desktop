@@ -30,9 +30,12 @@ interface ItemSpec {
 
 const FILE_ITEMS: readonly ItemSpec[] = [
   { command: "new-session", label: "New Session", accelerator: "CmdOrCtrl+N" },
-  { command: "open-project", label: "Open Project…", accelerator: "CmdOrCtrl+O" },
+  // `Ctrl+O` is Pi's `app.tools.expand` (plan step 18), so Open Project moves to
+  // Shift+O; otherwise the menu accelerator would swallow the expand key before
+  // the renderer ever sees it.
+  { command: "open-project", label: "Open Project…", accelerator: "CmdOrCtrl+Shift+O" },
   { command: "close-session", label: "Close Session", accelerator: "CmdOrCtrl+W" },
-  { command: "view-sessions", label: "Sessions…", accelerator: "CmdOrCtrl+Shift+O" },
+  { command: "view-sessions", label: "Sessions…", accelerator: "CmdOrCtrl+Alt+O" },
   { command: "view-settings", label: "Settings…", accelerator: "CmdOrCtrl+," },
 ];
 

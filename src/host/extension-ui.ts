@@ -458,6 +458,18 @@ export function createExtensionUiPort(options: ExtensionUiPortOptions): Extensio
     handlers: () => ({
       ...bridge.handlers(),
       "oi.state": () => snapshot(),
+      "oi.setToolsExpanded": (params: unknown) => {
+        // The app owns Ctrl+O and the view mode; this keeps the host's copy of
+        // the expand state truthful for `ctx.ui.getToolsExpanded()` (plan step 18).
+        const record =
+          params && typeof params === "object" ? (params as Record<string, unknown>) : {};
+        if (typeof record.expanded !== "boolean") {
+          throw new Error("oi.setToolsExpanded requires { expanded: boolean }");
+        }
+        toolsExpanded = record.expanded;
+        pushState();
+        return { ok: true };
+      },
       "oi.editorText": (params) => {
         const record =
           params && typeof params === "object" ? (params as Record<string, unknown>) : {};

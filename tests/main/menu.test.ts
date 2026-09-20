@@ -64,6 +64,16 @@ describe("menuTemplate", () => {
     expect(newSession?.accelerator).toBe("CmdOrCtrl+N");
   });
 
+  it("leaves Ctrl+O to the app's tool-expand binding (plan step 18)", () => {
+    const { template } = build();
+    const accelerators = allItems(template)
+      .map((item) => item.accelerator)
+      .filter((value): value is string => typeof value === "string");
+    // A menu accelerator is consumed before the renderer sees the keydown, so a
+    // `Ctrl+O` menu item would silently shadow `app.tools.expand`.
+    expect(accelerators).not.toContain("CmdOrCtrl+O");
+  });
+
   it("keeps Pi for Office out of the primary menus", () => {
     const { template } = build();
     const fileIds = collectIds(

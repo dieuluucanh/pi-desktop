@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEventEntry } from "../../src/shared/session-ipc";
 import { Transcript, toolSummary } from "../../src/renderer/src/session/Transcript";
 import {
@@ -8,6 +8,7 @@ import {
   reduceSessionEvents,
   type TranscriptItem,
 } from "../../src/renderer/src/session/session-events";
+import { installBridge } from "./fixtures";
 
 /**
  * Transcript rendering (plan step 5). The fixture below drives the *real*
@@ -181,6 +182,7 @@ describe("tool summaries", () => {
         args: { path: "src/a.ts" },
         isError: false,
         done: true,
+        version: 1,
       }),
     ).toBe("src/a.ts");
     expect(
@@ -190,10 +192,117 @@ describe("tool summaries", () => {
         args: { command: "npm test" },
         isError: false,
         done: true,
+        version: 1,
       }),
     ).toBe("npm test");
     expect(
-      toolSummary({ toolCallId: "3", toolName: "weird", args: {}, isError: false, done: true }),
+      toolSummary({
+        toolCallId: "3",
+        toolName: "weird",
+        args: {},
+        isError: false,
+        done: true,
+        version: 1,
+      }),
     ).toBe("");
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * Extension-owned renderers (plan step 18)
+ * ------------------------------------------------------------------------- */
+
+const RENDER_TAB = "tab-render";
+
+function stubRender(impl: (method: string, params?: unknown) => Promise<unknown>) {
+  const request = vi.fn((input: { method: string; params?: unknown }) =>
+    impl(input.method, input.params),
+  );
+  (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = request;
+  return request;
+}
+
+function itemsOf(events: SessionEventEntry[]): TranscriptItem[] {
+  return reduceSessionEvents(createTranscriptState(), events).items;
+}
+
+describe("extension renderers", () => {
+  beforeEach(() => {
+    installBridge();
+    stubRender(async (method, params) => {
+      if (method === "render.request") {
+        const type = (params as { type?: string } | undefined)?.type;
+        if (type === "bash") {
+          return { rendered: true, width: 40, lines: ["\x1b[32mcustom bash render\x1b[0m"] };
+        }
+        if (type === "todo") return { rendered: true, width: 40, lines: ["custom todo render"] };
+        return { rendered: false, width: 40, lines: [] };
+      }
+      if (method === "render.markdown") {
+        const text = (params as { text?: string }).text ?? "";
+        return { text: text.replace("fixed", "TRANSFORMED"), transformed: true };
+      }
+      return {};
+    });
+  });
+
+  it("shows an extension's ANSI frame for a tool that ships a renderer", async () => {
+    const items = itemsOf([
+      {
+        event: "tool_execution_start",
+        payload: { toolCallId: "t1", toolName: "bash", args: { command: "ls" } },
+      },
+      {
+        event: "tool_execution_end",
+        payload: { toolCallId: "t1", result: { content: [{ type: "text", text: "ok" }] } },
+      },
+    ]);
+    render(<Transcript items={items} tabId={RENDER_TAB} toolsExpanded />);
+
+    expect(await screen.findByText("custom bash render")).toBeInTheDocument();
+  });
+
+  it("keeps the native card for a tool without a renderer", async () => {
+    const items = itemsOf([
+      {
+        event: "tool_execution_start",
+        payload: { toolCallId: "t2", toolName: "read", args: { path: "src/a.ts" } },
+      },
+      {
+        event: "tool_execution_end",
+        payload: { toolCallId: "t2", result: { content: [{ type: "text", text: "file body" }] } },
+      },
+    ]);
+    render(<Transcript items={items} tabId={RENDER_TAB} toolsExpanded />);
+
+    expect(await screen.findByText("file body")).toBeInTheDocument();
+    expect(screen.queryByText("custom bash render")).not.toBeInTheDocument();
+  });
+
+  it("renders a custom message through registerMessageRenderer", async () => {
+    const items = itemsOf([
+      {
+        event: "entry_appended",
+        payload: {
+          entry: { type: "custom_message", id: "c1", customType: "todo", content: "3 items" },
+        },
+      },
+    ]);
+    render(<Transcript items={items} tabId={RENDER_TAB} />);
+
+    expect(await screen.findByText("custom todo render")).toBeInTheDocument();
+  });
+
+  it("applies a registered markdown transformer to assistant output", async () => {
+    const items = itemsOf([
+      { event: "message_start", payload: { message: { role: "assistant" } } },
+      {
+        event: "message_end",
+        payload: { message: { role: "assistant", content: "I fixed it" } },
+      },
+    ]);
+    render(<Transcript items={items} tabId={RENDER_TAB} />);
+
+    expect(await screen.findByText(/TRANSFORMED/)).toBeInTheDocument();
   });
 });

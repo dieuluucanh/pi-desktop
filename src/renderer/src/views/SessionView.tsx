@@ -100,6 +100,10 @@ export function SessionView() {
   const extensionUi = useAppStore((state) =>
     activeTabId ? state.extensionUi[activeTabId] : undefined,
   );
+  const toolsExpandedState = useAppStore((state) =>
+    activeTabId ? state.toolsExpanded[activeTabId] : undefined,
+  );
+  const toggleToolsExpanded = useAppStore((state) => state.toggleToolsExpanded);
   const extensionCompletion = useAppStore((state) => state.extensionCompletion);
   const extensionApplyCompletion = useAppStore((state) => state.extensionApplyCompletion);
   const tuiSurface = useAppStore((state) =>
@@ -179,6 +183,12 @@ export function SessionView() {
   const tuiOwnsEditor = Boolean(
     tuiSurface && (tuiSurface.editor || (tuiSurface.custom && !tuiSurface.overlay)),
   );
+
+  // The view mode is a semantic override (plan step 18): Verbose expands every
+  // tool card, Summary collapses them, Normal uses the Ctrl+O state (or each
+  // card's own default while the user has not toggled anything).
+  const effectiveToolsExpanded =
+    viewMode === "verbose" ? true : viewMode === "summary" ? false : (toolsExpandedState ?? null);
 
   return (
     <div className="relative flex h-full flex-col">
@@ -267,11 +277,13 @@ export function SessionView() {
       <div className="min-h-0 flex-1">
         <Transcript
           items={transcript?.items ?? []}
+          tabId={active.id}
           running={active.status === "running"}
           onAbort={() => void stopRun(active.id)}
           empty={{ cwd: active.cwd, project: project?.path ?? null, model: active.model }}
           thinkingLabel={extensionUi?.hiddenThinkingLabel ?? null}
-          toolsExpanded={extensionUi?.toolsExpanded ?? null}
+          toolsExpanded={effectiveToolsExpanded}
+          onToggleToolsExpanded={() => toggleToolsExpanded(active.id)}
         />
       </div>
 

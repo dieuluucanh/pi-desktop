@@ -31,6 +31,7 @@ import {
   type ExtensionCompletionProviderFactory,
 } from "../../shared/extension-ui";
 import type { ExtensionTerminalInputHandler, ExtensionUiPort } from "../extension-ui";
+import type { ExtensionRendererPort } from "../extension-renderers";
 import type { TuiSurfacePort } from "../tui-surface";
 import { createSdkFooterData, createSdkTuiKeybindings, sdkEditorTheme } from "./tui-surface";
 
@@ -333,6 +334,12 @@ export interface SdkExtensionBinderOptions {
   emit(event: string, payload?: unknown, sessionId?: string): void;
   /** The step-17 TUI surface; without one the TUI members stay inert. */
   tuiSurface?: TuiSurfacePort | null;
+  /**
+   * The step-18 renderer registry. A rebind replaces the session's extensions,
+   * so the registry is re-pointed at the new runner (and its per-tool renderer
+   * state dropped) exactly when the UI context is rebuilt.
+   */
+  renderers?: ExtensionRendererPort | null;
   /** Reads the profile's `keybindings.json` overrides for the global manager. */
   readKeybindings?: () => Promise<Record<string, unknown>>;
 }
@@ -371,6 +378,18 @@ export function createSdkExtensionBinder(
         footerData: createSdkFooterData(options.port),
       };
     }
+    // Extension-owned renderers (plan step 18) are re-pointed at the new
+    // runner on every rebind, so a `/reload` cannot keep rendering the old
+    // extension's components. The theme is read at render time so a switch shows.
+    options.renderers?.bind({
+      // SAFETY: `RendererRunner` mirrors `ExtensionRunner`'s renderer lookups but
+      // widens the payloads to `unknown` (the registry is SDK-free). The SDK's
+      // `CustomMessage`/`CustomEntry` are narrower, so the runner is passed as
+      // `never` exactly as the other structural adapters do.
+      runner: session.extensionRunner as never,
+      theme: () => themeAccess.current(),
+      cwd: runtime.cwd,
+    });
     const uiContext = createSdkExtensionUiContext(options.port, themeAccess, surface);
     await session.bindExtensions({
       uiContext,

@@ -93,6 +93,7 @@ drives the real bundle when `out/host/index.mjs` has been built.
 | extensions hub    | `resources.list` (both cores): extensions/skills/prompts/themes with source, scope, origin, contributed tools/commands/shortcuts/flags, loader diagnostics and live `extension_error` history                                                                                                                                                                                                                                                                                                                                                   | `src/host/resources.ts` (+ `src/host/sdk/resources.ts`)                                                                           |
 | extension UI      | `oi.respond` + `oi.request` events; `oi.state` (the pushed snapshot, also readable on demand), `oi.editorText` (composer mirror), `completion.suggest`/`completion.apply` (host-run extension autocomplete providers). The full `ExtensionUIContext` is bound to every session via `bindSession`                                                                                                                                                                                                                                                | `src/host/extension-ui.ts` + `src/host/sdk/extension-ui.ts` (session host only)                                                   |
 | TUI surface       | `tui.state` (pull the whole surface snapshot), `tui.resize` (the renderer's measured rows/cols), `tui.input` (raw terminal bytes). The host emulates `TUI` for `ctx.ui.custom()`, resolves overlay geometry and renders `footer`/`header`/`editor`/`custom` to ANSI frames; the renderer converts them to HTML and forwards DOM keys                                                                                                                                                                                                            | `src/host/tui-surface.ts` + `src/host/sdk/tui-surface.ts`, `src/renderer/src/tui/*` (session host only)                           |
+| extension renders | `render.request` (run a registered `renderCall`/`renderResult`/message/entry renderer for one item and return ANSI lines), `render.markdown` (apply the registered `MarkdownTransformer`s to user/assistant text); `render.invalidate` is an event the host pushes when a renderer calls `context.invalidate()`                                                                                                                                                                                                                                 | `src/host/extension-renderers.ts` + the `bindSession` adapter (session host only)                                                 |
 | skills & themes   | `themes.list` (both cores: built-ins + loader themes + conventional dirs + `themes` settings paths, with resolved swatches and the active theme), `themes.import` (validates name/filename/content before writing `<agentDir>/themes/<name>.json`); `keybindings.get/set/reset` (both cores: `<agentDir>/keybindings.json` validated against the documented table, conflicts reported); `shortcuts.list/invoke` (**session host only**: `ExtensionRunner.getShortcuts` with the effective bindings, handler runs with the runner's own context) | `src/host/themes.ts` + `src/host/sdk/themes.ts`, `src/host/keybindings.ts`, `src/host/shortcuts.ts` + `src/host/sdk/shortcuts.ts` |
 
 ### Declared and answering `not_implemented` (with the owning step)
@@ -215,6 +216,37 @@ app emulates the TUI instead:
   pi-tui's `visibleWidth` (pinned by a corpus test) so wide characters and emoji
   stay aligned.
 
+### Extension renderers (plan step 18)
+
+An extension can own the rendering of a custom message (`registerMessageRenderer`),
+a bare custom entry (`registerEntryRenderer`) and a tool call/result
+(`renderCall`/`renderResult`). Those are host functions returning pi-tui
+`Component`s, so they cannot cross the frame boundary. `render.request` runs one
+and answers ANSI lines the renderer shows inside the native card:
+
+- **Request/response, not a pushed frame.** `expanded` (the app's Ctrl+O / view
+  mode state) and `width` (the measured transcript grid) are renderer-local, and
+  a streaming tool's result changes on every update. The renderer asks, and
+  re-asks (debounced) while a tool streams; the request carries the same options
+  Pi's `ToolRenderContext` does (`isPartial`, `isError`, `showImages`,
+  `argsComplete`).
+- **Fallback is native.** An item with no renderer answers `rendered: false`, and
+  a renderer that throws answers `rendered: false` with an `error` — the card
+  keeps the app's HTML diff/output, which is Pi's documented fallback. The
+  registry never lets a throw reach the session.
+- **Per-tool renderer state persists.** `ToolRenderContext.state` and
+  `lastComponent` survive across the call and result renders for one
+  `toolCallId`, and are dropped when the session is rebound (`/reload`).
+- **`render.markdown`** chains the registered transformers (throw-safe, in
+  registration order) with the `{messageType, isStreaming, availableWidth}`
+  context; the renderer applies it to user and assistant text before parsing.
+- **`render.invalidate`** is pushed when a renderer calls `context.invalidate()`,
+  so an asynchronous redraw (an image conversion, say) reaches the card.
+
+`src/host/extension-renderers.ts` is SDK-free and unit-tested with fake
+components; the SDK adapter points it at the live runner and the current `Theme`
+(read at render time, so a theme switch shows) on every `bindSession`.
+
 ### Extensions hub (plan step 13)
 
 `resources.list` takes `{cwd?, refresh?}` and answers a `ResourcesSnapshot`:
@@ -301,4 +333,5 @@ themes), `keybindings.get/set/reset` (RPC mode never reads `keybindings.json`),
 session-state channel, no editor mirror, and cannot evaluate extension
 autocomplete providers), `tui.state`/`tui.resize`/`tui.input` (RPC mode's
 `custom()` returns `undefined`, so it has no terminal to render into or feed
-keys to).
+keys to), `render.request`/`render.markdown` (RPC mode renders tool/message
+components in-process; it has no client that could display ANSI lines).

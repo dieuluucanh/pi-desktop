@@ -83,3 +83,15 @@ export function matchShortcut(
   }
   return null;
 }
+
+/**
+ * True when an event matches any of the given Pi key chords. Used for the app's
+ * own actions (`app.tools.expand`), which resolve through `keybindings.json`
+ * exactly like an extension shortcut does (plan step 18).
+ */
+export function matchesBinding(event: DomKeyInput, keys: readonly string[]): boolean {
+  const pressed = domKeyId(event);
+  if (!pressed) return false;
+  const canonical = canonicalKey(pressed);
+  return keys.some((key) => canonicalKey(key) === canonical);
+}

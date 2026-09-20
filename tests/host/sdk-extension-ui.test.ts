@@ -212,4 +212,29 @@ describe("createSdkExtensionBinder", () => {
       stack: "s",
     });
   });
+
+  it("points the renderer registry at the session's runner and cwd (plan step 18)", async () => {
+    const { port } = portHarness();
+    const extensionRunner = { getMessageRenderer: () => undefined };
+    const session = fakeSession({ extensionRunner, bindExtensions: async () => undefined });
+    const bind = vi.fn();
+    const binder = createSdkExtensionBinder({
+      port,
+      emit: () => undefined,
+      renderers: { bind } as never,
+    });
+
+    await binder(session, { cwd: "C:/work/app" } as unknown as AgentSessionRuntime);
+
+    expect(bind).toHaveBeenCalledTimes(1);
+    const binding = bind.mock.calls[0]![0] as {
+      runner: unknown;
+      cwd: string;
+      theme: () => unknown;
+    };
+    expect(binding.runner).toBe(extensionRunner);
+    expect(binding.cwd).toBe("C:/work/app");
+    // The theme is resolved lazily, so a later switch is reflected on re-render.
+    expect(binding.theme()).toBeInstanceOf(Theme);
+  });
 });

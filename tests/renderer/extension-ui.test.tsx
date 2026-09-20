@@ -301,6 +301,7 @@ describe("Transcript extension props", () => {
               done: true,
               isError: false,
               resultText: "file contents",
+              version: 1,
             },
           },
         ]}
@@ -322,6 +323,7 @@ describe("Transcript extension props", () => {
           done: true,
           isError: false,
           resultText: "hidden output",
+          version: 1,
         }}
       />,
     );

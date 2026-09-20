@@ -157,6 +157,11 @@ describe("tool execution items", () => {
       resultText: "done",
     });
     expect(item.tool.args).toEqual({ command: "ls" });
+    // The raw result and a content version survive, so a tool renderer sees the
+    // exact `{content, details}` payload and a card can re-render on change.
+    expect(item.tool.result).toEqual({ content: [{ type: "text", text: "done" }] });
+    expect(item.tool.partialResult).toEqual({ content: [{ type: "text", text: "half" }] });
+    expect(item.tool.version).toBe(3);
   });
 
   it("marks a failing tool", () => {
@@ -226,10 +231,24 @@ describe("queue and notices", () => {
           entry: { type: "custom_message", id: "c1", customType: "todo", content: "3 items" },
         },
       },
+      {
+        event: "entry_appended",
+        payload: {
+          entry: { type: "custom", id: "e1", customType: "note", data: { body: "hi" } },
+        },
+      },
     ]);
-    expect(firstMessage(state).role).toBe("custom");
-    expect(firstMessage(state).customType).toBe("todo");
-    expect(firstMessage(state).blocks).toEqual([{ kind: "text", text: "3 items" }]);
+    const message = firstMessage(state);
+    expect(message.role).toBe("custom");
+    expect(message.customType).toBe("todo");
+    expect(message.customKind).toBe("message");
+    expect(message.customPayload).toMatchObject({ type: "custom_message", id: "c1" });
+    expect(message.blocks).toEqual([{ kind: "text", text: "3 items" }]);
+
+    const entry = items(state)[1];
+    if (entry?.kind !== "message") throw new Error("expected a custom entry message");
+    expect(entry.message.customKind).toBe("entry");
+    expect(entry.message.customPayload).toMatchObject({ type: "custom", data: { body: "hi" } });
   });
 
   it("ignores events that carry no transcript meaning", () => {

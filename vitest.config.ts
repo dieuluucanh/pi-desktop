@@ -35,6 +35,11 @@ export default defineConfig({
           environment: "jsdom",
           setupFiles: ["tests/renderer/setup.ts"],
           restoreMocks: true,
+          // The `userEvent`-driven view tests take several seconds each on a
+          // loaded machine; the 5 s default is too tight once the renderer suite
+          // runs its files in parallel (the settings raw-editor test is the one
+          // that tips over). A real hang still fails, just later.
+          testTimeout: 15_000,
         },
         // Renderer tests are not part of a tsconfig project Vite reads, so the
         // automatic JSX runtime is stated here instead of being inferred.

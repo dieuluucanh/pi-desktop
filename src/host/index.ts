@@ -15,6 +15,7 @@ import {
   type HostRole,
 } from "../shared/host-protocol";
 import { createControlCore } from "./control-core";
+import { createExtensionRendererRegistry } from "./extension-renderers";
 import { createExtensionUiBridge, createExtensionUiPort } from "./extension-ui";
 import {
   createNodeFileListingIo,
@@ -327,6 +328,15 @@ export function runService(
             emit: (event, payload) => forward.emit(event, payload, undefined),
             terminalInput: () => uiPort.terminalInputHandlers(),
           });
+    // Extension-owned renderers (plan step 18) run in the host and return ANSI
+    // lines for tool cards, custom messages and custom entries. Session hosts
+    // only: a control host has no runner to render from.
+    const rendererRegistry =
+      uiPort === null
+        ? null
+        : createExtensionRendererRegistry({
+            emit: (event, payload) => forward.emit(event, payload, undefined),
+          });
     const keybindingIo = createNodeModelsFileIo();
     const keybindingPort = createSdkKeybindingPort({ agentDir, io: keybindingIo });
     const readKeybindings = async (): Promise<Record<string, unknown>> => {
@@ -348,6 +358,7 @@ export function runService(
         ? createSdkExtensionBinder({
             port: uiPort,
             tuiSurface,
+            ...(rendererRegistry ? { renderers: rendererRegistry } : {}),
             readKeybindings,
             emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
           })
@@ -375,6 +386,7 @@ export function runService(
     const handlers: Partial<Record<string, HostHandler>> = { ...core.handlers() };
     if (uiPort) Object.assign(handlers, uiPort.handlers());
     if (tuiSurface) Object.assign(handlers, tuiSurface.handlers());
+    if (rendererRegistry) Object.assign(handlers, rendererRegistry.handlers());
 
     // Provider OAuth login is a control-host flow that reuses the `oi.respond`
     // answer path for its prompts (plan step 9, slice 3). It needs its own
@@ -413,6 +425,7 @@ export function runService(
         ui.dispose("the host is shutting down");
         uiPort?.dispose("the host is shutting down");
         tuiSurface?.dispose("the host is shutting down");
+        rendererRegistry?.dispose("the host is shutting down");
         providerLogin?.dispose();
         void core.dispose();
         // Give the response frame a tick to flush before the process ends.

@@ -161,6 +161,13 @@ export const HOST_METHODS = [
   "tui.state",
   "tui.resize",
   "tui.input",
+  // Extension-owned renderers (plan step 18). No RPC equivalent: RPC mode
+  // renders tool/message components in-process. `render.request` runs a
+  // registered `renderCall`/`renderResult`/message/entry renderer for one item
+  // and returns ANSI lines; `render.markdown` applies the registered markdown
+  // transformers to assistant/user text before the renderer parses it.
+  "render.request",
+  "render.markdown",
   "files.list",
   "files.read",
   "files.write",

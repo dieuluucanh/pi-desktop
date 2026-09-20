@@ -5,6 +5,8 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
 import { Markdown } from "./Markdown";
+import { ExtensionBlock } from "./ExtensionBlock";
+import { useMarkdownTransform } from "./useMarkdownTransform";
 import type {
   TranscriptBlock,
   TranscriptItem,
@@ -102,11 +104,67 @@ function diffPropsFor(tool: TranscriptToolRun): { before: string; after: string 
   return null;
 }
 
-export function ToolCard({ tool, expanded }: { tool: TranscriptToolRun; expanded?: boolean }) {
-  const [open, setOpen] = useState(tool.isError || expanded === true);
+export function ToolCard({
+  tool,
+  tabId,
+  expanded,
+  onToggle,
+}: {
+  tool: TranscriptToolRun;
+  /** Present when the transcript can run extension tool renderers (step 18). */
+  tabId?: string;
+  /** The app's expand-all state; when absent the card keeps its own default. */
+  expanded?: boolean;
+  /** Flips the app's expand-all state (Ctrl+O); absent means a local toggle. */
+  onToggle?: () => void;
+}) {
+  const [localOpen, setLocalOpen] = useState(tool.isError);
+  // A global expand state forces every card; otherwise a card keeps its own
+  // default, so a failing tool still starts open.
+  const open = expanded ?? (localOpen || tool.isError);
+  const toggle = (): void => {
+    if (onToggle) onToggle();
+    else setLocalOpen((value) => !value);
+  };
   const diff = diffPropsFor(tool);
   const output = tool.resultText ?? tool.partial ?? "";
   const summary = toolSummary(tool);
+
+  // What a tool without an extension renderer shows: the app's native diff or
+  // output card, which is also Pi's fallback when a renderer throws.
+  const nativeBody = (
+    <>
+      {diff ? <DiffView {...diff} /> : null}
+      {output ? (
+        <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap font-mono text-xs text-ink-muted">
+          {output}
+        </pre>
+      ) : null}
+      {!diff && !output ? <p className="text-xs text-ink-faint">No output captured yet.</p> : null}
+    </>
+  );
+  const body =
+    tabId && tool.toolName ? (
+      <ExtensionBlock
+        tabId={tabId}
+        input={{
+          target: "tool",
+          type: tool.toolName,
+          toolCallId: tool.toolCallId,
+          args: tool.args,
+          result: tool.result ?? tool.partialResult,
+          isPartial: !tool.done,
+          isError: tool.isError,
+          // `tool_execution_start` carries the already-parsed arguments.
+          argsComplete: true,
+          version: tool.version,
+        }}
+        expanded={open}
+        fallback={nativeBody}
+      />
+    ) : (
+      nativeBody
+    );
 
   return (
     <div
@@ -118,7 +176,7 @@ export function ToolCard({ tool, expanded }: { tool: TranscriptToolRun; expanded
       <button
         type="button"
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs"
-        onClick={() => setOpen((value) => !value)}
+        onClick={toggle}
         aria-expanded={open}
       >
         <Badge tone={tool.isError ? "danger" : tool.done ? "ok" : "accent"}>{tool.toolName}</Badge>
@@ -127,19 +185,7 @@ export function ToolCard({ tool, expanded }: { tool: TranscriptToolRun; expanded
           {tool.done ? (open ? "hide" : "show") : "running…"}
         </span>
       </button>
-      {open ? (
-        <div className="border-t border-line px-3 py-2">
-          {diff ? <DiffView {...diff} /> : null}
-          {output ? (
-            <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap font-mono text-xs text-ink-muted">
-              {output}
-            </pre>
-          ) : null}
-          {!diff && !output ? (
-            <p className="text-xs text-ink-faint">No output captured yet.</p>
-          ) : null}
-        </div>
-      ) : null}
+      {open ? <div className="border-t border-line px-3 py-2">{body}</div> : null}
     </div>
   );
 }
@@ -207,35 +253,67 @@ function MessageActions({ text }: { text: string }) {
 
 function MessageView({
   message,
+  tabId,
   thinkingLabel,
+  toolsExpanded,
 }: {
   message: TranscriptMessage;
+  tabId?: string;
   thinkingLabel?: string | null;
+  toolsExpanded?: boolean;
 }) {
+  const text = textOf(message.blocks);
+  // Pi applies registered markdown transformers to user and assistant text only.
+  const transformable = message.role === "user" || message.role === "assistant";
+  const transformed = useMarkdownTransform(
+    tabId,
+    text,
+    message.role === "user" ? "user" : "assistant",
+    message.streaming,
+    transformable,
+  );
+
   if (message.role === "compaction" || message.role === "branchSummary") {
     return (
       <details className="my-2 rounded-sm border border-line bg-sunken/60 px-3 py-2">
         <summary className="cursor-pointer text-xs text-ink-muted">
           {message.role === "compaction" ? "Context compacted" : "Branch summary"}
         </summary>
-        <Markdown className="mt-2 text-xs text-ink-muted">{textOf(message.blocks)}</Markdown>
+        <Markdown className="mt-2 text-xs text-ink-muted">{text}</Markdown>
       </details>
     );
   }
 
   if (message.role === "custom") {
-    return (
+    // A custom message goes through `registerMessageRenderer`, a bare custom
+    // entry through `registerEntryRenderer`; both fall back to this text card.
+    const fallback = (
       <div className="my-2 rounded-sm border border-dashed border-line px-3 py-2">
         <div className="text-[11px] text-ink-faint">{message.customType ?? "custom message"}</div>
-        <Markdown className="mt-1">{textOf(message.blocks)}</Markdown>
+        <Markdown className="mt-1">{text}</Markdown>
       </div>
+    );
+    if (!tabId || !message.customType) return fallback;
+    const isEntry = message.customKind === "entry";
+    return (
+      <ExtensionBlock
+        tabId={tabId}
+        input={{
+          target: isEntry ? "entry" : "message",
+          type: message.customType,
+          ...(isEntry ? { entry: message.customPayload } : { message: message.customPayload }),
+          version: message.id,
+        }}
+        expanded={toolsExpanded === true}
+        fallback={fallback}
+      />
     );
   }
 
   if (message.role === "bashExecution") {
     return (
       <pre className="my-2 overflow-x-auto rounded-sm border border-line bg-sunken p-2 font-mono text-xs">
-        {textOf(message.blocks)}
+        {text}
       </pre>
     );
   }
@@ -243,9 +321,7 @@ function MessageView({
   const thinking = message.blocks.filter(
     (block): block is { kind: "thinking"; text: string } => block.kind === "thinking",
   );
-  const text = message.blocks.filter(
-    (block): block is { kind: "text"; text: string } => block.kind === "text",
-  );
+  const hasText = message.blocks.some((block) => block.kind === "text" && block.text.length > 0);
   const images = message.blocks.filter((block) => block.kind === "image");
   const calls = message.blocks.filter((block) => block.kind === "toolCall");
 
@@ -258,7 +334,7 @@ function MessageView({
           {...(thinkingLabel ? { label: thinkingLabel } : {})}
         />
       ))}
-      {text.length > 0 ? <Markdown>{text.map((block) => block.text).join("")}</Markdown> : null}
+      {hasText ? <Markdown>{transformed}</Markdown> : null}
       {images.map((block, index) => (
         <img
           key={`image-${index}`}
@@ -274,9 +350,7 @@ function MessageView({
         </div>
       ))}
       {message.streaming ? <span className="ml-0.5 animate-pulse text-accent">▍</span> : null}
-      {!message.streaming && text.length > 0 ? (
-        <MessageActions text={textOf(message.blocks)} />
-      ) : null}
+      {!message.streaming && hasText ? <MessageActions text={text} /> : null}
     </>
   );
 
@@ -293,24 +367,37 @@ function MessageView({
 
 function TranscriptItemView({
   item,
+  tabId,
   onAbort,
   running,
   thinkingLabel,
   toolsExpanded,
+  onToggleToolsExpanded,
 }: {
   item: TranscriptItem;
+  tabId?: string;
   onAbort?: () => void;
   running?: boolean;
   thinkingLabel?: string | null;
   toolsExpanded?: boolean;
+  onToggleToolsExpanded?: () => void;
 }) {
   if (item.kind === "message")
-    return <MessageView message={item.message} thinkingLabel={thinkingLabel ?? null} />;
+    return (
+      <MessageView
+        message={item.message}
+        {...(tabId ? { tabId } : {})}
+        thinkingLabel={thinkingLabel ?? null}
+        {...(toolsExpanded === undefined ? {} : { toolsExpanded })}
+      />
+    );
   if (item.kind === "tool")
     return (
       <ToolCard
         tool={item.tool}
+        {...(tabId ? { tabId } : {})}
         {...(toolsExpanded === undefined ? {} : { expanded: toolsExpanded })}
+        {...(onToggleToolsExpanded ? { onToggle: onToggleToolsExpanded } : {})}
       />
     );
   return (
@@ -370,20 +457,26 @@ export const VIRTUALIZE_THRESHOLD = 50;
 
 export function Transcript({
   items,
+  tabId,
   onAbort,
   running,
   empty,
   thinkingLabel,
   toolsExpanded,
+  onToggleToolsExpanded,
 }: {
   items: readonly TranscriptItem[];
+  /** The session tab, so tool/message renderers can run in its host (step 18). */
+  tabId?: string;
   onAbort?: () => void;
   running?: boolean;
   empty?: { cwd?: string; project?: string | null; model?: string | null };
   /** `ctx.ui.setHiddenThinkingLabel`; null keeps the app default. */
   thinkingLabel?: string | null;
-  /** `ctx.ui.getToolsExpanded`; null leaves each card's own default. */
+  /** The expand-all state; null leaves each card's own default. */
   toolsExpanded?: boolean | null;
+  /** Flips the app's expand-all state (`app.tools.expand`). */
+  onToggleToolsExpanded?: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
@@ -424,10 +517,12 @@ export function Transcript({
           <TranscriptItemView
             key={item.id}
             item={item}
+            {...(tabId ? { tabId } : {})}
             {...(onAbort ? { onAbort } : {})}
             {...(running === undefined ? {} : { running })}
             {...(thinkingLabel ? { thinkingLabel } : {})}
             {...(toolsExpanded === null || toolsExpanded === undefined ? {} : { toolsExpanded })}
+            {...(onToggleToolsExpanded ? { onToggleToolsExpanded } : {})}
           />
         ))}
       </div>
@@ -455,12 +550,14 @@ export function Transcript({
             >
               <TranscriptItemView
                 item={item}
+                {...(tabId ? { tabId } : {})}
                 {...(onAbort ? { onAbort } : {})}
                 {...(running === undefined ? {} : { running })}
                 {...(thinkingLabel ? { thinkingLabel } : {})}
                 {...(toolsExpanded === null || toolsExpanded === undefined
                   ? {}
                   : { toolsExpanded })}
+                {...(onToggleToolsExpanded ? { onToggleToolsExpanded } : {})}
               />
             </div>
           );

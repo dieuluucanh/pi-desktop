@@ -55,8 +55,16 @@ export interface TranscriptMessage {
   timestamp?: number;
   /** True while deltas are still being appended. */
   streaming: boolean;
-  /** Custom entry/message type, so step 18 can pick a renderer. */
+  /** Custom entry/message type, so the extension renderer can be looked up. */
   customType?: string;
+  /**
+   * Which Pi entry kind a custom item came from (plan step 18): a
+   * `custom_message` goes through `getMessageRenderer`, a `custom` entry through
+   * `getEntryRenderer`.
+   */
+  customKind?: "message" | "entry";
+  /** The raw custom message/entry, forwarded verbatim to its renderer. */
+  customPayload?: unknown;
   model?: string;
   stopReason?: string;
 }
@@ -67,9 +75,15 @@ export interface TranscriptToolRun {
   args?: unknown;
   /** Accumulated streaming output (replaced by the final result). */
   partial?: string;
+  /** Raw streaming result payload, for a tool's own `renderResult`. */
+  partialResult?: unknown;
   resultText?: string;
+  /** Raw final result payload (`{content, details}`), for a tool's renderer. */
+  result?: unknown;
   isError: boolean;
   done: boolean;
+  /** Bumped on every update, so a render request is keyed on the content. */
+  version: number;
 }
 
 export interface TranscriptNotice {
@@ -198,6 +212,11 @@ export function messageFromSdk(message: unknown, id: string = nextId("msg")): Tr
     ...(typeof record.timestamp === "number" ? { timestamp: record.timestamp } : {}),
     streaming: false,
     ...(typeof record.customType === "string" ? { customType: record.customType } : {}),
+    // A `custom_message` is a message renderer's input; keep the raw payload so
+    // the renderer receives exactly what Pi's `MessageRenderer` expects.
+    ...(role === "custom_message"
+      ? { customKind: "message" as const, customPayload: message }
+      : {}),
     ...(typeof record.model === "string" ? { model: record.model } : {}),
     ...(typeof record.stopReason === "string" ? { stopReason: record.stopReason } : {}),
   };
@@ -251,6 +270,7 @@ function upsertTool(
       isError: patch.isError ?? false,
       done: patch.done ?? false,
       ...patch,
+      version: 1,
     };
     const item: TranscriptItem = { kind: "tool", id: toolCallId, tool };
     const items = [...state.items, item];
@@ -262,7 +282,11 @@ function upsertTool(
   }
   const current = state.items[index] as Extract<TranscriptItem, { kind: "tool" }>;
   const items = [...state.items];
-  items[index] = { kind: "tool", id: toolCallId, tool: { ...current.tool, ...patch } };
+  items[index] = {
+    kind: "tool",
+    id: toolCallId,
+    tool: { ...current.tool, ...patch, version: current.tool.version + 1 },
+  };
   return withItems(state, items);
 }
 
@@ -483,6 +507,7 @@ export function reduceSessionEvents(
           ...toolNamePatch(payload),
           ...argsPatch(payload),
           partial: textOfPartial(payload.partialResult),
+          ...(payload.partialResult === undefined ? {} : { partialResult: payload.partialResult }),
         });
         break;
 
@@ -491,6 +516,7 @@ export function reduceSessionEvents(
           ...toolNamePatch(payload),
           ...argsPatch(payload),
           resultText: textOfPartial(payload.result),
+          ...(payload.result === undefined ? {} : { result: payload.result }),
           isError: payload.isError === true,
           done: true,
         });
@@ -538,17 +564,22 @@ export function reduceSessionEvents(
       case "entry_appended": {
         const entry = asRecord(payload.entry);
         if (entry.type === "custom_message" || entry.type === "custom") {
+          const entryId = asString(entry.id) || nextId("custom");
           next = appendItem(next, {
             kind: "message",
-            id: asString(entry.id) || nextId("custom"),
+            id: entryId,
             message: {
-              id: asString(entry.id) || nextId("custom"),
+              id: entryId,
               role: "custom",
               blocks: asString(entry.content)
                 ? [{ kind: "text", text: asString(entry.content) }]
                 : [],
               streaming: false,
               ...(typeof entry.customType === "string" ? { customType: entry.customType } : {}),
+              // `custom_message` participates in LLM context and renders through
+              // the message renderer; a bare `custom` entry through the entry one.
+              customKind: entry.type === "custom" ? "entry" : "message",
+              customPayload: payload.entry,
             },
           });
         }
