@@ -8,11 +8,12 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import type { ModelsFileIo } from "./custom-providers";
 import type { DirectoryEntry, FileListingIo } from "./file-listing";
+import type { ProjectIo } from "./project-inspect";
 
 /**
  * Atomic `models.json` access (plan step 9, slice 5). A temp file in the same
@@ -48,6 +49,47 @@ export function createNodeModelsFileIo(): ModelsFileIo {
   };
 }
 
+/** Runs `git` in `root` and resolves stdout, or null when it fails/does not exist. */
+function runGitCommand(
+  root: string,
+  args: readonly string[],
+  timeoutMs: number,
+): Promise<string | null> {
+  return new Promise<string | null>((resolve) => {
+    let settled = false;
+    const finish = (value: string | null) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    let child;
+    try {
+      child = spawn("git", [...args], { cwd: root, windowsHide: true });
+    } catch {
+      finish(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(null);
+    }, timeoutMs);
+    let stdout = "";
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.on("error", () => {
+      clearTimeout(timer);
+      finish(null);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      // A non-zero exit means "not a repository" or "no git".
+      finish(code === 0 ? stdout : null);
+    });
+  });
+}
+
 export function createNodeFileListingIo(gitTimeoutMs = 4000): FileListingIo {
   return {
     async readDirectory(directory: string): Promise<DirectoryEntry[]> {
@@ -72,40 +114,26 @@ export function createNodeFileListingIo(gitTimeoutMs = 4000): FileListingIo {
       }
     },
 
-    async runGit(root: string, args: readonly string[]): Promise<string | null> {
-      return new Promise<string | null>((resolve) => {
-        let settled = false;
-        const finish = (value: string | null) => {
-          if (settled) return;
-          settled = true;
-          resolve(value);
-        };
-        let child;
-        try {
-          child = spawn("git", [...args], { cwd: root, windowsHide: true });
-        } catch {
-          finish(null);
-          return;
-        }
-        const timer = setTimeout(() => {
-          child.kill();
-          finish(null);
-        }, gitTimeoutMs);
-        let stdout = "";
-        child.stdout?.setEncoding("utf8");
-        child.stdout?.on("data", (chunk: string) => {
-          stdout += chunk;
-        });
-        child.on("error", () => {
-          clearTimeout(timer);
-          finish(null);
-        });
-        child.on("close", (code) => {
-          clearTimeout(timer);
-          // A non-zero exit means "not a repository" or "no git": walk instead.
-          finish(code === 0 ? stdout : null);
-        });
-      });
+    runGit: (root: string, args: readonly string[]) => runGitCommand(root, args, gitTimeoutMs),
+  };
+}
+
+/**
+ * Node adapter for project inspection (plan step 10): a path-kind probe plus the
+ * same `git` runner the file listing uses, so both agree on what "no git" means.
+ */
+export function createNodeProjectIo(gitTimeoutMs = 4000): ProjectIo {
+  return {
+    async pathKind(target: string): Promise<"file" | "directory" | null> {
+      try {
+        const info = await stat(target);
+        if (info.isDirectory()) return "directory";
+        if (info.isFile()) return "file";
+        return null;
+      } catch {
+        return null;
+      }
     },
+    runGit: (root: string, args: readonly string[]) => runGitCommand(root, args, gitTimeoutMs),
   };
 }

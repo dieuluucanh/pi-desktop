@@ -221,6 +221,22 @@ describe("tab lifecycle", () => {
     expect(pushes.some((push) => push.channel === "state")).toBe(true);
   });
 
+  it("passes per-project model and thinking defaults into session.create", async () => {
+    const { service, newest } = createHarness();
+    await service.createTab({
+      cwd: "C:\\work\\app",
+      model: "anthropic/claude-sonnet-4",
+      thinking: "high",
+    });
+
+    const create = newest().requests.find((request) => request.method === "session.create");
+    expect(create?.params).toMatchObject({
+      cwd: "C:\\work\\app",
+      model: "anthropic/claude-sonnet-4",
+      thinking: "high",
+    });
+  });
+
   it("resumes an existing session file instead of creating one", async () => {
     const { service, newest } = createHarness();
     await service.createTab({ cwd: "C:\\work\\app", sessionFile: "/profile/s1.jsonl" });

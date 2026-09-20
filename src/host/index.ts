@@ -13,8 +13,10 @@ import {
 } from "../shared/host-protocol";
 import { createControlCore } from "./control-core";
 import { createExtensionUiBridge } from "./extension-ui";
-import { createNodeFileListingIo, createNodeModelsFileIo } from "./file-io";
+import { createNodeFileListingIo, createNodeModelsFileIo, createNodeProjectIo } from "./file-io";
 import { listWorkspaceFiles } from "./file-listing";
+import { inspectProject } from "./project-inspect";
+import { createProjectTrust } from "./project-trust";
 import { createProviderLoginHandlers } from "./provider-login";
 import type { CustomProviderStore } from "./custom-providers";
 import type { ProviderPort } from "./providers";
@@ -141,6 +143,12 @@ function createControlHostCore(options: {
   providers: ProviderPort;
   customProviders: CustomProviderStore;
 }) {
+  const trust = createProjectTrust({
+    store: new ProjectTrustStore(options.agentDir),
+    requiresTrust: (cwd) => hasTrustRequiringProjectResources(cwd),
+  });
+  const projectIo = createNodeProjectIo();
+
   return createControlCore({
     createSettings: () => createSdkSettings(options.cwd, options.agentDir),
     listSessions: () => listAllSessions(),
@@ -148,6 +156,14 @@ function createControlHostCore(options: {
     // (or onboarding) asks for providers.
     providers: options.providers,
     customProviders: options.customProviders,
+    trust,
+    projectInspect: (cwd) =>
+      inspectProject(cwd, {
+        io: projectIo,
+        agentDir: options.agentDir,
+        trust,
+        joinPath: join,
+      }),
   });
 }
 

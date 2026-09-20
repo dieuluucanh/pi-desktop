@@ -39,7 +39,9 @@ export type AppCommandAction =
   /** Not wired yet; the message names the owning step. */
   | { kind: "pending"; message: string }
   /** Opens one of the app's pickers (plan step 8). */
-  | { kind: "picker"; picker: "model" | "thinking" };
+  | { kind: "picker"; picker: "model" | "thinking" }
+  /** Opens the project trust prompt (plan step 10). */
+  | { kind: "trust" };
 
 export interface AppCommand {
   /** Without the leading slash. */
@@ -144,7 +146,7 @@ export const APP_COMMANDS: readonly AppCommand[] = [
   {
     name: "trust",
     description: "Review project trust",
-    action: { kind: "pending", message: "the trust dialog arrives in step 10" },
+    action: { kind: "trust" },
   },
 ];
 

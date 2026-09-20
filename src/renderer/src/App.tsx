@@ -1,6 +1,7 @@
 import { useEffect, type ReactElement } from "react";
 import { CommandPalette } from "./layout/CommandPalette";
 import { ProviderLoginDialog } from "./connections/ProviderLoginDialog";
+import { TrustDialog } from "./projects/TrustDialog";
 import { Sidebar } from "./layout/Sidebar";
 import { StatusBar } from "./layout/StatusBar";
 import { TabStrip } from "./layout/TabStrip";
@@ -49,12 +50,14 @@ export function App() {
   const view = useAppStore((state) => state.view);
   const theme = useAppStore((state) => state.prefs.theme);
   const loadPrefs = useAppStore((state) => state.loadPrefs);
+  const loadProjects = useAppStore((state) => state.loadProjects);
   const loadTabs = useAppStore((state) => state.loadTabs);
   const setInfo = useAppStore((state) => state.setInfo);
 
   useEffect(() => {
     void loadPrefs();
-  }, [loadPrefs]);
+    void loadProjects();
+  }, [loadPrefs, loadProjects]);
 
   useEffect(() => {
     const api = window.pi;
@@ -116,6 +119,7 @@ export function App() {
       <StatusBar />
       <CommandPalette />
       <ProviderLoginDialog />
+      <TrustDialog />
       <Toaster theme={theme} />
     </div>
   );

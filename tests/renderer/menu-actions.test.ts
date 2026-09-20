@@ -19,6 +19,13 @@ beforeEach(() => {
   useAppStore.setState({
     view: "welcome",
     project: null,
+    projects: [],
+    projectsLoaded: false,
+    projectInspections: {},
+    projectInspectionErrors: {},
+    trustPrompt: null,
+    trustBusy: false,
+    sessionTrust: [],
     prefs: { ...DEFAULT_PREFS },
     paletteOpen: false,
     info: null,
@@ -44,7 +51,7 @@ describe("new session", () => {
   it("creates a session tab for the open project (plan step 3)", async () => {
     const create = vi.fn(async () => ({ tabs: [], activeTabId: null }));
     (window.pi as unknown as { sessions: { create: unknown } }).sessions.create = create;
-    useAppStore.getState().openProject("C:\\work\\pi-desktop");
+    await useAppStore.getState().openProject("C:\\work\\pi-desktop");
 
     await useAppStore.getState().createSessionTab();
 

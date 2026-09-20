@@ -25,16 +25,35 @@ describe("normalizeAppState", () => {
     const state = normalizeAppState({
       version: 7,
       activeProject: "C:/projects/demo",
-      recentProjects: ["C:/a", 3, "C:/b"],
+      projects: [
+        { path: "C:/a", name: "a", addedAt: 1, lastOpenedAt: 2 },
+        3,
+        { path: "C:/b" },
+        { path: "C:/a" },
+      ],
       tabs: ["not really a tab"],
     });
 
     expect(state.version).toBe(7);
     expect(state.activeProject).toBe("C:/projects/demo");
-    expect(state.recentProjects).toEqual(["C:/a", "C:/b"]);
+    // Unusable entries are dropped and duplicates collapse to the first record.
+    expect(state.projects.map((project) => project.path)).toEqual(["C:/a", "C:/b"]);
+    expect(state.projects[1]?.name).toBe("b");
     // A tab without a cwd could never be restored, so it is dropped, not trusted.
     expect(state.tabs).toEqual([]);
     expect(state.activeTabId).toBeNull();
+  });
+
+  it("migrates the pre-step-10 recentProjects schema into project records", () => {
+    const state = normalizeAppState({
+      activeProject: "C:/projects/demo",
+      recentProjects: ["C:/a", "C:/b"],
+    });
+
+    expect(state.projects).toEqual([
+      { path: "C:/a", name: "a", addedAt: 0, lastOpenedAt: 0 },
+      { path: "C:/b", name: "b", addedAt: 0, lastOpenedAt: 0 },
+    ]);
   });
 
   it("keeps well-formed tabs and the active tab id (plan step 3)", () => {
@@ -67,13 +86,13 @@ describe("normalizeAppState", () => {
     const state = normalizeAppState({
       version: "one",
       activeProject: 5,
-      recentProjects: "nope",
+      projects: "nope",
       tabs: null,
     });
 
     expect(state.version).toBe(APP_STATE_VERSION);
     expect(state.activeProject).toBeNull();
-    expect(state.recentProjects).toEqual([]);
+    expect(state.projects).toEqual([]);
     expect(state.tabs).toEqual([]);
   });
 });
@@ -93,7 +112,7 @@ describe("createAppStore", () => {
 
     const next = await store.update({
       activeProject: "C:/projects/demo",
-      recentProjects: ["C:/projects/demo"],
+      projects: [{ path: "C:/projects/demo", name: "demo", addedAt: 1, lastOpenedAt: 2 }],
     });
 
     expect(next.activeProject).toBe("C:/projects/demo");
@@ -102,7 +121,9 @@ describe("createAppStore", () => {
 
     const written = storedState(fs);
     expect(written.activeProject).toBe("C:/projects/demo");
-    expect(written.recentProjects).toEqual(["C:/projects/demo"]);
+    expect(written.projects).toEqual([
+      { path: "C:/projects/demo", name: "demo", addedAt: 1, lastOpenedAt: 2 },
+    ]);
 
     // The atomic writer must not leave its temp file behind.
     expect([...fs.files.keys()]).toEqual([fsKey(STATE_FILE)]);

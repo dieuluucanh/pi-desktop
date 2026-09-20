@@ -1,5 +1,6 @@
 import type { MenuCommand } from "../../shared/ipc";
-import { projectNameOf, useAppStore } from "./state/app-store";
+import { projectNameOf } from "../../shared/projects";
+import { useAppStore } from "./state/app-store";
 
 /**
  * Menu-command handling (plan step 1).
@@ -39,7 +40,7 @@ export async function openProjectAction(deps?: Partial<MenuActionDeps>): Promise
   }
   const path = await pick();
   if (!path) return;
-  useAppStore.getState().openProject(path);
+  await useAppStore.getState().openProject(path);
   void api?.setTitle(`Pi Desktop — ${projectNameOf(path)}`);
 }
 

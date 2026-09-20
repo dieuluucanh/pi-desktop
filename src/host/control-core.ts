@@ -1,9 +1,12 @@
 import type { HostMethod, HostRole } from "../shared/host-protocol";
+import type { ProjectInspection } from "../shared/projects";
 import {
   createCustomProviderHandlers,
   CUSTOM_PROVIDER_METHODS,
   type CustomProviderStore,
 } from "./custom-providers";
+import { createProjectHandlers, PROJECT_METHODS } from "./project-handlers";
+import type { ProjectTrust } from "./project-trust";
 import { createProviderHandlers, PROVIDER_METHODS, type ProviderPort } from "./providers";
 import type { HostHandler } from "./service";
 
@@ -54,6 +57,10 @@ export interface ControlCoreDeps {
   providers?: ProviderPort;
   /** Custom gateways in `models.json` (plan step 9, slice 5). */
   customProviders?: CustomProviderStore;
+  /** Inspects one project folder for the project header (plan step 10). */
+  projectInspect?(cwd: string): Promise<ProjectInspection>;
+  /** Trust status and answers for a folder (plan step 10). */
+  trust?: ProjectTrust;
 }
 
 /** The methods a control host answers. Everything else stays `not_implemented`. */
@@ -63,6 +70,7 @@ export const CONTROL_METHODS: readonly HostMethod[] = [
   "session.list",
   ...PROVIDER_METHODS,
   ...CUSTOM_PROVIDER_METHODS,
+  ...PROJECT_METHODS,
 ];
 
 export interface ControlCore {
@@ -99,6 +107,10 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
       ...createProviderHandlers(() => deps.providers ?? null).handlers(),
       ...createCustomProviderHandlers({
         resolveStore: () => deps.customProviders ?? null,
+      }).handlers(),
+      ...createProjectHandlers({
+        ...(deps.projectInspect ? { inspectProject: deps.projectInspect } : {}),
+        ...(deps.trust ? { trust: deps.trust } : {}),
       }).handlers(),
     }),
 

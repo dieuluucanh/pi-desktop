@@ -8,31 +8,17 @@
  * UI can put the question to the user.
  */
 
-export type TrustDecision = boolean | null;
+import type { ProjectTrustStatus, TrustAnswer, TrustDecision } from "../shared/projects";
 
-export type TrustAnswer =
-  /** Remember this project as trusted. */
-  | "trust"
-  /** Remember this project as untrusted (project resources stay disabled). */
-  | "never"
-  /** Trust for this session only; nothing is written to the trust store. */
-  | "session";
+// The trust types live in `src/shared/projects.ts` so the renderer can type the
+// trust prompt without importing host code. `TrustStatus` is the host-side alias
+// the existing tests and `session-core` use.
+export type { ProjectTrustStatus, TrustAnswer, TrustDecision };
+export type TrustStatus = ProjectTrustStatus;
 
 export interface TrustStoreLike {
   get(cwd: string): TrustDecision;
   set(cwd: string, decision: TrustDecision): void;
-}
-
-export interface TrustStatus {
-  cwd: string;
-  /** The project ships resources that need a decision. */
-  requiresTrust: boolean;
-  /** The stored decision, or null when the user has not decided yet. */
-  decision: TrustDecision;
-  /** True when project resources may be loaded. */
-  trusted: boolean;
-  /** True when the app still has to ask before loading project resources. */
-  needsPrompt: boolean;
 }
 
 export interface ResolveTrustInput {

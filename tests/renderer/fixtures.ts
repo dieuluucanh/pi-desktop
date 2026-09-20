@@ -2,6 +2,11 @@ import type { AppInfo, PiDesktopBridge } from "../../src/shared/ipc";
 import type { OfficeSetupView } from "../../src/shared/office-setup";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { UiPrefs } from "../../src/shared/prefs";
+import {
+  projectNameOf,
+  type ProjectRecord,
+  type ProjectsSnapshot,
+} from "../../src/shared/projects";
 
 /** Shared renderer-test fixtures (plan step 1). */
 
@@ -17,6 +22,7 @@ export function appInfoFixture(overrides: Partial<AppInfo> = {}): AppInfo {
     isDev: true,
     safeMode: false,
     userDataDir: "C:\\state",
+    homeDir: "C:\\Users\\test",
     logsDir: "C:\\state\\logs",
     blobCacheDir: "C:\\state\\blobs",
     profileDir: "C:\\Users\\test\\.pi\\agent",
@@ -62,6 +68,8 @@ export interface BridgeOptions {
   appInfo?: Partial<AppInfo>;
   prefs?: Partial<UiPrefs>;
   office?: OfficeSetupView;
+  projects?: ProjectRecord[];
+  activeProject?: string | null;
 }
 
 /** Installs a `window.pi` stub and returns the prefs store it writes to. */
@@ -72,6 +80,10 @@ export function installBridge(options: BridgeOptions = {}): {
   const prefs: UiPrefs = { ...DEFAULT_PREFS, ...options.prefs };
   const info = appInfoFixture(options.appInfo);
   const view = options.office ?? officeViewFixture();
+  const projectsState: ProjectsSnapshot = {
+    projects: options.projects ?? [],
+    activeProject: options.activeProject ?? null,
+  };
 
   const bridge: PiDesktopBridge = {
     getAppInfo: async () => info,
@@ -98,6 +110,46 @@ export function installBridge(options: BridgeOptions = {}): {
       onEvent: () => () => undefined,
       onState: () => () => undefined,
       onTabs: () => () => undefined,
+    },
+    projects: {
+      get: async () => ({
+        projects: [...projectsState.projects],
+        activeProject: projectsState.activeProject,
+      }),
+      mutate: async (input) => {
+        // A small in-memory stand-in for the main-process store, so store tests
+        // exercise add/activate/remove without a real app-state.json.
+        if (input.action === "add") {
+          const existing = projectsState.projects.find((project) => project.path === input.path);
+          const record: ProjectRecord = existing ?? {
+            path: input.path,
+            name: projectNameOf(input.path),
+            addedAt: 1,
+            lastOpenedAt: 1,
+          };
+          projectsState.projects = [
+            record,
+            ...projectsState.projects.filter((project) => project.path !== input.path),
+          ];
+          projectsState.activeProject = record.path;
+        } else if (input.action === "activate") {
+          projectsState.activeProject = input.path;
+        } else if (input.action === "remove") {
+          projectsState.projects = projectsState.projects.filter(
+            (project) => project.path !== input.path,
+          );
+          if (projectsState.activeProject === input.path) {
+            projectsState.activeProject = projectsState.projects[0]?.path ?? null;
+          }
+        }
+        return {
+          projects: [...projectsState.projects],
+          activeProject: projectsState.activeProject,
+        };
+      },
+      create: async () => ({ ok: false, path: null, error: "not configured", ...projectsState }),
+      clone: async () => ({ ok: false, path: null, error: "not configured", ...projectsState }),
+      action: async () => true,
     },
     office: {
       get: async () => view,

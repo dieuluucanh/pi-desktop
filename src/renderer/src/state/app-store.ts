@@ -7,6 +7,18 @@ import {
   type ViewMode,
 } from "../../../shared/prefs";
 import {
+  findProject,
+  projectNameOf,
+  type CloneProjectInput,
+  type CreateProjectInput,
+  type ProjectAction,
+  type ProjectConfigPatch,
+  type ProjectInspection,
+  type ProjectRecord,
+  type ProjectTrustStatus,
+  type TrustAnswer,
+} from "../../../shared/projects";
+import {
   PROVIDER_LOGIN_EVENT,
   isProviderLoginPrompt,
   type ProviderAuthPrompt,
@@ -16,6 +28,7 @@ import {
 import type { CustomProviderInput, CustomProviderSummary } from "../../../shared/custom-providers";
 import {
   CONTROL_TAB_ID,
+  type CreateTabInput,
   type SessionEventEnvelope,
   type SessionEventEntry,
   type SessionStateEnvelope,
@@ -39,10 +52,12 @@ import { thinkingLevelsOf, toCatalog, type ModelCatalogEntry } from "../session/
  *
  * Two rules keep this predictable:
  *  - the store never talks to a Pi host (that is the session service, step 3);
- *  - preferences are the only thing persisted, through the `prefs.*` IPC, so the
- *    main process stays the single writer of `app-state.json`.
+ *  - preferences and the project list are persisted through main (`prefs.*` and
+ *    `projects.*`), so the main process stays the single writer of
+ *    `app-state.json`.
  *
- * Projects and tabs are in-memory here and become persistent in step 10/11.
+ * Session tabs live in the session service (step 3); the project list is real as
+ * of step 10.
  */
 
 export type AppView =
@@ -89,10 +104,29 @@ export interface ProjectRef {
   name: string;
 }
 
+/** The trust question the project needs answered (plan step 10). */
+export interface TrustPrompt {
+  cwd: string;
+  /** The tab whose `session.create` was refused, when one exists. */
+  tabId: string | null;
+  status: ProjectTrustStatus;
+}
+
 export interface AppStateShape {
   view: AppView;
   /** The project a new session would use; null until one is opened. */
   project: ProjectRef | null;
+  /** Remembered projects, most recent first (plan step 10). */
+  projects: ProjectRecord[];
+  projectsLoaded: boolean;
+  /** Host inspection per project path (git branch, `.pi/`, trust, session dir). */
+  projectInspections: Record<string, ProjectInspection>;
+  projectInspectionErrors: Record<string, string>;
+  /** The trust prompt currently on screen, if any. */
+  trustPrompt: TrustPrompt | null;
+  trustBusy: boolean;
+  /** Projects trusted for this app run only (`Trust once`). */
+  sessionTrust: string[];
   prefs: UiPrefs;
   /** True once preferences have been read from the main process. */
   prefsLoaded: boolean;
@@ -115,8 +149,29 @@ export interface AppStateShape {
   setPrefs: (patch: Partial<UiPrefs>) => void;
   toggleSidebar: () => void;
   setInfo: (info: AppInfo) => void;
-  openProject: (path: string) => void;
+  openProject: (path: string) => Promise<void>;
   closeProject: () => void;
+  /** Loads the remembered project list and restores the active project. */
+  loadProjects: () => Promise<void>;
+  /** Applies a project-list snapshot returned by any `projects.*` call. */
+  applyProjects: (snapshot: { projects: ProjectRecord[]; activeProject: string | null }) => void;
+  activateProject: (path: string | null) => Promise<void>;
+  removeProject: (path: string) => Promise<void>;
+  reorderProject: (path: string, toIndex: number) => Promise<void>;
+  updateProjectConfig: (path: string, patch: ProjectConfigPatch) => Promise<void>;
+  /** Inspects a project folder through the control host (plan step 10). */
+  inspectProject: (path: string) => Promise<ProjectInspection | null>;
+  createBlankProject: (input: CreateProjectInput) => Promise<boolean>;
+  cloneProject: (input: CloneProjectInput) => Promise<boolean>;
+  /** Opens the user's home folder as a project and starts a session there. */
+  quickSessionInHome: () => Promise<void>;
+  projectAction: (path: string, action: ProjectAction) => Promise<boolean>;
+  /** Answers the `project_trust` prompt and retries the refused session. */
+  answerTrust: (answer: TrustAnswer) => Promise<void>;
+  /** Raises the trust prompt when the project requires a decision; reports whether it did. */
+  openTrustPrompt: (cwd: string) => Promise<boolean>;
+  /** Hides the trust prompt, leaving the project untrusted. */
+  dismissTrust: () => void;
   setHint: (hint: string | null) => void;
   loadPrefs: () => Promise<void>;
   /** Sessions (plan step 3). */
@@ -257,20 +312,27 @@ export interface ProviderLoginState {
   prompt: { id: string; prompt: ProviderAuthPrompt } | null;
 }
 
-/** The last path segment of a project directory, used as its display name. */
-export function projectNameOf(path: string): string {
-  const trimmed = path.replace(/[\\/]+$/, "");
-  const parts = trimmed.split(/[\\/]/);
-  return parts[parts.length - 1] || trimmed;
-}
-
 function bridge(): Window["pi"] | undefined {
   return typeof window === "undefined" ? undefined : window.pi;
+}
+
+/** Returns a copy of a record without one key (used to clear an inspection error). */
+function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  const next = { ...record };
+  delete next[key];
+  return next;
 }
 
 export const useAppStore = create<AppStateShape>()((set, get) => ({
   view: "welcome",
   project: null,
+  projects: [],
+  projectsLoaded: false,
+  projectInspections: {},
+  projectInspectionErrors: {},
+  trustPrompt: null,
+  trustBusy: false,
+  sessionTrust: [],
   prefs: { ...DEFAULT_PREFS },
   prefsLoaded: false,
   paletteOpen: false,
@@ -312,14 +374,220 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   setInfo: (info) => set({ info }),
 
-  openProject: (path) =>
-    set({
-      project: { path, name: projectNameOf(path) },
-      view: "session",
-      hint: null,
-    }),
+  openProject: async (path) => {
+    const api = bridge();
+    if (!api?.projects) {
+      // Without the bridge the app still works in-memory for this run.
+      set({ project: { path, name: projectNameOf(path) }, view: "session", hint: null });
+      return;
+    }
+    try {
+      get().applyProjects(await api.projects.mutate({ action: "add", path }));
+      set({ view: "session", hint: null });
+      void bridge()?.setTitle(`Pi Desktop — ${projectNameOf(path)}`);
+      void get().inspectProject(path);
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
 
   closeProject: () => set({ project: null, view: "welcome" }),
+
+  loadProjects: async () => {
+    const api = bridge();
+    if (!api?.projects) {
+      set({ projectsLoaded: true });
+      return;
+    }
+    try {
+      get().applyProjects(await api.projects.get());
+    } catch {
+      // Reading the project table must never break the shell.
+    } finally {
+      set({ projectsLoaded: true });
+    }
+  },
+
+  applyProjects: (snapshot) => {
+    const projects = snapshot.projects;
+    const active = findProject(projects, snapshot.activeProject);
+    set({
+      projects,
+      project: active ? { path: active.path, name: active.name } : null,
+      ...(active && get().view === "welcome" ? { view: "session" as AppView } : {}),
+    });
+  },
+
+  activateProject: async (path) => {
+    const api = bridge();
+    if (!api?.projects) return;
+    try {
+      get().applyProjects(await api.projects.mutate({ action: "activate", path }));
+      if (path) {
+        set({ view: "session", hint: null });
+        void get().inspectProject(path);
+      }
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  removeProject: async (path) => {
+    const api = bridge();
+    if (!api?.projects) return;
+    try {
+      get().applyProjects(await api.projects.mutate({ action: "remove", path }));
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  reorderProject: async (path, toIndex) => {
+    const api = bridge();
+    if (!api?.projects) return;
+    try {
+      get().applyProjects(await api.projects.mutate({ action: "reorder", path, toIndex }));
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  updateProjectConfig: async (path, patch) => {
+    const api = bridge();
+    if (!api?.projects) return;
+    try {
+      get().applyProjects(await api.projects.mutate({ action: "update", path, patch }));
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  inspectProject: async (path) => {
+    const api = bridge();
+    if (!api?.sessions) return null;
+    try {
+      const inspection = (await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "project.inspect",
+        params: { cwd: path },
+      })) as ProjectInspection;
+      set({
+        projectInspections: { ...get().projectInspections, [path]: inspection },
+        projectInspectionErrors: omitKey(get().projectInspectionErrors, path),
+      });
+      return inspection;
+    } catch (error) {
+      set({
+        projectInspectionErrors: {
+          ...get().projectInspectionErrors,
+          [path]: error instanceof Error ? error.message : String(error),
+        },
+      });
+      return null;
+    }
+  },
+
+  createBlankProject: async (input) => {
+    const api = bridge();
+    if (!api?.projects) {
+      set({ hint: "The preload bridge is unavailable." });
+      return false;
+    }
+    try {
+      const result = await api.projects.create(input);
+      get().applyProjects(result);
+      if (!result.ok) {
+        set({ hint: result.error ?? "the project could not be created" });
+        return false;
+      }
+      set({ view: "session", hint: null });
+      if (result.path) void get().inspectProject(result.path);
+      return true;
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  },
+
+  cloneProject: async (input) => {
+    const api = bridge();
+    if (!api?.projects) {
+      set({ hint: "The preload bridge is unavailable." });
+      return false;
+    }
+    try {
+      const result = await api.projects.clone(input);
+      get().applyProjects(result);
+      if (!result.ok) {
+        set({ hint: result.error ?? "the repository could not be cloned" });
+        return false;
+      }
+      set({ view: "session", hint: null });
+      if (result.path) void get().inspectProject(result.path);
+      return true;
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  },
+
+  quickSessionInHome: async () => {
+    const home = get().info?.homeDir;
+    if (!home) {
+      set({ hint: "The home folder is unknown; open a project folder instead." });
+      return;
+    }
+    await get().openProject(home);
+    await get().createSessionTab();
+  },
+
+  projectAction: async (path, action) => {
+    const api = bridge();
+    if (!api?.projects) return false;
+    try {
+      return await api.projects.action({ path, action });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  },
+
+  answerTrust: async (answer) => {
+    const prompt = get().trustPrompt;
+    const api = bridge();
+    if (!prompt || !api?.sessions) return;
+    set({ trustBusy: true });
+    try {
+      if (answer === "session") {
+        set({ sessionTrust: [...new Set([...get().sessionTrust, prompt.cwd])] });
+      }
+      if (prompt.tabId) {
+        // Retry the refused `session.create` with the answer; the host then
+        // loads (or keeps disabled) the project's resources and emits state.
+        await api.sessions.request({
+          tabId: prompt.tabId,
+          method: "session.create",
+          params: { cwd: prompt.cwd, trust: answer },
+        });
+        await get().loadTabs();
+        set({ trustPrompt: null, view: "session", hint: null });
+      } else {
+        await api.sessions.request({
+          tabId: CONTROL_TAB_ID,
+          method: "project.trust",
+          params: { cwd: prompt.cwd, answer },
+        });
+        set({ trustPrompt: null, hint: null });
+      }
+      void get().inspectProject(prompt.cwd);
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    } finally {
+      set({ trustBusy: false });
+    }
+  },
+
+  dismissTrust: () => set({ trustPrompt: null }),
 
   setHint: (hint) => set({ hint }),
 
@@ -356,11 +624,37 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       for (const entry of envelope.events) get().applyControlEvent(entry);
       return;
     }
+    // A trust refusal is a project-level question, not transcript content: raise
+    // the prompt and keep it out of the message list (plan step 10).
+    const trustEntry = envelope.events.find((entry) => entry.event === "project_trust");
+    if (trustEntry) {
+      const status = trustEntry.payload as ProjectTrustStatus | undefined;
+      const tab = get().tabs.find((entry) => entry.id === envelope.tabId);
+      const cwd = status?.cwd ?? tab?.cwd ?? "";
+      if (cwd) {
+        set({
+          trustPrompt: {
+            cwd,
+            tabId: envelope.tabId,
+            status: status ?? {
+              cwd,
+              requiresTrust: true,
+              decision: null,
+              trusted: false,
+              needsPrompt: true,
+            },
+          },
+        });
+        void get().inspectProject(cwd);
+      }
+    }
+    const rest = envelope.events.filter((entry) => entry.event !== "project_trust");
+    if (rest.length === 0) return;
     const current = get().transcripts[envelope.tabId] ?? createTranscriptState();
     set({
       transcripts: {
         ...get().transcripts,
-        [envelope.tabId]: reduceSessionEvents(current, envelope.events, envelope.seq),
+        [envelope.tabId]: reduceSessionEvents(current, rest, envelope.seq),
       },
     });
   },
@@ -647,6 +941,17 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // The model picker needs the catalog, so it is fetched as the dialog opens.
       set({ picker: action.picker, hint: null });
       if (action.picker === "model") void get().loadModels(tabId);
+      return { handled: true, sent: false };
+    }
+    if (action.kind === "trust") {
+      const cwd = get().tabs.find((tab) => tab.id === tabId)?.cwd ?? get().project?.path;
+      if (!cwd) {
+        set({ hint: "Open a project first — trust applies to a project folder." });
+        return { handled: true, sent: false };
+      }
+      const raised = await get().openTrustPrompt(cwd);
+      if (!raised)
+        set({ hint: "This project is already trusted or ships nothing that needs a decision." });
       return { handled: true, sent: false };
     }
     if (action.requiresArgument && argument.length === 0) {
@@ -956,12 +1261,36 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       setHint("The preload bridge is unavailable.");
       return;
     }
+    const input: CreateTabInput = { cwd: project.path };
+    // Per-project defaults (plan step 10) travel with the create so the host can
+    // apply them before the first state snapshot.
+    const record = findProject(get().projects, project.path);
+    if (record?.defaultModel) input.model = record.defaultModel;
+    if (record?.defaultThinking) input.thinking = record.defaultThinking;
+    // A project answered “Trust once” this run is passed the session-only grant so
+    // a second tab never re-prompts.
+    if (get().sessionTrust.includes(project.path)) input.trust = "session";
     try {
-      get().applyTabs(await api.sessions.create({ cwd: project.path }));
+      get().applyTabs(await api.sessions.create(input));
       set({ view: "session", hint: null });
     } catch (error) {
       setHint(error instanceof Error ? error.message : String(error));
+      // The host emits `project_trust` before it refuses, so the prompt is usually
+      // already up; this is the fallback for a failure without the event.
+      if (!get().trustPrompt) await get().openTrustPrompt(project.path);
     }
+  },
+
+  openTrustPrompt: async (cwd) => {
+    const inspection = await get().inspectProject(cwd);
+    if (!inspection?.trust.needsPrompt) return false;
+    const tab = [...get().tabs]
+      .filter((entry) => entry.cwd === cwd)
+      .sort((left, right) => right.createdAt - left.createdAt)[0];
+    set({
+      trustPrompt: { cwd, tabId: tab?.id ?? null, status: inspection.trust },
+    });
+    return true;
   },
 
   activateTab: async (tabId) => {

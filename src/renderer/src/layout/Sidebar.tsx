@@ -10,13 +10,14 @@ import {
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
+import { ProjectsSection } from "../projects/ProjectsSection";
 import { newSessionAction, openProjectAction } from "../menu-actions";
 import { useAppStore, type AppView } from "../state/app-store";
 
 /**
  * The sidebar (plan step 1, IA per D-A4): projects → sessions on top, the
- * product views below. Projects themselves become real in step 10; today the
- * section explains what will live there instead of pretending to have data.
+ * product views below. Projects became real in step 10, so the section is now
+ * the workspace list with each project's session list beneath it.
  */
 
 interface NavItem {
@@ -36,7 +37,6 @@ const VIEW_ITEMS: readonly NavItem[] = [
 
 export function Sidebar() {
   const view = useAppStore((state) => state.view);
-  const project = useAppStore((state) => state.project);
   const collapsed = useAppStore((state) => state.prefs.sidebarCollapsed);
   const width = useAppStore((state) => state.prefs.sidebarWidth);
   const setView = useAppStore((state) => state.setView);
@@ -62,25 +62,7 @@ export function Sidebar() {
 
       <ScrollArea className="min-h-0 flex-1">
         <nav className="flex flex-col gap-1 px-2 pb-4">
-          <SectionLabel>Project</SectionLabel>
-          {project ? (
-            <div className="rounded-sm border border-line bg-raised px-2 py-1.5">
-              <div className="truncate text-sm">{project.name}</div>
-              <div className="truncate text-[11px] text-ink-faint" title={project.path}>
-                {project.path}
-              </div>
-            </div>
-          ) : (
-            <p className="px-2 py-1 text-xs text-ink-muted">
-              No project open. Sessions are grouped by project, the way terminal Pi scopes them to a
-              folder.
-            </p>
-          )}
-
-          <SectionLabel>Sessions</SectionLabel>
-          <p className="px-2 py-1 text-xs text-ink-muted">
-            Session tabs appear here once the session service lands (step 3).
-          </p>
+          <ProjectsSection />
 
           <SectionLabel>Views</SectionLabel>
           {VIEW_ITEMS.map((item) => (

@@ -1,7 +1,14 @@
 import { BrowserWindow, ipcMain, shell } from "electron";
 import { isHostMethod, type HostMethod } from "../shared/host-protocol";
-import { IPC, type AppInfo } from "../shared/ipc";
+import { IPC, type AppInfo, type ProjectOpResponse } from "../shared/ipc";
 import type { UiPrefs } from "../shared/prefs";
+import type {
+  CloneProjectInput,
+  CreateProjectInput,
+  ProjectActionInput,
+  ProjectMutation,
+  ProjectsSnapshot,
+} from "../shared/projects";
 import {
   isControlTabId,
   isTabKind,
@@ -9,7 +16,14 @@ import {
   type SessionTabsEnvelope,
 } from "../shared/session-ipc";
 import { isOfficeSetupStepId } from "../shared/office-setup";
+import { isTrustAnswer } from "../shared/projects";
 import type { OfficeStopResult } from "../shared/office-bridge";
+import {
+  parseCloneProjectInput,
+  parseCreateProjectInput,
+  parseProjectActionInput,
+  parseProjectMutation,
+} from "./projects-service";
 import type { OfficeSetupService } from "./office/setup-service";
 
 /**
@@ -48,6 +62,14 @@ export interface IpcDependencies {
     set: (patch: unknown) => Promise<UiPrefs>;
   };
   sessions: IpcSessionDeps;
+  /** Projects and workspace management (plan step 10). */
+  projects: {
+    get(): Promise<ProjectsSnapshot>;
+    mutate(input: ProjectMutation): Promise<ProjectsSnapshot>;
+    create(input: CreateProjectInput): Promise<ProjectOpResponse>;
+    clone(input: CloneProjectInput): Promise<ProjectOpResponse>;
+    action(input: ProjectActionInput): Promise<boolean>;
+  };
   officeSetup: OfficeSetupService;
   /**
    * The Office run the app can stop. Idle (no Office session, or nothing in
@@ -119,6 +141,10 @@ function parseCreateTab(value: unknown): CreateTabInput {
   if (typeof record.thinking === "string" && record.thinking.length > 0) {
     input.thinking = record.thinking;
   }
+  if (record.trust !== undefined) {
+    if (!isTrustAnswer(record.trust)) throw new Error("session: invalid trust answer");
+    input.trust = record.trust;
+  }
   return input;
 }
 
@@ -144,6 +170,20 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   );
   ipcMain.handle(IPC.sessionRequest, (_event, input: unknown) =>
     deps.sessions.request(parseSessionRequest(deps, input)),
+  );
+
+  ipcMain.handle(IPC.projectsGet, () => deps.projects.get());
+  ipcMain.handle(IPC.projectsMutate, (_event, input: unknown) =>
+    deps.projects.mutate(parseProjectMutation(input)),
+  );
+  ipcMain.handle(IPC.projectsCreate, (_event, input: unknown) =>
+    deps.projects.create(parseCreateProjectInput(input)),
+  );
+  ipcMain.handle(IPC.projectsClone, (_event, input: unknown) =>
+    deps.projects.clone(parseCloneProjectInput(input)),
+  );
+  ipcMain.handle(IPC.projectsAction, (_event, input: unknown) =>
+    deps.projects.action(parseProjectActionInput(input)),
   );
 
   ipcMain.handle(IPC.officeGet, () => deps.officeSetup.getView());

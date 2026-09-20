@@ -117,10 +117,16 @@ describe("help", () => {
   });
 
   it("does not advertise a command it cannot run without saying so", () => {
-    for (const name of ["/tree", "/fork", "/resume", "/export", "/trust"]) {
+    for (const name of ["/tree", "/fork", "/resume", "/export"]) {
       const result = resolveCommandInput(name, { hostCommands: [] });
       expect(result.kind, name).toBe("app");
       if (result.kind === "app") expect(result.command.action.kind, name).toBe("pending");
     }
+  });
+
+  it("routes /trust to the project trust prompt (plan step 10)", () => {
+    const result = resolveCommandInput("/trust", { hostCommands: [] });
+    expect(result.kind).toBe("app");
+    if (result.kind === "app") expect(result.command.action.kind).toBe("trust");
   });
 });

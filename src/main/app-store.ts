@@ -5,6 +5,7 @@ import {
   type SettingsDocument,
 } from "./packages/settings";
 import { DEFAULT_PREFS, mergePrefs, sanitizePrefs, type UiPrefs } from "../shared/prefs";
+import { sanitizeProjects, type ProjectRecord } from "../shared/projects";
 import { sanitizeTabs, type TabRecord } from "../shared/session-ipc";
 
 /**
@@ -22,7 +23,8 @@ export const APP_STATE_VERSION = 1;
 export interface AppState {
   version: number;
   activeProject: string | null;
-  recentProjects: string[];
+  /** Remembered projects, most recent first (plan step 10). */
+  projects: ProjectRecord[];
   /** Window chrome and session-view preferences (plan step 1). */
   prefs: UiPrefs;
   /** Session/web/office tabs, restored on launch (plan step 3). */
@@ -35,7 +37,7 @@ export function defaultAppState(): AppState {
   return {
     version: APP_STATE_VERSION,
     activeProject: null,
-    recentProjects: [],
+    projects: [],
     prefs: { ...DEFAULT_PREFS },
     tabs: [],
     activeTabId: null,
@@ -57,12 +59,6 @@ export interface CreateAppStoreOptions {
   onError?: (error: unknown) => void;
 }
 
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === "string")
-    : [];
-}
-
 /** Coerces an arbitrary JSON document into a valid `AppState`. */
 export function normalizeAppState(doc: SettingsDocument): AppState {
   const defaults = defaultAppState();
@@ -75,7 +71,9 @@ export function normalizeAppState(doc: SettingsDocument): AppState {
   return {
     version,
     activeProject,
-    recentProjects: stringArray(doc.recentProjects),
+    // `recentProjects` was the pre-step-10 schema (bare paths); the sanitizer
+    // already accepts those strings, so an existing app-state.json migrates.
+    projects: sanitizeProjects(doc.projects ?? doc.recentProjects),
     prefs: sanitizePrefs(doc.prefs),
     tabs: sanitizeTabs(doc.tabs),
     activeTabId: typeof doc.activeTabId === "string" ? doc.activeTabId : null,

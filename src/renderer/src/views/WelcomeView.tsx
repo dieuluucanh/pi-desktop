@@ -1,13 +1,22 @@
-import { useEffect } from "react";
-import { FolderOpen, MessageSquarePlus, Plug } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  Clock,
+  FolderOpen,
+  FolderPlus,
+  GitBranch,
+  Home,
+  MessageSquarePlus,
+  Plug,
+} from "lucide-react";
 import { Button } from "../ui/button";
 import { Kbd } from "../ui/kbd";
 import { openProjectAction, newSessionAction } from "../menu-actions";
 import { useAppStore } from "../state/app-store";
+import { CloneProjectDialog, CreateProjectDialog } from "../projects/ProjectDialogs";
 
 /**
- * Welcome view (plan step 1): what the app is, and the two things a user can do
- * from an empty state. Shown whenever no project is open.
+ * Welcome view (plan step 1, projects in step 10): what the app is, the ways to
+ * get a project, the recent projects, and the first-run sign-in prompt.
  */
 
 export function WelcomeView() {
@@ -15,7 +24,12 @@ export function WelcomeView() {
   const providers = useAppStore((state) => state.providers);
   const providersLoaded = useAppStore((state) => state.providersLoaded);
   const loadProviders = useAppStore((state) => state.loadProviders);
+  const projects = useAppStore((state) => state.projects);
+  const openProject = useAppStore((state) => state.openProject);
+  const quickSessionInHome = useAppStore((state) => state.quickSessionInHome);
   const setView = useAppStore((state) => state.setView);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [cloneOpen, setCloneOpen] = useState(false);
 
   useEffect(() => {
     void loadProviders();
@@ -25,7 +39,7 @@ export function WelcomeView() {
     providersLoaded && providers.length > 0 && !providers.some((provider) => provider.configured);
 
   return (
-    <div className="mx-auto flex h-full max-w-2xl flex-col justify-center gap-6 px-8">
+    <div className="mx-auto flex h-full max-w-2xl flex-col justify-center gap-6 overflow-y-auto px-8 py-8">
       <div className="flex flex-col gap-2">
         <h1 className="text-xl font-semibold">Pi Desktop</h1>
         <p className="text-sm text-ink-muted">
@@ -40,11 +54,52 @@ export function WelcomeView() {
           <FolderOpen className="size-4" aria-hidden />
           Open project folder…
         </Button>
-        <Button variant="secondary" onClick={newSessionAction}>
+        <Button variant="secondary" onClick={() => setCreateOpen(true)}>
+          <FolderPlus className="size-4" aria-hidden />
+          Create blank project…
+        </Button>
+        <Button variant="secondary" onClick={() => setCloneOpen(true)}>
+          <GitBranch className="size-4" aria-hidden />
+          Clone repository…
+        </Button>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <Button variant="ghost" onClick={newSessionAction}>
           <MessageSquarePlus className="size-4" aria-hidden />
           New session
         </Button>
+        <Button variant="ghost" onClick={() => void quickSessionInHome()} title={info?.homeDir}>
+          <Home className="size-4" aria-hidden />
+          Quick session in home
+        </Button>
       </div>
+
+      {projects.length > 0 ? (
+        <section className="flex flex-col gap-1" data-testid="recent-projects">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
+            Recent projects
+          </h2>
+          <ul className="flex flex-col gap-1">
+            {projects.slice(0, 6).map((project) => (
+              <li key={project.path}>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-sm border border-line bg-raised/60 px-2 py-1.5 text-left text-sm hover:border-line-strong"
+                  onClick={() => void openProject(project.path)}
+                  title={project.path}
+                >
+                  <Clock className="size-3.5 shrink-0 text-ink-faint" aria-hidden />
+                  <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                  <span className="max-w-64 truncate font-mono text-[11px] text-ink-faint">
+                    {project.path}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {needsSignIn ? (
         <section
@@ -97,6 +152,9 @@ export function WelcomeView() {
           {info.runtimeNodeVersion ? ` (node ${info.runtimeNodeVersion})` : ""}
         </p>
       ) : null}
+
+      <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <CloneProjectDialog open={cloneOpen} onOpenChange={setCloneOpen} />
     </div>
   );
 }

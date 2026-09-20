@@ -2,6 +2,13 @@ import type { OfficeSetupStepId, OfficeSetupView } from "./office-setup";
 import type { OfficeStopResult } from "./office-bridge";
 import type { UiPrefs } from "./prefs";
 import type {
+  CloneProjectInput,
+  CreateProjectInput,
+  ProjectActionInput,
+  ProjectMutation,
+  ProjectsSnapshot,
+} from "./projects";
+import type {
   CreateTabInput,
   SessionEventEnvelope,
   SessionRequestInput,
@@ -51,6 +58,13 @@ export const IPC = {
   sessionState: "session:state",
   /** Main → renderer: the tab table changed (created, closed, status). */
   sessionTabsChanged: "session:tabs-changed",
+
+  /** Projects and workspace management (plan step 10). */
+  projectsGet: "projects:get",
+  projectsMutate: "projects:mutate",
+  projectsCreate: "projects:create",
+  projectsClone: "projects:clone",
+  projectsAction: "projects:action",
 
   /** Office wizard (plan step 1 UI, step 19 card). */
   officeGet: "office:get",
@@ -109,6 +123,8 @@ export interface AppInfo {
   isDev: boolean;
   safeMode: boolean;
   userDataDir: string;
+  /** The user's home folder (`app.getPath("home")`), for “quick session in home”. */
+  homeDir: string;
   logsDir: string;
   blobCacheDir: string;
   /** `~/.pi/agent` unless `PI_CODING_AGENT_DIR` overrides it (plan D8). */
@@ -170,6 +186,22 @@ export interface PrefsBridge {
   set(patch: Partial<UiPrefs>): Promise<UiPrefs>;
 }
 
+/** A create/clone result plus the project list it produced (plan step 10). */
+export interface ProjectOpResponse extends ProjectsSnapshot {
+  ok: boolean;
+  path: string | null;
+  error?: string;
+}
+
+/** Projects and workspace management (plan step 10). */
+export interface ProjectsBridge {
+  get(): Promise<ProjectsSnapshot>;
+  mutate(input: ProjectMutation): Promise<ProjectsSnapshot>;
+  create(input: CreateProjectInput): Promise<ProjectOpResponse>;
+  clone(input: CloneProjectInput): Promise<ProjectOpResponse>;
+  action(input: ProjectActionInput): Promise<boolean>;
+}
+
 /** The complete API exposed to the renderer as `window.pi`. */
 export interface PiDesktopBridge {
   getAppInfo(): Promise<AppInfo>;
@@ -182,5 +214,6 @@ export interface PiDesktopBridge {
   onMenuCommand(listener: (command: MenuCommand) => void): () => void;
   prefs: PrefsBridge;
   sessions: SessionsBridge;
+  projects: ProjectsBridge;
   office: OfficeBridge;
 }

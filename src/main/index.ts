@@ -1,10 +1,18 @@
+import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, dialog, shell } from "electron";
-import { IPC, type AppInfo, type WindowState } from "../shared/ipc";
+import { app, BrowserWindow, clipboard, dialog, shell } from "electron";
+import { IPC, type AppInfo, type ProjectOpResponse, type WindowState } from "../shared/ipc";
 import type { OfficeStopResult } from "../shared/office-bridge";
+import type {
+  CloneProjectInput,
+  CreateProjectInput,
+  ProjectActionInput,
+  ProjectMutation,
+} from "../shared/projects";
 import type { CreateTabInput } from "../shared/session-ipc";
 import { createAppStore } from "./app-store";
+import { createNodeFsPort } from "./fs-port";
 import { createHostSupervisor } from "./host-supervisor";
 import {
   broadcastToWindows,
@@ -14,6 +22,9 @@ import {
   type IpcSessionDeps,
 } from "./ipc";
 import { installAppMenu } from "./menu";
+import { createCommandRunner } from "./office/exec";
+import { createProjectOps } from "./project-ops";
+import { createProjectsService } from "./projects-service";
 import {
   createSessionService,
   type SessionEmitChannel,
@@ -70,6 +81,21 @@ const appState = createAppStore({
 });
 
 let mainWindow: BrowserWindow | null = null;
+
+/** The remembered project list (plan step 10): `app-state.json` is its only writer. */
+const projectsService = createProjectsService({ store: appState });
+
+/** Create/clone/reveal/terminal/clipboard for projects (plan step 10). */
+const projectOps = createProjectOps({
+  fs: createNodeFsPort(),
+  runner: createCommandRunner(),
+  reveal: revealPathWithShell,
+  openTerminal: launchTerminal,
+  copyText: async (text) => {
+    clipboard.writeText(text);
+    return true;
+  },
+});
 
 /** The IPC channel each session push channel maps to. */
 const SESSION_CHANNELS: Record<SessionEmitChannel, string> = {
@@ -153,6 +179,7 @@ function currentAppInfo(): AppInfo {
     isDev,
     safeMode,
     userDataDir: paths.userData,
+    homeDir: app.getPath("home"),
     logsDir: paths.logs,
     blobCacheDir: paths.blobCache,
     profileDir: paths.profileDir,
@@ -172,6 +199,37 @@ function windowStateOf(window: BrowserWindow): WindowState {
     maximized: window.isMaximized(),
     fullScreen: window.isFullScreen(),
   };
+}
+
+/** Opens an external terminal rooted at `path`; the process is detached. */
+function launchTerminal(path: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const command =
+      process.platform === "win32"
+        ? "cmd.exe"
+        : process.platform === "darwin"
+          ? "open"
+          : (process.env.TERMINAL ?? "x-terminal-emulator");
+    const args =
+      process.platform === "win32"
+        ? ["/c", "start", "", "cmd.exe"]
+        : process.platform === "darwin"
+          ? ["-a", "Terminal", path]
+          : [];
+    try {
+      const child = spawn(command, args, {
+        cwd: path,
+        detached: true,
+        stdio: "ignore",
+        windowsHide: false,
+      });
+      child.on("error", () => resolve(false));
+      child.unref();
+      resolve(true);
+    } catch {
+      resolve(false);
+    }
+  });
 }
 
 /** Native folder picker used by “Open project…” (plan step 1). */
@@ -305,6 +363,31 @@ if (!app.requestSingleInstanceLock()) {
         set: (patch) => appState.updatePrefs(patch),
       },
       sessions: sessionsIpc,
+      projects: {
+        get: () => projectsService.snapshot(),
+        mutate: (input: ProjectMutation) => projectsService.mutate(input),
+        create: async (input: CreateProjectInput): Promise<ProjectOpResponse> => {
+          const result = await projectOps.createBlank(input);
+          if (!result.ok || !result.path)
+            return { ...result, ...(await projectsService.snapshot()) };
+          // A created project becomes the active one in the same step, so the
+          // caller can open a session without a second round trip.
+          return {
+            ...result,
+            ...(await projectsService.mutate({ action: "add", path: result.path })),
+          };
+        },
+        clone: async (input: CloneProjectInput): Promise<ProjectOpResponse> => {
+          const result = await projectOps.cloneRepo(input);
+          if (!result.ok || !result.path)
+            return { ...result, ...(await projectsService.snapshot()) };
+          return {
+            ...result,
+            ...(await projectsService.mutate({ action: "add", path: result.path })),
+          };
+        },
+        action: (input: ProjectActionInput) => projectOps.action(input.path, input.action),
+      },
       officeSetup,
       // The Office session owns the bridge and the app owns the session, so Stop
       // aborts that session's run — which ends a pane's answer for every bridge

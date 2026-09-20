@@ -280,6 +280,10 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     cwd: string;
     sessionManager: SessionManagerHandle;
     trustAnswer?: TrustAnswer;
+    /** Per-project default applied only to a brand-new session (plan step 10). */
+    model?: string;
+    /** Per-project default thinking level for a brand-new session. */
+    thinking?: string;
   }): Promise<SessionSnapshot> => {
     const status = trust.status(options.cwd);
     if (status.needsPrompt && !options.trustAnswer) {
@@ -303,6 +307,12 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     settingsManager = created.runtime.services?.settingsManager ?? null;
     attach(created.session);
     runtime.setRebindSession?.(rebind);
+    // Per-project defaults (plan step 10) apply only to a *new* session: a
+    // resumed session must keep the model and thinking level it recorded.
+    if (options.model) await applyModel(created.session, options.model);
+    if (options.thinking) {
+      created.session.setThinkingLevel?.(options.thinking, { persist: false });
+    }
     await deps.bindSession?.(created.session);
 
     deps.emit("session_started", snapshot(), created.session.sessionId ?? undefined);
@@ -319,6 +329,12 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         input.trust === "trust" || input.trust === "never" || input.trust === "session"
           ? (input.trust as TrustAnswer)
           : undefined;
+      const model =
+        typeof input.model === "string" && input.model.length > 0 ? input.model : undefined;
+      const thinking =
+        typeof input.thinking === "string" && input.thinking.length > 0
+          ? input.thinking
+          : undefined;
       const sessionManager = deps.newSessionManager
         ? deps.newSessionManager(targetCwd, deps.sessionDir)
         : {};
@@ -326,6 +342,8 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         cwd: targetCwd,
         sessionManager,
         ...(trustAnswer ? { trustAnswer } : {}),
+        ...(model ? { model } : {}),
+        ...(thinking ? { thinking } : {}),
       });
     },
 
@@ -717,6 +735,28 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       session = null;
     },
   };
+}
+
+/**
+ * Resolves a `provider/id` (or bare `id`) default against the session's own model
+ * catalog and applies it without persisting (plan step 10). Returns false when
+ * the catalog does not offer it — a project default must never invent a model.
+ */
+async function applyModel(session: HostSession, wanted: string): Promise<boolean> {
+  if (!session.setModel) return false;
+  const catalog = session.modelRuntime?.getAvailableSnapshot?.() ?? session.scopedModels ?? [];
+  const match = catalog.find((entry) => {
+    const record = asRecord(entry);
+    const inner =
+      record.model && typeof record.model === "object" ? asRecord(record.model) : record;
+    const id = typeof inner.id === "string" ? inner.id : null;
+    const provider = typeof inner.provider === "string" ? inner.provider : null;
+    if (!id) return false;
+    return `${provider ?? ""}/${id}` === wanted || id === wanted;
+  });
+  if (!match) return false;
+  await session.setModel(match, { persist: false });
+  return true;
 }
 
 /** A handler that is deliberately not wired yet, with the step that owns it. */

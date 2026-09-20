@@ -6,10 +6,19 @@ import {
   type OfficeBridge,
   type PiDesktopBridge,
   type PrefsBridge,
+  type ProjectOpResponse,
+  type ProjectsBridge,
   type SessionsBridge,
   type WindowState,
 } from "../shared/ipc";
 import type { UiPrefs } from "../shared/prefs";
+import type {
+  CloneProjectInput,
+  CreateProjectInput,
+  ProjectActionInput,
+  ProjectMutation,
+  ProjectsSnapshot,
+} from "../shared/projects";
 import type {
   CreateTabInput,
   SessionEventEnvelope,
@@ -74,6 +83,18 @@ const prefs: PrefsBridge = {
   set: (patch: Partial<UiPrefs>) => ipcRenderer.invoke(IPC.prefsSet, patch) as Promise<UiPrefs>,
 };
 
+const projects: ProjectsBridge = {
+  get: () => ipcRenderer.invoke(IPC.projectsGet) as Promise<ProjectsSnapshot>,
+  mutate: (input: ProjectMutation) =>
+    ipcRenderer.invoke(IPC.projectsMutate, input) as Promise<ProjectsSnapshot>,
+  create: (input: CreateProjectInput) =>
+    ipcRenderer.invoke(IPC.projectsCreate, input) as Promise<ProjectOpResponse>,
+  clone: (input: CloneProjectInput) =>
+    ipcRenderer.invoke(IPC.projectsClone, input) as Promise<ProjectOpResponse>,
+  action: (input: ProjectActionInput) =>
+    ipcRenderer.invoke(IPC.projectsAction, input) as Promise<boolean>,
+};
+
 const bridge: PiDesktopBridge = {
   getAppInfo: () => ipcRenderer.invoke(IPC.appInfo) as Promise<AppInfo>,
   openExternal: (url: string) => ipcRenderer.invoke(IPC.openExternal, url) as Promise<boolean>,
@@ -86,6 +107,7 @@ const bridge: PiDesktopBridge = {
     subscribe<MenuCommand>(IPC.appMenuCommand, listener),
   prefs,
   sessions,
+  projects,
   office,
 };
 

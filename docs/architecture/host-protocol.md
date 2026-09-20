@@ -86,18 +86,18 @@ drives the real bundle when `out/host/index.mjs` has been built.
 | models & thinking | `model.list`, `model.available`, `model.set`, `model.cycle`, `thinking.levels`, `thinking.set`, `thinking.cycle`                                                                                                                                                                | `src/host/session-core.ts`                             |
 | session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`                                                                                                                                                                                        | `src/host/session-core.ts`                             |
 | settings          | `settings.get`, `settings.raw`, `settings.flush` (returns **both** scopes: `{global, project}`)                                                                                                                                                                                 | `src/host/session-core.ts`, `src/host/control-core.ts` |
-| control host      | `settings.get/raw`, `session.list` (all projects)                                                                                                                                                                                                                               | `src/host/control-core.ts`                             |
+| control host      | `settings.get/raw`, `session.list` (all projects), `providers.*`, `providers.custom`, `project.inspect`, `project.trust`                                                                                                                                                        | `src/host/control-core.ts`                             |
 | extension UI      | `oi.respond` + `oi.request` events                                                                                                                                                                                                                                              | `src/host/extension-ui.ts`                             |
 
 ### Declared and answering `not_implemented` (with the owning step)
 
-| Methods                                | Step   |
-| -------------------------------------- | ------ |
-| `settings.set`                         | 12     |
-| `session.delete`, `session.exportHtml` | 11     |
-| `bash.run`, `bash.abort`               | 6      |
-| `providers.*`, `packages.*`            | 9 / 14 |
-| `files.read`, `files.write`            | 20     |
+| Methods                                | Step |
+| -------------------------------------- | ---- |
+| `settings.set`                         | 12   |
+| `session.delete`, `session.exportHtml` | 11   |
+| `bash.run`, `bash.abort`               | 6    |
+| `packages.*`                           | 14   |
+| `files.read`, `files.write`            | 20   |
 
 ### RPC mapping (the parity test pins this)
 
@@ -123,4 +123,6 @@ drives the real bundle when `out/host/index.mjs` has been built.
 Host methods with **no** RPC equivalent (the app needs them, RPC does not):
 `host.*`, `session.list`, `session.create/open/resume/reload/delete/exportHtml`,
 `session.queueMode`'s single envelope, `providers.runtimeKey/refresh/custom`,
-`packages.*`, `files.list`, `settings.*`.
+`packages.*`, `files.list`, `settings.*`, `project.inspect`, `project.trust`
+(project inspection and trust: the TUI resolves trust through its own session,
+so RPC has no command for it).

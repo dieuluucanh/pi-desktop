@@ -8,6 +8,8 @@
  * preload and the renderer all agree on one shape.
  */
 
+import type { TrustAnswer } from "./projects";
+
 /**
  * The address of the app-wide **control host** (plan D-A3) on the session
  * request channel. The renderer addresses hosts as "tabs"; the control host is
@@ -84,6 +86,12 @@ export interface CreateTabInput {
   sessionFile?: string | null;
   model?: string;
   thinking?: string;
+  /**
+   * The user's already-given trust answer for this project (plan step 10). Sent
+   * with a new session so a second tab in a session-trusted project never
+   * re-prompts; `trust`/`never` are also accepted because the host persists them.
+   */
+  trust?: TrustAnswer;
 }
 
 export interface SessionRequestInput {

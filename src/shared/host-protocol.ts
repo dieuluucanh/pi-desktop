@@ -153,6 +153,10 @@ export const HOST_METHODS = [
   "providers.refresh", // refresh (no RPC equivalent)
   "providers.cancel", // cancels an in-flight OAuth login (no RPC equivalent)
   "providers.custom", // models.json gateway editor (no RPC equivalent)
+  // Projects and workspace management (plan step 10). No RPC equivalent: the
+  // TUI inspects a project implicitly through its own session.
+  "project.inspect",
+  "project.trust",
 ] as const;
 
 export type HostMethod = (typeof HOST_METHODS)[number];

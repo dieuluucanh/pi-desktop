@@ -1,4 +1,5 @@
 import type { HostMethod, HostRole } from "../shared/host-protocol";
+import type { TrustAnswer } from "../shared/projects";
 import {
   CONTROL_TAB_ID,
   sanitizeTabs,
@@ -136,6 +137,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
   const tabs = new Map<string, TabRecord>();
   const hosts = new Map<string, SupervisorHostLike>();
+  /** Per-tab `session.create` defaults (per-project model/thinking + trust, step 10). */
+  const createParams = new Map<
+    string,
+    { model?: string; thinking?: string; trust?: TrustAnswer }
+  >();
   const unsubscribes = new Map<string, Array<() => void>>();
   /** Subscriptions to the control host (provider login events, plan step 9). */
   const controlUnsubscribes: Array<() => void> = [];
@@ -309,9 +315,15 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     hosts.set(tab.id, host);
     subscribe(tab, host);
     try {
+      const extra = createParams.get(tab.id);
       const snapshot = tab.sessionFile
         ? await host.request("session.resume", { sessionFile: tab.sessionFile })
-        : await host.request("session.create", { cwd: tab.cwd });
+        : await host.request("session.create", {
+            cwd: tab.cwd,
+            ...(extra?.model ? { model: extra.model } : {}),
+            ...(extra?.thinking ? { thinking: extra.thinking } : {}),
+            ...(extra?.trust ? { trust: extra.trust } : {}),
+          });
       applySnapshot(tab, snapshot);
       rememberSession(host, tab);
     } catch (error) {
@@ -398,6 +410,13 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       };
       tabs.set(id, tab);
       activeId = id;
+      if (input.model || input.thinking || input.trust) {
+        createParams.set(id, {
+          ...(input.model ? { model: input.model } : {}),
+          ...(input.thinking ? { thinking: input.thinking } : {}),
+          ...(input.trust ? { trust: input.trust } : {}),
+        });
+      }
       publishTabs();
       await persist();
       await service.activateTab(id);
@@ -423,6 +442,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       for (const off of unsubscribes.get(tabId) ?? []) off();
       unsubscribes.delete(tabId);
       hosts.delete(tabId);
+      createParams.delete(tabId);
       tabs.delete(tabId);
       try {
         await deps.supervisor.stop(tabId);
