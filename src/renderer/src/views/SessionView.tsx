@@ -7,6 +7,7 @@ import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
 import { WidgetStrip } from "../extension-ui/WidgetStrip";
 import { WorkingRow } from "../extension-ui/WorkingRow";
+import { TuiSlotFrame, TuiSurface } from "../tui/TuiSurface";
 import { createCommandProvider } from "../completion/command-source";
 import { createDocumentProvider } from "../completion/document-source";
 import { createFileProvider } from "../completion/file-source";
@@ -101,6 +102,9 @@ export function SessionView() {
   );
   const extensionCompletion = useAppStore((state) => state.extensionCompletion);
   const extensionApplyCompletion = useAppStore((state) => state.extensionApplyCompletion);
+  const tuiSurface = useAppStore((state) =>
+    activeTabId ? state.tuiSurfaces[activeTabId] : undefined,
+  );
   const [editingName, setEditingName] = useState(false);
 
   /**
@@ -170,9 +174,14 @@ export function SessionView() {
   const currentModelKey = modelKeyOf(activeState?.model);
   const needsRestart =
     active.status === "stopped" || active.status === "crashed" || active.status === "failed";
+  // A non-overlay `custom`/`editor` component owns the composer region; an
+  // overlay floats over the whole view (plan step 17).
+  const tuiOwnsEditor = Boolean(
+    tuiSurface && (tuiSurface.editor || (tuiSurface.custom && !tuiSurface.overlay)),
+  );
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="relative flex h-full flex-col">
       <header className="flex shrink-0 items-center gap-3 border-b border-line px-4 py-2">
         {editingName ? (
           <input
@@ -269,41 +278,64 @@ export function SessionView() {
       {active.status === "running" && extensionUi ? (
         <WorkingRow working={extensionUi.working} />
       ) : null}
-      <WidgetStrip tabId={active.id} placement="aboveEditor" />
+      {tuiSurface?.header ? (
+        <TuiSlotFrame
+          frame={tuiSurface.header}
+          className="shrink-0 border-t border-line px-3 py-1"
+        />
+      ) : null}
 
-      <Composer
-        tabId={active.id}
-        running={active.status === "running"}
-        enabled={active.status === "running" || active.status === "idle"}
-        draft={drafts[active.id] ?? ""}
-        queue={transcript?.queue ?? { steering: [], followUp: [] }}
-        sendMode={sendModes[active.id] ?? "steer"}
-        contextLabel={usage}
-        onDraftChange={(text) => setDraft(active.id, text)}
-        onSend={async (text, images, options) => {
-          const mode = sendModes[active.id] ?? "steer";
-          return sendPrompt(active.id, text, {
-            ...(active.status === "running" ? { mode } : {}),
-            ...(options?.preferredSource ? { preferredSource: options.preferredSource } : {}),
-            ...(images.length > 0
-              ? {
-                  images: images.map((image) => ({
-                    type: "image" as const,
-                    data: image.data,
-                    mimeType: image.mimeType,
-                  })),
-                }
-              : {}),
-          });
-        }}
-        completion={completion}
-        onStop={() => void stopRun(active.id)}
-        onClearQueue={() => void clearQueue(active.id)}
-        onSendModeChange={(mode) => setSendMode(active.id, mode)}
-        onHistoryStep={(direction) => historyStep(active.id, direction)}
-      />
+      {tuiOwnsEditor && tuiSurface ? (
+        <TuiSurface tabId={active.id} snapshot={tuiSurface} />
+      ) : (
+        <>
+          <WidgetStrip tabId={active.id} placement="aboveEditor" />
 
-      <WidgetStrip tabId={active.id} placement="belowEditor" />
+          <Composer
+            tabId={active.id}
+            running={active.status === "running"}
+            enabled={active.status === "running" || active.status === "idle"}
+            draft={drafts[active.id] ?? ""}
+            queue={transcript?.queue ?? { steering: [], followUp: [] }}
+            sendMode={sendModes[active.id] ?? "steer"}
+            contextLabel={usage}
+            onDraftChange={(text) => setDraft(active.id, text)}
+            onSend={async (text, images, options) => {
+              const mode = sendModes[active.id] ?? "steer";
+              return sendPrompt(active.id, text, {
+                ...(active.status === "running" ? { mode } : {}),
+                ...(options?.preferredSource ? { preferredSource: options.preferredSource } : {}),
+                ...(images.length > 0
+                  ? {
+                      images: images.map((image) => ({
+                        type: "image" as const,
+                        data: image.data,
+                        mimeType: image.mimeType,
+                      })),
+                    }
+                  : {}),
+              });
+            }}
+            completion={completion}
+            onStop={() => void stopRun(active.id)}
+            onClearQueue={() => void clearQueue(active.id)}
+            onSendModeChange={(mode) => setSendMode(active.id, mode)}
+            onHistoryStep={(direction) => historyStep(active.id, direction)}
+          />
+
+          <WidgetStrip tabId={active.id} placement="belowEditor" />
+        </>
+      )}
+
+      {tuiSurface?.footer ? (
+        <TuiSlotFrame
+          frame={tuiSurface.footer}
+          className="shrink-0 border-t border-line px-3 py-1"
+        />
+      ) : null}
+      {tuiSurface?.overlay && tuiSurface.custom ? (
+        <TuiSurface tabId={active.id} snapshot={tuiSurface} />
+      ) : null}
 
       <ModelPicker
         open={picker === "model"}

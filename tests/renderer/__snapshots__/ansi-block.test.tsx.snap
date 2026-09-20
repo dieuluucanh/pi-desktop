@@ -1,0 +1,94 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`AnsiBlock > keeps wide characters and emoji intact 1`] = `
+<div
+  data-tui-frame="1"
+>
+  <div
+    class="ansi-line whitespace-pre"
+    data-ansi-line=""
+  >
+    <span>
+      日本 👋🏽 ok
+    </span>
+    <span>
+            
+    </span>
+  </div>
+</div>
+`;
+
+exports[`AnsiBlock > renders 256-colour and truecolor spans 1`] = `
+<div
+  data-tui-frame="1"
+>
+  <div
+    class="ansi-line whitespace-pre"
+    data-ansi-line=""
+  >
+    <span
+      style="color: rgb(255, 0, 0); background-color: rgb(0, 16, 32);"
+    >
+      256
+    </span>
+    <span
+      style="color: rgb(255, 0, 0); background-color: rgb(0, 16, 32);"
+    >
+       true
+    </span>
+    <span
+      style="color: rgb(255, 0, 0); background-color: rgb(0, 16, 32);"
+    >
+                  
+    </span>
+  </div>
+</div>
+`;
+
+exports[`AnsiBlock > renders OSC-8 hyperlinks 1`] = `
+<div
+  data-tui-frame="1"
+>
+  <div
+    class="ansi-line whitespace-pre"
+    data-ansi-line=""
+  >
+    <span>
+      see 
+    </span>
+    <a
+      class="underline"
+      href="https://pi.dev"
+    >
+      docs
+    </a>
+    <span>
+       now
+    </span>
+    <span>
+              
+    </span>
+  </div>
+</div>
+`;
+
+exports[`AnsiBlock > renders colours, attributes and resets 1`] = `
+<div
+  data-tui-frame="1"
+>
+  <div
+    class="ansi-line whitespace-pre"
+    data-ansi-line=""
+  >
+    <span>
+      red
+    </span>
+    <span>
+       plain
+    </span>
+    <span>
+                 
+    </span>
+  </div>
+</div>
+`;

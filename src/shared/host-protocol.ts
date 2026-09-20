@@ -153,6 +153,14 @@ export const HOST_METHODS = [
   "oi.editorText",
   "completion.suggest",
   "completion.apply",
+  // The extension TUI surface (plan step 17). No RPC equivalent: RPC mode's
+  // `custom()` returns undefined, so a host is the only way to run and render
+  // Pi's terminal components. `tui.state` pulls the whole surface snapshot,
+  // `tui.resize` reports the renderer's measured grid and `tui.input` carries
+  // raw terminal bytes produced from DOM keys.
+  "tui.state",
+  "tui.resize",
+  "tui.input",
   "files.list",
   "files.read",
   "files.write",

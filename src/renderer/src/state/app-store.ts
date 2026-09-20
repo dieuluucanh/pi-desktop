@@ -51,6 +51,12 @@ import {
   type TabRecord,
 } from "../../../shared/session-ipc";
 import {
+  EMPTY_TUI_SURFACE,
+  TUI_STATE_EVENT,
+  sanitizeTuiSurfaceSnapshot,
+  type TuiSurfaceSnapshot,
+} from "../../../shared/tui-surface";
+import {
   EMPTY_EXTENSION_UI,
   EXTENSION_UI_NOTIFY_EVENT,
   EXTENSION_UI_REQUEST_EVENT,
@@ -518,6 +524,19 @@ export interface AppStateShape {
     request: ExtensionCompletionApplyRequest,
   ) => Promise<ExtensionCompletionResult | null>;
 
+  /**
+   * Extension TUI surface (plan step 17): per-tab ANSI frames rendered by
+   * `ctx.ui.custom()` and the footer/editor slots. `EMPTY_TUI_SURFACE` means no
+   * extension component is mounted, so the composer behaves as before.
+   */
+  tuiSurfaces: Record<string, TuiSurfaceSnapshot>;
+  /** Fetches `tui.state` for a tab (called on activation). */
+  loadTuiSurface: (tabId: string) => Promise<void>;
+  /** Reports the renderer's measured grid so overlays re-resolve. */
+  resizeTuiSurface: (tabId: string, rows: number, cols: number) => void;
+  /** Sends raw terminal bytes to the tab's focused component. */
+  sendTuiInput: (tabId: string, data: string) => void;
+
   createSessionTab: () => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
@@ -667,6 +686,9 @@ const EXTENSION_UI_EVENTS = new Set<string>([
   EXTENSION_UI_NOTIFY_EVENT,
   EXTENSION_UI_THEME_EVENT,
   SESSION_SHUTDOWN_REQUEST_EVENT,
+  // The extension TUI surface (plan step 17) is rendered by its own component,
+  // never by the transcript reducer.
+  TUI_STATE_EVENT,
 ]);
 
 /** Toast copy per notification kind; `error` also stays in the history panel. */
@@ -788,6 +810,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   extensionUi: {},
   extensionDialogs: [],
   extensionNotifications: [],
+  tuiSurfaces: {},
 
   setView: (view) => set({ view, hint: null }),
   openPalette: () => set({ paletteOpen: true }),
@@ -1147,6 +1170,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   handleExtensionUiEvent: (tabId, entry) => {
+    if (entry.event === TUI_STATE_EVENT) {
+      // The whole surface is pushed after every change, so no reconciliation.
+      set({
+        tuiSurfaces: { ...get().tuiSurfaces, [tabId]: sanitizeTuiSurfaceSnapshot(entry.payload) },
+      });
+      return;
+    }
     if (entry.event === EXTENSION_UI_STATE_EVENT) {
       const snapshot = sanitizeExtensionUiSnapshot(entry.payload);
       const previousTitle = get().extensionUi[tabId]?.title ?? null;
@@ -1258,6 +1288,40 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     } catch {
       return null;
     }
+  },
+
+  loadTuiSurface: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions || tabId === CONTROL_TAB_ID) return;
+    try {
+      const result = await api.sessions.request({ tabId, method: "tui.state" });
+      set({
+        tuiSurfaces: { ...get().tuiSurfaces, [tabId]: sanitizeTuiSurfaceSnapshot(result) },
+      });
+    } catch {
+      // A host without a TUI surface still streams; keep the empty surface.
+      set({ tuiSurfaces: { ...get().tuiSurfaces, [tabId]: { ...EMPTY_TUI_SURFACE } } });
+    }
+  },
+
+  resizeTuiSurface: (tabId, rows, cols) => {
+    // Fire-and-forget: a resize must never block a keystroke.
+    const request = bridge()?.sessions?.request({
+      tabId,
+      method: "tui.resize",
+      params: { rows, cols },
+    });
+    if (request) void request.then(undefined, () => undefined);
+  },
+
+  sendTuiInput: (tabId, data) => {
+    if (data.length === 0) return;
+    const request = bridge()?.sessions?.request({
+      tabId,
+      method: "tui.input",
+      params: { data },
+    });
+    if (request) void request.then(undefined, () => undefined);
   },
 
   setSendMode: (tabId, mode) => set({ sendModes: { ...get().sendModes, [tabId]: mode } }),
@@ -2460,6 +2524,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // The extension UI state is per host: fetch it for the tab being shown
     // (statuses, widgets, working state) instead of trusting a stale snapshot.
     void get().loadExtensionUi(tabId);
+    // The TUI surface is per host too (plan step 17).
+    void get().loadTuiSurface(tabId);
     try {
       get().applyTabs(await api.sessions.activate(tabId));
     } catch (error) {

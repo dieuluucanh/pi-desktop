@@ -187,4 +187,15 @@ export {
   type SdkExtensionBinderOptions,
   type SdkThemeAccess,
   type SdkThemeAccessOptions,
+  type SdkUiSurface,
 } from "./extension-ui";
+
+/** The extension TUI surface (plan step 17): pi-tui helpers, keybindings, footer data. */
+export {
+  createSdkFooterData,
+  createSdkTuiKeybindings,
+  createSdkTuiSurface,
+  sdkEditorTheme,
+  SDK_TUI_KIT,
+  type SdkTuiSurfaceOptions,
+} from "./tui-surface";

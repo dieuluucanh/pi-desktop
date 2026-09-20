@@ -20,14 +20,14 @@ is declared but not yet wired answers
 it** in the message — see “Implementation status” below, which is the current
 truth and supersedes the group table's implications.
 
-| Group         | Methods                                                                                                                                                   |
-| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| transport     | `host.hello`, `host.ping`, `host.shutdown`, `host.blobs.read`                                                                                             |
-| sessions      | `session.create/open/list/resume/fork/clone/delete/rename/exportHtml`                                                                                     |
-| conversation  | `prompt`, `steer`, `followUp`, `abort`, `clearQueue`                                                                                                      |
-| state         | `state.get`, `messages.get`, `entries.get`, `tree.get`, `stats.get`, `compact`, `commands.list`, `tools.*`, `model.*`, `thinking.*`                       |
-| configuration | `settings.*`, `providers.*`, `packages.*`                                                                                                                 |
-| other         | `oi.respond` (extension UI answers), `oi.state`, `oi.editorText`, `completion.suggest`, `completion.apply` (extension UI + composer bridge), `files.list` |
+| Group         | Methods                                                                                                                                                                                                                   |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| transport     | `host.hello`, `host.ping`, `host.shutdown`, `host.blobs.read`                                                                                                                                                             |
+| sessions      | `session.create/open/list/resume/fork/clone/delete/rename/exportHtml`                                                                                                                                                     |
+| conversation  | `prompt`, `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                      |
+| state         | `state.get`, `messages.get`, `entries.get`, `tree.get`, `stats.get`, `compact`, `commands.list`, `tools.*`, `model.*`, `thinking.*`                                                                                       |
+| configuration | `settings.*`, `providers.*`, `packages.*`                                                                                                                                                                                 |
+| other         | `oi.respond` (extension UI answers), `oi.state`, `oi.editorText`, `completion.suggest`, `completion.apply` (extension UI + composer bridge), `tui.state`, `tui.resize`, `tui.input` (extension TUI surface), `files.list` |
 
 ## Framing rules
 
@@ -76,7 +76,7 @@ so the whole supervisor is unit tested against a scripted fake host
 (`tests/main/host-supervisor.test.ts`), and `tests/host/service.live.test.ts`
 drives the real bundle when `out/host/index.mjs` has been built.
 
-## Implementation status (2026-09-20, after plan step 16)
+## Implementation status (2026-09-20, after plan step 17)
 
 ### Wired and tested
 
@@ -92,6 +92,7 @@ drives the real bundle when `out/host/index.mjs` has been built.
 | control host      | `settings.*`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `packages.*`, `project.inspect`, `project.trust`, `resources.list` (loads a project's resources with no session), `themes.*`, `keybindings.*`                                                                                                                                                                                                                          | `src/host/control-core.ts`                                                                                                        |
 | extensions hub    | `resources.list` (both cores): extensions/skills/prompts/themes with source, scope, origin, contributed tools/commands/shortcuts/flags, loader diagnostics and live `extension_error` history                                                                                                                                                                                                                                                                                                                                                   | `src/host/resources.ts` (+ `src/host/sdk/resources.ts`)                                                                           |
 | extension UI      | `oi.respond` + `oi.request` events; `oi.state` (the pushed snapshot, also readable on demand), `oi.editorText` (composer mirror), `completion.suggest`/`completion.apply` (host-run extension autocomplete providers). The full `ExtensionUIContext` is bound to every session via `bindSession`                                                                                                                                                                                                                                                | `src/host/extension-ui.ts` + `src/host/sdk/extension-ui.ts` (session host only)                                                   |
+| TUI surface       | `tui.state` (pull the whole surface snapshot), `tui.resize` (the renderer's measured rows/cols), `tui.input` (raw terminal bytes). The host emulates `TUI` for `ctx.ui.custom()`, resolves overlay geometry and renders `footer`/`header`/`editor`/`custom` to ANSI frames; the renderer converts them to HTML and forwards DOM keys                                                                                                                                                                                                            | `src/host/tui-surface.ts` + `src/host/sdk/tui-surface.ts`, `src/renderer/src/tui/*` (session host only)                           |
 | skills & themes   | `themes.list` (both cores: built-ins + loader themes + conventional dirs + `themes` settings paths, with resolved swatches and the active theme), `themes.import` (validates name/filename/content before writing `<agentDir>/themes/<name>.json`); `keybindings.get/set/reset` (both cores: `<agentDir>/keybindings.json` validated against the documented table, conflicts reported); `shortcuts.list/invoke` (**session host only**: `ExtensionRunner.getShortcuts` with the effective bindings, handler runs with the runner's own context) | `src/host/themes.ts` + `src/host/sdk/themes.ts`, `src/host/keybindings.ts`, `src/host/shortcuts.ts` + `src/host/sdk/shortcuts.ts` |
 
 ### Declared and answering `not_implemented` (with the owning step)
@@ -168,14 +169,51 @@ binds it to each session (`bindSession` in `src/host/index.ts`, now wired).
   `Theme` through the well-known global symbol (the SDK exports `initTheme` and
   `Theme` but not the `theme` proxy); `setTheme` also persists the `theme`
   setting and emits `oi.theme` so the app chrome follows.
-- **Step 17 surface**: `custom`, `setFooter`, `setHeader`, `setEditorComponent`
-  and `onTerminalInput` are registered but inert — `custom()` returns
-  `undefined` like RPC mode, so an extension that needs the TUI surface degrades
-  instead of hanging. The TUI host replaces these in step 17.
+- **TUI surface** (plan step 17): `custom`, `setFooter`, `setHeader`,
+  `setEditorComponent` and `onTerminalInput` render through the emulated TUI
+  (see “Extension TUI surface” below). Without a surface (a control host, or a
+  test that does not build one) `custom()` returns `undefined` exactly as RPC
+  mode does, so an extension degrades instead of hanging.
 
 Errors an extension throws while handling an event arrive as `extension_error`
 and render as a transcript notice; an extension asking to shut down emits
 `session.shutdown_requested`, which closes its tab.
+
+### Extension TUI surface (plan step 17)
+
+Pi's `ctx.ui.custom(factory, options)` hands an extension a `TUI` and a
+component that owns the keyboard; RPC mode returns `undefined` for it. The
+app emulates the TUI instead:
+
+- **Host** (`src/host/tui-surface.ts`, SDK-free): coalesces `requestRender()`,
+  exposes `terminal.rows/cols`, tracks focus (`Focusable.focused`), resolves
+  overlay geometry (anchor, `width`/`minWidth`/`maxHeight`, margins, `%` sizes,
+  `visible()`), implements `OverlayHandle` (`focus`/`unfocus`/`setHidden`/
+  `hide`/`getBounds`) and renders each slot to ANSI lines with
+  `component.render(width)`. `CURSOR_MARKER` is extracted and stripped for the
+  focused component. A throwing component renders nothing rather than killing
+  the session.
+- **SDK adapter** (`src/host/sdk/tui-surface.ts`): injects pi-tui's real
+  `visibleWidth`/`sliceByColumn`/`stripTerminalSequences`/`CURSOR_MARKER`, the
+  `EditorTheme` an `EditorFactory` needs, a `ReadonlyFooterDataProvider`
+  (live statuses, no git watcher) and the profile's effective keybindings —
+  installed globally with `setKeybindings`, so Pi's `Editor`/`SelectList`
+  honour a remap from the app's Keybindings view.
+- **Wire**: one `tui.state` event pushes the whole `TuiSurfaceSnapshot` after
+  every change (like `oi.state`); `tui.state`/`tui.resize`/`tui.input` are the
+  renderer's pull/resize/key methods. `custom` is a single slot; a visible
+  overlay takes it and reports `overlay: true` plus the resolved `bounds`.
+- **Renderer** (`src/renderer/src/tui/TuiSurface.tsx`, `AnsiBlock.tsx`): parses
+  SGR/OSC-8 into styled spans (no `dangerouslySetInnerHTML`), pads each line to
+  the host's cell width, draws the cursor, scrolls a tall frame with wheel +
+  PageUp/PageDown, and turns DOM keys into terminal bytes with
+  `src/shared/terminal-keys.ts` (pinned against pi-tui's `matchesKey`). A paste
+  is framed as a bracketed paste, which is what Pi's `Input`/`Editor` expect.
+- **Layout**: a non-overlay `custom`/`editor` component replaces the composer
+  region; `header`/`footer` render above/below it; an overlay floats over the
+  session view at the host-resolved rectangle. `src/shared/ansi.ts` mirrors
+  pi-tui's `visibleWidth` (pinned by a corpus test) so wide characters and emoji
+  stay aligned.
 
 ### Extensions hub (plan step 13)
 
@@ -261,4 +299,6 @@ themes), `keybindings.get/set/reset` (RPC mode never reads `keybindings.json`),
 `shortcuts.list/invoke` (RPC mode has no shortcut protocol), `oi.state`,
 `oi.editorText`, `completion.suggest`, `completion.apply` (RPC mode has no
 session-state channel, no editor mirror, and cannot evaluate extension
-autocomplete providers).
+autocomplete providers), `tui.state`/`tui.resize`/`tui.input` (RPC mode's
+`custom()` returns `undefined`, so it has no terminal to render into or feed
+keys to).

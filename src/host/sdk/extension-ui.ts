@@ -21,14 +21,18 @@ import {
   type ExtensionCommandContextActions,
   type ExtensionError,
   type ExtensionUIContext,
+  type ReadonlyFooterDataProvider,
   type TerminalInputHandler,
 } from "@earendil-works/pi-coding-agent";
+import type { KeybindingsManager } from "@earendil-works/pi-tui";
 import { BUILTIN_THEME_SWATCHES } from "../../shared/themes";
 import {
   SESSION_SHUTDOWN_REQUEST_EVENT,
   type ExtensionCompletionProviderFactory,
 } from "../../shared/extension-ui";
 import type { ExtensionTerminalInputHandler, ExtensionUiPort } from "../extension-ui";
+import type { TuiSurfacePort } from "../tui-surface";
+import { createSdkFooterData, createSdkTuiKeybindings, sdkEditorTheme } from "./tui-surface";
 
 /**
  * Pi installs the active theme on this well-known global symbol
@@ -199,12 +203,22 @@ export function createSdkThemeAccess(options: SdkThemeAccessOptions): SdkThemeAc
 }
 
 /**
- * Wraps the host port in Pi's `ExtensionUIContext`. The TUI-surface members are
- * inert until step 17; everything else is a direct delegate.
+ * Wraps the host port in Pi's `ExtensionUIContext`. With a `surface` bundle the
+ * TUI members (`custom`, `setFooter`, `setHeader`, `setEditorComponent`) render
+ * through the step-17 emulation; without one they stay inert exactly as in
+ * step 16 (RPC's own behaviour), so a host that has no surface degrades rather
+ * than throwing.
  */
+export interface SdkUiSurface {
+  port: TuiSurfacePort;
+  keybindings: KeybindingsManager;
+  footerData: ReadonlyFooterDataProvider;
+}
+
 export function createSdkExtensionUiContext(
   port: ExtensionUiPort,
   themeAccess: SdkThemeAccess,
+  surface?: SdkUiSurface | null,
 ): ExtensionUIContext {
   return {
     select: (title, choices, opts) => port.select(title, choices, opts),
@@ -224,10 +238,37 @@ export function createSdkExtensionUiContext(
       if (typeof content === "function") return;
       port.setWidget(key, content, widgetOptions);
     },
-    setFooter: (factory) => port.setFooter(factory),
-    setHeader: (factory) => port.setHeader(factory),
+    setFooter: (factory) => {
+      port.setFooter(factory);
+      surface?.port.setFooter(
+        factory
+          ? (tui) => factory(tui as never, themeAccess.current(), surface.footerData) as never
+          : undefined,
+      );
+    },
+    setHeader: (factory) => {
+      port.setHeader(factory);
+      surface?.port.setHeader(
+        factory ? (tui) => factory(tui as never, themeAccess.current()) as never : undefined,
+      );
+    },
     setTitle: (title) => port.setTitle(title),
-    custom: async <T>() => undefined as T,
+    custom: async <T>(
+      factory: Parameters<ExtensionUIContext["custom"]>[0],
+      options?: Parameters<ExtensionUIContext["custom"]>[1],
+    ): Promise<T> => {
+      if (!surface) return undefined as T;
+      return surface.port.custom<T>(
+        (tui, done) =>
+          factory(
+            tui as never,
+            themeAccess.current(),
+            surface.keybindings as never,
+            done as never,
+          ) as never,
+        options,
+      );
+    },
     pasteToEditor: (text) => port.pasteToEditor(text),
     setEditorText: (text) => port.setEditorText(text),
     getEditorText: () => port.getEditorText(),
@@ -237,8 +278,21 @@ export function createSdkExtensionUiContext(
       // shared type is a deliberate mirror so host evaluation can run it.
       port.addAutocompleteProvider(factory as unknown as ExtensionCompletionProviderFactory);
     },
-    setEditorComponent: (factory) => port.setEditorComponent(factory),
-    getEditorComponent: () => port.getEditorComponent() as never,
+    setEditorComponent: (factory) => {
+      port.setEditorComponent(factory);
+      surface?.port.setEditorComponent(
+        factory
+          ? (tui) =>
+              factory(
+                tui as never,
+                sdkEditorTheme(themeAccess.current()),
+                surface.keybindings as never,
+              ) as never
+          : undefined,
+      );
+    },
+    getEditorComponent: () =>
+      port.getEditorComponent() as Parameters<ExtensionUIContext["setEditorComponent"]>[0],
     get theme() {
       return themeAccess.current();
     },
@@ -249,6 +303,7 @@ export function createSdkExtensionUiContext(
       if (result.success) {
         const name = typeof themeOrName === "string" ? themeOrName : (themeOrName.name ?? "");
         if (name) port.emitTheme(name);
+        surface?.port.invalidate();
       }
       return result;
     },
@@ -276,6 +331,10 @@ export interface SdkExtensionBinderOptions {
   port: ExtensionUiPort;
   /** The host's event emitter, so errors and shutdown requests reach the app. */
   emit(event: string, payload?: unknown, sessionId?: string): void;
+  /** The step-17 TUI surface; without one the TUI members stay inert. */
+  tuiSurface?: TuiSurfacePort | null;
+  /** Reads the profile's `keybindings.json` overrides for the global manager. */
+  readKeybindings?: () => Promise<Record<string, unknown>>;
 }
 
 /**
@@ -300,12 +359,24 @@ export function createSdkExtensionBinder(
           }
         : null,
     });
-    const uiContext = createSdkExtensionUiContext(options.port, themeAccess);
+    let surface: SdkUiSurface | null = null;
+    if (options.tuiSurface) {
+      // A rebind replaces the session's extensions, so the previous surface
+      // (footer/editor/custom) must not leak into the new one.
+      options.tuiSurface.reset();
+      const user = options.readKeybindings ? await options.readKeybindings().catch(() => ({})) : {};
+      surface = {
+        port: options.tuiSurface,
+        keybindings: createSdkTuiKeybindings(user),
+        footerData: createSdkFooterData(options.port),
+      };
+    }
+    const uiContext = createSdkExtensionUiContext(options.port, themeAccess, surface);
     await session.bindExtensions({
       uiContext,
-      // Step 17 makes the TUI surface real; reporting `tui` now means an
-      // extension that branches on mode takes the same path it would in the
-      // terminal, and its unimplemented members degrade rather than throw.
+      // The TUI surface is real from step 17: reporting `tui` means an extension
+      // that branches on mode takes the terminal path, and its components render
+      // through the emulation instead of degrading.
       mode: "tui",
       commandContextActions: createSdkCommandContextActions(session, runtime),
       shutdownHandler: () => options.emit(SESSION_SHUTDOWN_REQUEST_EVENT, {}),

@@ -43,6 +43,7 @@ import {
   createSdkSettingsPort,
   createSdkShortcutRunner,
   createSdkThemePort,
+  createSdkTuiSurface,
   createThemeSettingsManager,
   hasTrustRequiringProjectResources,
   listAllSessions,
@@ -316,12 +317,41 @@ export function runService(
         : createExtensionUiPort({
             emit: (event, payload) => forward.emit(event, payload, undefined),
           });
-    const bindSession = uiPort
-      ? createSdkExtensionBinder({
-          port: uiPort,
-          emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
-        })
-      : null;
+    // The TUI surface (plan step 17) renders extension components to ANSI frames
+    // and routes the renderer's key bytes back to them. It shares the UI port's
+    // `onTerminalInput` handlers, which must run before the focused component.
+    const tuiSurface =
+      uiPort === null
+        ? null
+        : createSdkTuiSurface({
+            emit: (event, payload) => forward.emit(event, payload, undefined),
+            terminalInput: () => uiPort.terminalInputHandlers(),
+          });
+    const keybindingIo = createNodeModelsFileIo();
+    const keybindingPort = createSdkKeybindingPort({ agentDir, io: keybindingIo });
+    const readKeybindings = async (): Promise<Record<string, unknown>> => {
+      const text = await keybindingPort.read();
+      if (!text) return {};
+      try {
+        const parsed = JSON.parse(text) as unknown;
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : {};
+      } catch {
+        // A malformed keybindings.json is surfaced by the Settings view; the
+        // surface falls back to defaults rather than failing to bind.
+        return {};
+      }
+    };
+    const bindSession =
+      uiPort && tuiSurface
+        ? createSdkExtensionBinder({
+            port: uiPort,
+            tuiSurface,
+            readKeybindings,
+            emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
+          })
+        : null;
 
     const core =
       providerPort && customProviderStore
@@ -344,6 +374,7 @@ export function runService(
 
     const handlers: Partial<Record<string, HostHandler>> = { ...core.handlers() };
     if (uiPort) Object.assign(handlers, uiPort.handlers());
+    if (tuiSurface) Object.assign(handlers, tuiSurface.handlers());
 
     // Provider OAuth login is a control-host flow that reuses the `oi.respond`
     // answer path for its prompts (plan step 9, slice 3). It needs its own
@@ -381,6 +412,7 @@ export function runService(
         service.stop();
         ui.dispose("the host is shutting down");
         uiPort?.dispose("the host is shutting down");
+        tuiSurface?.dispose("the host is shutting down");
         providerLogin?.dispose();
         void core.dispose();
         // Give the response frame a tick to flush before the process ends.
