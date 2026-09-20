@@ -2,6 +2,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  BACKUP_DIR_ENV,
   BLOB_DIR_ENV,
   HOST_ROLE_ENV,
   ROLE_FLAG,
@@ -13,7 +14,12 @@ import {
 } from "../shared/host-protocol";
 import { createControlCore } from "./control-core";
 import { createExtensionUiBridge } from "./extension-ui";
-import { createNodeFileListingIo, createNodeModelsFileIo, createNodeProjectIo } from "./file-io";
+import {
+  createNodeFileListingIo,
+  createNodeModelsFileIo,
+  createNodeProjectIo,
+  createNodeSettingsFileIo,
+} from "./file-io";
 import { listWorkspaceFiles } from "./file-listing";
 import { inspectProject } from "./project-inspect";
 import { createProjectTrust } from "./project-trust";
@@ -28,7 +34,7 @@ import {
   createSdkCustomProviderStore,
   createSdkProviderPort,
   createSdkSessionRuntime,
-  createSdkSettings,
+  createSdkSettingsPort,
   hasTrustRequiringProjectResources,
   listAllSessions,
   renameStoredSession,
@@ -90,9 +96,11 @@ function createCore(options: {
   agentDir: string;
   emit: (event: string, payload?: unknown, sessionId?: string) => void;
   npmCommand?: readonly string[] | null;
+  backupDir?: string;
   bindSession?: (session: never) => Promise<void>;
 }): SessionCore {
   const trustStore = new ProjectTrustStore(options.agentDir);
+  const settingsIo = createNodeSettingsFileIo();
 
   return createSessionCore({
     cwd: options.cwd,
@@ -102,6 +110,17 @@ function createCore(options: {
     emit: options.emit,
     trustStore,
     requiresTrust: (cwd) => hasTrustRequiringProjectResources(cwd),
+    // Settings writes use the session's own manager for the session cwd, so a
+    // change is visible to this session without a second manager (plan step 12).
+    createSettingsPort: (manager) =>
+      createSdkSettingsPort({
+        agentDir: options.agentDir,
+        cwd: options.cwd,
+        io: settingsIo,
+        ...(options.backupDir ? { backupDir: options.backupDir } : {}),
+        ...(manager ? { manager: manager as never } : {}),
+        ...(options.npmCommand ? { npmCommand: options.npmCommand } : {}),
+      }),
     newSessionManager: (cwd, sessionDir) => SessionManager.create(cwd, sessionDir) as never,
     openSessionManager: (sessionFile, cwd, sessionDir) =>
       SessionManager.open(sessionFile, sessionDir, cwd) as never,
@@ -141,6 +160,7 @@ export function resolveHostRole(
 function createControlHostCore(options: {
   cwd: string;
   agentDir: string;
+  backupDir?: string;
   providers: ProviderPort;
   customProviders: CustomProviderStore;
 }) {
@@ -151,7 +171,17 @@ function createControlHostCore(options: {
   const projectIo = createNodeProjectIo();
 
   return createControlCore({
-    createSettings: () => createSdkSettings(options.cwd, options.agentDir),
+    // One port; it resolves a `SettingsManager` per project cwd on demand, so a
+    // project's settings are editable with no session open (plan step 12). Trust
+    // comes from the same store the session flow uses, so an untrusted project
+    // refuses project writes exactly as Pi does.
+    settings: createSdkSettingsPort({
+      agentDir: options.agentDir,
+      cwd: options.cwd,
+      io: createNodeSettingsFileIo(),
+      ...(options.backupDir ? { backupDir: options.backupDir } : {}),
+      isProjectTrusted: (cwd) => trust.status(cwd).trusted,
+    }),
     listSessions: () => listAllSessions(),
     // Renaming a closed session goes through `SessionManager`, the SDK's own
     // writer — the control host still never builds an `AgentSession`.
@@ -180,6 +210,7 @@ export function runService(
   env: Record<string, string | undefined> = process.env,
 ): Promise<void> {
   const blobDir = env[BLOB_DIR_ENV]?.trim() || BLOB_DIR_DEFAULT;
+  const backupDir = env[BACKUP_DIR_ENV]?.trim() || undefined;
   const agentDir = env.PI_CODING_AGENT_DIR?.trim() || join(process.cwd(), ".pi", "agent");
   const bridgePort = flagValue(args, "--port") ?? env.PI_OFFICE_BRIDGE_PORT ?? null;
   const cwd = flagValue(args, "--cwd") ?? process.cwd();
@@ -207,12 +238,14 @@ export function runService(
         ? createControlHostCore({
             cwd,
             agentDir,
+            ...(backupDir ? { backupDir } : {}),
             providers: providerPort,
             customProviders: customProviderStore,
           })
         : createCore({
             cwd,
             agentDir,
+            ...(backupDir ? { backupDir } : {}),
             emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
           });
 

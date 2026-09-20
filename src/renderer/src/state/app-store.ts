@@ -27,6 +27,20 @@ import {
 } from "../../../shared/providers";
 import type { CustomProviderInput, CustomProviderSummary } from "../../../shared/custom-providers";
 import {
+  findSettingsField,
+  getSettingsValue,
+  mergeSettingsScopes,
+  settingsDefaultsDocument,
+  type SettingsValue,
+} from "../../../shared/settings-schema";
+import type {
+  SettingsErrorInfo,
+  SettingsFileStatus,
+  SettingsScope,
+  SettingsScopes,
+  SettingsSnapshot,
+} from "../../../shared/settings";
+import {
   CONTROL_TAB_ID,
   type CreateTabInput,
   type SessionEventEnvelope,
@@ -291,6 +305,40 @@ export interface AppStateShape {
   saveCustomProvider: (input: CustomProviderInput) => Promise<void>;
   deleteCustomProvider: (providerId: string) => Promise<void>;
 
+  /** Pi settings (plan step 12): both scopes, edited through the control host. */
+  settingsCwd: string | null;
+  settings: SettingsScopes | null;
+  settingsLoaded: boolean;
+  settingsBusy: boolean;
+  settingsError: string | null;
+  settingsErrors: SettingsErrorInfo[];
+  settingsFiles: { global: SettingsFileStatus; project: SettingsFileStatus } | null;
+  settingsProjectTrusted: boolean;
+  /** File mtimes captured with the snapshot, to detect a terminal-Pi edit. */
+  settingsMtimes: { global: number | null; project: number | null };
+  settingsExternalEdit: boolean;
+  loadSettings: (options?: { refresh?: boolean }) => Promise<void>;
+  /**
+   * Writes one key in one scope. Returns false (and records `settingsError`)
+   * when the value is invalid or the project is not trusted.
+   */
+  setSetting: (key: string, value: unknown, scope: SettingsScope) => Promise<boolean>;
+  writeRawSettings: (
+    scope: SettingsScope,
+    document: string | Record<string, unknown>,
+  ) => Promise<boolean>;
+  flushSettings: () => Promise<void>;
+  /** Re-reads both scopes from disk and clears the external-edit flag. */
+  reloadSettings: () => Promise<void>;
+  /** Compares the files' mtimes with the loaded snapshot; true when they differ. */
+  checkExternalSettingsEdit: () => Promise<boolean>;
+  /** Writes the documented default (or deletes the key when it has none). */
+  resetSetting: (key: string, scope: SettingsScope) => Promise<void>;
+  /** Resets a scope: global to the documented defaults, project to no overrides. */
+  resetScope: (scope: SettingsScope) => Promise<void>;
+  /** The effective value of a key, with the project override winning. */
+  effectiveSetting: (key: string) => SettingsValue | undefined;
+
   createSessionTab: () => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
@@ -381,6 +429,33 @@ function bridge(): Window["pi"] | undefined {
   return typeof window === "undefined" ? undefined : window.pi;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Turns a `settings.*` snapshot into the store slice it updates, so every
+ * settings action records the file mtimes for external-edit detection the same
+ * way (plan step 12).
+ */
+function settingsStateFrom(snapshot: SettingsSnapshot, cwd: string | null): Partial<AppStateShape> {
+  return {
+    settingsCwd: cwd,
+    settings: snapshot.settings,
+    settingsErrors: snapshot.errors ?? [],
+    settingsFiles: snapshot.files,
+    settingsProjectTrusted: snapshot.projectTrusted,
+    settingsMtimes: {
+      global: snapshot.files.global.mtimeMs,
+      project: snapshot.files.project.mtimeMs,
+    },
+    settingsLoaded: true,
+    settingsBusy: false,
+    settingsError: null,
+    settingsExternalEdit: false,
+  };
+}
+
 /** Returns a copy of a record without one key (used to clear an inspection error). */
 function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {
   const next = { ...record };
@@ -431,6 +506,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   providers: [],
   providersLoaded: false,
   providersError: null,
+  settingsCwd: null,
+  settings: null,
+  settingsLoaded: false,
+  settingsBusy: false,
+  settingsError: null,
+  settingsErrors: [],
+  settingsFiles: null,
+  settingsProjectTrusted: true,
+  settingsMtimes: { global: null, project: null },
+  settingsExternalEdit: false,
   providerLogin: null,
   customProviders: [],
   customProvidersLoaded: false,
@@ -1341,6 +1426,129 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       params: { action: "remove", providerId },
     });
     await get().loadCustomProviders();
+  },
+
+  // ---- Pi settings (plan step 12) ----
+
+  loadSettings: async (options) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    const cwd = get().project?.path ?? null;
+    const current = get();
+    if (!options?.refresh && current.settingsLoaded && current.settingsCwd === cwd) return;
+    set({ settingsBusy: true, settingsError: null });
+    try {
+      const snapshot = (await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "settings.get",
+        params: { cwd },
+      })) as SettingsSnapshot;
+      set(settingsStateFrom(snapshot, cwd));
+    } catch (error) {
+      set({ settingsBusy: false, settingsLoaded: true, settingsError: errorMessage(error) });
+    }
+  },
+
+  setSetting: async (key, value, scope) => {
+    const api = bridge();
+    if (!api?.sessions) {
+      set({ settingsError: "The preload bridge is unavailable." });
+      return false;
+    }
+    const cwd = get().project?.path ?? null;
+    set({ settingsBusy: true, settingsError: null });
+    try {
+      const snapshot = (await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "settings.set",
+        params: { cwd, key, value, scope },
+      })) as SettingsSnapshot;
+      set(settingsStateFrom(snapshot, cwd));
+      return true;
+    } catch (error) {
+      set({ settingsBusy: false, settingsError: errorMessage(error) });
+      return false;
+    }
+  },
+
+  writeRawSettings: async (scope, document) => {
+    const api = bridge();
+    if (!api?.sessions) {
+      set({ settingsError: "The preload bridge is unavailable." });
+      return false;
+    }
+    const cwd = get().project?.path ?? null;
+    set({ settingsBusy: true, settingsError: null });
+    try {
+      const snapshot = (await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "settings.raw",
+        params: { cwd, scope, document },
+      })) as SettingsSnapshot;
+      set(settingsStateFrom(snapshot, cwd));
+      return true;
+    } catch (error) {
+      set({ settingsBusy: false, settingsError: errorMessage(error) });
+      return false;
+    }
+  },
+
+  flushSettings: async () => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      const result = (await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "settings.flush",
+        params: { cwd: get().project?.path ?? null },
+      })) as { errors?: SettingsErrorInfo[] };
+      set({ settingsErrors: result.errors ?? [] });
+    } catch (error) {
+      set({ settingsError: errorMessage(error) });
+    }
+  },
+
+  reloadSettings: async () => {
+    set({ settingsExternalEdit: false });
+    await get().loadSettings({ refresh: true });
+  },
+
+  checkExternalSettingsEdit: async () => {
+    const api = bridge();
+    const before = get().settingsMtimes;
+    if (!api?.sessions || !get().settingsFiles) return false;
+    try {
+      const snapshot = (await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "settings.get",
+        params: { cwd: get().project?.path ?? null },
+      })) as SettingsSnapshot;
+      const external =
+        snapshot.files.global.mtimeMs !== before.global ||
+        snapshot.files.project.mtimeMs !== before.project;
+      if (external) set({ settingsExternalEdit: true });
+      return external;
+    } catch {
+      return false;
+    }
+  },
+
+  resetSetting: async (key, scope) => {
+    const field = findSettingsField(key);
+    if (!field) return;
+    await get().setSetting(key, field.default === undefined ? undefined : field.default, scope);
+  },
+
+  resetScope: async (scope) => {
+    // Global resets to Pi's documented defaults; project resets to “no overrides”.
+    const document = scope === "global" ? settingsDefaultsDocument() : {};
+    await get().writeRawSettings(scope, document);
+  },
+
+  effectiveSetting: (key) => {
+    const settings = get().settings;
+    if (!settings) return undefined;
+    return getSettingsValue(mergeSettingsScopes(settings.global, settings.project), key);
   },
 
   createSessionTab: async () => {

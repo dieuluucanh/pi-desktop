@@ -11,6 +11,7 @@ import {
   type TrustAnswer,
   type TrustStoreLike,
 } from "./project-trust";
+import { createSettingsHandlers, type SettingsPort } from "./settings";
 import type { FileListing } from "./file-listing";
 import type { HostHandler } from "./service";
 
@@ -178,6 +179,12 @@ export interface SessionCoreDeps {
   listFiles?(cwd: string, options: { limit?: number }): Promise<FileListing>;
   /** Injected by the extension UI host (plan step 6). */
   bindSession?(session: HostSession): Promise<void>;
+  /**
+   * Settings writes (plan step 12). The composition root supplies the SDK port
+   * built over this session's own manager, so `settings.set` here is visible to
+   * the session without a second manager.
+   */
+  createSettingsPort?(manager: SettingsLike | null): SettingsPort;
   emit(event: string, payload?: unknown, sessionId?: string): void;
   now?: () => number;
 }
@@ -222,6 +229,24 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   let manager: SessionManagerHandle | null = null;
   let unsubscribe: (() => void) | null = null;
   let settingsManager: SettingsLike | null = null;
+
+  /**
+   * Settings writes (plan step 12) are built lazily over whichever manager is
+   * current, so a session replacement (`rebind`) picks up the new one.
+   */
+  let settingsPort: SettingsPort | null = null;
+  let settingsPortManager: SettingsLike | null = null;
+  const resolveSettingsPort = (): SettingsPort | null => {
+    if (!deps.createSettingsPort) return null;
+    if (!settingsPort || settingsPortManager !== settingsManager) {
+      settingsPortManager = settingsManager;
+      settingsPort = deps.createSettingsPort(settingsManager);
+    }
+    return settingsPort;
+  };
+  const settingsSetHandler = createSettingsHandlers({
+    resolvePort: resolveSettingsPort,
+  }).handlers()["settings.set"];
 
   /** Events after which the app should refresh its state snapshot. */
   const STATE_EVENTS = new Set([
@@ -730,9 +755,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     },
 
     // Pi's manager exposes named setters, not a generic set(key, value); the
-    // per-key schema and writers belong to the settings mirror (step 12).
-    "settings.set": () =>
-      notImplemented("settings.set", "the per-key settings schema lands in step 12"),
+    // port writes through a named setter when one exists and through an atomic,
+    // schema-validated document edit otherwise (plan step 12).
+    "settings.set":
+      settingsSetHandler ??
+      (() => notImplemented("settings.set", "the settings port is not configured")),
     "bash.run": () =>
       notImplemented("bash.run", "direct bash runs land with the composer (step 6)"),
     "bash.abort": () =>

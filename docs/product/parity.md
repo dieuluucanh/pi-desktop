@@ -23,16 +23,16 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 
 ## Models, providers, settings
 
-| Capability                                               | Terminal Pi                | Pi Desktop                                                                                                  |
-| -------------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Model switching, per-model thinking levels               | ✅ (`/model`, `/thinking`) | ✅ step 8 (picker: grouped by provider, auth badges, search, favourites, “save as default” vs session-only) |
-| Context-usage ring, token/cost totals, rename, view mode | ✅                         | ✅ step 8                                                                                                   |
-| Provider auth: OAuth subscriptions                       | ✅ (`/login`)              | 🚧 step 9 (system browser + code paste)                                                                     |
-| Provider auth: API keys / env vars                       | ✅ (`auth.json`)           | 🚧 step 9 (write-only UI)                                                                                   |
-| Custom models & gateways (`models.json`)                 | ✅                         | 🚧 step 9                                                                                                   |
-| Every `settings.json` key, global + project              | ✅                         | 🚧 step 12                                                                                                  |
-| `keybindings.json`, themes, skills, prompt templates     | ✅                         | 🚧 step 15                                                                                                  |
-| Proxy / offline (`httpProxy`, `PI_OFFLINE`)              | ✅                         | 🚧 steps 9, 12                                                                                              |
+| Capability                                               | Terminal Pi                | Pi Desktop                                                                                                                                                                   |
+| -------------------------------------------------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Model switching, per-model thinking levels               | ✅ (`/model`, `/thinking`) | ✅ step 8 (picker: grouped by provider, auth badges, search, favourites, “save as default” vs session-only)                                                                  |
+| Context-usage ring, token/cost totals, rename, view mode | ✅                         | ✅ step 8                                                                                                                                                                    |
+| Provider auth: OAuth subscriptions                       | ✅ (`/login`)              | 🚧 step 9 (system browser + code paste)                                                                                                                                      |
+| Provider auth: API keys / env vars                       | ✅ (`auth.json`)           | 🚧 step 9 (write-only UI)                                                                                                                                                    |
+| Custom models & gateways (`models.json`)                 | ✅                         | 🚧 step 9                                                                                                                                                                    |
+| Every `settings.json` key, global + project              | ✅                         | ✅ step 12 (schema pinned to Pi's `docs/settings.md`; grouped editors, scope per key, raw JSON + diff, backup before first write)                                            |
+| `keybindings.json`, themes, skills, prompt templates     | ✅                         | 🚧 step 15                                                                                                                                                                   |
+| Proxy / offline (`httpProxy`, `PI_OFFLINE`)              | ✅                         | 🚧 `httpProxy` ✅ step 12; the `PI_OFFLINE` toggle lands with the offline banner in step 22 (it is process env, not a settings key, and cannot affect already-spawned hosts) |
 
 ## Extensions and packages
 
@@ -49,13 +49,13 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 
 ## Context and input
 
-| Capability                              | Terminal Pi           | Pi Desktop                                                                            |
-| --------------------------------------- | --------------------- | ------------------------------------------------------------------------------------- |
-| `@file` references with completion      | ✅                    | ✅ step 7 (rooted at the session's own cwd)                                           |
-| `/` commands (extension, prompt, skill) | ✅                    | ✅ step 7 (app commands + host commands; a name both claim is listed with its source) |
-| Images: paste / drag into the prompt    | ✅                    | ✅ step 6                                                                             |
-| `#document` Office mentions             | ✅ (bridge extension) | 🚧 step 20 (the provider ships in step 7; step 20 supplies the document registry)     |
-| External editor for long prompts        | ✅                    | 🚧 step 12 (the setting and a validated spawn land with the settings mirror)          |
+| Capability                              | Terminal Pi           | Pi Desktop                                                                                                                                                |
+| --------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@file` references with completion      | ✅                    | ✅ step 7 (rooted at the session's own cwd)                                                                                                               |
+| `/` commands (extension, prompt, skill) | ✅                    | ✅ step 7 (app commands + host commands; a name both claim is listed with its source)                                                                     |
+| Images: paste / drag into the prompt    | ✅                    | ✅ step 6                                                                                                                                                 |
+| `#document` Office mentions             | ✅ (bridge extension) | 🚧 step 20 (the provider ships in step 7; step 20 supplies the document registry)                                                                         |
+| External editor for long prompts        | ✅                    | 🚧 setting ✅ step 12; the validated spawn lands with step 22 (reliability/cancellation), so the key is editable but the Ctrl+G launcher is not wired yet |
 
 ## Office
 

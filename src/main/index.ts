@@ -123,6 +123,7 @@ const hosts = runtime.nodePath
       binDir: runtime.binDir,
       logDir: paths.logs,
       blobDir: paths.blobCache,
+      backupDir: join(paths.userData, "backups"),
       profileDir: paths.profileDir,
     })
   : null;

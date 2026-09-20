@@ -9,45 +9,28 @@ import { createProjectHandlers, PROJECT_METHODS } from "./project-handlers";
 import type { ProjectTrust } from "./project-trust";
 import { createProviderHandlers, PROVIDER_METHODS, type ProviderPort } from "./providers";
 import { resolveListedSession, SessionFileError } from "./session-files";
+import { createSettingsHandlers, SETTINGS_METHODS, type SettingsPort } from "./settings";
 import type { HostHandler } from "./service";
 
 /**
  * The control core (plan step 3, decision D-A3).
  *
- * A control host serves app-wide state — settings, and (from step 4) providers,
- * packages and file listings — and **never constructs an `AgentSession`**: it
- * exists so the welcome screen, onboarding and the Extensions hub can work before
- * (or without) any session.
+ * A control host serves app-wide state — settings (plan step 12) and, since
+ * step 4/9/10, providers, packages, projects and session listings — and **never
+ * constructs an `AgentSession`**: it exists so the welcome screen, onboarding and
+ * the Extensions hub can work before (or without) any session.
  *
- * Both dependencies are injected, so this module has no SDK import and a test can
+ * Every dependency is injected, so this module has no SDK import and a test can
  * prove that a control host never reaches for a session runtime.
  */
 
 /**
- * One settings scope as Pi hands it over (the SDK's `Settings`). Its fields
- * belong to Pi, so the app-side type stays structural; the settings schema in
- * step 12 is what gives them names.
+ * The settings surface the control host drives (plan step 12). Reads and errors
+ * come from Pi's manager; writes are the port's concern so the SDK stays behind
+ * `src/host/sdk/*`.
  */
-export type SettingsScope = object;
-
-/**
- * The settings surface a control host needs.
- *
- * Deliberately the two scopes rather than a merged object: Pi keeps global
- * (`~/.pi/agent/settings.json`) and project (`<cwd>/.pi/settings.json`) settings
- * apart with nested-merge semantics, and the settings UI (step 12) has to show
- * and edit both. Inventing a merge here would hide which scope wins.
- */
-export interface SettingsManagerLike {
-  getGlobalSettings?(): SettingsScope;
-  getProjectSettings?(): SettingsScope;
-  flush?(): Promise<void>;
-  drainErrors?(): unknown[];
-}
-
 export interface ControlCoreDeps {
-  /** Creates the settings manager on first use (never at construction). */
-  createSettings(): SettingsManagerLike;
+  settings: SettingsPort;
   /** Lists every session of the profile (all projects), for the session browser. */
   listSessions(): Promise<unknown[]>;
   /**
@@ -72,8 +55,7 @@ export interface ControlCoreDeps {
 
 /** The methods a control host answers. Everything else stays `not_implemented`. */
 export const CONTROL_METHODS: readonly HostMethod[] = [
-  "settings.get",
-  "settings.raw",
+  ...SETTINGS_METHODS,
   "session.list",
   "session.delete",
   "session.rename",
@@ -93,29 +75,11 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 export function createControlCore(deps: ControlCoreDeps): ControlCore {
-  let settings: SettingsManagerLike | null = null;
-
-  const settingsManager = (): SettingsManagerLike => {
-    settings ??= deps.createSettings();
-    return settings;
-  };
-
-  const readScopes = (
-    manager: SettingsManagerLike,
-  ): { global: SettingsScope; project: SettingsScope } => ({
-    global: manager.getGlobalSettings?.() ?? {},
-    project: manager.getProjectSettings?.() ?? {},
-  });
-
   return {
     role: "control",
 
     handlers: () => ({
-      "settings.get": () => ({
-        settings: readScopes(settingsManager()),
-        errors: settingsManager().drainErrors?.() ?? [],
-      }),
-      "settings.raw": () => ({ settings: readScopes(settingsManager()) }),
+      ...createSettingsHandlers({ resolvePort: () => deps.settings }).handlers(),
       "session.list": async () => ({ sessions: await deps.listSessions() }),
       // Validation only: the app performs the recoverable delete with the OS
       // trash API, which a host process does not have (see `session-files.ts`).
@@ -147,14 +111,11 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
     }),
 
     dispose: async () => {
-      const current = settings;
-      settings = null;
-      if (current?.flush) {
-        try {
-          await current.flush();
-        } catch {
-          // A failed flush of read-only app state must not block shutdown.
-        }
+      // A failed flush of settings must not block shutdown.
+      try {
+        await deps.settings.flush(null);
+      } catch {
+        // Intentionally ignored: the write path already surfaces its own errors.
       }
     },
   };

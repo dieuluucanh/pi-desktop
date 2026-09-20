@@ -457,10 +457,10 @@ describe("settings", () => {
     await expect(call("settings.flush")).resolves.toMatchObject({ flushed: true });
   });
 
-  it("says plainly which settings work is still missing", async () => {
+  it("says plainly when the host has no settings port", async () => {
     const { call } = await started();
     await expect(call("settings.set", { key: "theme", value: "light" })).rejects.toThrow(
-      /settings\.set is not implemented yet/i,
+      /settings are not available/i,
     );
   });
 });

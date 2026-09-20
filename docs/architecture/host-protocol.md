@@ -49,8 +49,9 @@ truth and supersedes the group table's implications.
   (38617 for the Office host, 38618+ otherwise, plan D10), `PI_DESKTOP_SESSION_ID`,
   `PI_DESKTOP_HOST_ROLE` (`control` = app-wide state and no `AgentSession`,
   `session` = one Pi session; plan D-A3),
-  `PI_DESKTOP_BLOB_DIR`, `PI_DESKTOP_NODE` / `PI_DESKTOP_HOST_ENTRY`, and `PATH`
-  prefixed with the shim directory.
+  `PI_DESKTOP_BLOB_DIR`, `PI_DESKTOP_BACKUP_DIR` (where a host copies a file
+  before rewriting it; plan step 12), `PI_DESKTOP_NODE` /
+  `PI_DESKTOP_HOST_ENTRY`, and `PATH` prefixed with the shim directory.
 - `host.hello` reports protocol version, node/pi version, cwd, bridge port and
   pid/ppid. A protocol mismatch is logged, not fatal (risk R8).
 
@@ -73,30 +74,52 @@ so the whole supervisor is unit tested against a scripted fake host
 (`tests/main/host-supervisor.test.ts`), and `tests/host/service.live.test.ts`
 drives the real bundle when `out/host/index.mjs` has been built.
 
-## Implementation status (2026-09-20, after plan step 4)
+## Implementation status (2026-09-20, after plan step 12)
 
 ### Wired and tested
 
-| Group             | Methods                                                                                                                                                                                                                                                                                         | Where                                                  |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| transport         | `host.hello` (reports `role`), `host.ping`, `host.shutdown`, `host.blobs.read`                                                                                                                                                                                                                  | `src/host/service.ts`                                  |
-| sessions          | `session.create`, `session.open`, `session.resume`, `session.list`, `session.new`, `session.switch`, `session.clone`, `session.fork`, `session.forkMessages`, `session.rename`, `session.reload`, `session.lastAssistantText`, `session.exportHtml`, `session.navigateTree`, `session.setLabel` | `src/host/session-core.ts`                             |
-| conversation      | `prompt` (images + `streamingBehavior`), `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                                                             | `src/host/session-core.ts`                             |
-| state             | `state.get`, `messages.get`, `entries.get` (`since` cursor), `tree.get`, `stats.get` (`contextUsage`, `tokens`, queue modes), `compact`, `tools.list`, `tools.setActive`, `commands.list`, `files.list` (workspace listing for `@` completion, rooted at the session's own cwd)                 | `src/host/session-core.ts`                             |
-| models & thinking | `model.list`, `model.available`, `model.set`, `model.cycle`, `thinking.levels`, `thinking.set`, `thinking.cycle`                                                                                                                                                                                | `src/host/session-core.ts`                             |
-| session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`                                                                                                                                                                                                        | `src/host/session-core.ts`                             |
-| settings          | `settings.get`, `settings.raw`, `settings.flush` (returns **both** scopes: `{global, project}`)                                                                                                                                                                                                 | `src/host/session-core.ts`, `src/host/control-core.ts` |
-| control host      | `settings.get/raw`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `project.inspect`, `project.trust`                                                                               | `src/host/control-core.ts`                             |
-| extension UI      | `oi.respond` + `oi.request` events                                                                                                                                                                                                                                                              | `src/host/extension-ui.ts`                             |
+| Group             | Methods                                                                                                                                                                                                                                                                                                                                                                                | Where                                                              |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| transport         | `host.hello` (reports `role`), `host.ping`, `host.shutdown`, `host.blobs.read`                                                                                                                                                                                                                                                                                                         | `src/host/service.ts`                                              |
+| sessions          | `session.create`, `session.open`, `session.resume`, `session.list`, `session.new`, `session.switch`, `session.clone`, `session.fork`, `session.forkMessages`, `session.rename`, `session.reload`, `session.lastAssistantText`, `session.exportHtml`, `session.navigateTree`, `session.setLabel`                                                                                        | `src/host/session-core.ts`                                         |
+| conversation      | `prompt` (images + `streamingBehavior`), `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                                                                                                                                                    | `src/host/session-core.ts`                                         |
+| state             | `state.get`, `messages.get`, `entries.get` (`since` cursor), `tree.get`, `stats.get` (`contextUsage`, `tokens`, queue modes), `compact`, `tools.list`, `tools.setActive`, `commands.list`, `files.list` (workspace listing for `@` completion, rooted at the session's own cwd)                                                                                                        | `src/host/session-core.ts`                                         |
+| models & thinking | `model.list`, `model.available`, `model.set`, `model.cycle`, `thinking.levels`, `thinking.set`, `thinking.cycle`                                                                                                                                                                                                                                                                       | `src/host/session-core.ts`                                         |
+| session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`                                                                                                                                                                                                                                                                                               | `src/host/session-core.ts`                                         |
+| settings          | `settings.get`, `settings.set`, `settings.raw` (read **or** write a whole scope), `settings.flush`; every response carries **both** scopes, the two file paths + mtimes, `drainErrors` and the project-trust flag. Writes are schema-validated: a named `SettingsManager` setter when Pi has one, otherwise an atomic whole-document edit, always with a backup before the first write | `src/host/settings.ts` + `src/host/sdk/settings.ts`, in both cores |
+| control host      | `settings.*`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `project.inspect`, `project.trust`                                                                                                                                                                            | `src/host/control-core.ts`                                         |
+| extension UI      | `oi.respond` + `oi.request` events                                                                                                                                                                                                                                                                                                                                                     | `src/host/extension-ui.ts`                                         |
 
 ### Declared and answering `not_implemented` (with the owning step)
 
 | Methods                     | Step |
 | --------------------------- | ---- |
-| `settings.set`              | 12   |
 | `bash.run`, `bash.abort`    | 6    |
 | `packages.*`                | 14   |
 | `files.read`, `files.write` | 20   |
+
+### Settings (plan step 12)
+
+`settings.set` takes `{cwd?, key, value, scope}` and `settings.raw` takes
+`{cwd?, scope, document}` (with no `document`, `settings.raw` still reads).
+`src/shared/settings-schema.ts` is the single key list, pinned to Pi's own
+`docs/settings.md` by `tests/shared/settings-schema.test.ts`, so the app can
+neither invent a key nor drop a documented one.
+
+Pi's `SettingsManager` has **named setters**, not `set(key, value)`, and only its
+resource keys have project-scope writers, so the port writes two ways:
+
+- a named setter when Pi has one (this is why `enableAnalytics` still generates
+  `trackingId`); a global-only key written to the project scope is refused;
+- otherwise an atomic, schema-validated **document edit** — parse (refuse a
+  malformed file), back up once, replace via temp file + rename, `reload()` the
+  manager and revert the previous bytes if Pi cannot load the result. This is the
+  only way to write project-scope keys the SDK has no setter for, and it is the
+  same shape `providers.custom` uses for `models.json`.
+
+`cwd` selects the project whose `.pi/settings.json` is read and written; the
+manager is created with the project's real trust status, so an untrusted project
+refuses project writes exactly as Pi does.
 
 ### RPC mapping (the parity test pins this)
 

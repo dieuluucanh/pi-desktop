@@ -2,6 +2,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { basename, join } from "node:path";
 import {
+  BACKUP_DIR_ENV,
   BLOB_DIR_ENV,
   HOST_PROTOCOL_VERSION,
   HOST_ROLE_ENV,
@@ -108,6 +109,12 @@ export interface HostSupervisorOptions {
   binDir: string;
   logDir: string;
   blobDir: string;
+  /**
+   * Where a host copies files before rewriting them (plan step 12). Optional so
+   * a supervisor without a userData path still spawns hosts; settings writes
+   * then simply skip the backup.
+   */
+  backupDir?: string;
   /** Base environment (the process env of the app). */
   env?: Record<string, string | undefined>;
   profileDir: string;
@@ -285,6 +292,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
           : options.binDir;
       env.PI_DESKTOP_NODE = options.nodePath;
       env.PI_DESKTOP_HOST_ENTRY = options.hostPath;
+      if (options.backupDir) env[BACKUP_DIR_ENV] = options.backupDir;
 
       const args = [
         options.hostPath,

@@ -3,6 +3,7 @@ import { createControlCore, CONTROL_METHODS } from "../../src/host/control-core"
 import { createProjectHandlers, ProjectError } from "../../src/host/project-handlers";
 import { createProjectTrust } from "../../src/host/project-trust";
 import type { ProjectInspection } from "../../src/shared/projects";
+import { createFakeSettings } from "./fake-settings";
 
 const CWD = "C:/work/app";
 
@@ -101,7 +102,7 @@ describe("project handlers", () => {
 
   it("is exposed by the control core and declared in CONTROL_METHODS", () => {
     const core = createControlCore({
-      createSettings: () => ({}),
+      settings: createFakeSettings(),
       listSessions: async () => [],
       projectInspect: async () => INSPECTION,
       trust: trustWith(true),

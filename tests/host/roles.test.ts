@@ -1,28 +1,25 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import {
-  createControlCore,
-  CONTROL_METHODS,
-  type SettingsManagerLike,
-} from "../../src/host/control-core";
+import { createControlCore, CONTROL_METHODS } from "../../src/host/control-core";
 import { resolveHostRole } from "../../src/host/index";
 import { createHostService } from "../../src/host/service";
+import { createFakeSettings } from "./fake-settings";
 
 /**
  * Host roles (plan step 3, decision D-A3).
  *
  * A control host serves app-wide state and must never be able to run a session;
  * a session host owns exactly one Pi session. This is the guard that keeps the
- * two cores from drifting into one another.
+ * two cores from drifting into one another. Settings (plan step 12) are supplied
+ * as an in-memory port.
  */
 
-function fakeSettings(): SettingsManagerLike {
-  return {
-    getGlobalSettings: () => ({ theme: "dark", model: "test-model" }),
-    getProjectSettings: () => ({ defaultTools: ["read"] }),
-    drainErrors: () => [{ message: "one settings warning" }],
-    flush: vi.fn(async () => undefined),
-  };
+function fakeSettings() {
+  return createFakeSettings({
+    global: { theme: "dark", model: "test-model" },
+    project: { defaultTools: ["read"] },
+    errors: [{ scope: "global", message: "one settings warning" }],
+  });
 }
 
 function memoryStreams(): {
@@ -65,14 +62,14 @@ describe("resolveHostRole", () => {
 
 describe("control core", () => {
   it("declares exactly the app-wide methods", () => {
-    const core = createControlCore({ createSettings: fakeSettings, listSessions: async () => [] });
+    const core = createControlCore({ settings: fakeSettings(), listSessions: async () => [] });
     expect(Object.keys(core.handlers()).sort()).toEqual([...CONTROL_METHODS].sort());
     expect(Object.keys(core.handlers())).not.toContain("prompt");
     expect(core.role).toBe("control");
   });
 
   it("returns both settings scopes rather than an invented merge", async () => {
-    const core = createControlCore({ createSettings: fakeSettings, listSessions: async () => [] });
+    const core = createControlCore({ settings: fakeSettings(), listSessions: async () => [] });
     const result = (await core.handlers()["settings.get"]?.({}, {} as never)) as {
       settings: { global: unknown; project: unknown };
       errors: unknown[];
@@ -82,19 +79,19 @@ describe("control core", () => {
     expect(result.errors).toHaveLength(1);
   });
 
-  it("creates the settings manager lazily, not at construction", async () => {
-    const createSettings = vi.fn(fakeSettings);
-    const core = createControlCore({ createSettings, listSessions: async () => [] });
-    expect(createSettings).not.toHaveBeenCalled();
+  it("reads settings only when asked, not at construction", async () => {
+    const settings = fakeSettings();
+    const core = createControlCore({ settings, listSessions: async () => [] });
+    expect(settings.read).not.toHaveBeenCalled();
     await core.handlers()["settings.raw"]?.({}, {} as never);
-    expect(createSettings).toHaveBeenCalledTimes(1);
+    expect(settings.read).toHaveBeenCalledTimes(1);
     await core.handlers()["settings.raw"]?.({}, {} as never);
-    expect(createSettings).toHaveBeenCalledTimes(1);
+    expect(settings.read).toHaveBeenCalledTimes(2);
   });
 
   it("lists every session of the profile", async () => {
     const listSessions = vi.fn(async () => [{ sessionId: "a" }, { sessionId: "b" }]);
-    const core = createControlCore({ createSettings: fakeSettings, listSessions });
+    const core = createControlCore({ settings: fakeSettings(), listSessions });
     const result = (await core.handlers()["session.list"]?.({}, {} as never)) as {
       sessions: unknown[];
     };
@@ -106,7 +103,7 @@ describe("control core", () => {
     const listSessions = async (): Promise<unknown[]> => [
       { path: "/profile/sessions/--a--/s1.jsonl" },
     ];
-    const core = createControlCore({ createSettings: fakeSettings, listSessions });
+    const core = createControlCore({ settings: fakeSettings(), listSessions });
     const resolve = core.handlers()["session.delete"];
     await expect(
       resolve?.({ sessionFile: "/profile/sessions/--a--/s1.jsonl" }, {} as never),
@@ -121,7 +118,7 @@ describe("control core", () => {
 describe("a control host over the protocol", () => {
   it("reports its role and refuses session methods", async () => {
     const streams = memoryStreams();
-    const core = createControlCore({ createSettings: fakeSettings, listSessions: async () => [] });
+    const core = createControlCore({ settings: fakeSettings(), listSessions: async () => [] });
     const service = createHostService({
       stdin: streams.stdin,
       stdout: streams.stdout,

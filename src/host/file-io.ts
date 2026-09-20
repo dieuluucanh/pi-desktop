@@ -14,6 +14,7 @@ import { dirname } from "node:path";
 import type { ModelsFileIo } from "./custom-providers";
 import type { DirectoryEntry, FileListingIo } from "./file-listing";
 import type { ProjectIo } from "./project-inspect";
+import type { SettingsFileIo } from "./settings";
 
 /**
  * Atomic `models.json` access (plan step 9, slice 5). A temp file in the same
@@ -45,6 +46,50 @@ export function createNodeModelsFileIo(): ModelsFileIo {
 
     async delete(path: string): Promise<void> {
       await unlink(path).catch(() => undefined);
+    },
+  };
+}
+
+/**
+ * Atomic `settings.json` access (plan step 12). Same temp-file + rename rule as
+ * `models.json`: a crashed write can never truncate the shared profile's
+ * settings, and `stat` gives the renderer the mtime it needs to notice that
+ * terminal Pi edited the same file.
+ */
+export function createNodeSettingsFileIo(): SettingsFileIo {
+  return {
+    async read(path: string): Promise<string | null> {
+      try {
+        return await readFile(path, "utf8");
+      } catch {
+        return null;
+      }
+    },
+
+    async write(path: string, text: string): Promise<void> {
+      await mkdir(dirname(path), { recursive: true });
+      const temporary = `${path}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(temporary, text, { encoding: "utf8", mode: 0o600 });
+        await rename(temporary, path);
+      } catch (error) {
+        await unlink(temporary).catch(() => undefined);
+        throw error;
+      }
+    },
+
+    async delete(path: string): Promise<void> {
+      await unlink(path).catch(() => undefined);
+    },
+
+    async stat(path: string): Promise<{ mtimeMs: number; size: number } | null> {
+      try {
+        const info = await stat(path);
+        if (!info.isFile()) return null;
+        return { mtimeMs: info.mtimeMs, size: info.size };
+      } catch {
+        return null;
+      }
     },
   };
 }

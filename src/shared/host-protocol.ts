@@ -20,6 +20,9 @@ export const BLOB_SPILL_THRESHOLD_BYTES = 1024 * 1024;
 /** Environment variable telling a host where to spill oversized payloads. */
 export const BLOB_DIR_ENV = "PI_DESKTOP_BLOB_DIR";
 
+/** Environment variable telling a host where to back up files before writing them. */
+export const BACKUP_DIR_ENV = "PI_DESKTOP_BACKUP_DIR";
+
 /** Selects the host service instead of the `pi` CLI (plan D16). */
 export const SERVICE_FLAG = "--service";
 export const SERVICE_ENV = "PI_DESKTOP_HOST_MODE";
