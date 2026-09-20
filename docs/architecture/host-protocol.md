@@ -27,7 +27,7 @@ truth and supersedes the group table's implications.
 | conversation  | `prompt`, `steer`, `followUp`, `abort`, `clearQueue`                                                                                |
 | state         | `state.get`, `messages.get`, `entries.get`, `tree.get`, `stats.get`, `compact`, `commands.list`, `tools.*`, `model.*`, `thinking.*` |
 | configuration | `settings.*`, `providers.*`, `packages.*`                                                                                           |
-| other         | `oi.respond` (extension UI answers), `files.*`                                                                                      |
+| other         | `oi.respond` (extension UI answers), `files.list`                                                                                   |
 
 ## Framing rules
 
@@ -77,26 +77,27 @@ drives the real bundle when `out/host/index.mjs` has been built.
 
 ### Wired and tested
 
-| Group             | Methods                                                                                                                                                                                                                       | Where                                                  |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| transport         | `host.hello` (reports `role`), `host.ping`, `host.shutdown`, `host.blobs.read`                                                                                                                                                | `src/host/service.ts`                                  |
-| sessions          | `session.create`, `session.open`, `session.resume`, `session.list`, `session.new`, `session.switch`, `session.clone`, `session.fork`, `session.forkMessages`, `session.rename`, `session.reload`, `session.lastAssistantText` | `src/host/session-core.ts`                             |
-| conversation      | `prompt` (images + `streamingBehavior`), `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                           | `src/host/session-core.ts`                             |
-| state             | `state.get`, `messages.get`, `entries.get` (`since` cursor), `tree.get`, `stats.get` (`contextUsage`, `tokens`, queue modes), `compact`, `tools.list`, `tools.setActive`, `commands.list`                                     | `src/host/session-core.ts`                             |
-| models & thinking | `model.list`, `model.available`, `model.set`, `model.cycle`, `thinking.levels`, `thinking.set`, `thinking.cycle`                                                                                                              | `src/host/session-core.ts`                             |
-| session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`                                                                                                                                      | `src/host/session-core.ts`                             |
-| settings          | `settings.get`, `settings.raw`, `settings.flush` (returns **both** scopes: `{global, project}`)                                                                                                                               | `src/host/session-core.ts`, `src/host/control-core.ts` |
-| control host      | `settings.get/raw`, `session.list` (all projects)                                                                                                                                                                             | `src/host/control-core.ts`                             |
-| extension UI      | `oi.respond` + `oi.request` events                                                                                                                                                                                            | `src/host/extension-ui.ts`                             |
+| Group             | Methods                                                                                                                                                                                                                                                                         | Where                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| transport         | `host.hello` (reports `role`), `host.ping`, `host.shutdown`, `host.blobs.read`                                                                                                                                                                                                  | `src/host/service.ts`                                  |
+| sessions          | `session.create`, `session.open`, `session.resume`, `session.list`, `session.new`, `session.switch`, `session.clone`, `session.fork`, `session.forkMessages`, `session.rename`, `session.reload`, `session.lastAssistantText`                                                   | `src/host/session-core.ts`                             |
+| conversation      | `prompt` (images + `streamingBehavior`), `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                                             | `src/host/session-core.ts`                             |
+| state             | `state.get`, `messages.get`, `entries.get` (`since` cursor), `tree.get`, `stats.get` (`contextUsage`, `tokens`, queue modes), `compact`, `tools.list`, `tools.setActive`, `commands.list`, `files.list` (workspace listing for `@` completion, rooted at the session's own cwd) | `src/host/session-core.ts`                             |
+| models & thinking | `model.list`, `model.available`, `model.set`, `model.cycle`, `thinking.levels`, `thinking.set`, `thinking.cycle`                                                                                                                                                                | `src/host/session-core.ts`                             |
+| session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`                                                                                                                                                                                        | `src/host/session-core.ts`                             |
+| settings          | `settings.get`, `settings.raw`, `settings.flush` (returns **both** scopes: `{global, project}`)                                                                                                                                                                                 | `src/host/session-core.ts`, `src/host/control-core.ts` |
+| control host      | `settings.get/raw`, `session.list` (all projects)                                                                                                                                                                                                                               | `src/host/control-core.ts`                             |
+| extension UI      | `oi.respond` + `oi.request` events                                                                                                                                                                                                                                              | `src/host/extension-ui.ts`                             |
 
 ### Declared and answering `not_implemented` (with the owning step)
 
-| Methods                                | Step       |
-| -------------------------------------- | ---------- |
-| `settings.set`                         | 12         |
-| `session.delete`, `session.exportHtml` | 11         |
-| `bash.run`, `bash.abort`               | 6          |
-| `providers.*`, `packages.*`, `files.*` | 9 / 14 / 7 |
+| Methods                                | Step   |
+| -------------------------------------- | ------ |
+| `settings.set`                         | 12     |
+| `session.delete`, `session.exportHtml` | 11     |
+| `bash.run`, `bash.abort`               | 6      |
+| `providers.*`, `packages.*`            | 9 / 14 |
+| `files.read`, `files.write`            | 20     |
 
 ### RPC mapping (the parity test pins this)
 
@@ -122,4 +123,4 @@ drives the real bundle when `out/host/index.mjs` has been built.
 Host methods with **no** RPC equivalent (the app needs them, RPC does not):
 `host.*`, `session.list`, `session.create/open/resume/reload/delete/exportHtml`,
 `session.queueMode`'s single envelope, `providers.runtimeKey/refresh/custom`,
-`packages.*`, `files.*`, `settings.*`.
+`packages.*`, `files.list`, `settings.*`.

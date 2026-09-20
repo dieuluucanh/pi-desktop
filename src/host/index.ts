@@ -13,6 +13,8 @@ import {
 } from "../shared/host-protocol";
 import { createControlCore } from "./control-core";
 import { createExtensionUiBridge } from "./extension-ui";
+import { createNodeFileListingIo } from "./file-io";
+import { listWorkspaceFiles } from "./file-listing";
 import { createSessionCore, type SessionCore } from "./session-core";
 import { createHostService, type HostHandler, type HostService } from "./service";
 import {
@@ -96,6 +98,7 @@ function createCore(options: {
     openSessionManager: (sessionFile, cwd, sessionDir) =>
       SessionManager.open(sessionFile, sessionDir, cwd) as never,
     listSessions: (cwd) => SessionManager.list(cwd) as Promise<never[]>,
+    listFiles: (cwd, options) => listWorkspaceFiles(createNodeFileListingIo(), cwd, options),
     createRuntime: async (request) => {
       // Annotated with the adapter's own parameter type: if the SDK adapter ever
       // requires another field, this line fails to compile instead of drifting.

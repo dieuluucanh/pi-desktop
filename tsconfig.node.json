@@ -21,10 +21,14 @@
     "src/preload/**/*.ts",
     "src/host/**/*.ts",
     "src/shared/**/*.ts",
+    // The completion engine is pure (no DOM, no React): the node project checks it
+    // and `tests/completion/**` runs it without a DOM (plan step 7). The overlay
+    // (.tsx) stays in the renderer project.
+    "src/renderer/src/completion/**/*.ts",
     "tests/**/*.ts",
     "electron.vite.config.ts",
     "vite.host.config.ts",
     "vitest.config.ts"
   ],
-  "exclude": ["tests/renderer/**", "tests/e2e/**"]
+  "exclude": ["tests/renderer/**", "tests/e2e/**", "src/renderer/src/completion/**/*.tsx"]
 }

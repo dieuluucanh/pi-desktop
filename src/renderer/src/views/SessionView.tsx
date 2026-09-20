@@ -1,9 +1,13 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { Composer } from "../session/Composer";
 import { Transcript } from "../session/Transcript";
 import { Badge } from "../ui/badge";
 import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
+import { createCommandProvider } from "../completion/command-source";
+import { createDocumentProvider } from "../completion/document-source";
+import { createFileProvider } from "../completion/file-source";
+import { createCompletionProvider } from "../completion/stack";
 import type { TabStatus } from "../../../shared/session-ipc";
 
 /**
@@ -63,6 +67,26 @@ export function SessionView() {
   const historyStep = useAppStore((state) => state.historyStep);
   const drafts = useAppStore((state) => state.prefs.drafts);
   const sendModes = useAppStore((state) => state.sendModes);
+  const loadCommands = useAppStore((state) => state.loadCommands);
+  const loadFiles = useAppStore((state) => state.loadFiles);
+
+  /**
+   * The completion stack for this tab (plan step 7): commands from the host's
+   * `commands.list`, files from `files.list` (rooted at this session's cwd) and
+   * `#` documents, which stay empty until the Office registry arrives in step 20.
+   * Extension providers are added by the host in step 16 through the same
+   * `factory(current)` shape.
+   */
+  const completion = useMemo(
+    () => ({
+      provider: createCompletionProvider({
+        command: createCommandProvider({ loadCommands: () => loadCommands(activeTabId ?? "") }),
+        file: createFileProvider({ loadFiles: () => loadFiles(activeTabId ?? "") }),
+        document: createDocumentProvider(null),
+      }),
+    }),
+    [activeTabId, loadCommands, loadFiles],
+  );
 
   const active = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeId = active?.id ?? null;
@@ -120,10 +144,11 @@ export function SessionView() {
         sendMode={sendModes[active.id] ?? "steer"}
         contextLabel={usage}
         onDraftChange={(text) => setDraft(active.id, text)}
-        onSend={async (text, images) => {
+        onSend={async (text, images, options) => {
           const mode = sendModes[active.id] ?? "steer";
           return sendPrompt(active.id, text, {
             ...(active.status === "running" ? { mode } : {}),
+            ...(options?.preferredSource ? { preferredSource: options.preferredSource } : {}),
             ...(images.length > 0
               ? {
                   images: images.map((image) => ({
@@ -135,6 +160,7 @@ export function SessionView() {
               : {}),
           });
         }}
+        completion={completion}
         onStop={() => void stopRun(active.id)}
         onClearQueue={() => void clearQueue(active.id)}
         onSendModeChange={(mode) => setSendMode(active.id, mode)}

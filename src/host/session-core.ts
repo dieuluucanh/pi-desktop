@@ -11,6 +11,7 @@ import {
   type TrustAnswer,
   type TrustStoreLike,
 } from "./project-trust";
+import type { FileListing } from "./file-listing";
 import type { HostHandler } from "./service";
 
 /**
@@ -137,6 +138,12 @@ export interface SessionCoreDeps {
   requiresTrust?(cwd: string): boolean;
   /** Session browser listing (plan step 11 surfaces it). */
   listSessions?(cwd: string): Promise<SessionListEntry[]>;
+  /**
+   * Workspace files for `@` completion (plan step 7). The root is this host's
+   * own cwd, never a renderer-supplied path, so the listing cannot escape the
+   * session it belongs to.
+   */
+  listFiles?(cwd: string, options: { limit?: number }): Promise<FileListing>;
   /** Injected by the extension UI host (plan step 6). */
   bindSession?(session: HostSession): Promise<void>;
   emit(event: string, payload?: unknown, sessionId?: string): void;
@@ -473,6 +480,18 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     }),
 
     "commands.list": () => ({ commands: collectCommands(ensure()) }),
+
+    "files.list": async (params) => {
+      if (!deps.listFiles) {
+        throw new SessionCoreError("listing workspace files is not supported", "unsupported");
+      }
+      const rawLimit = asRecord(params).limit;
+      const listing = await deps.listFiles(
+        cwd,
+        typeof rawLimit === "number" && Number.isFinite(rawLimit) ? { limit: rawLimit } : {},
+      );
+      return { root: cwd, files: listing.files, truncated: listing.truncated };
+    },
 
     "session.new": async (params) => {
       if (!runtime?.newSession) {

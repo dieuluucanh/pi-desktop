@@ -48,12 +48,13 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 
 ## Context and input
 
-| Capability                           | Terminal Pi           | Pi Desktop                                          |
-| ------------------------------------ | --------------------- | --------------------------------------------------- |
-| `@file` references with completion   | ✅                    | 🚧 step 7                                           |
-| Images: paste / drag into the prompt | ✅                    | 🚧 step 6                                           |
-| `#document` Office mentions          | ✅ (bridge extension) | 🚧 step 20 (same provider, forwarded from the host) |
-| External editor for long prompts     | ✅                    | 🚧 step 6                                           |
+| Capability                              | Terminal Pi           | Pi Desktop                                                                            |
+| --------------------------------------- | --------------------- | ------------------------------------------------------------------------------------- |
+| `@file` references with completion      | ✅                    | ✅ step 7 (rooted at the session's own cwd)                                           |
+| `/` commands (extension, prompt, skill) | ✅                    | ✅ step 7 (app commands + host commands; a name both claim is listed with its source) |
+| Images: paste / drag into the prompt    | ✅                    | ✅ step 6                                                                             |
+| `#document` Office mentions             | ✅ (bridge extension) | 🚧 step 20 (the provider ships in step 7; step 20 supplies the document registry)     |
+| External editor for long prompts        | ✅                    | 🚧 step 12 (the setting and a validated spawn land with the settings mirror)          |
 
 ## Office
 
