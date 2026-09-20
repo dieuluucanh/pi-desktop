@@ -48,6 +48,7 @@ import {
   type SessionEventEntry,
   type SessionStateEnvelope,
   type SessionTabsEnvelope,
+  type TabKind,
   type TabRecord,
 } from "../../../shared/session-ipc";
 import {
@@ -101,6 +102,13 @@ import {
 } from "../../../shared/resources";
 import type { RecommendedPackage } from "../../../shared/recommended-packages";
 import {
+  emptyIntegrationsState,
+  officeBridgePackageSource,
+  sanitizeIntegrationsState,
+  type IntegrationsState,
+  type OfficeIntegrationRecordPatch,
+} from "../../../shared/integrations";
+import {
   EMPTY_THEMES,
   activeThemeSwatches,
   sanitizeThemesSnapshot,
@@ -151,14 +159,7 @@ import { thinkingLevelsOf, toCatalog, type ModelCatalogEntry } from "../session/
  */
 
 export type AppView =
-  | "welcome"
-  | "session"
-  | "settings"
-  | "extensions"
-  | "connections"
-  | "skills"
-  | "diagnostics"
-  | "office";
+  "welcome" | "session" | "settings" | "extensions" | "connections" | "skills" | "diagnostics";
 
 /** How a message sent while the agent is streaming is delivered (plan step 6). */
 export type SendMode = "steer" | "followUp";
@@ -197,7 +198,6 @@ export const APP_VIEWS: readonly AppView[] = [
   "connections",
   "skills",
   "diagnostics",
-  "office",
 ];
 
 export interface ProjectRef {
@@ -261,6 +261,15 @@ export interface AppStateShape {
   forkCandidates: Array<{ entryId: string; text: string }>;
 
   setView: (view: AppView) => void;
+  /**
+   * Which section of the Extensions hub to reveal after navigation (plan step
+   * 19). The Integrations menu item routes here, since Pi for Office has no
+   * primary-navigation surface of its own.
+   */
+  extensionsFocus: "integrations" | null;
+  /** Opens the Extensions hub on the Integrations card. */
+  focusIntegrations: () => void;
+  clearExtensionsFocus: () => void;
   openPalette: () => void;
   closePalette: () => void;
   togglePalette: () => void;
@@ -443,6 +452,22 @@ export interface AppStateShape {
    */
   installRecommendedPackage: (entry: RecommendedPackage) => void;
 
+  /**
+   * Install the Office bridge through the package manager (plan step 19): opens
+   * the same consent dialog a manual install uses and records the consented
+   * install in app state.
+   */
+  installOfficeBridge: () => void;
+
+  /** Integrations (plan step 19): the app's record of consented installs. */
+  integrations: IntegrationsState;
+  integrationsLoaded: boolean;
+  loadIntegrations: () => Promise<void>;
+  /** Records a consented install / completed setup (validated in main). */
+  recordOfficeIntegration: (patch: OfficeIntegrationRecordPatch) => Promise<void>;
+  /** Opens (or focuses) the Office session tab, which owns the bridge port. */
+  openOfficeSession: () => Promise<void>;
+
   /** Packages (plan step 14): what Pi is configured to load, and its state. */
   packages: PackageSummary[];
   packagesLoaded: boolean;
@@ -456,7 +481,12 @@ export interface AppStateShape {
   packageConsent: PackageConsentRequest | null;
   loadPackages: (options?: { refresh?: boolean }) => Promise<void>;
   /** Opens the consent dialog for an install; nothing is installed yet. */
-  requestPackageInstall: (source: string, scope: PackageScope, cwd?: string | null) => void;
+  requestPackageInstall: (
+    source: string,
+    scope: PackageScope,
+    cwd?: string | null,
+    options?: { integration?: "office" },
+  ) => void;
   /** Opens the consent dialog for an update (one package, or all with null). */
   requestPackageUpdate: (source: string | null, scope: PackageScope, cwd?: string | null) => void;
   /** Sends the consent the dialog displayed and runs the operation. */
@@ -566,7 +596,7 @@ export interface AppStateShape {
   /** Flips expand-all for a tab and mirrors it to `ctx.ui.getToolsExpanded()`. */
   toggleToolsExpanded: (tabId: string) => void;
 
-  createSessionTab: () => Promise<void>;
+  createSessionTab: (kind?: TabKind) => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
   closeActiveTab: () => Promise<void>;
@@ -665,6 +695,11 @@ export interface PackageConsentRequest {
   name: string;
   scope: PackageScope;
   cwd: string | null;
+  /**
+   * Set when this install is an integration's package (plan step 19), so a
+   * successful run can be recorded in app state. The dialog is unchanged.
+   */
+  integration?: "office";
 }
 
 function bridge(): Window["pi"] | undefined {
@@ -765,6 +800,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   prefs: { ...DEFAULT_PREFS },
   prefsLoaded: false,
   paletteOpen: false,
+  extensionsFocus: null,
   info: null,
   hint: null,
   tabs: [],
@@ -823,6 +859,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   packagesCwd: null,
   packageProgress: null,
   packageConsent: null,
+  integrations: emptyIntegrationsState(),
+  integrationsLoaded: false,
   themes: EMPTY_THEMES,
   themesLoaded: false,
   themesBusy: false,
@@ -843,6 +881,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   toolsExpanded: {},
 
   setView: (view) => set({ view, hint: null }),
+  focusIntegrations: () => set({ view: "extensions", extensionsFocus: "integrations", hint: null }),
+  clearExtensionsFocus: () => set({ extensionsFocus: null }),
   openPalette: () => set({ paletteOpen: true }),
   closePalette: () => set({ paletteOpen: false }),
   togglePalette: () => set({ paletteOpen: !get().paletteOpen }),
@@ -2417,6 +2457,49 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     get().requestPackageInstall(entry.source, "user");
   },
 
+  // ---- Integrations (plan step 19) ----
+
+  installOfficeBridge: () => {
+    get().requestPackageInstall(officeBridgePackageSource(), "user", null, {
+      integration: "office",
+    });
+  },
+
+  loadIntegrations: async () => {
+    const api = bridge();
+    if (!api?.integrations) return;
+    if (get().integrationsLoaded) return;
+    try {
+      const state = await api.integrations.get();
+      set({ integrations: sanitizeIntegrationsState(state), integrationsLoaded: true });
+    } catch {
+      // An unreadable record must never block the card: Pi's settings still say
+      // whether the bridge is installed, so the app keeps its defaults.
+      set({ integrationsLoaded: true });
+    }
+  },
+
+  recordOfficeIntegration: async (patch) => {
+    const api = bridge();
+    if (!api?.integrations) return;
+    try {
+      const state = await api.integrations.recordOffice(patch);
+      set({ integrations: sanitizeIntegrationsState(state), integrationsLoaded: true });
+    } catch (error) {
+      set({ packagesError: errorMessage(error) });
+    }
+  },
+
+  openOfficeSession: async () => {
+    const existing = get().tabs.find((tab) => tab.kind === "office");
+    if (existing) {
+      await get().activateTab(existing.id);
+      set({ view: "session" });
+      return;
+    }
+    await get().createSessionTab("office");
+  },
+
   loadPackages: async (options) => {
     const api = bridge();
     if (!api?.sessions) return;
@@ -2443,7 +2526,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  requestPackageInstall: (source, scope, cwd) => {
+  requestPackageInstall: (source, scope, cwd, options) => {
     let normalized: string;
     try {
       normalized = normalizePackageSource(source);
@@ -2459,6 +2542,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         name: normalized,
         scope,
         cwd: cwd ?? packageCwd(get()),
+        ...(options?.integration ? { integration: options.integration } : {}),
       },
     });
   },
@@ -2511,6 +2595,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       await get().loadPackages({ refresh: true });
       await get().loadSettings();
       await get().loadResources({ refresh: true });
+      // An integration's bridge install is recorded in app state as soon as the
+      // consented run succeeds (plan step 19); Pi's settings remain the source
+      // of truth for whether the package is installed.
+      if (consent.kind === "install" && consent.integration === "office") {
+        await get().recordOfficeIntegration({ bridgeInstalledAt: new Date().toISOString() });
+      }
       set({ packagesBusy: false, packageProgress: null });
       return true;
     } catch (error) {
@@ -2554,7 +2644,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (source) get().requestPackageInstall(source, summary.scope, cwd);
   },
 
-  createSessionTab: async () => {
+  createSessionTab: async (kind) => {
     const { project, setHint } = get();
     const api = bridge();
     if (!project) {
@@ -2566,6 +2656,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return;
     }
     const input: CreateTabInput = { cwd: project.path };
+    if (kind && kind !== "session") input.kind = kind;
     // Per-project defaults (plan step 10) travel with the create so the host can
     // apply them before the first state snapshot.
     const record = findProject(get().projects, project.path);

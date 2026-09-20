@@ -1,7 +1,6 @@
 import {
   Activity,
   Blocks,
-  FileSpreadsheet,
   FolderOpen,
   MessageSquarePlus,
   Plug,
@@ -80,20 +79,6 @@ export function Sidebar() {
               ) : null}
             </Button>
           ))}
-
-          <SectionLabel>Integrations</SectionLabel>
-          <Button
-            variant={view === "office" ? "secondary" : "ghost"}
-            className="justify-start"
-            onClick={() => setView("office")}
-            aria-current={view === "office"}
-          >
-            <FileSpreadsheet className="size-4" aria-hidden />
-            <span className="flex-1 text-left">Pi for Office</span>
-          </Button>
-          <p className="px-2 py-1 text-xs text-ink-muted">
-            Optional. Installs the Office bridge as a normal Pi extension; the app works without it.
-          </p>
         </nav>
       </ScrollArea>
     </aside>

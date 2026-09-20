@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import {
   IPC,
   type AppInfo,
+  type IntegrationsBridge,
   type MenuCommand,
   type OfficeBridge,
   type PiDesktopBridge,
@@ -13,6 +14,7 @@ import {
   type WindowState,
 } from "../shared/ipc";
 import type { UiPrefs } from "../shared/prefs";
+import type { IntegrationsState, OfficeIntegrationRecordPatch } from "../shared/integrations";
 import type {
   CloneProjectInput,
   CreateProjectInput,
@@ -90,6 +92,12 @@ const prefs: PrefsBridge = {
   set: (patch: Partial<UiPrefs>) => ipcRenderer.invoke(IPC.prefsSet, patch) as Promise<UiPrefs>,
 };
 
+const integrations: IntegrationsBridge = {
+  get: () => ipcRenderer.invoke(IPC.integrationsGet) as Promise<IntegrationsState>,
+  recordOffice: (patch: OfficeIntegrationRecordPatch) =>
+    ipcRenderer.invoke(IPC.integrationsRecordOffice, patch) as Promise<IntegrationsState>,
+};
+
 const projects: ProjectsBridge = {
   get: () => ipcRenderer.invoke(IPC.projectsGet) as Promise<ProjectsSnapshot>,
   mutate: (input: ProjectMutation) =>
@@ -116,6 +124,7 @@ const bridge: PiDesktopBridge = {
   sessions,
   projects,
   office,
+  integrations,
 };
 
 contextBridge.exposeInMainWorld("pi", bridge);

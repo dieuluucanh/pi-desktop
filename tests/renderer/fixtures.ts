@@ -1,5 +1,6 @@
 import type { AppInfo, PiDesktopBridge } from "../../src/shared/ipc";
 import type { OfficeSetupView } from "../../src/shared/office-setup";
+import { emptyIntegrationsState, type IntegrationsState } from "../../src/shared/integrations";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { UiPrefs } from "../../src/shared/prefs";
 import {
@@ -70,6 +71,7 @@ export interface BridgeOptions {
   office?: OfficeSetupView;
   projects?: ProjectRecord[];
   activeProject?: string | null;
+  integrations?: IntegrationsState;
 }
 
 /** Installs a `window.pi` stub and returns the prefs store it writes to. */
@@ -80,6 +82,7 @@ export function installBridge(options: BridgeOptions = {}): {
   const prefs: UiPrefs = { ...DEFAULT_PREFS, ...options.prefs };
   const info = appInfoFixture(options.appInfo);
   const view = options.office ?? officeViewFixture();
+  let integrationsState: IntegrationsState = options.integrations ?? emptyIntegrationsState();
   const projectsState: ProjectsSnapshot = {
     projects: options.projects ?? [],
     activeProject: options.activeProject ?? null,
@@ -165,6 +168,24 @@ export function installBridge(options: BridgeOptions = {}): {
       reveal: async () => true,
       stopRun: async () => ({ ok: true }),
       onState: () => () => undefined,
+    },
+    integrations: {
+      get: async () => integrationsState,
+      recordOffice: async (patch) => {
+        integrationsState = {
+          office: {
+            bridgeInstalledAt:
+              "bridgeInstalledAt" in patch
+                ? (patch.bridgeInstalledAt ?? null)
+                : integrationsState.office.bridgeInstalledAt,
+            lastSetupAt:
+              "lastSetupAt" in patch
+                ? (patch.lastSetupAt ?? null)
+                : integrationsState.office.lastSetupAt,
+          },
+        };
+        return integrationsState;
+      },
     },
   };
 

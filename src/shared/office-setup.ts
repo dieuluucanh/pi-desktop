@@ -154,3 +154,28 @@ export interface OfficeSetupView {
   error: string | null;
   log: OfficeSetupLogView[];
 }
+
+/**
+ * One-line evidence summary for the main-process log (plan step 19).
+ *
+ * The card shows the full picture; a support log needs the same facts in a form
+ * that survives a scrollback. Emitted only when it changes, so a poll loop does
+ * not spam the log.
+ */
+export function officeEvidenceLine(view: OfficeSetupView): string {
+  const parts: string[] = [
+    `status=${view.status}`,
+    view.currentStep ? `step=${view.currentStep}` : "",
+    `port=${view.port}`,
+    view.detection
+      ? `office=${view.detection.officeVersion ?? "none"} sideloaded=${view.detection.sideloaded}`
+      : "office=unknown",
+    view.bridge
+      ? `bridge=${view.bridge.status}${view.bridge.version ? `@${view.bridge.version}` : ""}`
+      : "",
+    view.health ? `health=${view.health.status}` : "",
+    view.compatibility ? `compat=${view.compatibility.shape}` : "",
+    view.error ? `error=${view.error}` : "",
+  ];
+  return parts.filter((part) => part.length > 0).join(" ");
+}

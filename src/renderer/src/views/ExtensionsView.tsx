@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ExternalLink, FolderOpen, RefreshCw, Search } from "lucide-react";
 import {
   PACKAGE_GALLERY_URL,
@@ -6,7 +6,7 @@ import {
   isRecommendedInstalled,
 } from "../../../shared/recommended-packages";
 import { type ResourceKind, type ResourceSummary } from "../../../shared/resources";
-import { OfficeSetupPanel } from "../office/OfficeSetupPanel";
+import { OfficeIntegrationCard } from "../office/OfficeIntegrationCard";
 import { PackagesSection } from "../extensions/PackagesSection";
 import { useAppStore } from "../state/app-store";
 import { Badge } from "../ui/badge";
@@ -23,8 +23,9 @@ import { Switch } from "../ui/switch";
  * override (`-path` / `+path`), so it is reversible and visible to terminal Pi;
  * "Reload runtime" asks the live session to reload and reports what changed.
  *
- * Integrations still hosts the shipped Pi for Office wizard unchanged (plan
- * D-A10); step 19 turns that into a full card.
+ * Integrations hosts the Pi for Office card (plan step 19): the card is the
+ * only Office surface in the app (plan D-A10) and folds the unchanged wizard
+ * panel in as its detailed evidence.
  */
 
 const KIND_LABELS: Record<ResourceKind, string> = {
@@ -72,6 +73,17 @@ export function ExtensionsView() {
   const loadSettings = useAppStore((state) => state.loadSettings);
 
   const [query, setQuery] = useState("");
+  const extensionsFocus = useAppStore((state) => state.extensionsFocus);
+  const clearExtensionsFocus = useAppStore((state) => state.clearExtensionsFocus);
+  const integrationsRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    // The Integrations menu item routes here (plan step 19): the hub opens on
+    // the card rather than at the top of an unrelated list.
+    if (extensionsFocus !== "integrations") return;
+    integrationsRef.current?.scrollIntoView?.({ block: "start" });
+    clearExtensionsFocus();
+  }, [extensionsFocus, clearExtensionsFocus]);
 
   useEffect(() => {
     void loadSettings();
@@ -281,14 +293,14 @@ export function ExtensionsView() {
         onRevealSettings={() => useAppStore.getState().setView("settings")}
       />
 
-      <section className="flex flex-col gap-3" data-testid="integrations">
+      <section className="flex flex-col gap-3" data-testid="integrations" ref={integrationsRef}>
         <div>
           <h2 className="text-sm font-semibold">Integrations</h2>
           <p className="text-xs text-ink-muted">
             Optional add-ons. The app is fully usable without any of them.
           </p>
         </div>
-        <OfficeSetupPanel />
+        <OfficeIntegrationCard />
       </section>
     </div>
   );

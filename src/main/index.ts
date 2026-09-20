@@ -32,6 +32,7 @@ import { installAppMenu } from "./menu";
 import { createCommandRunner } from "./office/exec";
 import { createProjectOps } from "./project-ops";
 import { createProjectsService } from "./projects-service";
+import { createIntegrationsService } from "./integrations-service";
 import {
   createSessionService,
   type SessionEmitChannel,
@@ -39,6 +40,7 @@ import {
 } from "./session-service";
 import { isDeletableSessionPath } from "./session-ops";
 import { createOfficeSetupService } from "./office/setup-service";
+import { officeEvidenceLine } from "../shared/office-setup";
 import { appPaths, isSafeMode, resolveAppRoots, type AppPaths, type AppRoots } from "./paths";
 import { resolveAppRuntime, type RuntimeResolution } from "./runtime";
 
@@ -92,6 +94,9 @@ let mainWindow: BrowserWindow | null = null;
 
 /** The remembered project list (plan step 10): `app-state.json` is its only writer. */
 const projectsService = createProjectsService({ store: appState });
+
+/** The app's integration record (plan step 19): consented installs, setup timestamps. */
+const integrationsService = createIntegrationsService({ store: appState });
 
 /** Create/clone/reveal/terminal/clipboard for projects (plan step 10). */
 const projectOps = createProjectOps({
@@ -347,6 +352,9 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
+/** The last evidence line written to the log, so a poll loop does not spam it. */
+let lastOfficeEvidence: string | null = null;
+
 const officeSetup = createOfficeSetupService({
   agentDir: paths.profileDir,
   cwd: app.getPath("home"),
@@ -369,7 +377,17 @@ const officeSetup = createOfficeSetupService({
     arch: process.arch,
     osRelease: process.getSystemVersion?.() ?? null,
   },
-  onView: (view) => broadcastToWindows(IPC.officeState, view),
+  onView: (view) => {
+    broadcastToWindows(IPC.officeState, view);
+    // Keep the evidence trail in the main-process log too (plan step 19): a
+    // support log should show what the Integrations card showed. Only on change,
+    // so the wizard's poll loop cannot spam it.
+    const evidence = officeEvidenceLine(view);
+    if (evidence !== lastOfficeEvidence) {
+      lastOfficeEvidence = evidence;
+      console.log(`[pi-desktop] office: ${evidence}`);
+    }
+  },
 });
 
 if (!app.requestSingleInstanceLock()) {
@@ -433,12 +451,21 @@ if (!app.requestSingleInstanceLock()) {
         action: (input: ProjectActionInput) => projectOps.action(input.path, input.action),
       },
       officeSetup,
+      integrations: {
+        get: () => integrationsService.get(),
+        recordOffice: (patch: unknown) => integrationsService.recordOffice(patch),
+      },
       // The Office session owns the bridge and the app owns the session, so Stop
       // aborts that session's run — which ends a pane's answer for every bridge
       // version (protocol v3 additionally lets a pane stop its own run).
       officeRun: {
         stop: async (): Promise<OfficeStopResult> => {
-          const host = hosts?.get("office");
+          // The office session is an ordinary tab of kind `office` (its host id
+          // is the tab id); find it rather than guessing a fixed host name.
+          const officeTab = sessions
+            ?.envelope()
+            .tabs.find((tab) => tab.kind === "office" && tab.status !== "stopped");
+          const host = officeTab ? hosts?.get(officeTab.id) : undefined;
           if (!host) return { ok: false, reason: "idle" };
           try {
             await host.request("abort");

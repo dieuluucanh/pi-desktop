@@ -7,10 +7,10 @@ steps must extend it rather than re-invent it.
 
 ```text
 title bar        brand, active project, Open project…, New session
-sidebar          + New session · Open project… · Project · Sessions · Views · Integrations
+sidebar          + New session · Open project… · Project · Sessions · Views
 tab strip        session tabs (empty until step 11) + the "+" action
 main area        the active view (welcome | session | settings | extensions |
-                 connections | skills | diagnostics | office)
+                 connections | skills | diagnostics)
 status bar       Pi profile · bundled runtime · view mode · transient hints
 overlays         command palette (Ctrl+K), toast host
 ```
@@ -36,8 +36,21 @@ strip, step 10 fills the project section — neither re-lays-out the window.
   session host when one is active, otherwise the control host, which loads a
   `DefaultResourceLoader` on demand). Enable/disable edits the `extensions` /
   `skills` / `prompts` / `themes` settings arrays (`-path` / `+path`), so the
-  change is reversible and visible to terminal Pi. The shipped Pi for Office
-  wizard stays mounted, unchanged, under Extensions → Integrations (plan D-A10).
+  change is reversible and visible to terminal Pi.
+- **Integrations (plan step 19).** `OfficeIntegrationCard` is the only Office
+  surface in the app (plan D-A10): it derives its facts
+  (`src/shared/integrations.ts`) from the wizard view plus the package manager's
+  installed list, and folds the unchanged `OfficeSetupPanel` in as detailed
+  evidence. The bridge install goes through the same consent dialog as any
+  package (`packages.install`), and the app records that consent in its own
+  state (`app-state.json#integrations`, written by
+  `src/main/integrations-service.ts`). The sidebar, palette and `AppView` union
+  carry no Office entry; the Integrations menu item routes to the hub with
+  `extensionsFocus: "integrations"`.
+- **The app's own record is not Pi state.** `integrations` in `app-state.json`
+  only remembers what Pi cannot: that the user consented to the bridge install
+  here and when setup last completed. Whether a package is installed stays a
+  `packages` entry in Pi's `settings.json`, which terminal Pi also sees.
 
 ## Command ownership (no double-firing)
 
@@ -64,37 +77,50 @@ so the app chrome and the extension TUI surface stay in step.
 
 ## App files (step 1)
 
-```
+```text
 src/shared/prefs.ts            preference key set, defaults, clamping, merge
 src/shared/ipc.ts              the IPC allowlist + MenuCommand union + AppInfo
 src/main/menu.ts               the menu template (pure, unit tested) + installer
 src/main/ipc.ts               handlers + validation for every renderer channel
-src/main/app-store.ts          atomic app state (projects, prefs, tabs)
+src/main/app-store.ts          atomic app state (projects, prefs, tabs, integrations)
+src/main/integrations-service.ts  the consented-install record (plan step 19)
 src/renderer/src/App.tsx       regions + view routing + theme + menu dispatch
 src/renderer/src/menu-actions.ts  what each command does today
 src/renderer/src/state/app-store.ts  view state (zustand)
 src/renderer/src/layout/*      TitleBar, Sidebar, TabStrip, StatusBar, CommandPalette
 src/renderer/src/views/*       Welcome, Session, Settings, Extensions, Connections,
-                               Skills, Diagnostics, Office
+                               Skills, Diagnostics
+src/renderer/src/office/*      OfficeIntegrationCard + the unchanged wizard panel
 src/renderer/src/ui/*          Button, Badge, Kbd, Separator, Dialog, DropdownMenu,
                                ScrollArea, Switch, Toaster
 src/renderer/src/styles/*      tokens.css (Tailwind + theme tokens), office-panel.css
 ```
 
-`src/renderer/src/styles/office-panel.css` is temporary: it keeps the shipped Pi
-for Office wizard rendering exactly as before while step 19 migrates that panel
-to `ui/*` primitives.
+`src/renderer/src/styles/office-panel.css` keeps the shipped Pi for Office
+wizard panel rendering exactly as before; the card around it uses `ui/*`
+primitives. Migrating the panel itself to `ui/*` is not required by step 19.
 
 ## Tests
 
 - `tests/main/prefs.test.ts` — validation/clamping/merge of the preference patch.
+- `tests/main/integrations-service.test.ts` — the consented-install record goes
+  through the store's sanitizer and keeps unknown keys out.
 - `tests/main/menu.test.ts` — every `MenuCommand` has exactly one menu item, New
   Session keeps `Ctrl+N`, Office stays out of the primary menus.
 - `tests/renderer/shell.test.tsx` — the shell renders navigation and the welcome
-  state, and the old scaffold placeholder copy is gone.
-- `tests/renderer/extensions.test.tsx` — the Office wizard still mounts under
-  Extensions → Integrations, and the hub lists resources, shows load/live errors,
-  writes an enable/disable override and offers the recommended set.
+  state, the old scaffold placeholder copy is gone, and Pi for Office is not a
+  primary-navigation button.
+- `tests/renderer/extensions.test.tsx` — the Office card mounts under Extensions →
+  Integrations and the wizard panel appears once the bridge is installed; the hub
+  lists resources, shows load/live errors, writes an enable/disable override and
+  offers the recommended set.
+- `tests/renderer/office-integration-card.test.tsx` — the card's derived facts,
+  the consented install, the diagnostics copy and the completed-setup record.
+- `tests/renderer/integration-store.test.ts` — `installOfficeBridge` opens the
+  standard consent dialog, and `openOfficeSession` focuses rather than duplicates
+  an Office tab.
+- `tests/shared/integrations.test.ts` — the facts derivation and record
+  sanitizers (pure, node project).
 
 The renderer project is configured in `vitest.config.ts` (`projects`), with
 `tests/renderer/setup.ts` for jest-dom and Testing Library cleanup.

@@ -39,6 +39,9 @@ describe("app shell", () => {
       ).toBeGreaterThan(0);
     }
     expect(screen.queryByText("Office", { selector: ".tabs__badge" })).toBeNull();
+    // Pi for Office is an integration, not primary navigation (plan step 19):
+    // the only way to it is Extensions → Integrations or the Integrations menu.
+    expect(screen.queryByRole("button", { name: /pi for office/i })).toBeNull();
   });
 
   it("shows the welcome state with no project open", async () => {

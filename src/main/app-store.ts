@@ -5,6 +5,11 @@ import {
   type SettingsDocument,
 } from "./packages/settings";
 import { DEFAULT_PREFS, mergePrefs, sanitizePrefs, type UiPrefs } from "../shared/prefs";
+import {
+  emptyIntegrationsState,
+  sanitizeIntegrationsState,
+  type IntegrationsState,
+} from "../shared/integrations";
 import { sanitizeProjects, type ProjectRecord } from "../shared/projects";
 import { sanitizeTabs, type TabRecord } from "../shared/session-ipc";
 
@@ -31,6 +36,12 @@ export interface AppState {
   tabs: TabRecord[];
   /** The tab the window should select after a relaunch. */
   activeTabId: string | null;
+  /**
+   * Integrations (plan step 19): the app's own record of a consented install
+   * and the last completed setup. Pi's settings remain the install source of
+   * truth; this is what lets the card be honest about "installed by this app".
+   */
+  integrations: IntegrationsState;
 }
 
 export function defaultAppState(): AppState {
@@ -41,6 +52,7 @@ export function defaultAppState(): AppState {
     prefs: { ...DEFAULT_PREFS },
     tabs: [],
     activeTabId: null,
+    integrations: emptyIntegrationsState(),
   };
 }
 
@@ -77,6 +89,7 @@ export function normalizeAppState(doc: SettingsDocument): AppState {
     prefs: sanitizePrefs(doc.prefs),
     tabs: sanitizeTabs(doc.tabs),
     activeTabId: typeof doc.activeTabId === "string" ? doc.activeTabId : null,
+    integrations: sanitizeIntegrationsState(doc.integrations),
   };
 }
 

@@ -35,10 +35,9 @@ export function OfficeSetupPanel() {
     <section className="panel">
       <header className="panel__head">
         <div>
-          <h2>Pi for Office</h2>
+          <h2>Setup details</h2>
           <p className="muted">
-            Connects this app to Excel, Word and PowerPoint through the Pi for Office add-in on port{" "}
-            {view?.port ?? 38617}.
+            Step-by-step evidence for the Pi for Office add-in on port {view?.port ?? 38617}.
           </p>
         </div>
         <span className={`pill pill--${view?.status ?? "idle"}`}>{view?.status ?? "loading…"}</span>

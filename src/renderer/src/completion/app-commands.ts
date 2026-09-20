@@ -21,8 +21,7 @@
 import type { HostMethod } from "../../../shared/host-protocol";
 
 /** The views an app command can open (a subset of the app's `AppView`). */
-export type AppCommandView =
-  "settings" | "extensions" | "connections" | "skills" | "diagnostics" | "office";
+export type AppCommandView = "settings" | "extensions" | "connections" | "skills" | "diagnostics";
 
 export type AppCommandAction =
   /** Runs a host method on this session's host. */

@@ -16,6 +16,7 @@ import {
   type SessionTabsEnvelope,
 } from "../shared/session-ipc";
 import { isOfficeSetupStepId } from "../shared/office-setup";
+import type { IntegrationsState } from "../shared/integrations";
 import { isTrustAnswer } from "../shared/projects";
 import type { OfficeStopResult } from "../shared/office-bridge";
 import {
@@ -79,6 +80,11 @@ export interface IpcDependencies {
     action(input: ProjectActionInput): Promise<boolean>;
   };
   officeSetup: OfficeSetupService;
+  /** The app's integration record (plan step 19). */
+  integrations: {
+    get(): Promise<IntegrationsState>;
+    recordOffice(patch: unknown): Promise<IntegrationsState>;
+  };
   /**
    * The Office run the app can stop. Idle (no Office session, or nothing in
    * flight) until the app owns one — the wizard's health probe is unaffected.
@@ -225,6 +231,11 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.officeStopRun, () => deps.officeRun.stop());
   // Same implementation as `app:reveal-path` — one path-validation rule.
   ipcMain.handle(IPC.officeReveal, (_event, target: unknown) => deps.revealPath(target));
+
+  ipcMain.handle(IPC.integrationsGet, () => deps.integrations.get());
+  ipcMain.handle(IPC.integrationsRecordOffice, (_event, patch: unknown) =>
+    deps.integrations.recordOffice(patch),
+  );
 }
 
 /** The default `revealPath` implementation: a non-empty string reveals, nothing else. */

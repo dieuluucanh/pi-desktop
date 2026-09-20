@@ -88,12 +88,19 @@ describe("handleMenuCommand", () => {
       ["view-connections", "connections"],
       ["view-skills", "skills"],
       ["view-diagnostics", "diagnostics"],
-      ["view-office", "office"],
     ];
     for (const [command, view] of cases) {
       handleMenuCommand(command);
       expect(useAppStore.getState().view, command).toBe(view);
     }
+  });
+
+  it("routes the Integrations menu item at the Extensions hub's Integrations card", () => {
+    handleMenuCommand("view-office");
+    // Pi for Office has no primary view any more (plan step 19): the menu item
+    // opens the hub and marks the card for the focus scroll.
+    expect(useAppStore.getState().view).toBe("extensions");
+    expect(useAppStore.getState().extensionsFocus).toBe("integrations");
   });
 
   it("toggles the palette and the sidebar", () => {

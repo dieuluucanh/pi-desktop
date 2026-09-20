@@ -95,6 +95,25 @@ describe("normalizeAppState", () => {
     expect(state.projects).toEqual([]);
     expect(state.tabs).toEqual([]);
   });
+
+  it("sanitizes the integration record (plan step 19)", () => {
+    expect(normalizeAppState({}).integrations).toEqual({
+      office: { bridgeInstalledAt: null, lastSetupAt: null },
+    });
+    expect(
+      normalizeAppState({
+        integrations: {
+          office: {
+            bridgeInstalledAt: "2026-09-20T10:00:00.000Z",
+            lastSetupAt: "garbage",
+            extra: true,
+          },
+        },
+      }).integrations,
+    ).toEqual({
+      office: { bridgeInstalledAt: "2026-09-20T10:00:00.000Z", lastSetupAt: null },
+    });
+  });
 });
 
 describe("createAppStore", () => {

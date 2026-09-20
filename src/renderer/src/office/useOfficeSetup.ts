@@ -22,7 +22,8 @@ export interface OfficeSetupApi {
   cancel(): void;
   refreshHealth(): void;
   unsideload(): void;
-  loadDiagnostics(): void;
+  /** Fetches the redacted diagnostics bundle; resolves null when unavailable. */
+  loadDiagnostics(): Promise<string | null>;
   reveal(path: string): void;
 }
 
@@ -125,15 +126,20 @@ export function useOfficeSetup(): OfficeSetupApi {
     },
     refreshHealth: () => call((office) => office.refreshHealth()),
     unsideload: () => call((office) => office.unsideload()),
-    loadDiagnostics: () => {
-      window.pi?.office
-        .diagnostics()
-        .then((text) => {
-          if (mounted.current) setDiagnostics(text);
-        })
-        .catch((cause: unknown) => {
-          if (mounted.current) setError(describe(cause));
-        });
+    loadDiagnostics: async (): Promise<string | null> => {
+      const bridge = window.pi?.office;
+      if (!bridge) {
+        setError("The preload bridge is unavailable (window.pi.office is missing).");
+        return null;
+      }
+      try {
+        const text = await bridge.diagnostics();
+        if (mounted.current) setDiagnostics(text);
+        return text;
+      } catch (cause) {
+        if (mounted.current) setError(describe(cause));
+        return null;
+      }
     },
     reveal: (path) => {
       void window.pi?.office.reveal(path);

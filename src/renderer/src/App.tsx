@@ -19,7 +19,6 @@ import { SessionTreeDialog } from "./sessions/SessionTree";
 import { ConnectionsView } from "./views/ConnectionsView";
 import { DiagnosticsView } from "./views/DiagnosticsView";
 import { ExtensionsView } from "./views/ExtensionsView";
-import { OfficeView } from "./views/OfficeView";
 import { SessionView } from "./views/SessionView";
 import { SettingsView } from "./views/SettingsView";
 import { SkillsView } from "./views/SkillsView";
@@ -42,7 +41,6 @@ const VIEWS: Record<AppView, () => ReactElement> = {
   connections: ConnectionsView,
   skills: SkillsView,
   diagnostics: DiagnosticsView,
-  office: OfficeView,
 };
 
 function prefersLight(): boolean {

@@ -6,7 +6,8 @@ import { PACKAGE_GALLERY_URL, RECOMMENDED_PACKAGES } from "../../src/shared/reco
 import type { ResourcesSnapshot } from "../../src/shared/resources";
 import type { SettingsSnapshot } from "../../src/shared/settings";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
-import { appInfoFixture, installBridge } from "./fixtures";
+import { emptyIntegrationsState } from "../../src/shared/integrations";
+import { appInfoFixture, installBridge, officeViewFixture } from "./fixtures";
 
 /**
  * The Extensions hub (plan step 13). The Office wizard must stay reachable from
@@ -88,17 +89,68 @@ beforeEach(() => {
     resourcesTabId: "control",
     resourcesCwd: null,
     resourcesChange: null,
+    packages: [],
+    packagesLoaded: false,
+    packagesBusy: false,
+    packagesError: null,
+    packagesCwd: null,
+    packageProgress: null,
+    packageConsent: null,
+    integrations: emptyIntegrationsState(),
+    integrationsLoaded: false,
   });
 });
 
 describe("extensions view", () => {
-  it("mounts the Pi for Office wizard under Integrations", async () => {
+  it("mounts the Pi for Office card under Integrations (plan step 19)", async () => {
     stubRequest(async (method) =>
       method === "settings.get" ? settingsSnapshot() : resourcesSnapshot(),
     );
-    const { container } = render(<ExtensionsView />);
+    render(<ExtensionsView />);
     expect(screen.getByRole("heading", { name: "Integrations" })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Pi for Office" })).toBeInTheDocument();
+    const card = screen.getByTestId("office-integration-card");
+    expect(card).toBeInTheDocument();
+    // Nothing is installed yet, so the card offers the consented install instead
+    // of a wizard that would install the bridge without asking.
+    expect(card).toHaveAttribute("data-status", "not-installed");
+    expect(screen.getByRole("button", { name: /install bridge package/i })).toBeInTheDocument();
+    expect(useAppStore.getState().integrationsLoaded).toBe(true);
+  });
+
+  it("reveals the wizard panel once the bridge package is installed", async () => {
+    installBridge({
+      office: officeViewFixture({
+        status: "done",
+        finishedAt: "2026-09-20T10:00:00.000Z",
+        bridge: { status: "already-installed", version: "0.5.0", error: null, installLog: "" },
+      }),
+    });
+    stubRequest(async (method) => {
+      if (method === "packages.list") {
+        return {
+          packages: [
+            {
+              source: "npm:@dieulc/pi-office-bridge@^0.5.0",
+              name: "@dieulc/pi-office-bridge",
+              kind: "npm",
+              scope: "user",
+              filtered: false,
+              version: "0.5.0",
+              pinned: true,
+              installedPath: "C:/profile/agent/npm/node_modules/@dieulc/pi-office-bridge",
+              installed: true,
+            },
+          ],
+          loadedAt: 1,
+        };
+      }
+      return method === "settings.get" ? settingsSnapshot() : resourcesSnapshot();
+    });
+    const { container } = render(<ExtensionsView />);
+
+    expect(await screen.findByTestId("office-setup-details")).toBeInTheDocument();
+    // The unchanged wizard panel is still reachable inside the card.
     expect(container.querySelector(".panel")).not.toBeNull();
     expect(container.querySelector(".steps")).not.toBeNull();
   });

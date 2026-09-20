@@ -134,7 +134,9 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
       store.setView("diagnostics");
       return;
     case "view-office":
-      store.setView("office");
+      // Pi for Office is an integration, not a primary view (plan D-A10): the
+      // menu item opens the Extensions hub on its Integrations card.
+      store.focusIntegrations();
       return;
     case "shortcuts":
       store.setShortcutsHelpOpen(true);

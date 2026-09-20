@@ -1,5 +1,6 @@
 import type { OfficeSetupStepId, OfficeSetupView } from "./office-setup";
 import type { OfficeStopResult } from "./office-bridge";
+import type { IntegrationsState, OfficeIntegrationRecordPatch } from "./integrations";
 import type { UiPrefs } from "./prefs";
 import type {
   CloneProjectInput,
@@ -84,6 +85,13 @@ export const IPC = {
   officeStopRun: "office:stop-run",
   /** Main → renderer: a new wizard state. */
   officeState: "office:state",
+
+  /**
+   * Integrations (plan step 19): the app's own record of a consented install,
+   * separate from Pi's settings (which the package manager owns).
+   */
+  integrationsGet: "integrations:get",
+  integrationsRecordOffice: "integrations:record-office",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -216,6 +224,16 @@ export interface PrefsBridge {
   set(patch: Partial<UiPrefs>): Promise<UiPrefs>;
 }
 
+/**
+ * Integrations (plan step 19). The record is the app's own note that the user
+ * consented to the Office bridge install and when setup last completed; Pi's
+ * settings.json remains the record of *whether* the package is installed.
+ */
+export interface IntegrationsBridge {
+  get(): Promise<IntegrationsState>;
+  recordOffice(patch: OfficeIntegrationRecordPatch): Promise<IntegrationsState>;
+}
+
 /** A create/clone result plus the project list it produced (plan step 10). */
 export interface ProjectOpResponse extends ProjectsSnapshot {
   ok: boolean;
@@ -246,4 +264,5 @@ export interface PiDesktopBridge {
   sessions: SessionsBridge;
   projects: ProjectsBridge;
   office: OfficeBridge;
+  integrations: IntegrationsBridge;
 }
