@@ -9,6 +9,7 @@ import {
   JsonlFrameDecoder,
   NODE_BIN_ENV,
   NPM_CLI_ENV,
+  SAFE_MODE_ENV,
   encodeFrame,
   isEventFrame,
   isResponseFrame,
@@ -93,6 +94,10 @@ export interface HostHandle {
   readonly officeHost: boolean;
   ready(): Promise<HostInfo>;
   status(): HostStatus;
+  /** The host's identity once the handshake completed, else null (plan step 22). */
+  info(): HostInfo | null;
+  /** The tail of the host's own log, oldest first — the Diagnostics view reads it. */
+  logs(): string[];
   request(method: HostMethod, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
   on(event: string, listener: HostEventListener): () => void;
   restart(reason?: string): Promise<HostInfo>;
@@ -133,6 +138,11 @@ export interface HostSupervisorOptions {
   maxHosts?: number;
   idleTimeoutMs?: number;
   maxRestarts?: number;
+  /**
+   * Safe mode (plan step 22): passed to every child as `PI_DESKTOP_SAFE_MODE` so
+   * the host loads no third-party resources and refuses package changes.
+   */
+  safeMode?: boolean;
 }
 
 export interface HostSupervisor {
@@ -203,6 +213,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     private idleTimer: ReturnType<typeof setTimeout> | null = null;
     private intentionalStop = false;
     private logBuffer: string[] = [];
+    private lastInfo: HostInfo | null = null;
     private readyResolve: ((info: HostInfo) => void) | null = null;
     private readyReject: ((error: Error) => void) | null = null;
     private readonly readyPromise: Promise<HostInfo>;
@@ -224,6 +235,14 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
 
     status(): HostStatus {
       return this.state;
+    }
+
+    info(): HostInfo | null {
+      return this.lastInfo;
+    }
+
+    logs(): string[] {
+      return [...this.logBuffer];
     }
 
     on(event: string, listener: HostEventListener): () => void {
@@ -288,6 +307,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         ...(options.env ?? process.env),
         [SESSION_ID_ENV]: this.sessionId,
         [HOST_ROLE_ENV]: this.spec.role ?? "session",
+        [SAFE_MODE_ENV]: options.safeMode ? "1" : "0",
         [BLOB_DIR_ENV]: options.blobDir,
         [SERVICE_ENV]: "service",
         PI_CODING_AGENT_DIR: options.profileDir,
@@ -422,6 +442,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
           `protocol mismatch: host speaks v${info.protocolVersion}, app speaks v${HOST_PROTOCOL_VERSION}`,
         );
       }
+      this.lastInfo = info;
       this.state = "ready";
       this.emitter.emit("status", "ready");
       this.readyResolve?.(info);
@@ -467,6 +488,15 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       return new Promise<unknown>((resolve, reject) => {
         const timer = setTimeout(() => {
           this.pending.delete(id);
+          // Surface the wedge as an event, not just a rejected request: the
+          // renderer shows a "host stopped responding" incident and can restart
+          // the tab (plan step 22).
+          this.appendLog("error", `request "${method}" timed out after ${timeoutMs} ms`);
+          this.emitter.emit("timeout", {
+            method,
+            timeoutMs,
+            sessionId: this.sessionId,
+          });
           reject(new HostTimeoutError(method, timeoutMs));
         }, timeoutMs);
         if (typeof timer === "object" && timer && "unref" in timer) timer.unref();

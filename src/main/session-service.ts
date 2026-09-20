@@ -1,4 +1,13 @@
 import type { HostMethod, HostRole } from "../shared/host-protocol";
+import {
+  appendIncident,
+  createIncident,
+  DEFAULT_INCIDENT_LIMIT,
+  type DiagnosticsExtensionError,
+  type DiagnosticsHostInfo,
+  type Incident,
+  type IncidentKind,
+} from "../shared/diagnostics";
 import type { TrustAnswer } from "../shared/projects";
 import { sanitizeWebUrl, webTabTitle } from "../shared/web-tabs";
 import {
@@ -34,6 +43,15 @@ export const DEFAULT_COALESCE_MS = 33;
 export const DEFAULT_COALESCE_BYTES = 1024;
 export const DEFAULT_MAX_TABS = 8;
 
+/** The host identity a supervisor reports after its handshake (structural). */
+export interface HostInfoLike {
+  role?: HostRole;
+  cwd?: string;
+  sessionId?: string | null;
+  startedAt?: number;
+  pids?: { pid?: number };
+}
+
 /** The narrow supervisor surface this service drives. */
 export interface SupervisorHostLike {
   readonly sessionId: string;
@@ -42,6 +60,10 @@ export interface SupervisorHostLike {
   on(event: string, listener: (payload: unknown) => void): () => void;
   /** Optional so simple test doubles stay simple; the real host implements it. */
   rememberSessionFile?(sessionFile: string): void;
+  /** Host identity once ready (plan step 22). Optional for test doubles. */
+  info?(): HostInfoLike | null;
+  /** The tail of the host's own log (plan step 22). Optional for test doubles. */
+  logs?(): string[];
   shutdown(): Promise<void>;
 }
 
@@ -103,6 +125,17 @@ export interface SessionService {
    */
   promoteToOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   request(tabId: string, method: HostMethod, params?: unknown): Promise<unknown>;
+  /**
+   * Stops and re-spawns a tab's host, resuming its session from the JSONL
+   * (plan step 22). This is the recovery action for a crashed or wedged host.
+   */
+  restartTab(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Failures seen this run, newest first (plan step 22 Diagnostics). */
+  incidents(): Incident[];
+  /** Which host is behind each tab, plus its log tail (plan step 22 Diagnostics). */
+  diagnosticsHosts(): DiagnosticsHostInfo[];
+  /** Bounded `extension_error` history across tabs (plan step 22 Diagnostics). */
+  extensionErrors(): DiagnosticsExtensionError[];
   /** Re-spawns the last active tab in the background (plan step 24 pre-warm). */
   prewarmLast(): Promise<void>;
   flush(): Promise<void>;
@@ -159,6 +192,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   const pending = new Map<string, SessionEventEntry[]>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   const sequences = new Map<string, number>();
+  /** Failures seen this run, newest first (plan step 22). */
+  let incidents: Incident[] = [];
+  /** Bounded `extension_error` history across every tab (plan step 22). */
+  const extensionErrors: DiagnosticsExtensionError[] = [];
+  let incidentCounter = 0;
 
   let activeId: string | null = null;
   let control: SupervisorHostLike | null = null;
@@ -237,6 +275,48 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     deps.emit("state", { tabId, state } satisfies SessionStateEnvelope);
   };
 
+  /** Records a failure for the Diagnostics view and returns it for a notice. */
+  const recordIncident = (
+    kind: IncidentKind,
+    message: string,
+    options: { tabId?: string; detail?: string } = {},
+  ): Incident => {
+    incidentCounter += 1;
+    const incident = createIncident({
+      kind,
+      message,
+      id: `inc-${incidentCounter}`,
+      at: now(),
+      ...(options.tabId ? { tabId: options.tabId } : {}),
+      ...(options.detail ? { detail: options.detail } : {}),
+    });
+    incidents = appendIncident(incidents, incident, DEFAULT_INCIDENT_LIMIT);
+    return incident;
+  };
+
+  const recordExtensionError = (tabId: string, payload: unknown): void => {
+    const record = asRecord(payload);
+    const error = record.error;
+    const message =
+      typeof error === "string"
+        ? error
+        : error &&
+            typeof error === "object" &&
+            typeof (error as { message?: unknown }).message === "string"
+          ? String((error as { message?: unknown }).message)
+          : "an extension threw an error";
+    const extensionId = typeof record.extensionPath === "string" ? record.extensionPath : null;
+    const at = now();
+    extensionErrors.unshift({ tabId, extensionId, message, at });
+    if (extensionErrors.length > DEFAULT_INCIDENT_LIMIT) {
+      extensionErrors.length = DEFAULT_INCIDENT_LIMIT;
+    }
+    recordIncident("extension_error", message, {
+      tabId,
+      ...(extensionId ? { detail: extensionId } : {}),
+    });
+  };
+
   const applySnapshot = (tab: TabRecord, snapshot: unknown): void => {
     const record = asRecord(snapshot) as SnapshotLike;
     if (typeof record.sessionFile === "string") tab.sessionFile = record.sessionFile;
@@ -287,19 +367,44 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           accumulate(tab.id, entry);
           return;
         }
+        if (entry.event === "extension_error") {
+          recordExtensionError(tab.id, entry.payload);
+        }
         flushPending(tab.id);
         pushEntries(tab.id, [entry]);
       }),
       host.on("status", (status) => {
         const next = String(status);
         if (next === "ready") setStatus(tab, tab.status === "running" ? "running" : "idle");
-        else if (next === "failed") setStatus(tab, "failed");
-        else if (next === "stopped") setStatus(tab, "stopped");
+        else if (next === "failed") {
+          setStatus(tab, "failed");
+          if (
+            !incidents.some(
+              (incident) => incident.tabId === tab.id && incident.kind === "host_crash",
+            )
+          ) {
+            recordIncident(
+              "host_failed",
+              `host for ${tab.id} was stopped after repeated failures`,
+              {
+                tabId: tab.id,
+              },
+            );
+          }
+        } else if (next === "stopped") setStatus(tab, "stopped");
       }),
       host.on("crashed", (payload) => {
         flushPending(tab.id);
         setStatus(tab, "crashed");
+        recordIncident("host_crash", `host for ${tab.id} crashed`, { tabId: tab.id });
         pushEntries(tab.id, [{ event: "session.crashed", payload }]);
+      }),
+      host.on("timeout", (payload) => {
+        flushPending(tab.id);
+        const record = asRecord(payload);
+        const method = typeof record.method === "string" ? record.method : "request";
+        recordIncident("host_timeout", `host did not answer "${method}"`, { tabId: tab.id });
+        pushEntries(tab.id, [{ event: "session.timeout", payload }]);
       }),
       host.on("resumed", (payload) => {
         flushPending(tab.id);
@@ -368,6 +473,24 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     );
   };
 
+  /** One row per tab (plus the control host) for the Diagnostics view (step 22). */
+  const describeHost = (tabId: string, host: SupervisorHostLike): DiagnosticsHostInfo => {
+    const tab = tabs.get(tabId);
+    const info = host.info?.() ?? null;
+    const pads = info?.pids;
+    return {
+      tabId,
+      role: info?.role === "control" ? "control" : "session",
+      status: host.status(),
+      cwd: typeof info?.cwd === "string" ? info.cwd : (tab?.cwd ?? ""),
+      sessionFile: tab?.sessionFile ?? null,
+      officeHost: tab?.kind === "office",
+      pid: typeof pads?.pid === "number" ? pads.pid : null,
+      startedAt: typeof info?.startedAt === "number" ? info.startedAt : null,
+      logLines: host.logs?.() ?? [],
+    };
+  };
+
   const service: SessionService = {
     async controlHost() {
       if (control) return control;
@@ -384,6 +507,32 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     tabs: () => [...tabs.values()],
     activeTabId: () => activeId,
     envelope,
+
+    incidents: () => [...incidents],
+    extensionErrors: () => [...extensionErrors],
+    diagnosticsHosts: () => {
+      const rows: DiagnosticsHostInfo[] = [];
+      if (control) rows.push(describeHost(CONTROL_HOST_ID, control));
+      for (const tab of tabs.values()) {
+        const host = hosts.get(tab.id);
+        if (host) {
+          rows.push(describeHost(tab.id, host));
+          continue;
+        }
+        rows.push({
+          tabId: tab.id,
+          role: "session",
+          status: tab.status,
+          cwd: tab.cwd,
+          sessionFile: tab.sessionFile,
+          officeHost: tab.kind === "office",
+          pid: null,
+          startedAt: null,
+          logLines: [],
+        });
+      }
+      return rows;
+    },
 
     async restoreTabs() {
       const state = await deps.store.read();
@@ -565,6 +714,29 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       const tab = requireTab(tabId);
       const host = await ensureHost(tab);
       return host.request(method, params);
+    },
+
+    async restartTab(tabId) {
+      const tab = requireTab(tabId);
+      if (tab.kind === "web") {
+        throw new SessionServiceError("a web tab has no Pi host to restart", "web_tab");
+      }
+      // Detach the old host the same way `closeTab` does, then let `activateTab`
+      // spawn a fresh one. The session file is untouched, so history returns.
+      flushPending(tabId);
+      timers.delete(tabId);
+      pending.delete(tabId);
+      for (const off of unsubscribes.get(tabId) ?? []) off();
+      unsubscribes.delete(tabId);
+      hosts.delete(tabId);
+      try {
+        await deps.supervisor.stop(tabId);
+      } catch {
+        // A host that is already gone is exactly the state we want.
+      }
+      tab.status = "stopped";
+      publishTabs();
+      return service.activateTab(tabId);
     },
 
     async prewarmLast() {

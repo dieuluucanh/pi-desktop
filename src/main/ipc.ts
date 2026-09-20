@@ -28,6 +28,12 @@ import {
 import type { WebTabOpenInput } from "../shared/ipc";
 import type { IntegrationsState } from "../shared/integrations";
 import type { OfficeDocumentsView } from "../shared/office-documents";
+import {
+  parseReportedIncident,
+  type DiagnosticsExport,
+  type DiagnosticsSnapshot,
+} from "../shared/diagnostics";
+import type { DiagnosticsSaveResult } from "../shared/ipc";
 import { isTrustAnswer } from "../shared/projects";
 import type { OfficeStopResult } from "../shared/office-bridge";
 import {
@@ -61,6 +67,8 @@ export interface IpcSessionDeps {
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
   restore(): Promise<SessionTabsEnvelope>;
+  /** Stops and re-spawns a tab's host, resuming its session (plan step 22). */
+  restart(tabId: string): Promise<SessionTabsEnvelope>;
   request(input: { tabId: string; method: HostMethod; params?: unknown }): Promise<unknown>;
   /**
    * Deletes a session file to the OS trash (plan step 11). The session service's
@@ -114,6 +122,13 @@ export interface IpcDependencies {
     setBounds(tabId: string, bounds: WebTabBounds): boolean;
     command(tabId: string, command: WebCommand): boolean;
     decideNavigation(decision: WebNavigationDecision): Promise<boolean> | boolean;
+  };
+  /** Diagnostics (plan step 22): snapshot, redacted export and a file save. */
+  diagnostics: {
+    get(): DiagnosticsSnapshot;
+    export(): Promise<DiagnosticsExport>;
+    save(): Promise<DiagnosticsSaveResult>;
+    record(value: unknown): boolean;
   };
 }
 
@@ -240,6 +255,9 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.sessionActivate, (_event, tabId: unknown) =>
     deps.sessions.activate(requireTabId(deps, tabId)),
   );
+  ipcMain.handle(IPC.sessionRestart, (_event, tabId: unknown) =>
+    deps.sessions.restart(requireTabId(deps, tabId)),
+  );
   ipcMain.handle(IPC.sessionRequest, (_event, input: unknown) =>
     deps.sessions.request(parseSessionRequest(deps, input)),
   );
@@ -304,6 +322,15 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     const parsed = sanitizeWebNavigationDecision(decision);
     if (!parsed) throw new Error("web: invalid navigation decision");
     return deps.web.decideNavigation(parsed);
+  });
+
+  ipcMain.handle(IPC.diagnosticsGet, () => deps.diagnostics.get());
+  ipcMain.handle(IPC.diagnosticsExport, () => deps.diagnostics.export());
+  ipcMain.handle(IPC.diagnosticsSave, () => deps.diagnostics.save());
+  ipcMain.handle(IPC.diagnosticsRecord, (_event, value: unknown) => {
+    // Validation lives here: an unknown/malformed report is dropped, not stored.
+    if (!parseReportedIncident(value)) return false;
+    return deps.diagnostics.record(value);
   });
 }
 

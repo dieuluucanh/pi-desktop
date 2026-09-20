@@ -446,6 +446,7 @@ const NOTICE_SEVERITY: Record<string, TranscriptNotice["severity"]> = {
   agent_settled: "info",
   compaction_start: "info",
   "session.crashed": "warning",
+  "session.timeout": "warning",
   extension_error: "error",
 };
 
@@ -455,6 +456,7 @@ const NOTICE_TEXT: Record<string, string> = {
   session_recovered: "Session recovered after a crash",
   compaction_start: "Compacting the conversation…",
   "session.crashed": "The host process crashed",
+  "session.timeout": "The session host stopped responding",
   extension_error: "An extension raised an error",
 };
 

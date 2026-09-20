@@ -185,6 +185,8 @@ export interface SessionRuntimeRequest {
   agentDir: string;
   sessionManager: SessionManagerHandle;
   npmCommand?: readonly string[] | null;
+  /** Safe mode (plan step 22): load no third-party extensions/skills/prompts/themes. */
+  safeMode?: boolean;
 }
 
 export interface SessionCoreDeps {
@@ -192,6 +194,8 @@ export interface SessionCoreDeps {
   agentDir: string;
   sessionDir?: string;
   npmCommand?: readonly string[] | null;
+  /** Safe mode (plan step 22): the runtime is built with every loader disabled. */
+  safeMode?: boolean;
   /** Creates the SDK runtime (see `src/host/sdk/index.ts`). */
   createRuntime(
     request: SessionRuntimeRequest,
@@ -434,6 +438,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       agentDir: deps.agentDir,
       sessionManager: options.sessionManager,
       npmCommand: deps.npmCommand,
+      ...(deps.safeMode ? { safeMode: true } : {}),
     });
     runtime = created.runtime;
     settingsManager = created.runtime.services?.settingsManager ?? null;

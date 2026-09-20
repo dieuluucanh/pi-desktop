@@ -9,6 +9,7 @@
  */
 
 import { PI_FOR_OFFICE, PI_OFFICE_BRIDGE, officeHostLabel } from "../../shared/office";
+import { DIAGNOSTIC_ENV_KEYS } from "../../shared/diagnostics";
 import type { OfficeDetectionResult, OfficeOs } from "./types";
 import type { BridgeInstallResult } from "./bridge-install";
 import type { SideloadResult } from "./sideload";
@@ -338,18 +339,6 @@ export interface DiagnosticsInput {
   extra?: Record<string, string>;
   now?: () => Date;
 }
-
-const DIAGNOSTIC_ENV_KEYS = [
-  "PI_CODING_AGENT_DIR",
-  "PI_CODING_AGENT_SESSION_DIR",
-  "PI_OFFICE_BRIDGE_PORT",
-  "PI_OFFICE_BRIDGE_ALLOWED_ORIGINS",
-  "PI_OFFLINE",
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "WSL_DISTRO_NAME",
-  "SSH_CONNECTION",
-] as const;
 
 export function buildDiagnosticsBundle(input: DiagnosticsInput): {
   text: string;

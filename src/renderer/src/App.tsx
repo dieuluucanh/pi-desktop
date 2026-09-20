@@ -60,6 +60,10 @@ export function App() {
   const loadProjects = useAppStore((state) => state.loadProjects);
   const loadTabs = useAppStore((state) => state.loadTabs);
   const setInfo = useAppStore((state) => state.setInfo);
+  const safeMode = useAppStore((state) => state.info?.safeMode ?? false);
+  const piOffline = useAppStore((state) => state.info?.piOffline ?? false);
+  const offlineNotice = useAppStore((state) => state.offlineNotice);
+  const clearOffline = useAppStore((state) => state.clearOffline);
   useEffect(() => {
     void loadPrefs();
     void loadProjects();
@@ -98,6 +102,13 @@ export function App() {
     const offWebNav = api.web.onNavigationRequest((request) =>
       useAppStore.setState({ webNavigationPrompt: request }),
     );
+    // A renderer promise rejection is captured like a main-process one: it is
+    // classified, shown as a hint and recorded for Diagnostics (plan step 22).
+    const onRejection = (event: PromiseRejectionEvent): void => {
+      event.preventDefault();
+      useAppStore.getState().noteFailure(event.reason);
+    };
+    window.addEventListener("unhandledrejection", onRejection);
     return () => {
       cancelled = true;
       offMenu();
@@ -107,6 +118,7 @@ export function App() {
       offDocuments();
       offWebState();
       offWebNav();
+      window.removeEventListener("unhandledrejection", onRejection);
     };
   }, [loadTabs, setInfo]);
 
@@ -129,6 +141,30 @@ export function App() {
         <div className="banner banner--error m-3">
           The preload bridge is unavailable (window.pi is missing), so no command can reach the main
           process. This build is broken — reinstall or run from source.
+        </div>
+      ) : null}
+      {safeMode ? (
+        <div className="banner banner--warn m-3" role="status" data-testid="safe-mode-banner">
+          Safe mode is on: third-party extensions and packages are not loaded. Restart without
+          --safe-mode to restore them.
+        </div>
+      ) : null}
+      {piOffline || offlineNotice ? (
+        <div
+          className="banner banner--warn m-3 flex items-center justify-between gap-3"
+          role="status"
+          data-testid="offline-banner"
+        >
+          <span>
+            {piOffline
+              ? "PI_OFFLINE is set: Pi will not make startup network calls (model lists, updates and package installs are unavailable)."
+              : `This machine looks offline: ${offlineNotice}`}
+          </span>
+          {offlineNotice ? (
+            <button type="button" className="text-xs underline" onClick={clearOffline}>
+              Dismiss
+            </button>
+          ) : null}
         </div>
       ) : null}
       <div className="flex min-h-0 flex-1">

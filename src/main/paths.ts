@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { app } from "electron";
+import { SAFE_MODE_ENV } from "../shared/host-protocol";
 
 /**
  * Where the app keeps its own state, and where the Pi profile lives.
@@ -12,7 +13,8 @@ import { app } from "electron";
 
 export const PROFILE_ENV = "PI_CODING_AGENT_DIR";
 export const SAFE_MODE_FLAG = "--safe-mode";
-export const SAFE_MODE_ENV = "PI_DESKTOP_SAFE_MODE";
+/** Re-exported from the host protocol so the host and the app read one name. */
+export { SAFE_MODE_ENV };
 
 export interface AppPaths {
   /** Electron `userData` root (also the base for package/app caches). */
@@ -91,7 +93,7 @@ export function appPaths(): AppPaths {
 
 /**
  * Safe mode starts with no extensions and no packages so a bad install can
- * always be recovered from (plan step 21).
+ * always be recovered from (plan step 22).
  */
 export function isSafeMode(
   argv: readonly string[] = process.argv,

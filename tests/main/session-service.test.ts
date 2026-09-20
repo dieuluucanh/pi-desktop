@@ -81,6 +81,26 @@ class FakeHost implements SupervisorHostLike {
     this.statusValue = "stopped";
   }
 
+  info(): {
+    role: HostRole;
+    cwd: string;
+    sessionId: string;
+    startedAt: number;
+    pids: { pid: number };
+  } {
+    return {
+      role: this.sessionId === CONTROL_HOST_ID ? "control" : "session",
+      cwd: `C:\\work\\${this.sessionId}`,
+      sessionId: this.sessionId,
+      startedAt: 5,
+      pids: { pid: 900 },
+    };
+  }
+
+  logs(): string[] {
+    return [`log line for ${this.sessionId}`];
+  }
+
   /** Pushes a protocol event (the supervisor forwards the named event and `event`). */
   emit(event: string, payload?: unknown): void {
     const entry = payload === undefined ? { event } : { event, payload };
@@ -96,12 +116,14 @@ function createHarness(options: { maxTabs?: number; failCreate?: Error } = {}): 
   service: SessionService;
   hosts: Map<string, FakeHost>;
   specs: SpawnSpec[];
+  stopped: string[];
   pushes: Array<{ channel: "event" | "state" | "tabs"; payload: unknown }>;
   stored: { tabs: TabRecord[]; activeTabId: string | null };
   newest(): FakeHost;
 } {
   const hosts = new Map<string, FakeHost>();
   const specs: SpawnSpec[] = [];
+  const stopped: string[] = [];
   const pushes: Array<{ channel: "event" | "state" | "tabs"; payload: unknown }> = [];
   const stored: { tabs: TabRecord[]; activeTabId: string | null } = { tabs: [], activeTabId: null };
 
@@ -123,9 +145,11 @@ function createHarness(options: { maxTabs?: number; failCreate?: Error } = {}): 
     get: (id) => hosts.get(id),
     list: () => [...hosts.values()],
     stop: async (id) => {
+      stopped.push(id);
       hosts.delete(id);
     },
     stopAll: async () => {
+      stopped.push(...hosts.keys());
       hosts.clear();
     },
   };
@@ -148,7 +172,15 @@ function createHarness(options: { maxTabs?: number; failCreate?: Error } = {}): 
     emit: (channel, payload) => pushes.push({ channel, payload }),
   });
 
-  return { service, hosts, specs, pushes, stored, newest: () => [...hosts.values()].at(-1)! };
+  return {
+    service,
+    hosts,
+    specs,
+    stopped,
+    pushes,
+    stored,
+    newest: () => [...hosts.values()].at(-1)!,
+  };
 }
 
 const eventsOf = (
@@ -362,6 +394,113 @@ describe("crash recovery", () => {
         .events.map((entry) => entry.event),
     ).toEqual(["session.recovered"]);
     expect(host.requests.map((request) => request.method)).toContain("state.get");
+  });
+});
+
+describe("reliability and recovery (plan step 22)", () => {
+  it("records a crash as an incident with a fix", async () => {
+    const { service, newest } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+
+    newest().emitLifecycle("crashed", { code: 1 });
+
+    const incident = service.incidents()[0];
+    expect(incident).toMatchObject({ kind: "host_crash", severity: "error", recoverable: true });
+    expect(incident?.fix).toMatch(/Restart/);
+    expect(incident?.tabId).toBe("tab-1");
+  });
+
+  it("records a wedged request and pushes a timeout notice", async () => {
+    const { service, newest, pushes } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    pushes.length = 0;
+
+    newest().emitLifecycle("timeout", { method: "compact", timeoutMs: 20 });
+
+    expect(service.incidents()[0]).toMatchObject({
+      kind: "host_timeout",
+      recoverable: true,
+      message: expect.stringContaining("compact"),
+    });
+    expect(eventsOf(pushes)[0]!.events.map((entry) => entry.event)).toEqual(["session.timeout"]);
+  });
+
+  it("records extension errors with their extension path", async () => {
+    const { service, newest } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+
+    newest().emit("extension_error", {
+      extensionPath: "C:/ext/workflow/extension.ts",
+      error: "boom",
+    });
+
+    expect(service.extensionErrors()[0]).toMatchObject({
+      tabId: "tab-1",
+      extensionId: "C:/ext/workflow/extension.ts",
+      message: "boom",
+    });
+    expect(service.incidents()[0]).toMatchObject({ kind: "extension_error", severity: "error" });
+  });
+
+  it("restarts a tab by stopping the old host and resuming from the JSONL", async () => {
+    const { service, specs, newest, hosts } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const first = newest();
+    specs.length = 0;
+
+    await service.restartTab("tab-1");
+
+    // The supervisor stopped the old process and a fresh host took its place.
+    expect(hosts.get("tab-1")).not.toBe(first);
+    expect(hosts.size).toBe(1);
+    expect(specs).toHaveLength(1);
+    expect(specs[0]).toMatchObject({
+      sessionId: "tab-1",
+      sessionFile: "/profile/sessions/s1.jsonl",
+    });
+    // The new host resumes the same session file instead of creating a blank one.
+    expect(newest().requests.map((entry) => entry.method)).toEqual(["session.resume"]);
+    expect(service.tabs()[0]!.status).toBe("idle");
+  });
+
+  it("refuses to restart a web tab", async () => {
+    const { service } = createHarness();
+    await service.createTab({ kind: "web", cwd: "", url: "http://127.0.0.1:5173/" });
+    await expect(service.restartTab("tab-1")).rejects.toThrow(/no Pi host to restart/);
+  });
+
+  it("stops a running tab's host when it is closed mid-run (no orphan process)", async () => {
+    const { service, stopped, newest } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    // A run in flight: the host reports streaming, so the tab is `running`.
+    newest().emit("state", { streaming: true });
+    expect(service.tabs()[0]!.status).toBe("running");
+
+    await service.closeTab("tab-1");
+
+    expect(stopped).toEqual(["tab-1"]);
+    expect(service.tabs()).toEqual([]);
+    expect(service.diagnosticsHosts()).toEqual([]);
+  });
+
+  it("describes each tab and the control host for Diagnostics", async () => {
+    const { service } = createHarness();
+    await service.controlHost();
+    await service.createTab({ cwd: "C:\\work\\app" });
+
+    const rows = service.diagnosticsHosts();
+    const control = rows.find((row) => row.tabId === CONTROL_HOST_ID);
+    const tab = rows.find((row) => row.tabId === "tab-1");
+
+    expect(control).toMatchObject({ role: "control", pid: 900, startedAt: 5 });
+    expect(control?.logLines[0]).toContain("control");
+    expect(tab).toMatchObject({
+      role: "session",
+      // The host process is ready; the tab's own status is tracked separately.
+      status: "ready",
+      sessionFile: "/profile/sessions/s1.jsonl",
+      logLines: ["log line for tab-1"],
+    });
   });
 });
 

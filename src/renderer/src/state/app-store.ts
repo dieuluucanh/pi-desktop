@@ -159,6 +159,8 @@ import type { HostCommandEntry } from "../completion/command-source";
 import type { FileListSnapshot } from "../completion/file-source";
 import type { CompletionSource } from "../completion/types";
 import { thinkingLevelsOf, toCatalog, type ModelCatalogEntry } from "../session/model-catalog";
+import { classifyFailure, isOfflineError } from "../../../shared/diagnostics";
+import type { DiagnosticsSnapshot } from "../../../shared/diagnostics";
 
 /**
  * The renderer's view state (plan step 1).
@@ -250,6 +252,8 @@ export interface AppStateShape {
   info: AppInfo | null;
   /** Transient, user-visible explanation for an action that is not wired yet. */
   hint: string | null;
+  /** A connectivity failure the user should see until it is dismissed or a call works. */
+  offlineNotice: string | null;
   /** Open session tabs (plan step 3); the main process owns their hosts. */
   tabs: TabRecord[];
   activeTabId: string | null;
@@ -315,6 +319,14 @@ export interface AppStateShape {
   /** Hides the trust prompt, leaving the project untrusted. */
   dismissTrust: () => void;
   setHint: (hint: string | null) => void;
+  /**
+   * Records a failed operation: sets the transient hint and, when the message
+   * looks like a network failure, raises the persistent offline banner
+   * (plan step 22). Every user-visible catch path funnels through here.
+   */
+  noteFailure: (error: unknown) => void;
+  /** Clears the offline banner (a retry worked, or the user dismissed it). */
+  clearOffline: () => void;
   loadPrefs: () => Promise<void>;
   /** Sessions (plan step 3). */
   loadTabs: () => Promise<void>;
@@ -325,6 +337,8 @@ export interface AppStateShape {
   hydrateTranscript: (tabId: string) => Promise<void>;
   /** Aborts the run of a tab (the transcript's error banner action). */
   abortTab: (tabId: string) => Promise<void>;
+  /** Stops and re-spawns a tab's host, resuming its session (plan step 22). */
+  restartTab: (tabId: string) => Promise<void>;
   /** Drops a tab's transcript so the next hydrate rebuilds it (branch navigation). */
   resetTranscript: (tabId: string) => void;
 
@@ -491,6 +505,10 @@ export interface AppStateShape {
   /** The live Office pane registry (plan step 20), pushed from main's poll. */
   officeDocuments: OfficeDocumentsView | null;
   officeDocumentsLoaded: boolean;
+  /** The app-wide diagnostics snapshot (plan step 22), null until first loaded. */
+  diagnostics: DiagnosticsSnapshot | null;
+  diagnosticsError: string | null;
+  loadDiagnostics: () => Promise<void>;
   /** Whether the right-rail Documents panel is open. */
   documentsPanelOpen: boolean;
   loadOfficeDocuments: () => Promise<void>;
@@ -865,6 +883,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   extensionsFocus: null,
   info: null,
   hint: null,
+  offlineNotice: null,
   tabs: [],
   activeTabId: null,
   transcripts: {},
@@ -925,6 +944,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   integrationsLoaded: false,
   officeDocuments: null,
   officeDocumentsLoaded: false,
+  diagnostics: null,
+  diagnosticsError: null,
   documentsPanelOpen: false,
   webTabStates: {},
   webNavigationPrompt: null,
@@ -978,7 +999,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       void bridge()?.setTitle(`Pi Desktop — ${projectNameOf(path)}`);
       void get().inspectProject(path);
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -1019,7 +1040,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         void get().inspectProject(path);
       }
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -1029,7 +1050,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       get().applyProjects(await api.projects.mutate({ action: "remove", path }));
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -1039,7 +1060,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       get().applyProjects(await api.projects.mutate({ action: "reorder", path, toIndex }));
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -1049,7 +1070,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       get().applyProjects(await api.projects.mutate({ action: "update", path, patch }));
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -1095,7 +1116,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       if (result.path) void get().inspectProject(result.path);
       return true;
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
       return false;
     }
   },
@@ -1117,7 +1138,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       if (result.path) void get().inspectProject(result.path);
       return true;
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
       return false;
     }
   },
@@ -1138,7 +1159,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       return await api.projects.action({ path, action });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
       return false;
     }
   },
@@ -1172,7 +1193,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       }
       void get().inspectProject(prompt.cwd);
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     } finally {
       set({ trustBusy: false });
     }
@@ -1181,6 +1202,25 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   dismissTrust: () => set({ trustPrompt: null }),
 
   setHint: (hint) => set({ hint }),
+
+  noteFailure: (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    set({
+      hint: message,
+      ...(isOfflineError(message) ? { offlineNotice: message } : {}),
+    });
+    // Report to main so the failure shows up in Diagnostics (plan step 22).
+    // Fire-and-forget: reporting a failure must never itself surface an error.
+    void bridge()
+      ?.diagnostics?.record({
+        kind: classifyFailure(message),
+        message,
+        ...(error instanceof Error && error.stack ? { detail: error.stack } : {}),
+      })
+      .catch(() => undefined);
+  },
+
+  clearOffline: () => set({ offlineNotice: null }),
 
   loadPrefs: async () => {
     const api = bridge();
@@ -1311,7 +1351,25 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       await api.sessions.request({ tabId, method: "abort" });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
+    }
+  },
+
+  restartTab: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      await api.sessions.restart(tabId);
+      // The host is new, so the transcript has to be rebuilt from `messages.get`
+      // on the next view (history lives in the JSONL, not in this window).
+      const base = get().transcripts[tabId];
+      if (base) {
+        set({
+          transcripts: { ...get().transcripts, [tabId]: { ...base, hydrated: false } },
+        });
+      }
+    } catch (error) {
+      get().noteFailure(error);
     }
   },
 
@@ -1403,7 +1461,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         params: { id: dialog.id, ...answer },
       });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -1588,7 +1646,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         },
       });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -1608,7 +1666,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         thinkingLevels: { ...get().thinkingLevels, [tabId]: thinkingLevelsOf(response) },
       });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -1623,7 +1681,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       });
       set({ picker: null });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -1637,7 +1695,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         params: { direction: direction === -1 ? "backward" : "forward", persist: false },
       });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -1647,7 +1705,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       await api.sessions.request({ tabId, method: "thinking.cycle", params: { persist: false } });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -1658,7 +1716,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       await api.sessions.request({ tabId, method: "session.rename", params: { name: trimmed } });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -1694,7 +1752,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       });
       return true;
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
       return false;
     }
   },
@@ -1725,7 +1783,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       set({ completionCommands: { ...get().completionCommands, [tabId]: commands } });
       return commands;
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
       return cached ?? [];
     }
   },
@@ -1748,7 +1806,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       set({ completionFiles: { ...get().completionFiles, [tabId]: entry } });
       return entry;
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
       return cached ?? null;
     }
   },
@@ -1841,7 +1899,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       });
       return { handled: true, sent: true };
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
       return { handled: true, sent: false };
     }
   },
@@ -1862,7 +1920,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       ].join("\n\n");
       if (restored.length > 0) get().setDraft(tabId, restored);
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -1872,7 +1930,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       await api.sessions.request({ tabId, method: "clearQueue" });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -1952,7 +2010,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         });
       }
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -1991,7 +2049,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       });
       set({ providerLogin: { ...login, prompt: null } });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -2611,6 +2669,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   // ---- Live Office pane registry (plan step 20) ----
 
+  loadDiagnostics: async () => {
+    const api = bridge();
+    if (!api?.diagnostics) return;
+    try {
+      set({ diagnostics: await api.diagnostics.get(), diagnosticsError: null });
+    } catch (error) {
+      set({ diagnosticsError: errorMessage(error) });
+    }
+  },
+
   loadOfficeDocuments: async () => {
     const api = bridge();
     if (!api?.office) return;
@@ -2946,7 +3014,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       get().applyTabs(await api.sessions.activate(tabId));
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -2956,7 +3024,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       get().applyTabs(await api.sessions.close(tabId));
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -2980,7 +3048,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       get().applyTabs(await api.sessions.closeOthers(tabId));
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -3000,7 +3068,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       get().applyTabs(await api.sessions.reorder(tabId, target));
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
       void get().loadTabs();
     }
   },
@@ -3018,7 +3086,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       get().applyTabs(await api.sessions.create(input));
       set({ view: "session", hint: null });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -3043,7 +3111,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       await get().hydrateTranscript(tabId);
       set({ hint: null });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -3095,7 +3163,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       get().applyTabs(await api.sessions.create({ cwd, sessionFile: session.path }));
       set({ sessionBrowserOpen: false, view: "session", hint: null });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -3127,7 +3195,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       set({ hint: "Session moved to the trash." });
       return true;
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
       return false;
     }
   },
@@ -3157,7 +3225,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       await get().loadProjectSessions({ refresh: true });
       set({ hint: null });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -3212,7 +3280,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       await get().loadSessionTree(tabId);
       set({ sessionTreeOpen: false, hint: null });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -3227,7 +3295,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       });
       await get().loadSessionTree(tabId);
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -3247,7 +3315,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       set({ forkOpen: true, forkCandidates: messages });
       if (messages.length === 0) set({ hint: "Nothing to fork from yet." });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -3262,7 +3330,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       await get().hydrateTranscript(tabId);
       set({ forkOpen: false, forkCandidates: [], hint: null });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 
@@ -3282,7 +3350,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       await api.revealPath(path);
       set({ hint: `Exported to ${path}` });
     } catch (error) {
-      set({ hint: error instanceof Error ? error.message : String(error) });
+      get().noteFailure(error);
     }
   },
 

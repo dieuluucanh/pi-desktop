@@ -13,6 +13,7 @@
 
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ResourceInspector, ResourceLoaderSource } from "../resources";
+import { SAFE_MODE_RESOURCE_LOADER_OPTIONS } from "../safe-mode";
 
 export interface SdkResourceInspectorOptions {
   /** `~/.pi/agent`, resolved by the composition root. */
@@ -21,6 +22,8 @@ export interface SdkResourceInspectorOptions {
   cwd: string;
   /** The app's stored trust decision for a project folder. */
   isProjectTrusted?: (cwd: string) => boolean;
+  /** Safe mode (plan step 22): the hub reports no third-party resources. */
+  safeMode?: boolean;
 }
 
 export function createSdkResourceInspector(
@@ -42,6 +45,7 @@ export function createSdkResourceInspector(
         cwd: target,
         agentDir: options.agentDir,
         settingsManager,
+        ...(options.safeMode ? SAFE_MODE_RESOURCE_LOADER_OPTIONS : {}),
       });
       await loader.reload({
         // Answer from the app's store instead of prompting: the hub is not a

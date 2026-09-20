@@ -8,6 +8,7 @@ import {
   NODE_BIN_ENV,
   NPM_CLI_ENV,
   ROLE_FLAG,
+  SAFE_MODE_ENV,
   SERVICE_ENV,
   SERVICE_FLAG,
   SESSION_ID_ENV,
@@ -27,6 +28,8 @@ import { listWorkspaceFiles } from "./file-listing";
 import { inspectProject } from "./project-inspect";
 import { createProjectTrust } from "./project-trust";
 import { createProviderLoginHandlers } from "./provider-login";
+import { PACKAGE_METHODS, PackageError } from "./packages";
+import { SAFE_MODE_PACKAGE_REFUSAL } from "./safe-mode";
 import type { CustomProviderStore } from "./custom-providers";
 import type { ProviderPort } from "./providers";
 import { createSessionCore, type SessionCore } from "./session-core";
@@ -108,6 +111,7 @@ function createCore(options: {
   emit: (event: string, payload?: unknown, sessionId?: string) => void;
   npmCommand?: readonly string[] | null;
   backupDir?: string;
+  safeMode?: boolean;
   bindSession?: (session: never, runtime: never) => Promise<void>;
 }): SessionCore {
   const trustStore = new ProjectTrustStore(options.agentDir);
@@ -121,6 +125,7 @@ function createCore(options: {
     cwd: options.cwd,
     agentDir: options.agentDir,
     ...(options.npmCommand ? { npmCommand: options.npmCommand } : {}),
+    ...(options.safeMode ? { safeMode: true } : {}),
     ...(options.bindSession ? { bindSession: options.bindSession as never } : {}),
     emit: options.emit,
     trustStore,
@@ -191,6 +196,7 @@ function createControlHostCore(options: {
   cwd: string;
   agentDir: string;
   backupDir?: string;
+  safeMode?: boolean;
   providers: ProviderPort;
   customProviders: CustomProviderStore;
   npmCommand?: readonly string[] | null;
@@ -240,6 +246,7 @@ function createControlHostCore(options: {
       agentDir: options.agentDir,
       cwd: options.cwd,
       isProjectTrusted: (cwd) => trust.status(cwd).trusted,
+      ...(options.safeMode ? { safeMode: true } : {}),
     }),
     // Profile keybindings and the theme catalogue (plan step 15) work with no
     // session open; the theme port is built per project cwd over a fresh
@@ -289,6 +296,7 @@ export function runService(
   const bridgePort = flagValue(args, "--port") ?? env.PI_OFFICE_BRIDGE_PORT ?? null;
   const cwd = flagValue(args, "--cwd") ?? process.cwd();
   const role = resolveHostRole(args, env);
+  const safeMode = env[SAFE_MODE_ENV] === "1";
   const npmCommand = resolveNpmCommand(env);
 
   return new Promise<void>((resolve) => {
@@ -370,6 +378,7 @@ export function runService(
             cwd,
             agentDir,
             ...(backupDir ? { backupDir } : {}),
+            ...(safeMode ? { safeMode: true } : {}),
             ...(npmCommand ? { npmCommand } : {}),
             providers: providerPort,
             customProviders: customProviderStore,
@@ -378,12 +387,23 @@ export function runService(
             cwd,
             agentDir,
             ...(backupDir ? { backupDir } : {}),
+            ...(safeMode ? { safeMode: true } : {}),
             ...(npmCommand ? { npmCommand } : {}),
             ...(bindSession ? { bindSession } : {}),
             emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
           });
 
     const handlers: Partial<Record<string, HostHandler>> = { ...core.handlers() };
+    // Safe mode (plan step 22) is enforced at the composition root: installing or
+    // removing a package is the one mutation that could re-introduce third-party
+    // code, so every package mutation is refused outright.
+    if (safeMode) {
+      for (const method of PACKAGE_METHODS) {
+        handlers[method] = async () => {
+          throw new PackageError(SAFE_MODE_PACKAGE_REFUSAL, "safe_mode");
+        };
+      }
+    }
     if (uiPort) Object.assign(handlers, uiPort.handlers());
     if (tuiSurface) Object.assign(handlers, tuiSurface.handlers());
     if (rendererRegistry) Object.assign(handlers, rendererRegistry.handlers());

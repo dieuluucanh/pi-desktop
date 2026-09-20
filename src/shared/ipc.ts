@@ -1,6 +1,7 @@
 import type { OfficeSetupStepId, OfficeSetupView } from "./office-setup";
 import type { OfficeStopResult } from "./office-bridge";
 import type { OfficeDocumentsView } from "./office-documents";
+import type { DiagnosticsExport, DiagnosticsSnapshot } from "./diagnostics";
 import type { IntegrationsState, OfficeIntegrationRecordPatch } from "./integrations";
 import type { UiPrefs } from "./prefs";
 import type {
@@ -66,6 +67,8 @@ export const IPC = {
   sessionPromoteOffice: "session:promote-office",
   sessionActivate: "session:activate",
   sessionRestore: "session:restore",
+  /** Stops and re-spawns a tab's host, resuming its session (plan step 22). */
+  sessionRestart: "session:restart",
   sessionRequest: "session:request",
   /** Deletes a session to the OS trash (plan step 11; validated in main). */
   sessionDelete: "session:delete",
@@ -122,6 +125,15 @@ export const IPC = {
   webState: "web:state",
   /** Main → renderer: a navigation left the review and needs a decision. */
   webNavigationRequest: "web:navigation-request",
+
+  /**
+   * Diagnostics (plan step 22): the app-wide snapshot, the redacted export
+   * bundle, a file-save step and renderer-reported incidents.
+   */
+  diagnosticsGet: "diagnostics:get",
+  diagnosticsExport: "diagnostics:export",
+  diagnosticsSave: "diagnostics:save",
+  diagnosticsRecord: "diagnostics:record",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -172,6 +184,8 @@ export interface AppInfo {
   arch: string;
   isDev: boolean;
   safeMode: boolean;
+  /** True when `PI_OFFLINE` disables Pi's startup network calls (plan step 22). */
+  piOffline: boolean;
   userDataDir: string;
   /** The user's home folder (`app.getPath("home")`), for “quick session in home”. */
   homeDir: string;
@@ -209,6 +223,8 @@ export interface SessionsBridge {
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
   restore(): Promise<SessionTabsEnvelope>;
+  /** Recovers a crashed/wedged host by re-spawning it (plan step 22). */
+  restart(tabId: string): Promise<SessionTabsEnvelope>;
   /** Runs any host protocol method against a tab's host. */
   request(input: SessionRequestInput): Promise<unknown>;
   /**
@@ -312,6 +328,30 @@ export interface WebBridge {
 }
 
 /** The complete API exposed to the renderer as `window.pi`. */
+export interface DiagnosticsSaveResult {
+  ok: boolean;
+  path?: string;
+  error?: string;
+}
+
+/** Diagnostics (plan step 22). */
+export interface DiagnosticsBridge {
+  /** The current snapshot: hosts, logs, incidents, Office state, environment. */
+  get(): Promise<DiagnosticsSnapshot>;
+  /** The redacted support bundle, without writing anything. */
+  export(): Promise<DiagnosticsExport>;
+  /** Asks the user where to save, then writes the bundle there. */
+  save(): Promise<DiagnosticsSaveResult>;
+  /** Reports a renderer failure (unhandled rejection) into the incident list. */
+  record(incident: {
+    kind?: string;
+    message: string;
+    detail?: string;
+    tabId?: string;
+  }): Promise<boolean>;
+}
+
+/** The complete API exposed to the renderer as `window.pi`. */
 export interface PiDesktopBridge {
   getAppInfo(): Promise<AppInfo>;
   openExternal(url: string): Promise<boolean>;
@@ -327,4 +367,5 @@ export interface PiDesktopBridge {
   office: OfficeBridge;
   integrations: IntegrationsBridge;
   web: WebBridge;
+  diagnostics: DiagnosticsBridge;
 }

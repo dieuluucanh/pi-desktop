@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import {
   IPC,
   type AppInfo,
+  type DiagnosticsBridge,
   type IntegrationsBridge,
   type MenuCommand,
   type OfficeBridge,
@@ -10,6 +11,7 @@ import {
   type ProjectOpResponse,
   type ProjectsBridge,
   type SessionDeleteResult,
+  type DiagnosticsSaveResult,
   type SessionsBridge,
   type WebBridge,
   type WebTabOpenInput,
@@ -34,6 +36,7 @@ import type {
 import type { OfficeSetupStepId, OfficeSetupView } from "../shared/office-setup";
 import type { OfficeStopResult } from "../shared/office-bridge";
 import type { OfficeDocumentsView } from "../shared/office-documents";
+import type { DiagnosticsExport, DiagnosticsSnapshot } from "../shared/diagnostics";
 import type {
   WebCommand,
   WebNavigationDecision,
@@ -72,6 +75,8 @@ const sessions: SessionsBridge = {
   activate: (tabId: string) =>
     ipcRenderer.invoke(IPC.sessionActivate, tabId) as Promise<SessionTabsEnvelope>,
   restore: () => ipcRenderer.invoke(IPC.sessionRestore) as Promise<SessionTabsEnvelope>,
+  restart: (tabId: string) =>
+    ipcRenderer.invoke(IPC.sessionRestart, tabId) as Promise<SessionTabsEnvelope>,
   request: (input: SessionRequestInput) =>
     ipcRenderer.invoke(IPC.sessionRequest, input) as Promise<unknown>,
   deleteSession: (sessionFile: string) =>
@@ -142,6 +147,13 @@ const web: WebBridge = {
     subscribe<WebNavigationRequest>(IPC.webNavigationRequest, listener),
 };
 
+const diagnostics: DiagnosticsBridge = {
+  get: () => ipcRenderer.invoke(IPC.diagnosticsGet) as Promise<DiagnosticsSnapshot>,
+  export: () => ipcRenderer.invoke(IPC.diagnosticsExport) as Promise<DiagnosticsExport>,
+  save: () => ipcRenderer.invoke(IPC.diagnosticsSave) as Promise<DiagnosticsSaveResult>,
+  record: (incident) => ipcRenderer.invoke(IPC.diagnosticsRecord, incident) as Promise<boolean>,
+};
+
 const bridge: PiDesktopBridge = {
   getAppInfo: () => ipcRenderer.invoke(IPC.appInfo) as Promise<AppInfo>,
   openExternal: (url: string) => ipcRenderer.invoke(IPC.openExternal, url) as Promise<boolean>,
@@ -158,6 +170,7 @@ const bridge: PiDesktopBridge = {
   office,
   integrations,
   web,
+  diagnostics,
 };
 
 contextBridge.exposeInMainWorld("pi", bridge);

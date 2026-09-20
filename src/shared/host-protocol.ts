@@ -50,6 +50,14 @@ export const SESSION_ID_ENV = "PI_DESKTOP_SESSION_ID";
 export const HOST_ROLE_ENV = "PI_DESKTOP_HOST_ROLE";
 export const ROLE_FLAG = "--role";
 
+/**
+ * Safe mode (plan step 22): the app-wide "no third-party code" switch. Main sets
+ * it for every host it spawns from `isSafeMode()`, and a host that sees it builds
+ * its resource loaders with every loader collection disabled and refuses package
+ * mutations, so a broken extension or package can always be recovered from.
+ */
+export const SAFE_MODE_ENV = "PI_DESKTOP_SAFE_MODE";
+
 export type HostRole = "control" | "session";
 
 export function isHostRole(value: unknown): value is HostRole {

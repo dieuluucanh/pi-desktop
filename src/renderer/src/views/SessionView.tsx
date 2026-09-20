@@ -83,6 +83,7 @@ export function SessionView() {
   const sessionStates = useAppStore((state) => state.sessionStates);
   const transcripts = useAppStore((state) => state.transcripts);
   const activateTab = useAppStore((state) => state.activateTab);
+  const restartTab = useAppStore((state) => state.restartTab);
   const hydrateTranscript = useAppStore((state) => state.hydrateTranscript);
   const sendPrompt = useAppStore((state) => state.sendPrompt);
   const stopRun = useAppStore((state) => state.stopRun);
@@ -317,7 +318,19 @@ export function SessionView() {
         </div>
       </header>
 
-      {active.error ? <div className="banner banner--error mx-4 mt-2">{active.error}</div> : null}
+      {active.error || active.status === "crashed" || active.status === "failed" ? (
+        <div className="banner banner--error mx-4 mt-2 flex items-start justify-between gap-3">
+          <span>
+            {active.error ??
+              (active.status === "crashed"
+                ? "The session host crashed. History is on disk and returns after a restart."
+                : "The session host was stopped after repeated failures.")}
+          </span>
+          <Button size="sm" variant="secondary" onClick={() => void restartTab(active.id)}>
+            Restart
+          </Button>
+        </div>
+      ) : null}
 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">

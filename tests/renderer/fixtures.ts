@@ -1,4 +1,5 @@
 import type { AppInfo, PiDesktopBridge, WebTabOpenInput } from "../../src/shared/ipc";
+import type { DiagnosticsSnapshot } from "../../src/shared/diagnostics";
 import type {
   WebCommand,
   WebNavigationDecision,
@@ -30,6 +31,7 @@ export function appInfoFixture(overrides: Partial<AppInfo> = {}): AppInfo {
     arch: "x64",
     isDev: true,
     safeMode: false,
+    piOffline: false,
     userDataDir: "C:\\state",
     homeDir: "C:\\Users\\test",
     logsDir: "C:\\state\\logs",
@@ -100,6 +102,7 @@ export interface BridgeOptions {
   projects?: ProjectRecord[];
   activeProject?: string | null;
   integrations?: IntegrationsState;
+  diagnostics?: Partial<DiagnosticsSnapshot>;
 }
 
 export interface BridgeHandles {
@@ -130,6 +133,10 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
     projects: options.projects ?? [],
     activeProject: options.activeProject ?? null,
   };
+  const diagnosticsView: DiagnosticsSnapshot = {
+    ...diagnosticsSnapshot(info),
+    ...options.diagnostics,
+  };
 
   const bridge: PiDesktopBridge = {
     getAppInfo: async () => info,
@@ -155,6 +162,7 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
       promoteOfficeHost: async () => ({ tabs: [], activeTabId: null }),
       activate: async () => ({ tabs: [], activeTabId: null }),
       restore: async () => ({ tabs: [], activeTabId: null }),
+      restart: async () => ({ tabs: [], activeTabId: null }),
       request: async () => ({}),
       deleteSession: async (sessionFile: string) => ({ ok: true, path: sessionFile }),
       onEvent: () => () => undefined,
@@ -260,6 +268,12 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
         return () => webNavListeners.delete(listener);
       },
     },
+    diagnostics: {
+      get: async () => diagnosticsView,
+      export: async () => ({ text: "bundle", redactions: 0, generatedAt: 0 }),
+      save: async () => ({ ok: true, path: "C:\\bundle.txt" }),
+      record: async () => true,
+    },
   };
 
   (window as unknown as { pi: PiDesktopBridge }).pi = bridge;
@@ -281,4 +295,50 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
 
 export function removeBridge(): void {
   delete (window as unknown as { pi?: PiDesktopBridge }).pi;
+}
+
+/** A minimal, consistent diagnostics snapshot for renderer tests (plan step 22). */
+function diagnosticsSnapshot(info: AppInfo): DiagnosticsSnapshot {
+  return {
+    generatedAt: 1,
+    safeMode: info.safeMode,
+    app: {
+      name: info.name,
+      version: info.version,
+      electron: info.electron,
+      chrome: info.chrome,
+      node: info.node,
+      platform: info.platform,
+      arch: info.arch,
+      isDev: info.isDev,
+      safeMode: info.safeMode,
+    },
+    runtime: {
+      source: info.runtimeSource,
+      nodeVersion: info.runtimeNodeVersion,
+      problems: info.runtimeProblems,
+    },
+    paths: {
+      userDataDir: info.userDataDir,
+      homeDir: info.homeDir,
+      logsDir: info.logsDir,
+      blobCacheDir: info.blobCacheDir,
+      profileDir: info.profileDir,
+      settingsFile: info.settingsFile,
+      authFile: info.authFile,
+      modelsFile: info.modelsFile,
+      appStateFile: info.appStateFile,
+    },
+    hosts: [],
+    incidents: [],
+    extensionErrors: [],
+    office: {
+      available: false,
+      status: "unreachable",
+      port: 38617,
+      protocolVersion: null,
+      panes: 0,
+    },
+    environment: {},
+  };
 }

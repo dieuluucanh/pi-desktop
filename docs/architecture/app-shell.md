@@ -112,6 +112,9 @@ src/shared/office-documents.ts  the pure pane projection + mention/target helper
 src/shared/web-tabs.ts         the web-tab wire model, URL policy and review parse
 src/main/web-tabs.ts           the Electron-free web-tab service (policy + reconciliation)
 src/main/web-view-host.ts      the WebContentsView adapter (isolated partition, no preload)
+src/shared/diagnostics.ts      incident vocabulary, offline rule, bundle snapshot types (step 22)
+src/main/diagnostics-service.ts  the Electron-free snapshot + redacted support bundle
+src/host/safe-mode.ts          the one "no third-party code" policy value (step 22)
 src/renderer/src/App.tsx       regions + view routing + theme + menu dispatch
 src/renderer/src/menu-actions.ts  what each command does today
 src/renderer/src/state/app-store.ts  view state (zustand)
@@ -130,7 +133,59 @@ src/renderer/src/styles/*      tokens.css (Tailwind + theme tokens), office-pane
 wizard panel rendering exactly as before; the card around it uses `ui/*`
 primitives. Migrating the panel itself to `ui/*` is not required by step 19.
 
+## Reliability and recovery (step 22)
+
+The app treats failure as a first-class state rather than a silent no-op:
+
+- **Incidents.** `src/shared/diagnostics.ts` classifies a failed operation into a
+  family (`host_crash`, `host_timeout`, `offline`, `permission`, `read_only`,
+  `disk_full`, …), derives severity, whether a restart is a plausible fix, and an
+  actionable `fix` sentence. Disk problems outrank connectivity so the user fixes
+  the cause first. The session service records host crashes, wedged requests and
+  `extension_error` events into a bounded list; main records process-level
+  `unhandledRejection`/`uncaughtException`; the renderer reports its own
+  unhandled rejections through `diagnostics:record` (validated in main).
+- **Recovery.** A crashed or wedged tab shows a banner with **Restart**
+  (`session:restart`): the old host is stopped and a fresh one resumes the same
+  JSONL, so history returns. The supervisor also emits `timeout` and forwards
+  `crashed`/`resumed`, which the session service turns into `session.timeout`,
+  `session.crashed` and `session.recovered` transcript notices.
+- **Cancellation.** Abort/clear-queue already restore the queued text; closing a
+  tab mid-run stops its host through the supervisor (a test pins that no host is
+  left behind).
+- **Offline.** `isOfflineEnv` mirrors Pi's own `PI_OFFLINE` rule (`1`/`true`/
+  `yes`); the value travels in `AppInfo.piOffline` and raises a persistent banner.
+  Every user-visible catch path funnels through the store's `noteFailure`, which
+  classifies the message and raises the banner for connectivity failures.
+- **Safe mode.** `--safe-mode` (or `PI_DESKTOP_SAFE_MODE=1`) is passed to every
+  host. `src/host/safe-mode.ts` supplies the one loader-options object that
+  disables extensions, skills, prompt templates, themes and project context
+  files, and the composition root refuses every `packages.*` mutation. The app
+  also skips the Office registry poll and the session pre-warm, so it starts with
+  zero third-party code. The banner in `App.tsx` and the Diagnostics badge make
+  the state impossible to miss.
+- **Diagnostics view.** `src/main/diagnostics-service.ts` gathers the app/runtime
+  facts, profile paths, each host's status and log tail, incidents, extension
+  errors, the Office probe and the allowlisted environment into one snapshot. The
+  export renders a bundle through the Office wizard's `redactSecrets`, so it is
+  safe to paste; the view offers Copy and Save (main owns the save dialog).
+
 ## Tests
+
+- `tests/shared/diagnostics.test.ts` — classification order, severity/recovery/
+  fix derivation, bounded incident list and the env allowlist (plan step 22).
+- `tests/host/safe-mode.test.ts` — the loader options that disable every
+  third-party collection, and the package-refusal message (plan step 22).
+- `tests/main/diagnostics-service.test.ts` — snapshot shape, incident merge, the
+  bundle structure, credential redaction and the allowlisted environment.
+- `tests/main/host-supervisor.test.ts` / `tests/main/session-service.test.ts` —
+  timeout events, host identity/log tails, incidents, restart-resume and the
+  closed-mid-run host stop (plan step 22).
+- `tests/renderer/reliability-store.test.ts`, `tests/renderer/reliability-banners.test.tsx`
+  — `noteFailure`/offline classification, restart re-hydration and the safe-mode
+  and offline banners.
+- `tests/renderer/diagnostics-view.test.tsx` — hosts, incidents, extension
+  errors, the Office probe, the environment and the Copy/Save exports.
 
 - `tests/main/prefs.test.ts` — validation/clamping/merge of the preference patch.
 - `tests/main/integrations-service.test.ts` — the consented-install record goes

@@ -113,6 +113,7 @@ function harness(
     sessionFile?: string | null;
     maxHosts?: number;
     npmCliPath?: string;
+    safeMode?: boolean;
   } = {},
 ) {
   const spawned: FakeHost[] = [];
@@ -143,6 +144,7 @@ function harness(
     requestTimeoutMs: 1_000,
     maxHosts: options.maxHosts ?? 8,
     idleTimeoutMs: 0,
+    safeMode: options.safeMode ?? false,
   });
 
   return { supervisor, spawned, spawnCalls, fs };
@@ -345,5 +347,66 @@ describe("host supervisor shutdown", () => {
     const logFile = [...fs.files.keys()].find((file) => file.endsWith("s1.log"));
     expect(logFile, "a log file per session").toBeDefined();
     expect(fs.files.get(logFile ?? "") ?? "").toContain("spawned");
+  });
+});
+
+describe("host supervisor reliability (plan step 22)", () => {
+  it("reports the host identity and its log tail", async () => {
+    const { supervisor } = harness({
+      behaviours: [
+        {
+          answer: (request) =>
+            request.method === "host.hello"
+              ? {
+                  protocolVersion: HOST_PROTOCOL_VERSION,
+                  nodeVersion: "v24.21.0",
+                  piVersion: "0.85.1",
+                  role: "control",
+                  sessionId: "s1",
+                  cwd: normalize("C:/work"),
+                  bridgePort: 38618,
+                  pids: { pid: 4242, ppid: 1 },
+                  startedAt: 7,
+                }
+              : undefined,
+        },
+      ],
+    });
+    const host = await supervisor.start({
+      sessionId: "s1",
+      cwd: normalize("C:/work"),
+      role: "control",
+    });
+
+    expect(host.info()?.role).toBe("control");
+    expect(host.info()?.cwd).toBe(normalize("C:/work"));
+    expect(host.info()?.startedAt).toBe(7);
+    expect(host.info()?.pids?.pid).toBe(4242);
+    expect(host.logs().join("\n")).toContain("spawned");
+    expect(host.logs()).not.toBe(host.logs());
+  });
+
+  it("emits a timeout event when a request wedges", async () => {
+    const { supervisor } = harness({ behaviours: [{ silent: ["compact"] }] });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    const timeouts: unknown[] = [];
+    host.on("timeout", (payload) => timeouts.push(payload));
+
+    await expect(host.request("compact", {}, { timeoutMs: 20 })).rejects.toBeInstanceOf(
+      HostTimeoutError,
+    );
+
+    expect(timeouts).toEqual([{ method: "compact", timeoutMs: 20, sessionId: "s1" }]);
+    expect(host.logs().join("\n")).toContain("timed out");
+  });
+
+  it("tells every host whether safe mode is on", async () => {
+    const off = harness({ safeMode: false });
+    await off.supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(off.spawnCalls[0]?.env.PI_DESKTOP_SAFE_MODE).toBe("0");
+
+    const on = harness({ safeMode: true });
+    await on.supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
+    expect(on.spawnCalls[0]?.env.PI_DESKTOP_SAFE_MODE).toBe("1");
   });
 });

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, clipboard, dialog, shell } from "electron";
@@ -43,8 +44,11 @@ import { createElectronWebViewHost } from "./web-view-host";
 import { isDeletableSessionPath } from "./session-ops";
 import { createOfficeSetupService } from "./office/setup-service";
 import { createOfficeDocumentsService } from "./office/documents-service";
+import { createDiagnosticsService } from "./diagnostics-service";
 import { officeEvidenceLine } from "../shared/office-setup";
 import { appPaths, isSafeMode, resolveAppRoots, type AppPaths, type AppRoots } from "./paths";
+import { isOfflineEnv, classifyFailure } from "../shared/diagnostics";
+import type { DiagnosticsSaveResult } from "../shared/ipc";
 import { resolveAppRuntime, type RuntimeResolution } from "./runtime";
 
 /**
@@ -134,6 +138,9 @@ const hosts = runtime.nodePath
       backupDir: join(paths.userData, "backups"),
       profileDir: paths.profileDir,
       ...(runtime.npmCliPath ? { npmCliPath: runtime.npmCliPath } : {}),
+      // Safe mode (plan step 22): every host loads no third-party resources and
+      // refuses package mutations.
+      safeMode,
     })
   : null;
 
@@ -193,6 +200,7 @@ const sessionsIpc: IpcSessionDeps = {
   promoteOfficeHost: (tabId: string) => requireSessions().promoteToOfficeHost(tabId),
   activate: (tabId: string) => requireSessions().activateTab(tabId),
   restore: () => requireSessions().restoreTabs(),
+  restart: (tabId: string) => requireSessions().restartTab(tabId),
   request: (input) => requireSessions().request(input.tabId, input.method, input.params),
   deleteSession: deleteSessionFile,
 };
@@ -255,6 +263,7 @@ function currentAppInfo(): AppInfo {
     arch: process.arch,
     isDev,
     safeMode,
+    piOffline: isOfflineEnv(process.env.PI_OFFLINE),
     userDataDir: paths.userData,
     homeDir: app.getPath("home"),
     logsDir: paths.logs,
@@ -427,6 +436,65 @@ const officeDocuments = createOfficeDocumentsService({
   onView: (view) => broadcastToWindows(IPC.officeDocumentsState, view),
 });
 
+/**
+ * The app-wide diagnostics service (plan step 22). It reads what already exists —
+ * hosts and their logs, incidents, extension errors, the Office probe — and
+ * renders the redacted support bundle. `save` lives here because it is the one
+ * step that needs Electron's dialog.
+ */
+const diagnostics = createDiagnosticsService({
+  appInfo: currentAppInfo,
+  sessions: sessions
+    ? {
+        hosts: () => sessions.diagnosticsHosts(),
+        incidents: () => sessions.incidents(),
+        extensionErrors: () => sessions.extensionErrors(),
+      }
+    : null,
+  office: () => {
+    const view = officeDocuments.get();
+    return {
+      available: view.available,
+      status: view.status,
+      port: view.port,
+      protocolVersion: view.protocolVersion,
+      panes: view.panes.length,
+      ...(view.error ? { error: view.error } : {}),
+    };
+  },
+  officeBundle: async () => officeSetup.diagnostics(),
+  env: process.env,
+});
+
+/** Asks where to save, then writes the already-redacted bundle. */
+async function saveDiagnosticsBundle(): Promise<DiagnosticsSaveResult> {
+  const bundle = await diagnostics.exportBundle();
+  const { canceled, filePath } = await dialog.showSaveDialog({
+    title: "Save diagnostics bundle",
+    defaultPath: `pi-desktop-diagnostics-${new Date(bundle.generatedAt).toISOString().slice(0, 10)}.txt`,
+    filters: [{ name: "Text", extensions: ["txt"] }],
+  });
+  if (canceled || !filePath) return { ok: false };
+  try {
+    await writeFile(filePath, bundle.text, "utf8");
+    return { ok: true, path: filePath };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// Process-level failures are captured before anything else can go wrong, so a
+// rejection during startup still shows up in Diagnostics (plan step 22).
+process.on("unhandledRejection", (reason) => {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  const detail = reason instanceof Error ? reason.stack : undefined;
+  const kind = classifyFailure(message);
+  diagnostics.recordMain(kind === "unknown" ? "unhandled_rejection" : kind, message, detail);
+});
+process.on("uncaughtException", (error) => {
+  diagnostics.recordMain("uncaught_exception", error.message, error.stack);
+});
+
 if (!app.requestSingleInstanceLock()) {
   // Another instance owns this userData directory (including a developer's dev
   // window or a stale E2E run). Say so instead of vanishing.
@@ -514,6 +582,12 @@ if (!app.requestSingleInstanceLock()) {
           }
         },
       },
+      diagnostics: {
+        get: () => diagnostics.snapshot(),
+        export: () => diagnostics.exportBundle(),
+        save: () => saveDiagnosticsBundle(),
+        record: (value: unknown) => diagnostics.recordReported(value),
+      },
       officeDocuments: {
         get: () => officeDocuments.get(),
         refresh: () => officeDocuments.refresh(),
@@ -569,11 +643,16 @@ if (!app.requestSingleInstanceLock()) {
     mainWindow = createWindow();
     // The registry poll is cheap (one loopback GET) and the panel must reflect a
     // bridge that a terminal Pi session owns, so it runs whenever the app does.
-    officeDocuments.start();
+    // Safe mode starts with zero third-party code, so the poll stays off there.
+    if (!safeMode) officeDocuments.start();
 
     // Restore the tab table without spawning anything, then warm the most
-    // recently used tab in the background (plan step 24 pre-warm).
-    void sessions?.restoreTabs().then(() => sessions?.prewarmLast());
+    // recently used tab in the background (plan step 24 pre-warm). Safe mode
+    // starts lazily: no session host runs until the user opens a tab.
+    void sessions?.restoreTabs().then(() => {
+      if (!safeMode) return sessions?.prewarmLast();
+      return undefined;
+    });
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();

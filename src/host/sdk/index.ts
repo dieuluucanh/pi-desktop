@@ -18,6 +18,7 @@ import {
   createAgentSessionServices,
   hasTrustRequiringProjectResources,
 } from "@earendil-works/pi-coding-agent";
+import { SAFE_MODE_RESOURCE_LOADER_OPTIONS } from "../safe-mode";
 import type {
   AgentSession,
   AgentSessionEvent,
@@ -52,6 +53,8 @@ export type SessionRuntimeFactory = (options: {
   /** Optional: the adapter creates one for the profile when omitted. */
   settingsManager?: SettingsManager;
   npmCommand?: readonly string[] | null;
+  /** Safe mode (plan step 22): disable every resource-loader collection. */
+  safeMode?: boolean;
 }) => Promise<{
   runtime: AgentSessionRuntime;
   session: AgentSession;
@@ -76,7 +79,14 @@ export const createSdkSessionRuntime: SessionRuntimeFactory = async (options) =>
     agentDir,
     sessionManager,
   }) => {
-    const services = await createAgentSessionServices({ cwd, agentDir, settingsManager });
+    const services = await createAgentSessionServices({
+      cwd,
+      agentDir,
+      settingsManager,
+      // Safe mode (plan step 22): no third-party code at all — no extensions,
+      // skills, prompt templates, themes or project context files.
+      ...(options.safeMode ? { resourceLoaderOptions: SAFE_MODE_RESOURCE_LOADER_OPTIONS } : {}),
+    });
     const created = await createAgentSessionFromServices({ services, sessionManager });
     return { ...created, services, diagnostics: services.diagnostics };
   };

@@ -4,6 +4,7 @@ import {
   type HostSession,
   type RuntimeLike,
   type SessionCoreDeps,
+  type SessionRuntimeRequest,
 } from "../../src/host/session-core";
 import type { HostMethod } from "../../src/shared/host-protocol";
 import type { HostRequestContext } from "../../src/host/service";
@@ -413,5 +414,41 @@ describe("session core emits via the injected emitter", () => {
     });
     await expect(call("session.create")).resolves.toBeDefined();
     expect(failure).toHaveBeenCalled();
+  });
+});
+
+describe("session core safe mode (plan step 22)", () => {
+  function runtimeWith(requests: SessionRuntimeRequest[], safeMode: boolean | undefined) {
+    const session = fakeSession().session;
+    const runtime: RuntimeLike = {
+      get session() {
+        return session;
+      },
+      get services() {
+        return { cwd: CWD };
+      },
+    };
+    const harnessed = harness({
+      ...(safeMode === undefined ? {} : { safeMode }),
+      createRuntime: async (request) => {
+        requests.push(request);
+        return { runtime, session };
+      },
+    });
+    return harnessed;
+  }
+
+  it("forwards safe mode to the runtime factory so no resources load", async () => {
+    const requests: SessionRuntimeRequest[] = [];
+    const { call } = runtimeWith(requests, true);
+    await call("session.create");
+    expect(requests[0]?.safeMode).toBe(true);
+  });
+
+  it("omits safe mode when it is off", async () => {
+    const requests: SessionRuntimeRequest[] = [];
+    const { call } = runtimeWith(requests, undefined);
+    await call("session.create");
+    expect(requests[0]).not.toHaveProperty("safeMode");
   });
 });
