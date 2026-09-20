@@ -13,6 +13,7 @@ import {
   type ProviderLoginEvent,
   type ProviderSummary,
 } from "../../../shared/providers";
+import type { CustomProviderInput, CustomProviderSummary } from "../../../shared/custom-providers";
 import {
   CONTROL_TAB_ID,
   type SessionEventEnvelope,
@@ -203,6 +204,13 @@ export interface AppStateShape {
   answerProviderLogin: (value: string | undefined) => Promise<void>;
   /** Routes a control-host event (provider login) rather than a transcript. */
   applyControlEvent: (entry: SessionEventEntry) => void;
+  /** Custom model gateways in `models.json` (plan step 9, slice 5). */
+  customProviders: CustomProviderSummary[];
+  customProvidersLoaded: boolean;
+  customProvidersError: string | null;
+  loadCustomProviders: () => Promise<void>;
+  saveCustomProvider: (input: CustomProviderInput) => Promise<void>;
+  deleteCustomProvider: (providerId: string) => Promise<void>;
 
   createSessionTab: () => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
@@ -285,6 +293,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   providersLoaded: false,
   providersError: null,
   providerLogin: null,
+  customProviders: [],
+  customProvidersLoaded: false,
+  customProvidersError: null,
 
   setView: (view) => set({ view, hint: null }),
   openPalette: () => set({ paletteOpen: true }),
@@ -888,6 +899,50 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         providerLogin: { ...login, prompt: { id: payload.id, prompt: payload.params.prompt } },
       });
     }
+  },
+
+  loadCustomProviders: async () => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      const result = (await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "providers.custom",
+        params: { action: "list" },
+      })) as { providers?: CustomProviderSummary[] };
+      set({
+        customProviders: result.providers ?? [],
+        customProvidersLoaded: true,
+        customProvidersError: null,
+      });
+    } catch (error) {
+      set({
+        customProvidersLoaded: true,
+        customProvidersError: error instanceof Error ? error.message : String(error),
+      });
+    }
+  },
+
+  saveCustomProvider: async (input) => {
+    const api = bridge();
+    if (!api?.sessions) throw new Error("The preload bridge is unavailable.");
+    await api.sessions.request({
+      tabId: CONTROL_TAB_ID,
+      method: "providers.custom",
+      params: { action: "set", provider: input },
+    });
+    await get().loadCustomProviders();
+  },
+
+  deleteCustomProvider: async (providerId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    await api.sessions.request({
+      tabId: CONTROL_TAB_ID,
+      method: "providers.custom",
+      params: { action: "remove", providerId },
+    });
+    await get().loadCustomProviders();
   },
 
   createSessionTab: async () => {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { Plus, Search, Trash2 } from "lucide-react";
+import type { CustomProviderSummary } from "../../../shared/custom-providers";
 import type { ProviderSummary } from "../../../shared/providers";
 import { useAppStore } from "../state/app-store";
 import { Badge } from "../ui/badge";
@@ -27,12 +28,17 @@ export function ConnectionsView() {
   const loaded = useAppStore((state) => state.providersLoaded);
   const error = useAppStore((state) => state.providersError);
   const loadProviders = useAppStore((state) => state.loadProviders);
+  const customProviders = useAppStore((state) => state.customProviders);
+  const customProvidersLoaded = useAppStore((state) => state.customProvidersLoaded);
+  const loadCustomProviders = useAppStore((state) => state.loadCustomProviders);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [gatewayOpen, setGatewayOpen] = useState(false);
 
   useEffect(() => {
     void loadProviders();
-  }, [loadProviders]);
+    void loadCustomProviders();
+  }, [loadProviders, loadCustomProviders]);
 
   const groups = useMemo(() => groupProviders(providers), [providers]);
   const filtered = useMemo(() => {
@@ -128,7 +134,62 @@ export function ConnectionsView() {
         <code className="font-mono">pi</code> in a terminal.
       </p>
 
+      <section className="card flex flex-col gap-2" data-testid="group-custom">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold">Custom gateways</h2>
+            <p className="text-xs text-ink-muted">
+              Any OpenAI-compatible endpoint, stored in Pi's{" "}
+              <code className="font-mono">models.json</code>. The entry is validated with Pi before
+              it is kept.
+            </p>
+          </div>
+          <Button size="sm" onClick={() => setGatewayOpen(true)}>
+            <Plus className="size-3" aria-hidden />
+            Add gateway
+          </Button>
+        </div>
+        <Separator />
+        {!customProvidersLoaded ? (
+          <p className="text-xs text-ink-faint">Reading models.json…</p>
+        ) : customProviders.length === 0 ? (
+          <p className="text-xs text-ink-faint">No custom gateways yet.</p>
+        ) : (
+          <ul className="flex flex-col">
+            {customProviders.map((gateway) => (
+              <li key={gateway.id} className="flex items-center justify-between gap-3 px-2 py-1.5">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate text-xs text-ink">{gateway.name}</span>
+                  <span className="truncate text-[10px] text-ink-faint">
+                    {gateway.baseUrl ?? ""}
+                  </span>
+                  <Badge tone={gateway.hasApiKey ? "ok" : "neutral"}>
+                    {gateway.hasApiKey ? "key stored" : "no key"}
+                  </Badge>
+                  <span className="shrink-0 text-[10px] text-ink-faint">
+                    {gateway.modelIds.length} models
+                  </span>
+                </div>
+                <Button size="sm" onClick={() => setSelectedId(`custom:${gateway.id}`)}>
+                  Edit
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
       {selected ? <ProviderSheet provider={selected} onClose={() => setSelectedId(null)} /> : null}
+
+      {gatewayOpen || selectedId?.startsWith("custom:") ? (
+        <CustomGatewaySheet
+          gateway={customProviders.find((entry) => `custom:${entry.id}` === selectedId) ?? null}
+          onClose={() => {
+            setGatewayOpen(false);
+            setSelectedId(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -278,6 +339,175 @@ function ProviderSheet({ provider, onClose }: { provider: ProviderSummary; onClo
             </Button>
           </div>
         </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Add/edit a gateway in `models.json` (plan step 9, slice 5). The key is
+ * write-only, and Pi validates the entry before the app keeps the file.
+ */
+function CustomGatewaySheet({
+  gateway,
+  onClose,
+}: {
+  gateway: CustomProviderSummary | null;
+  onClose: () => void;
+}) {
+  const saveCustomProvider = useAppStore((state) => state.saveCustomProvider);
+  const deleteCustomProvider = useAppStore((state) => state.deleteCustomProvider);
+  const [id, setId] = useState(gateway?.id ?? "");
+  const [name, setName] = useState(gateway?.name ?? "");
+  const [baseUrl, setBaseUrl] = useState(gateway?.baseUrl ?? "");
+  const [api, setApi] = useState(gateway?.api ?? "openai-completions");
+  const [models, setModels] = useState(gateway?.modelIds.join(", ") ?? "");
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      await saveCustomProvider({
+        id: id.trim(),
+        ...(name.trim() ? { name: name.trim() } : {}),
+        baseUrl: baseUrl.trim(),
+        ...(api.trim() ? { api: api.trim() } : {}),
+        ...(apiKey.length > 0 ? { apiKey } : {}),
+        models: models
+          .split(",")
+          .map((model) => model.trim())
+          .filter((model) => model.length > 0)
+          .map((model) => ({ id: model })),
+      });
+      setApiKey("");
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const field =
+    "min-w-0 flex-1 rounded-sm border border-line bg-transparent px-2 py-1 text-xs text-ink outline-none";
+
+  return (
+    <Dialog open onOpenChange={(open) => (open ? undefined : onClose())}>
+      <DialogContent aria-label="Custom gateway" data-testid="gateway-sheet">
+        <DialogTitle>{gateway ? `Edit ${gateway.name}` : "Add a custom gateway"}</DialogTitle>
+        <DialogDescription>
+          Stored in Pi's <code className="font-mono">models.json</code> and validated with Pi before
+          it is kept.
+        </DialogDescription>
+        <form
+          className="flex flex-col gap-3 px-4 pb-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <label className="flex items-center gap-2">
+            <span className="w-24 text-xs text-ink-muted">Provider id</span>
+            <input
+              aria-label="Provider id"
+              value={id}
+              disabled={gateway !== null}
+              onChange={(event) => setId(event.target.value)}
+              placeholder="my-gateway"
+              className={field}
+            />
+          </label>
+          <label className="flex items-center gap-2">
+            <span className="w-24 text-xs text-ink-muted">Name</span>
+            <input
+              aria-label="Name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              className={field}
+            />
+          </label>
+          <label className="flex items-center gap-2">
+            <span className="w-24 text-xs text-ink-muted">Base URL</span>
+            <input
+              aria-label="Base URL"
+              value={baseUrl}
+              onChange={(event) => setBaseUrl(event.target.value)}
+              placeholder="https://gateway.example.com/v1"
+              className={field}
+            />
+          </label>
+          <label className="flex items-center gap-2">
+            <span className="w-24 text-xs text-ink-muted">API family</span>
+            <input
+              aria-label="API family"
+              value={api}
+              onChange={(event) => setApi(event.target.value)}
+              className={field}
+            />
+          </label>
+          <label className="flex items-center gap-2">
+            <span className="w-24 text-xs text-ink-muted">Model ids</span>
+            <input
+              aria-label="Model ids"
+              value={models}
+              onChange={(event) => setModels(event.target.value)}
+              placeholder="gpt-5, gpt-5-mini"
+              className={field}
+            />
+          </label>
+          <label className="flex items-center gap-2">
+            <span className="w-24 text-xs text-ink-muted">API key</span>
+            <input
+              aria-label="Gateway API key"
+              type="password"
+              autoComplete="off"
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              placeholder={gateway?.hasApiKey ? "stored — leave blank to keep" : "optional"}
+              className={field}
+            />
+          </label>
+
+          {error ? (
+            <p className="text-xs text-danger" role="alert">
+              {error}
+            </p>
+          ) : null}
+
+          <div className="flex justify-between gap-2 pt-1">
+            {gateway ? (
+              <Button
+                size="sm"
+                variant="danger"
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setBusy(true);
+                  void deleteCustomProvider(gateway.id).finally(() => {
+                    setBusy(false);
+                    onClose();
+                  });
+                }}
+              >
+                <Trash2 className="size-3" aria-hidden />
+                Delete
+              </Button>
+            ) : (
+              <span />
+            )}
+            <div className="flex gap-2">
+              <Button size="sm" type="button" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button size="sm" variant="primary" type="submit" disabled={busy}>
+                Save
+              </Button>
+            </div>
+          </div>
+        </form>
       </DialogContent>
     </Dialog>
   );

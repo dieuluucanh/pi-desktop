@@ -1,4 +1,9 @@
 import type { HostMethod, HostRole } from "../shared/host-protocol";
+import {
+  createCustomProviderHandlers,
+  CUSTOM_PROVIDER_METHODS,
+  type CustomProviderStore,
+} from "./custom-providers";
 import { createProviderHandlers, PROVIDER_METHODS, type ProviderPort } from "./providers";
 import type { HostHandler } from "./service";
 
@@ -47,6 +52,8 @@ export interface ControlCoreDeps {
    * `providers.*` handlers answer `not_implemented` instead of pretending.
    */
   providers?: ProviderPort;
+  /** Custom gateways in `models.json` (plan step 9, slice 5). */
+  customProviders?: CustomProviderStore;
 }
 
 /** The methods a control host answers. Everything else stays `not_implemented`. */
@@ -55,6 +62,7 @@ export const CONTROL_METHODS: readonly HostMethod[] = [
   "settings.raw",
   "session.list",
   ...PROVIDER_METHODS,
+  ...CUSTOM_PROVIDER_METHODS,
 ];
 
 export interface ControlCore {
@@ -89,6 +97,9 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
       "settings.raw": () => ({ settings: readScopes(settingsManager()) }),
       "session.list": async () => ({ sessions: await deps.listSessions() }),
       ...createProviderHandlers(() => deps.providers ?? null).handlers(),
+      ...createCustomProviderHandlers({
+        resolveStore: () => deps.customProviders ?? null,
+      }).handlers(),
     }),
 
     dispose: async () => {

@@ -7,9 +7,46 @@
  */
 
 import { spawn } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 
+import type { ModelsFileIo } from "./custom-providers";
 import type { DirectoryEntry, FileListingIo } from "./file-listing";
+
+/**
+ * Atomic `models.json` access (plan step 9, slice 5). A temp file in the same
+ * directory is renamed over the target, so a crashed write can never leave a
+ * half-written credential file behind. The profile directory is created first
+ * (a fresh profile has none).
+ */
+export function createNodeModelsFileIo(): ModelsFileIo {
+  return {
+    async read(path: string): Promise<string | null> {
+      try {
+        return await readFile(path, "utf8");
+      } catch {
+        return null;
+      }
+    },
+
+    async write(path: string, text: string): Promise<void> {
+      await mkdir(dirname(path), { recursive: true });
+      const temporary = `${path}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(temporary, text, { encoding: "utf8", mode: 0o600 });
+        await rename(temporary, path);
+      } catch (error) {
+        await unlink(temporary).catch(() => undefined);
+        throw error;
+      }
+    },
+
+    async delete(path: string): Promise<void> {
+      await unlink(path).catch(() => undefined);
+    },
+  };
+}
 
 export function createNodeFileListingIo(gitTimeoutMs = 4000): FileListingIo {
   return {

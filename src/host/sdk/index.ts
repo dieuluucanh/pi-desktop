@@ -121,3 +121,6 @@ export {
   keyOnlyInteraction,
   type SdkProviderPortOptions,
 } from "./providers";
+
+/** Custom model gateways in `models.json` (plan step 9, slice 5). */
+export { createSdkCustomProviderStore, type SdkCustomProviderOptions } from "./custom-providers";

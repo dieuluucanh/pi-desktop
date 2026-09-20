@@ -54,6 +54,7 @@ function stubRequest(impl?: (method: string, params?: unknown) => Promise<unknow
     if (input.method === "providers.list") {
       return { providers: PROVIDERS };
     }
+    if (input.method === "providers.custom") return { providers: [] };
     if (input.method === "providers.setKey") return { provider: PROVIDERS[1] };
     return impl ? impl(input.method, input.params) : {};
   });
@@ -146,5 +147,36 @@ describe("ConnectionsView", () => {
         params: { providerId: "claude-max" },
       }),
     );
+  });
+
+  it("adds a custom gateway through providers.custom and keeps the key write-only", async () => {
+    const request = stubRequest();
+    render(<ConnectionsView />);
+    await waitFor(() => expect(screen.getByTestId("group-custom")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: /Add gateway/ }));
+    await userEvent.type(screen.getByLabelText("Provider id"), "my-gateway");
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://gateway.example.com/v1");
+    await userEvent.type(screen.getByLabelText("Model ids"), "gpt-5, gpt-5-mini");
+    await userEvent.type(screen.getByLabelText("Gateway API key"), "sk-gateway-secret");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: "control",
+        method: "providers.custom",
+        params: {
+          action: "set",
+          provider: {
+            id: "my-gateway",
+            baseUrl: "https://gateway.example.com/v1",
+            api: "openai-completions",
+            apiKey: "sk-gateway-secret",
+            models: [{ id: "gpt-5" }, { id: "gpt-5-mini" }],
+          },
+        },
+      }),
+    );
+    expect(document.body.textContent ?? "").not.toContain("sk-gateway-secret");
   });
 });

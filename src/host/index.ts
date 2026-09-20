@@ -13,15 +13,17 @@ import {
 } from "../shared/host-protocol";
 import { createControlCore } from "./control-core";
 import { createExtensionUiBridge } from "./extension-ui";
-import { createNodeFileListingIo } from "./file-io";
+import { createNodeFileListingIo, createNodeModelsFileIo } from "./file-io";
 import { listWorkspaceFiles } from "./file-listing";
 import { createProviderLoginHandlers } from "./provider-login";
+import type { CustomProviderStore } from "./custom-providers";
 import type { ProviderPort } from "./providers";
 import { createSessionCore, type SessionCore } from "./session-core";
 import { createHostService, type HostHandler, type HostService } from "./service";
 import {
   ProjectTrustStore,
   SessionManager,
+  createSdkCustomProviderStore,
   createSdkProviderPort,
   createSdkSessionRuntime,
   createSdkSettings,
@@ -137,6 +139,7 @@ function createControlHostCore(options: {
   cwd: string;
   agentDir: string;
   providers: ProviderPort;
+  customProviders: CustomProviderStore;
 }) {
   return createControlCore({
     createSettings: () => createSdkSettings(options.cwd, options.agentDir),
@@ -144,6 +147,7 @@ function createControlHostCore(options: {
     // The port is lazy: no `ModelRuntime` is built until the Connections view
     // (or onboarding) asks for providers.
     providers: options.providers,
+    customProviders: options.customProviders,
   });
 }
 
@@ -171,14 +175,26 @@ export function runService(
     // The control host owns the app-wide credential surface, so its provider port
     // is shared by the `providers.*` handlers and the login bridge below.
     const providerPort = role === "control" ? createSdkProviderPort({ agentDir }) : null;
+    const customProviderStore = providerPort
+      ? createSdkCustomProviderStore({
+          modelsPath: join(agentDir, "models.json"),
+          io: createNodeModelsFileIo(),
+        })
+      : null;
 
-    const core = providerPort
-      ? createControlHostCore({ cwd, agentDir, providers: providerPort })
-      : createCore({
-          cwd,
-          agentDir,
-          emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
-        });
+    const core =
+      providerPort && customProviderStore
+        ? createControlHostCore({
+            cwd,
+            agentDir,
+            providers: providerPort,
+            customProviders: customProviderStore,
+          })
+        : createCore({
+            cwd,
+            agentDir,
+            emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
+          });
 
     const handlers: Partial<Record<string, HostHandler>> = { ...core.handlers() };
 
