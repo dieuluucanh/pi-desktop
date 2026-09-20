@@ -1,4 +1,5 @@
-import { FolderOpen, MessageSquarePlus } from "lucide-react";
+import { useEffect } from "react";
+import { FolderOpen, MessageSquarePlus, Plug } from "lucide-react";
 import { Button } from "../ui/button";
 import { Kbd } from "../ui/kbd";
 import { openProjectAction, newSessionAction } from "../menu-actions";
@@ -11,6 +12,17 @@ import { useAppStore } from "../state/app-store";
 
 export function WelcomeView() {
   const info = useAppStore((state) => state.info);
+  const providers = useAppStore((state) => state.providers);
+  const providersLoaded = useAppStore((state) => state.providersLoaded);
+  const loadProviders = useAppStore((state) => state.loadProviders);
+  const setView = useAppStore((state) => state.setView);
+
+  useEffect(() => {
+    void loadProviders();
+  }, [loadProviders]);
+
+  const needsSignIn =
+    providersLoaded && providers.length > 0 && !providers.some((provider) => provider.configured);
 
   return (
     <div className="mx-auto flex h-full max-w-2xl flex-col justify-center gap-6 px-8">
@@ -33,6 +45,25 @@ export function WelcomeView() {
           New session
         </Button>
       </div>
+
+      {needsSignIn ? (
+        <section
+          className="card flex items-center justify-between gap-4"
+          data-testid="welcome-signin"
+        >
+          <div>
+            <h2 className="text-sm font-semibold">Connect a provider</h2>
+            <p className="text-xs text-ink-muted">
+              No provider is signed in yet. Add a subscription or an API key — it is stored in the
+              shared Pi profile, so terminal Pi sees it too.
+            </p>
+          </div>
+          <Button variant="primary" onClick={() => setView("connections")}>
+            <Plug className="size-4" aria-hidden />
+            Open Connections
+          </Button>
+        </section>
+      ) : null}
 
       <ul className="flex flex-col gap-2 text-sm text-ink-muted">
         <li>

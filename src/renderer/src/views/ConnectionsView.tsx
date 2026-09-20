@@ -1,53 +1,284 @@
-import { Button } from "../ui/button";
+import { useEffect, useMemo, useState } from "react";
+import { Search } from "lucide-react";
+import type { ProviderSummary } from "../../../shared/providers";
 import { useAppStore } from "../state/app-store";
+import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
+import { Separator } from "../ui/separator";
+import {
+  canAddKey,
+  canSignIn,
+  groupProviders,
+  statusLabel,
+  statusTone,
+} from "../connections/provider-groups";
 
 /**
- * Connections view (plan step 1 stub with real facts; full provider management
- * lands in step 9). It already answers the question users ask first — *where do
- * credentials live, and can terminal Pi see them?* — with the real paths.
+ * Connections (plan step 9, slice 4).
+ *
+ * Providers grouped by how they are paid for, with one sheet per provider:
+ * status, sign in / sign out, a **write-only** key form, and the note that the
+ * same `auth.json` is what terminal Pi reads. The key is sent once and never
+ * rendered back — the UI cannot show what it never receives.
  */
 export function ConnectionsView() {
-  const info = useAppStore((state) => state.info);
+  const providers = useAppStore((state) => state.providers);
+  const loaded = useAppStore((state) => state.providersLoaded);
+  const error = useAppStore((state) => state.providersError);
+  const loadProviders = useAppStore((state) => state.loadProviders);
+  const [query, setQuery] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    void loadProviders();
+  }, [loadProviders]);
+
+  const groups = useMemo(() => groupProviders(providers), [providers]);
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (needle.length === 0) return groups;
+    return groups
+      .map((group) => ({
+        ...group,
+        providers: group.providers.filter((provider) =>
+          `${provider.id} ${provider.label}`.toLowerCase().includes(needle),
+        ),
+      }))
+      .filter((group) => group.providers.length > 0);
+  }, [groups, query]);
+
+  const selected = providers.find((provider) => provider.id === selectedId) ?? null;
 
   return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col gap-6 overflow-y-auto px-8 py-6">
-      <header>
-        <h1 className="text-lg font-semibold">Connections</h1>
-        <p className="text-sm text-ink-muted">
-          Providers are shared with terminal Pi: a subscription signed in through{" "}
-          <code className="font-mono text-xs">/login</code>, or an API key written to{" "}
-          <code className="font-mono text-xs">auth.json</code>, is immediately usable in both.
-        </p>
+    <div className="mx-auto flex h-full max-w-4xl flex-col gap-4 overflow-y-auto px-8 py-6">
+      <header className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-lg font-semibold">Connections</h1>
+          <p className="text-sm text-ink-muted">
+            Providers are shared with terminal Pi: a signed-in subscription, or a key written to{" "}
+            <code className="font-mono text-xs">auth.json</code>, is usable in both immediately.
+          </p>
+        </div>
+        <Button size="sm" onClick={() => void loadProviders()}>
+          Refresh
+        </Button>
       </header>
 
-      <section className="card flex flex-col gap-3">
-        <h2 className="text-sm font-semibold">What step 9 adds</h2>
-        <ul className="list-disc pl-5 text-xs text-ink-muted">
-          <li>Every provider from the model runtime, with real auth status and model counts.</li>
-          <li>
-            Sign in / sign out: OAuth opens the provider's page; API keys are written through the
-            SDK and never rendered back.
-          </li>
-          <li>Custom models and gateways (models.json) plus proxy and offline toggles.</li>
-        </ul>
-        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
-          <dt className="text-ink-faint">Credentials</dt>
-          <dd className="truncate" title={info?.authFile}>
-            {info?.authFile ?? "unavailable"}
-          </dd>
-          <dt className="text-ink-faint">Custom models</dt>
-          <dd className="truncate" title={info?.modelsFile}>
-            {info?.modelsFile ?? "unavailable"}
-          </dd>
-        </dl>
-        {info?.authFile ? (
+      <label className="flex items-center gap-2 rounded-sm border border-line px-2 py-1">
+        <Search className="size-3 text-ink-faint" aria-hidden />
+        <input
+          aria-label="Search providers"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search providers"
+          className="w-full bg-transparent text-xs text-ink outline-none"
+        />
+      </label>
+
+      {error ? (
+        <p className="banner banner--error text-xs" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      {!loaded ? (
+        <p className="text-xs text-ink-faint">Reading providers from the Pi runtime…</p>
+      ) : providers.length === 0 && !error ? (
+        <p className="text-xs text-ink-faint">
+          The Pi runtime reported no providers. Check the profile and try Refresh.
+        </p>
+      ) : null}
+
+      {filtered.map((group) => (
+        <section
+          key={group.id}
+          className="card flex flex-col gap-2"
+          data-testid={`group-${group.id}`}
+        >
           <div>
-            <Button size="sm" onClick={() => void window.pi?.revealPath(info.authFile)}>
+            <h2 className="text-sm font-semibold">{group.label}</h2>
+            <p className="text-xs text-ink-muted">{group.description}</p>
+          </div>
+          <Separator />
+          <ul className="flex flex-col">
+            {group.providers.map((provider) => (
+              <li
+                key={provider.id}
+                className="flex items-center justify-between gap-3 rounded-sm px-2 py-1.5 hover:bg-raised"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate text-xs text-ink">{provider.label}</span>
+                  <Badge tone={statusTone(provider)}>{statusLabel(provider)}</Badge>
+                  <span className="shrink-0 text-[10px] text-ink-faint">
+                    {provider.modelCount} models
+                  </span>
+                </div>
+                <Button size="sm" onClick={() => setSelectedId(provider.id)}>
+                  Manage
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+
+      <p className="text-[11px] text-ink-faint">
+        Credentials live in the shared Pi profile, so anything added here also shows up in{" "}
+        <code className="font-mono">pi</code> in a terminal.
+      </p>
+
+      {selected ? <ProviderSheet provider={selected} onClose={() => setSelectedId(null)} /> : null}
+    </div>
+  );
+}
+
+function ProviderSheet({ provider, onClose }: { provider: ProviderSummary; onClose: () => void }) {
+  const setProviderKey = useAppStore((state) => state.setProviderKey);
+  const logoutProvider = useAppStore((state) => state.logoutProvider);
+  const startProviderLogin = useAppStore((state) => state.startProviderLogin);
+  const revealPath = useAppStore((state) => state.info?.authFile ?? null);
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const submitKey = async (): Promise<void> => {
+    if (key.length === 0) return;
+    setBusy(true);
+    setFormError(null);
+    try {
+      await setProviderKey(provider.id, key);
+      // The key is dropped immediately: it is never kept in renderer state.
+      setKey("");
+    } catch (cause) {
+      setFormError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => (open ? undefined : onClose())}>
+      <DialogContent aria-label={`${provider.label} settings`} data-testid="provider-sheet">
+        <DialogTitle>{provider.label}</DialogTitle>
+        <DialogDescription>
+          <span className="mr-2 font-mono text-[11px] text-ink-faint">{provider.id}</span>
+          <Badge tone={statusTone(provider)}>{statusLabel(provider)}</Badge>
+          <span className="ml-2">{provider.modelCount} models</span>
+        </DialogDescription>
+
+        <div className="flex flex-col gap-4 px-4 pb-4">
+          {provider.envVars.length > 0 ? (
+            <p className="text-xs text-ink-muted">
+              Environment: <code className="font-mono">{provider.envVars.join(", ")}</code>
+              {provider.envAvailable ? " (set)" : ""}
+            </p>
+          ) : null}
+
+          {canSignIn(provider) ? (
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs text-ink">Subscription</div>
+                <div className="text-[11px] text-ink-faint">
+                  Opens the provider's sign-in page in your browser.
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={busy}
+                  onClick={() => void startProviderLogin(provider.id)}
+                >
+                  Sign in
+                </Button>
+                {provider.configured ? (
+                  <Button
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => {
+                      setBusy(true);
+                      void logoutProvider(provider.id).finally(() => setBusy(false));
+                    }}
+                  >
+                    Sign out
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          {canAddKey(provider) ? (
+            <form
+              className="flex flex-col gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitKey();
+              }}
+            >
+              <div className="text-xs text-ink">API key</div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="password"
+                  aria-label={`API key for ${provider.label}`}
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={key}
+                  onChange={(event) => setKey(event.target.value)}
+                  placeholder="Paste the key — it is written by Pi and never shown again"
+                  className="min-w-0 flex-1 rounded-sm border border-line bg-transparent px-2 py-1 text-xs text-ink outline-none"
+                  data-testid="provider-key-input"
+                />
+                <Button
+                  size="sm"
+                  variant="primary"
+                  type="submit"
+                  disabled={busy || key.length === 0}
+                >
+                  Save key
+                </Button>
+              </div>
+              <p className="text-[11px] text-ink-faint">
+                Write-only: the app never reads a key back, and it is stored in{" "}
+                <code className="font-mono">auth.json</code> (mode 0600) through Pi.
+              </p>
+            </form>
+          ) : null}
+
+          {formError ? (
+            <p className="text-xs text-danger" role="alert">
+              {formError}
+            </p>
+          ) : null}
+
+          {!canSignIn(provider) && !canAddKey(provider) ? (
+            <p className="text-xs text-ink-muted">
+              This provider is configured through its environment or a local server; nothing to set
+              up here.
+            </p>
+          ) : null}
+
+          <Separator />
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[11px] text-ink-faint">
+              Visible to terminal Pi — same <code className="font-mono">auth.json</code>.
+            </p>
+            <Button
+              size="sm"
+              disabled={!revealPath}
+              onClick={() => void window.pi?.revealPath(revealPath ?? "")}
+            >
               Reveal auth.json
             </Button>
           </div>
-        ) : null}
-      </section>
-    </div>
+
+          <div className="flex justify-end">
+            <Button size="sm" onClick={onClose}>
+              Close
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
