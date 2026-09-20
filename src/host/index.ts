@@ -33,6 +33,7 @@ import {
   SessionManager,
   createSdkCustomProviderStore,
   createSdkProviderPort,
+  createSdkResourceInspector,
   createSdkSessionRuntime,
   createSdkSettingsPort,
   hasTrustRequiringProjectResources,
@@ -191,6 +192,14 @@ function createControlHostCore(options: {
     providers: options.providers,
     customProviders: options.customProviders,
     trust,
+    defaultCwd: options.cwd,
+    // The hub loads resources for a project on demand, so it works with no
+    // session open; an untrusted project keeps its project resources hidden.
+    resources: createSdkResourceInspector({
+      agentDir: options.agentDir,
+      cwd: options.cwd,
+      isProjectTrusted: (cwd) => trust.status(cwd).trusted,
+    }),
     projectInspect: (cwd) =>
       inspectProject(cwd, {
         io: projectIo,

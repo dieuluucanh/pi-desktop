@@ -8,6 +8,13 @@ import {
 import { createProjectHandlers, PROJECT_METHODS } from "./project-handlers";
 import type { ProjectTrust } from "./project-trust";
 import { createProviderHandlers, PROVIDER_METHODS, type ProviderPort } from "./providers";
+import {
+  buildResourcesSnapshot,
+  createResourceHandlers,
+  RESOURCE_METHODS,
+  ResourceError,
+  type ResourceInspector,
+} from "./resources";
 import { resolveListedSession, SessionFileError } from "./session-files";
 import { createSettingsHandlers, SETTINGS_METHODS, type SettingsPort } from "./settings";
 import type { HostHandler } from "./service";
@@ -34,6 +41,14 @@ export interface ControlCoreDeps {
   /** Lists every session of the profile (all projects), for the session browser. */
   listSessions(): Promise<unknown[]>;
   /**
+   * The Extensions hub's loader source (plan step 13). Optional like the other
+   * ports: a control host without it answers `resources.list` with
+   * `not_implemented` instead of pretending it has no resources.
+   */
+  resources?: ResourceInspector;
+  /** The cwd used when the hub does not name a project (the host's own cwd). */
+  defaultCwd?: string;
+  /**
    * Provider/credential management (plan step 9). Optional for the same reason
    * `files.list` is: a host can be useful without it, and when it is missing the
    * `providers.*` handlers answer `not_implemented` instead of pretending.
@@ -51,6 +66,8 @@ export interface ControlCoreDeps {
    * host without the adapter answers `unsupported`.
    */
   renameSession?(sessionFile: string, name: string): Promise<{ path: string; name: string }>;
+  /** Clock for the hub snapshot's `loadedAt` (tests inject a fixed value). */
+  now?: () => number;
 }
 
 /** The methods a control host answers. Everything else stays `not_implemented`. */
@@ -62,6 +79,7 @@ export const CONTROL_METHODS: readonly HostMethod[] = [
   ...PROVIDER_METHODS,
   ...CUSTOM_PROVIDER_METHODS,
   ...PROJECT_METHODS,
+  ...RESOURCE_METHODS,
 ];
 
 export interface ControlCore {
@@ -107,6 +125,30 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
       ...createProjectHandlers({
         ...(deps.projectInspect ? { inspectProject: deps.projectInspect } : {}),
         ...(deps.trust ? { trust: deps.trust } : {}),
+      }).handlers(),
+      // The Extensions hub (plan step 13): build a loader on demand so the hub
+      // works before (or without) any session tab.
+      ...createResourceHandlers({
+        inspect: async (requested, { refresh }) => {
+          if (!deps.resources) {
+            throw new ResourceError(
+              "resources.list is not available in this host: no resource inspector is configured",
+              "not_implemented",
+            );
+          }
+          const target = requested ?? deps.defaultCwd ?? null;
+          const [source, settings] = await Promise.all([
+            deps.resources.load(target, { refresh }),
+            deps.settings.read(target),
+          ]);
+          return buildResourcesSnapshot({
+            cwd: target,
+            scope: "control",
+            settings,
+            source,
+            now: deps.now,
+          });
+        },
       }).handlers(),
     }),
 

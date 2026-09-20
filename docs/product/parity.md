@@ -36,16 +36,17 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 
 ## Extensions and packages
 
-| Capability                                                                                 | Terminal Pi   | Pi Desktop                                                                    |
-| ------------------------------------------------------------------------------------------ | ------------- | ----------------------------------------------------------------------------- |
-| Load extensions, skills, prompts, themes from the profile and project                      | ✅            | ✅ same discovery (shared profile)                                            |
-| Extension slash commands (`/name`)                                                         | ✅            | 🚧 steps 7, 13                                                                |
-| Extension keyboard shortcuts                                                               | ✅            | 🚧 step 15                                                                    |
-| Extension dialogs (`select`, `confirm`, `input`, `editor`), notifications, status, widgets | ✅ (TUI)      | 🚧 step 16                                                                    |
-| Extension custom UI (`ctx.ui.custom()`), footers, headers, custom editors                  | ✅ (TUI)      | 🚧 step 17 (TUI rendering surface)                                            |
-| Extension custom tool/message/entry renderers                                              | ✅ (TUI)      | 🚧 step 18                                                                    |
-| Install / update / remove packages (npm, git, path, URL)                                   | ✅ (`pi` CLI) | 🚧 step 14 (streaming progress + consent)                                     |
-| In-app terminal running the real `pi` TUI                                                  | n/a           | ⛔ post-MVP backlog (the bundled `pi` shim + an external terminal work today) |
+| Capability                                                                                 | Terminal Pi        | Pi Desktop                                                                                 |
+| ------------------------------------------------------------------------------------------ | ------------------ | ------------------------------------------------------------------------------------------ |
+| Load extensions, skills, prompts, themes from the profile and project                      | ✅                 | ✅ same discovery (shared profile)                                                         |
+| Extensions hub: inventory, provenance, contributions, load errors, enable/disable, reload  | ✅ (`/extensions`) | ✅ step 13 (live from a session host; a control host loads on demand with no session open) |
+| Extension slash commands (`/name`)                                                         | ✅                 | ✅ steps 7, 13 (completed with source + description from the hub)                          |
+| Extension keyboard shortcuts                                                               | ✅                 | 🚧 step 15                                                                                 |
+| Extension dialogs (`select`, `confirm`, `input`, `editor`), notifications, status, widgets | ✅ (TUI)           | 🚧 step 16                                                                                 |
+| Extension custom UI (`ctx.ui.custom()`), footers, headers, custom editors                  | ✅ (TUI)           | 🚧 step 17 (TUI rendering surface)                                                         |
+| Extension custom tool/message/entry renderers                                              | ✅ (TUI)           | 🚧 step 18                                                                                 |
+| Install / update / remove packages (npm, git, path, URL)                                   | ✅ (`pi` CLI)      | 🚧 step 14 (streaming progress + consent)                                                  |
+| In-app terminal running the real `pi` TUI                                                  | n/a                | ⛔ post-MVP backlog (the bundled `pi` shim + an external terminal work today)              |
 
 ## Context and input
 

@@ -165,6 +165,9 @@ export const HOST_METHODS = [
   // TUI inspects a project implicitly through its own session.
   "project.inspect",
   "project.trust",
+  // The Extensions hub's inventory (plan step 13). No RPC equivalent: RPC mode
+  // never lists resources, and a control host loads them without a session.
+  "resources.list",
 ] as const;
 
 export type HostMethod = (typeof HOST_METHODS)[number];

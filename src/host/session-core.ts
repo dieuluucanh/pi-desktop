@@ -1,4 +1,5 @@
 import type { HostMethod } from "../shared/host-protocol";
+import type { ExtensionRuntimeErrorSummary } from "../shared/resources";
 import {
   eventToFrame,
   sessionSnapshot,
@@ -12,6 +13,7 @@ import {
   type TrustStoreLike,
 } from "./project-trust";
 import { createSettingsHandlers, type SettingsPort } from "./settings";
+import { buildResourcesSnapshot } from "./resources";
 import type { FileListing } from "./file-listing";
 import type { HostHandler } from "./service";
 
@@ -78,9 +80,22 @@ export interface HostSession extends SessionStateLike {
     ): { configured?: boolean; source?: string; label?: string } | undefined;
   };
   /** Command/template/skill sources, mirroring Pi's RPC `get_commands`. */
-  extensionRunner?: { getRegisteredCommands?: () => readonly unknown[] };
+  extensionRunner?: {
+    getRegisteredCommands?: () => readonly unknown[];
+    /**
+     * Live `extension_error` history (plan step 13): Pi reports an error an
+     * extension threw while handling an event, which a loader error cannot show.
+     */
+    onError?: (listener: (error: unknown) => void) => () => void;
+  };
   promptTemplates?: readonly unknown[];
-  resourceLoader?: { getSkills?: () => { skills?: readonly unknown[] } };
+  resourceLoader?: {
+    getSkills?: () => { skills?: readonly unknown[] };
+    /** The four loader collections the Extensions hub reports (plan step 13). */
+    getExtensions?: () => unknown;
+    getPrompts?: () => unknown;
+    getThemes?: () => unknown;
+  };
   compact?(instructions?: string): Promise<unknown>;
   reload?(options?: unknown): Promise<void>;
   /**
@@ -228,7 +243,38 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   let runtime: RuntimeLike | null = null;
   let manager: SessionManagerHandle | null = null;
   let unsubscribe: (() => void) | null = null;
+  let unsubscribeErrors: (() => void) | null = null;
   let settingsManager: SettingsLike | null = null;
+
+  /**
+   * Bounded `extension_error` history for the Extensions hub (plan step 13). Pi
+   * reports an error an extension threw while handling an event, which is a
+   * different (and more actionable) signal than a load error.
+   */
+  const runtimeErrors: ExtensionRuntimeErrorSummary[] = [];
+  const recordRuntimeError = (error: unknown): void => {
+    const record = asRecord(error);
+    const message =
+      typeof record.error === "string"
+        ? record.error
+        : error instanceof Error
+          ? error.message
+          : String(error);
+    const stack =
+      typeof record.stack === "string"
+        ? record.stack
+        : error instanceof Error
+          ? error.stack
+          : undefined;
+    runtimeErrors.unshift({
+      extensionPath: typeof record.extensionPath === "string" ? record.extensionPath : "",
+      event: typeof record.event === "string" ? record.event : "unknown",
+      error: message,
+      ...(stack ? { stack } : {}),
+      at: deps.now?.() ?? Date.now(),
+    });
+    if (runtimeErrors.length > 50) runtimeErrors.length = 50;
+  };
 
   /**
    * Settings writes (plan step 12) are built lazily over whichever manager is
@@ -265,7 +311,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
   const attach = (next: HostSession): void => {
     unsubscribe?.();
+    unsubscribeErrors?.();
     session = next;
+    unsubscribeErrors = next.extensionRunner?.onError?.(recordRuntimeError) ?? null;
     const listener = (event: { type: string; [key: string]: unknown }): void => {
       const frame = eventToFrame(event);
       deps.emit(frame.event, frame.payload, next.sessionId ?? undefined);
@@ -556,6 +604,24 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     "commands.list": () => ({ commands: collectCommands(ensure()) }),
 
+    // The Extensions hub (plan step 13): what this session actually loaded, with
+    // provenance, contributions and errors. A session host answers from its live
+    // resource loader + extension runner, so the data is the running truth.
+    "resources.list": () =>
+      buildResourcesSnapshot({
+        cwd,
+        scope: "session",
+        settings: readSettingsScopes(settingsManager),
+        source: {
+          extensions: session?.resourceLoader?.getExtensions?.(),
+          skills: session?.resourceLoader?.getSkills?.(),
+          prompts: session?.resourceLoader?.getPrompts?.(),
+          themes: session?.resourceLoader?.getThemes?.(),
+        },
+        runtimeErrors,
+        now: deps.now,
+      }),
+
     "files.list": async (params) => {
       if (!deps.listFiles) {
         throw new SessionCoreError("listing workspace files is not supported", "unsupported");
@@ -831,6 +897,8 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     dispose: async () => {
       unsubscribe?.();
       unsubscribe = null;
+      unsubscribeErrors?.();
+      unsubscribeErrors = null;
       await runtime?.dispose?.();
       runtime = null;
       session = null;
@@ -892,12 +960,12 @@ function providerAuthStatus(
  * needs to show and edit each scope.
  */
 function readSettingsScopes(manager: SettingsLike | null): {
-  global: PiPayload;
-  project: PiPayload;
+  global: Record<string, unknown>;
+  project: Record<string, unknown>;
 } {
   return {
-    global: manager?.getGlobalSettings?.() ?? {},
-    project: manager?.getProjectSettings?.() ?? {},
+    global: asRecord(manager?.getGlobalSettings?.() ?? {}),
+    project: asRecord(manager?.getProjectSettings?.() ?? {}),
   };
 }
 

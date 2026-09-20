@@ -157,3 +157,66 @@ describe("a control host over the protocol", () => {
     }
   });
 });
+
+describe("control core resources (plan step 13)", () => {
+  it("answers not_implemented when no inspector is configured", async () => {
+    const core = createControlCore({ settings: fakeSettings(), listSessions: async () => [] });
+    await expect(core.handlers()["resources.list"]?.({}, {} as never)).rejects.toThrow(
+      /no resource inspector/,
+    );
+  });
+
+  it("builds the hub snapshot from the inspector and the settings port", async () => {
+    const load = vi.fn(async () => ({
+      extensions: {
+        extensions: [
+          {
+            path: "/p/foo.ts",
+            sourceInfo: { source: "user", scope: "user", origin: "top-level" },
+          },
+        ],
+        errors: [],
+      },
+      skills: { skills: [], diagnostics: [] },
+      prompts: { prompts: [], diagnostics: [] },
+      themes: { themes: [], diagnostics: [] },
+    }));
+    const core = createControlCore({
+      settings: fakeSettings(),
+      listSessions: async () => [],
+      resources: { load },
+      defaultCwd: "/home",
+      now: () => 7,
+    });
+
+    const handlers = core.handlers();
+    const snapshot = (await handlers["resources.list"]?.(
+      { cwd: "/project", refresh: true },
+      {} as never,
+    )) as {
+      scope: string;
+      cwd: string | null;
+      loadedAt: number;
+      resources: unknown[];
+    };
+    expect(load).toHaveBeenCalledWith("/project", { refresh: true });
+    expect(snapshot).toMatchObject({ scope: "control", cwd: "/project", loadedAt: 7 });
+    expect(snapshot.resources[0]).toMatchObject({ name: "foo.ts" });
+  });
+
+  it("falls back to the host's own cwd", async () => {
+    const load = vi.fn(async () => ({}));
+    const core = createControlCore({
+      settings: fakeSettings(),
+      listSessions: async () => [],
+      resources: { load },
+      defaultCwd: "/home",
+    });
+    const handlers = core.handlers();
+    const snapshot = (await handlers["resources.list"]?.({}, {} as never)) as {
+      cwd: string | null;
+    };
+    expect(snapshot.cwd).toBe("/home");
+    expect(load).toHaveBeenCalledWith("/home", { refresh: false });
+  });
+});

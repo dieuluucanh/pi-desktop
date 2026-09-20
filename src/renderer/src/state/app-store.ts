@@ -55,6 +55,18 @@ import {
   type SessionSummary,
 } from "../../../shared/session-browser";
 import {
+  EMPTY_RESOURCES,
+  applyResourceOverride,
+  diffResources,
+  isResourceChangeEmpty,
+  sanitizeResourcesSnapshot,
+  settingsScopeForResource,
+  type ResourceChangeSummary,
+  type ResourceSummary,
+  type ResourcesSnapshot,
+} from "../../../shared/resources";
+import type { RecommendedPackage } from "../../../shared/recommended-packages";
+import {
   createTranscriptState,
   hydrateMessages,
   reduceSessionEvents,
@@ -339,6 +351,28 @@ export interface AppStateShape {
   /** The effective value of a key, with the project override winning. */
   effectiveSetting: (key: string) => SettingsValue | undefined;
 
+  /** Extensions hub (plan step 13): what Pi loaded, with provenance and errors. */
+  resources: ResourcesSnapshot;
+  resourcesLoaded: boolean;
+  resourcesBusy: boolean;
+  resourcesError: string | null;
+  /** The tab whose host answered (the control host when no session is active). */
+  resourcesTabId: string | null;
+  resourcesCwd: string | null;
+  /** What the last runtime reload changed, for the hub's “what changed” note. */
+  resourcesChange: ResourceChangeSummary | null;
+  loadResources: (options?: { refresh?: boolean }) => Promise<void>;
+  /** Enable/disable one resource through the settings arrays, then reload Pi. */
+  toggleResource: (resource: ResourceSummary, enabled: boolean) => Promise<boolean>;
+  /** `session.reload` on a live host (or a fresh loader) and report the delta. */
+  reloadResources: () => Promise<void>;
+  /**
+   * One-click install of a recommended package (plan step 13 routes it through
+   * the package manager; step 14 owns the install machinery, so a host without
+   * it surfaces `not_implemented` instead of pretending success).
+   */
+  installRecommendedPackage: (entry: RecommendedPackage) => Promise<boolean>;
+
   createSessionTab: () => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
@@ -463,6 +497,22 @@ function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {
   return next;
 }
 
+/**
+ * Which host answers the Extensions hub (plan step 13): the active session tab
+ * when one exists (live, with `extension_error` history), otherwise the app-wide
+ * control host, which loads resources on demand.
+ */
+function resourcesTarget(state: AppStateShape): string {
+  const active = state.tabs.find((tab) => tab.id === state.activeTabId);
+  return active && active.kind === "session" ? active.id : CONTROL_TAB_ID;
+}
+
+/** The project whose resources the hub should describe. */
+function resourcesCwd(state: AppStateShape, target: string): string | null {
+  const tab = state.tabs.find((entry) => entry.id === target);
+  return tab?.cwd ?? state.project?.path ?? null;
+}
+
 export const useAppStore = create<AppStateShape>()((set, get) => ({
   view: "welcome",
   project: null,
@@ -516,6 +566,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   settingsProjectTrusted: true,
   settingsMtimes: { global: null, project: null },
   settingsExternalEdit: false,
+  resources: EMPTY_RESOURCES,
+  resourcesLoaded: false,
+  resourcesBusy: false,
+  resourcesError: null,
+  resourcesTabId: null,
+  resourcesCwd: null,
+  resourcesChange: null,
   providerLogin: null,
   customProviders: [],
   customProvidersLoaded: false,
@@ -1549,6 +1606,115 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const settings = get().settings;
     if (!settings) return undefined;
     return getSettingsValue(mergeSettingsScopes(settings.global, settings.project), key);
+  },
+
+  // ---- Extensions hub (plan step 13) ----
+
+  loadResources: async (options) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    const target = resourcesTarget(get());
+    const cwd = resourcesCwd(get(), target);
+    const current = get();
+    if (
+      options?.refresh !== true &&
+      current.resourcesLoaded &&
+      current.resourcesTabId === target &&
+      current.resourcesCwd === cwd
+    ) {
+      return;
+    }
+    set({ resourcesBusy: true, resourcesError: null });
+    try {
+      const raw = await api.sessions.request({
+        tabId: target,
+        method: "resources.list",
+        params: { cwd, refresh: options?.refresh === true },
+      });
+      set({
+        resources: sanitizeResourcesSnapshot(raw),
+        resourcesLoaded: true,
+        resourcesBusy: false,
+        resourcesError: null,
+        resourcesTabId: target,
+        resourcesCwd: cwd,
+      });
+    } catch (error) {
+      set({
+        resourcesBusy: false,
+        resourcesLoaded: true,
+        resourcesError: errorMessage(error),
+      });
+    }
+  },
+
+  toggleResource: async (resource, enabled) => {
+    const api = bridge();
+    if (!api?.sessions) {
+      set({ resourcesError: "The preload bridge is unavailable." });
+      return false;
+    }
+    if (!get().settings) await get().loadSettings();
+    const settings = get().settings;
+    if (!settings) {
+      set({ resourcesError: "Pi settings could not be read, so the toggle was not written." });
+      return false;
+    }
+    const key = resource.settingsKey;
+    const scope = settingsScopeForResource(resource.scope);
+    const document = scope === "project" ? settings.project : settings.global;
+    const currentValue = getSettingsValue(document, key);
+    const entries = Array.isArray(currentValue)
+      ? currentValue.filter((entry): entry is string => typeof entry === "string")
+      : [];
+    const next = applyResourceOverride(entries, resource.overridePath, enabled);
+    const ok = await get().setSetting(key, next, scope);
+    if (ok) await get().loadResources({ refresh: true });
+    return ok;
+  },
+
+  reloadResources: async () => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    const target = resourcesTarget(get());
+    const before = get().resources.resources;
+    // A live session host reloads its whole runtime; the control host has no
+    // runtime to reload, so its fresh loader *is* the reload (plan step 13).
+    if (target !== CONTROL_TAB_ID) {
+      try {
+        await api.sessions.request({ tabId: target, method: "session.reload" });
+      } catch {
+        // A failed runtime reload still re-lists: the list is the source of truth.
+      }
+    }
+    await get().loadResources({ refresh: true });
+    const change = diffResources(before, get().resources.resources);
+    set({ resourcesChange: isResourceChangeEmpty(change) ? null : change });
+  },
+
+  installRecommendedPackage: async (entry) => {
+    const api = bridge();
+    if (!api?.sessions) {
+      set({ resourcesError: "The preload bridge is unavailable." });
+      return false;
+    }
+    set({ resourcesBusy: true, resourcesError: null });
+    try {
+      await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "packages.install",
+        params: { source: entry.source, scope: "global" },
+      });
+      await get().loadResources({ refresh: true });
+      set({ resourcesBusy: false });
+      return true;
+    } catch (error) {
+      set({
+        resourcesBusy: false,
+        resourcesError: `Installing ${entry.name} failed: ${errorMessage(error)}`,
+      });
+      return false;
+    }
   },
 
   createSessionTab: async () => {

@@ -87,7 +87,8 @@ drives the real bundle when `out/host/index.mjs` has been built.
 | models & thinking | `model.list`, `model.available`, `model.set`, `model.cycle`, `thinking.levels`, `thinking.set`, `thinking.cycle`                                                                                                                                                                                                                                                                       | `src/host/session-core.ts`                                         |
 | session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`                                                                                                                                                                                                                                                                                               | `src/host/session-core.ts`                                         |
 | settings          | `settings.get`, `settings.set`, `settings.raw` (read **or** write a whole scope), `settings.flush`; every response carries **both** scopes, the two file paths + mtimes, `drainErrors` and the project-trust flag. Writes are schema-validated: a named `SettingsManager` setter when Pi has one, otherwise an atomic whole-document edit, always with a backup before the first write | `src/host/settings.ts` + `src/host/sdk/settings.ts`, in both cores |
-| control host      | `settings.*`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `project.inspect`, `project.trust`                                                                                                                                                                            | `src/host/control-core.ts`                                         |
+| control host      | `settings.*`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `project.inspect`, `project.trust`, `resources.list` (loads a project's resources with no session)                                                                                                            | `src/host/control-core.ts`                                         |
+| extensions hub    | `resources.list` (both cores): extensions/skills/prompts/themes with source, scope, origin, contributed tools/commands/shortcuts/flags, loader diagnostics and live `extension_error` history                                                                                                                                                                                          | `src/host/resources.ts` (+ `src/host/sdk/resources.ts`)            |
 | extension UI      | `oi.respond` + `oi.request` events                                                                                                                                                                                                                                                                                                                                                     | `src/host/extension-ui.ts`                                         |
 
 ### Declared and answering `not_implemented` (with the owning step)
@@ -97,6 +98,31 @@ drives the real bundle when `out/host/index.mjs` has been built.
 | `bash.run`, `bash.abort`    | 6    |
 | `packages.*`                | 14   |
 | `files.read`, `files.write` | 20   |
+
+### Extensions hub (plan step 13)
+
+`resources.list` takes `{cwd?, refresh?}` and answers a `ResourcesSnapshot`:
+every loaded extension, skill, prompt template and theme with its `source`,
+`scope` (`user`/`project`/`temporary`), `origin` (`package`/`top-level`),
+contributed tools/commands/shortcuts/flags, plus loader diagnostics and live
+`extension_error` history. It is answered by **both** cores:
+
+- a **session host** reports its live `ResourceLoader`/`ExtensionRunner`, so the
+  data is the running truth and includes errors an extension threw mid-event;
+- a **control host** has no `AgentSession`, so `createSdkResourceInspector`
+  builds a real `DefaultResourceLoader` for the requested project on demand
+  (cached; `refresh: true` rebuilds it) — this is what makes the hub work before
+  any session tab exists. Project resources load only when the app's trust store
+  says the project is trusted.
+
+Enable/disable is **not** a new write path: Pi resolves the `extensions`,
+`skills`, `prompts` and `themes` settings arrays, where `-path` force-excludes
+and `+path` force-includes an exact resource. The app writes that entry through
+`settings.set` in the resource's own scope (project resources stay project),
+then reloads the runtime. Disabled resources are derived back out of those
+override entries, so a disabled extension is still listed and can be
+re-enabled; glob overrides are reported verbatim instead of being turned into
+phantom resources.
 
 ### Settings (plan step 12)
 
@@ -149,6 +175,7 @@ Host methods with **no** RPC equivalent (the app needs them, RPC does not):
 _stored_ session, `session.navigateTree` / `session.setLabel` (the TUI drives its
 tree selector in-process), `session.queueMode`'s single envelope,
 `providers.runtimeKey/refresh/custom`, `packages.*`, `files.list`, `settings.*`,
-`project.inspect`, `project.trust`
+`resources.list` (RPC mode never lists resources), `project.inspect`,
+`project.trust`
 (project inspection and trust: the TUI resolves trust through its own session,
 so RPC has no command for it).

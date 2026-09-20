@@ -31,6 +31,13 @@ strip, step 10 fills the project section — neither re-lays-out the window.
   `userData/app-state.json` by the main process (`src/main/app-store.ts`), which
   validates the patch against a closed key set (`src/shared/prefs.ts`). Projects
   and tabs become persistent in steps 10 and 11.
+- **Extensions hub (plan step 13).** `ExtensionsView` lists Pi's loaded
+  extensions/skills/prompts/themes through the host's `resources.list` (a live
+  session host when one is active, otherwise the control host, which loads a
+  `DefaultResourceLoader` on demand). Enable/disable edits the `extensions` /
+  `skills` / `prompts` / `themes` settings arrays (`-path` / `+path`), so the
+  change is reversible and visible to terminal Pi. The shipped Pi for Office
+  wizard stays mounted, unchanged, under Extensions → Integrations (plan D-A10).
 
 ## Command ownership (no double-firing)
 
@@ -69,7 +76,8 @@ src/renderer/src/state/app-store.ts  view state (zustand)
 src/renderer/src/layout/*      TitleBar, Sidebar, TabStrip, StatusBar, CommandPalette
 src/renderer/src/views/*       Welcome, Session, Settings, Extensions, Connections,
                                Skills, Diagnostics, Office
-src/renderer/src/ui/*          Button, Badge, Kbd, Separator, Dialog, ScrollArea, Toaster
+src/renderer/src/ui/*          Button, Badge, Kbd, Separator, Dialog, DropdownMenu,
+                               ScrollArea, Switch, Toaster
 src/renderer/src/styles/*      tokens.css (Tailwind + theme tokens), office-panel.css
 ```
 
@@ -85,7 +93,8 @@ to `ui/*` primitives.
 - `tests/renderer/shell.test.tsx` — the shell renders navigation and the welcome
   state, and the old scaffold placeholder copy is gone.
 - `tests/renderer/extensions.test.tsx` — the Office wizard still mounts under
-  Extensions → Integrations.
+  Extensions → Integrations, and the hub lists resources, shows load/live errors,
+  writes an enable/disable override and offers the recommended set.
 
 The renderer project is configured in `vitest.config.ts` (`projects`), with
 `tests/renderer/setup.ts` for jest-dom and Testing Library cleanup.
