@@ -170,6 +170,26 @@ describe("control host", () => {
     await service.controlHost();
     expect(specs).toEqual([{ sessionId: CONTROL_HOST_ID, cwd: "C:\\state", role: "control" }]);
   });
+
+  it("routes a request addressed to the control host without creating a tab", async () => {
+    const { service, specs, hosts } = createHarness();
+    const result = await service.request(CONTROL_HOST_ID, "providers.list");
+
+    const control = hosts.get(CONTROL_HOST_ID)!;
+    expect(control.requests).toEqual([{ method: "providers.list" }]);
+    expect(result).toEqual({});
+    // Only the control host was spawned; no session tab exists.
+    expect(specs.map((spec) => spec.role)).toEqual(["control"]);
+    expect(service.tabs()).toEqual([]);
+    expect(service.activeTabId()).toBeNull();
+  });
+
+  it("still refuses an unknown tab id", async () => {
+    const { service } = createHarness();
+    await expect(service.request("tab-missing", "state.get")).rejects.toThrow(
+      /unknown session tab/,
+    );
+  });
 });
 
 describe("tab lifecycle", () => {

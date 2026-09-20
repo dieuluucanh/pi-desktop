@@ -8,6 +8,19 @@
  * preload and the renderer all agree on one shape.
  */
 
+/**
+ * The address of the app-wide **control host** (plan D-A3) on the session
+ * request channel. The renderer addresses hosts as "tabs"; the control host is
+ * the one address that is not a session tab, so this constant is shared by the
+ * main-process session service and the IPC validator.
+ */
+export const CONTROL_TAB_ID = "control";
+
+/** True when a request targets the control host rather than a session tab. */
+export function isControlTabId(value: unknown): value is typeof CONTROL_TAB_ID {
+  return value === CONTROL_TAB_ID;
+}
+
 export type TabKind = "session" | "office" | "web";
 
 export const TAB_KINDS: readonly TabKind[] = ["session", "office", "web"];

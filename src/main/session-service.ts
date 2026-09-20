@@ -1,5 +1,6 @@
 import type { HostMethod, HostRole } from "../shared/host-protocol";
 import {
+  CONTROL_TAB_ID,
   sanitizeTabs,
   sessionTitle,
   type CreateTabInput,
@@ -26,7 +27,7 @@ import {
  */
 
 /** Host id of the single control host. */
-export const CONTROL_HOST_ID = "control";
+export const CONTROL_HOST_ID = CONTROL_TAB_ID;
 export const DEFAULT_COALESCE_MS = 33;
 export const DEFAULT_COALESCE_BYTES = 1024;
 export const DEFAULT_MAX_TABS = 8;
@@ -417,6 +418,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     },
 
     async request(tabId, method, params) {
+      // The control host is addressed like a tab so the renderer has one channel
+      // for every host (plan D-A3); it simply has no per-session state.
+      if (tabId === CONTROL_TAB_ID) {
+        const host = await service.controlHost();
+        return host.request(method, params);
+      }
       const tab = requireTab(tabId);
       const host = await ensureHost(tab);
       return host.request(method, params);

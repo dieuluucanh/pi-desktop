@@ -2,7 +2,12 @@ import { BrowserWindow, ipcMain, shell } from "electron";
 import { isHostMethod, type HostMethod } from "../shared/host-protocol";
 import { IPC, type AppInfo } from "../shared/ipc";
 import type { UiPrefs } from "../shared/prefs";
-import { isTabKind, type CreateTabInput, type SessionTabsEnvelope } from "../shared/session-ipc";
+import {
+  isControlTabId,
+  isTabKind,
+  type CreateTabInput,
+  type SessionTabsEnvelope,
+} from "../shared/session-ipc";
 import { isOfficeSetupStepId } from "../shared/office-setup";
 import type { OfficeStopResult } from "../shared/office-bridge";
 import type { OfficeSetupService } from "./office/setup-service";
@@ -64,11 +69,16 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
-/** Rejects a tab id that is missing, malformed, or no longer open. */
+/**
+ * Rejects a tab id that is missing, malformed, or no longer open. The control
+ * host is a valid address for `session.request` only (plan D-A3) — it is never
+ * a tab, so activation/close still require a live tab.
+ */
 function requireTabId(deps: IpcDependencies, value: unknown): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new Error("session: a tab id is required");
   }
+  if (isControlTabId(value)) return value;
   if (!deps.sessions.knownTabIds().includes(value)) {
     throw new Error(`session: unknown tab ${value}`);
   }

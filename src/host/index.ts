@@ -20,6 +20,7 @@ import { createHostService, type HostHandler, type HostService } from "./service
 import {
   ProjectTrustStore,
   SessionManager,
+  createSdkProviderPort,
   createSdkSessionRuntime,
   createSdkSettings,
   hasTrustRequiringProjectResources,
@@ -126,13 +127,17 @@ export function resolveHostRole(
 }
 
 /**
- * The control core's real adapters: settings and the profile-wide session list.
- * Deliberately no session runtime — a control host never owns an `AgentSession`.
+ * The control core's real adapters: settings, providers/credentials and the
+ * profile-wide session list. Deliberately no session runtime — a control host
+ * never owns an `AgentSession` (plan D-A3).
  */
 function createControlHostCore(options: { cwd: string; agentDir: string }) {
   return createControlCore({
     createSettings: () => createSdkSettings(options.cwd, options.agentDir),
     listSessions: () => listAllSessions(),
+    // The port is lazy: no `ModelRuntime` is built until the Connections view
+    // (or onboarding) asks for providers.
+    providers: createSdkProviderPort({ agentDir: options.agentDir }),
   });
 }
 

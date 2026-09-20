@@ -111,3 +111,13 @@ export function createSdkSettings(
 export function listAllSessions(): Promise<unknown[]> {
   return SessionManager.listAll() as Promise<unknown[]>;
 }
+
+/**
+ * Providers, credentials and gateways (plan step 9). Re-exported here so the
+ * composition root keeps importing the SDK adapters from one place.
+ */
+export {
+  createSdkProviderPort,
+  keyOnlyInteraction,
+  type SdkProviderPortOptions,
+} from "./providers";
