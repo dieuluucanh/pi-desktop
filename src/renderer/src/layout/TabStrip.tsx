@@ -2,12 +2,15 @@ import { useState } from "react";
 import {
   Copy,
   Download,
+  ExternalLink,
   FolderOpen,
   GitFork,
+  Globe,
   ListTree,
   MoreHorizontal,
   Pencil,
   Plus,
+  RefreshCw,
   X,
 } from "lucide-react";
 import { Button } from "../ui/button";
@@ -20,6 +23,7 @@ import {
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
 import { tabMenuItems, type TabMenuActionId } from "./tab-menu";
+import { copyToClipboard } from "../web/clipboard";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { newSessionAction } from "../menu-actions";
 import { useAppStore } from "../state/app-store";
@@ -92,11 +96,15 @@ export function TabStrip() {
               title={tab.error ?? `${tab.cwd} · ${tab.status}`}
               className="flex items-center gap-2"
             >
-              <span
-                className={`size-1.5 rounded-full ${STATUS_DOT[tab.status]}`}
-                aria-hidden
-                data-status={tab.status}
-              />
+              {tab.kind === "web" ? (
+                <Globe className="size-3 shrink-0 text-ink-faint" aria-hidden />
+              ) : (
+                <span
+                  className={`size-1.5 rounded-full ${STATUS_DOT[tab.status]}`}
+                  aria-hidden
+                  data-status={tab.status}
+                />
+              )}
               <span className="max-w-48 truncate">{tab.title}</span>
             </button>
 
@@ -151,6 +159,12 @@ function TabMenuIcon({ id }: { id: TabMenuActionId }) {
       return <Download className="size-3.5" aria-hidden />;
     case "reveal":
       return <FolderOpen className="size-3.5" aria-hidden />;
+    // Web tabs (plan step 21).
+    case "reload":
+      return <RefreshCw className="size-3.5" aria-hidden />;
+    case "copy-url":
+    case "open-browser":
+      return <ExternalLink className="size-3.5" aria-hidden />;
     default:
       return null;
   }
@@ -182,6 +196,19 @@ function TabMenu({ tab, onRename }: { tab: TabRecord; onRename: () => void }) {
       case "reveal":
         void store.revealSessionFile(tab.id);
         return;
+      // Web tabs (plan step 21): the chrome commands, not session lifecycle.
+      case "reload":
+        store.webCommand(tab.id, { command: "reload" });
+        return;
+      case "copy-url":
+        if (tab.url) {
+          copyToClipboard(tab.url);
+          store.setHint("URL copied.");
+        }
+        return;
+      case "open-browser":
+        if (tab.url) void window.pi?.openExternal(tab.url);
+        return;
       case "close":
         void store.closeTab(tab.id);
         return;
@@ -204,7 +231,7 @@ function TabMenu({ tab, onRename }: { tab: TabRecord; onRename: () => void }) {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">
         <DropdownMenuLabel>{tab.title}</DropdownMenuLabel>
-        {tabMenuItems().map((item) => (
+        {tabMenuItems(tab.kind).map((item) => (
           <span key={item.id}>
             {item.separated ? <DropdownMenuSeparator /> : null}
             <DropdownMenuItem

@@ -9,6 +9,7 @@ import { WidgetStrip } from "../extension-ui/WidgetStrip";
 import { DocumentsPanel } from "../office/DocumentsPanel";
 import { WorkingRow } from "../extension-ui/WorkingRow";
 import { TuiSlotFrame, TuiSurface } from "../tui/TuiSurface";
+import { WebTabView } from "../web/WebTabView";
 import { createCommandProvider } from "../completion/command-source";
 import { createDocumentProvider } from "../completion/document-source";
 import { createFileProvider } from "../completion/file-source";
@@ -123,6 +124,7 @@ export function SessionView() {
   );
   const officeDocuments = useAppStore((state) => state.officeDocuments);
   const toggleDocumentsPanel = useAppStore((state) => state.toggleDocumentsPanel);
+  const webTabStates = useAppStore((state) => state.webTabStates);
   const [editingName, setEditingName] = useState(false);
 
   /**
@@ -173,12 +175,14 @@ export function SessionView() {
   const activeId = active?.id ?? null;
 
   // Hooks run before the early return: `messages.get` seeds the transcript of the
-  // tab being shown (once per tab; live batches append after that).
+  // tab being shown (once per tab; live batches append after that). A web tab has
+  // no Pi session to hydrate (plan step 21).
   useEffect(() => {
-    if (activeId) void hydrateTranscript(activeId);
-  }, [activeId, hydrateTranscript]);
+    if (activeId && active?.kind !== "web") void hydrateTranscript(activeId);
+  }, [activeId, active?.kind, hydrateTranscript]);
 
   if (!active) return <WelcomeView />;
+  if (active.kind === "web") return <WebTabView tab={active} />;
 
   const transcript = transcripts[active.id];
   const usage = usageLine(sessionStates[active.id]);
@@ -290,6 +294,21 @@ export function SessionView() {
               {officeDocuments.panes.length > 0 ? ` (${officeDocuments.panes.length})` : ""}
             </Button>
           ) : null}
+          {/* A review opened from this session stays linked to it (plan step 21). */}
+          {tabs
+            .filter((tab) => tab.kind === "web" && tab.sessionTabId === active.id)
+            .map((tab) => (
+              <Button
+                key={tab.id}
+                size="sm"
+                variant="ghost"
+                aria-label={`Open review ${webTabStates[tab.id]?.title ?? tab.title}`}
+                title={tab.url ?? ""}
+                onClick={() => void activateTab(tab.id)}
+              >
+                Review: {webTabStates[tab.id]?.title ?? tab.title}
+              </Button>
+            ))}
           {active.status === "running" ? (
             <Button size="sm" variant="secondary" onClick={() => void stopRun(active.id)}>
               Stop

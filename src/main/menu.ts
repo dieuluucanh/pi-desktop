@@ -34,6 +34,7 @@ const FILE_ITEMS: readonly ItemSpec[] = [
   // Shift+O; otherwise the menu accelerator would swallow the expand key before
   // the renderer ever sees it.
   { command: "open-project", label: "Open Project…", accelerator: "CmdOrCtrl+Shift+O" },
+  { command: "open-web-url", label: "Open URL in Tab…" },
   { command: "close-session", label: "Close Session", accelerator: "CmdOrCtrl+W" },
   { command: "view-sessions", label: "Sessions…", accelerator: "CmdOrCtrl+Alt+O" },
   { command: "view-settings", label: "Settings…", accelerator: "CmdOrCtrl+," },

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { toast } from "sonner";
-import type { AppInfo } from "../../../shared/ipc";
+import type { AppInfo, WebTabOpenInput } from "../../../shared/ipc";
 import {
   DEFAULT_PREFS,
   toggleFavoriteModel,
@@ -57,6 +57,15 @@ import {
   sanitizeTuiSurfaceSnapshot,
   type TuiSurfaceSnapshot,
 } from "../../../shared/tui-surface";
+import {
+  firstLoopbackUrl,
+  sanitizeWebUrl,
+  type WebCommand,
+  type WebNavigationAction,
+  type WebNavigationRequest,
+  type WebTabBounds,
+  type WebTabState,
+} from "../../../shared/web-tabs";
 import {
   sanitizeMarkdownTransformResult,
   sanitizeRenderedFrame,
@@ -142,6 +151,7 @@ import {
   createTranscriptState,
   hydrateMessages,
   reduceSessionEvents,
+  textOfPartial,
   type TranscriptState,
 } from "../session/session-events";
 import { appCommandNames, resolveCommandInput } from "../completion/dispatch";
@@ -493,6 +503,32 @@ export interface AppStateShape {
    * or null when no session is open.
    */
   chatAboutDocument: (pane: OfficeDocumentPane) => string | null;
+
+  /** Web tabs (plan step 21): the live state of each isolated page view. */
+  webTabStates: Record<string, WebTabState>;
+  /** A navigation main refused because it leaves the review, awaiting an answer. */
+  webNavigationPrompt: WebNavigationRequest | null;
+  /** Whether the manual "Open URL in a tab…" dialog is open. */
+  webUrlDialogOpen: boolean;
+  /** Applies one pushed web-tab state. */
+  applyWebTabState: (state: WebTabState) => void;
+  /** Opens a page in a web tab, reusing an existing tab for the same URL. */
+  openWebTab: (input: WebTabOpenInput) => Promise<boolean>;
+  /**
+   * Opens a loopback URL a notification or tool result mentioned (plan step 21),
+   * without stealing focus from a tab that already shows it.
+   */
+  openLoopbackUrl: (url: string, sessionTabId: string | null) => void;
+  /** Runs a chrome command against a web tab. */
+  webCommand: (tabId: string, command: WebCommand) => void;
+  /** Records the rectangle the native view occupies; fire-and-forget. */
+  setWebTabBounds: (tabId: string, bounds: WebTabBounds) => void;
+  /** Answers a pending navigation request (in-tab, new tab, browser, dismiss). */
+  answerWebNavigation: (action: WebNavigationAction) => Promise<void>;
+  /** Drops the pending navigation request without acting. */
+  dismissWebNavigation: () => void;
+  openWebUrlDialog: () => void;
+  closeWebUrlDialog: () => void;
 
   /** Packages (plan step 14): what Pi is configured to load, and its state. */
   packages: PackageSummary[];
@@ -890,6 +926,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   officeDocuments: null,
   officeDocumentsLoaded: false,
   documentsPanelOpen: false,
+  webTabStates: {},
+  webNavigationPrompt: null,
+  webUrlDialogOpen: false,
   themes: EMPTY_THEMES,
   themesLoaded: false,
   themesBusy: false,
@@ -1167,7 +1206,21 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  applyTabs: (envelope) => set({ tabs: envelope.tabs, activeTabId: envelope.activeTabId }),
+  applyTabs: (envelope) => {
+    const ids = new Set(envelope.tabs.map((tab) => tab.id));
+    // Web-tab state and any pending navigation belong to a tab that still
+    // exists; a closed tab must not leave a stale native view or dialog behind.
+    const webTabStates = Object.fromEntries(
+      Object.entries(get().webTabStates).filter(([id]) => ids.has(id)),
+    );
+    const prompt = get().webNavigationPrompt;
+    set({
+      tabs: envelope.tabs,
+      activeTabId: envelope.activeTabId,
+      webTabStates,
+      ...(prompt && !ids.has(prompt.tabId) ? { webNavigationPrompt: null } : {}),
+    });
+  },
 
   applySessionEvents: (envelope) => {
     // The control host is addressed like a tab but has no transcript: its events
@@ -1207,6 +1260,14 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       (entry) => entry.event !== "project_trust" && !EXTENSION_UI_EVENTS.has(entry.event),
     );
     if (rest.length === 0) return;
+    // Extension output can carry a review URL too (a tool result, not only a
+    // notification); open loopback URLs the same way (plan step 21).
+    for (const entry of rest) {
+      if (entry.event !== "tool_execution_end") continue;
+      const payload = entry.payload as { result?: unknown } | undefined;
+      const loopback = firstLoopbackUrl(textOfPartial(payload?.result));
+      if (loopback) get().openLoopbackUrl(loopback, envelope.tabId);
+    }
     const current = get().transcripts[envelope.tabId] ?? createTranscriptState();
     set({
       transcripts: {
@@ -1312,6 +1373,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         extensionNotifications: [notification, ...get().extensionNotifications].slice(0, 100),
       });
       notifyToast(notification.message, notification.type);
+      // Plannotator notifies its review URL, so the URL arriving in a
+      // notification is the signal to open it in an in-app tab (plan step 21)
+      // instead of handing it to the system browser.
+      const loopback = firstLoopbackUrl(notification.message);
+      if (loopback) get().openLoopbackUrl(loopback, tabId);
       return;
     }
     if (entry.event === EXTENSION_UI_THEME_EVENT) {
@@ -2585,6 +2651,77 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   toggleDocumentsPanel: () => set({ documentsPanelOpen: !get().documentsPanelOpen }),
 
+  // ---- Web tabs (plan step 21) ----
+
+  applyWebTabState: (state) =>
+    set({ webTabStates: { ...get().webTabStates, [state.tabId]: state } }),
+
+  openWebTab: async (input) => {
+    const api = bridge();
+    if (!api?.web) {
+      set({ hint: "The preload bridge is unavailable." });
+      return false;
+    }
+    // Opening the same page twice focuses the tab that already shows it, so a
+    // repeated notification cannot spawn a second review view.
+    const existing = get().tabs.find((tab) => tab.kind === "web" && tab.url === input.url);
+    if (existing) {
+      await get().activateTab(existing.id);
+      return true;
+    }
+    try {
+      get().applyTabs(await api.web.open(input));
+      set({ view: "session", hint: null });
+      return true;
+    } catch (error) {
+      set({ hint: errorMessage(error) });
+      return false;
+    }
+  },
+
+  openLoopbackUrl: (url, sessionTabId) => {
+    const parsed = sanitizeWebUrl(url);
+    if (!parsed) return;
+    // Already open: leave the user where they are instead of re-focusing the tab
+    // on every repeated mention.
+    const existing = get().tabs.find((tab) => tab.kind === "web" && tab.url === parsed);
+    if (existing) return;
+    void get().openWebTab({ url: parsed, ...(sessionTabId ? { sessionTabId } : {}) });
+  },
+
+  webCommand: (tabId, command) => {
+    const request = bridge()?.web?.command(tabId, command);
+    if (request) void request.catch(() => undefined);
+  },
+
+  setWebTabBounds: (tabId, bounds) => {
+    const request = bridge()?.web?.setBounds(tabId, bounds);
+    if (request) void request.catch(() => undefined);
+  },
+
+  answerWebNavigation: async (action) => {
+    const prompt = get().webNavigationPrompt;
+    const api = bridge();
+    set({ webNavigationPrompt: null });
+    if (!prompt || !api?.web) return;
+    const sessionTabId =
+      action === "new-tab" ? (get().webTabStates[prompt.tabId]?.sessionTabId ?? null) : null;
+    try {
+      await api.web.decideNavigation({
+        tabId: prompt.tabId,
+        url: prompt.url,
+        action,
+        ...(sessionTabId ? { sessionTabId } : {}),
+      });
+    } catch (error) {
+      set({ hint: errorMessage(error) });
+    }
+  },
+
+  dismissWebNavigation: () => set({ webNavigationPrompt: null }),
+  openWebUrlDialog: () => set({ webUrlDialogOpen: true }),
+  closeWebUrlDialog: () => set({ webUrlDialogOpen: false }),
+
   chatAboutDocument: (pane) => {
     const tabId = get().activeTabId;
     if (!tabId) {
@@ -2796,11 +2933,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.sessions) return;
     set({ activeTabId: tabId, view: "session" });
-    // The extension UI state is per host: fetch it for the tab being shown
-    // (statuses, widgets, working state) instead of trusting a stale snapshot.
-    void get().loadExtensionUi(tabId);
-    // The TUI surface is per host too (plan step 17).
-    void get().loadTuiSurface(tabId);
+    // A web tab has no Pi host (plan step 21), so there is no extension UI or
+    // TUI surface to fetch for it.
+    const tab = get().tabs.find((entry) => entry.id === tabId);
+    if (tab?.kind !== "web") {
+      // The extension UI state is per host: fetch it for the tab being shown
+      // (statuses, widgets, working state) instead of trusting a stale snapshot.
+      void get().loadExtensionUi(tabId);
+      // The TUI surface is per host too (plan step 17).
+      void get().loadTuiSurface(tabId);
+    }
     try {
       get().applyTabs(await api.sessions.activate(tabId));
     } catch (error) {

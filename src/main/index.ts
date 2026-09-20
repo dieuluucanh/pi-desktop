@@ -16,7 +16,7 @@ import type {
   ProjectActionInput,
   ProjectMutation,
 } from "../shared/projects";
-import type { CreateTabInput } from "../shared/session-ipc";
+import type { CreateTabInput, SessionTabsEnvelope } from "../shared/session-ipc";
 import { CONTROL_TAB_ID } from "../shared/session-ipc";
 import { createAppStore } from "./app-store";
 import { createNodeFsPort } from "./fs-port";
@@ -38,6 +38,8 @@ import {
   type SessionEmitChannel,
   type SessionService,
 } from "./session-service";
+import { createWebTabManager } from "./web-tabs";
+import { createElectronWebViewHost } from "./web-view-host";
 import { isDeletableSessionPath } from "./session-ops";
 import { createOfficeSetupService } from "./office/setup-service";
 import { createOfficeDocumentsService } from "./office/documents-service";
@@ -136,6 +138,17 @@ const hosts = runtime.nodePath
   : null;
 
 /**
+ * The isolated web tabs (plan step 21): one `WebContentsView` per `web` tab,
+ * reconciled from the tab table. Created before the session service because that
+ * service's tab push is what drives the reconciliation.
+ */
+const webTabs = createWebTabManager({
+  createView: createElectronWebViewHost({ window: () => mainWindow }),
+  emitState: (state) => broadcastToWindows(IPC.webState, state),
+  emitNavigationRequest: (request) => broadcastToWindows(IPC.webNavigationRequest, request),
+});
+
+/**
  * The session service (plan step 3): the app's only path to a Pi host. It needs a
  * supervisor, so it is absent when the bundled runtime could not be resolved —
  * in which case the renderer gets a precise error instead of a silent no-op.
@@ -145,9 +158,22 @@ const sessions: SessionService | null = hosts
       supervisor: hosts,
       store: appState,
       controlCwd: app.getPath("home"),
-      emit: (channel, payload) => broadcastToWindows(SESSION_CHANNELS[channel], payload),
+      emit: (channel, payload) => {
+        broadcastToWindows(SESSION_CHANNELS[channel], payload);
+        // The tab table is the web-tab service's reconciliation input: a web tab
+        // opened, closed, reordered or restored is reflected in one place.
+        if (channel === "tabs") webTabs.sync(payload as SessionTabsEnvelope);
+      },
     })
   : null;
+
+/** The folder a new web tab reports (the active session's, else the home folder). */
+function webTabCwd(explicit?: string): string {
+  if (explicit && explicit.length > 0) return explicit;
+  const active = sessions?.activeTabId();
+  const tab = active ? sessions?.tabs().find((entry) => entry.id === active) : undefined;
+  return tab && tab.cwd.length > 0 ? tab.cwd : app.getPath("home");
+}
 
 function requireSessions(): SessionService {
   if (!sessions) {
@@ -492,6 +518,53 @@ if (!app.requestSingleInstanceLock()) {
         get: () => officeDocuments.get(),
         refresh: () => officeDocuments.refresh(),
       },
+      web: {
+        open: async (input) => {
+          // Opening the same page twice reuses the tab: a repeated notification
+          // (or a double "chat about this") must not spawn a second review view.
+          const existing = sessions
+            ?.tabs()
+            .find((tab) => tab.kind === "web" && tab.url === input.url);
+          if (existing) return requireSessions().activateTab(existing.id);
+          return requireSessions().createTab({
+            kind: "web",
+            cwd: webTabCwd(input.cwd),
+            url: input.url,
+            ...(input.sessionTabId ? { sessionTabId: input.sessionTabId } : {}),
+          });
+        },
+        setBounds: (tabId, bounds) => {
+          webTabs.setBounds(tabId, bounds);
+          return true;
+        },
+        command: (tabId, command) => {
+          webTabs.command(tabId, command);
+          return true;
+        },
+        decideNavigation: async (decision) => {
+          if (decision.action === "current-tab") {
+            return webTabs.navigate(decision.tabId, decision.url);
+          }
+          if (decision.action === "new-tab") {
+            const existing = sessions
+              ?.tabs()
+              .find((tab) => tab.kind === "web" && tab.url === decision.url);
+            if (existing) {
+              await requireSessions().activateTab(existing.id);
+              return true;
+            }
+            await requireSessions().createTab({
+              kind: "web",
+              cwd: webTabCwd(),
+              url: decision.url,
+              ...(decision.sessionTabId ? { sessionTabId: decision.sessionTabId } : {}),
+            });
+            return true;
+          }
+          if (decision.action === "external") return openExternal(decision.url);
+          return true;
+        },
+      },
     });
     mainWindow = createWindow();
     // The registry poll is cheap (one loopback GET) and the panel must reflect a
@@ -514,6 +587,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on("before-quit", () => {
     // `dispose` flushes the tab table and stops every host, including control.
     officeDocuments.dispose();
+    webTabs.dispose();
     void (sessions ? sessions.dispose() : hosts?.stopAll());
   });
 }

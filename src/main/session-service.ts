@@ -1,5 +1,6 @@
 import type { HostMethod, HostRole } from "../shared/host-protocol";
 import type { TrustAnswer } from "../shared/projects";
+import { sanitizeWebUrl, webTabTitle } from "../shared/web-tabs";
 import {
   CONTROL_TAB_ID,
   sanitizeTabs,
@@ -311,6 +312,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   };
 
   const ensureHost = async (tab: TabRecord): Promise<SupervisorHostLike> => {
+    // A web tab (plan step 21) has no Pi host: it is a `WebContentsView` main
+    // owns, and no host method can ever apply to it.
+    if (tab.kind === "web") {
+      throw new SessionServiceError("a web tab has no Pi host", "web_tab");
+    }
     const existing = hosts.get(tab.id);
     if (existing) return existing;
     setStatus(tab, "starting");
@@ -385,8 +391,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       hosts.clear();
       for (const tab of sanitizeTabs(state.tabs).slice(0, maxTabs)) {
         // Nothing is running yet after a relaunch: a restored tab is "stopped"
-        // until the user activates it (or `prewarmLast` does).
-        tabs.set(tab.id, { ...tab, status: "stopped" });
+        // until the user activates it (or `prewarmLast` does). A web tab has no
+        // host to stop, so it is idle from the start (plan step 21).
+        tabs.set(tab.id, { ...tab, status: tab.kind === "web" ? "idle" : "stopped" });
       }
       const persistedActive = typeof state.activeTabId === "string" ? state.activeTabId : null;
       activeId = persistedActive && tabs.has(persistedActive) ? persistedActive : null;
@@ -396,7 +403,13 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     async createTab(input) {
       if (disposed) throw new SessionServiceError("session service is disposed", "disposed");
-      if (typeof input.cwd !== "string" || input.cwd.length === 0) {
+      const kind = input.kind ?? "session";
+      // A web tab carries a URL and needs no project folder; every other kind
+      // needs a session host and therefore a cwd.
+      const webUrl = kind === "web" ? sanitizeWebUrl(input.url) : null;
+      if (kind === "web") {
+        if (!webUrl) throw new SessionServiceError("createTab requires a web URL", "bad_request");
+      } else if (typeof input.cwd !== "string" || input.cwd.length === 0) {
         throw new SessionServiceError("createTab requires a project folder", "bad_request");
       }
       if (tabs.size >= maxTabs) {
@@ -407,20 +420,22 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       }
       const id = newId();
       const timestamp = now();
+      const cwd = typeof input.cwd === "string" ? input.cwd : "";
       const tab: TabRecord = {
         id,
-        kind: input.kind ?? "session",
-        cwd: input.cwd,
-        title: sessionTitle(input.cwd),
+        kind,
+        cwd,
+        title: kind === "web" ? webTabTitle(webUrl) : sessionTitle(cwd),
         sessionFile: input.sessionFile ?? null,
-        status: "starting",
+        status: kind === "web" ? "idle" : "starting",
         createdAt: timestamp,
         lastActiveAt: timestamp,
         model: null,
+        ...(kind === "web" ? { url: webUrl, sessionTabId: input.sessionTabId ?? null } : {}),
       };
       tabs.set(id, tab);
       activeId = id;
-      if (input.model || input.thinking || input.trust) {
+      if (kind !== "web" && (input.model || input.thinking || input.trust)) {
         createParams.set(id, {
           ...(input.model ? { model: input.model } : {}),
           ...(input.thinking ? { thinking: input.thinking } : {}),
@@ -438,7 +453,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       activeId = tabId;
       tab.lastActiveAt = now();
       publishTabs();
-      await ensureHost(tab);
+      // A web tab has no host to start (plan step 21); main's web-tab manager
+      // reconciles the view from the tab table instead.
+      if (tab.kind !== "web") await ensureHost(tab);
       await persist();
       return envelope();
     },
@@ -455,7 +472,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       createParams.delete(tabId);
       tabs.delete(tabId);
       try {
-        await deps.supervisor.stop(tabId);
+        // A web tab has no supervisor host to stop (plan step 21).
+        if (tab.kind !== "web") await deps.supervisor.stop(tabId);
       } catch {
         // A host that is already gone is not an error for the user.
       }
@@ -498,6 +516,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     async promoteToOfficeHost(tabId) {
       const tab = requireTab(tabId);
+      if (tab.kind === "web") {
+        throw new SessionServiceError("a web tab cannot be the Office host", "bad_request");
+      }
       // Already the office host and running: nothing to restart.
       if (tab.kind === "office" && hosts.has(tabId)) return envelope();
 
@@ -547,7 +568,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     },
 
     async prewarmLast() {
-      const tab = [...tabs.values()].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
+      const tab = [...tabs.values()]
+        .filter((entry) => entry.kind !== "web")
+        .sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
       if (!tab) return;
       try {
         await ensureHost(tab);

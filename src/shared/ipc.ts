@@ -17,6 +17,13 @@ import type {
   SessionStateEnvelope,
   SessionTabsEnvelope,
 } from "./session-ipc";
+import type {
+  WebCommand,
+  WebNavigationDecision,
+  WebNavigationRequest,
+  WebTabBounds,
+  WebTabState,
+} from "./web-tabs";
 
 /**
  * The IPC surface between the Electron main process and the renderer.
@@ -105,6 +112,16 @@ export const IPC = {
    */
   integrationsGet: "integrations:get",
   integrationsRecordOffice: "integrations:record-office",
+
+  /** Web tabs (plan step 21): isolated views for localhost/Plannotator pages. */
+  webOpen: "web:open",
+  webSetBounds: "web:set-bounds",
+  webCommand: "web:command",
+  webNavigationDecision: "web:navigation-decision",
+  /** Main → renderer: one web tab's state changed. */
+  webState: "web:state",
+  /** Main → renderer: a navigation left the review and needs a decision. */
+  webNavigationRequest: "web:navigation-request",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -113,6 +130,7 @@ export type IpcChannel = (typeof IPC)[keyof typeof IPC];
 export const MENU_COMMANDS = [
   "new-session",
   "open-project",
+  "open-web-url",
   "close-session",
   "view-sessions",
   "next-tab",
@@ -271,6 +289,28 @@ export interface ProjectsBridge {
   action(input: ProjectActionInput): Promise<boolean>;
 }
 
+/** Web tabs (plan step 21) — the renderer's handle on an isolated `WebContentsView`. */
+export interface WebTabOpenInput {
+  url: string;
+  /** The project the tab belongs to, when one is open. */
+  cwd?: string;
+  /** The session tab this web tab links back to (Plannotator). */
+  sessionTabId?: string | null;
+}
+
+export interface WebBridge {
+  /** Opens a page in a new web tab (or reuses an existing one for the same URL). */
+  open(input: WebTabOpenInput): Promise<SessionTabsEnvelope>;
+  /** Tells main where the active view's rectangle is; fire-and-forget. */
+  setBounds(tabId: string, bounds: WebTabBounds): Promise<boolean>;
+  /** Runs a chrome command (back/forward/reload/stop/zoom/navigate). */
+  command(tabId: string, command: WebCommand): Promise<boolean>;
+  /** Answers a navigation-request: open in tab, external browser, or dismiss. */
+  decideNavigation(decision: WebNavigationDecision): Promise<boolean>;
+  onState(listener: (state: WebTabState) => void): () => void;
+  onNavigationRequest(listener: (request: WebNavigationRequest) => void): () => void;
+}
+
 /** The complete API exposed to the renderer as `window.pi`. */
 export interface PiDesktopBridge {
   getAppInfo(): Promise<AppInfo>;
@@ -286,4 +326,5 @@ export interface PiDesktopBridge {
   projects: ProjectsBridge;
   office: OfficeBridge;
   integrations: IntegrationsBridge;
+  web: WebBridge;
 }

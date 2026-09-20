@@ -532,3 +532,90 @@ describe("promoteToOfficeHost (plan step 20)", () => {
     await expect(service.promoteToOfficeHost("tab-nope")).rejects.toThrow(/unknown session tab/);
   });
 });
+
+describe("web tabs (plan step 21)", () => {
+  it("creates a web tab without spawning any host", async () => {
+    const { service, specs, stored } = createHarness();
+    const envelope = await service.createTab({
+      kind: "web",
+      url: "http://127.0.0.1:19432/review/abc",
+      sessionTabId: "tab-0",
+    });
+
+    expect(specs).toEqual([]);
+    const tab = envelope.tabs[0]!;
+    expect(tab).toMatchObject({
+      id: "tab-1",
+      kind: "web",
+      url: "http://127.0.0.1:19432/review/abc",
+      sessionTabId: "tab-0",
+      title: "127.0.0.1:19432",
+      status: "idle",
+    });
+    expect(envelope.activeTabId).toBe("tab-1");
+    // The web tab is persisted like any other, so it survives a relaunch.
+    expect(stored.tabs.map((entry) => entry.id)).toEqual(["tab-1"]);
+  });
+
+  it("refuses a web tab without a permitted URL or a hostless other kind", async () => {
+    const { service } = createHarness();
+    await expect(service.createTab({ kind: "web" })).rejects.toThrow(/requires a web URL/);
+    await expect(service.createTab({ kind: "web", url: "javascript:alert(1)" })).rejects.toThrow(
+      /requires a web URL/,
+    );
+  });
+
+  it("never starts a host when a web tab is activated, and refuses host requests", async () => {
+    const { service, specs } = createHarness();
+    await service.createTab({ cwd: "C:/work/app" });
+    await service.createTab({ kind: "web", url: "http://localhost:5173/", sessionTabId: "tab-1" });
+    expect(specs).toHaveLength(1);
+
+    await service.activateTab("tab-2");
+    expect(specs).toHaveLength(1);
+
+    await expect(service.request("tab-2", "state.get")).rejects.toThrow(/no Pi host/);
+  });
+
+  it("restores a web tab as idle (there is no host to stop)", async () => {
+    const { service, stored } = createHarness();
+    stored.tabs = [
+      {
+        id: "tab-1",
+        kind: "web",
+        cwd: "",
+        title: "x",
+        sessionFile: null,
+        status: "idle",
+        createdAt: 0,
+        lastActiveAt: 0,
+        model: null,
+        url: "http://localhost:1/x",
+        sessionTabId: null,
+      },
+    ];
+    const envelope = await service.restoreTabs();
+    expect(envelope.tabs[0]!.status).toBe("idle");
+    expect(envelope.tabs[0]!.url).toBe("http://localhost:1/x");
+  });
+
+  it("does not stop a supervisor host for a web tab, and skips it when pre-warming", async () => {
+    const { service, hosts } = createHarness();
+    await service.createTab({ cwd: "C:/work/app" });
+    await service.createTab({ kind: "web", url: "http://localhost:1/", sessionTabId: "tab-1" });
+    expect(hosts.has("tab-1")).toBe(true);
+
+    await service.closeTab("tab-2");
+    expect(hosts.has("tab-1")).toBe(true);
+
+    await service.prewarmLast();
+    // The web tab was most recently active but is not pre-warmed; tab-1 is.
+    expect(hosts.has("tab-1")).toBe(true);
+  });
+
+  it("refuses to promote a web tab to the Office host", async () => {
+    const { service } = createHarness();
+    await service.createTab({ kind: "web", url: "http://localhost:1/" });
+    await expect(service.promoteToOfficeHost("tab-1")).rejects.toThrow(/web tab/);
+  });
+});

@@ -180,6 +180,42 @@ describe("tool execution items", () => {
     if (item?.kind !== "tool") throw new Error("expected a tool item");
     expect(item.tool.isError).toBe(true);
   });
+
+  it("surfaces a Plannotator review decision as a notice (plan step 21)", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "tool_execution_start", payload: { toolCallId: "t1", toolName: "bash" } },
+      {
+        event: "tool_execution_end",
+        payload: {
+          toolCallId: "t1",
+          result: {
+            content: [{ type: "text", text: '{"decision":"annotated","feedback":"fix"}' }],
+          },
+        },
+      },
+    ]);
+
+    const notice = items(state).find((item) => item.kind === "notice");
+    if (notice?.kind !== "notice") throw new Error("expected a review notice");
+    expect(notice.notice).toMatchObject({
+      event: "review_decision",
+      severity: "warning",
+      text: "Plan review feedback sent",
+    });
+  });
+
+  it("does not add a notice for an ordinary tool result", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      {
+        event: "tool_execution_end",
+        payload: {
+          toolCallId: "t1",
+          result: { content: [{ type: "text", text: "ok" }] },
+        },
+      },
+    ]);
+    expect(items(state).every((item) => item.kind !== "notice")).toBe(true);
+  });
 });
 
 describe("queue and notices", () => {

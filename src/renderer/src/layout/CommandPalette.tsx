@@ -85,6 +85,10 @@ export function CommandPalette() {
                 onSelect={() => run(() => void openProjectAction())}
               />
               <PaletteItem
+                label="Open URL in a tab…"
+                onSelect={() => run(() => useAppStore.getState().openWebUrlDialog())}
+              />
+              <PaletteItem
                 label="Browse sessions…"
                 shortcut="Ctrl+Shift+O"
                 onSelect={() => run(() => void openSessionBrowser())}

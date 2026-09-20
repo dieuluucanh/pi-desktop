@@ -16,6 +16,16 @@ import {
   type SessionTabsEnvelope,
 } from "../shared/session-ipc";
 import { isOfficeSetupStepId } from "../shared/office-setup";
+import {
+  parseWebCommand,
+  sanitizeWebNavigationDecision,
+  sanitizeWebTabBounds,
+  sanitizeWebUrl,
+  type WebCommand,
+  type WebNavigationDecision,
+  type WebTabBounds,
+} from "../shared/web-tabs";
+import type { WebTabOpenInput } from "../shared/ipc";
 import type { IntegrationsState } from "../shared/integrations";
 import type { OfficeDocumentsView } from "../shared/office-documents";
 import { isTrustAnswer } from "../shared/projects";
@@ -98,6 +108,13 @@ export interface IpcDependencies {
     get(): OfficeDocumentsView;
     refresh(): Promise<OfficeDocumentsView>;
   };
+  /** Web tabs (plan step 21): the isolated page views behind `web` tabs. */
+  web: {
+    open(input: WebTabOpenInput): Promise<SessionTabsEnvelope>;
+    setBounds(tabId: string, bounds: WebTabBounds): boolean;
+    command(tabId: string, command: WebCommand): boolean;
+    decideNavigation(decision: WebNavigationDecision): Promise<boolean> | boolean;
+  };
 }
 
 const MAX_TITLE_LENGTH = 200;
@@ -127,6 +144,26 @@ function requireTabId(deps: IpcDependencies, value: unknown): string {
     throw new Error(`session: unknown tab ${value}`);
   }
   return value;
+}
+
+/** Rejects the control host: a web tab is always a real, live tab. */
+function requireRealTabId(deps: IpcDependencies, value: unknown): string {
+  const id = requireTabId(deps, value);
+  if (isControlTabId(id)) throw new Error("web: the control host is not a tab");
+  return id;
+}
+
+/** Validates the `web:open` input: a permitted URL, an optional folder and link. */
+function parseWebOpen(value: unknown): WebTabOpenInput {
+  const record = asRecord(value);
+  const url = sanitizeWebUrl(record.url);
+  if (!url) throw new Error("web: a permitted http(s) URL is required");
+  const input: WebTabOpenInput = { url };
+  if (typeof record.cwd === "string" && record.cwd.length > 0) input.cwd = record.cwd;
+  if (typeof record.sessionTabId === "string" && record.sessionTabId.length > 0) {
+    input.sessionTabId = record.sessionTabId;
+  }
+  return input;
 }
 
 /** Validates a `session.request` envelope: a live tab and a real host method. */
@@ -249,6 +286,25 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.integrationsRecordOffice, (_event, patch: unknown) =>
     deps.integrations.recordOffice(patch),
   );
+
+  ipcMain.handle(IPC.webOpen, (_event, input: unknown) => deps.web.open(parseWebOpen(input)));
+  ipcMain.handle(IPC.webSetBounds, (_event, tabId: unknown, bounds: unknown) => {
+    const id = requireRealTabId(deps, tabId);
+    const parsed = sanitizeWebTabBounds(bounds);
+    if (!parsed) throw new Error("web: a bounds rectangle is required");
+    return deps.web.setBounds(id, parsed);
+  });
+  ipcMain.handle(IPC.webCommand, (_event, tabId: unknown, command: unknown) => {
+    const id = requireRealTabId(deps, tabId);
+    const parsed = parseWebCommand(command);
+    if (!parsed) throw new Error("web: unsupported web command");
+    return deps.web.command(id, parsed);
+  });
+  ipcMain.handle(IPC.webNavigationDecision, (_event, decision: unknown) => {
+    const parsed = sanitizeWebNavigationDecision(decision);
+    if (!parsed) throw new Error("web: invalid navigation decision");
+    return deps.web.decideNavigation(parsed);
+  });
 }
 
 /** The default `revealPath` implementation: a non-empty string reveals, nothing else. */

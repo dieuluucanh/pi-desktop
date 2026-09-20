@@ -1,4 +1,11 @@
-import type { AppInfo, PiDesktopBridge } from "../../src/shared/ipc";
+import type { AppInfo, PiDesktopBridge, WebTabOpenInput } from "../../src/shared/ipc";
+import type {
+  WebCommand,
+  WebNavigationDecision,
+  WebNavigationRequest,
+  WebTabBounds,
+  WebTabState,
+} from "../../src/shared/web-tabs";
 import type { OfficeSetupView } from "../../src/shared/office-setup";
 import type { OfficeDocumentsView } from "../../src/shared/office-documents";
 import { emptyIntegrationsState, type IntegrationsState } from "../../src/shared/integrations";
@@ -95,16 +102,30 @@ export interface BridgeOptions {
   integrations?: IntegrationsState;
 }
 
-/** Installs a `window.pi` stub and returns the prefs store it writes to. */
-export function installBridge(options: BridgeOptions = {}): {
+export interface BridgeHandles {
   bridge: PiDesktopBridge;
   prefs: UiPrefs;
-} {
+  webOpened: WebTabOpenInput[];
+  webCommands: Array<{ tabId: string; command: WebCommand }>;
+  webBounds: Array<{ tabId: string; bounds: WebTabBounds }>;
+  webDecisions: WebNavigationDecision[];
+  emitWebState(state: WebTabState): void;
+  emitWebNavigationRequest(request: WebNavigationRequest): void;
+}
+
+/** Installs a `window.pi` stub and returns the prefs store it writes to. */
+export function installBridge(options: BridgeOptions = {}): BridgeHandles {
   const prefs: UiPrefs = { ...DEFAULT_PREFS, ...options.prefs };
   const info = appInfoFixture(options.appInfo);
   const view = options.office ?? officeViewFixture();
   const documents = options.documents ?? documentsViewFixture();
   let integrationsState: IntegrationsState = options.integrations ?? emptyIntegrationsState();
+  const webStateListeners = new Set<(state: WebTabState) => void>();
+  const webNavListeners = new Set<(request: WebNavigationRequest) => void>();
+  const webOpened: WebTabOpenInput[] = [];
+  const webCommands: Array<{ tabId: string; command: WebCommand }> = [];
+  const webBounds: Array<{ tabId: string; bounds: WebTabBounds }> = [];
+  const webDecisions: WebNavigationDecision[] = [];
   const projectsState: ProjectsSnapshot = {
     projects: options.projects ?? [],
     activeProject: options.activeProject ?? null,
@@ -213,10 +234,49 @@ export function installBridge(options: BridgeOptions = {}): {
         return integrationsState;
       },
     },
+    web: {
+      open: async (input) => {
+        webOpened.push(input);
+        return { tabs: [], activeTabId: null };
+      },
+      setBounds: async (tabId, bounds) => {
+        webBounds.push({ tabId, bounds });
+        return true;
+      },
+      command: async (tabId, command) => {
+        webCommands.push({ tabId, command });
+        return true;
+      },
+      decideNavigation: async (decision) => {
+        webDecisions.push(decision);
+        return true;
+      },
+      onState: (listener) => {
+        webStateListeners.add(listener);
+        return () => webStateListeners.delete(listener);
+      },
+      onNavigationRequest: (listener) => {
+        webNavListeners.add(listener);
+        return () => webNavListeners.delete(listener);
+      },
+    },
   };
 
   (window as unknown as { pi: PiDesktopBridge }).pi = bridge;
-  return { bridge, prefs };
+  return {
+    bridge,
+    prefs,
+    webOpened,
+    webCommands,
+    webBounds,
+    webDecisions,
+    emitWebState: (state) => {
+      for (const listener of webStateListeners) listener(state);
+    },
+    emitWebNavigationRequest: (request) => {
+      for (const listener of webNavListeners) listener(request);
+    },
+  };
 }
 
 export function removeBridge(): void {

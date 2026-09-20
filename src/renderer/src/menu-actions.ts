@@ -53,6 +53,11 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "open-project":
       void openProjectAction(deps);
       return;
+    case "open-web-url":
+      // The manual "Open URL in a tab" action (plan step 21); the dialog is the
+      // one place a URL is typed, so localhost UIs never need a terminal.
+      store.openWebUrlDialog();
+      return;
     case "close-session":
       void store.closeActiveTab();
       return;

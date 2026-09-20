@@ -6,6 +6,8 @@
  * component module exports only components (react-refresh).
  */
 
+import type { TabKind } from "../../../shared/session-ipc";
+
 export type TabMenuActionId =
   | "rename"
   | "duplicate"
@@ -15,7 +17,11 @@ export type TabMenuActionId =
   | "export"
   | "reveal"
   | "close"
-  | "close-others";
+  | "close-others"
+  // Web tabs (plan step 21).
+  | "reload"
+  | "copy-url"
+  | "open-browser";
 
 export interface TabMenuAction {
   id: TabMenuActionId;
@@ -25,7 +31,18 @@ export interface TabMenuAction {
   separated?: boolean;
 }
 
-export function tabMenuItems(): readonly TabMenuAction[] {
+export function tabMenuItems(kind: TabKind = "session"): readonly TabMenuAction[] {
+  if (kind === "web") {
+    // A web tab has no Pi session, so the lifecycle actions do not apply; the
+    // chrome commands and closing are what remain.
+    return [
+      { id: "reload", label: "Reload" },
+      { id: "copy-url", label: "Copy URL" },
+      { id: "open-browser", label: "Open in browser" },
+      { id: "close", label: "Close", separated: true },
+      { id: "close-others", label: "Close others", destructive: true },
+    ];
+  }
   return [
     { id: "rename", label: "Rename…" },
     { id: "duplicate", label: "Duplicate in this project" },

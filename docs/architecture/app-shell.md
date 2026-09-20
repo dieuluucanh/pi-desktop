@@ -59,6 +59,21 @@ strip, step 10 fills the project section — neither re-lays-out the window.
   `src/shared/office-documents.ts` and also feeds the `#` completion source and
   the office tool cards. A session tab that owns port 38617 is the **Office
   host**; the panel's footer names it or offers _Promote to Office host_.
+- **Web tabs (plan step 21).** A `web` tab is a page the app did not write — a
+  Plannotator review served on a loopback port, or any localhost UI. It has no Pi
+  host: `src/shared/session-ipc.ts` carries only its record (`url`,
+  `sessionTabId`) and main owns the page in `src/main/web-tabs.ts`, an
+  Electron-free service whose `WebContentsView` is injected by
+  `src/main/web-view-host.ts`. The renderer draws the chrome (`WebTabView`) and
+  reports the rectangle the native view must occupy over `web:set-bounds`; a
+  native view always paints above React, so the chrome reports `visible: false`
+  whenever a dialog/menu is open (`src/renderer/src/web/overlay-detect.ts`). A
+  loopback URL that arrives in an extension notification or tool result opens a
+  tab automatically (`openLoopbackUrl`); anything else that would leave the page
+  is refused and answered through `WebNavigationDialog`. Security is structural:
+  every web tab shares one partition with no preload, `sandbox: true`,
+  `contextIsolation: true` and all permissions denied, so `window.pi` never
+  exists in it and it cannot reach the Pi bridge.
 
 ## Command ownership (no double-firing)
 
@@ -94,6 +109,9 @@ src/main/app-store.ts          atomic app state (projects, prefs, tabs, integrat
 src/main/integrations-service.ts  the consented-install record (plan step 19)
 src/main/office/documents-service.ts  the live /health pane-registry poll (step 20)
 src/shared/office-documents.ts  the pure pane projection + mention/target helpers
+src/shared/web-tabs.ts         the web-tab wire model, URL policy and review parse
+src/main/web-tabs.ts           the Electron-free web-tab service (policy + reconciliation)
+src/main/web-view-host.ts      the WebContentsView adapter (isolated partition, no preload)
 src/renderer/src/App.tsx       regions + view routing + theme + menu dispatch
 src/renderer/src/menu-actions.ts  what each command does today
 src/renderer/src/state/app-store.ts  view state (zustand)
@@ -101,6 +119,7 @@ src/renderer/src/layout/*      TitleBar, Sidebar, TabStrip, StatusBar, CommandPa
 src/renderer/src/views/*       Welcome, Session, Settings, Extensions, Connections,
                                Skills, Diagnostics
 src/renderer/src/office/*      OfficeIntegrationCard, DocumentsPanel + the unchanged wizard panel
+src/renderer/src/web/*         WebTabView chrome, the URL/navigation dialogs, overlay detect
 src/renderer/src/session/*     Transcript, Composer, OfficeToolCard, …
 src/renderer/src/ui/*          Button, Badge, Kbd, Separator, Dialog, DropdownMenu,
                                ScrollArea, Switch, Toaster
@@ -139,6 +158,17 @@ primitives. Migrating the panel itself to `ui/*` is not required by step 19.
   — the right rail and the office tool cards (plan step 20).
 - `tests/renderer/office-documents-store.test.ts` — the registry in the store,
   the `#`-tagged composer draft and Office-host promotion.
+- `tests/shared/web-tabs.test.ts` — the URL policy (only http(s), loopback
+  classification, URL extraction from prose), the state/command/bounds
+  sanitizers and the Plannotator decision parser (plan step 21).
+- `tests/shared/session-ipc.test.ts` — a web tab survives the app-state
+  sanitizer only with a permitted URL; a host-backed tab needs a folder.
+- `tests/main/web-tabs.test.ts` — reconciliation with the tab table, the chrome
+  commands, and the navigation policy (loopback loads without a prompt).
+- `tests/renderer/web-tab-store.test.ts` — the pushed state, one tab per URL,
+  the chrome commands, bounds reporting and the navigation decision.
+- `tests/renderer/web-tab-view.test.tsx` — the toolbar, retry affordance, the
+  rectangle reported to main, and the URL/navigation dialogs.
 
 The renderer project is configured in `vitest.config.ts` (`projects`), with
 `tests/renderer/setup.ts` for jest-dom and Testing Library cleanup.

@@ -1,0 +1,324 @@
+import type { SessionTabsEnvelope, TabRecord } from "../shared/session-ipc";
+import {
+  emptyWebTabState,
+  isLoopbackUrl,
+  parseWebCommand,
+  sanitizeWebTabBounds,
+  sanitizeWebUrl,
+  type WebCommand,
+  type WebNavigationDisposition,
+  type WebNavigationRequest,
+  type WebTabState,
+} from "../shared/web-tabs";
+
+/**
+ * The web-tab service (plan step 21): the app's tab table knows *that* a web tab
+ * exists, and this service owns the `WebContentsView` behind it.
+ *
+ * It is deliberately Electron-free. The native view is injected as a small
+ * `WebViewLike` port whose events are already normalized away from Electron's
+ * `(event, …)` signatures, so the reconciliation, the chrome commands, the
+ * navigation policy (loopback loads without a prompt, everything else asks
+ * first) and the state projection are unit testable with a fake view and no
+ * window at all. The Electron adapter lives in `src/main/web-view-host.ts`.
+ *
+ * The service never creates or deletes tabs — the session service does that.
+ * `sync()` reconciles the views to whatever tab table was last published, which
+ * is also how a web tab survives an app restart: the restored tab table
+ * republishes and the view is rebuilt.
+ */
+
+/** A navigation the app did not author; the renderer decides what to do. */
+export interface WebViewNavigationRequest {
+  url: string;
+  disposition: WebNavigationDisposition;
+  /** Refuses an in-page navigation; a no-op for `new-window`. */
+  prevent(): void;
+}
+
+/** Normalized events the service consumes (never Electron's own signatures). */
+export type WebViewEvent =
+  "loading" | "loaded" | "navigated" | "title" | "favicon" | "failed" | "navigation-request";
+
+/** The slice of `WebContentsView`'s webContents the service drives. */
+export interface WebViewContentsLike {
+  loadURL(url: string): Promise<void> | void;
+  /** The real current URL; used after a prevented navigation. */
+  getURL(): string;
+  canGoBack(): boolean;
+  canGoForward(): boolean;
+  goBack(): void;
+  goForward(): void;
+  reload(): void;
+  stop(): void;
+  setZoomFactor(factor: number): void;
+}
+
+/** The slice of `WebContentsView` the service drives. */
+export interface WebViewLike {
+  readonly webContents: WebViewContentsLike;
+  /** Subscribes to a normalized event; returns an unsubscriber. */
+  on(event: WebViewEvent, listener: (payload?: unknown) => void): () => void;
+  setBounds(bounds: { x: number; y: number; width: number; height: number }): void;
+  setVisible(visible: boolean): void;
+  close?(): void;
+}
+
+export interface WebViewFactory {
+  create(input: { tabId: string; url: string }): WebViewLike;
+}
+
+export interface WebTabManagerDeps {
+  createView: WebViewFactory;
+  /** Pushes one tab's state to the renderer after every change. */
+  emitState: (state: WebTabState) => void;
+  /** Asks the renderer what to do about a navigation the app did not author. */
+  emitNavigationRequest: (request: WebNavigationRequest) => void;
+  now?: () => number;
+}
+
+export interface WebTabManager {
+  /** Reconciles views with the published tab table. */
+  sync(envelope: SessionTabsEnvelope): void;
+  /** Records the rectangle the renderer reserved for the active view. */
+  setBounds(tabId: string, bounds: unknown): void;
+  /** Runs a chrome command; unknown commands are ignored. */
+  command(tabId: string, command: unknown): void;
+  /** Loads a URL in an existing web tab (the "open in this tab" answer). */
+  navigate(tabId: string, url: unknown): boolean;
+  /** The current state for one tab, or null when it is not an open web tab. */
+  state(tabId: string): WebTabState | null;
+  /** Every open web tab's state. */
+  states(): WebTabState[];
+  /** Tears every view down (window close / quit). */
+  dispose(): void;
+}
+
+interface ManagedView {
+  tabId: string;
+  view: WebViewLike;
+  state: WebTabState;
+  bounds: { x: number; y: number; width: number; height: number };
+  visible: boolean;
+  detach: Array<() => void>;
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
+  const now = deps.now ?? ((): number => Date.now());
+  const views = new Map<string, ManagedView>();
+  /** The tab whose view should be shown; others stay hidden. */
+  let activeTabId: string | null = null;
+
+  const project = (managed: ManagedView): WebTabState => {
+    const url = sanitizeWebUrl(managed.view.webContents.getURL()) ?? managed.state.url;
+    return { ...managed.state, url };
+  };
+
+  const applyVisibility = (managed: ManagedView): void => {
+    managed.view.setVisible(managed.visible && managed.tabId === activeTabId);
+  };
+
+  const applyBounds = (managed: ManagedView): void => {
+    managed.view.setBounds(managed.bounds);
+  };
+
+  const update = (managed: ManagedView, patch: Partial<WebTabState>): void => {
+    managed.state = { ...managed.state, ...patch };
+    deps.emitState(managed.state);
+  };
+
+  const onNavigation = (managed: ManagedView, request: WebViewNavigationRequest): void => {
+    const url = sanitizeWebUrl(request.url);
+    if (!url) {
+      request.prevent();
+      return;
+    }
+    // Loopback pages belong to this machine, so they load without a prompt — a
+    // Plannotator review is the common case. Anything else leaves the review and
+    // the renderer decides (a new tab, the system browser, or nothing).
+    if (isLoopbackUrl(url)) return;
+    request.prevent();
+    deps.emitNavigationRequest({
+      tabId: managed.tabId,
+      url,
+      disposition: request.disposition,
+      at: now(),
+    });
+  };
+
+  const attach = (managed: ManagedView): void => {
+    const view = managed.view;
+    const contents = view.webContents;
+    const on = (event: WebViewEvent, listener: (payload?: unknown) => void): void => {
+      managed.detach.push(view.on(event, listener));
+    };
+
+    on("loading", () => update(managed, { status: "loading", error: null }));
+    on("loaded", () =>
+      update(managed, {
+        status: "ready",
+        error: null,
+        canGoBack: contents.canGoBack(),
+        canGoForward: contents.canGoForward(),
+        loadedAt: now(),
+      }),
+    );
+    on("navigated", () =>
+      update(managed, {
+        url: sanitizeWebUrl(contents.getURL()) ?? managed.state.url,
+        canGoBack: contents.canGoBack(),
+        canGoForward: contents.canGoForward(),
+      }),
+    );
+    on("title", (payload) => {
+      if (isString(payload) && payload.length > 0) update(managed, { title: payload });
+    });
+    on("favicon", (payload) => {
+      const urls = Array.isArray(payload) ? payload.filter(isString) : [];
+      const favicon = urls.find((entry) => sanitizeWebUrl(entry) !== null) ?? null;
+      if (favicon) update(managed, { favicon });
+    });
+    on("failed", (payload) => {
+      const record = (payload ?? {}) as { errorDescription?: unknown };
+      update(managed, {
+        status: "failed",
+        error: isString(record.errorDescription) ? record.errorDescription : "load failed",
+        canGoBack: contents.canGoBack(),
+        canGoForward: contents.canGoForward(),
+      });
+    });
+    on("navigation-request", (payload) => {
+      const request = payload as WebViewNavigationRequest | undefined;
+      if (request && isString(request.url) && typeof request.prevent === "function") {
+        onNavigation(managed, request);
+      }
+    });
+  };
+
+  const create = (tab: TabRecord & { url: string }): ManagedView => {
+    const url = sanitizeWebUrl(tab.url) ?? tab.url;
+    const view = deps.createView.create({ tabId: tab.id, url });
+    const managed: ManagedView = {
+      tabId: tab.id,
+      view,
+      state: emptyWebTabState(tab.id, url, tab.sessionTabId ?? null),
+      bounds: { x: 0, y: 0, width: 0, height: 0 },
+      // Until the renderer reports a rectangle the view is 0×0 anyway; treating
+      // the freshly created (active) tab as visible avoids a flash once bounds land.
+      visible: true,
+      detach: [],
+    };
+    attach(managed);
+    void view.webContents.loadURL(url);
+    views.set(tab.id, managed);
+    deps.emitState(managed.state);
+    return managed;
+  };
+
+  const teardown = (managed: ManagedView): void => {
+    for (const off of managed.detach.splice(0)) off();
+    try {
+      managed.view.close?.();
+    } catch {
+      // Closing an already-gone view is not an error for the user.
+    }
+    views.delete(managed.tabId);
+  };
+
+  return {
+    sync(envelope) {
+      const webTabs = new Map<string, TabRecord & { url: string }>();
+      for (const tab of envelope.tabs) {
+        if (tab.kind === "web" && isString(tab.url) && tab.url.length > 0) {
+          webTabs.set(tab.id, tab as TabRecord & { url: string });
+        }
+      }
+
+      // Close views whose tab is gone or is no longer a web tab.
+      for (const managed of [...views.values()]) {
+        if (!webTabs.has(managed.tabId)) teardown(managed);
+      }
+      // Open views for new web tabs (including ones restored from disk).
+      for (const tab of webTabs.values()) {
+        if (!views.has(tab.id)) create(tab);
+      }
+
+      activeTabId =
+        isString(envelope.activeTabId) && webTabs.has(envelope.activeTabId)
+          ? envelope.activeTabId
+          : null;
+      for (const managed of views.values()) {
+        applyBounds(managed);
+        applyVisibility(managed);
+      }
+    },
+
+    setBounds(tabId, bounds) {
+      const managed = views.get(tabId);
+      if (!managed) return;
+      const parsed = sanitizeWebTabBounds(bounds);
+      if (!parsed) return;
+      managed.bounds = { x: parsed.x, y: parsed.y, width: parsed.width, height: parsed.height };
+      managed.visible = parsed.visible;
+      applyBounds(managed);
+      applyVisibility(managed);
+    },
+
+    command(tabId, command) {
+      const managed = views.get(tabId);
+      if (!managed) return;
+      const parsed: WebCommand | null = parseWebCommand(command);
+      if (!parsed) return;
+      const contents = managed.view.webContents;
+      switch (parsed.command) {
+        case "back":
+          if (contents.canGoBack()) contents.goBack();
+          break;
+        case "forward":
+          if (contents.canGoForward()) contents.goForward();
+          break;
+        case "reload":
+          contents.reload();
+          break;
+        case "stop":
+          contents.stop();
+          break;
+        case "zoom":
+          contents.setZoomFactor(parsed.factor);
+          update(managed, { zoom: parsed.factor });
+          break;
+        case "navigate":
+          void contents.loadURL(parsed.url);
+          update(managed, { url: parsed.url, status: "loading", error: null });
+          break;
+        default:
+          break;
+      }
+    },
+
+    navigate(tabId, url) {
+      const managed = views.get(tabId);
+      const target = sanitizeWebUrl(url);
+      if (!managed || !target) return false;
+      void managed.view.webContents.loadURL(target);
+      update(managed, { url: target, status: "loading", error: null });
+      return true;
+    },
+
+    state: (tabId) => {
+      const managed = views.get(tabId);
+      return managed ? project(managed) : null;
+    },
+
+    states: () => [...views.values()].map(project),
+
+    dispose() {
+      for (const managed of [...views.values()]) teardown(managed);
+      activeTabId = null;
+    },
+  };
+}

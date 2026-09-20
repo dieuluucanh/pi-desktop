@@ -20,6 +20,8 @@ import { ConnectionsView } from "./views/ConnectionsView";
 import { DiagnosticsView } from "./views/DiagnosticsView";
 import { ExtensionsView } from "./views/ExtensionsView";
 import { SessionView } from "./views/SessionView";
+import { WebNavigationDialog } from "./web/WebNavigationDialog";
+import { WebUrlDialog } from "./web/WebUrlDialog";
 import { SettingsView } from "./views/SettingsView";
 import { SkillsView } from "./views/SkillsView";
 import { WelcomeView } from "./views/WelcomeView";
@@ -90,6 +92,12 @@ export function App() {
     const offDocuments = api.office.onDocuments((view) =>
       useAppStore.getState().applyOfficeDocuments(view),
     );
+    // Web tabs (plan step 21): the live state of each native page view, and the
+    // navigations main refused because they leave the review.
+    const offWebState = api.web.onState((state) => useAppStore.getState().applyWebTabState(state));
+    const offWebNav = api.web.onNavigationRequest((request) =>
+      useAppStore.setState({ webNavigationPrompt: request }),
+    );
     return () => {
       cancelled = true;
       offMenu();
@@ -97,6 +105,8 @@ export function App() {
       offState();
       offEvents();
       offDocuments();
+      offWebState();
+      offWebNav();
     };
   }, [loadTabs, setInfo]);
 
@@ -139,6 +149,8 @@ export function App() {
       <ProviderLoginDialog />
       <PackageConsentDialog />
       <TrustDialog />
+      <WebNavigationDialog />
+      <WebUrlDialog />
       <ShortcutsHelp />
       <ShortcutDispatcher />
       <Toaster theme={theme} />

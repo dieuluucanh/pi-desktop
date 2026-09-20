@@ -1,4 +1,5 @@
 import type { SessionEventEntry } from "../../../shared/session-ipc";
+import { parseReviewDecision, type ReviewDecision } from "../../../shared/web-tabs";
 
 /**
  * The transcript reducer (plan step 5).
@@ -457,6 +458,17 @@ const NOTICE_TEXT: Record<string, string> = {
   extension_error: "An extension raised an error",
 };
 
+/**
+ * The review outcome a Plannotator tool result reports (plan step 21). Surfacing
+ * it as a notice means the decision is readable next to the tool card instead of
+ * only inside the raw JSON.
+ */
+const REVIEW_NOTICE_TEXT: Record<ReviewDecision, string> = {
+  approved: "Plan review approved",
+  annotated: "Plan review feedback sent",
+  dismissed: "Plan review dismissed",
+};
+
 /** Folds one ordered batch of host events into the transcript. */
 export function reduceSessionEvents(
   state: TranscriptState,
@@ -511,16 +523,29 @@ export function reduceSessionEvents(
         });
         break;
 
-      case "tool_execution_end":
+      case "tool_execution_end": {
+        const resultText = textOfPartial(payload.result);
         next = upsertTool(next, asString(payload.toolCallId), {
           ...toolNamePatch(payload),
           ...argsPatch(payload),
-          resultText: textOfPartial(payload.result),
+          resultText,
           ...(payload.result === undefined ? {} : { result: payload.result }),
           isError: payload.isError === true,
           done: true,
         });
+        // A Plannotator review reports its decision on stdout (`--json` or the
+        // plaintext approval); a notice keeps that outcome visible (step 21).
+        const decision = parseReviewDecision(resultText);
+        if (decision) {
+          next = appendNotice(
+            next,
+            "review_decision",
+            decision === "approved" ? "info" : "warning",
+            REVIEW_NOTICE_TEXT[decision],
+          );
+        }
         break;
+      }
 
       case "queue_update":
         next = {

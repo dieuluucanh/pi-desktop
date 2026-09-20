@@ -11,6 +11,8 @@ import {
   type ProjectsBridge,
   type SessionDeleteResult,
   type SessionsBridge,
+  type WebBridge,
+  type WebTabOpenInput,
   type WindowState,
 } from "../shared/ipc";
 import type { UiPrefs } from "../shared/prefs";
@@ -32,6 +34,13 @@ import type {
 import type { OfficeSetupStepId, OfficeSetupView } from "../shared/office-setup";
 import type { OfficeStopResult } from "../shared/office-bridge";
 import type { OfficeDocumentsView } from "../shared/office-documents";
+import type {
+  WebCommand,
+  WebNavigationDecision,
+  WebNavigationRequest,
+  WebTabBounds,
+  WebTabState,
+} from "../shared/web-tabs";
 
 /**
  * The preload is the only place that touches `ipcRenderer`. It exposes a fixed,
@@ -118,6 +127,21 @@ const projects: ProjectsBridge = {
     ipcRenderer.invoke(IPC.projectsAction, input) as Promise<boolean>,
 };
 
+const web: WebBridge = {
+  open: (input: WebTabOpenInput) =>
+    ipcRenderer.invoke(IPC.webOpen, input) as Promise<SessionTabsEnvelope>,
+  setBounds: (tabId: string, bounds: WebTabBounds) =>
+    ipcRenderer.invoke(IPC.webSetBounds, tabId, bounds) as Promise<boolean>,
+  command: (tabId: string, command: WebCommand) =>
+    ipcRenderer.invoke(IPC.webCommand, tabId, command) as Promise<boolean>,
+  decideNavigation: (decision: WebNavigationDecision) =>
+    ipcRenderer.invoke(IPC.webNavigationDecision, decision) as Promise<boolean>,
+  onState: (listener: (state: WebTabState) => void) =>
+    subscribe<WebTabState>(IPC.webState, listener),
+  onNavigationRequest: (listener: (request: WebNavigationRequest) => void) =>
+    subscribe<WebNavigationRequest>(IPC.webNavigationRequest, listener),
+};
+
 const bridge: PiDesktopBridge = {
   getAppInfo: () => ipcRenderer.invoke(IPC.appInfo) as Promise<AppInfo>,
   openExternal: (url: string) => ipcRenderer.invoke(IPC.openExternal, url) as Promise<boolean>,
@@ -133,6 +157,7 @@ const bridge: PiDesktopBridge = {
   projects,
   office,
   integrations,
+  web,
 };
 
 contextBridge.exposeInMainWorld("pi", bridge);

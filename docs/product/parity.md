@@ -81,6 +81,6 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 | ---------------------------------------------------- | ------------------------- | --------------------------------------------------------- |
 | Runtime install                                      | user installs Node + `pi` | ✅ bundled Node 24 + `pi` PATH shim (`resources/runtime`) |
 | Multi-session parallelism                            | multiple terminals        | 🚧 step 11 (tabs, one host per session)                   |
-| Web UIs on localhost (e.g. Plannotator review pages) | system browser            | 🚧 step 21 (in-app web tab)                               |
+| Web UIs on localhost (e.g. Plannotator review pages) | system browser            | ✅ step 21 (in-app isolated web tab)                      |
 | Auto-update                                          | `pi` self-update          | 🚧 step 26                                                |
 | Windows / macOS / Linux                              | ✅                        | Windows first; macOS/Linux beta (D-A13)                   |
