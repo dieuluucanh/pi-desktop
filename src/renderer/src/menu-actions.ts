@@ -56,6 +56,9 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "close-session":
       void store.closeActiveTab();
       return;
+    case "view-sessions":
+      void store.openSessionBrowser();
+      return;
     case "next-tab":
       void store.cycleTab(1);
       return;
@@ -82,6 +85,33 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "previous-tab":
       void store.cycleTab(-1);
       return;
+    case "session-tree": {
+      const tabId = store.activeTabId;
+      if (!tabId) {
+        store.setHint("Open a session first — the history tree belongs to a session.");
+        return;
+      }
+      void store.openSessionTree(tabId);
+      return;
+    }
+    case "session-fork": {
+      const tabId = store.activeTabId;
+      if (!tabId) {
+        store.setHint("Open a session first — forking belongs to a session.");
+        return;
+      }
+      void store.openFork(tabId);
+      return;
+    }
+    case "session-export": {
+      const tabId = store.activeTabId;
+      if (!tabId) {
+        store.setHint("Open a session first — there is nothing to export.");
+        return;
+      }
+      void store.exportSessionHtml(tabId);
+      return;
+    }
     case "command-palette":
       store.togglePalette();
       return;

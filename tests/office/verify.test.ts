@@ -129,6 +129,20 @@ describe("parseBridgeHealth", () => {
     expect(health?.capabilities).toEqual([]);
   });
 
+  it("accepts the health payload's `service` field as the bridge identity", () => {
+    // Bridge 0.5.0 emits `service` over HTTP and `serverName` in the handshake;
+    // reading only one of them made the app disown its own bridge.
+    const health = parseBridgeHealth({
+      ok: true,
+      service: "pi-office-bridge",
+      serverVersion: "0.5.0",
+      protocolVersion: 3,
+    });
+    expect(health?.serverName).toBe("pi-office-bridge");
+    expect(health?.serverVersion).toBe("0.5.0");
+    expect(health?.protocolVersion).toBe(3);
+  });
+
   it("returns null for non-object payloads", () => {
     expect(parseBridgeHealth(null)).toBeNull();
     expect(parseBridgeHealth("nope")).toBeNull();

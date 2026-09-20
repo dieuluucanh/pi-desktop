@@ -153,6 +153,11 @@ export const HOST_METHODS = [
   "providers.refresh", // refresh (no RPC equivalent)
   "providers.cancel", // cancels an in-flight OAuth login (no RPC equivalent)
   "providers.custom", // models.json gateway editor (no RPC equivalent)
+  // Session tree and labels (plan step 11). Pi's RPC mode has no command for
+  // either: the TUI drives the tree selector in-process, and a host has to
+  // expose it before the desktop can navigate branches or edit labels.
+  "session.navigateTree", // no RPC equivalent
+  "session.setLabel", // no RPC equivalent
   // Projects and workspace management (plan step 10). No RPC equivalent: the
   // TUI inspects a project implicitly through its own session.
   "project.inspect",

@@ -36,6 +36,11 @@ import {
   type TabRecord,
 } from "../../../shared/session-ipc";
 import {
+  mostRecentSessionForProject,
+  sanitizeSessionList,
+  type SessionSummary,
+} from "../../../shared/session-browser";
+import {
   createTranscriptState,
   hydrateMessages,
   reduceSessionEvents,
@@ -142,6 +147,23 @@ export interface AppStateShape {
   /** Latest `state.get` snapshot per tab (opaque to the renderer). */
   sessionStates: Record<string, unknown>;
 
+  /** Session browser and tree (plan step 11). */
+  sessionBrowserOpen: boolean;
+  sessionBrowserQuery: string;
+  /** Every session of the profile, from the control host's `session.list`. */
+  projectSessions: SessionSummary[];
+  projectSessionsLoaded: boolean;
+  projectSessionsError: string | null;
+  /** The session tree of the tab the tree dialog is showing. */
+  sessionTreeOpen: boolean;
+  sessionTreeTabId: string | null;
+  sessionTree: unknown;
+  sessionTreeLeafId: string | null;
+  sessionTreeError: string | null;
+  /** The fork dialog's candidates (Pi's `get_fork_messages`). */
+  forkOpen: boolean;
+  forkCandidates: Array<{ entryId: string; text: string }>;
+
   setView: (view: AppView) => void;
   openPalette: () => void;
   closePalette: () => void;
@@ -183,6 +205,8 @@ export interface AppStateShape {
   hydrateTranscript: (tabId: string) => Promise<void>;
   /** Aborts the run of a tab (the transcript's error banner action). */
   abortTab: (tabId: string) => Promise<void>;
+  /** Drops a tab's transcript so the next hydrate rebuilds it (branch navigation). */
+  resetTranscript: (tabId: string) => void;
 
   /** Composer (plan step 6). */
   sendModes: Record<string, SendMode>;
@@ -272,6 +296,47 @@ export interface AppStateShape {
   closeTab: (tabId: string) => Promise<void>;
   closeActiveTab: () => Promise<void>;
   cycleTab: (direction: 1 | -1) => Promise<void>;
+  /** Close every other tab, keeping `tabId` active (plan step 11). */
+  closeOtherTabs: (tabId: string) => Promise<void>;
+  /** Move a tab within the strip; persisted by the session service. */
+  moveTab: (tabId: string, toIndex: number) => Promise<void>;
+  /** Open a fresh session in the same project as `tabId`. */
+  duplicateTab: (tabId: string) => Promise<void>;
+  /** Clone the live session into a new file and keep working in the clone. */
+  cloneSession: (tabId: string) => Promise<void>;
+  /** Reveal the tab's session JSONL in the OS file manager. */
+  revealSessionFile: (tabId: string) => Promise<void>;
+
+  /** Session browser (plan step 11): list, search, resume, delete. */
+  openSessionBrowser: () => Promise<void>;
+  closeSessionBrowser: () => void;
+  setSessionBrowserQuery: (query: string) => void;
+  loadProjectSessions: (options?: { refresh?: boolean }) => Promise<SessionSummary[]>;
+  /** Resume a listed session in a new tab and focus it. */
+  resumeSession: (session: SessionSummary) => Promise<void>;
+  /** Continue the newest session of a project. */
+  continueMostRecent: (cwd: string) => Promise<void>;
+  /** Trash a session file (validated by the host, trashed by main). */
+  deleteSession: (session: SessionSummary) => Promise<boolean>;
+  /** Rename a stored session: through its open tab, or the control host. */
+  renameStoredSession: (session: SessionSummary, name: string) => Promise<void>;
+
+  /** Session tree and branches (plan step 11). */
+  openSessionTree: (tabId: string) => Promise<void>;
+  closeSessionTree: () => void;
+  loadSessionTree: (tabId: string) => Promise<void>;
+  navigateTree: (
+    tabId: string,
+    targetId: string,
+    options?: { summarize?: boolean; label?: string },
+  ) => Promise<void>;
+  setEntryLabel: (tabId: string, targetId: string, label: string | null) => Promise<void>;
+  /** The fork dialog: Pi's user messages, then fork at the chosen entry. */
+  openFork: (tabId: string) => Promise<void>;
+  closeFork: () => void;
+  forkFrom: (tabId: string, entryId: string) => Promise<void>;
+  /** Export the session to HTML and reveal the written file. */
+  exportSessionHtml: (tabId: string) => Promise<void>;
 }
 
 /** How long a `files.list` result is reused before it is fetched again. */
@@ -342,6 +407,18 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   activeTabId: null,
   transcripts: {},
   sessionStates: {},
+  sessionBrowserOpen: false,
+  sessionBrowserQuery: "",
+  projectSessions: [],
+  projectSessionsLoaded: false,
+  projectSessionsError: null,
+  sessionTreeOpen: false,
+  sessionTreeTabId: null,
+  sessionTree: null,
+  sessionTreeLeafId: null,
+  sessionTreeError: null,
+  forkOpen: false,
+  forkCandidates: [],
   sendModes: {},
   draftHistory: {},
   historyIndex: {},
@@ -954,6 +1031,22 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         set({ hint: "This project is already trusted or ships nothing that needs a decision." });
       return { handled: true, sent: false };
     }
+    if (action.kind === "browser") {
+      await get().openSessionBrowser();
+      return { handled: true, sent: false };
+    }
+    if (action.kind === "tree") {
+      await get().openSessionTree(tabId);
+      return { handled: true, sent: false };
+    }
+    if (action.kind === "fork") {
+      await get().openFork(tabId);
+      return { handled: true, sent: false };
+    }
+    if (action.kind === "export") {
+      await get().exportSessionHtml(tabId);
+      return { handled: true, sent: false };
+    }
     if (action.requiresArgument && argument.length === 0) {
       set({ hint: `/${name} needs ${command.argumentHint ?? "an argument"}.` });
       return { handled: true, sent: false };
@@ -1326,6 +1419,324 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const index = tabs.findIndex((tab) => tab.id === activeTabId);
     const next = tabs[(index + direction + tabs.length) % tabs.length];
     if (next) await get().activateTab(next.id);
+  },
+
+  closeOtherTabs: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      get().applyTabs(await api.sessions.closeOthers(tabId));
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  moveTab: async (tabId, toIndex) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    // Optimistic: the strip reorders immediately, the service confirms.
+    const order = [...get().tabs];
+    const from = order.findIndex((tab) => tab.id === tabId);
+    if (from === -1) return;
+    const target = Math.max(0, Math.min(order.length - 1, Math.floor(toIndex)));
+    if (target !== from) {
+      const [moved] = order.splice(from, 1);
+      if (moved) order.splice(target, 0, moved);
+      set({ tabs: order });
+    }
+    try {
+      get().applyTabs(await api.sessions.reorder(tabId, target));
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+      void get().loadTabs();
+    }
+  },
+
+  duplicateTab: async (tabId) => {
+    const tab = get().tabs.find((entry) => entry.id === tabId);
+    const api = bridge();
+    if (!tab || !api?.sessions) return;
+    const input: CreateTabInput = { cwd: tab.cwd };
+    const record = findProject(get().projects, tab.cwd);
+    if (record?.defaultModel) input.model = record.defaultModel;
+    if (record?.defaultThinking) input.thinking = record.defaultThinking;
+    if (get().sessionTrust.includes(tab.cwd)) input.trust = "session";
+    try {
+      get().applyTabs(await api.sessions.create(input));
+      set({ view: "session", hint: null });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  revealSessionFile: async (tabId) => {
+    const tab = get().tabs.find((entry) => entry.id === tabId);
+    const api = bridge();
+    if (!tab?.sessionFile || !api) {
+      set({ hint: "This session has no file yet — send a message first." });
+      return;
+    }
+    const revealed = await api.revealPath(tab.sessionFile);
+    if (!revealed) set({ hint: "That session file could not be revealed." });
+  },
+
+  cloneSession: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      await api.sessions.request({ tabId, method: "session.clone" });
+      // The clone is a new session file with a copied context: rebuild the view.
+      get().resetTranscript(tabId);
+      await get().hydrateTranscript(tabId);
+      set({ hint: null });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  // ---- Session browser (plan step 11) ----
+
+  openSessionBrowser: async () => {
+    set({ sessionBrowserOpen: true, view: "session", hint: null });
+    await get().loadProjectSessions();
+  },
+
+  closeSessionBrowser: () => set({ sessionBrowserOpen: false }),
+
+  setSessionBrowserQuery: (query) => set({ sessionBrowserQuery: query }),
+
+  loadProjectSessions: async (options = {}) => {
+    const api = bridge();
+    if (!api?.sessions) return get().projectSessions;
+    try {
+      const response = (await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "session.list",
+      })) as { sessions?: unknown } | undefined;
+      const sessions = sanitizeSessionList(response?.sessions);
+      set({
+        projectSessions: sessions,
+        projectSessionsLoaded: true,
+        projectSessionsError: null,
+      });
+      return sessions;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set({ projectSessionsLoaded: true, projectSessionsError: message });
+      if (options.refresh) set({ hint: message });
+      return get().projectSessions;
+    }
+  },
+
+  resumeSession: async (session) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    const cwd = session.cwd.length > 0 ? session.cwd : (get().project?.path ?? null);
+    if (!cwd) {
+      set({
+        hint: "That session does not record a project folder — open the folder first, then resume.",
+      });
+      return;
+    }
+    try {
+      get().applyTabs(await api.sessions.create({ cwd, sessionFile: session.path }));
+      set({ sessionBrowserOpen: false, view: "session", hint: null });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  continueMostRecent: async (cwd) => {
+    const sessions = await get().loadProjectSessions();
+    const latest = mostRecentSessionForProject(sessions, cwd);
+    if (!latest) {
+      set({ hint: "No saved session in this project yet — start a new one (Ctrl+N)." });
+      return;
+    }
+    await get().resumeSession(latest);
+  },
+
+  deleteSession: async (session) => {
+    const api = bridge();
+    if (!api?.sessions) return false;
+    try {
+      const result = await api.sessions.deleteSession(session.path);
+      if (!result.ok) {
+        set({ hint: result.error ?? "The session could not be deleted." });
+        // A stale row is the usual cause: refresh so the list tells the truth.
+        await get().loadProjectSessions({ refresh: true });
+        return false;
+      }
+      // No tab should keep pointing at a file that is now in the trash.
+      const open = get().tabs.filter((tab) => tab.sessionFile === session.path);
+      for (const tab of open) await get().closeTab(tab.id);
+      await get().loadProjectSessions({ refresh: true });
+      set({ hint: "Session moved to the trash." });
+      return true;
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  },
+
+  renameStoredSession: async (session, name) => {
+    const api = bridge();
+    const trimmed = name.trim();
+    if (!api?.sessions || trimmed.length === 0) return;
+    // An open tab owns a live `SessionManager` for this file, so renaming through
+    // it updates the tab title too; a closed session goes through the control
+    // host's stored-session writer.
+    const openTab = get().tabs.find((tab) => tab.sessionFile === session.path);
+    try {
+      if (openTab) {
+        await api.sessions.request({
+          tabId: openTab.id,
+          method: "session.rename",
+          params: { name: trimmed },
+        });
+      } else {
+        await api.sessions.request({
+          tabId: CONTROL_TAB_ID,
+          method: "session.rename",
+          params: { sessionFile: session.path, name: trimmed },
+        });
+      }
+      await get().loadProjectSessions({ refresh: true });
+      set({ hint: null });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  // ---- Session tree, branches and forks (plan step 11) ----
+  openSessionTree: async (tabId) => {
+    set({
+      sessionTreeOpen: true,
+      sessionTreeTabId: tabId,
+      sessionTree: null,
+      sessionTreeError: null,
+    });
+    await get().loadSessionTree(tabId);
+  },
+
+  closeSessionTree: () => set({ sessionTreeOpen: false, sessionTreeTabId: null }),
+
+  loadSessionTree: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      const response = (await api.sessions.request({ tabId, method: "tree.get" })) as
+        { tree?: unknown; leafId?: unknown } | undefined;
+      set({
+        sessionTree: response?.tree ?? [],
+        sessionTreeLeafId: typeof response?.leafId === "string" ? response.leafId : null,
+        sessionTreeError: null,
+      });
+    } catch (error) {
+      set({ sessionTreeError: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  navigateTree: async (tabId, targetId, options = {}) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      const params: Record<string, unknown> = { targetId };
+      if (options.summarize) params.summarize = true;
+      if (options.label) params.label = options.label;
+      const result = (await api.sessions.request({
+        tabId,
+        method: "session.navigateTree",
+        params,
+      })) as { editorText?: unknown } | undefined;
+      // Branch navigation replaces the live context, so the transcript must be
+      // rebuilt from `messages.get` rather than appended to.
+      get().resetTranscript(tabId);
+      if (typeof result?.editorText === "string" && result.editorText.length > 0) {
+        get().setDraft(tabId, result.editorText);
+      }
+      await get().hydrateTranscript(tabId);
+      await get().loadSessionTree(tabId);
+      set({ sessionTreeOpen: false, hint: null });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  setEntryLabel: async (tabId, targetId, label) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      await api.sessions.request({
+        tabId,
+        method: "session.setLabel",
+        params: { targetId, label },
+      });
+      await get().loadSessionTree(tabId);
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  openFork: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      const response = (await api.sessions.request({
+        tabId,
+        method: "session.forkMessages",
+      })) as { messages?: Array<{ entryId?: unknown; text?: unknown }> } | undefined;
+      const messages = (response?.messages ?? []).flatMap((entry) =>
+        typeof entry.entryId === "string" && typeof entry.text === "string"
+          ? [{ entryId: entry.entryId, text: entry.text }]
+          : [],
+      );
+      set({ forkOpen: true, forkCandidates: messages });
+      if (messages.length === 0) set({ hint: "Nothing to fork from yet." });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  closeFork: () => set({ forkOpen: false, forkCandidates: [] }),
+
+  forkFrom: async (tabId, entryId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      await api.sessions.request({ tabId, method: "session.fork", params: { entryId } });
+      get().resetTranscript(tabId);
+      await get().hydrateTranscript(tabId);
+      set({ forkOpen: false, forkCandidates: [], hint: null });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  exportSessionHtml: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      const result = (await api.sessions.request({
+        tabId,
+        method: "session.exportHtml",
+      })) as { path?: unknown } | undefined;
+      const path = typeof result?.path === "string" ? result.path : null;
+      if (!path) {
+        set({ hint: "The session was exported but the file path was not reported." });
+        return;
+      }
+      await api.revealPath(path);
+      set({ hint: `Exported to ${path}` });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  resetTranscript: (tabId) => {
+    set({
+      transcripts: { ...get().transcripts, [tabId]: createTranscriptState() },
+    });
   },
 }));
 

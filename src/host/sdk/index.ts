@@ -113,6 +113,24 @@ export function listAllSessions(): Promise<unknown[]> {
 }
 
 /**
+ * Renames a stored session that is not open in a tab (plan step 11).
+ *
+ * Uses `SessionManager.open(path)` and `appendSessionInfo(name)` — the SDK's own
+ * writer — so the app never touches the JSONL format itself. The session file is
+ * opened read/write by Pi and the new `session_info` entry is appended in place;
+ * an open tab for the same file keeps its own manager and is renamed through it
+ * instead (see the renderer's `renameStoredSession`).
+ */
+export function renameStoredSession(
+  sessionFile: string,
+  name: string,
+): { path: string; name: string } {
+  const manager = SessionManager.open(sessionFile);
+  manager.appendSessionInfo(name);
+  return { path: sessionFile, name };
+}
+
+/**
  * Providers, credentials and gateways (plan step 9). Re-exported here so the
  * composition root keeps importing the SDK adapters from one place.
  */

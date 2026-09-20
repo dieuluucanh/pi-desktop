@@ -116,11 +116,17 @@ describe("help", () => {
     }
   });
 
-  it("does not advertise a command it cannot run without saying so", () => {
-    for (const name of ["/tree", "/fork", "/resume", "/export"]) {
+  it("routes the session-history commands to their dialogs (plan step 11)", () => {
+    const expected: Record<string, string> = {
+      "/resume": "browser",
+      "/tree": "tree",
+      "/fork": "fork",
+      "/export": "export",
+    };
+    for (const [name, kind] of Object.entries(expected)) {
       const result = resolveCommandInput(name, { hostCommands: [] });
       expect(result.kind, name).toBe("app");
-      if (result.kind === "app") expect(result.command.action.kind, name).toBe("pending");
+      if (result.kind === "app") expect(result.command.action.kind, name).toBe(kind);
     }
   });
 

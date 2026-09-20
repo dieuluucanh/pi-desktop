@@ -50,6 +50,7 @@ const MIRRORED: Record<string, RpcCommandType> = {
   "session.create": "new_session",
   "session.clone": "clone",
   "session.fork": "fork",
+  "session.exportHtml": "export_html",
   "session.list": "get_state",
   compact: "compact",
   "session.rename": "set_session_name",

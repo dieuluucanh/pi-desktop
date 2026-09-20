@@ -97,10 +97,12 @@ describe("runCommandInput", () => {
     expect(request.mock.calls.some((call) => call[0]?.method === "prompt")).toBe(false);
   });
 
-  it("says which step owns a command whose UI does not exist yet", async () => {
-    stubRequest();
+  it("opens the session history tree for /tree (plan step 11)", async () => {
+    const request = stubRequest();
     await useAppStore.getState().runCommandInput("tab-1", "/tree");
-    expect(useAppStore.getState().hint).toMatch(/step 11/);
+
+    expect(request.mock.calls.some((call) => call[0]?.method === "tree.get")).toBe(true);
+    expect(useAppStore.getState().sessionTreeOpen).toBe(true);
   });
 
   it("switches view for an app command that opens one", async () => {

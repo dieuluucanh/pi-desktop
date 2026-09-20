@@ -9,6 +9,9 @@ import { TitleBar } from "./layout/TitleBar";
 import { handleMenuCommand } from "./menu-actions";
 import { useAppStore, type AppView } from "./state/app-store";
 import { Toaster } from "./ui/toaster";
+import { ForkDialog } from "./sessions/ForkDialog";
+import { SessionBrowserDialog } from "./sessions/SessionBrowser";
+import { SessionTreeDialog } from "./sessions/SessionTree";
 import { ConnectionsView } from "./views/ConnectionsView";
 import { DiagnosticsView } from "./views/DiagnosticsView";
 import { ExtensionsView } from "./views/ExtensionsView";
@@ -118,6 +121,9 @@ export function App() {
       </div>
       <StatusBar />
       <CommandPalette />
+      <SessionBrowserDialog />
+      <SessionTreeDialog />
+      <ForkDialog />
       <ProviderLoginDialog />
       <TrustDialog />
       <Toaster theme={theme} />

@@ -91,6 +91,10 @@ export interface SessionService {
   createTab(input: CreateTabInput): Promise<SessionTabsEnvelope>;
   activateTab(tabId: string): Promise<SessionTabsEnvelope>;
   closeTab(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Closes every tab except `tabId` (the tab strip's "close others", step 11). */
+  closeOthers(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Moves a tab to `toIndex`, persisted so the strip order survives a relaunch. */
+  reorderTab(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
   request(tabId: string, method: HostMethod, params?: unknown): Promise<unknown>;
   /** Re-spawns the last active tab in the background (plan step 24 pre-warm). */
   prewarmLast(): Promise<void>;
@@ -453,6 +457,34 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         const next = [...tabs.values()].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
         activeId = next ? next.id : null;
       }
+      publishTabs();
+      await persist();
+      return envelope();
+    },
+
+    async closeOthers(tabId) {
+      if (!tabs.has(tabId)) return envelope();
+      for (const id of [...tabs.keys()]) {
+        if (id !== tabId) await service.closeTab(id);
+      }
+      return envelope();
+    },
+
+    async reorderTab(tabId, toIndex) {
+      const order = [...tabs.keys()];
+      const from = order.indexOf(tabId);
+      if (from === -1) return envelope();
+      const target = Math.max(0, Math.min(order.length - 1, Math.floor(toIndex)));
+      if (target === from) return envelope();
+      order.splice(from, 1);
+      order.splice(target, 0, tabId);
+      // Rebuild the map in the new order: the tab table's insertion order *is*
+      // the strip order, so this is the only place it is defined.
+      const entries = order
+        .map((id) => [id, tabs.get(id)] as const)
+        .filter((entry): entry is readonly [string, TabRecord] => entry[1] !== undefined);
+      tabs.clear();
+      for (const [id, record] of entries) tabs.set(id, record);
       publishTabs();
       await persist();
       return envelope();

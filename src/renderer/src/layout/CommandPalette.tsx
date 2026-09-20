@@ -30,10 +30,24 @@ export function CommandPalette() {
   const setView = useAppStore((state) => state.setView);
   const setHint = useAppStore((state) => state.setHint);
   const toggleSidebar = useAppStore((state) => state.toggleSidebar);
+  const openSessionBrowser = useAppStore((state) => state.openSessionBrowser);
 
   const run = (action: () => void): void => {
     closePalette();
     action();
+  };
+
+  // Session-history actions need an open session; the palette says so instead of
+  // silently doing nothing (the placeholder UI's failure mode).
+  const runSession = (action: (tabId: string) => void): void => {
+    const tabId = useAppStore.getState().activeTabId;
+    if (!tabId) {
+      closePalette();
+      setHint("Open a session first — that action applies to a session.");
+      return;
+    }
+    closePalette();
+    action(tabId);
   };
 
   return (
@@ -70,6 +84,27 @@ export function CommandPalette() {
                 label="Open project…"
                 shortcut="Ctrl+O"
                 onSelect={() => run(() => void openProjectAction())}
+              />
+              <PaletteItem
+                label="Browse sessions…"
+                shortcut="Ctrl+Shift+O"
+                onSelect={() => run(() => void openSessionBrowser())}
+              />
+              <PaletteItem
+                label="Session history tree…"
+                onSelect={() =>
+                  runSession((tabId) => void useAppStore.getState().openSessionTree(tabId))
+                }
+              />
+              <PaletteItem
+                label="Fork from a message…"
+                onSelect={() => runSession((tabId) => void useAppStore.getState().openFork(tabId))}
+              />
+              <PaletteItem
+                label="Export session to HTML"
+                onSelect={() =>
+                  runSession((tabId) => void useAppStore.getState().exportSessionHtml(tabId))
+                }
               />
               <PaletteItem
                 label="Toggle sidebar"

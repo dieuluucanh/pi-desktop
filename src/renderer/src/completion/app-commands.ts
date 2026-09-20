@@ -41,7 +41,15 @@ export type AppCommandAction =
   /** Opens one of the app's pickers (plan step 8). */
   | { kind: "picker"; picker: "model" | "thinking" }
   /** Opens the project trust prompt (plan step 10). */
-  | { kind: "trust" };
+  | { kind: "trust" }
+  /** Opens the session browser (plan step 11). */
+  | { kind: "browser" }
+  /** Opens this session's history tree (plan step 11). */
+  | { kind: "tree" }
+  /** Opens the fork-from-message dialog for this session (plan step 11). */
+  | { kind: "fork" }
+  /** Exports this session to HTML and reveals it (plan step 11). */
+  | { kind: "export" };
 
 export interface AppCommand {
   /** Without the leading slash. */
@@ -115,23 +123,23 @@ export const APP_COMMANDS: readonly AppCommand[] = [
   },
   {
     name: "resume",
-    description: "Resume a recent session",
-    action: { kind: "pending", message: "the session browser arrives in step 11" },
+    description: "Browse and resume a recent session",
+    action: { kind: "browser" },
   },
   {
     name: "tree",
     description: "Browse this session's conversation tree",
-    action: { kind: "pending", message: "the session tree view arrives in step 11" },
+    action: { kind: "tree" },
   },
   {
     name: "fork",
     description: "Fork from an earlier message",
-    action: { kind: "pending", message: "fork-from-message arrives in step 11" },
+    action: { kind: "fork" },
   },
   {
     name: "export",
     description: "Export this session to HTML",
-    action: { kind: "pending", message: "HTML export arrives in step 11" },
+    action: { kind: "export" },
   },
   {
     name: "model",

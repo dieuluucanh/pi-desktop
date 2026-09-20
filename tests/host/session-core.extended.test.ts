@@ -18,6 +18,8 @@ interface TestSession {
   abortRetry: Mock<() => void>;
   setSteeringMode: Mock<(mode: string) => void>;
   setFollowUpMode: Mock<(mode: string) => void>;
+  navigateTree: Mock<(targetId: string, options?: unknown) => Promise<unknown>>;
+  exportToHtml: Mock<(outputPath?: string) => Promise<string>>;
 }
 
 function fakeSession(overrides: Record<string, unknown> = {}): TestSession {
@@ -64,6 +66,8 @@ function fakeSession(overrides: Record<string, unknown> = {}): TestSession {
     setActiveToolsByName: vi.fn(),
     compact: vi.fn(async () => ({ summary: "compacted" })),
     reload: vi.fn(async () => undefined),
+    navigateTree: vi.fn(async () => ({ cancelled: false, editorText: "resumed text" })),
+    exportToHtml: vi.fn(async (outputPath?: string) => outputPath ?? "/profile/sessions/s1.html"),
     getLastAssistantText: () => "the last answer",
     extensionRunner: {
       getRegisteredCommands: () => [
@@ -103,13 +107,19 @@ function fakeManager() {
     },
     { type: "model_change", id: "e4" },
   ];
+  const labels: Array<{ targetId: string; label: string | undefined }> = [];
   return {
+    labels,
     appendSessionInfo: (name: string) => `/profile/sessions/${name}.jsonl`,
     getSessionFile: () => "/profile/sessions/s1.jsonl",
     getEntries: () => entries,
     getBranch: () => entries,
     getTree: () => [{ entry: { id: "e1" }, children: [] }],
     getLeafId: () => "e4",
+    appendLabelChange: (targetId: string, label: string | undefined) => {
+      labels.push({ targetId, label });
+      return `label-${labels.length}`;
+    },
   };
 }
 
@@ -153,7 +163,7 @@ function harness(overrides: Record<string, unknown> = {}) {
     return handler(params, {} as never);
   };
 
-  return { core, call, runtime, session, emitted };
+  return { core, call, runtime, session, manager, emitted };
 }
 
 /** Every test starts from a created session, the way the app does. */
@@ -336,6 +346,59 @@ describe("session lifecycle", () => {
   });
 });
 
+describe("session tree, labels and export", () => {
+  it("navigates to an entry and reports the editor text", async () => {
+    const { call, session } = await started();
+    const result = (await call("session.navigateTree", {
+      targetId: "e1",
+      summarize: true,
+      label: "kept branch",
+    })) as { cancelled: boolean; editorText: string | null };
+    expect(session.navigateTree).toHaveBeenCalledWith("e1", {
+      summarize: true,
+      label: "kept branch",
+    });
+    expect(result.cancelled).toBe(false);
+    expect(result.editorText).toBe("resumed text");
+  });
+
+  it("requires a target entry id", async () => {
+    const { call } = await started();
+    await expect(call("session.navigateTree", {})).rejects.toThrow(/targetId/);
+  });
+
+  it("sets and clears an entry label", async () => {
+    const { call, manager } = await started();
+    await expect(
+      call("session.setLabel", { targetId: "e1", label: "  bookmark  " }),
+    ).resolves.toEqual({ targetId: "e1", label: "bookmark" });
+    await expect(call("session.setLabel", { targetId: "e1", label: null })).resolves.toEqual({
+      targetId: "e1",
+      label: null,
+    });
+    expect(manager.labels).toEqual([
+      { targetId: "e1", label: "bookmark" },
+      { targetId: "e1", label: undefined },
+    ]);
+  });
+
+  it("exports to the path the session reports", async () => {
+    const { call, session } = await started();
+    const result = (await call("session.exportHtml", {
+      outputPath: "/tmp/session.html",
+    })) as { path: string };
+    expect(session.exportToHtml).toHaveBeenCalledWith("/tmp/session.html");
+    expect(result.path).toBe("/tmp/session.html");
+  });
+
+  it("uses the SDK's default export path when none is given", async () => {
+    const { call, session } = await started();
+    const result = (await call("session.exportHtml")) as { path: string };
+    expect(session.exportToHtml).toHaveBeenCalledWith(undefined);
+    expect(result.path).toBe("/profile/sessions/s1.html");
+  });
+});
+
 describe("queue modes and retry", () => {
   it("sets the steering and follow-up modes", async () => {
     const { call, session } = await started();
@@ -406,8 +469,6 @@ describe("methods that are deliberately unwired", () => {
   it("answers not_implemented with the owning step, never an empty object", async () => {
     const { call } = await started();
     const cases: Array<[HostMethod, RegExp]> = [
-      ["session.delete", /step 11/],
-      ["session.exportHtml", /step 11/],
       ["bash.run", /step 6/],
       ["bash.abort", /step 6/],
     ];

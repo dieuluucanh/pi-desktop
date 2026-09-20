@@ -82,6 +82,23 @@ export interface HostSession extends SessionStateLike {
   resourceLoader?: { getSkills?: () => { skills?: readonly unknown[] } };
   compact?(instructions?: string): Promise<unknown>;
   reload?(options?: unknown): Promise<void>;
+  /**
+   * Branch navigation inside the session file (plan step 11): unlike `fork`,
+   * which creates a new JSONL, this moves the leaf in place. The session owns it
+   * because it also refreshes agent state and emits the SDK's `session_tree`
+   * event, which the TUI selector relies on.
+   */
+  navigateTree?(
+    targetId: string,
+    options?: {
+      summarize?: boolean;
+      customInstructions?: string;
+      replaceInstructions?: boolean;
+      label?: string;
+    },
+  ): Promise<{ editorText?: string; cancelled: boolean }>;
+  /** Exports the session to a standalone HTML file; returns the written path. */
+  exportToHtml?(outputPath?: string, options?: { themeName?: string }): Promise<string>;
 }
 
 export interface SessionManagerLike {
@@ -100,6 +117,8 @@ export interface SessionManagerHandle {
   getBranch?(fromId?: string): readonly unknown[];
   getTree?(): PiPayload;
   getLeafId?(): string | undefined;
+  /** Sets or clears a display label on a tree entry (plan step 11). */
+  appendLabelChange?(targetId: string, label: string | undefined): string;
   [key: string]: unknown;
 }
 
@@ -556,6 +575,65 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       return { ...snapshot(), cancelled: result.cancelled };
     },
 
+    "session.exportHtml": async (params) => {
+      const current = ensure();
+      if (!current.exportToHtml) {
+        throw new SessionCoreError("exporting this session is not supported", "unsupported");
+      }
+      const outputPath = asRecord(params).outputPath;
+      const path = await current.exportToHtml(
+        typeof outputPath === "string" && outputPath.length > 0 ? outputPath : undefined,
+      );
+      return { path };
+    },
+
+    "session.navigateTree": async (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      const targetId = requireString(input.targetId ?? input.entryId ?? input.id, "targetId");
+      if (!current.navigateTree) {
+        throw new SessionCoreError("navigating the session tree is not supported", "unsupported");
+      }
+      const options: {
+        summarize?: boolean;
+        customInstructions?: string;
+        replaceInstructions?: boolean;
+        label?: string;
+      } = {};
+      if (input.summarize === true) options.summarize = true;
+      if (typeof input.customInstructions === "string" && input.customInstructions.length > 0) {
+        options.customInstructions = input.customInstructions;
+      }
+      if (input.replaceInstructions === true) options.replaceInstructions = true;
+      if (typeof input.label === "string" && input.label.length > 0) options.label = input.label;
+      const result = await current.navigateTree(
+        targetId,
+        Object.keys(options).length > 0 ? options : undefined,
+      );
+      await rebind();
+      return {
+        ...snapshot(),
+        cancelled: result.cancelled,
+        editorText: result.editorText ?? null,
+      };
+    },
+
+    "session.setLabel": (params) => {
+      const input = asRecord(params);
+      const targetId = requireString(input.targetId ?? input.entryId ?? input.id, "targetId");
+      if (!manager?.appendLabelChange) {
+        throw new SessionCoreError("this session cannot store labels", "unsupported");
+      }
+      const rawLabel = input.label;
+      if (rawLabel !== undefined && rawLabel !== null && typeof rawLabel !== "string") {
+        throw new SessionCoreError("label must be a string or null", "bad_request");
+      }
+      const label =
+        typeof rawLabel === "string" && rawLabel.trim().length > 0 ? rawLabel.trim() : undefined;
+      manager.appendLabelChange(targetId, label);
+      return { targetId, label: label ?? null };
+    },
+
     "session.forkMessages": () => ({ messages: collectForkMessages(manager) }),
 
     "session.lastAssistantText": () => {
@@ -655,10 +733,6 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     // per-key schema and writers belong to the settings mirror (step 12).
     "settings.set": () =>
       notImplemented("settings.set", "the per-key settings schema lands in step 12"),
-    "session.delete": () =>
-      notImplemented("session.delete", "the app deletes session files to the OS trash (step 11)"),
-    "session.exportHtml": () =>
-      notImplemented("session.exportHtml", "HTML export lands with the session browser (step 11)"),
     "bash.run": () =>
       notImplemented("bash.run", "direct bash runs land with the composer (step 6)"),
     "bash.abort": () =>

@@ -49,9 +49,15 @@ export const IPC = {
   sessionTabs: "session:tabs",
   sessionCreate: "session:create",
   sessionClose: "session:close",
+  /** Closes every tab except one (plan step 11). */
+  sessionCloseOthers: "session:close-others",
+  /** Moves a tab to a new index (plan step 11 drag-reorder). */
+  sessionReorder: "session:reorder",
   sessionActivate: "session:activate",
   sessionRestore: "session:restore",
   sessionRequest: "session:request",
+  /** Deletes a session to the OS trash (plan step 11; validated in main). */
+  sessionDelete: "session:delete",
   /** Main → renderer: a batch of host events for one tab. */
   sessionEvent: "session:event",
   /** Main → renderer: the latest state snapshot for one tab. */
@@ -87,6 +93,7 @@ export const MENU_COMMANDS = [
   "new-session",
   "open-project",
   "close-session",
+  "view-sessions",
   "next-tab",
   "previous-tab",
   "command-palette",
@@ -98,6 +105,10 @@ export const MENU_COMMANDS = [
   "view-diagnostics",
   "view-office",
   "shortcuts",
+  // Session history (plan step 11).
+  "session-tree",
+  "session-fork",
+  "session-export",
   // Model / thinking cycling (plan step 8). The Electron menu owns the
   // accelerators; the renderer never registers a second key handler for them.
   "model-cycle-forward",
@@ -151,13 +162,32 @@ export interface SessionsBridge {
   list(): Promise<SessionTabsEnvelope>;
   create(input: CreateTabInput): Promise<SessionTabsEnvelope>;
   close(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Closes every tab except `tabId`, keeping that one active. */
+  closeOthers(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Moves a tab within the strip; persisted so the order survives a relaunch. */
+  reorder(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
   restore(): Promise<SessionTabsEnvelope>;
   /** Runs any host protocol method against a tab's host. */
   request(input: SessionRequestInput): Promise<unknown>;
+  /**
+   * Deletes a session file to the OS trash (plan step 11). The control host
+   * validates the path against Pi's session index; main does the recoverable
+   * delete. Returns the resolved path, or a reason it was refused.
+   */
+  deleteSession(sessionFile: string): Promise<SessionDeleteResult>;
   onEvent(listener: (envelope: SessionEventEnvelope) => void): () => void;
   onState(listener: (envelope: SessionStateEnvelope) => void): () => void;
   onTabs(listener: (envelope: SessionTabsEnvelope) => void): () => void;
+}
+
+/** The outcome of a session deletion (plan step 11). */
+export interface SessionDeleteResult {
+  ok: boolean;
+  /** The trashed session file, when `ok` is true. */
+  path?: string;
+  /** A user-readable reason the deletion was refused. */
+  error?: string;
 }
 
 /** Pi for Office setup wizard (plan step 1 UI, step 19 card). */

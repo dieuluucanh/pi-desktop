@@ -8,6 +8,7 @@ import {
   type PrefsBridge,
   type ProjectOpResponse,
   type ProjectsBridge,
+  type SessionDeleteResult,
   type SessionsBridge,
   type WindowState,
 } from "../shared/ipc";
@@ -50,11 +51,17 @@ const sessions: SessionsBridge = {
     ipcRenderer.invoke(IPC.sessionCreate, input) as Promise<SessionTabsEnvelope>,
   close: (tabId: string) =>
     ipcRenderer.invoke(IPC.sessionClose, tabId) as Promise<SessionTabsEnvelope>,
+  closeOthers: (tabId: string) =>
+    ipcRenderer.invoke(IPC.sessionCloseOthers, tabId) as Promise<SessionTabsEnvelope>,
+  reorder: (tabId: string, toIndex: number) =>
+    ipcRenderer.invoke(IPC.sessionReorder, tabId, toIndex) as Promise<SessionTabsEnvelope>,
   activate: (tabId: string) =>
     ipcRenderer.invoke(IPC.sessionActivate, tabId) as Promise<SessionTabsEnvelope>,
   restore: () => ipcRenderer.invoke(IPC.sessionRestore) as Promise<SessionTabsEnvelope>,
   request: (input: SessionRequestInput) =>
     ipcRenderer.invoke(IPC.sessionRequest, input) as Promise<unknown>,
+  deleteSession: (sessionFile: string) =>
+    ipcRenderer.invoke(IPC.sessionDelete, sessionFile) as Promise<SessionDeleteResult>,
   onEvent: (listener: (envelope: SessionEventEnvelope) => void) =>
     subscribe<SessionEventEnvelope>(IPC.sessionEvent, listener),
   onState: (listener: (envelope: SessionStateEnvelope) => void) =>

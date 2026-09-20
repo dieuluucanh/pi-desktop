@@ -135,7 +135,10 @@ export function parseBridgeHealth(payload: unknown): BridgeHealth | null {
     : [];
 
   return {
-    serverName: asString(root.serverName) ?? "",
+    // The bridge reports its identity as `service` in the HTTP health payload
+    // (bridge 0.5.0) and as `serverName` in the welcome/handshake shape; accept
+    // both so a version skew cannot make the app disown its own bridge.
+    serverName: asString(root.serverName) ?? asString(root.service) ?? "",
     serverVersion: asString(root.serverVersion),
     piVersion: asString(root.piVersion),
     protocolVersion: asNumber(root.protocolVersion),

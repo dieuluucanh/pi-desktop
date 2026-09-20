@@ -2,7 +2,13 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, clipboard, dialog, shell } from "electron";
-import { IPC, type AppInfo, type ProjectOpResponse, type WindowState } from "../shared/ipc";
+import {
+  IPC,
+  type AppInfo,
+  type ProjectOpResponse,
+  type SessionDeleteResult,
+  type WindowState,
+} from "../shared/ipc";
 import type { OfficeStopResult } from "../shared/office-bridge";
 import type {
   CloneProjectInput,
@@ -11,6 +17,7 @@ import type {
   ProjectMutation,
 } from "../shared/projects";
 import type { CreateTabInput } from "../shared/session-ipc";
+import { CONTROL_TAB_ID } from "../shared/session-ipc";
 import { createAppStore } from "./app-store";
 import { createNodeFsPort } from "./fs-port";
 import { createHostSupervisor } from "./host-supervisor";
@@ -30,6 +37,7 @@ import {
   type SessionEmitChannel,
   type SessionService,
 } from "./session-service";
+import { isDeletableSessionPath } from "./session-ops";
 import { createOfficeSetupService } from "./office/setup-service";
 import { appPaths, isSafeMode, resolveAppRoots, type AppPaths, type AppRoots } from "./paths";
 import { resolveAppRuntime, type RuntimeResolution } from "./runtime";
@@ -146,10 +154,44 @@ const sessionsIpc: IpcSessionDeps = {
   list: () => sessions?.envelope() ?? { tabs: [], activeTabId: null },
   create: (input: CreateTabInput) => requireSessions().createTab(input),
   close: (tabId: string) => requireSessions().closeTab(tabId),
+  closeOthers: (tabId: string) => requireSessions().closeOthers(tabId),
+  reorder: (tabId: string, toIndex: number) => requireSessions().reorderTab(tabId, toIndex),
   activate: (tabId: string) => requireSessions().activateTab(tabId),
   restore: () => requireSessions().restoreTabs(),
   request: (input) => requireSessions().request(input.tabId, input.method, input.params),
+  deleteSession: deleteSessionFile,
 };
+
+/**
+ * Deletes a session to the OS trash (plan step 11). The control host resolves
+ * the path against Pi's own session index; main then trashes it with a second,
+ * path-containment check in between, so only a real session file inside the
+ * shared profile can ever reach `shell.trashItem`.
+ */
+async function deleteSessionFile(sessionFile: string): Promise<SessionDeleteResult> {
+  if (!sessions) {
+    return {
+      ok: false,
+      error: "The bundled Pi runtime is unavailable, so sessions cannot be listed.",
+    };
+  }
+  if (!isDeletableSessionPath(sessionFile, paths.profileDir)) {
+    return { ok: false, error: "That path is not a session file in the Pi profile." };
+  }
+  try {
+    const resolved = (await sessions.request(CONTROL_TAB_ID, "session.delete", {
+      sessionFile,
+    })) as { path?: unknown } | undefined;
+    const path = typeof resolved?.path === "string" ? resolved.path : sessionFile;
+    if (!isDeletableSessionPath(path, paths.profileDir)) {
+      return { ok: false, error: "The host resolved a path outside the Pi profile." };
+    }
+    await shell.trashItem(path);
+    return { ok: true, path };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
 
 /** Only these schemes may be handed to the operating system (plan step 22). */
 const EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);

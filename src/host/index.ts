@@ -31,6 +31,7 @@ import {
   createSdkSettings,
   hasTrustRequiringProjectResources,
   listAllSessions,
+  renameStoredSession,
 } from "./sdk";
 
 /**
@@ -152,6 +153,9 @@ function createControlHostCore(options: {
   return createControlCore({
     createSettings: () => createSdkSettings(options.cwd, options.agentDir),
     listSessions: () => listAllSessions(),
+    // Renaming a closed session goes through `SessionManager`, the SDK's own
+    // writer — the control host still never builds an `AgentSession`.
+    renameSession: async (sessionFile, name) => renameStoredSession(sessionFile, name),
     // The port is lazy: no `ModelRuntime` is built until the Connections view
     // (or onboarding) asks for providers.
     providers: options.providers,

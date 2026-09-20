@@ -101,6 +101,21 @@ describe("control core", () => {
     expect(result.sessions).toHaveLength(2);
     expect(listSessions).toHaveBeenCalledTimes(1);
   });
+
+  it("resolves a listed session for deletion and refuses anything else", async () => {
+    const listSessions = async (): Promise<unknown[]> => [
+      { path: "/profile/sessions/--a--/s1.jsonl" },
+    ];
+    const core = createControlCore({ createSettings: fakeSettings, listSessions });
+    const resolve = core.handlers()["session.delete"];
+    await expect(
+      resolve?.({ sessionFile: "/profile/sessions/--a--/s1.jsonl" }, {} as never),
+    ).resolves.toEqual({ path: "/profile/sessions/--a--/s1.jsonl" });
+    // The host never deletes: it validates, and main trashes the returned path.
+    await expect(resolve?.({ sessionFile: "/profile/auth.json" }, {} as never)).rejects.toThrow(
+      /not part of this profile/,
+    );
+  });
 });
 
 describe("a control host over the protocol", () => {

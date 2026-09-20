@@ -77,27 +77,26 @@ drives the real bundle when `out/host/index.mjs` has been built.
 
 ### Wired and tested
 
-| Group             | Methods                                                                                                                                                                                                                                                                         | Where                                                  |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| transport         | `host.hello` (reports `role`), `host.ping`, `host.shutdown`, `host.blobs.read`                                                                                                                                                                                                  | `src/host/service.ts`                                  |
-| sessions          | `session.create`, `session.open`, `session.resume`, `session.list`, `session.new`, `session.switch`, `session.clone`, `session.fork`, `session.forkMessages`, `session.rename`, `session.reload`, `session.lastAssistantText`                                                   | `src/host/session-core.ts`                             |
-| conversation      | `prompt` (images + `streamingBehavior`), `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                                             | `src/host/session-core.ts`                             |
-| state             | `state.get`, `messages.get`, `entries.get` (`since` cursor), `tree.get`, `stats.get` (`contextUsage`, `tokens`, queue modes), `compact`, `tools.list`, `tools.setActive`, `commands.list`, `files.list` (workspace listing for `@` completion, rooted at the session's own cwd) | `src/host/session-core.ts`                             |
-| models & thinking | `model.list`, `model.available`, `model.set`, `model.cycle`, `thinking.levels`, `thinking.set`, `thinking.cycle`                                                                                                                                                                | `src/host/session-core.ts`                             |
-| session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`                                                                                                                                                                                        | `src/host/session-core.ts`                             |
-| settings          | `settings.get`, `settings.raw`, `settings.flush` (returns **both** scopes: `{global, project}`)                                                                                                                                                                                 | `src/host/session-core.ts`, `src/host/control-core.ts` |
-| control host      | `settings.get/raw`, `session.list` (all projects), `providers.*`, `providers.custom`, `project.inspect`, `project.trust`                                                                                                                                                        | `src/host/control-core.ts`                             |
-| extension UI      | `oi.respond` + `oi.request` events                                                                                                                                                                                                                                              | `src/host/extension-ui.ts`                             |
+| Group             | Methods                                                                                                                                                                                                                                                                                         | Where                                                  |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| transport         | `host.hello` (reports `role`), `host.ping`, `host.shutdown`, `host.blobs.read`                                                                                                                                                                                                                  | `src/host/service.ts`                                  |
+| sessions          | `session.create`, `session.open`, `session.resume`, `session.list`, `session.new`, `session.switch`, `session.clone`, `session.fork`, `session.forkMessages`, `session.rename`, `session.reload`, `session.lastAssistantText`, `session.exportHtml`, `session.navigateTree`, `session.setLabel` | `src/host/session-core.ts`                             |
+| conversation      | `prompt` (images + `streamingBehavior`), `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                                                             | `src/host/session-core.ts`                             |
+| state             | `state.get`, `messages.get`, `entries.get` (`since` cursor), `tree.get`, `stats.get` (`contextUsage`, `tokens`, queue modes), `compact`, `tools.list`, `tools.setActive`, `commands.list`, `files.list` (workspace listing for `@` completion, rooted at the session's own cwd)                 | `src/host/session-core.ts`                             |
+| models & thinking | `model.list`, `model.available`, `model.set`, `model.cycle`, `thinking.levels`, `thinking.set`, `thinking.cycle`                                                                                                                                                                                | `src/host/session-core.ts`                             |
+| session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`                                                                                                                                                                                                        | `src/host/session-core.ts`                             |
+| settings          | `settings.get`, `settings.raw`, `settings.flush` (returns **both** scopes: `{global, project}`)                                                                                                                                                                                                 | `src/host/session-core.ts`, `src/host/control-core.ts` |
+| control host      | `settings.get/raw`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `project.inspect`, `project.trust`                                                                               | `src/host/control-core.ts`                             |
+| extension UI      | `oi.respond` + `oi.request` events                                                                                                                                                                                                                                                              | `src/host/extension-ui.ts`                             |
 
 ### Declared and answering `not_implemented` (with the owning step)
 
-| Methods                                | Step |
-| -------------------------------------- | ---- |
-| `settings.set`                         | 12   |
-| `session.delete`, `session.exportHtml` | 11   |
-| `bash.run`, `bash.abort`               | 6    |
-| `packages.*`                           | 14   |
-| `files.read`, `files.write`            | 20   |
+| Methods                     | Step |
+| --------------------------- | ---- |
+| `settings.set`              | 12   |
+| `bash.run`, `bash.abort`    | 6    |
+| `packages.*`                | 14   |
+| `files.read`, `files.write` | 20   |
 
 ### RPC mapping (the parity test pins this)
 
@@ -115,14 +114,18 @@ drives the real bundle when `out/host/index.mjs` has been built.
 | `session.new` / `session.switch` / `session.clone` / `session.fork`   | `new_session` / `switch_session` / `clone` / `fork`               |
 | `session.forkMessages` / `session.lastAssistantText`                  | `get_fork_messages` / `get_last_assistant_text`                   |
 | `session.rename`                                                      | `set_session_name`                                                |
+| `session.exportHtml`                                                  | `export_html`                                                     |
 | `session.queueMode` (steering / follow-up)                            | `set_steering_mode` / `set_follow_up_mode`                        |
 | `session.autoCompaction` / `session.autoRetry` / `session.abortRetry` | `set_auto_compaction` / `set_auto_retry` / `abort_retry`          |
 | `bash.run` / `bash.abort` (declared)                                  | `bash` / `abort_bash`                                             |
 | `oi.request` / `oi.respond`                                           | the `extension_ui_request` / `extension_ui_response` sub-protocol |
 
 Host methods with **no** RPC equivalent (the app needs them, RPC does not):
-`host.*`, `session.list`, `session.create/open/resume/reload/delete/exportHtml`,
-`session.queueMode`'s single envelope, `providers.runtimeKey/refresh/custom`,
-`packages.*`, `files.list`, `settings.*`, `project.inspect`, `project.trust`
+`host.*`, `session.list`, `session.create/open/resume/reload`, `session.delete`
+(the host validates the path; the app trashes it), `session.rename` on a
+_stored_ session, `session.navigateTree` / `session.setLabel` (the TUI drives its
+tree selector in-process), `session.queueMode`'s single envelope,
+`providers.runtimeKey/refresh/custom`, `packages.*`, `files.list`, `settings.*`,
+`project.inspect`, `project.trust`
 (project inspection and trust: the TUI resolves trust through its own session,
 so RPC has no command for it).

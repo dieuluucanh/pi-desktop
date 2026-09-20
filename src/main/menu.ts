@@ -32,6 +32,7 @@ const FILE_ITEMS: readonly ItemSpec[] = [
   { command: "new-session", label: "New Session", accelerator: "CmdOrCtrl+N" },
   { command: "open-project", label: "Open Project…", accelerator: "CmdOrCtrl+O" },
   { command: "close-session", label: "Close Session", accelerator: "CmdOrCtrl+W" },
+  { command: "view-sessions", label: "Sessions…", accelerator: "CmdOrCtrl+Shift+O" },
   { command: "view-settings", label: "Settings…", accelerator: "CmdOrCtrl+," },
 ];
 
@@ -43,6 +44,9 @@ const VIEW_ITEMS: readonly ItemSpec[] = [
 ];
 
 const SESSION_ITEMS: readonly ItemSpec[] = [
+  { command: "session-tree", label: "Session History Tree…" },
+  { command: "session-fork", label: "Fork From Message…" },
+  { command: "session-export", label: "Export Session to HTML" },
   { command: "model-cycle-forward", label: "Next Model", accelerator: "CmdOrCtrl+Alt+Down" },
   { command: "model-cycle-backward", label: "Previous Model", accelerator: "CmdOrCtrl+Alt+Up" },
   { command: "thinking-cycle", label: "Cycle Thinking Level", accelerator: "CmdOrCtrl+Alt+T" },

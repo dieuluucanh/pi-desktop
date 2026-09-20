@@ -1,6 +1,6 @@
 import { BrowserWindow, ipcMain, shell } from "electron";
 import { isHostMethod, type HostMethod } from "../shared/host-protocol";
-import { IPC, type AppInfo, type ProjectOpResponse } from "../shared/ipc";
+import { IPC, type AppInfo, type ProjectOpResponse, type SessionDeleteResult } from "../shared/ipc";
 import type { UiPrefs } from "../shared/prefs";
 import type {
   CloneProjectInput,
@@ -43,9 +43,17 @@ export interface IpcSessionDeps {
   list(): SessionTabsEnvelope;
   create(input: CreateTabInput): Promise<SessionTabsEnvelope>;
   close(tabId: string): Promise<SessionTabsEnvelope>;
+  closeOthers(tabId: string): Promise<SessionTabsEnvelope>;
+  reorder(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
   restore(): Promise<SessionTabsEnvelope>;
   request(input: { tabId: string; method: HostMethod; params?: unknown }): Promise<unknown>;
+  /**
+   * Deletes a session file to the OS trash (plan step 11). The session service's
+   * control host validates the path first; `src/main/index.ts` wires the real
+   * implementation (this layer only validates the argument shape).
+   */
+  deleteSession(sessionFile: string): Promise<SessionDeleteResult>;
 }
 
 export interface IpcDependencies {
@@ -165,12 +173,28 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.sessionClose, (_event, tabId: unknown) =>
     deps.sessions.close(requireTabId(deps, tabId)),
   );
+  ipcMain.handle(IPC.sessionCloseOthers, (_event, tabId: unknown) =>
+    deps.sessions.closeOthers(requireTabId(deps, tabId)),
+  );
+  ipcMain.handle(IPC.sessionReorder, (_event, tabId: unknown, toIndex: unknown) => {
+    const id = requireTabId(deps, tabId);
+    if (typeof toIndex !== "number" || !Number.isFinite(toIndex)) {
+      throw new Error("session: a numeric tab index is required");
+    }
+    return deps.sessions.reorder(id, Math.floor(toIndex));
+  });
   ipcMain.handle(IPC.sessionActivate, (_event, tabId: unknown) =>
     deps.sessions.activate(requireTabId(deps, tabId)),
   );
   ipcMain.handle(IPC.sessionRequest, (_event, input: unknown) =>
     deps.sessions.request(parseSessionRequest(deps, input)),
   );
+  ipcMain.handle(IPC.sessionDelete, (_event, sessionFile: unknown) => {
+    if (typeof sessionFile !== "string" || sessionFile.length === 0) {
+      return { ok: false, error: "session: a session file is required" } as SessionDeleteResult;
+    }
+    return deps.sessions.deleteSession(sessionFile);
+  });
 
   ipcMain.handle(IPC.projectsGet, () => deps.projects.get());
   ipcMain.handle(IPC.projectsMutate, (_event, input: unknown) =>
