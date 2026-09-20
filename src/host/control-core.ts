@@ -1,4 +1,5 @@
 import type { HostMethod, HostRole } from "../shared/host-protocol";
+import { createProviderHandlers, PROVIDER_METHODS, type ProviderPort } from "./providers";
 import type { HostHandler } from "./service";
 
 /**
@@ -40,6 +41,12 @@ export interface ControlCoreDeps {
   createSettings(): SettingsManagerLike;
   /** Lists every session of the profile (all projects), for the session browser. */
   listSessions(): Promise<unknown[]>;
+  /**
+   * Provider/credential management (plan step 9). Optional for the same reason
+   * `files.list` is: a host can be useful without it, and when it is missing the
+   * `providers.*` handlers answer `not_implemented` instead of pretending.
+   */
+  providers?: ProviderPort;
 }
 
 /** The methods a control host answers. Everything else stays `not_implemented`. */
@@ -47,6 +54,7 @@ export const CONTROL_METHODS: readonly HostMethod[] = [
   "settings.get",
   "settings.raw",
   "session.list",
+  ...PROVIDER_METHODS,
 ];
 
 export interface ControlCore {
@@ -80,6 +88,7 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
       }),
       "settings.raw": () => ({ settings: readScopes(settingsManager()) }),
       "session.list": async () => ({ sessions: await deps.listSessions() }),
+      ...createProviderHandlers(() => deps.providers ?? null).handlers(),
     }),
 
     dispose: async () => {
