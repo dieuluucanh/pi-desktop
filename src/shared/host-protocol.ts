@@ -178,6 +178,15 @@ export const HOST_METHODS = [
   // The Extensions hub's inventory (plan step 13). No RPC equivalent: RPC mode
   // never lists resources, and a control host loads them without a session.
   "resources.list",
+  // Skills, themes and keybindings (plan step 15). No RPC equivalent: RPC mode
+  // never lists themes, reads keybindings.json, or runs extension shortcuts.
+  "themes.list",
+  "themes.import",
+  "keybindings.get",
+  "keybindings.set",
+  "keybindings.reset",
+  "shortcuts.list",
+  "shortcuts.invoke",
 ] as const;
 
 export type HostMethod = (typeof HOST_METHODS)[number];

@@ -9,6 +9,8 @@ import { TabStrip } from "./layout/TabStrip";
 import { TitleBar } from "./layout/TitleBar";
 import { handleMenuCommand } from "./menu-actions";
 import { useAppStore, type AppView } from "./state/app-store";
+import { ShortcutDispatcher } from "./shortcuts/ShortcutDispatcher";
+import { ShortcutsHelp } from "./shortcuts/ShortcutsHelp";
 import { Toaster } from "./ui/toaster";
 import { ForkDialog } from "./sessions/ForkDialog";
 import { SessionBrowserDialog } from "./sessions/SessionBrowser";
@@ -94,6 +96,9 @@ export function App() {
   }, [loadTabs, setInfo]);
 
   useEffect(() => {
+    // The appearance preference paints first paint; once the Pi theme loads,
+    // the active Pi theme owns the chrome (plan step 15) and this yields.
+    if (useAppStore.getState().themesLoaded) return;
     const resolved = theme === "system" ? (prefersLight() ? "light" : "dark") : theme;
     document.documentElement.dataset.theme = resolved;
     document.documentElement.style.colorScheme = resolved;
@@ -128,6 +133,8 @@ export function App() {
       <ProviderLoginDialog />
       <PackageConsentDialog />
       <TrustDialog />
+      <ShortcutsHelp />
+      <ShortcutDispatcher />
       <Toaster theme={theme} />
     </div>
   );

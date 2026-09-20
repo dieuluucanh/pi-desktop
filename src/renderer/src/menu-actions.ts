@@ -137,7 +137,7 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
       store.setView("office");
       return;
     case "shortcuts":
-      store.setHint(SHORTCUTS_HINT);
+      store.setShortcutsHelpOpen(true);
       return;
     default: {
       // Exhaustive today: every MenuCommand is handled above, so `command` is

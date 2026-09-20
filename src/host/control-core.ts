@@ -5,6 +5,7 @@ import {
   CUSTOM_PROVIDER_METHODS,
   type CustomProviderStore,
 } from "./custom-providers";
+import { createKeybindingHandlers, KEYBINDING_METHODS, type KeybindingPort } from "./keybindings";
 import { createPackageHandlers, PACKAGE_METHODS, type PackagePort } from "./packages";
 import { createProjectHandlers, PROJECT_METHODS } from "./project-handlers";
 import type { ProjectTrust } from "./project-trust";
@@ -16,6 +17,7 @@ import {
   ResourceError,
   type ResourceInspector,
 } from "./resources";
+import { createThemeHandlers, THEME_METHODS, type ThemePort } from "./themes";
 import { resolveListedSession, SessionFileError } from "./session-files";
 import { createSettingsHandlers, SETTINGS_METHODS, type SettingsPort } from "./settings";
 import type { HostHandler } from "./service";
@@ -63,6 +65,17 @@ export interface ControlCoreDeps {
    * `not_implemented` instead of pretending it can install.
    */
   packages?: PackagePort;
+  /**
+   * Profile keybindings (plan step 15). `keybindings.json` is profile-wide, so
+   * one port serves the whole host; without it the methods answer
+   * `not_implemented`.
+   */
+  keybindings?: KeybindingPort;
+  /**
+   * Theme catalogue per project cwd (plan step 15). Without it `themes.*`
+   * answer `not_implemented`.
+   */
+  createThemePort?(cwd: string): ThemePort | null;
   /** Inspects one project folder for the project header (plan step 10). */
   projectInspect?(cwd: string): Promise<ProjectInspection>;
   /** Trust status and answers for a folder (plan step 10). */
@@ -88,6 +101,11 @@ export const CONTROL_METHODS: readonly HostMethod[] = [
   ...PACKAGE_METHODS,
   ...PROJECT_METHODS,
   ...RESOURCE_METHODS,
+  // Skills, themes and keybindings (plan step 15). `shortcuts.*` are
+  // deliberately absent: extension shortcuts need a live session, which a
+  // control host never has.
+  ...THEME_METHODS,
+  ...KEYBINDING_METHODS,
 ];
 
 export interface ControlCore {
@@ -161,6 +179,15 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
           });
         },
       }).handlers(),
+      // Themes and keybindings (plan step 15): the hub's catalogue and the
+      // profile's `keybindings.json` work with no session open. The project
+      // for `themes.list` comes from the request, falling back to the hub's
+      // default cwd.
+      ...createThemeHandlers({
+        resolvePort: (requested) =>
+          deps.createThemePort?.(requested ?? deps.defaultCwd ?? "") ?? null,
+      }).handlers(),
+      ...createKeybindingHandlers({ resolvePort: () => deps.keybindings ?? null }).handlers(),
     }),
 
     dispose: async () => {

@@ -164,3 +164,12 @@ export {
   serializeSettingsFile,
   type SdkSettingsOptions,
 } from "./settings";
+
+/** Theme catalogue, swatches and imports (plan step 15). */
+export { createSdkThemePort, createThemeSettingsManager, type SdkThemePortOptions } from "./themes";
+
+/** Profile `keybindings.json` (plan step 15). */
+export { createSdkKeybindingPort, type SdkKeybindingPortOptions } from "./keybindings";
+
+/** Extension shortcuts over a live `ExtensionRunner` (plan step 15). */
+export { createSdkShortcutRunner, type SdkExtensionRunner } from "./shortcuts";

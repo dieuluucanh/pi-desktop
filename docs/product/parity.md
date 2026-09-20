@@ -31,22 +31,22 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 | Provider auth: API keys / env vars                       | ✅ (`auth.json`)           | 🚧 step 9 (write-only UI)                                                                                                                                                    |
 | Custom models & gateways (`models.json`)                 | ✅                         | 🚧 step 9                                                                                                                                                                    |
 | Every `settings.json` key, global + project              | ✅                         | ✅ step 12 (schema pinned to Pi's `docs/settings.md`; grouped editors, scope per key, raw JSON + diff, backup before first write)                                            |
-| `keybindings.json`, themes, skills, prompt templates     | ✅                         | 🚧 step 15                                                                                                                                                                   |
+| `keybindings.json`, themes, skills, prompt templates     | ✅                         | ✅ step 15 (keybindings editor with validation + conflicts; theme catalogue with swatches, import and chrome mapping; skills/prompts run via `/skill:<name>`)                |
 | Proxy / offline (`httpProxy`, `PI_OFFLINE`)              | ✅                         | 🚧 `httpProxy` ✅ step 12; the `PI_OFFLINE` toggle lands with the offline banner in step 22 (it is process env, not a settings key, and cannot affect already-spawned hosts) |
 
 ## Extensions and packages
 
-| Capability                                                                                 | Terminal Pi        | Pi Desktop                                                                                 |
-| ------------------------------------------------------------------------------------------ | ------------------ | ------------------------------------------------------------------------------------------ |
-| Load extensions, skills, prompts, themes from the profile and project                      | ✅                 | ✅ same discovery (shared profile)                                                         |
-| Extensions hub: inventory, provenance, contributions, load errors, enable/disable, reload  | ✅ (`/extensions`) | ✅ step 13 (live from a session host; a control host loads on demand with no session open) |
-| Extension slash commands (`/name`)                                                         | ✅                 | ✅ steps 7, 13 (completed with source + description from the hub)                          |
-| Extension keyboard shortcuts                                                               | ✅                 | 🚧 step 15                                                                                 |
-| Extension dialogs (`select`, `confirm`, `input`, `editor`), notifications, status, widgets | ✅ (TUI)           | 🚧 step 16                                                                                 |
-| Extension custom UI (`ctx.ui.custom()`), footers, headers, custom editors                  | ✅ (TUI)           | 🚧 step 17 (TUI rendering surface)                                                         |
-| Extension custom tool/message/entry renderers                                              | ✅ (TUI)           | 🚧 step 18                                                                                 |
-| Install / update / remove packages (npm, git, path, URL)                                   | ✅ (`pi` CLI)      | ✅ step 14 (Pi's own package manager, bundled npm, streaming progress, consent dialog)     |
-| In-app terminal running the real `pi` TUI                                                  | n/a                | ⛔ post-MVP backlog (the bundled `pi` shim + an external terminal work today)              |
+| Capability                                                                                 | Terminal Pi        | Pi Desktop                                                                                                                 |
+| ------------------------------------------------------------------------------------------ | ------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| Load extensions, skills, prompts, themes from the profile and project                      | ✅                 | ✅ same discovery (shared profile)                                                                                         |
+| Extensions hub: inventory, provenance, contributions, load errors, enable/disable, reload  | ✅ (`/extensions`) | ✅ step 13 (live from a session host; a control host loads on demand with no session open)                                 |
+| Extension slash commands (`/name`)                                                         | ✅                 | ✅ steps 7, 13 (completed with source + description from the hub)                                                          |
+| Extension keyboard shortcuts                                                               | ✅                 | ✅ step 15 (listed from the live runner with effective bindings, invoked with the runner's context; help dialog on Ctrl+/) |
+| Extension dialogs (`select`, `confirm`, `input`, `editor`), notifications, status, widgets | ✅ (TUI)           | 🚧 step 16                                                                                                                 |
+| Extension custom UI (`ctx.ui.custom()`), footers, headers, custom editors                  | ✅ (TUI)           | 🚧 step 17 (TUI rendering surface)                                                                                         |
+| Extension custom tool/message/entry renderers                                              | ✅ (TUI)           | 🚧 step 18                                                                                                                 |
+| Install / update / remove packages (npm, git, path, URL)                                   | ✅ (`pi` CLI)      | ✅ step 14 (Pi's own package manager, bundled npm, streaming progress, consent dialog)                                     |
+| In-app terminal running the real `pi` TUI                                                  | n/a                | ⛔ post-MVP backlog (the bundled `pi` shim + an external terminal work today)                                              |
 
 ## Context and input
 

@@ -114,8 +114,9 @@ describe("handleMenuCommand", () => {
     }
   });
 
-  it("shows the shortcut list on demand", () => {
+  it("opens the shortcuts dialog on demand", () => {
+    useAppStore.setState({ shortcutsHelpOpen: false });
     handleMenuCommand("shortcuts");
-    expect(useAppStore.getState().hint).toMatch(/palette/i);
+    expect(useAppStore.getState().shortcutsHelpOpen).toBe(true);
   });
 });

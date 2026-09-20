@@ -212,7 +212,7 @@ export function SettingsView() {
         <h2 className="text-sm font-semibold">App preferences</h2>
         <Row
           label="Theme"
-          hint="Applies to the app chrome; step 15 also drives the extension surface."
+          hint="First-paint fallback only; the active Pi theme (Skills → Themes) owns the chrome once it loads."
         >
           <Segmented
             options={THEMES}

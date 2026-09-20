@@ -13,6 +13,13 @@ import {
   type TrustStoreLike,
 } from "./project-trust";
 import { createSettingsHandlers, type SettingsPort } from "./settings";
+import { createShortcutHandlers, ShortcutError, type ShortcutRunner } from "./shortcuts";
+import { createThemeHandlers, type ThemePort } from "./themes";
+import {
+  createKeybindingHandlers,
+  parseKeybindingsDocument,
+  type KeybindingPort,
+} from "./keybindings";
 import { buildResourcesSnapshot } from "./resources";
 import type { FileListing } from "./file-listing";
 import type { HostHandler } from "./service";
@@ -87,6 +94,15 @@ export interface HostSession extends SessionStateLike {
      * extension threw while handling an event, which a loader error cannot show.
      */
     onError?: (listener: (error: unknown) => void) => () => void;
+    /**
+     * Extension-registered shortcuts (plan step 15). The composition root
+     * wraps this in an SDK adapter; the core only checks presence and
+     * forwards it opaquely, so the fields stay `unknown` and any SDK shape
+     * satisfies them.
+     */
+    getShortcuts?: unknown;
+    getShortcutDiagnostics?: unknown;
+    createContext?: unknown;
   };
   promptTemplates?: readonly unknown[];
   resourceLoader?: {
@@ -200,6 +216,23 @@ export interface SessionCoreDeps {
    * the session without a second manager.
    */
   createSettingsPort?(manager: SettingsLike | null): SettingsPort;
+  /**
+   * Theme catalogue (plan step 15). Built over the session's own manager and
+   * loader when a session is open, so the active theme and project themes are
+   * the running truth; null answers `not_implemented`.
+   */
+  createThemePort?(input: { manager: unknown; loader: unknown }): ThemePort | null;
+  /**
+   * Profile keybindings (plan step 15). `keybindings.json` is profile-wide,
+   * so one port serves the whole host process.
+   */
+  keybindingPort?: KeybindingPort;
+  /**
+   * Wraps the session's live `extensionRunner` in the SDK shortcut adapter
+   * (plan step 15). Lives in `src/host/sdk/*`; the core only sees
+   * `ShortcutRunner`.
+   */
+  wrapShortcutRunner?(runner: unknown): ShortcutRunner | null;
   emit(event: string, payload?: unknown, sessionId?: string): void;
   now?: () => number;
 }
@@ -621,6 +654,45 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         runtimeErrors,
         now: deps.now,
       }),
+
+    // Skills, themes and keybindings (plan step 15). Themes come from the
+    // session's own manager and loader when a session is open, so the active
+    // theme and project themes are the running truth; keybindings are
+    // profile-wide, so one port serves the whole host.
+    ...createThemeHandlers({
+      resolvePort: () =>
+        deps.createThemePort?.({
+          manager: settingsManager,
+          loader: session?.resourceLoader?.getThemes?.() ?? null,
+        }) ?? null,
+    }).handlers(),
+    ...createKeybindingHandlers({ resolvePort: () => deps.keybindingPort ?? null }).handlers(),
+    // Extension shortcuts (plan step 15) only exist on a live session: the
+    // handler runs with the runner's own extension context. Bindings resolve
+    // through the keybinding port so a user remap is honoured.
+    ...createShortcutHandlers({
+      resolveRunner: () => {
+        const runner = session?.extensionRunner;
+        if (!runner?.getShortcuts) return null;
+        return (
+          deps.wrapShortcutRunner?.(runner) ?? {
+            getShortcuts: () => new Map(),
+            getShortcutDiagnostics: () => [],
+            createContext: () => ({}),
+            invokeShortcut: () => {
+              throw new ShortcutError("shortcuts.invoke needs the SDK adapter");
+            },
+          }
+        );
+      },
+      resolveKeybindings: async () => {
+        if (!deps.keybindingPort) return {};
+        const document = parseKeybindingsDocument(await deps.keybindingPort.read());
+        const user: Record<string, unknown> = {};
+        for (const [id, value] of Object.entries(document)) user[id] = value;
+        return user;
+      },
+    }).handlers(),
 
     "files.list": async (params) => {
       if (!deps.listFiles) {

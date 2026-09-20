@@ -67,6 +67,19 @@ import {
 } from "../../../shared/resources";
 import type { RecommendedPackage } from "../../../shared/recommended-packages";
 import {
+  EMPTY_THEMES,
+  activeThemeSwatches,
+  sanitizeThemesSnapshot,
+  themeCssVariables,
+  type ThemesSnapshot,
+} from "../../../shared/themes";
+import { sanitizeKeybindingsSnapshot, type KeybindingsSnapshot } from "../../../shared/keybindings";
+import {
+  EMPTY_SHORTCUTS,
+  sanitizeShortcutsSnapshot,
+  type ShortcutsSnapshot,
+} from "../../../shared/shortcuts";
+import {
   PACKAGES_CHANGED_EVENT,
   PACKAGE_PROGRESS_EVENT,
   normalizePackageSource,
@@ -410,6 +423,41 @@ export interface AppStateShape {
   /** Reinstall floating on latest (npm only); opens the consent dialog. */
   unpinPackage: (summary: PackageSummary, cwd?: string | null) => void;
 
+  /** Themes (plan step 15): the catalogue with the active theme marked. */
+  themes: ThemesSnapshot;
+  themesLoaded: boolean;
+  themesBusy: boolean;
+  themesError: string | null;
+  loadThemes: (options?: { refresh?: boolean }) => Promise<void>;
+  /** Activates a theme through the `theme` setting, then recolours the chrome. */
+  setActiveTheme: (name: string) => Promise<boolean>;
+  /** Imports a `.json` theme file into the profile and selects it. */
+  importTheme: (filename: string, content: string) => Promise<boolean>;
+
+  /** Keybindings (plan step 15): the profile's overrides with validation. */
+  keybindings: KeybindingsSnapshot | null;
+  keybindingsLoaded: boolean;
+  keybindingsBusy: boolean;
+  keybindingsError: string | null;
+  loadKeybindings: (options?: { refresh?: boolean }) => Promise<void>;
+  saveKeybindings: (bindings: Record<string, string[]>) => Promise<boolean>;
+  resetKeybindings: () => Promise<void>;
+
+  /** Extension shortcuts (plan step 15): listed from the live session. */
+  shortcuts: ShortcutsSnapshot;
+  shortcutsLoaded: boolean;
+  shortcutsBusy: boolean;
+  shortcutsError: string | null;
+  loadShortcuts: () => Promise<void>;
+  invokeShortcut: (key: string) => Promise<boolean>;
+  /** The shortcuts help dialog (Ctrl+/). */
+  shortcutsHelpOpen: boolean;
+  setShortcutsHelpOpen: (open: boolean) => void;
+  /** Inserts `/skill:<name>` into the active session's composer. */
+  runSkill: (name: string) => void;
+  /** Recolours the chrome from the active Pi theme (data-theme + tokens). */
+  applyChromeTheme: () => void;
+
   createSessionTab: () => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
@@ -645,6 +693,19 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   packagesCwd: null,
   packageProgress: null,
   packageConsent: null,
+  themes: EMPTY_THEMES,
+  themesLoaded: false,
+  themesBusy: false,
+  themesError: null,
+  keybindings: null,
+  keybindingsLoaded: false,
+  keybindingsBusy: false,
+  keybindingsError: null,
+  shortcuts: EMPTY_SHORTCUTS,
+  shortcutsLoaded: false,
+  shortcutsBusy: false,
+  shortcutsError: null,
+  shortcutsHelpOpen: false,
 
   setView: (view) => set({ view, hint: null }),
   openPalette: () => set({ paletteOpen: true }),
@@ -1776,6 +1837,208 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     await get().loadResources({ refresh: true });
     const change = diffResources(before, get().resources.resources);
     set({ resourcesChange: isResourceChangeEmpty(change) ? null : change });
+  },
+
+  // ---- Skills, themes and keybindings (plan step 15) ----
+
+  loadThemes: async () => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    const current = get();
+    if (current.themesLoaded && !current.themesError) return;
+    set({ themesBusy: true, themesError: null });
+    try {
+      const target = resourcesTarget(get());
+      const cwd = resourcesCwd(get(), target);
+      const raw = await api.sessions.request({
+        tabId: target,
+        method: "themes.list",
+        params: { cwd },
+      });
+      const themes = sanitizeThemesSnapshot(raw);
+      set({ themes, themesLoaded: true, themesBusy: false, themesError: null });
+      get().applyChromeTheme();
+    } catch (error) {
+      set({ themesBusy: false, themesLoaded: true, themesError: errorMessage(error) });
+    }
+  },
+
+  setActiveTheme: async (name) => {
+    if (!get().settings) await get().loadSettings();
+    const settings = get().settings;
+    const scope =
+      settings?.project && typeof settings.project === "object" && "theme" in settings.project
+        ? "project"
+        : "global";
+    const ok = await get().setSetting("theme", name, scope as SettingsScope);
+    if (ok) {
+      const themes = {
+        ...get().themes,
+        active: name,
+        themes: get().themes.themes.map((entry) => ({ ...entry, active: entry.name === name })),
+      };
+      set({ themes });
+      get().applyChromeTheme();
+    }
+    return ok;
+  },
+
+  importTheme: async (filename, content) => {
+    const api = bridge();
+    if (!api?.sessions) {
+      set({ themesError: "The preload bridge is unavailable." });
+      return false;
+    }
+    set({ themesBusy: true, themesError: null });
+    try {
+      const result = (await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "themes.import",
+        params: { filename, content },
+      })) as { name: string };
+      set({ themesBusy: false, themesLoaded: false });
+      await get().loadThemes();
+      return await get().setActiveTheme(result.name);
+    } catch (error) {
+      set({ themesBusy: false, themesError: errorMessage(error) });
+      return false;
+    }
+  },
+
+  loadKeybindings: async (options) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    const current = get();
+    if (options?.refresh !== true && current.keybindingsLoaded) return;
+    set({ keybindingsBusy: true, keybindingsError: null });
+    try {
+      const raw = await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "keybindings.get",
+      });
+      set({
+        keybindings: sanitizeKeybindingsSnapshot(raw),
+        keybindingsLoaded: true,
+        keybindingsBusy: false,
+        keybindingsError: null,
+      });
+    } catch (error) {
+      set({
+        keybindingsBusy: false,
+        keybindingsLoaded: true,
+        keybindingsError: errorMessage(error),
+      });
+    }
+  },
+
+  saveKeybindings: async (bindings) => {
+    const api = bridge();
+    if (!api?.sessions) {
+      set({ keybindingsError: "The preload bridge is unavailable." });
+      return false;
+    }
+    set({ keybindingsBusy: true, keybindingsError: null });
+    try {
+      const raw = await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "keybindings.set",
+        params: { bindings },
+      });
+      set({
+        keybindings: sanitizeKeybindingsSnapshot(raw),
+        keybindingsBusy: false,
+        keybindingsError: null,
+      });
+      return true;
+    } catch (error) {
+      set({ keybindingsBusy: false, keybindingsError: errorMessage(error) });
+      return false;
+    }
+  },
+
+  resetKeybindings: async () => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    set({ keybindingsBusy: true, keybindingsError: null });
+    try {
+      const raw = await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "keybindings.reset",
+      });
+      set({
+        keybindings: sanitizeKeybindingsSnapshot(raw),
+        keybindingsBusy: false,
+        keybindingsError: null,
+      });
+    } catch (error) {
+      set({ keybindingsBusy: false, keybindingsError: errorMessage(error) });
+    }
+  },
+
+  loadShortcuts: async () => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    const target = resourcesTarget(get());
+    set({ shortcutsBusy: true, shortcutsError: null });
+    try {
+      const raw = await api.sessions.request({ tabId: target, method: "shortcuts.list" });
+      set({
+        shortcuts: sanitizeShortcutsSnapshot(raw),
+        shortcutsLoaded: true,
+        shortcutsBusy: false,
+        shortcutsError: null,
+      });
+    } catch (error) {
+      set({
+        shortcutsBusy: false,
+        shortcutsLoaded: true,
+        shortcutsError: errorMessage(error),
+        shortcuts: EMPTY_SHORTCUTS,
+      });
+    }
+  },
+
+  invokeShortcut: async (key) => {
+    const api = bridge();
+    if (!api?.sessions) return false;
+    const target = resourcesTarget(get());
+    if (target === CONTROL_TAB_ID) return false;
+    try {
+      await api.sessions.request({ tabId: target, method: "shortcuts.invoke", params: { key } });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  setShortcutsHelpOpen: (open) => set({ shortcutsHelpOpen: open }),
+
+  runSkill: (name) => {
+    const state = get();
+    const active = state.tabs.find((tab) => tab.id === state.activeTabId);
+    if (!active || active.kind !== "session") {
+      set({ view: "skills", hint: `Open a session first, then run /skill:${name}.` });
+      return;
+    }
+    // Insert, don't send: the skill may take arguments the user must supply.
+    state.setDraft(active.id, `/skill:${name} `);
+    set({ view: "session", hint: null });
+  },
+
+  applyChromeTheme: () => {
+    const snapshot = get().themes;
+    const active = activeThemeSwatches(snapshot);
+    if (typeof document === "undefined") return;
+    const root = document.documentElement;
+    if (!active) {
+      root.removeAttribute("data-theme");
+      return;
+    }
+    const variables: Record<string, string> = themeCssVariables(active.swatches, active.variant);
+    for (const [key, value] of Object.entries(variables)) {
+      if (key === "data-theme") root.setAttribute("data-theme", value);
+      else if (value) root.style.setProperty(key, value);
+    }
   },
 
   // ---- Packages (plan step 14) ----

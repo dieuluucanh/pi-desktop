@@ -242,3 +242,59 @@ describe("control core resources (plan step 13)", () => {
     expect(load).toHaveBeenCalledWith("/home", { refresh: false });
   });
 });
+
+describe("control core skills, themes and keybindings (plan step 15)", () => {
+  it("answers themes.* and keybindings.* with not_implemented when unconfigured", async () => {
+    const core = createControlCore({ settings: fakeSettings(), listSessions: async () => [] });
+    const handlers = core.handlers();
+    await expect(handlers["themes.list"]?.({}, {} as never)).rejects.toMatchObject({
+      code: "not_implemented",
+    });
+    await expect(handlers["keybindings.get"]?.({}, {} as never)).rejects.toMatchObject({
+      code: "not_implemented",
+    });
+  });
+
+  it("never serves extension shortcuts (they need a live session)", () => {
+    const core = createControlCore({ settings: fakeSettings(), listSessions: async () => [] });
+    expect(core.handlers()["shortcuts.list"]).toBeUndefined();
+    expect(core.handlers()["shortcuts.invoke"]).toBeUndefined();
+    expect(CONTROL_METHODS).not.toContain("shortcuts.list");
+    expect(CONTROL_METHODS).toContain("themes.list");
+    expect(CONTROL_METHODS).toContain("keybindings.get");
+  });
+
+  it("lists themes for the requested project and keybindings from the port", async () => {
+    const createThemePort = vi.fn((cwd: string) => ({
+      listLoaded: async () => [],
+      getActive: async () => "dark",
+      readFile: async () => null,
+      importFile: async (filename: string) => `/t/${cwd}/${filename}`,
+    }));
+    const keybindings = {
+      path: () => "/profile/keybindings.json",
+      read: async () => null,
+      write: async () => undefined,
+      remove: async () => undefined,
+    };
+    const core = createControlCore({
+      settings: fakeSettings(),
+      listSessions: async () => [],
+      defaultCwd: "/home",
+      createThemePort,
+      keybindings,
+    });
+    const handlers = core.handlers();
+    const themes = (await handlers["themes.list"]?.({ cwd: "/project" }, {} as never)) as {
+      active: string;
+      themes: Array<{ name: string }>;
+    };
+    expect(createThemePort).toHaveBeenCalledWith("/project");
+    expect(themes.active).toBe("dark");
+    expect(themes.themes.map((entry) => entry.name)).toEqual(["dark", "light"]);
+    const bindings = (await handlers["keybindings.get"]?.({}, {} as never)) as {
+      path: string;
+    };
+    expect(bindings.path).toBe("/profile/keybindings.json");
+  });
+});

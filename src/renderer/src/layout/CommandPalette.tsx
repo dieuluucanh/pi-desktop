@@ -1,6 +1,6 @@
 import { Command } from "cmdk";
 import { useAppStore, type AppView } from "../state/app-store";
-import { newSessionAction, openProjectAction, SHORTCUTS_HINT } from "../menu-actions";
+import { newSessionAction, openProjectAction } from "../menu-actions";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { Kbd } from "../ui/kbd";
 
@@ -114,7 +114,7 @@ export function CommandPalette() {
               <PaletteItem
                 label="Show keyboard shortcuts"
                 shortcut="Ctrl+/"
-                onSelect={() => run(() => setHint(SHORTCUTS_HINT))}
+                onSelect={() => run(() => useAppStore.getState().setShortcutsHelpOpen(true))}
               />
             </Command.Group>
 

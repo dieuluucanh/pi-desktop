@@ -34,11 +34,15 @@ import {
   ProjectTrustStore,
   SessionManager,
   createSdkCustomProviderStore,
+  createSdkKeybindingPort,
   createSdkPackagePort,
   createSdkProviderPort,
   createSdkResourceInspector,
   createSdkSessionRuntime,
   createSdkSettingsPort,
+  createSdkShortcutRunner,
+  createSdkThemePort,
+  createThemeSettingsManager,
   hasTrustRequiringProjectResources,
   listAllSessions,
   renameStoredSession,
@@ -105,6 +109,10 @@ function createCore(options: {
 }): SessionCore {
   const trustStore = new ProjectTrustStore(options.agentDir);
   const settingsIo = createNodeSettingsFileIo();
+  const modelsIo = createNodeModelsFileIo();
+  const fileListingIo = createNodeFileListingIo();
+  // Profile keybindings (plan step 15): one port for the whole host process.
+  const keybindingPort = createSdkKeybindingPort({ agentDir: options.agentDir, io: modelsIo });
 
   return createSessionCore({
     cwd: options.cwd,
@@ -130,6 +138,21 @@ function createCore(options: {
       SessionManager.open(sessionFile, sessionDir, cwd) as never,
     listSessions: (cwd) => SessionManager.list(cwd) as Promise<never[]>,
     listFiles: (cwd, options) => listWorkspaceFiles(createNodeFileListingIo(), cwd, options),
+    // Themes (plan step 15) resolve against the session's own manager and
+    // loader when a session is open, so the catalogue is the running truth.
+    createThemePort: (input) =>
+      createSdkThemePort({
+        agentDir: options.agentDir,
+        cwd: options.cwd,
+        manager: input.manager as never,
+        loaderThemes: input.loader,
+        io: modelsIo,
+        listing: fileListingIo,
+      }),
+    keybindingPort,
+    // Extension shortcuts (plan step 15) run through the live runner with
+    // the app's effective bindings, so a user remap is honoured.
+    wrapShortcutRunner: (runner) => createSdkShortcutRunner(runner as never),
     createRuntime: async (request) => {
       // Annotated with the adapter's own parameter type: if the SDK adapter ever
       // requires another field, this line fails to compile instead of drifting.
@@ -174,6 +197,8 @@ function createControlHostCore(options: {
     requiresTrust: (cwd) => hasTrustRequiringProjectResources(cwd),
   });
   const projectIo = createNodeProjectIo();
+  const modelsIo = createNodeModelsFileIo();
+  const fileListingIo = createNodeFileListingIo();
 
   return createControlCore({
     // One port; it resolves a `SettingsManager` per project cwd on demand, so a
@@ -213,6 +238,18 @@ function createControlHostCore(options: {
       cwd: options.cwd,
       isProjectTrusted: (cwd) => trust.status(cwd).trusted,
     }),
+    // Profile keybindings and the theme catalogue (plan step 15) work with no
+    // session open; the theme port is built per project cwd over a fresh
+    // settings manager, exactly as the control settings port does.
+    keybindings: createSdkKeybindingPort({ agentDir: options.agentDir, io: modelsIo }),
+    createThemePort: (cwd) =>
+      createSdkThemePort({
+        agentDir: options.agentDir,
+        cwd,
+        manager: createThemeSettingsManager(cwd, options.agentDir),
+        io: modelsIo,
+        listing: fileListingIo,
+      }),
     projectInspect: (cwd) =>
       inspectProject(cwd, {
         io: projectIo,
