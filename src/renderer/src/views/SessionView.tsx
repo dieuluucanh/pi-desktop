@@ -6,11 +6,13 @@ import { Button } from "../ui/button";
 import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
 import { WidgetStrip } from "../extension-ui/WidgetStrip";
+import { DocumentsPanel } from "../office/DocumentsPanel";
 import { WorkingRow } from "../extension-ui/WorkingRow";
 import { TuiSlotFrame, TuiSurface } from "../tui/TuiSurface";
 import { createCommandProvider } from "../completion/command-source";
 import { createDocumentProvider } from "../completion/document-source";
 import { createFileProvider } from "../completion/file-source";
+import { toDocumentMentions } from "../../../shared/office-documents";
 import { createCompletionProvider } from "../completion/stack";
 import type { CompletionItem, CompletionSuggestions } from "../completion/types";
 import { ContextRing } from "../session/ContextRing";
@@ -35,6 +37,16 @@ const STATUS_TONE: Record<TabStatus, "neutral" | "accent" | "ok" | "warn" | "dan
   crashed: "danger",
   failed: "danger",
   stopped: "neutral",
+};
+
+/**
+ * The `#` completion source (plan step 20). It reads the live pane registry from
+ * the store on every keystroke, so a document attached or detached mid-session is
+ * reflected without rebuilding the completion stack — and it works even when the
+ * bridge extension's own provider is absent.
+ */
+const documentMentionSource = {
+  list: () => toDocumentMentions(useAppStore.getState().officeDocuments?.panes ?? []),
 };
 
 /** "42% ctx · 12.3k tokens · $0.04" from the host's state snapshot. */
@@ -109,6 +121,8 @@ export function SessionView() {
   const tuiSurface = useAppStore((state) =>
     activeTabId ? state.tuiSurfaces[activeTabId] : undefined,
   );
+  const officeDocuments = useAppStore((state) => state.officeDocuments);
+  const toggleDocumentsPanel = useAppStore((state) => state.toggleDocumentsPanel);
   const [editingName, setEditingName] = useState(false);
 
   /**
@@ -123,7 +137,7 @@ export function SessionView() {
       provider: createCompletionProvider({
         command: createCommandProvider({ loadCommands: () => loadCommands(activeTabId ?? "") }),
         file: createFileProvider({ loadFiles: () => loadFiles(activeTabId ?? "") }),
-        document: createDocumentProvider(null),
+        document: createDocumentProvider(documentMentionSource),
         extension: activeTabId
           ? {
               suggest: (request) => extensionCompletion(activeTabId, request),
@@ -264,6 +278,18 @@ export function SessionView() {
             <option value="verbose">Verbose</option>
             <option value="summary">Summary</option>
           </select>
+          {officeDocuments?.available ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label="Documents"
+              title="Attached Office documents"
+              onClick={toggleDocumentsPanel}
+            >
+              Documents
+              {officeDocuments.panes.length > 0 ? ` (${officeDocuments.panes.length})` : ""}
+            </Button>
+          ) : null}
           {active.status === "running" ? (
             <Button size="sm" variant="secondary" onClick={() => void stopRun(active.id)}>
               Stop
@@ -274,77 +300,84 @@ export function SessionView() {
 
       {active.error ? <div className="banner banner--error mx-4 mt-2">{active.error}</div> : null}
 
-      <div className="min-h-0 flex-1">
-        <Transcript
-          items={transcript?.items ?? []}
-          tabId={active.id}
-          running={active.status === "running"}
-          onAbort={() => void stopRun(active.id)}
-          empty={{ cwd: active.cwd, project: project?.path ?? null, model: active.model }}
-          thinkingLabel={extensionUi?.hiddenThinkingLabel ?? null}
-          toolsExpanded={effectiveToolsExpanded}
-          onToggleToolsExpanded={() => toggleToolsExpanded(active.id)}
-        />
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1">
+            <Transcript
+              items={transcript?.items ?? []}
+              tabId={active.id}
+              running={active.status === "running"}
+              onAbort={() => void stopRun(active.id)}
+              empty={{ cwd: active.cwd, project: project?.path ?? null, model: active.model }}
+              thinkingLabel={extensionUi?.hiddenThinkingLabel ?? null}
+              toolsExpanded={effectiveToolsExpanded}
+              onToggleToolsExpanded={() => toggleToolsExpanded(active.id)}
+            />
+          </div>
+
+          {active.status === "running" && extensionUi ? (
+            <WorkingRow working={extensionUi.working} />
+          ) : null}
+          {tuiSurface?.header ? (
+            <TuiSlotFrame
+              frame={tuiSurface.header}
+              className="shrink-0 border-t border-line px-3 py-1"
+            />
+          ) : null}
+
+          {tuiOwnsEditor && tuiSurface ? (
+            <TuiSurface tabId={active.id} snapshot={tuiSurface} />
+          ) : (
+            <>
+              <WidgetStrip tabId={active.id} placement="aboveEditor" />
+
+              <Composer
+                tabId={active.id}
+                running={active.status === "running"}
+                enabled={active.status === "running" || active.status === "idle"}
+                draft={drafts[active.id] ?? ""}
+                queue={transcript?.queue ?? { steering: [], followUp: [] }}
+                sendMode={sendModes[active.id] ?? "steer"}
+                contextLabel={usage}
+                onDraftChange={(text) => setDraft(active.id, text)}
+                onSend={async (text, images, options) => {
+                  const mode = sendModes[active.id] ?? "steer";
+                  return sendPrompt(active.id, text, {
+                    ...(active.status === "running" ? { mode } : {}),
+                    ...(options?.preferredSource
+                      ? { preferredSource: options.preferredSource }
+                      : {}),
+                    ...(images.length > 0
+                      ? {
+                          images: images.map((image) => ({
+                            type: "image" as const,
+                            data: image.data,
+                            mimeType: image.mimeType,
+                          })),
+                        }
+                      : {}),
+                  });
+                }}
+                completion={completion}
+                onStop={() => void stopRun(active.id)}
+                onClearQueue={() => void clearQueue(active.id)}
+                onSendModeChange={(mode) => setSendMode(active.id, mode)}
+                onHistoryStep={(direction) => historyStep(active.id, direction)}
+              />
+
+              <WidgetStrip tabId={active.id} placement="belowEditor" />
+            </>
+          )}
+
+          {tuiSurface?.footer ? (
+            <TuiSlotFrame
+              frame={tuiSurface.footer}
+              className="shrink-0 border-t border-line px-3 py-1"
+            />
+          ) : null}
+        </div>
+        <DocumentsPanel />
       </div>
-
-      {active.status === "running" && extensionUi ? (
-        <WorkingRow working={extensionUi.working} />
-      ) : null}
-      {tuiSurface?.header ? (
-        <TuiSlotFrame
-          frame={tuiSurface.header}
-          className="shrink-0 border-t border-line px-3 py-1"
-        />
-      ) : null}
-
-      {tuiOwnsEditor && tuiSurface ? (
-        <TuiSurface tabId={active.id} snapshot={tuiSurface} />
-      ) : (
-        <>
-          <WidgetStrip tabId={active.id} placement="aboveEditor" />
-
-          <Composer
-            tabId={active.id}
-            running={active.status === "running"}
-            enabled={active.status === "running" || active.status === "idle"}
-            draft={drafts[active.id] ?? ""}
-            queue={transcript?.queue ?? { steering: [], followUp: [] }}
-            sendMode={sendModes[active.id] ?? "steer"}
-            contextLabel={usage}
-            onDraftChange={(text) => setDraft(active.id, text)}
-            onSend={async (text, images, options) => {
-              const mode = sendModes[active.id] ?? "steer";
-              return sendPrompt(active.id, text, {
-                ...(active.status === "running" ? { mode } : {}),
-                ...(options?.preferredSource ? { preferredSource: options.preferredSource } : {}),
-                ...(images.length > 0
-                  ? {
-                      images: images.map((image) => ({
-                        type: "image" as const,
-                        data: image.data,
-                        mimeType: image.mimeType,
-                      })),
-                    }
-                  : {}),
-              });
-            }}
-            completion={completion}
-            onStop={() => void stopRun(active.id)}
-            onClearQueue={() => void clearQueue(active.id)}
-            onSendModeChange={(mode) => setSendMode(active.id, mode)}
-            onHistoryStep={(direction) => historyStep(active.id, direction)}
-          />
-
-          <WidgetStrip tabId={active.id} placement="belowEditor" />
-        </>
-      )}
-
-      {tuiSurface?.footer ? (
-        <TuiSlotFrame
-          frame={tuiSurface.footer}
-          className="shrink-0 border-t border-line px-3 py-1"
-        />
-      ) : null}
       {tuiSurface?.overlay && tuiSurface.custom ? (
         <TuiSurface tabId={active.id} snapshot={tuiSurface} />
       ) : null}

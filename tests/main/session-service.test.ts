@@ -472,3 +472,63 @@ describe("dispose", () => {
     await expect(service.dispose()).resolves.toBeUndefined();
   });
 });
+
+describe("promoteToOfficeHost (plan step 20)", () => {
+  it("moves the Office host to the promoted tab and demotes the old one", async () => {
+    const { service, specs, hosts } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app", kind: "office" });
+    await service.createTab({ cwd: "C:\\work\\app" });
+
+    expect(service.tabs().map((tab) => [tab.id, tab.kind])).toEqual([
+      ["tab-1", "office"],
+      ["tab-2", "session"],
+    ]);
+    // The first spawn bound 38617; the second did not.
+    expect(specs.map((spec) => spec.officeHost)).toEqual([true, false]);
+
+    const envelope = await service.promoteToOfficeHost("tab-2");
+
+    // One office host only, and it is the promoted tab.
+    expect(envelope.tabs.map((tab) => [tab.id, tab.kind])).toEqual([
+      ["tab-1", "session"],
+      ["tab-2", "office"],
+    ]);
+    expect(envelope.activeTabId).toBe("tab-2");
+    // The promoted tab was re-spawned with the office flag (port 38617).
+    expect(specs.filter((spec) => spec.sessionId === "tab-2").map((s) => s.officeHost)).toEqual([
+      false,
+      true,
+    ]);
+    // The demoted tab's host is gone; the promoted tab's host is live.
+    expect(hosts.has("tab-1")).toBe(false);
+    expect(hosts.has("tab-2")).toBe(true);
+  });
+
+  it("resumes the promoted session from its JSONL", async () => {
+    const { service, hosts } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const sessionFile = service.tabs()[0]!.sessionFile;
+    expect(sessionFile).toBe("/profile/sessions/s1.jsonl");
+
+    await service.promoteToOfficeHost("tab-1");
+
+    const methods = hosts.get("tab-1")!.requests.map((request) => request.method);
+    expect(methods).toContain("session.resume");
+  });
+
+  it("is a no-op when the tab is already the running Office host", async () => {
+    const { service, specs } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app", kind: "office" });
+    const before = specs.length;
+
+    await service.promoteToOfficeHost("tab-1");
+
+    expect(specs).toHaveLength(before);
+    expect(service.tabs()[0]!.kind).toBe("office");
+  });
+
+  it("rejects an unknown tab", async () => {
+    const { service } = createHarness();
+    await expect(service.promoteToOfficeHost("tab-nope")).rejects.toThrow(/unknown session tab/);
+  });
+});

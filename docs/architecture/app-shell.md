@@ -51,6 +51,14 @@ strip, step 10 fills the project section — neither re-lays-out the window.
   only remembers what Pi cannot: that the user consented to the bridge install
   here and when setup last completed. Whether a package is installed stays a
   `packages` entry in Pi's `settings.json`, which terminal Pi also sees.
+- **Documents panel (plan step 20).** `DocumentsPanel` is the session's right
+  rail: it renders only while the bridge answers `/health` (plan D-A10) and lists
+  every attached task pane with its facts and actions. The registry is the main
+  process's `/health` poll (`src/main/office/documents-service.ts`), pushed over
+  `office:documents-state`; the pure projection lives in
+  `src/shared/office-documents.ts` and also feeds the `#` completion source and
+  the office tool cards. A session tab that owns port 38617 is the **Office
+  host**; the panel's footer names it or offers _Promote to Office host_.
 
 ## Command ownership (no double-firing)
 
@@ -84,13 +92,16 @@ src/main/menu.ts               the menu template (pure, unit tested) + installer
 src/main/ipc.ts               handlers + validation for every renderer channel
 src/main/app-store.ts          atomic app state (projects, prefs, tabs, integrations)
 src/main/integrations-service.ts  the consented-install record (plan step 19)
+src/main/office/documents-service.ts  the live /health pane-registry poll (step 20)
+src/shared/office-documents.ts  the pure pane projection + mention/target helpers
 src/renderer/src/App.tsx       regions + view routing + theme + menu dispatch
 src/renderer/src/menu-actions.ts  what each command does today
 src/renderer/src/state/app-store.ts  view state (zustand)
 src/renderer/src/layout/*      TitleBar, Sidebar, TabStrip, StatusBar, CommandPalette
 src/renderer/src/views/*       Welcome, Session, Settings, Extensions, Connections,
                                Skills, Diagnostics
-src/renderer/src/office/*      OfficeIntegrationCard + the unchanged wizard panel
+src/renderer/src/office/*      OfficeIntegrationCard, DocumentsPanel + the unchanged wizard panel
+src/renderer/src/session/*     Transcript, Composer, OfficeToolCard, …
 src/renderer/src/ui/*          Button, Badge, Kbd, Separator, Dialog, DropdownMenu,
                                ScrollArea, Switch, Toaster
 src/renderer/src/styles/*      tokens.css (Tailwind + theme tokens), office-panel.css
@@ -121,6 +132,13 @@ primitives. Migrating the panel itself to `ui/*` is not required by step 19.
   an Office tab.
 - `tests/shared/integrations.test.ts` — the facts derivation and record
   sanitizers (pure, node project).
+- `tests/main/office-documents-service.test.ts` — the registry poll projects
+  `/health`, rejects another service on the port, emits only on change and stops
+  cleanly (plan step 20).
+- `tests/renderer/documents-panel.test.tsx`, `tests/renderer/office-tool-card.test.tsx`
+  — the right rail and the office tool cards (plan step 20).
+- `tests/renderer/office-documents-store.test.ts` — the registry in the store,
+  the `#`-tagged composer draft and Office-host promotion.
 
 The renderer project is configured in `vitest.config.ts` (`projects`), with
 `tests/renderer/setup.ts` for jest-dom and Testing Library cleanup.

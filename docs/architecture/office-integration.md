@@ -105,14 +105,49 @@ is why a pane's Stop must stay usable when the reply keeps arriving.
 
 The app reads (and never infers):
 
-| Field                                                                                            | Use                                                                                             |
-| ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| `protocolVersion`                                                                                | compatibility shape; drives the skew diagnostics                                                |
-| `capabilities`                                                                                   | `agent-deltas` / `client-abort` availability                                                    |
-| `serverVersion`, `serverName`                                                                    | shown in the Bridge card and diagnostics                                                        |
-| `catalogVersion`                                                                                 | tool-catalog skew (`knownCatalogVersion` is 3)                                                  |
-| `panes[]` (`host`, `documentName`, `documentId`, `focused`, `visible`, `ops`, `protocolVersion`) | the attached-documents list; `document: "active"` resolution happens in the bridge, not the app |
-| `port`, `uptimeMs`                                                                               | diagnostics                                                                                     |
+| Field                                                                                                                                                                    | Use                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `protocolVersion`                                                                                                                                                        | compatibility shape; drives the skew diagnostics                                                |
+| `capabilities`                                                                                                                                                           | `agent-deltas` / `client-abort` availability                                                    |
+| `serverVersion`, `serverName`                                                                                                                                            | shown in the Bridge card and diagnostics                                                        |
+| `catalogVersion`                                                                                                                                                         | tool-catalog skew (`knownCatalogVersion` is 3)                                                  |
+| `panes[]` (`host`, `documentName`, `documentId`, `targetId`, `focused`, `visible`, `windows`, `ops`, `lastSeen`, `protocolVersion`, `catalogVersion`, `opsIgnoredCount`) | the attached-documents list; `document: "active"` resolution happens in the bridge, not the app |
+| `port`, `uptimeMs`                                                                                                                                                       | diagnostics                                                                                     |
+
+## The pane registry (plan step 20)
+
+`GET /health` is not only a wizard probe: its `panes[]` array is the live registry
+of attached task panes, and Pi Desktop reads it continuously.
+`src/main/office/documents-service.ts` polls the Office host port (38617) every
+five seconds while the app runs and pushes a projected view to the renderer.
+`src/shared/office-documents.ts` is the pure projection: it parses each pane
+(name, id, `targetId`, focus, window count, advertised ops, `lastSeen`, versions,
+ignored-op count) and derives the `#` mention value (the name when unique among
+the open documents, otherwise the id).
+
+Three renderer surfaces consume that view:
+
+- **Documents panel** (`src/renderer/src/office/DocumentsPanel.tsx`), the session
+  right rail. It renders only when `/health` answers (plan D-A10: no Office
+  surface before setup) and lists each pane with its facts and actions — _Chat
+  about this_ (prepends the `[office:…]` tag to the composer draft), _Insert
+  #mention_, _Copy id_, _Open Office_. With the bridge up but no pane attached it
+  shows the empty state; the footer names the Office host and offers **Promote to
+  Office host**.
+- **`#` completion** — the same registry feeds `createDocumentProvider` through
+  `toDocumentMentions()`, so mentions work even when the bridge extension's own
+  autocomplete provider is absent.
+- **Office tool cards** (`src/renderer/src/session/OfficeToolCard.tsx`) — an
+  `office_*` call shows the document it targeted (`document: "active"` resolved
+  against the registry) and whether the call was capability-gated (`advertised`,
+  `legacy`, `gated` or `unattached`). `office_list_documents` renders as a table
+  with per-row actions instead of markdown.
+
+**One Office host.** The supervisor gives port 38617 to the tab whose spawn spec
+has `officeHost: true` (the `office` tab kind); every other host gets 38618+.
+`promoteToOfficeHost(tabId)` in `src/main/session-service.ts` keeps that
+invariant: it demotes and stops any other `office` tab, then restarts the
+promoted tab's host so it binds 38617, resuming the session from its JSONL.
 
 ## Failure modes and what the user sees
 
@@ -162,6 +197,8 @@ minimum range rather than an exact version.
 | Pane-run tracker (session events → view; Stop → session)         | done (`src/main/office/office-run.ts`)                                                                                       |
 | `office:stop-run` IPC → preload → panel Stop button              | done                                                                                                                         |
 | Live streamed text in the panel                                  | wired, waiting on the Office **session** tab (plan step 14), which is what instantiates the tracker and populates `view.run` |
+| Live pane registry → Documents panel, `#` mentions, tool cards   | done (plan step 20: `documents-service.ts`, `office-documents.ts`, `DocumentsPanel.tsx`, `OfficeToolCard.tsx`)               |
+| Office host promotion (38617)                                    | done (`promoteToOfficeHost` in `session-service.ts`)                                                                         |
 
 Until step 14 lands, `view.run` is `{ available: false }` and the panel says
 "Start an Office session…". The Stop handler is already live through the
@@ -175,6 +212,10 @@ supervisor: if an Office session exists it aborts that session's run.
 | `tests/office/office-run.test.ts`                                      | the tracker: delta accumulation, final replacement, pane vs app attribution, idle/failed Stop, settle behaviour                                             |
 | `tests/office/version-skew.test.ts`                                    | the matrix end to end through a fake pane for both generations, plus the panel labels                                                                       |
 | `tests/office/setup-view.test.ts`, `tests/office/setup-wizard.test.ts` | the view/wizard surface that carries the compatibility and the pin                                                                                          |
+| `tests/main/office-documents-service.test.ts`                          | the registry poll: projection, not-our-bridge rejection, change-only emission, start/stop/dispose                                                           |
+| `tests/shared/office-documents.test.ts`                                | the pane projection, mention values, document tag, capability states, target resolution, `office_list_documents` table parsing, `toDocumentMentions`        |
+| `tests/renderer/documents-panel.test.tsx`                              | the rail: visibility rules, per-pane facts, empty state, chat/mention actions, promotion footer                                                             |
+| `tests/renderer/office-tool-card.test.tsx`                             | office tool cards: target chip, capability note, document-list table and row actions                                                                        |
 | pi-for-office `bridge-extension/tests/{multi-document,smoke}.mjs`      | v2 handshake accepted, v1 rejected, `/health` protocolVersion + capabilities                                                                                |
 | pi-for-office `packages/protocol/tests/protocol.test.ts`               | the version window, the `abort` frame, v2 frame acceptance                                                                                                  |
 

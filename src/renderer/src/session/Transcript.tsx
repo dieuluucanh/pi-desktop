@@ -6,7 +6,11 @@ import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
 import { Markdown } from "./Markdown";
 import { ExtensionBlock } from "./ExtensionBlock";
+import { OfficeToolCard } from "./OfficeToolCard";
+import { isOfficeTool, officeToolSummary } from "./office-tool-card";
 import { useMarkdownTransform } from "./useMarkdownTransform";
+import { useAppStore } from "../state/app-store";
+import type { OfficeDocumentPane } from "../../../shared/office-documents";
 import type {
   TranscriptBlock,
   TranscriptItem,
@@ -27,6 +31,9 @@ import type {
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
+
+/** Stable empty registry so the selector does not allocate a new array. */
+const EMPTY_PANES: readonly OfficeDocumentPane[] = [];
 
 function isAbsoluteOrRelativePath(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
@@ -126,9 +133,10 @@ export function ToolCard({
     if (onToggle) onToggle();
     else setLocalOpen((value) => !value);
   };
+  const officePanes = useAppStore((state) => state.officeDocuments?.panes ?? EMPTY_PANES);
   const diff = diffPropsFor(tool);
   const output = tool.resultText ?? tool.partial ?? "";
-  const summary = toolSummary(tool);
+  const summary = officeToolSummary(tool, officePanes) ?? toolSummary(tool);
 
   // What a tool without an extension renderer shows: the app's native diff or
   // output card, which is also Pi's fallback when a renderer throws.
@@ -142,6 +150,13 @@ export function ToolCard({
       ) : null}
       {!diff && !output ? <p className="text-xs text-ink-faint">No output captured yet.</p> : null}
     </>
+  );
+  // Office tools get the app's target/capability card (plan step 20); a tool
+  // with an extension renderer still wins, with that card as its fallback.
+  const officeBody = isOfficeTool(tool.toolName) ? (
+    <OfficeToolCard tool={tool} fallback={nativeBody} />
+  ) : (
+    nativeBody
   );
   const body =
     tabId && tool.toolName ? (
@@ -160,10 +175,10 @@ export function ToolCard({
           version: tool.version,
         }}
         expanded={open}
-        fallback={nativeBody}
+        fallback={officeBody}
       />
     ) : (
-      nativeBody
+      officeBody
     );
 
   return (

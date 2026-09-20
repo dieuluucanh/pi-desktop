@@ -95,6 +95,12 @@ export interface SessionService {
   closeOthers(tabId: string): Promise<SessionTabsEnvelope>;
   /** Moves a tab to `toIndex`, persisted so the strip order survives a relaunch. */
   reorderTab(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
+  /**
+   * Makes `tabId` the single Office host (plan step 20): demotes every other
+   * `office`-kind tab and restarts this one so its host binds port 38617. The
+   * session is resumed from its JSONL, so promoting never loses history.
+   */
+  promoteToOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   request(tabId: string, method: HostMethod, params?: unknown): Promise<unknown>;
   /** Re-spawns the last active tab in the background (plan step 24 pre-warm). */
   prewarmLast(): Promise<void>;
@@ -488,6 +494,44 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       publishTabs();
       await persist();
       return envelope();
+    },
+
+    async promoteToOfficeHost(tabId) {
+      const tab = requireTab(tabId);
+      // Already the office host and running: nothing to restart.
+      if (tab.kind === "office" && hosts.has(tabId)) return envelope();
+
+      const detach = async (id: string): Promise<void> => {
+        for (const off of unsubscribes.get(id) ?? []) off();
+        unsubscribes.delete(id);
+        flushPending(id);
+        timers.delete(id);
+        pending.delete(id);
+        hosts.delete(id);
+        try {
+          await deps.supervisor.stop(id);
+        } catch {
+          // A host that is already gone is not an error for the user.
+        }
+      };
+
+      // One office host only: demote every other `office` tab and stop its host
+      // so port 38617 is free for the promoted tab (plan step 20 acceptance).
+      for (const [id, record] of [...tabs]) {
+        if (id === tabId || record.kind !== "office") continue;
+        await detach(id);
+        tabs.set(id, { ...record, kind: "session", status: "stopped" });
+      }
+
+      // Restart the promoted tab so its host is spawned with `officeHost: true`.
+      await detach(tabId);
+      tab.kind = "office";
+      tab.status = "stopped";
+      publishTabs();
+      await persist();
+      // `activateTab` re-spawns the host (resuming the session JSONL) and makes
+      // the promoted tab active.
+      return service.activateTab(tabId);
     },
 
     async request(tabId, method, params) {

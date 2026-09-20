@@ -1,6 +1,6 @@
 # Pi Desktop — parity with terminal Pi
 
-**Last updated:** 2026-09-20 (plan step 18).
+**Last updated:** 2026-09-20 (plan step 20).
 
 This matrix is the product's contract: Pi Desktop is the desktop UI for the Pi
 coding agent, and every row is either **implemented**, **planned at a stated
@@ -57,16 +57,16 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 | `@file` references with completion      | ✅                    | ✅ step 7 (rooted at the session's own cwd)                                                                                                               |
 | `/` commands (extension, prompt, skill) | ✅                    | ✅ step 7 (app commands + host commands; a name both claim is listed with its source)                                                                     |
 | Images: paste / drag into the prompt    | ✅                    | ✅ step 6                                                                                                                                                 |
-| `#document` Office mentions             | ✅ (bridge extension) | 🚧 step 20 (the provider ships in step 7; step 20 supplies the document registry)                                                                         |
+| `#document` Office mentions             | ✅ (bridge extension) | ✅ step 20 (the app's own provider is fed by the live pane registry, so mentions work even when the bridge's provider is absent)                          |
 | External editor for long prompts        | ✅                    | 🚧 setting ✅ step 12; the validated spawn lands with step 22 (reliability/cancellation), so the key is editable but the Ctrl+G launcher is not wired yet |
 
 ## Office
 
-| Capability                                                                | Terminal Pi                         | Pi Desktop                                                                                                 |
-| ------------------------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Pi for Office bridge (`@dieulc/pi-office-bridge`)                         | install manually, sideload manually | 🚧 step 19 — automated wizard (detect → bridge install → sideload → verify) as an **optional integration** |
-| Attached documents panel, document targeting, streamed pane replies, Stop | ✅ via bridge                       | 🚧 step 20 (bridge 0.5.0 streaming already consumed, `office-run.ts`)                                      |
-| Office surface in the primary navigation                                  | n/a                                 | ⛔ never — Office is an integration, not a menu (D-A10)                                                    |
+| Capability                                                                | Terminal Pi                         | Pi Desktop                                                                                                                                                |
+| ------------------------------------------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pi for Office bridge (`@dieulc/pi-office-bridge`)                         | install manually, sideload manually | ✅ step 19 — automated wizard (detect → bridge install → sideload → verify) as an **optional integration**                                                |
+| Attached documents panel, document targeting, streamed pane replies, Stop | ✅ via bridge                       | ✅ step 20 (Documents panel from the live `/health` registry; office tool cards name the target and capability state; `office_list_documents` as a table) |
+| Office surface in the primary navigation                                  | n/a                                 | ⛔ never — Office is an integration, not a menu (D-A10)                                                                                                   |
 
 ## MCP
 

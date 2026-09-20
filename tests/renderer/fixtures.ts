@@ -1,5 +1,6 @@
 import type { AppInfo, PiDesktopBridge } from "../../src/shared/ipc";
 import type { OfficeSetupView } from "../../src/shared/office-setup";
+import type { OfficeDocumentsView } from "../../src/shared/office-documents";
 import { emptyIntegrationsState, type IntegrationsState } from "../../src/shared/integrations";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { UiPrefs } from "../../src/shared/prefs";
@@ -65,10 +66,30 @@ export function officeViewFixture(overrides: Partial<OfficeSetupView> = {}): Off
   };
 }
 
+/** An empty-but-available pane registry (no panes attached). */
+export function documentsViewFixture(
+  overrides: Partial<OfficeDocumentsView> = {},
+): OfficeDocumentsView {
+  return {
+    available: false,
+    port: 38617,
+    status: "unknown",
+    serverVersion: null,
+    protocolVersion: null,
+    catalogVersion: null,
+    compatibility: null,
+    panes: [],
+    fetchedAt: new Date(0).toISOString(),
+    error: null,
+    ...overrides,
+  };
+}
+
 export interface BridgeOptions {
   appInfo?: Partial<AppInfo>;
   prefs?: Partial<UiPrefs>;
   office?: OfficeSetupView;
+  documents?: OfficeDocumentsView;
   projects?: ProjectRecord[];
   activeProject?: string | null;
   integrations?: IntegrationsState;
@@ -82,6 +103,7 @@ export function installBridge(options: BridgeOptions = {}): {
   const prefs: UiPrefs = { ...DEFAULT_PREFS, ...options.prefs };
   const info = appInfoFixture(options.appInfo);
   const view = options.office ?? officeViewFixture();
+  const documents = options.documents ?? documentsViewFixture();
   let integrationsState: IntegrationsState = options.integrations ?? emptyIntegrationsState();
   const projectsState: ProjectsSnapshot = {
     projects: options.projects ?? [],
@@ -109,6 +131,7 @@ export function installBridge(options: BridgeOptions = {}): {
       close: async () => ({ tabs: [], activeTabId: null }),
       closeOthers: async () => ({ tabs: [], activeTabId: null }),
       reorder: async () => ({ tabs: [], activeTabId: null }),
+      promoteOfficeHost: async () => ({ tabs: [], activeTabId: null }),
       activate: async () => ({ tabs: [], activeTabId: null }),
       restore: async () => ({ tabs: [], activeTabId: null }),
       request: async () => ({}),
@@ -168,6 +191,9 @@ export function installBridge(options: BridgeOptions = {}): {
       reveal: async () => true,
       stopRun: async () => ({ ok: true }),
       onState: () => () => undefined,
+      documents: async () => documents,
+      refreshDocuments: async () => documents,
+      onDocuments: () => () => undefined,
     },
     integrations: {
       get: async () => integrationsState,

@@ -115,6 +115,11 @@ import {
   themeCssVariables,
   type ThemesSnapshot,
 } from "../../../shared/themes";
+import {
+  officeDocumentTag,
+  type OfficeDocumentPane,
+  type OfficeDocumentsView,
+} from "../../../shared/office-documents";
 import { sanitizeKeybindingsSnapshot, type KeybindingsSnapshot } from "../../../shared/keybindings";
 import {
   EMPTY_SHORTCUTS,
@@ -467,6 +472,27 @@ export interface AppStateShape {
   recordOfficeIntegration: (patch: OfficeIntegrationRecordPatch) => Promise<void>;
   /** Opens (or focuses) the Office session tab, which owns the bridge port. */
   openOfficeSession: () => Promise<void>;
+  /**
+   * Makes `tabId` the single Office host (plan step 20): demotes any other
+   * `office` tab and restarts this host on port 38617, resuming its session.
+   */
+  promoteToOfficeHost: (tabId: string) => Promise<boolean>;
+
+  /** The live Office pane registry (plan step 20), pushed from main's poll. */
+  officeDocuments: OfficeDocumentsView | null;
+  officeDocumentsLoaded: boolean;
+  /** Whether the right-rail Documents panel is open. */
+  documentsPanelOpen: boolean;
+  loadOfficeDocuments: () => Promise<void>;
+  applyOfficeDocuments: (view: OfficeDocumentsView) => void;
+  refreshOfficeDocuments: () => Promise<void>;
+  toggleDocumentsPanel: () => void;
+  /**
+   * Starts or appends a `[office:<host> "<name>" id=…]`-tagged prompt in the
+   * active session's composer draft (plan step 20). Returns the tab it targeted,
+   * or null when no session is open.
+   */
+  chatAboutDocument: (pane: OfficeDocumentPane) => string | null;
 
   /** Packages (plan step 14): what Pi is configured to load, and its state. */
   packages: PackageSummary[];
@@ -861,6 +887,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   packageConsent: null,
   integrations: emptyIntegrationsState(),
   integrationsLoaded: false,
+  officeDocuments: null,
+  officeDocumentsLoaded: false,
+  documentsPanelOpen: false,
   themes: EMPTY_THEMES,
   themesLoaded: false,
   themesBusy: false,
@@ -2498,6 +2527,81 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return;
     }
     await get().createSessionTab("office");
+  },
+
+  promoteToOfficeHost: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return false;
+    try {
+      const envelope = await api.sessions.promoteOfficeHost(tabId);
+      get().applyTabs(envelope);
+      set({ hint: "This session is now the Office host (bridge port 38617)." });
+      return true;
+    } catch (error) {
+      set({ hint: errorMessage(error) });
+      return false;
+    }
+  },
+
+  // ---- Live Office pane registry (plan step 20) ----
+
+  loadOfficeDocuments: async () => {
+    const api = bridge();
+    if (!api?.office) return;
+    if (get().officeDocumentsLoaded) return;
+    try {
+      const view = await api.office.documents();
+      set({
+        officeDocuments: view,
+        officeDocumentsLoaded: true,
+        // A bridge that already has panes attached opens the rail on first load.
+        documentsPanelOpen: get().documentsPanelOpen || view.panes.length > 0,
+      });
+    } catch {
+      // The panel is an enhancement: an unreadable registry must never block
+      // the session, so the store keeps its empty view.
+      set({ officeDocumentsLoaded: true });
+    }
+  },
+
+  applyOfficeDocuments: (view) => {
+    set({
+      officeDocuments: view,
+      officeDocumentsLoaded: true,
+      documentsPanelOpen: get().documentsPanelOpen || view.panes.length > 0,
+    });
+  },
+
+  refreshOfficeDocuments: async () => {
+    const api = bridge();
+    if (!api?.office) return;
+    try {
+      const view = await api.office.refreshDocuments();
+      get().applyOfficeDocuments(view);
+    } catch {
+      // Same as above: a failed probe leaves the last known registry in place.
+    }
+  },
+
+  toggleDocumentsPanel: () => set({ documentsPanelOpen: !get().documentsPanelOpen }),
+
+  chatAboutDocument: (pane) => {
+    const tabId = get().activeTabId;
+    if (!tabId) {
+      set({ hint: "Open a session before chatting about a document." });
+      return null;
+    }
+    const tag = officeDocumentTag(pane);
+    if (!tag) {
+      set({ hint: "That document has no host app, so it cannot be targeted." });
+      return null;
+    }
+    const draft = get().prefs.drafts[tabId] ?? "";
+    if (draft.includes(tag)) return tabId;
+    const next = draft.trim().length > 0 ? `${tag} ${draft}` : `${tag} `;
+    get().setDraft(tabId, next);
+    set({ view: "session", hint: null });
+    return tabId;
   },
 
   loadPackages: async (options) => {

@@ -40,6 +40,7 @@ import {
 } from "./session-service";
 import { isDeletableSessionPath } from "./session-ops";
 import { createOfficeSetupService } from "./office/setup-service";
+import { createOfficeDocumentsService } from "./office/documents-service";
 import { officeEvidenceLine } from "../shared/office-setup";
 import { appPaths, isSafeMode, resolveAppRoots, type AppPaths, type AppRoots } from "./paths";
 import { resolveAppRuntime, type RuntimeResolution } from "./runtime";
@@ -163,6 +164,7 @@ const sessionsIpc: IpcSessionDeps = {
   close: (tabId: string) => requireSessions().closeTab(tabId),
   closeOthers: (tabId: string) => requireSessions().closeOthers(tabId),
   reorder: (tabId: string, toIndex: number) => requireSessions().reorderTab(tabId, toIndex),
+  promoteOfficeHost: (tabId: string) => requireSessions().promoteToOfficeHost(tabId),
   activate: (tabId: string) => requireSessions().activateTab(tabId),
   restore: () => requireSessions().restoreTabs(),
   request: (input) => requireSessions().request(input.tabId, input.method, input.params),
@@ -390,6 +392,15 @@ const officeSetup = createOfficeSetupService({
   },
 });
 
+/**
+ * The live Office pane registry (plan step 20). It polls the bridge's `/health`
+ * continuously — the Documents panel, `#` mentions and the office tool cards
+ * need it even when the setup wizard is closed.
+ */
+const officeDocuments = createOfficeDocumentsService({
+  onView: (view) => broadcastToWindows(IPC.officeDocumentsState, view),
+});
+
 if (!app.requestSingleInstanceLock()) {
   // Another instance owns this userData directory (including a developer's dev
   // window or a stale E2E run). Say so instead of vanishing.
@@ -460,8 +471,6 @@ if (!app.requestSingleInstanceLock()) {
       // version (protocol v3 additionally lets a pane stop its own run).
       officeRun: {
         stop: async (): Promise<OfficeStopResult> => {
-          // The office session is an ordinary tab of kind `office` (its host id
-          // is the tab id); find it rather than guessing a fixed host name.
           const officeTab = sessions
             ?.envelope()
             .tabs.find((tab) => tab.kind === "office" && tab.status !== "stopped");
@@ -479,8 +488,15 @@ if (!app.requestSingleInstanceLock()) {
           }
         },
       },
+      officeDocuments: {
+        get: () => officeDocuments.get(),
+        refresh: () => officeDocuments.refresh(),
+      },
     });
     mainWindow = createWindow();
+    // The registry poll is cheap (one loopback GET) and the panel must reflect a
+    // bridge that a terminal Pi session owns, so it runs whenever the app does.
+    officeDocuments.start();
 
     // Restore the tab table without spawning anything, then warm the most
     // recently used tab in the background (plan step 24 pre-warm).
@@ -497,6 +513,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on("before-quit", () => {
     // `dispose` flushes the tab table and stops every host, including control.
+    officeDocuments.dispose();
     void (sessions ? sessions.dispose() : hosts?.stopAll());
   });
 }

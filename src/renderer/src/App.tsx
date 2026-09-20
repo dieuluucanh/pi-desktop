@@ -58,7 +58,6 @@ export function App() {
   const loadProjects = useAppStore((state) => state.loadProjects);
   const loadTabs = useAppStore((state) => state.loadTabs);
   const setInfo = useAppStore((state) => state.setInfo);
-
   useEffect(() => {
     void loadPrefs();
     void loadProjects();
@@ -78,6 +77,7 @@ export function App() {
     // Session pushes (plan step 3): the tab table, per-tab state snapshots and
     // the host event batches the transcript will consume in step 5.
     void loadTabs();
+    void useAppStore.getState().loadOfficeDocuments();
     const offTabs = api.sessions.onTabs((envelope) => useAppStore.getState().applyTabs(envelope));
     const offState = api.sessions.onState((envelope) =>
       useAppStore.getState().applySessionState(envelope),
@@ -85,12 +85,18 @@ export function App() {
     const offEvents = api.sessions.onEvent((envelope) =>
       useAppStore.getState().applySessionEvents(envelope),
     );
+    // The live Office pane registry (plan step 20): pushed from main's poll so
+    // the Documents panel, `#` mentions and office tool cards stay current.
+    const offDocuments = api.office.onDocuments((view) =>
+      useAppStore.getState().applyOfficeDocuments(view),
+    );
     return () => {
       cancelled = true;
       offMenu();
       offTabs();
       offState();
       offEvents();
+      offDocuments();
     };
   }, [loadTabs, setInfo]);
 

@@ -19,6 +19,7 @@ import {
   applyCompletionInPlace,
   type CompletionProviderFactory,
 } from "../../src/renderer/src/completion/types";
+import { parseOfficeDocumentsView, toDocumentMentions } from "../../src/shared/office-documents";
 
 /**
  * The completion engine (plan step 7), tested with no DOM at all: these modules
@@ -218,6 +219,43 @@ describe("document completion", () => {
       source: "document",
       detail: "excel",
       description: "Q3 plan",
+    });
+  });
+
+  it("is fed by the bridge's pane registry (plan step 20)", async () => {
+    const view = parseOfficeDocumentsView({
+      payload: {
+        service: "pi-office-bridge",
+        protocolVersion: 3,
+        panes: [
+          {
+            host: "excel",
+            document: { id: "url_sha256:aaaa", name: "Book1.xlsx" },
+            targetId: "url_sha256:aaaa",
+            focused: true,
+            windows: 1,
+            ops: ["excel.read_range"],
+          },
+          {
+            host: "word",
+            document: { id: "url_sha256:bbbb", name: "Report.docx" },
+            targetId: "url_sha256:bbbb",
+            windows: 2,
+            ops: [],
+          },
+        ],
+      },
+      status: "ok",
+      fetchedAt: "2026-09-20T10:00:00.000Z",
+    });
+    const provider = createDocumentProvider({ list: () => toDocumentMentions(view.panes) });
+
+    const result = await provider.getSuggestions(["read #rep"], 0, 9, { signal: signal() });
+    expect(result?.items[0]).toMatchObject({
+      value: "#Report.docx",
+      label: "#Report.docx",
+      detail: "Word",
+      description: "Word · 2 windows",
     });
   });
 });

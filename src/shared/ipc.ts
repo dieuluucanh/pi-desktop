@@ -1,5 +1,6 @@
 import type { OfficeSetupStepId, OfficeSetupView } from "./office-setup";
 import type { OfficeStopResult } from "./office-bridge";
+import type { OfficeDocumentsView } from "./office-documents";
 import type { IntegrationsState, OfficeIntegrationRecordPatch } from "./integrations";
 import type { UiPrefs } from "./prefs";
 import type {
@@ -54,6 +55,8 @@ export const IPC = {
   sessionCloseOthers: "session:close-others",
   /** Moves a tab to a new index (plan step 11 drag-reorder). */
   sessionReorder: "session:reorder",
+  /** Makes one tab the single Office host, owning the bridge port (plan step 20). */
+  sessionPromoteOffice: "session:promote-office",
   sessionActivate: "session:activate",
   sessionRestore: "session:restore",
   sessionRequest: "session:request",
@@ -85,6 +88,16 @@ export const IPC = {
   officeStopRun: "office:stop-run",
   /** Main → renderer: a new wizard state. */
   officeState: "office:state",
+
+  /**
+   * The live Office pane registry (plan step 20). The main process polls the
+   * bridge's `/health` and pushes the projected view; the Documents panel and
+   * the `#` completion source read it from the renderer store.
+   */
+  officeDocuments: "office:documents",
+  officeDocumentsRefresh: "office:documents-refresh",
+  /** Main → renderer: the pane registry changed. */
+  officeDocumentsState: "office:documents-state",
 
   /**
    * Integrations (plan step 19): the app's own record of a consented install,
@@ -174,6 +187,8 @@ export interface SessionsBridge {
   closeOthers(tabId: string): Promise<SessionTabsEnvelope>;
   /** Moves a tab within the strip; persisted so the order survives a relaunch. */
   reorder(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
+  /** Makes this tab the single Office host (plan step 20), restarting its host. */
+  promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
   restore(): Promise<SessionTabsEnvelope>;
   /** Runs any host protocol method against a tab's host. */
@@ -216,6 +231,12 @@ export interface OfficeBridge {
    */
   stopRun(): Promise<OfficeStopResult>;
   onState(listener: (view: OfficeSetupView) => void): () => void;
+  /** The last pane-registry probe (plan step 20); never null. */
+  documents(): Promise<OfficeDocumentsView>;
+  /** Probes `/health` now and resolves with the fresh registry. */
+  refreshDocuments(): Promise<OfficeDocumentsView>;
+  /** Main → renderer: the pane registry changed. */
+  onDocuments(listener: (view: OfficeDocumentsView) => void): () => void;
 }
 
 /** UI preferences persisted by the main process (plan step 1). */

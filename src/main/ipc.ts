@@ -17,6 +17,7 @@ import {
 } from "../shared/session-ipc";
 import { isOfficeSetupStepId } from "../shared/office-setup";
 import type { IntegrationsState } from "../shared/integrations";
+import type { OfficeDocumentsView } from "../shared/office-documents";
 import { isTrustAnswer } from "../shared/projects";
 import type { OfficeStopResult } from "../shared/office-bridge";
 import {
@@ -46,6 +47,8 @@ export interface IpcSessionDeps {
   close(tabId: string): Promise<SessionTabsEnvelope>;
   closeOthers(tabId: string): Promise<SessionTabsEnvelope>;
   reorder(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
+  /** Makes one tab the single Office host (plan step 20). */
+  promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
   restore(): Promise<SessionTabsEnvelope>;
   request(input: { tabId: string; method: HostMethod; params?: unknown }): Promise<unknown>;
@@ -90,6 +93,11 @@ export interface IpcDependencies {
    * flight) until the app owns one — the wizard's health probe is unaffected.
    */
   officeRun: { stop: () => Promise<OfficeStopResult> };
+  /** Live Office pane registry (plan step 20), pushed from main's poll. */
+  officeDocuments: {
+    get(): OfficeDocumentsView;
+    refresh(): Promise<OfficeDocumentsView>;
+  };
 }
 
 const MAX_TITLE_LENGTH = 200;
@@ -189,6 +197,9 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     }
     return deps.sessions.reorder(id, Math.floor(toIndex));
   });
+  ipcMain.handle(IPC.sessionPromoteOffice, (_event, tabId: unknown) =>
+    deps.sessions.promoteOfficeHost(requireTabId(deps, tabId)),
+  );
   ipcMain.handle(IPC.sessionActivate, (_event, tabId: unknown) =>
     deps.sessions.activate(requireTabId(deps, tabId)),
   );
@@ -229,6 +240,8 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.officeUnsideload, () => deps.officeSetup.unsideload());
   ipcMain.handle(IPC.officeDiagnostics, () => deps.officeSetup.diagnostics());
   ipcMain.handle(IPC.officeStopRun, () => deps.officeRun.stop());
+  ipcMain.handle(IPC.officeDocuments, () => deps.officeDocuments.get());
+  ipcMain.handle(IPC.officeDocumentsRefresh, () => deps.officeDocuments.refresh());
   // Same implementation as `app:reveal-path` — one path-validation rule.
   ipcMain.handle(IPC.officeReveal, (_event, target: unknown) => deps.revealPath(target));
 

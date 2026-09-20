@@ -31,6 +31,7 @@ import type {
 } from "../shared/session-ipc";
 import type { OfficeSetupStepId, OfficeSetupView } from "../shared/office-setup";
 import type { OfficeStopResult } from "../shared/office-bridge";
+import type { OfficeDocumentsView } from "../shared/office-documents";
 
 /**
  * The preload is the only place that touches `ipcRenderer`. It exposes a fixed,
@@ -57,6 +58,8 @@ const sessions: SessionsBridge = {
     ipcRenderer.invoke(IPC.sessionCloseOthers, tabId) as Promise<SessionTabsEnvelope>,
   reorder: (tabId: string, toIndex: number) =>
     ipcRenderer.invoke(IPC.sessionReorder, tabId, toIndex) as Promise<SessionTabsEnvelope>,
+  promoteOfficeHost: (tabId: string) =>
+    ipcRenderer.invoke(IPC.sessionPromoteOffice, tabId) as Promise<SessionTabsEnvelope>,
   activate: (tabId: string) =>
     ipcRenderer.invoke(IPC.sessionActivate, tabId) as Promise<SessionTabsEnvelope>,
   restore: () => ipcRenderer.invoke(IPC.sessionRestore) as Promise<SessionTabsEnvelope>,
@@ -85,6 +88,11 @@ const office: OfficeBridge = {
   stopRun: () => ipcRenderer.invoke(IPC.officeStopRun) as Promise<OfficeStopResult>,
   onState: (listener: (view: OfficeSetupView) => void) =>
     subscribe<OfficeSetupView>(IPC.officeState, listener),
+  documents: () => ipcRenderer.invoke(IPC.officeDocuments) as Promise<OfficeDocumentsView>,
+  refreshDocuments: () =>
+    ipcRenderer.invoke(IPC.officeDocumentsRefresh) as Promise<OfficeDocumentsView>,
+  onDocuments: (listener: (view: OfficeDocumentsView) => void) =>
+    subscribe<OfficeDocumentsView>(IPC.officeDocumentsState, listener),
 };
 
 const prefs: PrefsBridge = {
