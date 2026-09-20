@@ -15,7 +15,7 @@ import {
   type HostRole,
 } from "../shared/host-protocol";
 import { createControlCore } from "./control-core";
-import { createExtensionUiBridge } from "./extension-ui";
+import { createExtensionUiBridge, createExtensionUiPort } from "./extension-ui";
 import {
   createNodeFileListingIo,
   createNodeModelsFileIo,
@@ -34,6 +34,7 @@ import {
   ProjectTrustStore,
   SessionManager,
   createSdkCustomProviderStore,
+  createSdkExtensionBinder,
   createSdkKeybindingPort,
   createSdkPackagePort,
   createSdkProviderPort,
@@ -105,7 +106,7 @@ function createCore(options: {
   emit: (event: string, payload?: unknown, sessionId?: string) => void;
   npmCommand?: readonly string[] | null;
   backupDir?: string;
-  bindSession?: (session: never) => Promise<void>;
+  bindSession?: (session: never, runtime: never) => Promise<void>;
 }): SessionCore {
   const trustStore = new ProjectTrustStore(options.agentDir);
   const settingsIo = createNodeSettingsFileIo();
@@ -305,6 +306,23 @@ export function runService(
         })
       : null;
 
+    // Extension UI (plan step 16) exists only for session hosts: a control host
+    // never owns an `AgentSession`, so it has no extensions to bind. The port
+    // owns dialogs, statuses, widgets and the composer mirror; its `bindSession`
+    // callback installs Pi's real `ExtensionUIContext` on each attached session.
+    const uiPort =
+      role === "control"
+        ? null
+        : createExtensionUiPort({
+            emit: (event, payload) => forward.emit(event, payload, undefined),
+          });
+    const bindSession = uiPort
+      ? createSdkExtensionBinder({
+          port: uiPort,
+          emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
+        })
+      : null;
+
     const core =
       providerPort && customProviderStore
         ? createControlHostCore({
@@ -320,21 +338,19 @@ export function runService(
             agentDir,
             ...(backupDir ? { backupDir } : {}),
             ...(npmCommand ? { npmCommand } : {}),
+            ...(bindSession ? { bindSession } : {}),
             emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
           });
 
     const handlers: Partial<Record<string, HostHandler>> = { ...core.handlers() };
+    if (uiPort) Object.assign(handlers, uiPort.handlers());
 
-    // Extension dialogs block until the app answers `oi.respond`. The bridge owns
-    // those promises, emits `oi.request`, and is torn down with the session so a
-    // closing host never leaves an extension hanging (step 16 renders the dialogs).
+    // Provider OAuth login is a control-host flow that reuses the `oi.respond`
+    // answer path for its prompts (plan step 9, slice 3). It needs its own
+    // bridge because the UI port is session-only.
     const ui = createExtensionUiBridge({
       emit: (event, payload) => forward.emit(event, payload, undefined),
     });
-    Object.assign(handlers, ui.handlers());
-
-    // Provider OAuth login is a control-host flow that reuses the `oi.respond`
-    // answer path for its prompts (plan step 9, slice 3).
     const providerLogin = providerPort
       ? createProviderLoginHandlers({
           resolvePort: () => providerPort,
@@ -342,7 +358,10 @@ export function runService(
           request: (method, params) => ui.request(method, params),
         })
       : null;
-    if (providerLogin) Object.assign(handlers, providerLogin.handlers());
+    if (providerLogin) {
+      Object.assign(handlers, ui.handlers());
+      Object.assign(handlers, providerLogin.handlers());
+    }
 
     const service: HostService = createHostService({
       stdin: process.stdin,
@@ -361,6 +380,7 @@ export function runService(
       onShutdown: () => {
         service.stop();
         ui.dispose("the host is shutting down");
+        uiPort?.dispose("the host is shutting down");
         providerLogin?.dispose();
         void core.dispose();
         // Give the response frame a tick to flush before the process ends.

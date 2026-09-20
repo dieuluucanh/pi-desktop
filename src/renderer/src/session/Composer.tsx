@@ -11,6 +11,7 @@ import { joinBuffer, offsetToPosition, positionToOffset, splitBuffer } from "../
 import type {
   CompletionItem,
   CompletionProvider,
+  CompletionResult,
   CompletionSource,
   CompletionSuggestions,
 } from "../completion/types";
@@ -59,6 +60,16 @@ export interface ComposerProps {
 /** What the composer needs from the completion engine (plan step 7). */
 export interface ComposerCompletion {
   provider: CompletionProvider;
+  /**
+   * Applies an accepted item. Used when the item came from a host-run extension
+   * chain (plan step 16), whose own `applyCompletion` cannot run in the
+   * renderer; returns null to fall back to `provider.applyCompletion`.
+   */
+  apply?: (
+    item: CompletionItem,
+    suggestions: CompletionSuggestions,
+    buffer: { lines: string[]; line: number; col: number },
+  ) => Promise<CompletionResult | null>;
 }
 
 /** Long enough to coalesce a burst of keystrokes, short enough to feel live. */
@@ -209,16 +220,24 @@ export function Composer({
   );
 
   const applySuggestion = useCallback(
-    (item: CompletionItem) => {
+    async (item: CompletionItem) => {
       if (!completion || !suggestions) return;
       const { lines, position } = currentBuffer();
-      const next = completion.provider.applyCompletion(
+      let next = completion.provider.applyCompletion(
         lines,
         position.line,
         position.col,
         item,
         suggestions.prefix,
       );
+      if (completion.apply) {
+        const remote = await completion.apply(item, suggestions, {
+          lines,
+          line: position.line,
+          col: position.col,
+        });
+        if (remote) next = remote;
+      }
       const text = joinBuffer(next.lines);
       const caret = positionToOffset(next.lines, { line: next.cursorLine, col: next.cursorCol });
       setPickedSource(item.source);

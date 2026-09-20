@@ -114,6 +114,8 @@ export interface HostSession extends SessionStateLike {
   };
   compact?(instructions?: string): Promise<unknown>;
   reload?(options?: unknown): Promise<void>;
+  /** Blocks until the session is idle; `ExtensionCommandContextActions.waitForIdle`. */
+  waitForIdle?(): Promise<void>;
   /**
    * Branch navigation inside the session file (plan step 11): unlike `fork`,
    * which creates a new JSONL, this moves the leaf in place. The session owns it
@@ -208,8 +210,13 @@ export interface SessionCoreDeps {
    * session it belongs to.
    */
   listFiles?(cwd: string, options: { limit?: number }): Promise<FileListing>;
-  /** Injected by the extension UI host (plan step 6). */
-  bindSession?(session: HostSession): Promise<void>;
+  /**
+   * Injected by the extension UI host (plan step 16). Receives the live session
+   * *and* its runtime: binding an extension's UI context needs the runtime's
+   * session-replacement commands (`newSession`/`fork`/`switchSession`), which do
+   * not live on the session itself.
+   */
+  bindSession?(session: HostSession, runtime: RuntimeLike): Promise<void>;
   /**
    * Settings writes (plan step 12). The composition root supplies the SDK port
    * built over this session's own manager, so `settings.set` here is visible to
@@ -359,7 +366,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     if (!runtime) return;
     attach(runtime.session);
     settingsManager = runtime.services?.settingsManager ?? settingsManager;
-    await deps.bindSession?.(runtime.session);
+    await deps.bindSession?.(runtime.session, runtime);
     deps.emit("session_replaced", snapshot(), runtime.session.sessionId ?? undefined);
     emitState();
   };
@@ -438,7 +445,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     if (options.thinking) {
       created.session.setThinkingLevel?.(options.thinking, { persist: false });
     }
-    await deps.bindSession?.(created.session);
+    await deps.bindSession?.(created.session, created.runtime);
 
     deps.emit("session_started", snapshot(), created.session.sessionId ?? undefined);
     emitState();

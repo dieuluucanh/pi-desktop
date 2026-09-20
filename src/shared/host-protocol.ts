@@ -145,6 +145,14 @@ export const HOST_METHODS = [
   "packages.list",
   // extension UI + files
   "oi.respond",
+  // Extension-UI state and the composer bridge (plan step 16). No RPC
+  // equivalent: RPC mode has no session-state channel, no editor mirror and no
+  // way to evaluate extension autocomplete providers (their factories cannot
+  // cross the frame boundary, so the host runs them).
+  "oi.state",
+  "oi.editorText",
+  "completion.suggest",
+  "completion.apply",
   "files.list",
   "files.read",
   "files.write",

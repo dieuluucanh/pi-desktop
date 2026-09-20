@@ -5,10 +5,13 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
+import { WidgetStrip } from "../extension-ui/WidgetStrip";
+import { WorkingRow } from "../extension-ui/WorkingRow";
 import { createCommandProvider } from "../completion/command-source";
 import { createDocumentProvider } from "../completion/document-source";
 import { createFileProvider } from "../completion/file-source";
 import { createCompletionProvider } from "../completion/stack";
+import type { CompletionItem, CompletionSuggestions } from "../completion/types";
 import { ContextRing } from "../session/ContextRing";
 import { ModelPicker } from "../session/ModelPicker";
 import { ThinkingPicker } from "../session/ThinkingPicker";
@@ -93,13 +96,18 @@ export function SessionView() {
   const setHint = useAppStore((state) => state.setHint);
   const favorites = useAppStore((state) => state.prefs.favoriteModels);
   const viewMode = useAppStore((state) => state.prefs.viewMode);
+  const extensionUi = useAppStore((state) =>
+    activeTabId ? state.extensionUi[activeTabId] : undefined,
+  );
+  const extensionCompletion = useAppStore((state) => state.extensionCompletion);
+  const extensionApplyCompletion = useAppStore((state) => state.extensionApplyCompletion);
   const [editingName, setEditingName] = useState(false);
 
   /**
    * The completion stack for this tab (plan step 7): commands from the host's
-   * `commands.list`, files from `files.list` (rooted at this session's cwd) and
-   * `#` documents, which stay empty until the Office registry arrives in step 20.
-   * Extension providers are added by the host in step 16 through the same
+   * `commands.list`, files from `files.list` (rooted at this session's cwd),
+   * `#` documents (empty until the Office registry arrives in step 20) and the
+   * extension providers the host runs (plan step 16) through the same
    * `factory(current)` shape.
    */
   const completion = useMemo(
@@ -108,9 +116,35 @@ export function SessionView() {
         command: createCommandProvider({ loadCommands: () => loadCommands(activeTabId ?? "") }),
         file: createFileProvider({ loadFiles: () => loadFiles(activeTabId ?? "") }),
         document: createDocumentProvider(null),
+        extension: activeTabId
+          ? {
+              suggest: (request) => extensionCompletion(activeTabId, request),
+              apply: (request) => extensionApplyCompletion(activeTabId, request),
+            }
+          : null,
       }),
+      apply: async (
+        item: CompletionItem,
+        suggestions: CompletionSuggestions,
+        buffer: { lines: string[]; line: number; col: number },
+      ) => {
+        // Only host-run extension items need the remote apply; the built-in
+        // sources are applied locally by the provider itself.
+        if (!activeTabId || item.source !== "extension") return null;
+        return extensionApplyCompletion(activeTabId, {
+          lines: buffer.lines,
+          cursorLine: buffer.line,
+          cursorCol: buffer.col,
+          item: {
+            value: item.value,
+            label: item.label,
+            ...(item.description === undefined ? {} : { description: item.description }),
+          },
+          prefix: suggestions.prefix,
+        });
+      },
     }),
-    [activeTabId, loadCommands, loadFiles],
+    [activeTabId, loadCommands, loadFiles, extensionCompletion, extensionApplyCompletion],
   );
 
   const active = tabs.find((tab) => tab.id === activeTabId) ?? null;
@@ -227,8 +261,15 @@ export function SessionView() {
           running={active.status === "running"}
           onAbort={() => void stopRun(active.id)}
           empty={{ cwd: active.cwd, project: project?.path ?? null, model: active.model }}
+          thinkingLabel={extensionUi?.hiddenThinkingLabel ?? null}
+          toolsExpanded={extensionUi?.toolsExpanded ?? null}
         />
       </div>
+
+      {active.status === "running" && extensionUi ? (
+        <WorkingRow working={extensionUi.working} />
+      ) : null}
+      <WidgetStrip tabId={active.id} placement="aboveEditor" />
 
       <Composer
         tabId={active.id}
@@ -261,6 +302,8 @@ export function SessionView() {
         onSendModeChange={(mode) => setSendMode(active.id, mode)}
         onHistoryStep={(direction) => historyStep(active.id, direction)}
       />
+
+      <WidgetStrip tabId={active.id} placement="belowEditor" />
 
       <ModelPicker
         open={picker === "model"}

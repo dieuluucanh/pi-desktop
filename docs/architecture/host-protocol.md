@@ -20,14 +20,14 @@ is declared but not yet wired answers
 it** in the message — see “Implementation status” below, which is the current
 truth and supersedes the group table's implications.
 
-| Group         | Methods                                                                                                                             |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| transport     | `host.hello`, `host.ping`, `host.shutdown`, `host.blobs.read`                                                                       |
-| sessions      | `session.create/open/list/resume/fork/clone/delete/rename/exportHtml`                                                               |
-| conversation  | `prompt`, `steer`, `followUp`, `abort`, `clearQueue`                                                                                |
-| state         | `state.get`, `messages.get`, `entries.get`, `tree.get`, `stats.get`, `compact`, `commands.list`, `tools.*`, `model.*`, `thinking.*` |
-| configuration | `settings.*`, `providers.*`, `packages.*`                                                                                           |
-| other         | `oi.respond` (extension UI answers), `files.list`                                                                                   |
+| Group         | Methods                                                                                                                                                   |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| transport     | `host.hello`, `host.ping`, `host.shutdown`, `host.blobs.read`                                                                                             |
+| sessions      | `session.create/open/list/resume/fork/clone/delete/rename/exportHtml`                                                                                     |
+| conversation  | `prompt`, `steer`, `followUp`, `abort`, `clearQueue`                                                                                                      |
+| state         | `state.get`, `messages.get`, `entries.get`, `tree.get`, `stats.get`, `compact`, `commands.list`, `tools.*`, `model.*`, `thinking.*`                       |
+| configuration | `settings.*`, `providers.*`, `packages.*`                                                                                                                 |
+| other         | `oi.respond` (extension UI answers), `oi.state`, `oi.editorText`, `completion.suggest`, `completion.apply` (extension UI + composer bridge), `files.list` |
 
 ## Framing rules
 
@@ -76,7 +76,7 @@ so the whole supervisor is unit tested against a scripted fake host
 (`tests/main/host-supervisor.test.ts`), and `tests/host/service.live.test.ts`
 drives the real bundle when `out/host/index.mjs` has been built.
 
-## Implementation status (2026-09-20, after plan step 14)
+## Implementation status (2026-09-20, after plan step 16)
 
 ### Wired and tested
 
@@ -91,7 +91,7 @@ drives the real bundle when `out/host/index.mjs` has been built.
 | settings          | `settings.get`, `settings.set`, `settings.raw` (read **or** write a whole scope), `settings.flush`; every response carries **both** scopes, the two file paths + mtimes, `drainErrors` and the project-trust flag. Writes are schema-validated: a named `SettingsManager` setter when Pi has one, otherwise an atomic whole-document edit, always with a backup before the first write                                                                                                                                                          | `src/host/settings.ts` + `src/host/sdk/settings.ts`, in both cores                                                                |
 | control host      | `settings.*`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `packages.*`, `project.inspect`, `project.trust`, `resources.list` (loads a project's resources with no session), `themes.*`, `keybindings.*`                                                                                                                                                                                                                          | `src/host/control-core.ts`                                                                                                        |
 | extensions hub    | `resources.list` (both cores): extensions/skills/prompts/themes with source, scope, origin, contributed tools/commands/shortcuts/flags, loader diagnostics and live `extension_error` history                                                                                                                                                                                                                                                                                                                                                   | `src/host/resources.ts` (+ `src/host/sdk/resources.ts`)                                                                           |
-| extension UI      | `oi.respond` + `oi.request` events                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `src/host/extension-ui.ts`                                                                                                        |
+| extension UI      | `oi.respond` + `oi.request` events; `oi.state` (the pushed snapshot, also readable on demand), `oi.editorText` (composer mirror), `completion.suggest`/`completion.apply` (host-run extension autocomplete providers). The full `ExtensionUIContext` is bound to every session via `bindSession`                                                                                                                                                                                                                                                | `src/host/extension-ui.ts` + `src/host/sdk/extension-ui.ts` (session host only)                                                   |
 | skills & themes   | `themes.list` (both cores: built-ins + loader themes + conventional dirs + `themes` settings paths, with resolved swatches and the active theme), `themes.import` (validates name/filename/content before writing `<agentDir>/themes/<name>.json`); `keybindings.get/set/reset` (both cores: `<agentDir>/keybindings.json` validated against the documented table, conflicts reported); `shortcuts.list/invoke` (**session host only**: `ExtensionRunner.getShortcuts` with the effective bindings, handler runs with the runner's own context) | `src/host/themes.ts` + `src/host/sdk/themes.ts`, `src/host/keybindings.ts`, `src/host/shortcuts.ts` + `src/host/sdk/shortcuts.ts` |
 
 ### Declared and answering `not_implemented` (with the owning step)
@@ -138,6 +138,44 @@ host reloads the shared settings after a mutation, so the app's cached
 plumbing (`src/main/packages/*`) to the SDK path: the same normalised
 `settings.json` entries and the same `~/.pi/agent/npm` / `<cwd>/.pi/npm` root,
 manifest name (`pi-extensions`) and `.gitignore`.
+
+### Extension UI (plan step 16)
+
+`src/host/extension-ui.ts` owns the stateful half (SDK-free) and
+`src/host/sdk/extension-ui.ts` turns it into Pi's real `ExtensionUIContext` and
+binds it to each session (`bindSession` in `src/host/index.ts`, now wired).
+
+- **Dialogs** (`select`/`confirm`/`input`/`editor`) emit `oi.request` and block
+  until `oi.respond` arrives with the same id — the RPC shape verbatim. A
+  cancelled or aborted dialog resolves to the member's default (`undefined` /
+  `false`), never a rejection the extension would have to catch; a timeout
+  rejects so a wedged host cannot hang a session forever.
+- **State** (`notify`, `setStatus`, `setWidget` string arrays, working message /
+  visibility / indicator, `setHiddenThinkingLabel`, `setTitle`,
+  `getToolsExpanded`/`setToolsExpanded`) is pushed as one `oi.state` snapshot
+  after every change; `undefined` clears a status or widget. `oi.state` also
+  answers on demand, which is what a tab activation uses.
+- **Composer mirror**: `setEditorText`/`pasteToEditor` bump a monotonic `seq` in
+  the snapshot so the renderer applies each host-issued edit exactly once;
+  `oi.editorText` reports the composer's own text back so `getEditorText()` is
+  truthful.
+- **Autocomplete**: extension factories cannot cross the frame boundary, so the
+  host runs the chain and `completion.suggest`/`completion.apply` return plain
+  data. The renderer forwards its built-in `/`, `@`, `#` result as the chain's
+  `current`, so an extension that delegates (the Office bridge does for anything
+  that is not a `#` mention) still sees the app's own completion.
+- **Theme** (`theme`, `getAllThemes`, `getTheme`, `setTheme`) reads Pi's active
+  `Theme` through the well-known global symbol (the SDK exports `initTheme` and
+  `Theme` but not the `theme` proxy); `setTheme` also persists the `theme`
+  setting and emits `oi.theme` so the app chrome follows.
+- **Step 17 surface**: `custom`, `setFooter`, `setHeader`, `setEditorComponent`
+  and `onTerminalInput` are registered but inert — `custom()` returns
+  `undefined` like RPC mode, so an extension that needs the TUI surface degrades
+  instead of hanging. The TUI host replaces these in step 17.
+
+Errors an extension throws while handling an event arrive as `extension_error`
+and render as a transcript notice; an extension asking to shut down emits
+`session.shutdown_requested`, which closes its tab.
 
 ### Extensions hub (plan step 13)
 
@@ -220,4 +258,7 @@ tree selector in-process), `session.queueMode`'s single envelope,
 (project inspection and trust: the TUI resolves trust through its own session,
 so RPC has no command for it), `themes.list/import` (RPC mode never lists
 themes), `keybindings.get/set/reset` (RPC mode never reads `keybindings.json`),
-`shortcuts.list/invoke` (RPC mode has no shortcut protocol).
+`shortcuts.list/invoke` (RPC mode has no shortcut protocol), `oi.state`,
+`oi.editorText`, `completion.suggest`, `completion.apply` (RPC mode has no
+session-state channel, no editor mirror, and cannot evaluate extension
+autocomplete providers).

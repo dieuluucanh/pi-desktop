@@ -1,0 +1,321 @@
+/**
+ * The SDK side of the extension-UI host (plan step 16).
+ *
+ * `src/host/extension-ui.ts` owns all the state and speaks the wire protocol;
+ * this adapter is the only place that turns that state into Pi's real
+ * `ExtensionUIContext` and binds it to a live `AgentSession`. That keeps every
+ * `@earendil-works/*` import inside `src/host/sdk/*` (AGENTS.md rule 4).
+ *
+ * The TUI rendering surface (`custom`, `setFooter`, `setHeader`,
+ * `setEditorComponent`, `onTerminalInput`) is registered here but rendered by
+ * the step-17 host; until then `custom()` returns `undefined`, exactly as Pi's
+ * RPC mode does, so an extension that needs it degrades instead of hanging.
+ */
+
+import {
+  Theme,
+  initTheme,
+  type AgentSession,
+  type AgentSessionRuntime,
+  type AutocompleteProviderFactory,
+  type ExtensionCommandContextActions,
+  type ExtensionError,
+  type ExtensionUIContext,
+  type TerminalInputHandler,
+} from "@earendil-works/pi-coding-agent";
+import { BUILTIN_THEME_SWATCHES } from "../../shared/themes";
+import {
+  SESSION_SHUTDOWN_REQUEST_EVENT,
+  type ExtensionCompletionProviderFactory,
+} from "../../shared/extension-ui";
+import type { ExtensionTerminalInputHandler, ExtensionUiPort } from "../extension-ui";
+
+/**
+ * Pi installs the active theme on this well-known global symbol
+ * (`theme.js` → `Symbol.for(...)`). The SDK exports `initTheme`/`Theme` but not
+ * the `theme` proxy, so reading the global is the only way to hand an extension
+ * the *current* `Theme` object. `tests/host/sdk-extension-ui.test.ts` pins the
+ * symbol: if upstream renames it, the test fails instead of extensions silently
+ * getting a fallback.
+ */
+export const THEME_GLOBAL_SYMBOL = Symbol.for("@earendil-works/pi-coding-agent:theme");
+
+function globalTheme(): Theme | undefined {
+  const value = (globalThis as Record<symbol, unknown>)[THEME_GLOBAL_SYMBOL];
+  return value instanceof Theme ? value : undefined;
+}
+
+const REQUIRED_FG = [
+  "accent",
+  "border",
+  "borderAccent",
+  "borderMuted",
+  "success",
+  "error",
+  "warning",
+  "muted",
+  "dim",
+  "text",
+  "thinkingText",
+  "userMessageText",
+  "customMessageText",
+  "customMessageLabel",
+  "toolTitle",
+  "toolOutput",
+  "mdHeading",
+  "mdLink",
+  "mdLinkUrl",
+  "mdCode",
+  "mdCodeBlock",
+  "mdCodeBlockBorder",
+  "mdQuote",
+  "mdQuoteBorder",
+  "mdHr",
+  "mdListBullet",
+  "toolDiffAdded",
+  "toolDiffRemoved",
+  "toolDiffContext",
+  "syntaxComment",
+  "syntaxKeyword",
+  "syntaxFunction",
+  "syntaxVariable",
+  "syntaxString",
+  "syntaxNumber",
+  "syntaxType",
+  "syntaxOperator",
+  "syntaxPunctuation",
+  "thinkingOff",
+  "thinkingMinimal",
+  "thinkingLow",
+  "thinkingMedium",
+  "thinkingHigh",
+  "thinkingXhigh",
+  "bashMode",
+] as const;
+
+const REQUIRED_BG = [
+  "selectedBg",
+  "userMessageBg",
+  "customMessageBg",
+  "toolPendingBg",
+  "toolSuccessBg",
+  "toolErrorBg",
+] as const;
+
+/**
+ * A last-resort theme for the impossible case where `initTheme` could not
+ * install one (SDK drift). Built from the pinned dark swatches so
+ * `ctx.ui.theme.fg("accent", …)` still works.
+ */
+function fallbackTheme(): Theme {
+  const swatches: Record<string, string | undefined> = BUILTIN_THEME_SWATCHES.dark ?? {};
+  const fg: Record<string, string> = {};
+  for (const key of REQUIRED_FG) fg[key] = swatches[key] ?? swatches.text ?? "#d4d4d4";
+  const bg: Record<string, string> = {};
+  for (const key of REQUIRED_BG) bg[key] = swatches.surface ?? "#1e1e24";
+  return new Theme(fg as never, bg as never, "truecolor", { name: "dark" });
+}
+
+export interface SdkThemeAccess {
+  current(): Theme;
+  all(): Array<{ name: string; path: string | undefined }>;
+  get(name: string): Theme | undefined;
+  set(theme: string | Theme): { success: boolean; error?: string };
+}
+
+export interface SdkThemeAccessOptions {
+  /** The live session (its loader reports user/project themes). */
+  session: AgentSession;
+  /** Reads and persists the `theme` setting. */
+  settings?: { getTheme?(): string | undefined; setTheme?(name: string): void } | null;
+}
+
+function loaderThemeInfos(
+  session: AgentSession,
+): Array<{ name: string; path: string | undefined }> {
+  const infos = new Map<string, { name: string; path: string | undefined }>();
+  for (const name of ["dark", "light"]) infos.set(name, { name, path: undefined });
+  try {
+    const themes = session.resourceLoader.getThemes() as { themes?: unknown } | undefined;
+    const entries = themes?.themes;
+    if (Array.isArray(entries)) {
+      for (const entry of entries) {
+        if (!entry || typeof entry !== "object") continue;
+        const record = entry as Record<string, unknown>;
+        const name = typeof record.name === "string" ? record.name : undefined;
+        if (!name) continue;
+        infos.set(name, {
+          name,
+          path: typeof record.sourcePath === "string" ? record.sourcePath : undefined,
+        });
+      }
+    }
+  } catch {
+    // A loader that cannot list themes still gets the built-ins.
+  }
+  return [...infos.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function createSdkThemeAccess(options: SdkThemeAccessOptions): SdkThemeAccess {
+  const settings = options.settings ?? null;
+  let active = settings?.getTheme?.() ?? "dark";
+  initTheme(active);
+  if (!globalTheme()) {
+    active = "dark";
+    initTheme(active);
+  }
+
+  const all = (): Array<{ name: string; path: string | undefined }> =>
+    loaderThemeInfos(options.session);
+
+  return {
+    current: () => globalTheme() ?? fallbackTheme(),
+    all,
+    get(name) {
+      if (!all().some((info) => info.name === name)) return undefined;
+      if (name === active) return globalTheme() ?? fallbackTheme();
+      // `initTheme` is synchronous; switch, read and restore.
+      const previous = active;
+      initTheme(name);
+      const theme = globalTheme();
+      initTheme(previous);
+      return theme;
+    },
+    set(themeOrName) {
+      if (themeOrName instanceof Theme) {
+        (globalThis as Record<symbol, unknown>)[THEME_GLOBAL_SYMBOL] = themeOrName;
+        active = themeOrName.name ?? active;
+        return { success: true };
+      }
+      if (!all().some((info) => info.name === themeOrName)) {
+        return { success: false, error: `Unknown theme: ${themeOrName}` };
+      }
+      initTheme(themeOrName);
+      active = themeOrName;
+      settings?.setTheme?.(themeOrName);
+      return { success: true };
+    },
+  };
+}
+
+/**
+ * Wraps the host port in Pi's `ExtensionUIContext`. The TUI-surface members are
+ * inert until step 17; everything else is a direct delegate.
+ */
+export function createSdkExtensionUiContext(
+  port: ExtensionUiPort,
+  themeAccess: SdkThemeAccess,
+): ExtensionUIContext {
+  return {
+    select: (title, choices, opts) => port.select(title, choices, opts),
+    confirm: (title, message, opts) => port.confirm(title, message, opts),
+    input: (title, placeholder, opts) => port.input(title, placeholder, opts),
+    editor: (title, prefill) => port.editor(title, prefill),
+    notify: (message, type) => port.notify(message, type),
+    onTerminalInput: (handler: TerminalInputHandler) =>
+      port.onTerminalInput(handler as ExtensionTerminalInputHandler),
+    setStatus: (key, text) => port.setStatus(key, text),
+    setWorkingMessage: (message) => port.setWorkingMessage(message),
+    setWorkingVisible: (visible) => port.setWorkingVisible(visible),
+    setWorkingIndicator: (indicator) => port.setWorkingIndicator(indicator),
+    setHiddenThinkingLabel: (label) => port.setHiddenThinkingLabel(label),
+    setWidget(key, content, widgetOptions) {
+      // A component factory cannot cross the frame boundary; step 17 renders it.
+      if (typeof content === "function") return;
+      port.setWidget(key, content, widgetOptions);
+    },
+    setFooter: (factory) => port.setFooter(factory),
+    setHeader: (factory) => port.setHeader(factory),
+    setTitle: (title) => port.setTitle(title),
+    custom: async <T>() => undefined as T,
+    pasteToEditor: (text) => port.pasteToEditor(text),
+    setEditorText: (text) => port.setEditorText(text),
+    getEditorText: () => port.getEditorText(),
+    addAutocompleteProvider(factory: AutocompleteProviderFactory) {
+      // SAFETY: pi-tui's `AutocompleteProvider` is structurally identical to
+      // `ExtensionCompletionProvider` (same fields, same signatures) — the
+      // shared type is a deliberate mirror so host evaluation can run it.
+      port.addAutocompleteProvider(factory as unknown as ExtensionCompletionProviderFactory);
+    },
+    setEditorComponent: (factory) => port.setEditorComponent(factory),
+    getEditorComponent: () => port.getEditorComponent() as never,
+    get theme() {
+      return themeAccess.current();
+    },
+    getAllThemes: () => themeAccess.all(),
+    getTheme: (name) => themeAccess.get(name),
+    setTheme: (themeOrName) => {
+      const result = themeAccess.set(themeOrName);
+      if (result.success) {
+        const name = typeof themeOrName === "string" ? themeOrName : (themeOrName.name ?? "");
+        if (name) port.emitTheme(name);
+      }
+      return result;
+    },
+    getToolsExpanded: () => port.getToolsExpanded(),
+    setToolsExpanded: (expanded) => port.setToolsExpanded(expanded),
+  };
+}
+
+/** The runtime commands an extension command context needs (plan step 16). */
+export function createSdkCommandContextActions(
+  session: AgentSession,
+  runtime: AgentSessionRuntime,
+): ExtensionCommandContextActions {
+  return {
+    waitForIdle: () => session.waitForIdle(),
+    newSession: (options) => runtime.newSession(options),
+    fork: (entryId, options) => runtime.fork(entryId, options),
+    navigateTree: (targetId, options) => session.navigateTree(targetId, options),
+    switchSession: (sessionPath, options) => runtime.switchSession(sessionPath, options),
+    reload: () => session.reload(),
+  };
+}
+
+export interface SdkExtensionBinderOptions {
+  port: ExtensionUiPort;
+  /** The host's event emitter, so errors and shutdown requests reach the app. */
+  emit(event: string, payload?: unknown, sessionId?: string): void;
+}
+
+/**
+ * Builds the `bindSession` callback the session core calls for every session it
+ * attaches (create, open, resume and every rebind after a session replacement).
+ */
+export function createSdkExtensionBinder(
+  options: SdkExtensionBinderOptions,
+): (session: AgentSession, runtime: AgentSessionRuntime) => Promise<void> {
+  return async (session, runtime) => {
+    const settings = session.settingsManager;
+    const themeAccess = createSdkThemeAccess({
+      session,
+      settings: settings
+        ? {
+            ...(typeof settings.getTheme === "function"
+              ? { getTheme: () => settings.getTheme() }
+              : {}),
+            ...(typeof settings.setTheme === "function"
+              ? { setTheme: (name: string) => settings.setTheme(name) }
+              : {}),
+          }
+        : null,
+    });
+    const uiContext = createSdkExtensionUiContext(options.port, themeAccess);
+    await session.bindExtensions({
+      uiContext,
+      // Step 17 makes the TUI surface real; reporting `tui` now means an
+      // extension that branches on mode takes the same path it would in the
+      // terminal, and its unimplemented members degrade rather than throw.
+      mode: "tui",
+      commandContextActions: createSdkCommandContextActions(session, runtime),
+      shutdownHandler: () => options.emit(SESSION_SHUTDOWN_REQUEST_EVENT, {}),
+      onError: (error: ExtensionError) =>
+        options.emit("extension_error", {
+          extensionPath: error.extensionPath,
+          event: error.event,
+          error: error.error,
+          ...(error.stack ? { stack: error.stack } : {}),
+        }),
+    });
+  };
+}

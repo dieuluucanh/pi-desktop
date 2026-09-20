@@ -9,6 +9,7 @@ import { TabStrip } from "./layout/TabStrip";
 import { TitleBar } from "./layout/TitleBar";
 import { handleMenuCommand } from "./menu-actions";
 import { useAppStore, type AppView } from "./state/app-store";
+import { ExtensionDialog } from "./extension-ui/ExtensionDialog";
 import { ShortcutDispatcher } from "./shortcuts/ShortcutDispatcher";
 import { ShortcutsHelp } from "./shortcuts/ShortcutsHelp";
 import { Toaster } from "./ui/toaster";
@@ -130,6 +131,7 @@ export function App() {
       <SessionBrowserDialog />
       <SessionTreeDialog />
       <ForkDialog />
+      <ExtensionDialog />
       <ProviderLoginDialog />
       <PackageConsentDialog />
       <TrustDialog />

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { toast } from "sonner";
 import type { AppInfo } from "../../../shared/ipc";
 import {
   DEFAULT_PREFS,
@@ -49,6 +50,25 @@ import {
   type SessionTabsEnvelope,
   type TabRecord,
 } from "../../../shared/session-ipc";
+import {
+  EMPTY_EXTENSION_UI,
+  EXTENSION_UI_NOTIFY_EVENT,
+  EXTENSION_UI_REQUEST_EVENT,
+  EXTENSION_UI_STATE_EVENT,
+  EXTENSION_UI_THEME_EVENT,
+  SESSION_SHUTDOWN_REQUEST_EVENT,
+  parseExtensionDialogRequest,
+  parseExtensionNotification,
+  sanitizeCompletionSuggestions,
+  sanitizeExtensionUiSnapshot,
+  type ExtensionCompletionApplyRequest,
+  type ExtensionCompletionRequest,
+  type ExtensionCompletionResult,
+  type ExtensionCompletionSuggestions,
+  type ExtensionDialogRequest,
+  type ExtensionNotification,
+  type ExtensionUiSnapshot,
+} from "../../../shared/extension-ui";
 import {
   mostRecentSessionForProject,
   sanitizeSessionList,
@@ -143,6 +163,17 @@ export interface PromptImage {
  */
 let draftPersistTimer: ReturnType<typeof setTimeout> | null = null;
 export const DRAFT_PERSIST_DELAY_MS = 500;
+
+/**
+ * The last extension `setEditorText`/`pasteToEditor` sequence applied per tab
+ * (plan step 16). A host-issued edit is applied exactly once, so a state push
+ * that repeats it cannot clobber the user's typing.
+ */
+const appliedEditorSeq = new Map<string, number>();
+
+/** Per-tab debounce for the `oi.editorText` mirror, so typing is not one frame per key. */
+const editorTextTimers = new Map<string, ReturnType<typeof setTimeout>>();
+export const EDITOR_TEXT_DELAY_MS = 250;
 
 export const APP_VIEWS: readonly AppView[] = [
   "welcome",
@@ -458,6 +489,35 @@ export interface AppStateShape {
   /** Recolours the chrome from the active Pi theme (data-theme + tokens). */
   applyChromeTheme: () => void;
 
+  /** Extension UI (plan step 16): per-tab state pushed by each session host. */
+  extensionUi: Record<string, ExtensionUiSnapshot>;
+  /** Dialogs waiting for an answer, oldest first. */
+  extensionDialogs: ExtensionDialogRequest[];
+  /** Notification history (the toast centre's backing list). */
+  extensionNotifications: ExtensionNotification[];
+  /** Fetches `oi.state` for a tab (called on activation). */
+  loadExtensionUi: (tabId: string) => Promise<void>;
+  /** Applies one `oi.*` host event (dialog, notification, state, theme, shutdown). */
+  handleExtensionUiEvent: (tabId: string, entry: SessionEventEntry) => void;
+  /** Answers a dialog through `oi.respond`; `cancelled` closes it unanswered. */
+  answerExtensionDialog: (
+    dialog: ExtensionDialogRequest,
+    answer: { value?: string; confirmed?: boolean; cancelled?: boolean },
+  ) => Promise<void>;
+  clearExtensionNotifications: () => void;
+  /** Mirrors the composer text back to the host for `ctx.ui.getEditorText()`. */
+  reportEditorText: (tabId: string, text: string) => void;
+  /** Runs extension autocomplete providers in the host (plan step 16). */
+  extensionCompletion: (
+    tabId: string,
+    request: ExtensionCompletionRequest,
+  ) => Promise<ExtensionCompletionSuggestions | null>;
+  /** Applies the extension chain's own completion to the buffer. */
+  extensionApplyCompletion: (
+    tabId: string,
+    request: ExtensionCompletionApplyRequest,
+  ) => Promise<ExtensionCompletionResult | null>;
+
   createSessionTab: () => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
@@ -598,6 +658,25 @@ function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {
 }
 
 /**
+ * Host events that belong to the extension UI rather than the transcript (plan
+ * step 16). `extension_error` is deliberately absent: it renders as a notice.
+ */
+const EXTENSION_UI_EVENTS = new Set<string>([
+  EXTENSION_UI_REQUEST_EVENT,
+  EXTENSION_UI_STATE_EVENT,
+  EXTENSION_UI_NOTIFY_EVENT,
+  EXTENSION_UI_THEME_EVENT,
+  SESSION_SHUTDOWN_REQUEST_EVENT,
+]);
+
+/** Toast copy per notification kind; `error` also stays in the history panel. */
+function notifyToast(message: string, type: ExtensionNotification["type"]): void {
+  if (type === "error") toast.error(message);
+  else if (type === "warning") toast.warning(message);
+  else toast(message);
+}
+
+/**
  * Which host answers the Extensions hub (plan step 13): the active session tab
  * when one exists (live, with `extension_error` history), otherwise the app-wide
  * control host, which loads resources on demand.
@@ -706,6 +785,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   shortcutsBusy: false,
   shortcutsError: null,
   shortcutsHelpOpen: false,
+  extensionUi: {},
+  extensionDialogs: [],
+  extensionNotifications: [],
 
   setView: (view) => set({ view, hint: null }),
   openPalette: () => set({ paletteOpen: true }),
@@ -996,7 +1078,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         void get().inspectProject(cwd);
       }
     }
-    const rest = envelope.events.filter((entry) => entry.event !== "project_trust");
+    // Extension UI events are not transcript content: dialogs, notifications,
+    // status/widget snapshots and theme switches are applied here (plan step 16).
+    for (const entry of envelope.events) get().handleExtensionUiEvent(envelope.tabId, entry);
+    const rest = envelope.events.filter(
+      (entry) => entry.event !== "project_trust" && !EXTENSION_UI_EVENTS.has(entry.event),
+    );
     if (rest.length === 0) return;
     const current = get().transcripts[envelope.tabId] ?? createTranscriptState();
     set({
@@ -1045,6 +1132,134 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
+  loadExtensionUi: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions || tabId === CONTROL_TAB_ID) return;
+    try {
+      const result = await api.sessions.request({ tabId, method: "oi.state" });
+      const snapshot = sanitizeExtensionUiSnapshot(result);
+      set({ extensionUi: { ...get().extensionUi, [tabId]: snapshot } });
+      if (snapshot.title && get().activeTabId === tabId) void api.setTitle(snapshot.title);
+    } catch {
+      // A host without the extension UI port still streams; keep the empty state.
+      set({ extensionUi: { ...get().extensionUi, [tabId]: { ...EMPTY_EXTENSION_UI } } });
+    }
+  },
+
+  handleExtensionUiEvent: (tabId, entry) => {
+    if (entry.event === EXTENSION_UI_STATE_EVENT) {
+      const snapshot = sanitizeExtensionUiSnapshot(entry.payload);
+      const previousTitle = get().extensionUi[tabId]?.title ?? null;
+      set({ extensionUi: { ...get().extensionUi, [tabId]: snapshot } });
+      // `ctx.ui.setTitle` sets the window title while its tab is focused.
+      if (snapshot.title && snapshot.title !== previousTitle && get().activeTabId === tabId) {
+        void bridge()?.setTitle(snapshot.title);
+      }
+      const command = snapshot.editor;
+      if (command && command.seq > (appliedEditorSeq.get(tabId) ?? 0)) {
+        appliedEditorSeq.set(tabId, command.seq);
+        get().setDraft(tabId, command.text);
+      }
+      return;
+    }
+    if (entry.event === EXTENSION_UI_REQUEST_EVENT) {
+      const dialog = parseExtensionDialogRequest(entry.payload, tabId);
+      if (!dialog) return;
+      set({ extensionDialogs: [...get().extensionDialogs, dialog] });
+      // A dialog belongs to its tab, so bring that tab forward rather than
+      // letting the extension block behind a background tab (plan risk R5).
+      if (get().activeTabId !== tabId) void get().activateTab(tabId);
+      return;
+    }
+    if (entry.event === EXTENSION_UI_NOTIFY_EVENT) {
+      const notification = parseExtensionNotification(entry.payload, tabId);
+      if (!notification) return;
+      set({
+        extensionNotifications: [notification, ...get().extensionNotifications].slice(0, 100),
+      });
+      notifyToast(notification.message, notification.type);
+      return;
+    }
+    if (entry.event === EXTENSION_UI_THEME_EVENT) {
+      const payload = entry.payload as { name?: unknown } | undefined;
+      if (typeof payload?.name === "string") void get().setActiveTheme(payload.name);
+      return;
+    }
+    if (entry.event === SESSION_SHUTDOWN_REQUEST_EVENT) {
+      // An extension asked to quit; the session host is the app's unit of work,
+      // so closing its tab is the desktop equivalent of Pi's shutdown.
+      void get().closeTab(tabId);
+    }
+  },
+
+  answerExtensionDialog: async (dialog, answer) => {
+    const api = bridge();
+    set({ extensionDialogs: get().extensionDialogs.filter((entry) => entry.id !== dialog.id) });
+    if (!api?.sessions) return;
+    try {
+      await api.sessions.request({
+        tabId: dialog.tabId,
+        method: "oi.respond",
+        params: { id: dialog.id, ...answer },
+      });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  clearExtensionNotifications: () => set({ extensionNotifications: [] }),
+
+  reportEditorText: (tabId, text) => {
+    const request = bridge()?.sessions?.request({
+      tabId,
+      method: "oi.editorText",
+      params: { text },
+    });
+    if (request) void request.then(undefined, () => undefined);
+  },
+
+  extensionCompletion: async (tabId, request) => {
+    const api = bridge();
+    if (!api?.sessions) return null;
+    try {
+      const result = await api.sessions.request({
+        tabId,
+        method: "completion.suggest",
+        params: request,
+      });
+      return sanitizeCompletionSuggestions(result);
+    } catch {
+      return null;
+    }
+  },
+
+  extensionApplyCompletion: async (tabId, request) => {
+    const api = bridge();
+    if (!api?.sessions) return null;
+    try {
+      const result = (await api.sessions.request({
+        tabId,
+        method: "completion.apply",
+        params: request,
+      })) as Partial<ExtensionCompletionResult> | null;
+      if (
+        !result ||
+        !Array.isArray(result.lines) ||
+        typeof result.cursorLine !== "number" ||
+        typeof result.cursorCol !== "number"
+      ) {
+        return null;
+      }
+      return {
+        lines: result.lines.filter((line): line is string => typeof line === "string"),
+        cursorLine: result.cursorLine,
+        cursorCol: result.cursorCol,
+      };
+    } catch {
+      return null;
+    }
+  },
+
   setSendMode: (tabId, mode) => set({ sendModes: { ...get().sendModes, [tabId]: mode } }),
 
   setDraft: (tabId, text) => {
@@ -1055,6 +1270,17 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       draftPersistTimer = null;
       void bridge()?.prefs.set({ drafts: useAppStore.getState().prefs.drafts });
     }, DRAFT_PERSIST_DELAY_MS);
+    // Mirror the composer back to the host so `ctx.ui.getEditorText()` is
+    // truthful (plan step 16). Debounced per tab, never per keystroke.
+    const pending = editorTextTimers.get(tabId);
+    if (pending) clearTimeout(pending);
+    editorTextTimers.set(
+      tabId,
+      setTimeout(() => {
+        editorTextTimers.delete(tabId);
+        get().reportEditorText(tabId, useAppStore.getState().prefs.drafts[tabId] ?? "");
+      }, EDITOR_TEXT_DELAY_MS),
+    );
   },
 
   openPicker: (picker) => set({ picker }),
@@ -2231,6 +2457,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.sessions) return;
     set({ activeTabId: tabId, view: "session" });
+    // The extension UI state is per host: fetch it for the tab being shown
+    // (statuses, widgets, working state) instead of trusting a stale snapshot.
+    void get().loadExtensionUi(tabId);
     try {
       get().applyTabs(await api.sessions.activate(tabId));
     } catch (error) {

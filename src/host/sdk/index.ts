@@ -173,3 +173,18 @@ export { createSdkKeybindingPort, type SdkKeybindingPortOptions } from "./keybin
 
 /** Extension shortcuts over a live `ExtensionRunner` (plan step 15). */
 export { createSdkShortcutRunner, type SdkExtensionRunner } from "./shortcuts";
+
+/**
+ * The extension-UI host (plan step 16): Pi's `ExtensionUIContext` over the
+ * SDK-free UI port, plus the `bindSession` callback the session core calls.
+ */
+export {
+  createSdkCommandContextActions,
+  createSdkExtensionBinder,
+  createSdkExtensionUiContext,
+  createSdkThemeAccess,
+  THEME_GLOBAL_SYMBOL,
+  type SdkExtensionBinderOptions,
+  type SdkThemeAccess,
+  type SdkThemeAccessOptions,
+} from "./extension-ui";

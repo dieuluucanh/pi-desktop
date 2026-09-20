@@ -22,17 +22,28 @@ import {
   type CompletionProvider,
   type CompletionProviderFactory,
 } from "./types";
+import {
+  createExtensionCompletionProvider,
+  type ExtensionCompletionBridge,
+} from "./extension-source";
 
 export interface CompletionStackOptions {
   command?: CompletionProvider | null;
   file?: CompletionProvider | null;
   document?: CompletionProvider | null;
-  /** Extension providers, applied in registration order. */
+  /**
+   * Host-run extension providers (plan step 16). The factories live in the host
+   * (a function cannot cross the frame boundary), so the whole chain is
+   * evaluated there and this bridge fetches the result.
+   */
+  extension?: ExtensionCompletionBridge | null;
+  /** Local factories, applied in registration order (tests and future sources). */
   extensionFactories?: readonly CompletionProviderFactory[];
 }
 
 export function createCompletionProvider(options: CompletionStackOptions = {}): CompletionProvider {
-  const base = createBaseProvider(options);
+  let base = createBaseProvider(options);
+  if (options.extension) base = createExtensionCompletionProvider(base, options.extension);
   return applyProviderFactories(base, options.extensionFactories ?? []);
 }
 

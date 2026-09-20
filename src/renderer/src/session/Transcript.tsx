@@ -102,8 +102,8 @@ function diffPropsFor(tool: TranscriptToolRun): { before: string; after: string 
   return null;
 }
 
-export function ToolCard({ tool }: { tool: TranscriptToolRun }) {
-  const [open, setOpen] = useState(tool.isError);
+export function ToolCard({ tool, expanded }: { tool: TranscriptToolRun; expanded?: boolean }) {
+  const [open, setOpen] = useState(tool.isError || expanded === true);
   const diff = diffPropsFor(tool);
   const output = tool.resultText ?? tool.partial ?? "";
   const summary = toolSummary(tool);
@@ -205,7 +205,13 @@ function MessageActions({ text }: { text: string }) {
   );
 }
 
-function MessageView({ message }: { message: TranscriptMessage }) {
+function MessageView({
+  message,
+  thinkingLabel,
+}: {
+  message: TranscriptMessage;
+  thinkingLabel?: string | null;
+}) {
   if (message.role === "compaction" || message.role === "branchSummary") {
     return (
       <details className="my-2 rounded-sm border border-line bg-sunken/60 px-3 py-2">
@@ -246,7 +252,11 @@ function MessageView({ message }: { message: TranscriptMessage }) {
   const body = (
     <>
       {thinking.map((block, index) => (
-        <ThinkingBlock key={`thinking-${index}`} text={block.text} />
+        <ThinkingBlock
+          key={`thinking-${index}`}
+          text={block.text}
+          {...(thinkingLabel ? { label: thinkingLabel } : {})}
+        />
       ))}
       {text.length > 0 ? <Markdown>{text.map((block) => block.text).join("")}</Markdown> : null}
       {images.map((block, index) => (
@@ -285,13 +295,24 @@ function TranscriptItemView({
   item,
   onAbort,
   running,
+  thinkingLabel,
+  toolsExpanded,
 }: {
   item: TranscriptItem;
   onAbort?: () => void;
   running?: boolean;
+  thinkingLabel?: string | null;
+  toolsExpanded?: boolean;
 }) {
-  if (item.kind === "message") return <MessageView message={item.message} />;
-  if (item.kind === "tool") return <ToolCard tool={item.tool} />;
+  if (item.kind === "message")
+    return <MessageView message={item.message} thinkingLabel={thinkingLabel ?? null} />;
+  if (item.kind === "tool")
+    return (
+      <ToolCard
+        tool={item.tool}
+        {...(toolsExpanded === undefined ? {} : { expanded: toolsExpanded })}
+      />
+    );
   return (
     <NoticeView
       notice={item.notice}
@@ -352,11 +373,17 @@ export function Transcript({
   onAbort,
   running,
   empty,
+  thinkingLabel,
+  toolsExpanded,
 }: {
   items: readonly TranscriptItem[];
   onAbort?: () => void;
   running?: boolean;
   empty?: { cwd?: string; project?: string | null; model?: string | null };
+  /** `ctx.ui.setHiddenThinkingLabel`; null keeps the app default. */
+  thinkingLabel?: string | null;
+  /** `ctx.ui.getToolsExpanded`; null leaves each card's own default. */
+  toolsExpanded?: boolean | null;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
@@ -399,6 +426,8 @@ export function Transcript({
             item={item}
             {...(onAbort ? { onAbort } : {})}
             {...(running === undefined ? {} : { running })}
+            {...(thinkingLabel ? { thinkingLabel } : {})}
+            {...(toolsExpanded === null || toolsExpanded === undefined ? {} : { toolsExpanded })}
           />
         ))}
       </div>
@@ -428,6 +457,10 @@ export function Transcript({
                 item={item}
                 {...(onAbort ? { onAbort } : {})}
                 {...(running === undefined ? {} : { running })}
+                {...(thinkingLabel ? { thinkingLabel } : {})}
+                {...(toolsExpanded === null || toolsExpanded === undefined
+                  ? {}
+                  : { toolsExpanded })}
               />
             </div>
           );

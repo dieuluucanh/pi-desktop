@@ -198,6 +198,20 @@ describe("session core lifecycle", () => {
     expect(core.cwd()).toBe(CWD);
   });
 
+  it("hands the live session and its runtime to bindSession", async () => {
+    const bound: Array<{ session: HostSession; runtime: RuntimeLike }> = [];
+    const { call, runtime } = harness({
+      bindSession: async (session, boundRuntime) => {
+        bound.push({ session, runtime: boundRuntime });
+      },
+    });
+
+    await call("session.create");
+    expect(bound).toHaveLength(1);
+    expect(bound[0]!.session.sessionId).toBe("session-1");
+    expect(bound[0]!.runtime).toBe(runtime);
+  });
+
   it("refuses to act before a session exists", async () => {
     const { call } = harness();
 
