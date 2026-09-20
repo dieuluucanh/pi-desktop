@@ -6,11 +6,20 @@ import {
   type UiPrefs,
   type ViewMode,
 } from "../../../shared/prefs";
-import type {
-  SessionEventEnvelope,
-  SessionStateEnvelope,
-  SessionTabsEnvelope,
-  TabRecord,
+import {
+  PROVIDER_LOGIN_EVENT,
+  isProviderLoginPrompt,
+  type ProviderAuthPrompt,
+  type ProviderLoginEvent,
+  type ProviderSummary,
+} from "../../../shared/providers";
+import {
+  CONTROL_TAB_ID,
+  type SessionEventEnvelope,
+  type SessionEventEntry,
+  type SessionStateEnvelope,
+  type SessionTabsEnvelope,
+  type TabRecord,
 } from "../../../shared/session-ipc";
 import {
   createTranscriptState,
@@ -177,6 +186,24 @@ export interface AppStateShape {
   setViewMode: (mode: ViewMode) => void;
   openPicker: (picker: PickerKind) => void;
   closePicker: () => void;
+
+  /** Connections — providers, credentials and sign-in (plan step 9). */
+  providers: ProviderSummary[];
+  providersLoaded: boolean;
+  providersError: string | null;
+  providerLogin: ProviderLoginState | null;
+  loadProviders: () => Promise<void>;
+  /** Writes a key through Pi; throws so the write-only form can show the error. */
+  setProviderKey: (providerId: string, apiKey: string) => Promise<void>;
+  logoutProvider: (providerId: string) => Promise<void>;
+  startProviderLogin: (providerId: string) => Promise<void>;
+  cancelProviderLogin: () => Promise<void>;
+  /** Aborts a running sign-in, then hides the dialog. */
+  dismissProviderLogin: () => void;
+  answerProviderLogin: (value: string | undefined) => Promise<void>;
+  /** Routes a control-host event (provider login) rather than a transcript. */
+  applyControlEvent: (entry: SessionEventEntry) => void;
+
   createSessionTab: () => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
@@ -204,6 +231,23 @@ export interface CommandOutcome {
 
 /** Which model/thinking dialog is open (plan step 8). */
 export type PickerKind = "model" | "thinking";
+
+/**
+ * The visible state of an in-flight provider sign-in (plan step 9).
+ *
+ * `url`/`deviceCode` mirror what Pi reported; the URL has already been opened
+ * in the system browser, and `prompt` is the `oi.request` the flow is blocked on
+ * until `answerProviderLogin` responds.
+ */
+export interface ProviderLoginState {
+  loginId: string;
+  providerId: string;
+  status: "running" | "done" | "error" | "cancelled";
+  message: string | null;
+  url: string | null;
+  deviceCode: { userCode: string; verificationUri: string } | null;
+  prompt: { id: string; prompt: ProviderAuthPrompt } | null;
+}
 
 /** The last path segment of a project directory, used as its display name. */
 export function projectNameOf(path: string): string {
@@ -237,6 +281,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   providerAuth: {},
   thinkingLevels: {},
   picker: null,
+  providers: [],
+  providersLoaded: false,
+  providersError: null,
+  providerLogin: null,
 
   setView: (view) => set({ view, hint: null }),
   openPalette: () => set({ paletteOpen: true }),
@@ -291,6 +339,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   applyTabs: (envelope) => set({ tabs: envelope.tabs, activeTabId: envelope.activeTabId }),
 
   applySessionEvents: (envelope) => {
+    // The control host is addressed like a tab but has no transcript: its events
+    // are provider-login progress and prompts (plan step 9).
+    if (envelope.tabId === CONTROL_TAB_ID) {
+      for (const entry of envelope.events) get().applyControlEvent(entry);
+      return;
+    }
     const current = get().transcripts[envelope.tabId] ?? createTranscriptState();
     set({
       transcripts: {
@@ -646,6 +700,194 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       direction === -1 ? Math.min(current + 1, history.length - 1) : Math.max(current - 1, -1);
     set({ historyIndex: { ...get().historyIndex, [tabId]: next } });
     return next === -1 ? null : (history[next] ?? null);
+  },
+
+  // ---- Connections: providers, credentials and sign-in (plan step 9) ----
+
+  loadProviders: async () => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      const result = (await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "providers.list",
+      })) as { providers?: ProviderSummary[] };
+      set({ providers: result.providers ?? [], providersLoaded: true, providersError: null });
+    } catch (error) {
+      set({
+        providersLoaded: true,
+        providersError: error instanceof Error ? error.message : String(error),
+      });
+    }
+  },
+
+  setProviderKey: async (providerId, apiKey) => {
+    const api = bridge();
+    if (!api?.sessions) throw new Error("The preload bridge is unavailable.");
+    // The key travels one way: it is sent and never read back.
+    await api.sessions.request({
+      tabId: CONTROL_TAB_ID,
+      method: "providers.setKey",
+      params: { providerId, apiKey },
+    });
+    await get().loadProviders();
+  },
+
+  logoutProvider: async (providerId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    await api.sessions.request({
+      tabId: CONTROL_TAB_ID,
+      method: "providers.logout",
+      params: { providerId },
+    });
+    await get().loadProviders();
+  },
+
+  startProviderLogin: async (providerId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      const result = (await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "providers.login",
+        params: { providerId },
+      })) as { loginId?: string };
+      if (result?.loginId) {
+        set({
+          providerLogin: {
+            loginId: result.loginId,
+            providerId,
+            status: "running",
+            message: null,
+            url: null,
+            deviceCode: null,
+            prompt: null,
+          },
+        });
+      }
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  cancelProviderLogin: async () => {
+    const login = get().providerLogin;
+    const api = bridge();
+    if (!login || !api?.sessions) return;
+    if (login.status === "running") {
+      // Abort first so the flow stops even if the dialog is gone next tick.
+      try {
+        await api.sessions.request({
+          tabId: CONTROL_TAB_ID,
+          method: "providers.cancel",
+          params: { loginId: login.loginId },
+        });
+      } catch {
+        // The flow may already have finished; the terminal event is authoritative.
+      }
+    }
+    set({ providerLogin: null });
+  },
+
+  dismissProviderLogin: () => {
+    void get().cancelProviderLogin();
+  },
+
+  answerProviderLogin: async (value) => {
+    const login = get().providerLogin;
+    const api = bridge();
+    if (!login?.prompt || !api?.sessions) return;
+    try {
+      await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "oi.respond",
+        params: { id: login.prompt.id, value },
+      });
+      set({ providerLogin: { ...login, prompt: null } });
+    } catch (error) {
+      set({ hint: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  applyControlEvent: (entry) => {
+    if (entry.event === PROVIDER_LOGIN_EVENT) {
+      const event = entry.payload as ProviderLoginEvent | undefined;
+      if (!event) return;
+
+      if (event.phase === "started") {
+        set({
+          providerLogin: {
+            loginId: event.loginId,
+            providerId: event.providerId,
+            status: "running",
+            message: null,
+            url: null,
+            deviceCode: null,
+            prompt: null,
+          },
+        });
+        return;
+      }
+
+      const current = get().providerLogin;
+      // A late event from a previous attempt must not reopen a closed dialog.
+      if (current && current.loginId !== event.loginId) return;
+      const base: ProviderLoginState = current ?? {
+        loginId: event.loginId,
+        providerId: event.providerId,
+        status: "running",
+        message: null,
+        url: null,
+        deviceCode: null,
+        prompt: null,
+      };
+
+      if (event.phase === "progress") {
+        const next: ProviderLoginState = { ...base };
+        if (event.event.type === "progress" || event.event.type === "info") {
+          next.message = event.event.message;
+        } else if (event.event.type === "auth_url") {
+          next.url = event.event.url;
+          next.message = event.event.instructions ?? "Finish signing in in your browser.";
+          // System browser by default (plan step 9); an in-app tab is step 21.
+          void bridge()?.openExternal(event.event.url);
+        } else if (event.event.type === "device_code") {
+          next.deviceCode = {
+            userCode: event.event.userCode,
+            verificationUri: event.event.verificationUri,
+          };
+          next.message = `Enter code ${event.event.userCode}`;
+          void bridge()?.openExternal(event.event.verificationUri);
+        }
+        set({ providerLogin: next });
+        return;
+      }
+
+      const status =
+        event.phase === "done" ? "done" : event.phase === "error" ? "error" : "cancelled";
+      const message =
+        event.phase === "error"
+          ? event.message
+          : event.phase === "done"
+            ? "Signed in."
+            : "Cancelled.";
+      set({ providerLogin: { ...base, status, message, prompt: null } });
+      if (event.phase === "done") void get().loadProviders();
+      return;
+    }
+
+    if (entry.event === "oi.request") {
+      const payload = entry.payload as { id?: unknown; params?: unknown } | undefined;
+      if (!payload || typeof payload.id !== "string" || !isProviderLoginPrompt(payload.params)) {
+        return;
+      }
+      const login = get().providerLogin;
+      if (!login || login.loginId !== payload.params.loginId) return;
+      set({
+        providerLogin: { ...login, prompt: { id: payload.id, prompt: payload.params.prompt } },
+      });
+    }
   },
 
   createSessionTab: async () => {

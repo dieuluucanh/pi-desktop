@@ -151,6 +151,7 @@ export const HOST_METHODS = [
   "bash.abort", // abort_bash
   "providers.runtimeKey", // setRuntimeApiKey (no RPC equivalent)
   "providers.refresh", // refresh (no RPC equivalent)
+  "providers.cancel", // cancels an in-flight OAuth login (no RPC equivalent)
   "providers.custom", // models.json gateway editor (no RPC equivalent)
 ] as const;
 

@@ -15,6 +15,8 @@ import { createControlCore } from "./control-core";
 import { createExtensionUiBridge } from "./extension-ui";
 import { createNodeFileListingIo } from "./file-io";
 import { listWorkspaceFiles } from "./file-listing";
+import { createProviderLoginHandlers } from "./provider-login";
+import type { ProviderPort } from "./providers";
 import { createSessionCore, type SessionCore } from "./session-core";
 import { createHostService, type HostHandler, type HostService } from "./service";
 import {
@@ -131,13 +133,17 @@ export function resolveHostRole(
  * profile-wide session list. Deliberately no session runtime — a control host
  * never owns an `AgentSession` (plan D-A3).
  */
-function createControlHostCore(options: { cwd: string; agentDir: string }) {
+function createControlHostCore(options: {
+  cwd: string;
+  agentDir: string;
+  providers: ProviderPort;
+}) {
   return createControlCore({
     createSettings: () => createSdkSettings(options.cwd, options.agentDir),
     listSessions: () => listAllSessions(),
     // The port is lazy: no `ModelRuntime` is built until the Connections view
     // (or onboarding) asks for providers.
-    providers: createSdkProviderPort({ agentDir: options.agentDir }),
+    providers: options.providers,
   });
 }
 
@@ -162,14 +168,17 @@ export function runService(
       emit: (_event: string, _payload?: unknown, _sessionId?: string): void => undefined,
     };
 
-    const core =
-      role === "control"
-        ? createControlHostCore({ cwd, agentDir })
-        : createCore({
-            cwd,
-            agentDir,
-            emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
-          });
+    // The control host owns the app-wide credential surface, so its provider port
+    // is shared by the `providers.*` handlers and the login bridge below.
+    const providerPort = role === "control" ? createSdkProviderPort({ agentDir }) : null;
+
+    const core = providerPort
+      ? createControlHostCore({ cwd, agentDir, providers: providerPort })
+      : createCore({
+          cwd,
+          agentDir,
+          emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
+        });
 
     const handlers: Partial<Record<string, HostHandler>> = { ...core.handlers() };
 
@@ -180,6 +189,17 @@ export function runService(
       emit: (event, payload) => forward.emit(event, payload, undefined),
     });
     Object.assign(handlers, ui.handlers());
+
+    // Provider OAuth login is a control-host flow that reuses the `oi.respond`
+    // answer path for its prompts (plan step 9, slice 3).
+    const providerLogin = providerPort
+      ? createProviderLoginHandlers({
+          resolvePort: () => providerPort,
+          emit: (event, payload) => forward.emit(event, payload, undefined),
+          request: (method, params) => ui.request(method, params),
+        })
+      : null;
+    if (providerLogin) Object.assign(handlers, providerLogin.handlers());
 
     const service: HostService = createHostService({
       stdin: process.stdin,
@@ -198,6 +218,7 @@ export function runService(
       onShutdown: () => {
         service.stop();
         ui.dispose("the host is shutting down");
+        providerLogin?.dispose();
         void core.dispose();
         // Give the response frame a tick to flush before the process ends.
         setTimeout(() => resolve(), 10);

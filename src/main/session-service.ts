@@ -137,6 +137,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   const tabs = new Map<string, TabRecord>();
   const hosts = new Map<string, SupervisorHostLike>();
   const unsubscribes = new Map<string, Array<() => void>>();
+  /** Subscriptions to the control host (provider login events, plan step 9). */
+  const controlUnsubscribes: Array<() => void> = [];
   const pending = new Map<string, SessionEventEntry[]>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   const sequences = new Map<string, number>();
@@ -306,7 +308,6 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     });
     hosts.set(tab.id, host);
     subscribe(tab, host);
-
     try {
       const snapshot = tab.sessionFile
         ? await host.request("session.resume", { sessionFile: tab.sessionFile })
@@ -321,15 +322,35 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     return host;
   };
 
+  /**
+   * Control-host events are app-wide (provider login progress and prompts, plan
+   * step 9), so they are forwarded under the control address rather than a tab.
+   */
+  const subscribeControl = (host: SupervisorHostLike): void => {
+    controlUnsubscribes.push(
+      host.on("event", (payload) => {
+        const entry = toEntry(payload);
+        if (!entry) return;
+        pushEntries(CONTROL_TAB_ID, [entry]);
+      }),
+      host.on("crashed", (payload) => {
+        control = null;
+        pushEntries(CONTROL_TAB_ID, [{ event: "host.crashed", payload }]);
+      }),
+    );
+  };
+
   const service: SessionService = {
     async controlHost() {
       if (control) return control;
-      control = await deps.supervisor.start({
+      const host = await deps.supervisor.start({
         sessionId: CONTROL_HOST_ID,
         cwd: deps.controlCwd,
         role: "control",
       });
-      return control;
+      control = host;
+      subscribeControl(host);
+      return host;
     },
 
     tabs: () => [...tabs.values()],
@@ -450,6 +471,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       await service.flush();
       for (const list of unsubscribes.values()) for (const off of list) off();
       unsubscribes.clear();
+      for (const off of controlUnsubscribes.splice(0)) off();
       hosts.clear();
       control = null;
       await deps.supervisor.stopAll();

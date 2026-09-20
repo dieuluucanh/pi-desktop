@@ -23,6 +23,7 @@ import type { AuthInteraction, AuthPrompt } from "@earendil-works/pi-ai";
 import {
   MAX_API_KEY_LENGTH,
   ProviderError,
+  type ProviderAuthInteraction,
   type ProviderAuthStatus,
   type ProviderDescriptor,
   type ProviderPort,
@@ -171,6 +172,18 @@ export function createSdkProviderPort(options: SdkProviderPortOptions): Provider
     refresh: async (): Promise<void> => {
       const modelRuntime = await ensure();
       await modelRuntime.refresh({ force: true });
+    },
+
+    loginOAuth: async (providerId: string, interaction: ProviderAuthInteraction): Promise<void> => {
+      const modelRuntime = await ensure();
+      const provider = modelRuntime.getProviders().find((entry) => entry.id === providerId);
+      if (!provider) throw new ProviderError(`unknown provider: ${providerId}`, "unknown_provider");
+      if (!provider.auth.oauth) {
+        throw new ProviderError(`${provider.name} has no OAuth login`, "no_oauth_login");
+      }
+      // The interaction mirrors pi-ai's `AuthInteraction`, so it is forwarded as
+      // it stands: Pi owns the flow, the app owns its prompts and progress.
+      await modelRuntime.login(providerId, "oauth", interaction as AuthInteraction);
     },
 
     envHas: (name: string): boolean => {

@@ -1,5 +1,6 @@
 import { useEffect, type ReactElement } from "react";
 import { CommandPalette } from "./layout/CommandPalette";
+import { ProviderLoginDialog } from "./connections/ProviderLoginDialog";
 import { Sidebar } from "./layout/Sidebar";
 import { StatusBar } from "./layout/StatusBar";
 import { TabStrip } from "./layout/TabStrip";
@@ -114,6 +115,7 @@ export function App() {
       </div>
       <StatusBar />
       <CommandPalette />
+      <ProviderLoginDialog />
       <Toaster theme={theme} />
     </div>
   );

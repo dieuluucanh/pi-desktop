@@ -15,42 +15,24 @@
  */
 
 import type { HostMethod } from "../shared/host-protocol";
+import type {
+  ProviderAuthInteraction,
+  ProviderAuthStatus,
+  ProviderDescriptor,
+  ProviderSummary,
+} from "../shared/providers";
 import type { HostHandler } from "./service";
 
-/** Pi's credential state for one provider (`AuthStatus`). */
-export interface ProviderAuthStatus {
-  configured: boolean;
-  /** `stored` | `runtime` | `environment` | `fallback` | `models_json_key` | … */
-  source?: string;
-  label?: string;
-}
-
-/** A provider as Pi's runtime describes it. */
-export interface ProviderDescriptor {
-  id: string;
-  label?: string;
-  /** Credential kinds the provider accepts, e.g. `oauth`, `api_key`. */
-  authTypes?: readonly string[];
-  /** True for a subscription provider (OAuth) rather than a metered key. */
-  subscription?: boolean;
-  /** Environment variables that can supply a credential. */
-  envVars?: readonly string[];
-}
-
-/** Everything the app may know about a provider. Deliberately credential-free. */
-export interface ProviderSummary {
-  id: string;
-  label: string;
-  authTypes: string[];
-  subscription: boolean;
-  configured: boolean;
-  source?: string;
-  statusLabel?: string;
-  modelCount: number;
-  envVars: string[];
-  /** True when one of `envVars` is set in the host's environment. */
-  envAvailable: boolean;
-}
+// The wire shapes live in `src/shared/providers.ts` so the renderer can import
+// them without touching a host module; the host keeps importing them from here.
+export type {
+  ProviderAuthEvent,
+  ProviderAuthInteraction,
+  ProviderAuthPrompt,
+  ProviderAuthStatus,
+  ProviderDescriptor,
+  ProviderSummary,
+} from "../shared/providers";
 
 /** The credential surface, implemented by `src/host/sdk/*` against `ModelRuntime`. */
 export interface ProviderPort {
@@ -70,6 +52,8 @@ export interface ProviderPort {
   clearRuntimeKey(providerId: string): Promise<void>;
   /** Re-reads provider/model catalogs (may touch the network). */
   refresh(): Promise<void>;
+  /** Runs Pi's own OAuth flow; progress goes through `interaction.notify`. */
+  loginOAuth?(providerId: string, interaction: ProviderAuthInteraction): Promise<void>;
   /** Environment lookup for `envVars`, injected so tests need no real env. */
   envHas?(name: string): boolean;
 }
