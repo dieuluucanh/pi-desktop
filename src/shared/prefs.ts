@@ -14,6 +14,8 @@ export const PREF_KEYS = [
   "viewMode",
   "drafts",
   "favoriteModels",
+  "telemetryEnabled",
+  "privacyAcknowledged",
 ] as const;
 
 export type PrefKey = (typeof PREF_KEYS)[number];
@@ -38,6 +40,18 @@ export interface UiPrefs {
    * second settings file — these are app preferences, not Pi state.
    */
   favoriteModels: string[];
+  /**
+   * Pi's install telemetry (plan step 23). **Off by default**: every host is
+   * spawned with `PI_TELEMETRY=0` unless this is true, so the app never sends an
+   * install/attribution ping the user did not opt into. It is an app preference
+   * on purpose — turning it on must not rewrite Pi's shared `settings.json`.
+   */
+  telemetryEnabled: boolean;
+  /**
+   * Whether the first-run privacy screen has been answered (plan step 23). Until
+   * it is, the app shows the opt-in prompt; telemetry stays off regardless.
+   */
+  privacyAcknowledged: boolean;
 }
 
 /** How many favourites are kept; the picker is a shortlist, not a catalogue. */
@@ -69,6 +83,8 @@ export const DEFAULT_PREFS: UiPrefs = {
   viewMode: "normal",
   drafts: {},
   favoriteModels: [],
+  telemetryEnabled: false,
+  privacyAcknowledged: false,
 };
 
 const THEMES: readonly ThemeSetting[] = ["dark", "light", "system"];
@@ -124,6 +140,12 @@ export function sanitizePrefs(input: unknown): UiPrefs {
       : DEFAULT_PREFS.viewMode,
     drafts: sanitizeDrafts(source.drafts),
     favoriteModels: sanitizeFavorites(source.favoriteModels),
+    // A missing value is off: an older app-state.json (or a fresh profile) must
+    // never opt the user into telemetry by omission.
+    telemetryEnabled:
+      typeof source.telemetryEnabled === "boolean" ? source.telemetryEnabled : false,
+    privacyAcknowledged:
+      typeof source.privacyAcknowledged === "boolean" ? source.privacyAcknowledged : false,
   };
 }
 

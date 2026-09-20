@@ -114,6 +114,7 @@ function harness(
     maxHosts?: number;
     npmCliPath?: string;
     safeMode?: boolean;
+    telemetryEnabled?: boolean | (() => boolean);
   } = {},
 ) {
   const spawned: FakeHost[] = [];
@@ -145,6 +146,7 @@ function harness(
     maxHosts: options.maxHosts ?? 8,
     idleTimeoutMs: 0,
     safeMode: options.safeMode ?? false,
+    telemetryEnabled: options.telemetryEnabled ?? false,
   });
 
   return { supervisor, spawned, spawnCalls, fs };
@@ -408,5 +410,26 @@ describe("host supervisor reliability (plan step 22)", () => {
     const on = harness({ safeMode: true });
     await on.supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
     expect(on.spawnCalls[0]?.env.PI_DESKTOP_SAFE_MODE).toBe("1");
+  });
+
+  it("forces Pi's install telemetry off unless the user opted in", async () => {
+    const off = harness();
+    await off.supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(off.spawnCalls[0]?.env.PI_TELEMETRY).toBe("0");
+
+    const on = harness({ telemetryEnabled: true });
+    await on.supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
+    expect(on.spawnCalls[0]?.env.PI_TELEMETRY).toBe("1");
+  });
+
+  it("reads the telemetry preference at each spawn, so a change applies live", async () => {
+    let enabled = false;
+    const { supervisor, spawnCalls } = harness({ telemetryEnabled: () => enabled });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(spawnCalls[0]?.env.PI_TELEMETRY).toBe("0");
+
+    enabled = true;
+    await supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
+    expect(spawnCalls[1]?.env.PI_TELEMETRY).toBe("1");
   });
 });

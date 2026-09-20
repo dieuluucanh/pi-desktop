@@ -20,6 +20,14 @@ export interface LaunchOptions {
   models?: Record<string, unknown>;
   /** Extra Electron arguments. */
   args?: readonly string[];
+  /**
+   * App preferences written to `<userData>/app-state.json` before launch. The
+   * privacy screen is acknowledged by default so the smoke tests see the shell;
+   * pass `{ privacyAcknowledged: false }` to exercise first-run (plan step 23).
+   */
+  prefs?: Record<string, unknown>;
+  /** Any other top-level app-state fields (projects, tabs, …). */
+  appState?: Record<string, unknown>;
 }
 
 export interface LaunchPaths {
@@ -55,6 +63,7 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
   const userDataDir = mkdtempSync(join(tmpdir(), "pi-desktop-e2e-state-"));
   const profileDir = mkdtempSync(join(tmpdir(), "pi-desktop-e2e-profile-"));
   seedProfile(profileDir, options);
+  seedAppState(userDataDir, options);
 
   const app = await electron.launch({
     // The app *directory* (whose package.json `main` points at out/main/index.mjs)
@@ -106,6 +115,17 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
       return child.exitCode;
     },
   };
+}
+
+/**
+ * Seeds `app-state.json` so a launch starts from a known state. The privacy
+ * screen is acknowledged unless a test asks for the first-run path (plan
+ * step 23).
+ */
+function seedAppState(userDataDir: string, options: LaunchOptions): void {
+  const prefs = { privacyAcknowledged: true, ...(options.prefs ?? {}) };
+  const state = { version: 1, ...(options.appState ?? {}), prefs };
+  writeFileSync(join(userDataDir, "app-state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
 function seedProfile(profileDir: string, options: LaunchOptions): void {

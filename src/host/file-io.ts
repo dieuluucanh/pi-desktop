@@ -8,13 +8,24 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { dirname } from "node:path";
 
 import type { ModelsFileIo } from "./custom-providers";
 import type { DirectoryEntry, FileListingIo } from "./file-listing";
 import type { ProjectIo } from "./project-inspect";
 import type { SettingsFileIo } from "./settings";
+import type { WorkspaceFileIo } from "./workspace-files";
 
 /**
  * Atomic `models.json` access (plan step 9, slice 5). A temp file in the same
@@ -160,6 +171,70 @@ export function createNodeFileListingIo(gitTimeoutMs = 4000): FileListingIo {
     },
 
     runGit: (root: string, args: readonly string[]) => runGitCommand(root, args, gitTimeoutMs),
+  };
+}
+
+/**
+ * Node adapter for the workspace file handlers (plan step 23). Reads are bounded
+ * (the frame protocol must never carry a whole disk), writes are atomic with a
+ * `0600` mode, and `realpath` is what lets `path-guard.ts` refuse a symlink that
+ * escapes the session folder.
+ */
+export function createNodeWorkspaceFileIo(): WorkspaceFileIo {
+  return {
+    async realpath(target: string): Promise<string | null> {
+      try {
+        return await realpath(target);
+      } catch {
+        return null;
+      }
+    },
+
+    async statFile(target: string): Promise<{ size: number } | null> {
+      try {
+        const info = await stat(target);
+        if (!info.isFile()) return null;
+        return { size: info.size };
+      } catch {
+        return null;
+      }
+    },
+
+    async readFile(
+      target: string,
+      maxBytes: number,
+    ): Promise<{ text: string; truncated: boolean } | null> {
+      const cap = Math.max(0, Math.floor(maxBytes));
+      let handle: Awaited<ReturnType<typeof open>> | null = null;
+      try {
+        handle = await open(target, "r");
+        const info = await handle.stat();
+        if (!info.isFile()) return null;
+        const buffer = Buffer.alloc(cap + 1);
+        const { bytesRead } = await handle.read(buffer, 0, cap + 1, 0);
+        const truncated = bytesRead > cap;
+        const text = buffer.subarray(0, Math.min(bytesRead, cap)).toString("utf8");
+        // A truncation can cut a multi-byte character; drop the replacement
+        // character rather than return a mangled tail.
+        return { text: truncated ? text.replace(/\uFFFD+$/, "") : text, truncated };
+      } catch {
+        return null;
+      } finally {
+        await handle?.close().catch(() => undefined);
+      }
+    },
+
+    async writeFile(target: string, text: string): Promise<void> {
+      await mkdir(dirname(target), { recursive: true });
+      const temporary = `${target}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(temporary, text, { encoding: "utf8", mode: 0o600 });
+        await rename(temporary, target);
+      } catch (error) {
+        await unlink(temporary).catch(() => undefined);
+        throw error;
+      }
+    },
   };
 }
 

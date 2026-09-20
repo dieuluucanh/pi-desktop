@@ -116,6 +116,19 @@ describe("sdk provider port", () => {
     expect(JSON.stringify(providers)).not.toContain(SECRET);
   });
 
+  it("writes the credential file with owner-only permissions (plan step 23)", async () => {
+    const agentDir = profile();
+    const port = createSdkProviderPort({ agentDir });
+    await port.setKey("anthropic", SECRET);
+
+    // Windows does not model POSIX mode bits; on a POSIX host the file Pi writes
+    // must not be group/world readable.
+    if (process.platform === "win32") return;
+    const { statSync } = await import("node:fs");
+    const mode = statSync(join(agentDir, "auth.json")).mode & 0o777;
+    expect(mode & 0o077).toBe(0);
+  });
+
   it("keeps a runtime-only key out of auth.json", async () => {
     const agentDir = profile();
     const authFile = join(agentDir, "auth.json");

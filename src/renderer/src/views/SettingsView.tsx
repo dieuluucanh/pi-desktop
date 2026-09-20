@@ -18,6 +18,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { Separator } from "../ui/separator";
+import { Switch } from "../ui/switch";
 import { SettingsFieldEditor } from "../settings/SettingsFieldEditor";
 
 /**
@@ -249,6 +250,23 @@ export function SettingsView() {
               Wider
             </Button>
             <span className="text-xs text-ink-faint">{prefs.sidebarWidth}px</span>
+          </div>
+        </Row>
+        <Row
+          label="Install telemetry"
+          hint="Pi's anonymous install/update ping and provider attribution header. Off by default; this app never rewrites Pi's shared settings.json."
+        >
+          <div className="flex items-center gap-2" data-testid="privacy-telemetry">
+            <Switch
+              checked={prefs.telemetryEnabled}
+              onCheckedChange={(telemetryEnabled) =>
+                setPrefs({ telemetryEnabled, privacyAcknowledged: true })
+              }
+              aria-label="Share anonymous install telemetry"
+            />
+            <span className="text-xs text-ink-faint">
+              {prefs.telemetryEnabled ? "on (new sessions)" : "off"}
+            </span>
           </div>
         </Row>
       </section>

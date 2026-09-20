@@ -246,6 +246,14 @@ describe("host service blob cache", () => {
     expect(host.last()).toMatchObject({ ok: false, error: { code: "forbidden" } });
   });
 
+  it("refuses a sibling whose name merely shares the blob directory's prefix", async () => {
+    // `C:/blobs-evil/x.json` starts with `C:/blobs`; a prefix check would let it
+    // through, the containment check does not (plan step 23).
+    const host = harness();
+    await host.request(1, "host.blobs.read", { path: normalize("C:/blobs-evil/x.json") });
+    expect(host.last()).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  });
+
   it("requires a path", async () => {
     const host = harness();
     await host.request(1, "host.blobs.read", {});

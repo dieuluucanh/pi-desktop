@@ -1,6 +1,6 @@
 # Pi Desktop — parity with terminal Pi
 
-**Last updated:** 2026-09-20 (plan step 20).
+**Last updated:** 2026-09-21 (plan step 23).
 
 This matrix is the product's contract: Pi Desktop is the desktop UI for the Pi
 coding agent, and every row is either **implemented**, **planned at a stated
@@ -75,6 +75,22 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
 | Built-in MCP client                                        | ⛔ not provided by Pi ("It intentionally does not include built-in MCP… build or install those workflows as extensions or packages" — `<sdk>/docs/usage.md`) | ⛔ same: parity means no special work (D-A11)         |
 | MCP servers, if a user installs a bridge extension/package | ✅ through the extension that provides it                                                                                                                    | ✅ same route: steps 13/14 (Extensions hub, Packages) |
+
+## Security and privacy
+
+| Capability                                                               | Terminal Pi                           | Pi Desktop                                                                                                                              |
+| ------------------------------------------------------------------------ | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Renderer isolation (sandbox, context isolation, no Node, no `<webview>`) | n/a (terminal)                        | ✅ step 23 (declared in `src/main/security.ts`, asserted by a unit test)                                                                |
+| Content Security Policy                                                  | n/a                                   | ✅ step 23 (`default-src 'none'`, `script-src 'self'`; injected as a `<meta>` tag because a `file://` page cannot take a CSP header)    |
+| Web tab isolation (no `window.pi`)                                       | n/a                                   | ✅ steps 21/23 (shared partition, no preload, all permissions denied)                                                                   |
+| Allowlisted IPC with argument validation                                 | n/a                                   | ✅ step 23 (one channel map; a static test proves every channel is reachable and handled, and no raw channel string crosses the bridge) |
+| File access confined to the session folder (traversal + symlink)         | ✅ (agent tools, cwd-scoped)          | ✅ step 23 (`files.read`/`files.write` and `host.blobs.read` use the path guard)                                                        |
+| Install consent before any package operation                             | ✅ (interactive prompt)               | ✅ step 14 (consent dialog); step 23 adds the npm-root containment guard                                                                |
+| Project trust before loading project resources                           | ✅ (`/trust`)                         | ✅ step 10 (prompt, remembered decision)                                                                                                |
+| Credentials stored 0600 and never returned to the UI                     | ✅ (`auth.json`)                      | ✅ steps 9/23 (write-only key form; `providers.*` returns status summaries only; diagnostics redact)                                    |
+| Secret redaction in logs/diagnostics                                     | ⛔ (no support bundle)                | ✅ step 22 (`redactSecrets` over the whole bundle)                                                                                      |
+| Telemetry off by default, opt-in screen                                  | default on (`enableInstallTelemetry`) | ✅ step 23 (`PI_TELEMETRY=0` unless opted in; the shared `settings.json` is never rewritten)                                            |
+| “What extensions can do” trust page                                      | n/a                                   | ✅ step 23 (Extensions hub → What can extensions do?)                                                                                   |
 
 ## Platform
 

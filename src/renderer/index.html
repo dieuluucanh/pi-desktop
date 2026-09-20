@@ -4,9 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!--
-      The renderer CSP is tightened together with web-tab isolation in plan step 22.
-      Keep this file free of inline scripts so that change is a one-line edit.
+      The Content Security Policy is injected at build time by the
+      `pi-desktop-renderer-csp` plugin in `electron.vite.config.ts`: production
+      gets the strict `RENDERER_CSP`, the dev server gets a policy that allows
+      Vite's inline refresh preamble. `tests/architecture/security.test.ts` pins
+      that this file has no inline script and carries the placeholder.
     -->
+    <meta http-equiv="Content-Security-Policy" content="__PI_RENDERER_CSP__" />
     <title>Pi Desktop</title>
   </head>
   <body>

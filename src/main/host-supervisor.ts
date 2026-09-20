@@ -10,6 +10,7 @@ import {
   NODE_BIN_ENV,
   NPM_CLI_ENV,
   SAFE_MODE_ENV,
+  TELEMETRY_ENV,
   encodeFrame,
   isEventFrame,
   isResponseFrame,
@@ -143,6 +144,13 @@ export interface HostSupervisorOptions {
    * the host loads no third-party resources and refuses package changes.
    */
   safeMode?: boolean;
+  /**
+   * Pi's install telemetry (plan step 23). Evaluated at each spawn and passed as
+   * `PI_TELEMETRY`, so it can follow a live preference change without restarting
+   * the app. Defaults to **off**: a host that was not explicitly opted in sends
+   * no install/attribution ping. A boolean or a getter are both accepted.
+   */
+  telemetryEnabled?: boolean | (() => boolean);
 }
 
 export interface HostSupervisor {
@@ -303,11 +311,16 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     }
 
     private spawnChild(): void {
+      const telemetry =
+        typeof options.telemetryEnabled === "function"
+          ? options.telemetryEnabled()
+          : options.telemetryEnabled === true;
       const env: Record<string, string | undefined> = {
         ...(options.env ?? process.env),
         [SESSION_ID_ENV]: this.sessionId,
         [HOST_ROLE_ENV]: this.spec.role ?? "session",
         [SAFE_MODE_ENV]: options.safeMode ? "1" : "0",
+        [TELEMETRY_ENV]: telemetry ? "1" : "0",
         [BLOB_DIR_ENV]: options.blobDir,
         [SERVICE_ENV]: "service",
         PI_CODING_AGENT_DIR: options.profileDir,

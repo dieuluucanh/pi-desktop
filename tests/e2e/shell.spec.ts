@@ -60,3 +60,49 @@ test("@smoke runs against the isolated profile and exits cleanly", async () => {
   removeTempDirs(app.paths);
   launched = undefined;
 });
+
+test("@smoke the built renderer carries the strict CSP and no Node globals", async () => {
+  launched = await launchApp();
+  const { window } = launched;
+
+  // The policy is a `<meta>` tag (Electron's webRequest does not see file://),
+  // injected by the build plugin. A missing/loose policy is the regression this
+  // guards: `script-src 'self'` with no `unsafe-inline`.
+  const csp = await window.evaluate(
+    () =>
+      document
+        .querySelector('meta[http-equiv="Content-Security-Policy"]')
+        ?.getAttribute("content") ?? "",
+  );
+  expect(csp).toContain("default-src 'none'");
+  expect(csp).toContain("script-src 'self'");
+  expect(csp).not.toContain("unsafe-eval");
+  expect(csp).not.toContain("__PI_RENDERER_CSP__");
+
+  // The app window is the one place `window.pi` exists (it must, or nothing
+  // works), and Node is not reachable from it.
+  const globals = await window.evaluate(() => ({
+    pi: typeof (window as unknown as { pi?: unknown }).pi,
+    require: typeof (window as unknown as { require?: unknown }).require,
+    process: typeof (window as unknown as { process?: unknown }).process,
+  }));
+  expect(globals.pi).toBe("object");
+  expect(globals.require).toBe("undefined");
+  expect(globals.process).toBe("undefined");
+});
+
+test("@smoke the first run asks about telemetry and defaults it off", async () => {
+  // No seeded acknowledgement: this is the real first launch.
+  launched = await launchApp({ prefs: { privacyAcknowledged: false } });
+  const { window } = launched;
+
+  await expect(window.getByText(/your data stays on this machine/i)).toBeVisible();
+  const telemetry = window.getByRole("switch", { name: /share anonymous install telemetry/i });
+  await expect(telemetry).toHaveAttribute("aria-checked", "false");
+
+  await window.getByRole("button", { name: /keep telemetry off/i }).click();
+
+  // Acknowledged: the shell is reachable again and the choice was persisted.
+  await expect(window.getByRole("button", { name: /open project folder/i })).toBeVisible();
+  await expect(window.getByText(/your data stays on this machine/i)).toBeHidden();
+});

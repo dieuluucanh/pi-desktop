@@ -23,8 +23,10 @@ import {
   createNodeModelsFileIo,
   createNodeProjectIo,
   createNodeSettingsFileIo,
+  createNodeWorkspaceFileIo,
 } from "./file-io";
 import { listWorkspaceFiles } from "./file-listing";
+import { readWorkspaceFile, writeWorkspaceFile } from "./workspace-files";
 import { inspectProject } from "./project-inspect";
 import { createProjectTrust } from "./project-trust";
 import { createProviderLoginHandlers } from "./provider-login";
@@ -146,6 +148,12 @@ function createCore(options: {
       SessionManager.open(sessionFile, sessionDir, cwd) as never,
     listSessions: (cwd) => SessionManager.list(cwd) as Promise<never[]>,
     listFiles: (cwd, options) => listWorkspaceFiles(createNodeFileListingIo(), cwd, options),
+    // Workspace file access (plan step 23): one node adapter, rooted at the
+    // session cwd by the guard inside `workspace-files.ts`.
+    readWorkspaceFile: (root, path, options) =>
+      readWorkspaceFile(createNodeWorkspaceFileIo(), root, path, options ?? {}),
+    writeWorkspaceFile: (root, path, text) =>
+      writeWorkspaceFile(createNodeWorkspaceFileIo(), root, path, text),
     // Themes (plan step 15) resolve against the session's own manager and
     // loader when a session is open, so the catalogue is the running truth.
     createThemePort: (input) =>

@@ -170,6 +170,56 @@ The app treats failure as a first-class state rather than a silent no-op:
   export renders a bundle through the Office wizard's `redactSecrets`, so it is
   safe to paste; the view offers Copy and Save (main owns the save dialog).
 
+## Security and privacy (step 23)
+
+The trust boundaries are declared in code and asserted by tests, not by prose:
+
+- **The renderer window.** `src/main/security.ts` owns `rendererWindowOptions`
+  (`contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`,
+  `webviewTag: false`) and the Content Security Policy. The app window is created
+  from that object, so `tests/main/security.test.ts` reads the posture the app
+  actually uses.
+- **The CSP.** A `file://` page cannot receive a CSP header — Electron's
+  `webRequest.onHeadersReceived` never fires for the file scheme — so the policy
+  lives in `src/renderer/index.html` as a `<meta>` tag with a
+  `__PI_RENDERER_CSP__` placeholder. The `pi-desktop-renderer-csp` plugin in
+  `electron.vite.config.ts` splices in `RENDERER_CSP` for a build and
+  `DEV_RENDERER_CSP` (which allows Vite's inline refresh preamble) for the dev
+  server. Production is `default-src 'none'` with `script-src 'self'` — no
+  `unsafe-inline`, no `unsafe-eval`.
+- **Web tabs.** `webTabWebPreferences()` is the same secure base plus one shared
+  partition and **no preload**, which is what keeps `window.pi` out of an
+  arbitrary localhost page; every permission request is denied.
+- **The IPC allowlist.** `src/shared/ipc.ts` is the single channel map;
+  `src/preload/index.ts` and `src/main/ipc.ts` are the only places that touch
+  `ipcRenderer`/`ipcMain`. `tests/architecture/security.test.ts` proves every
+  declared channel is reachable, every invoked channel has a handler, and no raw
+  channel string is ever passed.
+- **File access.** `src/host/path-guard.ts` provides the lexical containment
+  check (`isPathInside`) and the symlink-aware one (`resolveInsideRoot`).
+  `files.read`/`files.write` are rooted at the session's own cwd and refuse a
+  path (or a symlink) that leaves it; `host.blobs.read` uses the same check
+  instead of a `startsWith` prefix test. `files.read` bounds the bytes returned
+  and `files.write` bounds the payload.
+- **Packages.** A package source is normalised and validated on both sides of
+  the host boundary: an npm name or version that contains a path separator or
+  `..` is refused, so the generated npm-root `package.json` can never contain a
+  local-path dependency that escapes the npm root. Installing still requires the
+  consent dialog (step 14).
+- **Credentials.** Pi owns `auth.json` (0600); the app never reads it back into
+  a reply — `providers.*` returns status summaries only — and no IPC channel is
+  named for auth or credentials. The diagnostics bundle runs through
+  `redactSecrets`.
+- **Telemetry.** Off by default. The supervisor spawns every host with
+  `PI_TELEMETRY=0` unless the user opts in on the first-run privacy screen
+  (`UiPrefs.telemetryEnabled`). Pi's own `isInstallTelemetryEnabled` prefers that
+  variable over the shared `settings.json`, so the guarantee holds without
+  rewriting the profile terminal Pi also reads.
+- **Extension trust.** Extensions are not sandboxed — they run with the user's
+  privileges, as in terminal Pi. The Extensions hub carries a **“What can
+  extensions do?”** page that says so, next to the gates the app does provide
+  (project trust, install consent, safe mode).
+
 ## Tests
 
 - `tests/shared/diagnostics.test.ts` — classification order, severity/recovery/
@@ -178,6 +228,26 @@ The app treats failure as a first-class state rather than a silent no-op:
   third-party collection, and the package-refusal message (plan step 22).
 - `tests/main/diagnostics-service.test.ts` — snapshot shape, incident merge, the
   bundle structure, credential redaction and the allowlisted environment.
+- `tests/main/security.test.ts` — the CSP is strict in production and a superset
+  in dev; the window/web-tab preferences keep the sandbox and drop the preload;
+  the external-URL policy allows only http(s)/mailto (plan step 23).
+- `tests/architecture/security.test.ts` — the IPC allowlist is closed (every
+  declared channel reachable, every invoked channel handled, no raw strings), the
+  renderer HTML is inline-script-free with the CSP placeholder, and the renderer
+  has no filesystem access (plan step 23).
+- `tests/host/path-guard.test.ts` / `tests/host/workspace-files.test.ts` — lexical
+  and symlink containment, the read/write limits, and a real symlink escape
+  (plan step 23).
+- `tests/host/workspace-handlers.test.ts` — `files.read`/`files.write` parameter
+  validation and the `unsupported` answer without a workspace port.
+- `tests/packages/security.test.ts` — traversal-shaped npm sources are refused by
+  both parsers, and the npm-root manifest only ever carries a plain name/version.
+- `tests/main/host-supervisor.test.ts` — every host gets `PI_TELEMETRY=0` unless
+  the user opted in, and the preference is read at each spawn (plan step 23).
+- `tests/renderer/privacy-dialog.test.tsx` — the first-run screen appears once,
+  defaults telemetry off, and only an explicit opt-in turns it on.
+- `tests/renderer/extension-capabilities.test.tsx` — the extension trust page
+  states the privilege model and the gates.
 - `tests/main/host-supervisor.test.ts` / `tests/main/session-service.test.ts` —
   timeout events, host identity/log tails, incidents, restart-resume and the
   closed-mid-run host stop (plan step 22).

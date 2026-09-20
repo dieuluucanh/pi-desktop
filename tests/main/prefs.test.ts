@@ -20,9 +20,31 @@ describe("sanitizePrefs", () => {
   it("ignores unknown keys", () => {
     const result = sanitizePrefs({ theme: "light", somethingElse: true });
     expect(Object.keys(result).sort()).toEqual(
-      ["drafts", "favoriteModels", "sidebarCollapsed", "sidebarWidth", "theme", "viewMode"].sort(),
+      [
+        "drafts",
+        "favoriteModels",
+        "privacyAcknowledged",
+        "sidebarCollapsed",
+        "sidebarWidth",
+        "telemetryEnabled",
+        "theme",
+        "viewMode",
+      ].sort(),
     );
     expect(result.theme).toBe("light");
+  });
+
+  it("defaults telemetry off and the privacy screen unanswered (plan step 23)", () => {
+    // An older app-state.json has neither key; both must fall back to "off" and
+    // "not yet answered" rather than opting the user in by omission.
+    expect(sanitizePrefs({ theme: "light" }).telemetryEnabled).toBe(false);
+    expect(sanitizePrefs({ theme: "light" }).privacyAcknowledged).toBe(false);
+    expect(sanitizePrefs({ telemetryEnabled: "yes" }).telemetryEnabled).toBe(false);
+    expect(sanitizePrefs({ privacyAcknowledged: 1 }).privacyAcknowledged).toBe(false);
+    expect(sanitizePrefs({ telemetryEnabled: true, privacyAcknowledged: true })).toMatchObject({
+      telemetryEnabled: true,
+      privacyAcknowledged: true,
+    });
   });
 
   it("falls back per field when a value is invalid", () => {

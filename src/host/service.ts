@@ -15,6 +15,7 @@ import {
   type HostRequestFrame,
   type HostRole,
 } from "../shared/host-protocol";
+import { isPathInside } from "./path-guard";
 
 /**
  * Host-side protocol service (plan step 4).
@@ -181,7 +182,11 @@ export function createHostService(options: HostServiceOptions): HostService {
     if (typeof path !== "string" || path.length === 0) {
       throw new HostError("host.blobs.read requires a path", "bad_request");
     }
-    if (!path.startsWith(blobDir)) {
+    // A blob reference is a path the host itself spilled. The containment check
+    // is lexical (the cache is app-owned, so a symlink cannot be planted there),
+    // but it must be a *real* containment: `startsWith` also accepted a sibling
+    // such as `…/blob-cache-evil/x`, and an unset blob dir accepted everything.
+    if (blobDir.length === 0 || !isPathInside(blobDir, path)) {
       throw new HostError(`refusing to read outside the blob cache: ${path}`, "forbidden");
     }
     return { path, contents: await readBlob(path) };

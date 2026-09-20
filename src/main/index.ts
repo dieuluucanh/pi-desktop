@@ -50,6 +50,7 @@ import { appPaths, isSafeMode, resolveAppRoots, type AppPaths, type AppRoots } f
 import { isOfflineEnv, classifyFailure } from "../shared/diagnostics";
 import type { DiagnosticsSaveResult } from "../shared/ipc";
 import { resolveAppRuntime, type RuntimeResolution } from "./runtime";
+import { rendererWindowOptions, sanitizeExternalUrl } from "./security";
 
 /**
  * Electron main process entry.
@@ -62,6 +63,13 @@ import { resolveAppRuntime, type RuntimeResolution } from "./runtime";
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
 const safeMode = isSafeMode();
+
+/**
+ * Pi's install telemetry (plan step 23). Off until the user opts in on the
+ * privacy screen; the supervisor reads this at each spawn and passes
+ * `PI_TELEMETRY` accordingly, so an app install never sends a ping by default.
+ */
+let telemetryEnabled = false;
 
 // Electron's own state directory can be redirected from the environment. The E2E
 // harness needs a guaranteed-private userData (a Chromium switch after the app
@@ -141,6 +149,8 @@ const hosts = runtime.nodePath
       // Safe mode (plan step 22): every host loads no third-party resources and
       // refuses package mutations.
       safeMode,
+      // Install telemetry (plan step 23): off unless the user opted in.
+      telemetryEnabled: () => telemetryEnabled,
     })
   : null;
 
@@ -236,19 +246,11 @@ async function deleteSessionFile(sessionFile: string): Promise<SessionDeleteResu
   }
 }
 
-/** Only these schemes may be handed to the operating system (plan step 22). */
-const EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
-
+/** Only these schemes may be handed to the operating system (plan step 22/23). */
 export async function openExternal(rawUrl: unknown): Promise<boolean> {
-  if (typeof rawUrl !== "string" || rawUrl.length === 0) return false;
-  let url: URL;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    return false;
-  }
-  if (!EXTERNAL_PROTOCOLS.has(url.protocol)) return false;
-  await shell.openExternal(url.toString());
+  const url = sanitizeExternalUrl(rawUrl);
+  if (url === null) return false;
+  await shell.openExternal(url);
   return true;
 }
 
@@ -337,24 +339,10 @@ function setWindowTitle(title: unknown): boolean {
 }
 
 function createWindow(): BrowserWindow {
-  const window = new BrowserWindow({
-    width: 1280,
-    height: 860,
-    minWidth: 960,
-    minHeight: 600,
-    show: false,
-    backgroundColor: "#0f1115",
-    title: "Pi Desktop",
-    autoHideMenuBar: true,
-    webPreferences: {
-      preload: join(currentDir, "../preload/index.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      spellcheck: false,
-      webviewTag: false,
-    },
-  });
+  // The window's security posture is declared once in `./security.ts`; the test
+  // in `tests/main/security.test.ts` reads those options, so this call site
+  // cannot quietly drop `sandbox` or add `nodeIntegration`.
+  const window = new BrowserWindow(rendererWindowOptions(join(currentDir, "../preload/index.cjs")));
 
   window.once("ready-to-show", () => window.show());
 
@@ -508,6 +496,10 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    // Load the persisted preferences once before any host can spawn, so the
+    // telemetry flag is correct for the first session (plan step 23).
+    telemetryEnabled = (await appState.read()).prefs.telemetryEnabled;
+
     // The application menu is the app's command surface; its items never touch
     // windows directly — they forward a MenuCommand to the renderer.
     await installAppMenu({
@@ -527,7 +519,13 @@ if (!app.requestSingleInstanceLock()) {
       setTitle: setWindowTitle,
       prefs: {
         get: async () => (await appState.read()).prefs,
-        set: (patch) => appState.updatePrefs(patch),
+        set: async (patch) => {
+          const prefs = await appState.updatePrefs(patch);
+          // A telemetry change applies to hosts spawned from now on; a running
+          // session keeps its environment until it restarts.
+          telemetryEnabled = prefs.telemetryEnabled;
+          return prefs;
+        },
       },
       sessions: sessionsIpc,
       projects: {

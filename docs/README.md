@@ -3,7 +3,8 @@
 - [`product/parity.md`](product/parity.md) — the feature matrix against terminal Pi (what is
   implemented, what is planned at which step, and what is deliberately out of scope, including MCP).
 - [`architecture/app-shell.md`](architecture/app-shell.md) — the window's IA, view model, theme
-  tokens, command ownership and the renderer file map.
+  tokens, command ownership, the renderer file map, and the security/privacy posture (CSP, window
+  and web-tab isolation, IPC allowlist, path containment, telemetry).
 - [`architecture/versions.md`](architecture/versions.md) — pinned toolchain and
   runtime versions, and why.
 - [`architecture/runtime.md`](architecture/runtime.md) — the bundled Node/npm

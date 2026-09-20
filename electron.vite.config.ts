@@ -2,6 +2,8 @@ import { fileURLToPath } from "node:url";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import type { Plugin } from "vite";
+import { CSP_PLACEHOLDER, rendererCspFor } from "./src/main/security";
 
 /**
  * electron-vite config for the three Electron targets.
@@ -18,6 +20,27 @@ import tailwindcss from "@tailwindcss/vite";
  */
 const resolve = (relativePath: string): string =>
   fileURLToPath(new URL(relativePath, import.meta.url));
+
+/**
+ * Injects the renderer Content Security Policy into `index.html` (plan step 23).
+ *
+ * A CSP has to be a `<meta>` tag for a `file://` page — Electron's
+ * `webRequest.onHeadersReceived` never fires for the file scheme — so the
+ * policy is spliced into the HTML at build time. `ctx.server` distinguishes the
+ * dev server (Vite's inline refresh preamble needs `'unsafe-inline'`) from a
+ * production build, which gets the strict policy.
+ */
+function rendererCspPlugin(): Plugin {
+  return {
+    name: "pi-desktop-renderer-csp",
+    transformIndexHtml: {
+      order: "pre",
+      handler(html, ctx) {
+        return html.replace(CSP_PLACEHOLDER, rendererCspFor(Boolean(ctx.server)));
+      },
+    },
+  };
+}
 
 export default defineConfig({
   main: {
@@ -46,7 +69,7 @@ export default defineConfig({
   },
   renderer: {
     root: resolve("./src/renderer"),
-    plugins: [react(), tailwindcss()],
+    plugins: [rendererCspPlugin(), react(), tailwindcss()],
     build: {
       outDir: "out/renderer",
       emptyOutDir: true,

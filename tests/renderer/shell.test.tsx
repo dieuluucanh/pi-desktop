@@ -14,11 +14,13 @@ import { DEFAULT_PREFS } from "../../src/shared/prefs";
 const PLACEHOLDER_STRINGS = ["Scaffold is running", "Next up", "Step 4 —"];
 
 beforeEach(() => {
-  installBridge();
+  // The shell tests are about navigation and empty states, not first-run
+  // privacy; the privacy screen has its own test (plan step 23).
+  installBridge({ prefs: { privacyAcknowledged: true } });
   useAppStore.setState({
     view: "welcome",
     project: null,
-    prefs: { ...DEFAULT_PREFS },
+    prefs: { ...DEFAULT_PREFS, privacyAcknowledged: true },
     paletteOpen: false,
     info: null,
     hint: null,

@@ -31,6 +31,17 @@ export class PackageSourceError extends Error {
 
 const NPM_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
 
+/**
+ * Refuses a version/tag npm would read as a path or URL. A dependency value of
+ * `../../evil` in the generated npm-root manifest is a local path dependency,
+ * so it would install from outside the npm root (plan step 23).
+ */
+function assertSafeNpmVersion(version: string): void {
+  if (version.startsWith(".") || /[\\/]/.test(version)) {
+    throw new PackageSourceError(`Not a valid npm version or tag: ${version}`);
+  }
+}
+
 function splitNpmSpec(body: string): { name: string; version: string | null } {
   const trimmed = body.trim();
   if (trimmed.length === 0) throw new PackageSourceError("Empty npm package name");
@@ -40,7 +51,10 @@ function splitNpmSpec(body: string): { name: string; version: string | null } {
   if (at > 0) {
     const name = trimmed.slice(0, at);
     const version = trimmed.slice(at + 1);
-    if (NPM_NAME_RE.test(name) && version.length > 0) return { name, version };
+    if (NPM_NAME_RE.test(name) && version.length > 0) {
+      assertSafeNpmVersion(version);
+      return { name, version };
+    }
   }
   if (!NPM_NAME_RE.test(trimmed)) {
     throw new PackageSourceError(`Not a valid npm package name: ${trimmed}`);

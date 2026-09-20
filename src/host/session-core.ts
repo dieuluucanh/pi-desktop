@@ -22,6 +22,7 @@ import {
 } from "./keybindings";
 import { buildResourcesSnapshot } from "./resources";
 import type { FileListing } from "./file-listing";
+import type { WorkspaceReadResult } from "./workspace-files";
 import type { HostHandler } from "./service";
 
 /**
@@ -214,6 +215,25 @@ export interface SessionCoreDeps {
    * session it belongs to.
    */
   listFiles?(cwd: string, options: { limit?: number }): Promise<FileListing>;
+  /**
+   * Reads one workspace file for `files.read` (plan step 23). The root is this
+   * host's own cwd and the injected implementation enforces path containment
+   * (lexical + symlink), so a renderer-supplied path cannot leave the session.
+   */
+  readWorkspaceFile?(
+    cwd: string,
+    path: string,
+    options?: { limit?: number },
+  ): Promise<WorkspaceReadResult>;
+  /**
+   * Writes one workspace file for `files.write` (plan step 23), with the same
+   * containment rule as `readWorkspaceFile`.
+   */
+  writeWorkspaceFile?(
+    cwd: string,
+    path: string,
+    text: string,
+  ): Promise<{ path: string; relativePath: string; bytes: number }>;
   /**
    * Injected by the extension UI host (plan step 16). Receives the live session
    * *and* its runtime: binding an extension's UI context needs the runtime's
@@ -716,6 +736,36 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         typeof rawLimit === "number" && Number.isFinite(rawLimit) ? { limit: rawLimit } : {},
       );
       return { root: cwd, files: listing.files, truncated: listing.truncated };
+    },
+
+    // Workspace file access (plan step 23). Both handlers are rooted at the
+    // session's own cwd; the injected port enforces containment, so the only
+    // thing this layer does is reject a malformed request before it reaches it.
+    "files.read": async (params) => {
+      if (!deps.readWorkspaceFile) {
+        throw new SessionCoreError("reading workspace files is not supported", "unsupported");
+      }
+      const input = asRecord(params);
+      const path = requireString(input.path ?? input.file, "path");
+      const rawLimit = input.limit;
+      return deps.readWorkspaceFile(
+        cwd,
+        path,
+        typeof rawLimit === "number" && Number.isFinite(rawLimit) ? { limit: rawLimit } : undefined,
+      );
+    },
+
+    "files.write": async (params) => {
+      if (!deps.writeWorkspaceFile) {
+        throw new SessionCoreError("writing workspace files is not supported", "unsupported");
+      }
+      const input = asRecord(params);
+      const path = requireString(input.path ?? input.file, "path");
+      const text = input.text ?? input.content;
+      if (typeof text !== "string") {
+        throw new SessionCoreError("files.write requires text", "bad_request");
+      }
+      return deps.writeWorkspaceFile(cwd, path, text);
     },
 
     "session.new": async (params) => {

@@ -4,6 +4,7 @@ import {
   type BrowserWindow,
   type Session,
 } from "electron";
+import { WEB_TAB_PARTITION, webTabWebPreferences } from "./security";
 import type {
   WebViewEvent,
   WebViewFactory,
@@ -24,11 +25,9 @@ import type {
  * `sandbox: true`, `contextIsolation: true`, `nodeIntegration: false` and every
  * permission request denied. That is what makes "a web tab cannot reach the Pi
  * bridge" structural rather than a convention — `window.pi` only exists where the
- * app's own preload ran, and it never runs here.
+ * app's own preload ran, and it never runs here. The preferences come from
+ * `./security.ts` (plan step 23), so the posture is asserted by a unit test.
  */
-
-/** The partition every web tab shares; isolated from the app's cookies and storage. */
-export const WEB_TAB_PARTITION = "persist:pi-web-tabs";
 
 /** Electron's ERR_ABORTED, which a deliberately prevented navigation produces. */
 const ERR_ABORTED = -3;
@@ -63,15 +62,7 @@ export function createElectronWebViewHost(options: ElectronWebViewHostOptions): 
       webSession();
 
       const view = new WebContentsView({
-        webPreferences: {
-          partition: WEB_TAB_PARTITION,
-          contextIsolation: true,
-          nodeIntegration: false,
-          sandbox: true,
-          webviewTag: false,
-          spellcheck: false,
-          // No `preload`: this is what keeps `window.pi` out of the page.
-        },
+        webPreferences: webTabWebPreferences(),
       });
       options.window()?.contentView.addChildView(view);
 

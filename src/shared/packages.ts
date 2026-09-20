@@ -59,6 +59,38 @@ const HOSTED_GIT =
   /^https?:\/\/(?:www\.)?(github\.com|gitlab\.com|bitbucket\.org|codeberg\.org)\//i;
 const LOCAL_PATH = /^(?:[a-zA-Z]:[\\/]|[\\/]|~[\\/]|\.\.?[\\/])/;
 
+/**
+ * The npm package-name grammar (scoped or not). It cannot match a path: `/` is
+ * only allowed in the `@scope/name` form and every segment must start with an
+ * alphanumeric, so `..`, `../../evil` and `@scope/..` all fail.
+ */
+const NPM_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
+
+/**
+ * Refuses a name that is not an npm package name. The point is not tidiness: a
+ * dependency key of `../../evil` in the generated npm-root `package.json` is a
+ * *local path* dependency, so npm would install from outside the npm root
+ * (plan step 23).
+ */
+function requireNpmName(name: string): string {
+  if (!NPM_NAME.test(name)) {
+    throw new PackageSourceError(`not a valid npm package name: ${name}`);
+  }
+  return name;
+}
+
+/**
+ * Refuses a version/tag that could be read as a path or URL. npm treats a
+ * dependency value starting with `.`/`/`, or containing `/`, as a local path or
+ * a git spec, so `npm:pkg@../../evil` would escape the npm root the same way.
+ */
+function requireNpmVersion(version: string): string {
+  if (version.startsWith(".") || /[\\/]/.test(version)) {
+    throw new PackageSourceError(`not a valid npm version or tag: ${version}`);
+  }
+  return version;
+}
+
 function trimSource(raw: string): string {
   const trimmed = raw.trim();
   if (trimmed.length === 0) throw new PackageSourceError("a package source is required");
@@ -125,6 +157,8 @@ export function parsePackageSource(raw: string): ParsedPackageSource {
     if (spec.length === 0) throw new PackageSourceError("an npm package name is required");
     const { name, version } = splitNpm(spec);
     if (name.length === 0) throw new PackageSourceError(`invalid npm source: ${raw}`);
+    requireNpmName(name);
+    if (version !== null) requireNpmVersion(version);
     return {
       source,
       kind: "npm",

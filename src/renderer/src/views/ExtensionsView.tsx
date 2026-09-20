@@ -7,6 +7,7 @@ import {
 } from "../../../shared/recommended-packages";
 import { type ResourceKind, type ResourceSummary } from "../../../shared/resources";
 import { OfficeIntegrationCard } from "../office/OfficeIntegrationCard";
+import { ExtensionCapabilitiesDialog } from "../extensions/ExtensionCapabilitiesDialog";
 import { PackagesSection } from "../extensions/PackagesSection";
 import { useAppStore } from "../state/app-store";
 import { Badge } from "../ui/badge";
@@ -73,6 +74,7 @@ export function ExtensionsView() {
   const loadSettings = useAppStore((state) => state.loadSettings);
 
   const [query, setQuery] = useState("");
+  const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
   const extensionsFocus = useAppStore((state) => state.extensionsFocus);
   const clearExtensionsFocus = useAppStore((state) => state.clearExtensionsFocus);
   const integrationsRef = useRef<HTMLElement | null>(null);
@@ -137,6 +139,9 @@ export function ExtensionsView() {
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <Button size="sm" variant="ghost" onClick={() => setCapabilitiesOpen(true)}>
+            What can extensions do?
+          </Button>
           <Button size="sm" variant="ghost" onClick={openGallery}>
             <ExternalLink className="size-3" aria-hidden />
             pi.dev/packages
@@ -302,6 +307,8 @@ export function ExtensionsView() {
         </div>
         <OfficeIntegrationCard />
       </section>
+
+      <ExtensionCapabilitiesDialog open={capabilitiesOpen} onOpenChange={setCapabilitiesOpen} />
     </div>
   );
 }
