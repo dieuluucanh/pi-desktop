@@ -7,6 +7,7 @@ import {
 } from "../../../shared/recommended-packages";
 import { type ResourceKind, type ResourceSummary } from "../../../shared/resources";
 import { OfficeSetupPanel } from "../office/OfficeSetupPanel";
+import { PackagesSection } from "../extensions/PackagesSection";
 import { useAppStore } from "../state/app-store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -66,6 +67,7 @@ export function ExtensionsView() {
   const reloadResources = useAppStore((state) => state.reloadResources);
   const toggleResource = useAppStore((state) => state.toggleResource);
   const installRecommendedPackage = useAppStore((state) => state.installRecommendedPackage);
+  const packagesBusy = useAppStore((state) => state.packagesBusy);
   const settings = useAppStore((state) => state.settings);
   const loadSettings = useAppStore((state) => state.loadSettings);
 
@@ -74,6 +76,7 @@ export function ExtensionsView() {
   useEffect(() => {
     void loadSettings();
     void loadResources();
+    void useAppStore.getState().loadPackages();
   }, [loadSettings, loadResources]);
 
   const installedPackages = useMemo(() => {
@@ -269,10 +272,12 @@ export function ExtensionsView() {
         </section>
       ) : null}
 
+      <PackagesSection />
+
       <RecommendedSection
         packages={installedPackages}
-        busy={resourcesBusy}
-        onInstall={(entry) => void installRecommendedPackage(entry)}
+        busy={packagesBusy}
+        onInstall={(entry) => installRecommendedPackage(entry)}
         onRevealSettings={() => useAppStore.getState().setView("settings")}
       />
 

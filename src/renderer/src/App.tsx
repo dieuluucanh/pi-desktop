@@ -1,6 +1,7 @@
 import { useEffect, type ReactElement } from "react";
 import { CommandPalette } from "./layout/CommandPalette";
 import { ProviderLoginDialog } from "./connections/ProviderLoginDialog";
+import { PackageConsentDialog } from "./extensions/PackageConsentDialog";
 import { TrustDialog } from "./projects/TrustDialog";
 import { Sidebar } from "./layout/Sidebar";
 import { StatusBar } from "./layout/StatusBar";
@@ -125,6 +126,7 @@ export function App() {
       <SessionTreeDialog />
       <ForkDialog />
       <ProviderLoginDialog />
+      <PackageConsentDialog />
       <TrustDialog />
       <Toaster theme={theme} />
     </div>

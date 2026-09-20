@@ -45,7 +45,7 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 | Extension dialogs (`select`, `confirm`, `input`, `editor`), notifications, status, widgets | ✅ (TUI)           | 🚧 step 16                                                                                 |
 | Extension custom UI (`ctx.ui.custom()`), footers, headers, custom editors                  | ✅ (TUI)           | 🚧 step 17 (TUI rendering surface)                                                         |
 | Extension custom tool/message/entry renderers                                              | ✅ (TUI)           | 🚧 step 18                                                                                 |
-| Install / update / remove packages (npm, git, path, URL)                                   | ✅ (`pi` CLI)      | 🚧 step 14 (streaming progress + consent)                                                  |
+| Install / update / remove packages (npm, git, path, URL)                                   | ✅ (`pi` CLI)      | ✅ step 14 (Pi's own package manager, bundled npm, streaming progress, consent dialog)     |
 | In-app terminal running the real `pi` TUI                                                  | n/a                | ⛔ post-MVP backlog (the bundled `pi` shim + an external terminal work today)              |
 
 ## Context and input
@@ -71,7 +71,7 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 | Capability                                                 | Terminal Pi                                                                                                                                                  | Pi Desktop                                            |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
 | Built-in MCP client                                        | ⛔ not provided by Pi ("It intentionally does not include built-in MCP… build or install those workflows as extensions or packages" — `<sdk>/docs/usage.md`) | ⛔ same: parity means no special work (D-A11)         |
-| MCP servers, if a user installs a bridge extension/package | ✅ through the extension that provides it                                                                                                                    | 🚧 same route: steps 13/14 (Extensions hub, Packages) |
+| MCP servers, if a user installs a bridge extension/package | ✅ through the extension that provides it                                                                                                                    | ✅ same route: steps 13/14 (Extensions hub, Packages) |
 
 ## Platform
 

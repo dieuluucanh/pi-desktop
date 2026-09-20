@@ -86,7 +86,18 @@ class HostError extends Error {
 
 function toErrorBody(error: unknown): HostErrorBody {
   if (error instanceof HostError) return { message: error.message, code: error.code };
-  if (error instanceof Error) return { message: error.message };
+  if (error instanceof Error) {
+    // Any error carrying a string `code` (provider/resource/package errors) keeps
+    // it, so the renderer can branch on the cause instead of matching prose; an
+    // optional `data` payload (e.g. the captured npm output) travels with it.
+    const code = (error as { code?: unknown }).code;
+    const data = (error as { data?: unknown }).data;
+    return {
+      message: error.message,
+      ...(typeof code === "string" && code.length > 0 ? { code } : {}),
+      ...(data !== undefined ? { data } : {}),
+    };
+  }
   return { message: String(error) };
 }
 

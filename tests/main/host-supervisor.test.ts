@@ -108,10 +108,21 @@ function defaultAnswer(request: HostRequestFrame): unknown {
 }
 
 function harness(
-  options: { behaviours?: FakeBehaviour[]; sessionFile?: string | null; maxHosts?: number } = {},
+  options: {
+    behaviours?: FakeBehaviour[];
+    sessionFile?: string | null;
+    maxHosts?: number;
+    npmCliPath?: string;
+  } = {},
 ) {
   const spawned: FakeHost[] = [];
-  const spawner: HostSpawner = () => {
+  const spawnCalls: Array<{
+    command: string;
+    args: readonly string[];
+    env: Record<string, string | undefined>;
+  }> = [];
+  const spawner: HostSpawner = (command, args, spawnOptions) => {
+    spawnCalls.push({ command, args, env: spawnOptions.env });
     const child = new FakeHost(1000 + spawned.length, options.behaviours?.[spawned.length] ?? {});
     spawned.push(child);
     return child;
@@ -126,6 +137,7 @@ function harness(
     blobDir: normalize("C:/user-data/blob-cache"),
     profileDir: normalize("C:/Users/Test/.pi/agent"),
     env: { PATH: normalize("C:/Windows/System32") },
+    ...(options.npmCliPath ? { npmCliPath: options.npmCliPath } : {}),
     spawner,
     fs,
     requestTimeoutMs: 1_000,
@@ -133,12 +145,12 @@ function harness(
     idleTimeoutMs: 0,
   });
 
-  return { supervisor, spawned, fs };
+  return { supervisor, spawned, spawnCalls, fs };
 }
 
 describe("host supervisor startup", () => {
   it("spawns with the bundled runtime, the shim PATH and the session env", async () => {
-    const { supervisor, spawned } = harness();
+    const { supervisor, spawned, spawnCalls } = harness();
 
     const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
 
@@ -151,6 +163,23 @@ describe("host supervisor startup", () => {
     });
     expect(host.port).toBe(38618);
     expect(supervisor.list()).toHaveLength(1);
+
+    // The host learns where the bundled runtime is (plan step 14).
+    expect(spawnCalls[0]?.env.PI_DESKTOP_NODE).toBe(NODE_PATH);
+    expect(spawnCalls[0]?.env.PI_DESKTOP_HOST_MODE).toBe("service");
+  });
+
+  it("passes the bundled npm CLI to the host when the runtime resolved one", async () => {
+    const npmCliPath = normalize("C:/app/runtime/node/npm-cli.js");
+    const { supervisor, spawnCalls } = harness({ npmCliPath });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work"), role: "control" });
+    expect(spawnCalls[0]?.env.PI_DESKTOP_NPM_CLI).toBe(npmCliPath);
+  });
+
+  it("omits the npm CLI variable when the runtime has none", async () => {
+    const { supervisor, spawnCalls } = harness();
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(spawnCalls[0]?.env).not.toHaveProperty("PI_DESKTOP_NPM_CLI");
   });
 
   it("reserves port 38617 for the Office host and hands out 38618+ to everyone else", async () => {

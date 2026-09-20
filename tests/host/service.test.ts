@@ -139,6 +139,30 @@ describe("host service dispatch", () => {
     expect(host.last()).toMatchObject({ ok: false, error: { code: "not_implemented" } });
   });
 
+  it("keeps an error's code and data when it crosses the frame boundary", async () => {
+    // Package failures carry the captured npm output as `data`, and the UI needs
+    // the code to tell "offline" from "not found" (plan step 14).
+    const host = harness({
+      handlers: {
+        "packages.list": () => {
+          const error = new Error("npm ERR! code ENOTFOUND") as Error & {
+            code: string;
+            data: unknown;
+          };
+          error.code = "offline";
+          error.data = { output: "npm ERR! code ENOTFOUND" };
+          throw error;
+        },
+      },
+    });
+    await host.request(1, "packages.list");
+
+    expect(host.last()).toMatchObject({
+      ok: false,
+      error: { code: "offline", data: { output: "npm ERR! code ENOTFOUND" } },
+    });
+  });
+
   it("lets injected handlers answer a method", async () => {
     const host = harness({
       handlers: {

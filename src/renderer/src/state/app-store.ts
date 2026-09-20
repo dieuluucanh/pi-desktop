@@ -67,6 +67,18 @@ import {
 } from "../../../shared/resources";
 import type { RecommendedPackage } from "../../../shared/recommended-packages";
 import {
+  PACKAGES_CHANGED_EVENT,
+  PACKAGE_PROGRESS_EVENT,
+  normalizePackageSource,
+  pinnedPackageSource,
+  sanitizePackageProgress,
+  sanitizePackagesSnapshot,
+  unpinnedPackageSource,
+  type PackageProgressEvent,
+  type PackageScope,
+  type PackageSummary,
+} from "../../../shared/packages";
+import {
   createTranscriptState,
   hydrateMessages,
   reduceSessionEvents,
@@ -367,11 +379,36 @@ export interface AppStateShape {
   /** `session.reload` on a live host (or a fresh loader) and report the delta. */
   reloadResources: () => Promise<void>;
   /**
-   * One-click install of a recommended package (plan step 13 routes it through
-   * the package manager; step 14 owns the install machinery, so a host without
-   * it surfaces `not_implemented` instead of pretending success).
+   * One-click install of a recommended package: opens the consent dialog. The
+   * actual install happens in `confirmPackageConsent` once the user has seen
+   * the exact source (plan step 14).
    */
-  installRecommendedPackage: (entry: RecommendedPackage) => Promise<boolean>;
+  installRecommendedPackage: (entry: RecommendedPackage) => void;
+
+  /** Packages (plan step 14): what Pi is configured to load, and its state. */
+  packages: PackageSummary[];
+  packagesLoaded: boolean;
+  packagesBusy: boolean;
+  packagesError: string | null;
+  /** The project context the list was read for. */
+  packagesCwd: string | null;
+  /** The progress frame of the operation currently running, if any. */
+  packageProgress: PackageProgressEvent | null;
+  /** The pending consent dialog, or null when nothing is waiting. */
+  packageConsent: PackageConsentRequest | null;
+  loadPackages: (options?: { refresh?: boolean }) => Promise<void>;
+  /** Opens the consent dialog for an install; nothing is installed yet. */
+  requestPackageInstall: (source: string, scope: PackageScope, cwd?: string | null) => void;
+  /** Opens the consent dialog for an update (one package, or all with null). */
+  requestPackageUpdate: (source: string | null, scope: PackageScope, cwd?: string | null) => void;
+  /** Sends the consent the dialog displayed and runs the operation. */
+  confirmPackageConsent: () => Promise<boolean>;
+  cancelPackageConsent: () => void;
+  removePackage: (summary: PackageSummary, cwd?: string | null) => Promise<boolean>;
+  /** Reinstall at the installed version (npm only); opens the consent dialog. */
+  pinPackage: (summary: PackageSummary, cwd?: string | null) => void;
+  /** Reinstall floating on latest (npm only); opens the consent dialog. */
+  unpinPackage: (summary: PackageSummary, cwd?: string | null) => void;
 
   createSessionTab: () => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
@@ -459,6 +496,21 @@ export interface ProviderLoginState {
   prompt: { id: string; prompt: ProviderAuthPrompt } | null;
 }
 
+/**
+ * A package operation waiting for the user to acknowledge what it will run
+ * (plan step 14). The dialog shows `source` verbatim; confirming echoes it back,
+ * so the host refuses anything the user did not actually see.
+ */
+export interface PackageConsentRequest {
+  kind: "install" | "update";
+  /** The normalised source, exactly as the dialog shows it. */
+  source: string;
+  /** The package name for the heading (`*` for update-all). */
+  name: string;
+  scope: PackageScope;
+  cwd: string | null;
+}
+
 function bridge(): Window["pi"] | undefined {
   return typeof window === "undefined" ? undefined : window.pi;
 }
@@ -511,6 +563,15 @@ function resourcesTarget(state: AppStateShape): string {
 function resourcesCwd(state: AppStateShape, target: string): string | null {
   const tab = state.tabs.find((entry) => entry.id === target);
   return tab?.cwd ?? state.project?.path ?? null;
+}
+
+/**
+ * The project context packages are listed/installed for: the active project, or
+ * the active session tab's folder when the project list is not loaded.
+ */
+function packageCwd(state: AppStateShape): string | null {
+  const active = state.tabs.find((tab) => tab.id === state.activeTabId);
+  return state.project?.path ?? active?.cwd ?? null;
 }
 
 export const useAppStore = create<AppStateShape>()((set, get) => ({
@@ -577,6 +638,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   customProviders: [],
   customProvidersLoaded: false,
   customProvidersError: null,
+  packages: [],
+  packagesLoaded: false,
+  packagesBusy: false,
+  packagesError: null,
+  packagesCwd: null,
+  packageProgress: null,
+  packageConsent: null,
 
   setView: (view) => set({ view, hint: null }),
   openPalette: () => set({ paletteOpen: true }),
@@ -1362,6 +1430,24 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   applyControlEvent: (entry) => {
+    if (entry.event === PACKAGE_PROGRESS_EVENT) {
+      const progress = sanitizePackageProgress(entry.payload);
+      if (!progress) return;
+      // A finished operation clears the indicator; the request's own resolution
+      // also clears it, so a dropped event can never wedge the UI.
+      set({
+        packageProgress:
+          progress.phase === "complete" || progress.phase === "error" ? null : progress,
+      });
+      return;
+    }
+
+    if (entry.event === PACKAGES_CHANGED_EVENT) {
+      // Another window (or the host itself) changed the package list.
+      void get().loadPackages({ refresh: true });
+      return;
+    }
+
     if (entry.event === PROVIDER_LOGIN_EVENT) {
       const event = entry.payload as ProviderLoginEvent | undefined;
       if (!event) return;
@@ -1692,29 +1778,147 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     set({ resourcesChange: isResourceChangeEmpty(change) ? null : change });
   },
 
-  installRecommendedPackage: async (entry) => {
+  // ---- Packages (plan step 14) ----
+
+  installRecommendedPackage: (entry) => {
+    get().requestPackageInstall(entry.source, "user");
+  },
+
+  loadPackages: async (options) => {
     const api = bridge();
-    if (!api?.sessions) {
-      set({ resourcesError: "The preload bridge is unavailable." });
-      return false;
+    if (!api?.sessions) return;
+    const cwd = packageCwd(get());
+    const current = get();
+    if (options?.refresh !== true && current.packagesLoaded && current.packagesCwd === cwd) return;
+    set({ packagesBusy: true, packagesError: null });
+    try {
+      const raw = await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "packages.list",
+        params: { cwd },
+      });
+      const snapshot = sanitizePackagesSnapshot(raw);
+      set({
+        packages: snapshot.packages,
+        packagesLoaded: true,
+        packagesBusy: false,
+        packagesError: null,
+        packagesCwd: cwd,
+      });
+    } catch (error) {
+      set({ packagesBusy: false, packagesLoaded: true, packagesError: errorMessage(error) });
     }
-    set({ resourcesBusy: true, resourcesError: null });
+  },
+
+  requestPackageInstall: (source, scope, cwd) => {
+    let normalized: string;
+    try {
+      normalized = normalizePackageSource(source);
+    } catch (error) {
+      set({ packagesError: errorMessage(error) });
+      return;
+    }
+    set({
+      packagesError: null,
+      packageConsent: {
+        kind: "install",
+        source: normalized,
+        name: normalized,
+        scope,
+        cwd: cwd ?? packageCwd(get()),
+      },
+    });
+  },
+
+  requestPackageUpdate: (source, scope, cwd) => {
+    let normalized: string | null = null;
+    if (source !== null) {
+      try {
+        normalized = normalizePackageSource(source);
+      } catch (error) {
+        set({ packagesError: errorMessage(error) });
+        return;
+      }
+    }
+    set({
+      packagesError: null,
+      packageConsent: {
+        kind: "update",
+        source: normalized ?? "*",
+        name: normalized ?? "all configured packages",
+        scope,
+        cwd: cwd ?? packageCwd(get()),
+      },
+    });
+  },
+
+  confirmPackageConsent: async () => {
+    const consent = get().packageConsent;
+    const api = bridge();
+    if (!consent || !api?.sessions) return false;
+    set({ packageConsent: null, packagesBusy: true, packagesError: null, packageProgress: null });
+    // The echo is the whole point: the host refuses an install whose consent does
+    // not name the exact source this dialog displayed (plan step 14).
+    const echoed = { source: consent.source, systemAccess: true };
+    const params =
+      consent.kind === "update"
+        ? {
+            ...(consent.source === "*" ? {} : { source: consent.source }),
+            scope: consent.scope,
+            cwd: consent.cwd,
+            consent: echoed,
+          }
+        : { source: consent.source, scope: consent.scope, cwd: consent.cwd, consent: echoed };
     try {
       await api.sessions.request({
         tabId: CONTROL_TAB_ID,
-        method: "packages.install",
-        params: { source: entry.source, scope: "global" },
+        method: consent.kind === "update" ? "packages.update" : "packages.install",
+        params,
       });
+      await get().loadPackages({ refresh: true });
+      await get().loadSettings();
       await get().loadResources({ refresh: true });
-      set({ resourcesBusy: false });
+      set({ packagesBusy: false, packageProgress: null });
       return true;
     } catch (error) {
-      set({
-        resourcesBusy: false,
-        resourcesError: `Installing ${entry.name} failed: ${errorMessage(error)}`,
-      });
+      set({ packagesBusy: false, packageProgress: null, packagesError: errorMessage(error) });
       return false;
     }
+  },
+
+  cancelPackageConsent: () => set({ packageConsent: null }),
+
+  removePackage: async (summary, cwd) => {
+    const api = bridge();
+    if (!api?.sessions) {
+      set({ packagesError: "The preload bridge is unavailable." });
+      return false;
+    }
+    set({ packagesBusy: true, packagesError: null, packageProgress: null });
+    try {
+      await api.sessions.request({
+        tabId: CONTROL_TAB_ID,
+        method: "packages.remove",
+        params: { source: summary.source, scope: summary.scope, cwd: cwd ?? packageCwd(get()) },
+      });
+      await get().loadPackages({ refresh: true });
+      await get().loadResources({ refresh: true });
+      set({ packagesBusy: false, packageProgress: null });
+      return true;
+    } catch (error) {
+      set({ packagesBusy: false, packageProgress: null, packagesError: errorMessage(error) });
+      return false;
+    }
+  },
+
+  pinPackage: (summary, cwd) => {
+    const source = pinnedPackageSource(summary);
+    if (source) get().requestPackageInstall(source, summary.scope, cwd);
+  },
+
+  unpinPackage: (summary, cwd) => {
+    const source = unpinnedPackageSource(summary);
+    if (source) get().requestPackageInstall(source, summary.scope, cwd);
   },
 
   createSessionTab: async () => {

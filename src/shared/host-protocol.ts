@@ -23,6 +23,16 @@ export const BLOB_DIR_ENV = "PI_DESKTOP_BLOB_DIR";
 /** Environment variable telling a host where to back up files before writing them. */
 export const BACKUP_DIR_ENV = "PI_DESKTOP_BACKUP_DIR";
 
+/** Absolute path to the bundled Node binary, set by the supervisor for a host. */
+export const NODE_BIN_ENV = "PI_DESKTOP_NODE";
+
+/**
+ * Absolute path to the bundled npm CLI (`npm-cli.js`), set by the supervisor so
+ * package operations use the app's runtime instead of whatever is on PATH
+ * (plan step 14). The host turns it into `applyOverrides({ npmCommand })`.
+ */
+export const NPM_CLI_ENV = "PI_DESKTOP_NPM_CLI";
+
 /** Selects the host service instead of the `pi` CLI (plan D16). */
 export const SERVICE_FLAG = "--service";
 export const SERVICE_ENV = "PI_DESKTOP_HOST_MODE";

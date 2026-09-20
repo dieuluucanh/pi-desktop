@@ -125,6 +125,7 @@ const hosts = runtime.nodePath
       blobDir: paths.blobCache,
       backupDir: join(paths.userData, "backups"),
       profileDir: paths.profileDir,
+      ...(runtime.npmCliPath ? { npmCliPath: runtime.npmCliPath } : {}),
     })
   : null;
 

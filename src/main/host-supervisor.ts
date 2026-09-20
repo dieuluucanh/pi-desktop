@@ -7,6 +7,8 @@ import {
   HOST_PROTOCOL_VERSION,
   HOST_ROLE_ENV,
   JsonlFrameDecoder,
+  NODE_BIN_ENV,
+  NPM_CLI_ENV,
   encodeFrame,
   isEventFrame,
   isResponseFrame,
@@ -115,6 +117,12 @@ export interface HostSupervisorOptions {
    * then simply skip the backup.
    */
   backupDir?: string;
+  /**
+   * Absolute path to the bundled npm CLI (`npm-cli.js`), passed to hosts as
+   * `PI_DESKTOP_NPM_CLI` so package operations use the app's runtime and work
+   * even when `npm` is absent from PATH (plan step 14).
+   */
+  npmCliPath?: string;
   /** Base environment (the process env of the app). */
   env?: Record<string, string | undefined>;
   profileDir: string;
@@ -290,8 +298,9 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         basePath.length > 0
           ? `${options.binDir}${process.platform === "win32" ? ";" : ":"}${basePath}`
           : options.binDir;
-      env.PI_DESKTOP_NODE = options.nodePath;
+      env[NODE_BIN_ENV] = options.nodePath;
       env.PI_DESKTOP_HOST_ENTRY = options.hostPath;
+      if (options.npmCliPath) env[NPM_CLI_ENV] = options.npmCliPath;
       if (options.backupDir) env[BACKUP_DIR_ENV] = options.backupDir;
 
       const args = [

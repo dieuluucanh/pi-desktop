@@ -1,7 +1,7 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { createControlCore, CONTROL_METHODS } from "../../src/host/control-core";
-import { resolveHostRole } from "../../src/host/index";
+import { resolveHostRole, resolveNpmCommand } from "../../src/host/index";
 import { createHostService } from "../../src/host/service";
 import { createFakeSettings } from "./fake-settings";
 
@@ -57,6 +57,21 @@ describe("resolveHostRole", () => {
     expect(resolveHostRole(["--role", "session"], { PI_DESKTOP_HOST_ROLE: "control" })).toBe(
       "session",
     );
+  });
+});
+
+describe("resolveNpmCommand (plan step 14)", () => {
+  it("builds [node, npm-cli.js] only when both paths are present", () => {
+    expect(
+      resolveNpmCommand({
+        PI_DESKTOP_NODE: "C:/runtime/node.exe",
+        PI_DESKTOP_NPM_CLI: "C:/runtime/npm-cli.js",
+      }),
+    ).toEqual(["C:/runtime/node.exe", "C:/runtime/npm-cli.js"]);
+    expect(resolveNpmCommand({ PI_DESKTOP_NODE: "C:/runtime/node.exe" })).toBeNull();
+    expect(resolveNpmCommand({ PI_DESKTOP_NPM_CLI: "C:/runtime/npm-cli.js" })).toBeNull();
+    expect(resolveNpmCommand({ PI_DESKTOP_NODE: "  ", PI_DESKTOP_NPM_CLI: " " })).toBeNull();
+    expect(resolveNpmCommand({})).toBeNull();
   });
 });
 
@@ -164,6 +179,13 @@ describe("control core resources (plan step 13)", () => {
     await expect(core.handlers()["resources.list"]?.({}, {} as never)).rejects.toThrow(
       /no resource inspector/,
     );
+  });
+
+  it("answers packages.* with not_implemented when no package manager is configured", async () => {
+    const core = createControlCore({ settings: fakeSettings(), listSessions: async () => [] });
+    await expect(core.handlers()["packages.list"]?.({}, {} as never)).rejects.toMatchObject({
+      code: "not_implemented",
+    });
   });
 
   it("builds the hub snapshot from the inspector and the settings port", async () => {

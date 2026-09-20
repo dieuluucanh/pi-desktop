@@ -50,8 +50,10 @@ truth and supersedes the group table's implications.
   `PI_DESKTOP_HOST_ROLE` (`control` = app-wide state and no `AgentSession`,
   `session` = one Pi session; plan D-A3),
   `PI_DESKTOP_BLOB_DIR`, `PI_DESKTOP_BACKUP_DIR` (where a host copies a file
-  before rewriting it; plan step 12), `PI_DESKTOP_NODE` /
-  `PI_DESKTOP_HOST_ENTRY`, and `PATH` prefixed with the shim directory.
+  before rewriting it; plan step 12), `PI_DESKTOP_NODE`,
+  `PI_DESKTOP_NPM_CLI` (absolute path to the bundled `npm-cli.js`, so package
+  operations use the app's runtime and work with `npm` absent from PATH; plan
+  step 14), `PI_DESKTOP_HOST_ENTRY`, and `PATH` prefixed with the shim directory.
 - `host.hello` reports protocol version, node/pi version, cwd, bridge port and
   pid/ppid. A protocol mismatch is logged, not fatal (risk R8).
 
@@ -74,7 +76,7 @@ so the whole supervisor is unit tested against a scripted fake host
 (`tests/main/host-supervisor.test.ts`), and `tests/host/service.live.test.ts`
 drives the real bundle when `out/host/index.mjs` has been built.
 
-## Implementation status (2026-09-20, after plan step 12)
+## Implementation status (2026-09-20, after plan step 14)
 
 ### Wired and tested
 
@@ -87,7 +89,7 @@ drives the real bundle when `out/host/index.mjs` has been built.
 | models & thinking | `model.list`, `model.available`, `model.set`, `model.cycle`, `thinking.levels`, `thinking.set`, `thinking.cycle`                                                                                                                                                                                                                                                                       | `src/host/session-core.ts`                                         |
 | session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`                                                                                                                                                                                                                                                                                               | `src/host/session-core.ts`                                         |
 | settings          | `settings.get`, `settings.set`, `settings.raw` (read **or** write a whole scope), `settings.flush`; every response carries **both** scopes, the two file paths + mtimes, `drainErrors` and the project-trust flag. Writes are schema-validated: a named `SettingsManager` setter when Pi has one, otherwise an atomic whole-document edit, always with a backup before the first write | `src/host/settings.ts` + `src/host/sdk/settings.ts`, in both cores |
-| control host      | `settings.*`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `project.inspect`, `project.trust`, `resources.list` (loads a project's resources with no session)                                                                                                            | `src/host/control-core.ts`                                         |
+| control host      | `settings.*`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `packages.*`, `project.inspect`, `project.trust`, `resources.list` (loads a project's resources with no session)                                                                                              | `src/host/control-core.ts`                                         |
 | extensions hub    | `resources.list` (both cores): extensions/skills/prompts/themes with source, scope, origin, contributed tools/commands/shortcuts/flags, loader diagnostics and live `extension_error` history                                                                                                                                                                                          | `src/host/resources.ts` (+ `src/host/sdk/resources.ts`)            |
 | extension UI      | `oi.respond` + `oi.request` events                                                                                                                                                                                                                                                                                                                                                     | `src/host/extension-ui.ts`                                         |
 
@@ -96,8 +98,45 @@ drives the real bundle when `out/host/index.mjs` has been built.
 | Methods                     | Step |
 | --------------------------- | ---- |
 | `bash.run`, `bash.abort`    | 6    |
-| `packages.*`                | 14   |
 | `files.read`, `files.write` | 20   |
+
+### Packages (plan step 14)
+
+`packages.list` takes `{cwd?}` and answers `{packages, loadedAt}`: every entry in
+`settings.json#packages` (both scopes for the requested project) with its
+normalised source, kind (`npm`/`git`/`path`), scope, installed version, pin
+state and installed path. `packages.install`, `packages.remove` and
+`packages.update` take `{source?, scope, cwd?}` and answer the refreshed list.
+
+- **Bare names are normalised to `npm:`** before anything else happens, because
+  Pi's package manager treats a bare string as a _local path_ (`isLocalPath`).
+  The normalised source is what is persisted and what terminal Pi then resolves.
+- **Install and update require consent.** The caller must echo the exact source
+  it showed the user (`consent: {source, systemAccess: true}`); a missing or
+  stale echo is refused with `consent_required` before npm runs. `packages.update`
+  without a source (update-all) echoes `*`.
+- **Mutations are serialised** in the handler, so progress frames cannot
+  interleave and two operations cannot fight over the npm root.
+- **`packages.progress`** events carry `{operationId, action, phase, source,
+message?, percent?}` (npm reports no percentage, so `percent` is coarse), and
+  a successful mutation emits `packages.changed` so every open hub re-reads.
+
+`DefaultPackageManager` lives in `src/host/sdk/packages.ts` (the only module
+that constructs one). The bundled npm is injected as a **runtime-only**
+`applyOverrides({npmCommand})` — never written to the shared profile — and Pi's
+package manager is pointed at a small capture shim instead of npm directly: the
+shim pipes npm, forwards read-only queries (`root -g`, `view …`) on stdout for
+Pi's capture paths, sends installs to stderr so a package can never write into
+the JSONL stream, and tees the output to a log file. A failed operation
+re-throws a `PackageError` carrying the npm output tail and a classified hint
+(offline / not found / auth / peer-dependency / missing runtime). The control
+host reloads the shared settings after a mutation, so the app's cached
+`SettingsManager` sees the entry the package manager wrote.
+
+`tests/host/packages-parity.test.ts` pins the app's Office-bootstrap npm
+plumbing (`src/main/packages/*`) to the SDK path: the same normalised
+`settings.json` entries and the same `~/.pi/agent/npm` / `<cwd>/.pi/npm` root,
+manifest name (`pi-extensions`) and `.gitignore`.
 
 ### Extensions hub (plan step 13)
 

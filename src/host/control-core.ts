@@ -5,6 +5,7 @@ import {
   CUSTOM_PROVIDER_METHODS,
   type CustomProviderStore,
 } from "./custom-providers";
+import { createPackageHandlers, PACKAGE_METHODS, type PackagePort } from "./packages";
 import { createProjectHandlers, PROJECT_METHODS } from "./project-handlers";
 import type { ProjectTrust } from "./project-trust";
 import { createProviderHandlers, PROVIDER_METHODS, type ProviderPort } from "./providers";
@@ -56,6 +57,12 @@ export interface ControlCoreDeps {
   providers?: ProviderPort;
   /** Custom gateways in `models.json` (plan step 9, slice 5). */
   customProviders?: CustomProviderStore;
+  /**
+   * Package install/update/remove through Pi's package manager (plan step 14).
+   * Optional like the other ports: a host without it answers `packages.*` with
+   * `not_implemented` instead of pretending it can install.
+   */
+  packages?: PackagePort;
   /** Inspects one project folder for the project header (plan step 10). */
   projectInspect?(cwd: string): Promise<ProjectInspection>;
   /** Trust status and answers for a folder (plan step 10). */
@@ -78,6 +85,7 @@ export const CONTROL_METHODS: readonly HostMethod[] = [
   "session.rename",
   ...PROVIDER_METHODS,
   ...CUSTOM_PROVIDER_METHODS,
+  ...PACKAGE_METHODS,
   ...PROJECT_METHODS,
   ...RESOURCE_METHODS,
 ];
@@ -122,6 +130,9 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
       ...createCustomProviderHandlers({
         resolveStore: () => deps.customProviders ?? null,
       }).handlers(),
+      // Packages (plan step 14): install/update/remove through Pi's package
+      // manager, with consent and serialised npm runs enforced in the handlers.
+      ...createPackageHandlers({ resolvePort: () => deps.packages ?? null }).handlers(),
       ...createProjectHandlers({
         ...(deps.projectInspect ? { inspectProject: deps.projectInspect } : {}),
         ...(deps.trust ? { trust: deps.trust } : {}),

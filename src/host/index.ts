@@ -5,6 +5,8 @@ import {
   BACKUP_DIR_ENV,
   BLOB_DIR_ENV,
   HOST_ROLE_ENV,
+  NODE_BIN_ENV,
+  NPM_CLI_ENV,
   ROLE_FLAG,
   SERVICE_ENV,
   SERVICE_FLAG,
@@ -32,6 +34,7 @@ import {
   ProjectTrustStore,
   SessionManager,
   createSdkCustomProviderStore,
+  createSdkPackagePort,
   createSdkProviderPort,
   createSdkResourceInspector,
   createSdkSessionRuntime,
@@ -164,6 +167,7 @@ function createControlHostCore(options: {
   backupDir?: string;
   providers: ProviderPort;
   customProviders: CustomProviderStore;
+  npmCommand?: readonly string[] | null;
 }) {
   const trust = createProjectTrust({
     store: new ProjectTrustStore(options.agentDir),
@@ -191,6 +195,15 @@ function createControlHostCore(options: {
     // (or onboarding) asks for providers.
     providers: options.providers,
     customProviders: options.customProviders,
+    // Packages (plan step 14): install/update/remove through Pi's package
+    // manager, with the bundled npm as a runtime-only override so installs work
+    // even when `npm` is absent from PATH.
+    packages: createSdkPackagePort({
+      agentDir: options.agentDir,
+      defaultCwd: options.cwd,
+      ...(options.npmCommand ? { npmCommand: options.npmCommand } : {}),
+      isProjectTrusted: (cwd) => trust.status(cwd).trusted,
+    }),
     trust,
     defaultCwd: options.cwd,
     // The hub loads resources for a project on demand, so it works with no
@@ -211,6 +224,18 @@ function createControlHostCore(options: {
 }
 
 /**
+ * The bundled `[node, npm-cli.js]` command (plan step 14), when the supervisor
+ * provided both paths. `null` means the host has no runtime npm override and
+ * package operations fall back to PATH.
+ */
+export function resolveNpmCommand(env: Record<string, string | undefined>): string[] | null {
+  const nodePath = env[NODE_BIN_ENV]?.trim();
+  const npmCli = env[NPM_CLI_ENV]?.trim();
+  if (!nodePath || !npmCli) return null;
+  return [nodePath, npmCli];
+}
+
+/**
  * Runs the host protocol service on stdio until the supervisor shuts it down.
  * Returns only when the process is about to exit.
  */
@@ -224,6 +249,7 @@ export function runService(
   const bridgePort = flagValue(args, "--port") ?? env.PI_OFFICE_BRIDGE_PORT ?? null;
   const cwd = flagValue(args, "--cwd") ?? process.cwd();
   const role = resolveHostRole(args, env);
+  const npmCommand = resolveNpmCommand(env);
 
   return new Promise<void>((resolve) => {
     // The core is built before the service (which owns the frame writer), so the
@@ -248,6 +274,7 @@ export function runService(
             cwd,
             agentDir,
             ...(backupDir ? { backupDir } : {}),
+            ...(npmCommand ? { npmCommand } : {}),
             providers: providerPort,
             customProviders: customProviderStore,
           })
@@ -255,6 +282,7 @@ export function runService(
             cwd,
             agentDir,
             ...(backupDir ? { backupDir } : {}),
+            ...(npmCommand ? { npmCommand } : {}),
             emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
           });
 

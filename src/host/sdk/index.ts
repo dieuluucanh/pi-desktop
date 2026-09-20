@@ -146,6 +146,17 @@ export { createSdkCustomProviderStore, type SdkCustomProviderOptions } from "./c
 /** The Extensions hub's loader source for a control host (plan step 13). */
 export { createSdkResourceInspector, type SdkResourceInspectorOptions } from "./resources";
 
+/** Package install/update/remove through Pi's package manager (plan step 14). */
+export {
+  applyNpmOverride,
+  createSdkPackagePort,
+  NPM_CAPTURE_CLI_ENV,
+  NPM_CAPTURE_LOG_ENV,
+  NPM_CAPTURE_SHIM,
+  npmOverrideCommand,
+  type SdkPackageOptions,
+} from "./packages";
+
 /** Settings reads, writes and backups through `SettingsManager` (plan step 12). */
 export {
   createSdkSettingsPort,
