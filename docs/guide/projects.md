@@ -1,0 +1,63 @@
+# Projects
+
+A **project** is a folder a session runs in. Pi reads `AGENTS.md`, `.pi/`
+configuration, extensions, skills and prompts from it, so the folder — not the
+window — is the unit of context.
+
+## Adding a project
+
+- **Open project folder…** — native folder picker. The folder is added to the
+  sidebar’s recent list and becomes active.
+- **Create blank project…** — creates the directory (and optionally runs
+  `git init`; the app probes `git --version` before creating anything).
+- **Clone repository…** — validates the URL and clones with `git`, surfacing the
+  first line of an error.
+- **Quick session in home** — opens your home folder as a project for a one-off
+  session.
+
+Projects can be reordered and removed from the sidebar; the recent list is
+stored in app state (`app-state.json`), never in Pi state.
+
+## The project header
+
+The sidebar shows, per project:
+
+- name and path;
+- the **git branch**, when `git` is available;
+- a **trust** badge;
+- a `.pi/` summary (which of settings/extensions/skills/prompts/themes exist);
+- whether `AGENTS.md` is present;
+- the session directory Pi will use.
+
+Actions: reveal in the file manager, open an external terminal, copy the path,
+and set the project’s default model and thinking level. A project default is
+applied by the host when a **new** session is created — never on resume — and a
+default the model catalog does not offer is ignored rather than invented.
+
+## Trust
+
+Opening a folder with project-level Pi configuration triggers a trust prompt:
+
+- **Trust once** — this app run only;
+- **Trust & remember** — persisted;
+- **Never** — the project stays untrusted;
+- **Ignore** — dismiss without a decision (the project remains untrusted).
+
+Until a project is trusted, its project resources stay disabled, exactly as Pi
+behaves. `/trust` re-opens the prompt, and the trust chip in the sidebar shows
+the current state. A session refused for trust retries `session.create` with the
+answer you chose, so you never have to retype a prompt.
+
+## Where state lives
+
+| What                         | Where                             |
+| ---------------------------- | --------------------------------- |
+| Project config and overrides | `<project>/.pi/`                  |
+| Per-project session files    | the profile’s `sessions/` tree    |
+| Default model/thinking       | `app-state.json` (app preference) |
+| Project extensions/packages  | `<project>/.pi/npm`, `.pi/…`      |
+
+## Related
+
+- [Sessions and tabs](sessions-and-tabs.md) · [Settings](settings.md)
+- [Extensions and packages](extensions-and-packages.md) · [Getting started](getting-started.md)

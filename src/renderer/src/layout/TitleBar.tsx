@@ -2,6 +2,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { newSessionAction, openProjectAction } from "../menu-actions";
 import { useAppStore } from "../state/app-store";
+import { UpdateBanner } from "../updates/UpdateBanner";
 
 /** Top chrome: brand, active project, runtime facts that matter at a glance. */
 export function TitleBar() {
@@ -32,6 +33,7 @@ export function TitleBar() {
       )}
 
       <div className="ml-auto flex items-center gap-2">
+        <UpdateBanner />
         {info?.safeMode ? <Badge tone="warn">safe mode</Badge> : null}
         <Button size="sm" variant="ghost" onClick={() => void openProjectAction()}>
           Open project…

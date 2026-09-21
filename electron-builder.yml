@@ -2,6 +2,11 @@ appId: dev.pi.desktop
 productName: Pi Desktop
 copyright: Copyright (c) 2026 Pi Desktop contributors
 
+# Predictable file names make GitHub Release assets and the updater feed agree;
+# the default (productName + version + arch) is close, but naming `${os}` too
+# keeps Windows/macOS/Linux assets distinguishable in one release.
+artifactName: "${productName}-${version}-${os}-${arch}.${ext}"
+
 directories:
   output: release
   buildResources: build
@@ -53,6 +58,9 @@ linux:
   category: Development
   target: [AppImage, deb]
 
+# GitHub Releases is the update feed (plan step 26): `publish` writes
+# `app-update.yml` into the packaged app, which `electron-updater` reads. The
+# repository URL lives in package.json so builder and updater agree.
 publish:
   provider: github
   releaseType: release

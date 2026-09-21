@@ -13,6 +13,7 @@ import {
   type SessionDeleteResult,
   type DiagnosticsSaveResult,
   type SessionsBridge,
+  type UpdatesBridge,
   type WebBridge,
   type WebTabOpenInput,
   type WindowState,
@@ -37,6 +38,7 @@ import type { OfficeSetupStepId, OfficeSetupView } from "../shared/office-setup"
 import type { OfficeStopResult } from "../shared/office-bridge";
 import type { OfficeDocumentsView } from "../shared/office-documents";
 import type { DiagnosticsExport, DiagnosticsSnapshot } from "../shared/diagnostics";
+import type { UpdateState } from "../shared/updates";
 import type {
   WebCommand,
   WebNavigationDecision,
@@ -154,12 +156,22 @@ const diagnostics: DiagnosticsBridge = {
   record: (incident) => ipcRenderer.invoke(IPC.diagnosticsRecord, incident) as Promise<boolean>,
 };
 
+const updates: UpdatesBridge = {
+  get: () => ipcRenderer.invoke(IPC.updatesGet) as Promise<UpdateState>,
+  check: () => ipcRenderer.invoke(IPC.updatesCheck) as Promise<UpdateState>,
+  download: () => ipcRenderer.invoke(IPC.updatesDownload) as Promise<UpdateState>,
+  install: () => ipcRenderer.invoke(IPC.updatesInstall) as Promise<boolean>,
+  onState: (listener: (state: UpdateState) => void) =>
+    subscribe<UpdateState>(IPC.updatesState, listener),
+};
+
 const bridge: PiDesktopBridge = {
   getAppInfo: () => ipcRenderer.invoke(IPC.appInfo) as Promise<AppInfo>,
   openExternal: (url: string) => ipcRenderer.invoke(IPC.openExternal, url) as Promise<boolean>,
   pickDirectory: () => ipcRenderer.invoke(IPC.appPickDirectory) as Promise<string | null>,
   revealPath: (path: string) => ipcRenderer.invoke(IPC.appRevealPath, path) as Promise<boolean>,
   setTitle: (title: string) => ipcRenderer.invoke(IPC.appSetTitle, title) as Promise<boolean>,
+  relaunch: () => ipcRenderer.invoke(IPC.appRelaunch) as Promise<boolean>,
   onWindowState: (listener: (state: WindowState) => void) =>
     subscribe<WindowState>(IPC.windowState, listener),
   onMenuCommand: (listener: (command: MenuCommand) => void) =>
@@ -171,6 +183,7 @@ const bridge: PiDesktopBridge = {
   integrations,
   web,
   diagnostics,
+  updates,
 };
 
 contextBridge.exposeInMainWorld("pi", bridge);

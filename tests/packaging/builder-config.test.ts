@@ -1,0 +1,85 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+
+/**
+ * Packaging guard (plan step 26).
+ *
+ * Packaging is the one deliverable no unit test can exercise end to end (it
+ * needs a clean machine and a real installer), so this test pins the parts that
+ * *are* checkable in-repo and are easy to break silently: the target set, the
+ * runtime/manifest resources the app reads by path, the asar unpack list the
+ * SDK's dynamic loading needs, the GitHub update feed, and the pinned runtime
+ * artifacts the target platforms require.
+ *
+ * `electron-builder.yml` is read as text: no YAML parser is a dependency, and
+ * the assertions below are about presence of the named entries, not about YAML
+ * semantics.
+ */
+
+const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
+const builderYaml = readFileSync(join(repoRoot, "electron-builder.yml"), "utf8");
+const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+  main: string;
+  scripts: Record<string, string>;
+  repository?: { type?: string; url?: string };
+  dependencies: Record<string, string>;
+};
+const lock = JSON.parse(
+  readFileSync(join(repoRoot, "resources", "runtime", "node.lock.json"), "utf8"),
+) as { node: { version: string; artifacts: Record<string, unknown> } };
+
+describe("electron-builder config (plan step 26)", () => {
+  it("declares Windows NSIS + portable, macOS dmg/zip on both arches, and Linux AppImage/deb", () => {
+    expect(builderYaml).toMatch(/target:\s*nsis/);
+    expect(builderYaml).toMatch(/target:\s*portable/);
+    expect(builderYaml).toMatch(/target:\s*dmg/);
+    expect(builderYaml).toMatch(/target:\s*zip/);
+    expect(builderYaml).toMatch(/arch:\s*\[arm64,\s*x64\]/);
+    expect(builderYaml).toMatch(/target:\s*\[AppImage,\s*deb\]/);
+  });
+
+  it("ships the bundled runtime and the Office manifest outside the asar", () => {
+    // Both are read by absolute path at runtime, so they cannot live in the asar.
+    expect(builderYaml).toMatch(/from:\s*resources\/runtime/);
+    expect(builderYaml).toMatch(/from:\s*resources\/office/);
+    expect(builderYaml).toMatch(/to:\s*runtime/);
+    expect(builderYaml).toMatch(/to:\s*office/);
+  });
+
+  it("unpacks the SDK, jiti, typebox and the runtime", () => {
+    // Extensions are loaded from real files on disk (plan D2); an asar-packed
+    // `@earendil-works/*` breaks dynamic TypeScript/extension resolution.
+    expect(builderYaml).toContain('"**/node_modules/@earendil-works/**"');
+    expect(builderYaml).toContain('"**/node_modules/jiti/**"');
+    expect(builderYaml).toContain('"**/node_modules/typebox/**"');
+    expect(builderYaml).toContain("resources/runtime/**");
+  });
+
+  it("uses a stable artifact name and a GitHub update feed", () => {
+    expect(builderYaml).toMatch(/artifactName:\s*.*\$\{os\}.*\$\{arch\}/);
+    expect(builderYaml).toMatch(/provider:\s*github/);
+    expect(packageJson.repository?.url).toContain("github.com");
+  });
+
+  it("keeps the package entry, dependency and scripts the updater relies on", () => {
+    expect(packageJson.main).toBe("out/main/index.mjs");
+    expect(packageJson.dependencies["electron-updater"]).toBeTruthy();
+    for (const script of ["package:win", "package:mac", "package:linux"]) {
+      expect(packageJson.scripts[script], script).toBeTruthy();
+    }
+    // A package script builds first and verifies the bundled runtime before
+    // electron-builder runs, so an installer can never ship without one.
+    expect(packageJson.scripts["package:win"]).toContain("runtime:verify");
+    expect(packageJson.scripts["package:win"]).toContain("electron-builder");
+  });
+
+  it("has pinned runtime artifacts for every platform the builder targets", () => {
+    const artifacts = Object.keys(lock.node.artifacts);
+    for (const target of ["win32-x64", "darwin-arm64", "darwin-x64", "linux-x64"]) {
+      expect(artifacts, target).toContain(target);
+    }
+    expect(lock.node.version).toMatch(/^24\./);
+  });
+});

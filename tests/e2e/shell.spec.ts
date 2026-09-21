@@ -92,8 +92,10 @@ test("@smoke the built renderer carries the strict CSP and no Node globals", asy
 });
 
 test("@smoke the first run asks about telemetry and defaults it off", async () => {
-  // No seeded acknowledgement: this is the real first launch.
-  launched = await launchApp({ prefs: { privacyAcknowledged: false } });
+  // No seeded acknowledgement or onboarding completion: the real first launch.
+  launched = await launchApp({
+    prefs: { privacyAcknowledged: false, onboardingCompletedAt: null },
+  });
   const { window } = launched;
 
   await expect(window.getByText(/your data stays on this machine/i)).toBeVisible();
@@ -102,7 +104,13 @@ test("@smoke the first run asks about telemetry and defaults it off", async () =
 
   await window.getByRole("button", { name: /keep telemetry off/i }).click();
 
-  // Acknowledged: the shell is reachable again and the choice was persisted.
-  await expect(window.getByRole("button", { name: /open project folder/i })).toBeVisible();
+  // The privacy screen is done and the first-run setup wizard follows it
+  // (plan step 26); skipping it reaches the shell.
   await expect(window.getByText(/your data stays on this machine/i)).toBeHidden();
+  await expect(window.getByTestId("onboarding-wizard")).toBeVisible();
+  await window.getByRole("button", { name: /skip setup/i }).click();
+
+  // Acknowledged and skipped: the shell is reachable again.
+  await expect(window.getByRole("button", { name: /open project folder/i })).toBeVisible();
+  await expect(window.getByTestId("onboarding-wizard")).toBeHidden();
 });

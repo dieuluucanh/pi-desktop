@@ -34,6 +34,7 @@ import {
   type DiagnosticsSnapshot,
 } from "../shared/diagnostics";
 import type { DiagnosticsSaveResult } from "../shared/ipc";
+import type { UpdateState } from "../shared/updates";
 import { isTrustAnswer } from "../shared/projects";
 import type { OfficeStopResult } from "../shared/office-bridge";
 import {
@@ -87,6 +88,8 @@ export interface IpcDependencies {
   revealPath: (target: unknown) => boolean;
   /** Sets the window title (bounded, sanitized here). */
   setTitle: (title: unknown) => boolean;
+  /** Relaunches the app; a profile-mode change needs a restart (plan step 26). */
+  relaunch: () => boolean;
   prefs: {
     get: () => Promise<UiPrefs>;
     set: (patch: unknown) => Promise<UiPrefs>;
@@ -129,6 +132,13 @@ export interface IpcDependencies {
     export(): Promise<DiagnosticsExport>;
     save(): Promise<DiagnosticsSaveResult>;
     record(value: unknown): boolean;
+  };
+  /** Updates (plan step 26): check GitHub Releases, download and install. */
+  updates: {
+    get(): UpdateState;
+    check(): Promise<UpdateState>;
+    download(): Promise<UpdateState>;
+    install(): boolean;
   };
 }
 
@@ -228,6 +238,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.appPickDirectory, () => deps.pickDirectory());
   ipcMain.handle(IPC.appRevealPath, (_event, target: unknown) => deps.revealPath(target));
   ipcMain.handle(IPC.appSetTitle, (_event, title: unknown) => deps.setTitle(title));
+  ipcMain.handle(IPC.appRelaunch, () => deps.relaunch());
   ipcMain.handle(IPC.prefsGet, () => deps.prefs.get());
   ipcMain.handle(IPC.prefsSet, (_event, patch: unknown) => deps.prefs.set(patch));
 
@@ -332,6 +343,11 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     if (!parseReportedIncident(value)) return false;
     return deps.diagnostics.record(value);
   });
+
+  ipcMain.handle(IPC.updatesGet, () => deps.updates.get());
+  ipcMain.handle(IPC.updatesCheck, () => deps.updates.check());
+  ipcMain.handle(IPC.updatesDownload, () => deps.updates.download());
+  ipcMain.handle(IPC.updatesInstall, () => deps.updates.install());
 }
 
 /** The default `revealPath` implementation: a non-empty string reveals, nothing else. */

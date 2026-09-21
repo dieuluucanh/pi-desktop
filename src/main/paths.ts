@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { app } from "electron";
 import { SAFE_MODE_ENV } from "../shared/host-protocol";
+import { APP_PROFILE_DIR_NAME, sanitizeProfileMode, type ProfileMode } from "../shared/profile";
 
 /**
  * Where the app keeps its own state, and where the Pi profile lives.
@@ -24,6 +25,8 @@ export interface AppPaths {
   blobCache: string;
   /** The shared Pi profile directory. */
   profileDir: string;
+  /** Which profile strategy produced {@link profileDir} (plan step 26). */
+  profileMode: ProfileMode;
   appStateFile: string;
 }
 
@@ -31,6 +34,11 @@ export interface ResolveAppPathsInput {
   userDataDir: string;
   env?: Record<string, string | undefined>;
   homeDir?: string;
+  /**
+   * `shared` (default) keeps `~/.pi/agent`; `app` uses an app-private profile
+   * under `userData`. `PI_CODING_AGENT_DIR` always wins over either.
+   */
+  profileMode?: ProfileMode;
 }
 
 export interface AppRoots {
@@ -70,17 +78,39 @@ export function resolveAppRoots(input: {
  * Pure path resolution, so it can be unit tested without Electron.
  * `PI_CODING_AGENT_DIR` wins when set and non-empty (plan D8).
  */
+function profileDirFor(input: {
+  mode: ProfileMode;
+  override: string | undefined;
+  userDataDir: string;
+  home: string;
+}): string {
+  if (input.override && input.override.length > 0) return input.override;
+  if (input.mode === "app") return join(input.userDataDir, APP_PROFILE_DIR_NAME);
+  return join(input.home, ".pi", "agent");
+}
+
+/**
+ * Pure path resolution, so it can be unit tested without Electron.
+ * `PI_CODING_AGENT_DIR` wins when set and non-empty (plan D8).
+ */
 export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
   const env = input.env ?? {};
   const home = input.homeDir ?? homedir();
   const override = env[PROFILE_ENV]?.trim();
+  const profileMode = sanitizeProfileMode(input.profileMode);
 
   return {
     userData: input.userDataDir,
     logs: join(input.userDataDir, "logs"),
     blobCache: join(input.userDataDir, "blob-cache"),
     appStateFile: join(input.userDataDir, "app-state.json"),
-    profileDir: override && override.length > 0 ? override : join(home, ".pi", "agent"),
+    profileDir: profileDirFor({
+      mode: profileMode,
+      override,
+      userDataDir: input.userDataDir,
+      home,
+    }),
+    profileMode,
   };
 }
 

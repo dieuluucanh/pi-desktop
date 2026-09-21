@@ -11,6 +11,7 @@ import { TitleBar } from "./layout/TitleBar";
 import { handleMenuCommand } from "./menu-actions";
 import { useAppStore, type AppView } from "./state/app-store";
 import { ExtensionDialog } from "./extension-ui/ExtensionDialog";
+import { OnboardingWizard } from "./onboarding/OnboardingWizard";
 import { ShortcutDispatcher } from "./shortcuts/ShortcutDispatcher";
 import { ShortcutsHelp } from "./shortcuts/ShortcutsHelp";
 import { Toaster } from "./ui/toaster";
@@ -60,6 +61,10 @@ export function App() {
   const loadPrefs = useAppStore((state) => state.loadPrefs);
   const loadProjects = useAppStore((state) => state.loadProjects);
   const loadTabs = useAppStore((state) => state.loadTabs);
+  const loadUpdateState = useAppStore((state) => state.loadUpdateState);
+  const prefsLoaded = useAppStore((state) => state.prefsLoaded);
+  const privacyAcknowledged = useAppStore((state) => state.prefs.privacyAcknowledged);
+  const onboardingCompletedAt = useAppStore((state) => state.prefs.onboardingCompletedAt);
   const setInfo = useAppStore((state) => state.setInfo);
   const safeMode = useAppStore((state) => state.info?.safeMode ?? false);
   const piOffline = useAppStore((state) => state.info?.piOffline ?? false);
@@ -85,6 +90,12 @@ export function App() {
     // the host event batches the transcript will consume in step 5.
     void loadTabs();
     void useAppStore.getState().loadOfficeDocuments();
+    // The updater's state (plan step 26): read once, then follow main's pushes
+    // so a check started from the menu or the banner updates everywhere.
+    void loadUpdateState();
+    const offUpdates = api.updates.onState((state) =>
+      useAppStore.getState().applyUpdateState(state),
+    );
     const offTabs = api.sessions.onTabs((envelope) => useAppStore.getState().applyTabs(envelope));
     const offState = api.sessions.onState((envelope) =>
       useAppStore.getState().applySessionState(envelope),
@@ -119,9 +130,10 @@ export function App() {
       offDocuments();
       offWebState();
       offWebNav();
+      offUpdates();
       window.removeEventListener("unhandledrejection", onRejection);
     };
-  }, [loadTabs, setInfo]);
+  }, [loadTabs, setInfo, loadUpdateState]);
 
   useEffect(() => {
     // The appearance preference paints first paint; once the Pi theme loads,
@@ -131,6 +143,15 @@ export function App() {
     document.documentElement.dataset.theme = resolved;
     document.documentElement.style.colorScheme = resolved;
   }, [theme]);
+
+  useEffect(() => {
+    // The first-run flow (plan step 26) opens after the privacy screen and only
+    // until it is completed; dismissing it leaves the flag unset, so it returns
+    // on the next launch rather than silently disappearing.
+    if (prefsLoaded && privacyAcknowledged && onboardingCompletedAt === null) {
+      useAppStore.getState().startOnboarding();
+    }
+  }, [prefsLoaded, privacyAcknowledged, onboardingCompletedAt]);
 
   const View = VIEWS[view];
   const bridgeMissing = typeof window !== "undefined" && !window.pi;
@@ -186,6 +207,7 @@ export function App() {
       <ProviderLoginDialog />
       <PackageConsentDialog />
       <PrivacyDialog />
+      <OnboardingWizard />
       <TrustDialog />
       <WebNavigationDialog />
       <WebUrlDialog />

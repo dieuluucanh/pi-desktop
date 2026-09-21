@@ -23,7 +23,9 @@ describe("sanitizePrefs", () => {
       [
         "drafts",
         "favoriteModels",
+        "onboardingCompletedAt",
         "privacyAcknowledged",
+        "profileMode",
         "sidebarCollapsed",
         "sidebarWidth",
         "telemetryEnabled",

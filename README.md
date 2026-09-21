@@ -1,124 +1,107 @@
 # Pi Desktop
 
-A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global installs. Projects,
-sessions, chat, providers, models, extensions, packages, skills, themes and settings are managed
-through a UI, using the **same `~/.pi/agent` profile as terminal Pi**, so the two are
-interchangeable.
+A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global
+installs. Projects, sessions, chat, providers, models, extensions, packages,
+skills, themes and settings are managed through a UI, using the **same
+`~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
-> **Status:** core-first rebuild in progress. The bundled runtime, the Pi host process + supervisor,
-> the session core and the Office setup backend are implemented and tested (351 tests). The app shell
-> (plan step 1) is live: sidebar + session tabs + full-page views, an application menu with real
-> actions, and no placeholder screens. Sessions, chat, providers and the extension hub land next — see
-> [the execution plan](.pi/plans/2026-09-19-pi-desktop-core-first-rebaseline.md).
+> **Status:** v0.1.0 release candidate (plan steps 1–26 of the core-first
+> re-baseline shipped). Windows installer is the primary artefact; macOS and
+> Linux are beta. Artefacts are unsigned — see
+> [docs/guide/getting-started.md](docs/guide/getting-started.md).
 >
-> **Pi for Office is an optional integration.** It installs from Extensions → Integrations like any
-> other Pi extension, and no Office surface appears unless you set it up — see
-> [docs/product/parity.md](docs/product/parity.md).
+> **Pi for Office is an optional integration.** It installs from Extensions →
+> Integrations like any other Pi package, and no Office surface appears unless
+> you set it up.
 
-## Current state
+## What it does
 
-Implemented and covered by tests (`npm test`: **351 tests** in 36 files — a node project and a jsdom
-renderer project):
+- **Projects and sessions** — open a folder, manage recents and trust, and run
+  parallel sessions in tabs, each in its own Pi host process.
+- **Chat** — streaming text, thinking, tool cards with diffs, steering and
+  follow-up while streaming, `Esc` to stop, compaction, usage and cost.
+- **Context and commands** — `/` commands (app, extension, prompt, skill), `@`
+  files, image paste/drop, `#` Office document mentions.
+- **Providers and models** — OAuth subscriptions, write-only API keys, custom
+  gateways, model/thinking pickers, favourites and per-project defaults.
+- **Extensions and packages** — the same discovery as terminal Pi, with
+  provenance, load-error diagnostics, enable/disable, install consent and the
+  full `ExtensionUIContext` (dialogs, widgets, status, and the TUI rendering
+  surface for `ctx.ui.custom()`).
+- **Settings** — every key in Pi’s `docs/settings.md`, global and per project,
+  with a raw JSON editor, diff, backups and external-edit detection.
+- **Optional web tabs** — Plannotator and other localhost UIs open in isolated
+  in-app tabs.
+- **Recovery and safety** — safe mode, crash recovery, a redacted diagnostics
+  bundle, sandboxed renderer, strict CSP and an allowlisted IPC surface.
 
-| Area              | Module                                | What it does                                                                                                                                                                                                                                                                                   |
-| ----------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Office detection  | `src/main/office/detect.ts`           | Detects the OS, WSL, installed Office apps (registry / filesystem / app bundles), the installed Office version, and whether the Pi for Office add-in is already sideloaded — plus whether that sideload points at the current hosted task pane.                                                |
-| Windows registry  | `src/main/office/registry.ts`         | `reg.exe` query/add/delete with hive normalisation (`HKLM` ↔ `HKEY_LOCAL_MACHINE`), empty-value handling and wrapped-value joining.                                                                                                                                                            |
-| Manifest handling | `src/main/office/manifest.ts`         | Parses add-in manifests and identifies the Pi for Office add-in by `<Id>` (or by a task-pane URL), so unrelated add-ins are never claimed or modified.                                                                                                                                         |
-| Bridge package    | `src/main/office/bridge-install.ts`   | Installs and **pins** `@dieulc/pi-office-bridge` into Pi's npm root (`~/.pi/agent/npm`, layout `pi-extensions` + lockfile + `.gitignore`), then verifies the declared extension entry actually exists.                                                                                         |
-| Sideloading       | `src/main/office/sideload.ts`         | Plans and performs the sideload: `HKCU\Software\Microsoft\Office\16.0\WEF\Developer` (no admin) plus a manifest copy in `%LOCALAPPDATA%\Microsoft\Office\16.0\Wef`; on macOS copies into each `~/Library/Containers/com.microsoft.<App>/Data/Documents/wef`. Reversible via `unsideloadAddIn`. |
-| Verification      | `src/main/office/verify.ts`           | Opens the Office host (`shell.openPath`), polls `GET http://127.0.0.1:38617/health` until a task pane attaches, distinguishes a port conflict from "nothing listening", and projects everything into a live checklist.                                                                         |
-| Troubleshooting   | `src/main/office/troubleshoot.ts`     | Ranked, actionable items (port in use, Office missing, add-in not appearing, WSL/remote, version skew, stale sideload entries) and a **redacted** diagnostics bundle for "Copy diagnostics".                                                                                                   |
-| Wizard            | `src/main/office/setup-controller.ts` | The panel's contract: `run()`, per-step retries, `cancel()`, `refreshHealth()`, `unsideload()`, live `onChange` state, checklist + troubleshooting + diagnostics.                                                                                                                              |
-| Package plumbing  | `src/main/packages/*`                 | Pi-compatible package source parsing (`npm:`, `git:`, URLs, paths), settings.json read/atomic-write with filters preserved, npm-root management, and an npm installer behind a port.                                                                                                           |
+The feature-by-feature comparison with terminal Pi (including the explicit
+“MCP = parity, no built-in” note) is
+[docs/product/parity.md](docs/product/parity.md).
 
-### Deliberately not done yet
+## Install
 
-- **Sessions and chat.** The session service (one Pi host per session tab) is step 3; the transcript
-  and composer are steps 5–6. Until then the session view states exactly that instead of showing a
-  prompt box that cannot work.
-- **Providers, models and settings.** Connections (step 9), the model/thinking pickers (step 8) and
-  the full settings mirror (step 12). Credentials are already shared with terminal Pi today — the UI
-  to manage them is what is missing.
-- **Extension UI fidelity.** Extension dialogs, widgets and the TUI rendering surface are steps
-  16–18; the extension/package hub is steps 13–14.
+Download the installer for your platform from GitHub Releases. The Windows NSIS
+installer and portable `.exe` are the primary artefacts; macOS `.dmg`/`.zip`
+(arm64 + x64) and Linux AppImage/`.deb` are beta. Builds are unsigned in
+v0.1.0, so SmartScreen/Gatekeeper will warn on first launch (instructions in the
+guide).
 
-See [docs/product/parity.md](docs/product/parity.md) for the row-by-row plan against terminal Pi.
+Installed builds check GitHub Releases after launch and show an update banner:
+**Download**, then **Restart & install**.
+
+## Develop
+
+```bash
+npm ci
+npm run runtime:fetch      # bundled Node + npm + shims (~37 MB, not committed)
+npm run dev                # Electron with the renderer dev server
+```
+
+Gates (run before every commit; CI runs the same set):
+
+```bash
+npm run format:check && npm run typecheck && npm run lint && npm test && npm run build
+npm run runtime:verify     # bundled runtime + host bundle (needs runtime:fetch)
+npm run office:manifest:check
+npm run test:e2e           # Playwright-Electron (needs npm run build)
+```
+
+Useful probes: `npm run doctor` (runtime, profile, extensions, bridge, git,
+Office) and `npm run office:doctor` (Office detection, sideload, bridge health).
+
+`npm run package:win|mac|linux` fetches the runtime, builds, verifies it and
+produces installers under `release/`.
 
 ## Layout
 
 ```text
-src/main/                     Electron main: window, app menu, IPC router, supervisor, Office wiring
-src/main/menu.ts              the application menu (pure template + installer)
-src/main/session-service.ts   control host + one Pi host per session tab (plan step 3)
-src/main/fs-port.ts           FsPort + Node and in-memory implementations
-src/main/office/*             detection, registry, manifest, sideload, verify, troubleshoot, wizard
-src/main/packages/*           spec parsing, settings.json, npm root, installer
-src/preload/index.ts          the only place that touches contextBridge/ipcRenderer
-src/renderer/src/             React app: layout/, views/, ui/ primitives, state/ (zustand), styles/
-src/host/                     Pi host process (dual-mode: `pi` CLI passthrough or JSONL service)
-src/shared/                   types, constants, the IPC allowlist, preference schema
-resources/office/             vendored manifest.prod.xml + lockfile (hash-checked)
-resources/runtime/            pinned Node 24 + npm + PATH shims
-scripts/sync-office-manifest.mjs   re-vendor the manifest from the pi-for-office repo
-tests/                        vitest: node project (tests/**) + jsdom renderer project
+src/main/            Electron main: window, menu, IPC router, supervisor, updater, Office wiring
+src/main/office/     UI-free Office setup backend (detect, install, sideload, verify, wizard)
+src/preload/         the only place that touches contextBridge/ipcRenderer
+src/renderer/src/    React app: layout/, views/, ui/ primitives, state/ (zustand), styles/
+src/host/            the Pi host process (all SDK contact in src/host/sdk/)
+src/shared/          types, constants and the single IPC allowlist
+resources/           vendored Office manifest, fetched Node/npm runtime
+tests/               vitest (node project + jsdom renderer project) and Playwright E2E
+docs/                product/parity, the user guide, and the architecture docs
 ```
 
-## Verifying
+## Docs
 
-```bash
-npm ci
-npm run typecheck
-npm run lint
-npm test                       # node + renderer suites
-npm run build                  # host bundle + main/preload/renderer
-
-npm run office:doctor          # probe THIS machine: OS, Office install, sideload state, bridge health
-npm run office:manifest:check  # verify the vendored manifest against its recorded hash
-```
-
-`office:doctor` is the honest check: it runs the real detection code against the real machine
-(registry, filesystem, `/health`) and prints a report. On a Windows machine with Office it prints
-something like:
-
-```text
-os: windows
-office: 16.0.20326.20144 (x64) via HKLM\SOFTWARE\Microsoft\Office\ClickToRun\Configuration
-products: O365HomePremRetail
-apps: Excel=C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE, Word=..., PowerPoint=...
-sideloaded: no
-```
-
-## Design notes
-
-- **Shared profile.** The app reads and writes the same `~/.pi/agent` profile as terminal Pi
-  (`settings.json`, `auth.json`, `sessions/`, `npm/`), so the two are interchangeable. Writes are
-  atomic, malformed JSON is never overwritten, and `settings.json` is backed up before the first
-  change.
-- **Verify, never assume.** Every write is followed by detection: the bridge package must expose a
-  real extension entry, and the sideload must be visible to the same detector Office would satisfy.
-- **Ports.** The bridge listens on loopback port `38617` (`PI_OFFICE_BRIDGE_PORT` overrides). A
-  second Pi session must use a different port; the app reports a port conflict explicitly instead of
-  failing silently.
-- **No proxy needed.** The app runs in Node, so provider HTTP requests are not CORS-blocked — the
-  `pi-for-office-proxy` step is unnecessary for desktop users.
-- **Testability.** Every OS interaction (filesystem, registry, npm, fetch, clock, `openPath`) is
-  injected, so the whole wizard runs headlessly against an in-memory filesystem, a stateful `reg.exe`
-  double and a fake `fetch`.
-
-## Roadmap
-
-1. **Re-baseline** — product framing, IA, design system, app shell, application menu (step 1), then
-   renderer tests + E2E harness (step 2). ✅ shipped
-2. **Sessions and chat** — session service, protocol completion, transcript, composer, `/` `@` `#`,
-   model & thinking, providers, projects, session browser (steps 3–11).
-3. **Configuration and extensions** — settings mirror, extensions hub, packages, skills/themes/keys,
-   extension UI host + TUI surface + custom renderers (steps 12–18).
-4. **Office and polish** — Pi for Office as an integration, documents panel, web tabs (steps 19–21),
-   then reliability, security, performance, tests, packaging (steps 22–27).
-
-The full executable plan is [`.pi/plans/2026-09-19-pi-desktop-core-first-rebaseline.md`](.pi/plans/2026-09-19-pi-desktop-core-first-rebaseline.md).
+- **User guide** — [docs/guide/](docs/guide/) (getting started, projects,
+  sessions and tabs, providers, models, extensions and packages, settings,
+  skills/themes/keybindings, Office, web tabs, troubleshooting, FAQ).
+- **Architecture** — [docs/architecture/](docs/architecture/) (app shell,
+  host protocol + RPC mapping, extension UI host + TUI surface, Office
+  integration, runtime, pinned versions).
+- **Parity** — [docs/product/parity.md](docs/product/parity.md).
+- **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md) and
+  [AGENTS.md](AGENTS.md); the executable plan is
+  `.pi/plans/2026-09-19-pi-desktop-core-first-rebaseline.md`.
 
 ## License
 
-MIT.
+MIT — see [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Pi Desktop is an independent client built on the Pi SDK and is not affiliated
+with the Pi project.

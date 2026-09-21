@@ -7,6 +7,8 @@
  * never write an arbitrary key.
  */
 
+import { DEFAULT_PROFILE_MODE, sanitizeProfileMode, type ProfileMode } from "./profile";
+
 export const PREF_KEYS = [
   "theme",
   "sidebarCollapsed",
@@ -16,6 +18,8 @@ export const PREF_KEYS = [
   "favoriteModels",
   "telemetryEnabled",
   "privacyAcknowledged",
+  "profileMode",
+  "onboardingCompletedAt",
 ] as const;
 
 export type PrefKey = (typeof PREF_KEYS)[number];
@@ -52,6 +56,17 @@ export interface UiPrefs {
    * it is, the app shows the opt-in prompt; telemetry stays off regardless.
    */
   privacyAcknowledged: boolean;
+  /**
+   * Which Pi profile the app uses (plan D‑A8, step 26): the shared
+   * `~/.pi/agent` (default) or an app-private profile under `userData`. Resolved
+   * by main before any host spawns, so a change applies on the next launch.
+   */
+  profileMode: ProfileMode;
+  /**
+   * When the first-run onboarding flow finished (or was skipped), or null. Until
+   * it is set the onboarding wizard is offered; see `src/shared/onboarding.ts`.
+   */
+  onboardingCompletedAt: number | null;
 }
 
 /** How many favourites are kept; the picker is a shortlist, not a catalogue. */
@@ -85,6 +100,8 @@ export const DEFAULT_PREFS: UiPrefs = {
   favoriteModels: [],
   telemetryEnabled: false,
   privacyAcknowledged: false,
+  profileMode: DEFAULT_PROFILE_MODE,
+  onboardingCompletedAt: null,
 };
 
 const THEMES: readonly ThemeSetting[] = ["dark", "light", "system"];
@@ -146,6 +163,14 @@ export function sanitizePrefs(input: unknown): UiPrefs {
       typeof source.telemetryEnabled === "boolean" ? source.telemetryEnabled : false,
     privacyAcknowledged:
       typeof source.privacyAcknowledged === "boolean" ? source.privacyAcknowledged : false,
+    profileMode: sanitizeProfileMode(source.profileMode),
+    // A missing/zero value means "not completed yet", never a fabricated date.
+    onboardingCompletedAt:
+      typeof source.onboardingCompletedAt === "number" &&
+      Number.isFinite(source.onboardingCompletedAt) &&
+      source.onboardingCompletedAt > 0
+        ? Math.floor(source.onboardingCompletedAt)
+        : null,
   };
 }
 

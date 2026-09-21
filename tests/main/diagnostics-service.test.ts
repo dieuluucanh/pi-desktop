@@ -31,6 +31,7 @@ function appInfo(overrides: Partial<AppInfo> = {}): AppInfo {
     logsDir: "C:\\state\\logs",
     blobCacheDir: "C:\\state\\blobs",
     profileDir: "C:\\Users\\test\\.pi\\agent",
+    profileMode: "shared",
     settingsFile: "C:\\Users\\test\\.pi\\agent\\settings.json",
     authFile: "C:\\Users\\test\\.pi\\agent\\auth.json",
     modelsFile: "C:\\Users\\test\\.pi\\agent\\models.json",

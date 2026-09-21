@@ -227,3 +227,9 @@ supervisor: if an Office session exists it aborts that session's run.
   local agent) is tested in pi-for-office, not end to end against a real pane.
 - Only Windows has been exercised with a real Office host; the macOS `wef` path
   is covered by unit tests, not by a live pane.
+
+### User guide
+
+The end-user side of this integration — install, set up, the Documents panel,
+`#` mentions, promotion and troubleshooting — lives in
+[`../guide/office-setup.md`](../guide/office-setup.md).

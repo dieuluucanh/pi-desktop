@@ -1,6 +1,6 @@
 # Pi Desktop — parity with terminal Pi
 
-**Last updated:** 2026-09-21 (plan step 23).
+**Last updated:** 2026-09-21 (plan step 26).
 
 This matrix is the product's contract: Pi Desktop is the desktop UI for the Pi
 coding agent, and every row is either **implemented**, **planned at a stated
@@ -11,15 +11,15 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 
 ## Core agent loop
 
-| Capability                                                 | Terminal Pi                     | Pi Desktop                                |
-| ---------------------------------------------------------- | ------------------------------- | ----------------------------------------- |
-| Chat with the agent (streaming text, thinking, tool calls) | ✅                              | 🚧 step 5 (transcript), step 6 (composer) |
-| Steering / follow-up while streaming                       | ✅                              | 🚧 step 6                                 |
-| Abort a run (Esc) and restore queued text                  | ✅                              | 🚧 step 6                                 |
-| Compaction (auto + `/compact`)                             | ✅                              | 🚧 step 4 (methods), step 8 (surface)     |
-| Branching: fork / clone / tree navigation                  | ✅                              | 🚧 step 11                                |
-| Session list, resume, rename, delete, export HTML          | ✅                              | 🚧 step 11                                |
-| Session storage                                            | JSONL in `~/.pi/agent/sessions` | ✅ same files (shared profile, D-A8)      |
+| Capability                                                 | Terminal Pi                     | Pi Desktop                                                          |
+| ---------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------- |
+| Chat with the agent (streaming text, thinking, tool calls) | ✅                              | ✅ steps 5–6 (virtualized transcript, markdown + highlighted code)  |
+| Steering / follow-up while streaming                       | ✅                              | ✅ step 6 (explicit mode choice, queue chips, remember per session) |
+| Abort a run (Esc) and restore queued text                  | ✅                              | ✅ step 6 (`clearQueue` → `abort` → draft restored)                 |
+| Compaction (auto + `/compact`)                             | ✅                              | ✅ steps 4/8 (host methods + a compaction card/scoped commands)     |
+| Branching: fork / clone / tree navigation                  | ✅                              | ✅ step 11 (tree dialog, fork-from-entry, clone, label editing)     |
+| Session list, resume, rename, delete, export HTML          | ✅                              | ✅ step 11 (browser, OS-trash delete, HTML export, reveal)          |
+| Session storage                                            | JSONL in `~/.pi/agent/sessions` | ✅ same files (shared profile, D-A8)                                |
 
 ## Models, providers, settings
 
@@ -27,9 +27,9 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 | -------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Model switching, per-model thinking levels               | ✅ (`/model`, `/thinking`)       | ✅ step 8 (picker: grouped by provider, auth badges, search, favourites, “save as default” vs session-only)                                                   |
 | Context-usage ring, token/cost totals, rename, view mode | ✅                               | ✅ step 8                                                                                                                                                     |
-| Provider auth: OAuth subscriptions                       | ✅ (`/login`)                    | 🚧 step 9 (system browser + code paste)                                                                                                                       |
-| Provider auth: API keys / env vars                       | ✅ (`auth.json`)                 | 🚧 step 9 (write-only UI)                                                                                                                                     |
-| Custom models & gateways (`models.json`)                 | ✅                               | 🚧 step 9                                                                                                                                                     |
+| Provider auth: OAuth subscriptions                       | ✅ (`/login`)                    | ✅ step 9 (system browser + device code + code paste, progress and cancel)                                                                                    |
+| Provider auth: API keys / env vars                       | ✅ (`auth.json`)                 | ✅ step 9 (write-only UI; runtime-only keys never persisted)                                                                                                  |
+| Custom models & gateways (`models.json`)                 | ✅                               | ✅ step 9 (atomic editor, validated with Pi before keeping the entry)                                                                                         |
 | Every `settings.json` key, global + project              | ✅                               | ✅ step 12 (schema pinned to Pi's `docs/settings.md`; grouped editors, scope per key, raw JSON + diff, backup before first write)                             |
 | `keybindings.json`, themes, skills, prompt templates     | ✅                               | ✅ step 15 (keybindings editor with validation + conflicts; theme catalogue with swatches, import and chrome mapping; skills/prompts run via `/skill:<name>`) |
 | Proxy / offline (`httpProxy`, `PI_OFFLINE`)              | ✅                               | ✅ `httpProxy` step 12; `PI_OFFLINE` step 22 (inherited by every host from the app env; `AppInfo.piOffline` raises the banner)                                |
@@ -53,13 +53,13 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 
 ## Context and input
 
-| Capability                              | Terminal Pi           | Pi Desktop                                                                                                                                                |
-| --------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@file` references with completion      | ✅                    | ✅ step 7 (rooted at the session's own cwd)                                                                                                               |
-| `/` commands (extension, prompt, skill) | ✅                    | ✅ step 7 (app commands + host commands; a name both claim is listed with its source)                                                                     |
-| Images: paste / drag into the prompt    | ✅                    | ✅ step 6                                                                                                                                                 |
-| `#document` Office mentions             | ✅ (bridge extension) | ✅ step 20 (the app's own provider is fed by the live pane registry, so mentions work even when the bridge's provider is absent)                          |
-| External editor for long prompts        | ✅                    | 🚧 setting ✅ step 12; the validated spawn lands with step 22 (reliability/cancellation), so the key is editable but the Ctrl+G launcher is not wired yet |
+| Capability                              | Terminal Pi           | Pi Desktop                                                                                                                                     |
+| --------------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@file` references with completion      | ✅                    | ✅ step 7 (rooted at the session's own cwd)                                                                                                    |
+| `/` commands (extension, prompt, skill) | ✅                    | ✅ step 7 (app commands + host commands; a name both claim is listed with its source)                                                          |
+| Images: paste / drag into the prompt    | ✅                    | ✅ step 6                                                                                                                                      |
+| `#document` Office mentions             | ✅ (bridge extension) | ✅ step 20 (the app's own provider is fed by the live pane registry, so mentions work even when the bridge's provider is absent)               |
+| External editor for long prompts        | ✅                    | 🚧 setting ✅ step 12; the validated spawn lands with the reliability backlog, so the key is editable but the Ctrl+G launcher is not wired yet |
 
 ## Office
 
@@ -68,6 +68,19 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 | Pi for Office bridge (`@dieulc/pi-office-bridge`)                         | install manually, sideload manually | ✅ step 19 — automated wizard (detect → bridge install → sideload → verify) as an **optional integration**                                                |
 | Attached documents panel, document targeting, streamed pane replies, Stop | ✅ via bridge                       | ✅ step 20 (Documents panel from the live `/health` registry; office tool cards name the target and capability state; `office_list_documents` as a table) |
 | Office surface in the primary navigation                                  | n/a                                 | ⛔ never — Office is an integration, not a menu (D-A10)                                                                                                   |
+
+## Setup, distribution and platform
+
+| Capability                                                              | Terminal Pi               | Pi Desktop                                                                                          |
+| ----------------------------------------------------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------- |
+| Runtime install                                                         | user installs Node + `pi` | ✅ bundled Node 24 + `pi` PATH shim (`resources/runtime`)                                           |
+| First-run setup (provider → project → optional extras)                  | manual                    | ✅ step 26 (guided wizard; every step skippable; re-runs on a fresh profile)                        |
+| Profile choice (shared with terminal Pi vs app-private)                 | n/a                       | ✅ step 26 (shared is the default; the choice is applied before any host spawns, restart to change) |
+| Update notification + install                                           | `pi` self-update          | ✅ step 26 (GitHub Releases; `autoDownload` off; Download → Restart & install)                      |
+| Installers (Windows NSIS + portable; macOS dmg/zip; Linux AppImage/deb) | ✅ (`npm i -g`)           | ✅ step 26 (unsigned; verified on a clean machine in step 27)                                       |
+| Multi-session parallelism                                               | multiple terminals        | ✅ step 11 (tabs, one host per session, 8-host cap with idle recycling)                             |
+| Web UIs on localhost (e.g. Plannotator review pages)                    | system browser            | ✅ step 21 (in-app isolated web tab)                                                                |
+| Windows / macOS / Linux                                                 | ✅                        | Windows first; macOS/Linux beta (D-A13)                                                             |
 
 ## MCP
 
@@ -94,21 +107,11 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 
 ## Performance and resources
 
-| Capability                                      | Terminal Pi     | Pi Desktop                                                                                                                        |
-| ----------------------------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Startup to an interactive window (≤ 2.5 s)      | n/a             | ✅ step 24 (`createStartupMetrics`; Diagnostics shows it; `npm run e2e:perf` asserts it on CI)                                    |
-| Warm session ready (≤ 5 s)                      | n/a             | ✅ step 24 (only the last-used tab is pre-warmed; the mark stays `unknown` when there is nothing to warm)                         |
-| Streaming stays smooth (delta coalescing)       | ✅ (in-process) | ✅ step 24 (33 ms / 1 KB batches; `coalesceStats()` measured)                                                                     |
-| Very long sessions stay responsive              | ✅ (TUI)        | ✅ step 5/24 (transcript virtualizes above 50 items; a 10k-item test bounds the DOM)                                              |
-| Huge tool results do not block the UI           | ✅ (TUI)        | ✅ step 24 (a response over 1 MB spills to a blob; a tool result is spilled in place and fetched only when its card is opened)    |
-| Many parallel sessions without unbounded memory | ✅ (terminals)  | ✅ step 3/24 (host cap 8, idle recycling, per-host RSS in Diagnostics, RSS restart threshold with cooldown, backpressure message) |
-
-## Platform
-
-| Capability                                           | Terminal Pi               | Pi Desktop                                                |
-| ---------------------------------------------------- | ------------------------- | --------------------------------------------------------- |
-| Runtime install                                      | user installs Node + `pi` | ✅ bundled Node 24 + `pi` PATH shim (`resources/runtime`) |
-| Multi-session parallelism                            | multiple terminals        | 🚧 step 11 (tabs, one host per session)                   |
-| Web UIs on localhost (e.g. Plannotator review pages) | system browser            | ✅ step 21 (in-app isolated web tab)                      |
-| Auto-update                                          | `pi` self-update          | 🚧 step 26                                                |
-| Windows / macOS / Linux                              | ✅                        | Windows first; macOS/Linux beta (D-A13)                   |
+| Capability                                      | Terminal Pi     | Pi Desktop                                                                                                                         |
+| ----------------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Startup to an interactive window (≤ 2.5 s)      | n/a             | ✅ step 24 (`createStartupMetrics`; Diagnostics shows it; `npm run e2e:perf` asserts it on CI)                                     |
+| Warm session ready (≤ 5 s)                      | n/a             | ✅ step 24 (only the last-used tab is pre-warmed; the mark stays `unknown` when there is nothing to warm)                          |
+| Streaming stays smooth (delta coalescing)       | ✅ (in-process) | ✅ step 24 (33 ms / 1 KB batches; `coalesceStats()` measured)                                                                      |
+| Very long sessions stay responsive              | ✅ (TUI)        | ✅ steps 5/24 (transcript virtualizes above 50 items; a 10k-item test bounds the DOM)                                              |
+| Huge tool results do not block the UI           | ✅ (TUI)        | ✅ step 24 (a response over 1 MB spills to a blob; a tool result is spilled in place and fetched only when its card is opened)     |
+| Many parallel sessions without unbounded memory | ✅ (terminals)  | ✅ steps 3/24 (host cap 8, idle recycling, per-host RSS in Diagnostics, RSS restart threshold with cooldown, backpressure message) |

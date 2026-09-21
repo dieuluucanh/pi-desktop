@@ -49,6 +49,38 @@ describe("resolveAppPaths", () => {
     expect(paths.profileDir).toBe(join("C:", "Users", "tester", ".pi", "agent"));
   });
 
+  it("defaults to the shared profile mode", () => {
+    const paths = resolveAppPaths({
+      userDataDir: join("C:", "user-data"),
+      homeDir: join("C:", "Users", "tester"),
+      env: {},
+    });
+    expect(paths.profileMode).toBe("shared");
+  });
+
+  it("uses an app-private profile under userData when the mode says so (plan step 26)", () => {
+    const paths = resolveAppPaths({
+      userDataDir: join("C:", "user-data"),
+      homeDir: join("C:", "Users", "tester"),
+      env: {},
+      profileMode: "app",
+    });
+    expect(paths.profileDir).toBe(join("C:", "user-data", "profile"));
+    expect(paths.profileMode).toBe("app");
+  });
+
+  it(`still lets ${PROFILE_ENV} pin the directory over the mode`, () => {
+    const paths = resolveAppPaths({
+      userDataDir: join("C:", "user-data"),
+      homeDir: join("C:", "Users", "tester"),
+      env: { [PROFILE_ENV]: join("D:", "profiles", "work") },
+      profileMode: "app",
+    });
+    expect(paths.profileDir).toBe(join("D:", "profiles", "work"));
+    // The stored choice is still reported, so Diagnostics can explain it.
+    expect(paths.profileMode).toBe("app");
+  });
+
   it("resolves the Electron-bound wrapper through app.getPath", () => {
     expect(appPaths().userData).toBe(join("C:", "user-data"));
   });

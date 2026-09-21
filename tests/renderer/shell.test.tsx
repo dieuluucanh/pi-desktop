@@ -15,12 +15,13 @@ const PLACEHOLDER_STRINGS = ["Scaffold is running", "Next up", "Step 4 —"];
 
 beforeEach(() => {
   // The shell tests are about navigation and empty states, not first-run
-  // privacy; the privacy screen has its own test (plan step 23).
-  installBridge({ prefs: { privacyAcknowledged: true } });
+  // privacy or onboarding; those have their own tests (plan steps 23 and 26).
+  // A completed flag keeps the onboarding wizard from covering the shell.
+  installBridge({ prefs: { privacyAcknowledged: true, onboardingCompletedAt: 1 } });
   useAppStore.setState({
     view: "welcome",
     project: null,
-    prefs: { ...DEFAULT_PREFS, privacyAcknowledged: true },
+    prefs: { ...DEFAULT_PREFS, privacyAcknowledged: true, onboardingCompletedAt: 1 },
     paletteOpen: false,
     info: null,
     hint: null,

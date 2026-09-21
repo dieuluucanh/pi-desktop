@@ -74,3 +74,18 @@ first on `PATH`, plus `PI_DESKTOP_NODE` / `PI_DESKTOP_HOST_ENTRY`.
 - **Electron's Node is never used.** `process.execPath` in Electron reports the
   Electron version, which would pass a naive semver gate; `environment.ts` only
   offers it as a fallback when running under plain Node.
+
+## Packaging the runtime (plan step 26)
+
+`resources/runtime` is fetched per platform and is not committed. `npm run
+package:win` fetches the host platform, builds, runs `runtime:verify` and only
+then invokes electron-builder; `package:mac` and `package:linux` fetch **all**
+platforms first, because the macOS target builds both arm64 and x64 and a beta
+release should not depend on the packager's host arch.
+
+`electron-builder.yml` copies the directory into the app as
+`extraResources/runtime` (the app reads it by path, outside the asar) and lists
+it in `asarUnpack`. `resolveAppRoots`/`resolveAppRuntime` therefore see the same
+layout packaged as in development, and `runtime:verify` proves it before an
+installer is produced. `tests/packaging/builder-config.test.ts` checks that
+`node.lock.json` has an artifact for every platform the builder targets.

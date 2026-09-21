@@ -146,6 +146,11 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "shortcuts":
       store.setShortcutsHelpOpen(true);
       return;
+    case "check-updates":
+      // Runs a real check (plan step 26); the banner shows the outcome and, in a
+      // dev build, says that only installed builds have a feed.
+      void store.checkForUpdates();
+      return;
     default: {
       // Exhaustive today: every MenuCommand is handled above, so `command` is
       // `never` here. Keeping the default makes an added command without a

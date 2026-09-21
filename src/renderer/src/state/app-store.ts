@@ -162,6 +162,14 @@ import type { CompletionSource } from "../completion/types";
 import { thinkingLevelsOf, toCatalog, type ModelCatalogEntry } from "../session/model-catalog";
 import { classifyFailure, isOfflineError } from "../../../shared/diagnostics";
 import type { DiagnosticsSnapshot } from "../../../shared/diagnostics";
+import { sanitizeUpdateState, type UpdateState } from "../../../shared/updates";
+import {
+  firstOnboardingStep,
+  nextOnboardingStep,
+  previousOnboardingStep,
+  type OnboardingStep,
+} from "../../../shared/onboarding";
+import type { ProfileMode } from "../../../shared/profile";
 
 /**
  * The renderer's view state (plan step 1).
@@ -256,6 +264,11 @@ export interface AppStateShape {
   prefs: UiPrefs;
   /** True once preferences have been read from the main process. */
   prefsLoaded: boolean;
+  /**
+   * The first-run onboarding step on screen (plan step 26), or null when the
+   * wizard is closed. Completion lives in `prefs.onboardingCompletedAt`.
+   */
+  onboardingStep: OnboardingStep | null;
   paletteOpen: boolean;
   info: AppInfo | null;
   /** Transient, user-visible explanation for an action that is not wired yet. */
@@ -301,6 +314,22 @@ export interface AppStateShape {
   closePalette: () => void;
   togglePalette: () => void;
   setPrefs: (patch: Partial<UiPrefs>) => void;
+  /** Opens the onboarding wizard at the first step that still matters. */
+  startOnboarding: () => void;
+  setOnboardingStep: (step: OnboardingStep) => void;
+  nextOnboarding: () => void;
+  previousOnboarding: () => void;
+  /** Hides the wizard without marking it done, so it returns next launch. */
+  dismissOnboarding: () => void;
+  /** Marks the flow done (or explicitly skipped) in preferences. */
+  completeOnboarding: () => Promise<void>;
+  /**
+   * Persists the profile choice. Returns true when the running app still uses
+   * the old mode, so the wizard can offer a restart.
+   */
+  chooseProfileMode: (mode: ProfileMode) => Promise<boolean>;
+  /** Relaunches the app (a profile change is applied on the next launch). */
+  relaunchApp: () => Promise<void>;
   toggleSidebar: () => void;
   setInfo: (info: AppInfo) => void;
   openProject: (path: string) => Promise<void>;
@@ -516,6 +545,19 @@ export interface AppStateShape {
   /** The app-wide diagnostics snapshot (plan step 22), null until first loaded. */
   diagnostics: DiagnosticsSnapshot | null;
   diagnosticsError: string | null;
+  /**
+   * The updater's state (plan step 26), null until first read. Unsigned builds
+   * report `supported: false`, so the banner can say so instead of pretending a
+   * check ran.
+   */
+  update: UpdateState | null;
+  loadUpdateState: () => Promise<void>;
+  /** Applies a pushed updater state from main. */
+  applyUpdateState: (state: unknown) => void;
+  /** Starts a check; a no-op in a build with no feed. */
+  checkForUpdates: () => Promise<void>;
+  downloadUpdate: () => Promise<void>;
+  installUpdate: () => Promise<void>;
   /**
    * Bodies of spilled large payloads, fetched on demand and cached by blob path
    * (plan step 24). A 50 MB tool result never crosses the event frame; it is
@@ -895,6 +937,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   sessionTrust: [],
   prefs: { ...DEFAULT_PREFS },
   prefsLoaded: false,
+  onboardingStep: null,
   paletteOpen: false,
   extensionsFocus: null,
   info: null,
@@ -962,6 +1005,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   officeDocumentsLoaded: false,
   diagnostics: null,
   diagnosticsError: null,
+  update: null,
   blobs: {},
   documentsPanelOpen: false,
   webTabStates: {},
@@ -2697,6 +2741,129 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     } catch (error) {
       set({ diagnosticsError: errorMessage(error) });
     }
+  },
+
+  // ---- Updates (plan step 26) ----
+
+  loadUpdateState: async () => {
+    const api = bridge();
+    if (!api?.updates) return;
+    try {
+      set({ update: sanitizeUpdateState(await api.updates.get()) });
+    } catch {
+      // An updater that cannot be reached is not a user-visible failure: the
+      // banner simply stays absent.
+    }
+  },
+
+  applyUpdateState: (state) => set({ update: sanitizeUpdateState(state) }),
+
+  checkForUpdates: async () => {
+    const api = bridge();
+    if (!api?.updates) return;
+    try {
+      const next = sanitizeUpdateState(await api.updates.check());
+      set({ update: next });
+      // A finished check is feedback even when there is nothing to install; the
+      // banner only carries the actionable phases.
+      if (next.phase === "up-to-date") set({ hint: "Pi Desktop is up to date." });
+      else if (next.phase === "unsupported")
+        set({ hint: "Updates are checked in installed builds only." });
+      else if (next.phase === "error") set({ hint: next.error ?? "The update check failed." });
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  downloadUpdate: async () => {
+    const api = bridge();
+    if (!api?.updates) return;
+    try {
+      set({ update: sanitizeUpdateState(await api.updates.download()) });
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  installUpdate: async () => {
+    const api = bridge();
+    if (!api?.updates) return;
+    try {
+      // A successful install quits the app; a false answer means nothing was
+      // ready, so the state did not move and nothing needs saying.
+      await api.updates.install();
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  // ---- Onboarding (plan step 26) ----
+
+  startOnboarding: () => {
+    const { prefs, providers, projects } = get();
+    set({
+      onboardingStep: firstOnboardingStep({
+        providersConfigured: providers.some((provider) => provider.configured),
+        hasProjects: projects.length > 0,
+        completedAt: prefs.onboardingCompletedAt,
+      }),
+    });
+  },
+
+  setOnboardingStep: (step) => set({ onboardingStep: step }),
+
+  nextOnboarding: () => {
+    const step = get().onboardingStep;
+    if (!step) return;
+    const next = nextOnboardingStep(step);
+    // The last step has no next; finishing is the explicit button's job.
+    if (next) set({ onboardingStep: next });
+  },
+
+  previousOnboarding: () => {
+    const step = get().onboardingStep;
+    if (!step) return;
+    const previous = previousOnboardingStep(step);
+    // The first step has no previous; stay put rather than closing.
+    if (previous) set({ onboardingStep: previous });
+  },
+
+  dismissOnboarding: () => set({ onboardingStep: null }),
+
+  completeOnboarding: async () => {
+    const completedAt = Date.now();
+    set({
+      onboardingStep: null,
+      prefs: { ...get().prefs, onboardingCompletedAt: completedAt },
+    });
+    const api = bridge();
+    if (!api?.prefs) return;
+    try {
+      set({ prefs: await api.prefs.set({ onboardingCompletedAt: completedAt }) });
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  chooseProfileMode: async (mode) => {
+    const previous = get().prefs.profileMode;
+    set({ prefs: { ...get().prefs, profileMode: mode } });
+    const api = bridge();
+    if (api?.prefs) {
+      try {
+        set({ prefs: await api.prefs.set({ profileMode: mode }) });
+      } catch (error) {
+        // Put the old value back so the UI never lies about what is stored.
+        set({ prefs: { ...get().prefs, profileMode: previous } });
+        get().noteFailure(error);
+      }
+    }
+    // The running app resolved its profile at launch; a difference needs a restart.
+    return mode !== get().info?.profileMode;
+  },
+
+  relaunchApp: async () => {
+    await bridge()?.relaunch();
   },
 
   loadBlob: async (tabId, ref) => {

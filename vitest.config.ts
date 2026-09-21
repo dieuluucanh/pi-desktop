@@ -26,6 +26,9 @@ export default defineConfig({
         "src/main/index.ts",
         "src/main/ipc.ts",
         "src/main/web-view-host.ts",
+        // Only a packaged app can load `electron-updater`; `src/main/updater.ts`
+        // (the policy) is unit-tested with a fake port instead.
+        "src/main/electron-updater.ts",
         "src/preload/**",
         // The host entry point / composition root: it wires the SDK adapters and
         // the service loop together, so only the live host tests can run it.

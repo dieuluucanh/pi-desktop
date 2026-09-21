@@ -133,11 +133,15 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
 
 /**
  * Seeds `app-state.json` so a launch starts from a known state. The privacy
- * screen is acknowledged unless a test asks for the first-run path (plan
- * step 23).
+ * screen has been acknowledged and onboarding has been completed unless a test
+ * asks for the first-run path (plan steps 23 and 26).
  */
 function seedAppState(userDataDir: string, options: LaunchOptions): void {
-  const prefs = { privacyAcknowledged: true, ...(options.prefs ?? {}) };
+  const prefs = {
+    privacyAcknowledged: true,
+    onboardingCompletedAt: 1,
+    ...(options.prefs ?? {}),
+  };
   const state = { version: 1, ...(options.appState ?? {}), prefs };
   writeFileSync(join(userDataDir, "app-state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }

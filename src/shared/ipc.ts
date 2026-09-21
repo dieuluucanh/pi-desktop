@@ -4,6 +4,8 @@ import type { OfficeDocumentsView } from "./office-documents";
 import type { DiagnosticsExport, DiagnosticsSnapshot } from "./diagnostics";
 import type { IntegrationsState, OfficeIntegrationRecordPatch } from "./integrations";
 import type { UiPrefs } from "./prefs";
+import type { ProfileMode } from "./profile";
+import type { UpdateState } from "./updates";
 import type {
   CloneProjectInput,
   CreateProjectInput,
@@ -46,6 +48,8 @@ export const IPC = {
   appRevealPath: "app:reveal-path",
   /** Renderer → main: set the window title (app chrome owns it, not the menu). */
   appSetTitle: "app:set-title",
+  /** Renderer → main: relaunch the app (a profile change needs a restart). */
+  appRelaunch: "app:relaunch",
   /** Renderer → main: read the persisted UI preferences. */
   prefsGet: "prefs:get",
   /** Renderer → main: merge a partial preference patch (closed key set). */
@@ -134,6 +138,14 @@ export const IPC = {
   diagnosticsExport: "diagnostics:export",
   diagnosticsSave: "diagnostics:save",
   diagnosticsRecord: "diagnostics:record",
+
+  /** Updates (plan step 26): checking GitHub Releases and installing a build. */
+  updatesGet: "updates:get",
+  updatesCheck: "updates:check",
+  updatesDownload: "updates:download",
+  updatesInstall: "updates:install",
+  /** Main → renderer: the updater's state changed. */
+  updatesState: "updates:state",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -156,6 +168,8 @@ export const MENU_COMMANDS = [
   "view-diagnostics",
   "view-office",
   "shortcuts",
+  // Updates (plan step 26).
+  "check-updates",
   // Session history (plan step 11).
   "session-tree",
   "session-fork",
@@ -193,6 +207,8 @@ export interface AppInfo {
   blobCacheDir: string;
   /** `~/.pi/agent` unless `PI_CODING_AGENT_DIR` overrides it (plan D8). */
   profileDir: string;
+  /** Which profile strategy resolved {@link profileDir} (`shared` or `app`). */
+  profileMode: ProfileMode;
   /** Pi files inside the profile, resolved by the main process (plan step 1). */
   settingsFile: string;
   authFile: string;
@@ -351,6 +367,20 @@ export interface DiagnosticsBridge {
   }): Promise<boolean>;
 }
 
+/** Updates (plan step 26): checking GitHub Releases and installing a build. */
+export interface UpdatesBridge {
+  /** The current updater state (never throws; unsupported in a dev build). */
+  get(): Promise<UpdateState>;
+  /** Starts a check; resolves with the state once the feed answers. */
+  check(): Promise<UpdateState>;
+  /** Downloads the offered update. */
+  download(): Promise<UpdateState>;
+  /** Quits and installs a downloaded update; false when none is ready. */
+  install(): Promise<boolean>;
+  /** Main → renderer: the updater's state changed. */
+  onState(listener: (state: UpdateState) => void): () => void;
+}
+
 /** The complete API exposed to the renderer as `window.pi`. */
 export interface PiDesktopBridge {
   getAppInfo(): Promise<AppInfo>;
@@ -359,6 +389,8 @@ export interface PiDesktopBridge {
   pickDirectory(): Promise<string | null>;
   revealPath(path: string): Promise<boolean>;
   setTitle(title: string): Promise<boolean>;
+  /** Relaunches the app; used after a profile-mode change (plan step 26). */
+  relaunch(): Promise<boolean>;
   onWindowState(listener: (state: WindowState) => void): () => void;
   onMenuCommand(listener: (command: MenuCommand) => void): () => void;
   prefs: PrefsBridge;
@@ -368,4 +400,5 @@ export interface PiDesktopBridge {
   integrations: IntegrationsBridge;
   web: WebBridge;
   diagnostics: DiagnosticsBridge;
+  updates: UpdatesBridge;
 }

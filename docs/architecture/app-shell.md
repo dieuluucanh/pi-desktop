@@ -391,3 +391,46 @@ startup pre-warm and the renderer's first `messages.get` could both spawn a host
 for one tab, orphaning one host and its session file. It now memoises the spawn
 promise per tab (`spawning`), which also makes the restored-transcript test
 deterministic.
+
+### Onboarding, updates and packaging (step 26)
+
+**First run, in order.** The privacy screen (step 23) comes first; once it is
+answered the onboarding wizard opens, and only until
+`prefs.onboardingCompletedAt` is set. Dismissing it without finishing leaves the
+flag unset, so it returns next launch; **Skip setup** marks it done. Steps:
+welcome → profile choice → provider → project → optional recommended extensions
+→ optional Office → first session. Each step reuses an existing flow (the folder
+picker, Connections' sign-in, the package consent dialog, the Integrations
+card); the wizard is a guide, not a second implementation.
+
+**Profile choice.** `shared` (default) keeps `~/.pi/agent`; `app` keeps an
+app-private profile under `userData/profile`. A host's profile is fixed at spawn,
+so main resolves the choice **before** any service is constructed: it reads
+`prefs.profileMode` from a synchronous bootstrap read of `app-state.json` and
+passes it to `resolveAppPaths`. Changing the choice therefore takes effect on the
+next launch, and the wizard offers **Restart now** (`app:relaunch`, which uses
+`app.quit()` so `before-quit` still flushes tabs and stops hosts).
+`PI_CODING_AGENT_DIR` always wins. `AppInfo.profileMode` reports the launch
+value so the UI can tell the stored choice from the running one.
+
+**Updates.** `src/main/updater.ts` is the Electron-free policy; the only module
+that imports `electron-updater` is `src/main/electron-updater.ts`, reduced to an
+`UpdatePort`. `autoDownload` is **off** — a check reports and the user chooses.
+Events reduce into `UpdateState` (`src/shared/updates.ts`), pushed over
+`updates:state`; the renderer reads `updates.get` on start and shows an
+`UpdateBanner` for the actionable phases (available → Download, downloading →
+progress, downloaded → Restart & install, error → Retry). A finished check with
+nothing to install reports in the status bar instead of leaving a banner.
+`Help → Check for Updates…` runs one on demand; installed builds also check ~10 s
+after launch (skipped when `PI_OFFLINE`). A dev build reports `supported: false`.
+
+**Packaging.** `electron-builder.yml` targets Windows NSIS + portable, macOS
+dmg/zip on arm64 + x64, and Linux AppImage/deb. The bundled runtime and the
+Office manifest ship in `extraResources`; the SDK, `jiti`, `typebox` and the
+runtime are `asarUnpack`ed because extensions load from real files. `publish`
+is the GitHub provider, and `package.json` carries the `repository` URL so the
+builder and the updater agree. `package:win` fetches the runtime, builds, runs
+`runtime:verify` and only then invokes electron-builder, so an installer cannot
+ship without a working runtime. `tests/packaging/builder-config.test.ts` pins
+the targets, resources, unpack list, feed and the runtime artifacts each target
+needs; the installer itself is verified on a clean machine (step 27).

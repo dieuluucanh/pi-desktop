@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,8 +46,18 @@ import { isDeletableSessionPath } from "./session-ops";
 import { createOfficeSetupService } from "./office/setup-service";
 import { createOfficeDocumentsService } from "./office/documents-service";
 import { createDiagnosticsService } from "./diagnostics-service";
+import { createElectronUpdatePort } from "./electron-updater";
+import { createUpdateService, type UpdateService } from "./updater";
+import { initialUpdateState } from "../shared/updates";
 import { officeEvidenceLine } from "../shared/office-setup";
-import { appPaths, isSafeMode, resolveAppRoots, type AppPaths, type AppRoots } from "./paths";
+import { profileModeFromDocument, type ProfileMode } from "../shared/profile";
+import {
+  isSafeMode,
+  resolveAppPaths,
+  resolveAppRoots,
+  type AppPaths,
+  type AppRoots,
+} from "./paths";
 import { isOfflineEnv, classifyFailure } from "../shared/diagnostics";
 import { createStartupMetrics } from "../shared/performance";
 import type { DiagnosticsSaveResult } from "../shared/ipc";
@@ -85,7 +96,26 @@ let telemetryEnabled = false;
 const userDataOverride = process.env.PI_DESKTOP_USER_DATA_DIR?.trim();
 if (userDataOverride) app.setPath("userData", userDataOverride);
 
-const paths: AppPaths = appPaths();
+/**
+ * The profile choice lives in app state (plan step 26), but hosts are spawned
+ * with a profile at module scope, so it is read once before the paths resolve.
+ * A missing or malformed store falls back to the shared profile; the app store
+ * itself surfaces the malformed-file error later, and never rewrites it.
+ */
+function bootstrapProfileMode(appStateFile: string): ProfileMode {
+  try {
+    return profileModeFromDocument(JSON.parse(readFileSync(appStateFile, "utf8")));
+  } catch {
+    return "shared";
+  }
+}
+
+const userDataDir = app.getPath("userData");
+const paths: AppPaths = resolveAppPaths({
+  userDataDir,
+  env: process.env,
+  profileMode: bootstrapProfileMode(join(userDataDir, "app-state.json")),
+});
 
 // E2E runs print where they landed so a failed launch is diagnosable from the
 // harness output (the app is otherwise silent on a successful start).
@@ -114,6 +144,13 @@ const appState = createAppStore({
 });
 
 let mainWindow: BrowserWindow | null = null;
+
+/**
+ * Update checking (plan step 26). Created in `whenReady` because resolving the
+ * `electron-updater` port is async; null until then, and in a build with no feed.
+ */
+let updateService: UpdateService | null = null;
+let updateCheckTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** The remembered project list (plan step 10): `app-state.json` is its only writer. */
 const projectsService = createProjectsService({ store: appState });
@@ -279,6 +316,7 @@ function currentAppInfo(): AppInfo {
     logsDir: paths.logs,
     blobCacheDir: paths.blobCache,
     profileDir: paths.profileDir,
+    profileMode: paths.profileMode,
     settingsFile: join(paths.profileDir, "settings.json"),
     authFile: join(paths.profileDir, "auth.json"),
     modelsFile: join(paths.profileDir, "models.json"),
@@ -514,6 +552,16 @@ if (!app.requestSingleInstanceLock()) {
     // telemetry flag is correct for the first session (plan step 23).
     telemetryEnabled = (await appState.read()).prefs.telemetryEnabled;
 
+    // Updates (plan step 26): only an installed build has a feed, and only the
+    // Electron adapter can answer whether `electron-updater` loaded at all.
+    const updateSupported = app.isPackaged;
+    const updatePort = updateSupported ? await createElectronUpdatePort() : null;
+    updateService = createUpdateService({
+      port: updatePort,
+      supported: updateSupported && updatePort !== null,
+      onChange: (state) => broadcastToWindows(IPC.updatesState, state),
+    });
+
     // The application menu is the app's command surface; its items never touch
     // windows directly — they forward a MenuCommand to the renderer.
     await installAppMenu({
@@ -531,6 +579,14 @@ if (!app.requestSingleInstanceLock()) {
       pickDirectory: pickProjectDirectory,
       revealPath: revealPathWithShell,
       setTitle: setWindowTitle,
+      relaunch: () => {
+        // A profile-mode change is applied at the next launch, so the wizard can
+        // offer a real restart. `quit` (not `exit`) runs `before-quit`, which
+        // flushes the tab table and stops every host.
+        app.relaunch();
+        app.quit();
+        return true;
+      },
       prefs: {
         get: async () => (await appState.read()).prefs,
         set: async (patch) => {
@@ -600,6 +656,13 @@ if (!app.requestSingleInstanceLock()) {
         save: () => saveDiagnosticsBundle(),
         record: (value: unknown) => diagnostics.recordReported(value),
       },
+      updates: {
+        get: () => updateService?.state() ?? initialUpdateState(false),
+        check: async () => (updateService ? updateService.check() : initialUpdateState(false)),
+        download: async () =>
+          updateService ? updateService.download() : initialUpdateState(false),
+        install: () => updateService?.install() ?? false,
+      },
       officeDocuments: {
         get: () => officeDocuments.get(),
         refresh: () => officeDocuments.refresh(),
@@ -653,6 +716,12 @@ if (!app.requestSingleInstanceLock()) {
       },
     });
     mainWindow = createWindow();
+    // Check once, unobtrusively, in the background (plan step 26). A user can
+    // always ask from Help → Check for Updates; this is the "there is a newer
+    // build" path. Offline starts are skipped, and the timer is cleared on quit.
+    if (updateService && !isOfflineEnv(process.env.PI_OFFLINE)) {
+      updateCheckTimer = setTimeout(() => void updateService?.check(), 10_000);
+    }
     // The registry poll is cheap (one loopback GET) and the panel must reflect a
     // bridge that a terminal Pi session owns, so it runs whenever the app does.
     // Safe mode starts with zero third-party code, so the poll stays off there.
@@ -682,6 +751,8 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on("before-quit", () => {
     // `dispose` flushes the tab table and stops every host, including control.
+    if (updateCheckTimer) clearTimeout(updateCheckTimer);
+    updateService?.dispose();
     officeDocuments.dispose();
     webTabs.dispose();
     void (sessions ? sessions.dispose() : hosts?.stopAll());

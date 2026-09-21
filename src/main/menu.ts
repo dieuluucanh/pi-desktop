@@ -65,6 +65,9 @@ const GO_ITEMS: readonly ItemSpec[] = [
 
 const HELP_ITEMS: readonly ItemSpec[] = [
   { command: "shortcuts", label: "Keyboard Shortcuts", accelerator: "CmdOrCtrl+/" },
+  // The renderer runs the check and shows the result in the banner (plan step 26);
+  // a menu accelerator here would only duplicate the banner's own button.
+  { command: "check-updates", label: "Check for Updates…" },
 ];
 
 function toItems(

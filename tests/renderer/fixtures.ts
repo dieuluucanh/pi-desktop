@@ -12,6 +12,7 @@ import type { OfficeDocumentsView } from "../../src/shared/office-documents";
 import { emptyIntegrationsState, type IntegrationsState } from "../../src/shared/integrations";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { UiPrefs } from "../../src/shared/prefs";
+import { initialUpdateState, type UpdateState } from "../../src/shared/updates";
 import {
   projectNameOf,
   type ProjectRecord,
@@ -37,6 +38,7 @@ export function appInfoFixture(overrides: Partial<AppInfo> = {}): AppInfo {
     logsDir: "C:\\state\\logs",
     blobCacheDir: "C:\\state\\blobs",
     profileDir: "C:\\Users\\test\\.pi\\agent",
+    profileMode: "shared",
     settingsFile: "C:\\Users\\test\\.pi\\agent\\settings.json",
     authFile: "C:\\Users\\test\\.pi\\agent\\auth.json",
     modelsFile: "C:\\Users\\test\\.pi\\agent\\models.json",
@@ -103,6 +105,8 @@ export interface BridgeOptions {
   activeProject?: string | null;
   integrations?: IntegrationsState;
   diagnostics?: Partial<DiagnosticsSnapshot>;
+  /** The updater's starting state (plan step 26); defaults to "unsupported". */
+  update?: UpdateState;
 }
 
 export interface BridgeHandles {
@@ -112,8 +116,10 @@ export interface BridgeHandles {
   webCommands: Array<{ tabId: string; command: WebCommand }>;
   webBounds: Array<{ tabId: string; bounds: WebTabBounds }>;
   webDecisions: WebNavigationDecision[];
+  updateCalls: string[];
   emitWebState(state: WebTabState): void;
   emitWebNavigationRequest(request: WebNavigationRequest): void;
+  emitUpdateState(state: UpdateState): void;
 }
 
 /** Installs a `window.pi` stub and returns the prefs store it writes to. */
@@ -129,6 +135,9 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
   const webCommands: Array<{ tabId: string; command: WebCommand }> = [];
   const webBounds: Array<{ tabId: string; bounds: WebTabBounds }> = [];
   const webDecisions: WebNavigationDecision[] = [];
+  const updateListeners = new Set<(state: UpdateState) => void>();
+  const updateCalls: string[] = [];
+  let updateState: UpdateState = options.update ?? initialUpdateState(false);
   const projectsState: ProjectsSnapshot = {
     projects: options.projects ?? [],
     activeProject: options.activeProject ?? null,
@@ -144,6 +153,7 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
     pickDirectory: async () => null,
     revealPath: async () => true,
     setTitle: async () => true,
+    relaunch: async () => true,
     onWindowState: () => () => undefined,
     onMenuCommand: () => () => undefined,
     prefs: {
@@ -274,6 +284,28 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
       save: async () => ({ ok: true, path: "C:\\bundle.txt" }),
       record: async () => true,
     },
+    updates: {
+      get: async () => {
+        updateCalls.push("get");
+        return updateState;
+      },
+      check: async () => {
+        updateCalls.push("check");
+        return updateState;
+      },
+      download: async () => {
+        updateCalls.push("download");
+        return updateState;
+      },
+      install: async () => {
+        updateCalls.push("install");
+        return true;
+      },
+      onState: (listener) => {
+        updateListeners.add(listener);
+        return () => updateListeners.delete(listener);
+      },
+    },
   };
 
   (window as unknown as { pi: PiDesktopBridge }).pi = bridge;
@@ -284,11 +316,16 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
     webCommands,
     webBounds,
     webDecisions,
+    updateCalls,
     emitWebState: (state) => {
       for (const listener of webStateListeners) listener(state);
     },
     emitWebNavigationRequest: (request) => {
       for (const listener of webNavListeners) listener(request);
+    },
+    emitUpdateState: (state) => {
+      updateState = state;
+      for (const listener of updateListeners) listener(state);
     },
   };
 }
