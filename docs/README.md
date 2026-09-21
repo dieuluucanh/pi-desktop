@@ -4,6 +4,13 @@
 
 - [`product/parity.md`](product/parity.md) — the feature matrix against terminal Pi (implemented,
   planned at which step, and what is deliberately out of scope, including MCP).
+- [`product/backlog.md`](product/backlog.md) — the deferred backlog: post-MVP items, MVP scope
+  deferred during the plan, release engineering and the upstream watch list.
+
+## Releases
+
+- [`releases/v0.1.0.md`](releases/v0.1.0.md) — v0.1.0 release notes, install table, the
+  known-limitations list and the verification status.
 
 ## User guide
 
@@ -34,7 +41,8 @@
 - [`architecture/host-protocol.md`](architecture/host-protocol.md) — the main ⇄ Pi host JSONL
   protocol, including the RPC mapping table.
 - [`architecture/extension-ui.md`](architecture/extension-ui.md) — `ExtensionUIContext`
-  member-by-member and the TUI rendering surface.
+  member-by-member (the parity doc the definition of done calls `extension-parity.md`) and the
+  TUI rendering surface.
 - [`architecture/office-integration.md`](architecture/office-integration.md) — the Office bridge:
   processes and flows, the protocol compatibility matrix, streaming/stop rules, `/health` usage and
   release order.

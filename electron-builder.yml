@@ -2,10 +2,15 @@ appId: dev.pi.desktop
 productName: Pi Desktop
 copyright: Copyright (c) 2026 Pi Desktop contributors
 
-# Predictable file names make GitHub Release assets and the updater feed agree;
-# the default (productName + version + arch) is close, but naming `${os}` too
-# keeps Windows/macOS/Linux assets distinguishable in one release.
-artifactName: "${productName}-${version}-${os}-${arch}.${ext}"
+# Predictable, URL-safe file names that make GitHub Release assets and the
+# updater feed agree. Two rules learned the hard way (plan step 27):
+#  1. Never use `${productName}` here: it has a space, and electron-builder
+#     expands it unsanitized for the file on disk but sanitized (hyphens) in
+#     `latest.yml`, so the updater requests a name that does not exist.
+#  2. NSIS and portable are both `.exe`; one global `artifactName` made the
+#     second overwrite the first and left a blockmap for a file that was gone.
+#     Each Windows target gets its own name below.
+artifactName: "Pi-Desktop-${version}-${os}-${arch}.${ext}"
 
 directories:
   output: release
@@ -42,9 +47,13 @@ win:
       arch: [x64]
 
 nsis:
+  artifactName: "Pi-Desktop-${version}-win-${arch}-setup.${ext}"
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: false
+
+portable:
+  artifactName: "Pi-Desktop-${version}-win-${arch}-portable.${ext}"
 
 mac:
   category: public.app-category.developer-tools

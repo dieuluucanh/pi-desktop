@@ -93,7 +93,31 @@ Diagnostics → Save         redacted support bundle (no credentials)
 The bundle runs `redactSecrets` over the whole document, so it is safe to attach
 to an issue.
 
+## Known limitations in v0.1.0
+
+Every known limitation is recorded with the release notes:
+[`docs/releases/v0.1.0.md`](../releases/v0.1.0.md). The short version:
+
+- **Unsigned builds** — SmartScreen/Gatekeeper warn on first launch; signing is
+  deferred ([backlog](../product/backlog.md)).
+- **macOS and Linux are beta** — built from the same config, but no real
+  Mac/Linux install has been exercised. Windows is the verified target.
+- **The updater** is verified against its policy and a fake port, not a live
+  GitHub Release feed.
+- **Verified structurally, not on a live machine:** provider OAuth flows,
+  extension TUI/renderer fidelity in the packaged app, the Office wizard and
+  bridge end to end, the Plannotator round trip, web-tab isolation on a _loaded_
+  page, crash/timeout banners, safe mode against a genuinely broken extension,
+  and the 60 fps / RSS numbers.
+- **Upstream:** Pi's own `settings.json` and session-JSONL writes are not
+  crash-atomic; the app's own profile writes are (`fsync` + rename).
+- **Deferred features** are listed in [`../product/backlog.md`](../product/backlog.md).
+
+If one of these bites you, the diagnostics bundle above is the fastest path to a
+useful issue.
+
 ## Related
 
 - [FAQ](faq.md) · [Getting started](getting-started.md)
+- [Release notes v0.1.0](../releases/v0.1.0.md) · [Backlog](../product/backlog.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)

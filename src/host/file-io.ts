@@ -8,17 +8,7 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import {
-  mkdir,
-  open,
-  readdir,
-  readFile,
-  realpath,
-  rename,
-  stat,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, open, readdir, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import type { ModelsFileIo } from "./custom-providers";
@@ -26,6 +16,34 @@ import type { DirectoryEntry, FileListingIo } from "./file-listing";
 import type { ProjectIo } from "./project-inspect";
 import type { SettingsFileIo } from "./settings";
 import type { WorkspaceFileIo } from "./workspace-files";
+
+/**
+ * Atomic, durable file write (plan step 27).
+ *
+ * The rename makes the *name* swap atomic, but the new file's bytes can still
+ * be sitting in the page cache: a power loss after the rename can leave an
+ * empty `settings.json`/`models.json` behind. `sync()` forces the contents out
+ * before the rename, so the target is either the old file or the complete new
+ * one. The temp file is removed on any failure so a refused write leaves no
+ * debris in the shared profile.
+ */
+async function writeFileAtomic(target: string, text: string): Promise<void> {
+  await mkdir(dirname(target), { recursive: true });
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    handle = await open(temporary, "w", 0o600);
+    await handle.writeFile(text, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await rename(temporary, target);
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    await unlink(temporary).catch(() => undefined);
+    throw error;
+  }
+}
 
 /**
  * Atomic `models.json` access (plan step 9, slice 5). A temp file in the same
@@ -44,15 +62,7 @@ export function createNodeModelsFileIo(): ModelsFileIo {
     },
 
     async write(path: string, text: string): Promise<void> {
-      await mkdir(dirname(path), { recursive: true });
-      const temporary = `${path}.${randomUUID()}.tmp`;
-      try {
-        await writeFile(temporary, text, { encoding: "utf8", mode: 0o600 });
-        await rename(temporary, path);
-      } catch (error) {
-        await unlink(temporary).catch(() => undefined);
-        throw error;
-      }
+      await writeFileAtomic(path, text);
     },
 
     async delete(path: string): Promise<void> {
@@ -78,15 +88,7 @@ export function createNodeSettingsFileIo(): SettingsFileIo {
     },
 
     async write(path: string, text: string): Promise<void> {
-      await mkdir(dirname(path), { recursive: true });
-      const temporary = `${path}.${randomUUID()}.tmp`;
-      try {
-        await writeFile(temporary, text, { encoding: "utf8", mode: 0o600 });
-        await rename(temporary, path);
-      } catch (error) {
-        await unlink(temporary).catch(() => undefined);
-        throw error;
-      }
+      await writeFileAtomic(path, text);
     },
 
     async delete(path: string): Promise<void> {
@@ -225,15 +227,7 @@ export function createNodeWorkspaceFileIo(): WorkspaceFileIo {
     },
 
     async writeFile(target: string, text: string): Promise<void> {
-      await mkdir(dirname(target), { recursive: true });
-      const temporary = `${target}.${randomUUID()}.tmp`;
-      try {
-        await writeFile(temporary, text, { encoding: "utf8", mode: 0o600 });
-        await rename(temporary, target);
-      } catch (error) {
-        await unlink(temporary).catch(() => undefined);
-        throw error;
-      }
+      await writeFileAtomic(target, text);
     },
   };
 }

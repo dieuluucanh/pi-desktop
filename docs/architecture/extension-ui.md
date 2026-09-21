@@ -12,7 +12,9 @@ implements that surface in two halves (plan D‑A7, steps 16–18):
 `mode: "tui"` is reported to extensions, so one that branches on the mode takes
 the terminal path. The protocol between the host and the renderer is documented
 in [`host-protocol.md`](host-protocol.md); this file is the member-by-member
-mapping.
+mapping — the parity table the plan's definition of done calls
+`extension-parity.md`. `tests/packaging/release.test.ts` pins that every member
+of the SDK's `ExtensionUIContext` appears here.
 
 ## Member mapping
 
@@ -67,11 +69,11 @@ throwing renderer falls back to the native HTML card, exactly as Pi does.
 
 ## Tests
 
-| Area                        | Tests                                                                                                                                                                                                                 |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Wire model                  | `tests/shared/extension-ui.test.ts`, `tests/shared/tui-surface.test.ts`, `tests/shared/extension-render.test.ts`                                                                                                      |
-| Host UI port                | `tests/host/extension-ui.test.ts`, `tests/host/sdk-extension-ui.test.ts`                                                                                                                                              |
-| TUI surface                 | `tests/host/tui-surface.test.ts`, `tests/host/sdk-tui-surface.test.ts` (real `SelectList`/`Editor` by keyboard)                                                                                                       |
-| Renderers                   | `tests/host/extension-renderers.test.ts`                                                                                                                                                                              |
-| Renderer store + components | `tests/renderer/extension-ui-store.test.ts`, `tests/renderer/extension-ui.test.tsx`, `tests/renderer/tui-surface*.test.*`, `tests/renderer/extension-render-store.test.ts`, `tests/renderer/extension-block.test.tsx` |
-| Integration                 | `tests/host/integration.test.ts` (a real extension’s `confirm()` round-trips `oi.request`/`oi.respond`)                                                                                                               |
+| Area                        | Tests                                                                                                                                                                                                                                                              |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Wire model                  | `tests/shared/extension-ui.test.ts`, `tests/shared/tui-surface.test.ts`, `tests/shared/extension-render.test.ts`                                                                                                                                                   |
+| Host UI port                | `tests/host/extension-ui.test.ts`, `tests/host/sdk-extension-ui.test.ts`                                                                                                                                                                                           |
+| TUI surface                 | `tests/host/tui-surface.test.ts`, `tests/host/sdk-tui-surface.test.ts` (real `SelectList`/`Editor` by keyboard)                                                                                                                                                    |
+| Renderers                   | `tests/host/extension-renderers.test.ts`                                                                                                                                                                                                                           |
+| Renderer store + components | `tests/renderer/extension-ui-store.test.ts`, `tests/renderer/extension-ui.test.tsx`, `tests/renderer/tui-surface.test.tsx`, `tests/renderer/tui-surface-store.test.ts`, `tests/renderer/extension-render-store.test.ts`, `tests/renderer/extension-block.test.tsx` |
+| Integration                 | `tests/host/integration.test.ts` (a real extension’s `confirm()` round-trips `oi.request`/`oi.respond`)                                                                                                                                                            |

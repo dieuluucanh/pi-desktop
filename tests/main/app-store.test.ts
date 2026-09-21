@@ -148,6 +148,35 @@ describe("createAppStore", () => {
     expect([...fs.files.keys()]).toEqual([fsKey(STATE_FILE)]);
   });
 
+  it("does not cache an update that failed to persist (plan step 27)", async () => {
+    const fs = createMemoryFsPort();
+    const write = fs.writeTextFile.bind(fs);
+    let failWrites = false;
+    fs.writeTextFile = async (target, contents) => {
+      if (failWrites) throw new Error("disk full");
+      await write(target, contents);
+    };
+    const onError = vi.fn();
+    const store = createAppStore({ file: STATE_FILE, fs, onError });
+
+    await store.update({ activeProject: "C:/a" });
+    failWrites = true;
+
+    await expect(store.update({ activeProject: "C:/b" })).rejects.toThrow("disk full");
+    expect(onError).toHaveBeenCalled();
+    // The disk still holds the last accepted state, and so does the cache: a
+    // later patch must merge on top of `C:/a`, not the rejected `C:/b`.
+    expect(storedState(fs).activeProject).toBe("C:/a");
+    expect((await store.read()).activeProject).toBe("C:/a");
+
+    failWrites = false;
+    await store.update({ projects: [{ path: "C:/c", name: "c", addedAt: 1, lastOpenedAt: 2 }] });
+    expect(storedState(fs).activeProject).toBe("C:/a");
+    expect(storedState(fs).projects).toEqual([
+      { path: "C:/c", name: "c", addedAt: 1, lastOpenedAt: 2 },
+    ]);
+  });
+
   it("reads an existing state file back", async () => {
     const fs = createMemoryFsPort({
       files: {

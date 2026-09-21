@@ -1,6 +1,6 @@
 # Pi Desktop — parity with terminal Pi
 
-**Last updated:** 2026-09-21 (plan step 26).
+**Last updated:** 2026-09-21 (plan step 27, v0.1.0).
 
 This matrix is the product's contract: Pi Desktop is the desktop UI for the Pi
 coding agent, and every row is either **implemented**, **planned at a stated
@@ -71,16 +71,16 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 
 ## Setup, distribution and platform
 
-| Capability                                                              | Terminal Pi               | Pi Desktop                                                                                          |
-| ----------------------------------------------------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------- |
-| Runtime install                                                         | user installs Node + `pi` | ✅ bundled Node 24 + `pi` PATH shim (`resources/runtime`)                                           |
-| First-run setup (provider → project → optional extras)                  | manual                    | ✅ step 26 (guided wizard; every step skippable; re-runs on a fresh profile)                        |
-| Profile choice (shared with terminal Pi vs app-private)                 | n/a                       | ✅ step 26 (shared is the default; the choice is applied before any host spawns, restart to change) |
-| Update notification + install                                           | `pi` self-update          | ✅ step 26 (GitHub Releases; `autoDownload` off; Download → Restart & install)                      |
-| Installers (Windows NSIS + portable; macOS dmg/zip; Linux AppImage/deb) | ✅ (`npm i -g`)           | ✅ step 26 (unsigned; verified on a clean machine in step 27)                                       |
-| Multi-session parallelism                                               | multiple terminals        | ✅ step 11 (tabs, one host per session, 8-host cap with idle recycling)                             |
-| Web UIs on localhost (e.g. Plannotator review pages)                    | system browser            | ✅ step 21 (in-app isolated web tab)                                                                |
-| Windows / macOS / Linux                                                 | ✅                        | Windows first; macOS/Linux beta (D-A13)                                                             |
+| Capability                                                              | Terminal Pi               | Pi Desktop                                                                                                                                              |
+| ----------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime install                                                         | user installs Node + `pi` | ✅ bundled Node 24 + `pi` PATH shim (`resources/runtime`)                                                                                               |
+| First-run setup (provider → project → optional extras)                  | manual                    | ✅ step 26 (guided wizard; every step skippable; re-runs on a fresh profile)                                                                            |
+| Profile choice (shared with terminal Pi vs app-private)                 | n/a                       | ✅ step 26 (shared is the default; the choice is applied before any host spawns, restart to change)                                                     |
+| Update notification + install                                           | `pi` self-update          | ✅ step 26 (GitHub Releases; `autoDownload` off; Download → Restart & install)                                                                          |
+| Installers (Windows NSIS + portable; macOS dmg/zip; Linux AppImage/deb) | ✅ (`npm i -g`)           | ✅ step 26 (unsigned; macOS/Linux beta; the clean-machine install and every not-yet-live row are listed in [releases/v0.1.0.md](../releases/v0.1.0.md)) |
+| Multi-session parallelism                                               | multiple terminals        | ✅ step 11 (tabs, one host per session, 8-host cap with idle recycling)                                                                                 |
+| Web UIs on localhost (e.g. Plannotator review pages)                    | system browser            | ✅ step 21 (in-app isolated web tab)                                                                                                                    |
+| Windows / macOS / Linux                                                 | ✅                        | Windows first; macOS/Linux beta (D-A13)                                                                                                                 |
 
 ## MCP
 

@@ -508,8 +508,16 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     if (existing) return existing;
     const inFlight = spawning.get(tab.id);
     if (inFlight) return inFlight;
-    const spawn = spawnHost(tab).finally(() => spawning.delete(tab.id));
+    const spawn = spawnHost(tab);
     spawning.set(tab.id, spawn);
+    // The spawn is shared by everyone who asked for this tab, and the tab can be
+    // closed (or the service disposed) while it is in flight. Observe the
+    // rejection once so a caller that is already gone cannot turn it into an
+    // unhandled rejection; the handle is dropped on either outcome (step 27).
+    void spawn.then(
+      () => spawning.delete(tab.id),
+      () => spawning.delete(tab.id),
+    );
     return spawn;
   };
 
@@ -523,6 +531,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       officeHost: tab.kind === "office",
       sessionFile: tab.sessionFile,
     });
+    // `closeTab` or `dispose` may have run while the spawn was in flight: the
+    // supervisor now holds a process for a tab that no longer exists, and
+    // registering it here would leave a host with no owner and no stop path
+    // (plan step 27). Stop it and fail the spawn instead of orphaning it.
+    if (disposed || !tabs.has(tab.id)) {
+      await deps.supervisor.stop(tab.id).catch(() => undefined);
+      throw new SessionServiceError("tab closed while its host was starting", "tab_closed");
+    }
     hosts.set(tab.id, host);
     subscribe(tab, host);
     try {
@@ -859,10 +875,16 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       if (disposed) return;
       disposed = true;
       await service.flush();
+      for (const timer of timers.values()) clearTimeout(timer);
+      timers.clear();
       for (const list of unsubscribes.values()) for (const off of list) off();
       unsubscribes.clear();
       for (const off of controlUnsubscribes.splice(0)) off();
       hosts.clear();
+      // Any in-flight spawn sees `disposed` and stops its own host; dropping the
+      // handles here keeps nothing pointing at a process during shutdown.
+      spawning.clear();
+      createParams.clear();
       control = null;
       await deps.supervisor.stopAll();
     },

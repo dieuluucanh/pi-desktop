@@ -23,6 +23,7 @@ import { CONTROL_TAB_ID } from "../shared/session-ipc";
 import { createAppStore } from "./app-store";
 import { createNodeFsPort } from "./fs-port";
 import { createHostSupervisor } from "./host-supervisor";
+import { createQuitTeardown } from "./lifecycle";
 import {
   broadcastToWindows,
   registerIpcHandlers,
@@ -439,7 +440,10 @@ const officeSetup = createOfficeSetupService({
   backupDir: join(paths.userData, "backups"),
   openPath: (target) => shell.openPath(target),
   openExternal: async (url) => {
-    await shell.openExternal(url);
+    // Defence in depth: every other `openExternal` path runs the protocol
+    // allowlist, and the Office wizard's URLs are hardcoded today (plan step 27).
+    const safe = sanitizeExternalUrl(url);
+    if (safe) await shell.openExternal(safe);
   },
   appInfo: {
     name: app.getName(),
@@ -749,12 +753,23 @@ if (!app.requestSingleInstanceLock()) {
     if (process.platform !== "darwin") app.quit();
   });
 
-  app.on("before-quit", () => {
-    // `dispose` flushes the tab table and stops every host, including control.
-    if (updateCheckTimer) clearTimeout(updateCheckTimer);
-    updateService?.dispose();
-    officeDocuments.dispose();
-    webTabs.dispose();
-    void (sessions ? sessions.dispose() : hosts?.stopAll());
+  // `before-quit` is synchronous, so the async teardown (flush the tab table,
+  // stop every host including control) must defer the quit and quit again when
+  // it finishes; discarding the promise let the process exit mid-teardown and
+  // risked losing the tab table (plan step 27). `lifecycle.ts` owns the
+  // ordering so it is unit tested.
+  const quitTeardown = createQuitTeardown({
+    dispose: async () => {
+      if (updateCheckTimer) clearTimeout(updateCheckTimer);
+      updateService?.dispose();
+      officeDocuments.dispose();
+      webTabs.dispose();
+      await (sessions ? sessions.dispose() : hosts?.stopAll());
+    },
+    quit: () => app.quit(),
+    onError: (error) => {
+      console.error("quit teardown failed", error);
+    },
   });
+  app.on("before-quit", (event) => quitTeardown.handleBeforeQuit(event));
 }

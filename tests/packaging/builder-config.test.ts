@@ -57,8 +57,22 @@ describe("electron-builder config (plan step 26)", () => {
     expect(builderYaml).toContain("resources/runtime/**");
   });
 
-  it("uses a stable artifact name and a GitHub update feed", () => {
-    expect(builderYaml).toMatch(/artifactName:\s*.*\$\{os\}.*\$\{arch\}/);
+  it("uses URL-safe, target-distinct artifact names and a GitHub update feed", () => {
+    // A space is expanded unsanitized on disk but sanitized in `latest.yml`, so
+    // `${productName}` must never appear in an artifact name (plan step 27).
+    expect(builderYaml).not.toMatch(/artifactName:.*\$\{productName\}/);
+    const names = [...builderYaml.matchAll(/artifactName:\s*"([^"]+)"/g)].map(
+      (match) => match[1] ?? "",
+    );
+    expect(names.length).toBeGreaterThanOrEqual(3);
+    for (const name of names) expect(name, name).not.toContain(" ");
+    // NSIS and portable are both `.exe`: they must not share one name.
+    expect(new Set(names).size).toBe(names.length);
+    expect(builderYaml).toMatch(/nsis:\s*\n\s+artifactName:\s*"[^"]*-setup\.\$\{ext\}"/);
+    expect(builderYaml).toMatch(/portable:\s*\n\s+artifactName:\s*"[^"]*-portable\.\$\{ext\}"/);
+    expect(builderYaml).toMatch(
+      /artifactName:\s*"Pi-Desktop-\$\{version\}-\$\{os\}-\$\{arch\}\.\$\{ext\}"/,
+    );
     expect(builderYaml).toMatch(/provider:\s*github/);
     expect(packageJson.repository?.url).toContain("github.com");
   });

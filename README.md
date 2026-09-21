@@ -5,10 +5,11 @@ installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
 `~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
-> **Status:** v0.1.0 release candidate (plan steps 1–26 of the core-first
-> re-baseline shipped). Windows installer is the primary artefact; macOS and
-> Linux are beta. Artefacts are unsigned — see
-> [docs/guide/getting-started.md](docs/guide/getting-started.md).
+> **Status:** v0.1.0 release candidate (the core-first plan's steps 1–27). The
+> Windows installer is the primary artefact; macOS and Linux are beta, and builds
+> are unsigned. Known limitations and the deferred backlog are recorded in
+> [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md) and
+> [docs/product/backlog.md](docs/product/backlog.md).
 >
 > **Pi for Office is an optional integration.** It installs from Extensions →
 > Integrations like any other Pi package, and no Office surface appears unless
@@ -84,7 +85,7 @@ src/host/            the Pi host process (all SDK contact in src/host/sdk/)
 src/shared/          types, constants and the single IPC allowlist
 resources/           vendored Office manifest, fetched Node/npm runtime
 tests/               vitest (node project + jsdom renderer project) and Playwright E2E
-docs/                product/parity, the user guide, and the architecture docs
+docs/                product/parity + backlog, the user guide, releases and the architecture docs
 ```
 
 ## Docs
@@ -96,6 +97,9 @@ docs/                product/parity, the user guide, and the architecture docs
   host protocol + RPC mapping, extension UI host + TUI surface, Office
   integration, runtime, pinned versions).
 - **Parity** — [docs/product/parity.md](docs/product/parity.md).
+- **Release notes** — [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md)
+  (install table, known limitations, verification status).
+- **Backlog** — [docs/product/backlog.md](docs/product/backlog.md).
 - **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md) and
   [AGENTS.md](AGENTS.md); the executable plan is
   `.pi/plans/2026-09-19-pi-desktop-core-first-rebaseline.md`.

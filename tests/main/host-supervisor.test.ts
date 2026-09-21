@@ -352,6 +352,27 @@ describe("host supervisor shutdown", () => {
     expect(supervisor.list()).toHaveLength(0);
   });
 
+  it("refuses to restart a host that is already shutting down (plan step 27)", async () => {
+    const { supervisor } = harness();
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    await host.shutdown();
+
+    await expect(host.restart("crash")).rejects.toThrow(/shutting down/);
+  });
+
+  it("does not restart a crashed host once it has been stopped (plan step 27)", async () => {
+    const { supervisor, spawned } = harness();
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    // The crash queues a restart after the backoff; the stop must win.
+    spawned[0]?.crash(3);
+    await host.shutdown();
+
+    await vi.waitFor(() => expect(host.status()).toBe("stopped"));
+    expect(spawned).toHaveLength(1);
+  });
+
   it("writes a per-session log", async () => {
     const { supervisor, fs } = harness();
     await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });

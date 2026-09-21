@@ -475,7 +475,18 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       this.state = "restarting";
       this.emitter.emit("status", "restarting");
       this.restartTimer = setTimeout(() => {
-        void this.restart("crash");
+        // A shutdown that happened while the backoff was pending must win; do
+        // not spawn a replacement for an intentionally stopped host
+        // (plan step 27).
+        if (this.intentionalStop) return;
+        void this.restart("crash").catch((error: unknown) => {
+          this.appendLog(
+            "error",
+            `restart failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          this.state = "failed";
+          this.emitter.emit("status", "failed");
+        });
       }, delay);
       if (
         typeof this.restartTimer === "object" &&
@@ -490,6 +501,11 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       if (this.restartTimer) {
         clearTimeout(this.restartTimer);
         this.restartTimer = null;
+      }
+      // A queued restart that raced with `shutdown` must not spawn a process the
+      // supervisor has already given up ownership of (plan step 27).
+      if (this.intentionalStop) {
+        throw new Error(`host ${this.sessionId} is shutting down`);
       }
       this.state = "restarting";
       this.emitter.emit("status", "restarting");
@@ -596,7 +612,12 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
             "info",
             `recycling host: RSS ${mb(sample.rssBytes)} MB is over the ${mb(threshold)} MB threshold`,
           );
-          void this.restart("memory");
+          void this.restart("memory").catch((error: unknown) => {
+            this.appendLog(
+              "error",
+              `memory restart failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
         }
       } catch {
         // A metrics poll is best effort; a failure is not a host failure.
@@ -648,6 +669,9 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       this.intentionalStop = true;
       if (this.idleTimer) clearTimeout(this.idleTimer);
       if (this.restartTimer) clearTimeout(this.restartTimer);
+      // The metrics interval is unref'd, but it must not keep asking a host that
+      // is being stopped for its RSS (plan step 27).
+      this.stopMetricsPolling();
       const child = this.child;
       if (!child) {
         this.state = "stopped";
@@ -664,6 +688,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     }
 
     disposeHere(): void {
+      this.stopMetricsPolling();
       this.emitter.removeAllListeners();
     }
   }

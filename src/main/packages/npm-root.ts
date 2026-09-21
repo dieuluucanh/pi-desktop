@@ -137,6 +137,10 @@ export async function syncNpmRootManifest(
     return { changed: false, packageJson: next };
   }
 
-  await fs.writeTextFile(paths.packageJsonPath, nextText);
+  // Atomic, so a crash cannot truncate the manifest and force a reinstall of
+  // every extension (plan step 27).
+  const temporary = `${paths.packageJsonPath}.${process.pid}.tmp`;
+  await fs.writeTextFile(temporary, nextText);
+  await fs.rename(temporary, paths.packageJsonPath);
   return { changed: true, packageJson: next };
 }

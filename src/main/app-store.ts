@@ -118,10 +118,14 @@ export function createAppStore(options: CreateAppStoreOptions): AppStore {
         ...patch,
         version: APP_STATE_VERSION,
       });
+      // Never cache a state the disk did not accept: a failed write used to be
+      // reported and then cached anyway, so every later read returned phantom
+      // state and each patch compounded the drift (plan step 27).
       try {
         await writeSettingsDocument(fs, options.file, { ...next });
       } catch (error) {
         report(error);
+        throw error;
       }
       cached = next;
       return next;
@@ -129,7 +133,12 @@ export function createAppStore(options: CreateAppStoreOptions): AppStore {
     updatePrefs: async (patch: unknown): Promise<UiPrefs> => {
       const current = await read();
       const prefs = mergePrefs(current.prefs, patch);
-      await writeSettingsDocument(fs, options.file, { ...current, prefs });
+      try {
+        await writeSettingsDocument(fs, options.file, { ...current, prefs });
+      } catch (error) {
+        report(error);
+        throw error;
+      }
       cached = { ...current, prefs };
       return prefs;
     },

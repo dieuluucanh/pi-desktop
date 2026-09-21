@@ -112,7 +112,14 @@ class FakeHost implements SupervisorHostLike {
   }
 }
 
-function createHarness(options: { maxTabs?: number; failCreate?: Error } = {}): {
+function createHarness(
+  options: {
+    maxTabs?: number;
+    failCreate?: Error;
+    /** Awaited inside the fake `supervisor.start`, to hold a spawn in flight. */
+    onStart?: (spec: SpawnSpec) => Promise<void> | void;
+  } = {},
+): {
   service: SessionService;
   hosts: Map<string, FakeHost>;
   specs: SpawnSpec[];
@@ -130,6 +137,7 @@ function createHarness(options: { maxTabs?: number; failCreate?: Error } = {}): 
   const supervisor: SupervisorLike = {
     start: async (spec) => {
       specs.push(spec);
+      await options.onStart?.(spec);
       const host = new FakeHost(spec.sessionId);
       if (options.failCreate) {
         host.request = (method: HostMethod, params?: unknown) => {
@@ -512,6 +520,35 @@ describe("reliability and recovery (plan step 22)", () => {
 
     expect(stopped).toEqual(["tab-1"]);
     expect(service.tabs()).toEqual([]);
+    expect(service.diagnosticsHosts()).toEqual([]);
+  });
+
+  it("stops a host that finished starting after its tab was closed (plan step 27)", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reached!: () => void;
+    const started = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const { service, hosts, stopped } = createHarness({
+      onStart: async () => {
+        reached();
+        await gate;
+      },
+    });
+
+    const creating = service.createTab({ cwd: "C:\\work\\app" });
+    await started;
+
+    // The tab is gone before its host exists; the spawn must not re-register it.
+    await service.closeTab("tab-1");
+    release();
+
+    await expect(creating).rejects.toThrow(/closed while its host was starting/);
+    expect(stopped).toContain("tab-1");
+    expect(hosts.has("tab-1")).toBe(false);
     expect(service.diagnosticsHosts()).toEqual([]);
   });
 
