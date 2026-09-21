@@ -178,9 +178,13 @@ export function SessionView() {
   // Hooks run before the early return: `messages.get` seeds the transcript of the
   // tab being shown (once per tab; live batches append after that). A web tab has
   // no Pi session to hydrate (plan step 21).
+  //
+  // The tab status is a dependency so a restored-but-stopped tab (a relaunch)
+  // retries hydration once its host resumes; the first attempt can run before the
+  // host is ready and must not be cached as "no history" (plan step 25).
   useEffect(() => {
     if (activeId && active?.kind !== "web") void hydrateTranscript(activeId);
-  }, [activeId, active?.kind, hydrateTranscript]);
+  }, [activeId, active?.kind, active?.status, hydrateTranscript]);
 
   if (!active) return <WelcomeView />;
   if (active.kind === "web") return <WebTabView tab={active} />;

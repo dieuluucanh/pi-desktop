@@ -157,7 +157,6 @@ export const HOST_METHODS = [
   "settings.flush",
   "settings.raw",
   "providers.list",
-  "providers.auth",
   "providers.login",
   "providers.logout",
   "providers.setKey",
@@ -172,6 +171,10 @@ export const HOST_METHODS = [
   // way to evaluate extension autocomplete providers (their factories cannot
   // cross the frame boundary, so the host runs them).
   "oi.state",
+  // An extension can force the transcript's tool-expand state
+  // (`ctx.ui.setToolsExpanded`); the app owns Ctrl+O, so the host only mirrors
+  // it. Declared explicitly because `isHostMethod` guards the request path.
+  "oi.setToolsExpanded",
   "oi.editorText",
   "completion.suggest",
   "completion.apply",

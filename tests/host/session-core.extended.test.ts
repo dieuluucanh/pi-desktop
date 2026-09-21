@@ -255,6 +255,14 @@ describe("model & thinking", () => {
     expect(session.cycleModel).toHaveBeenNthCalledWith(2, "backward", { persist: true });
   });
 
+  it("lists the session's scoped models and current model", async () => {
+    const scoped = [{ model: { id: "a" } }, { model: { id: "b" } }];
+    const { call } = await started({ scopedModels: scoped });
+    const result = (await call("model.list")) as { scoped: unknown[]; current: unknown };
+    expect(result.scoped).toHaveLength(2);
+    expect(result.current).toMatchObject({ id: "test-model" });
+  });
+
   it("cycles the thinking level and reloads the snapshot", async () => {
     const { call, session } = await started();
     await call("thinking.cycle", { persist: true });

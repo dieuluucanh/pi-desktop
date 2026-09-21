@@ -223,6 +223,13 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
   const tabs = new Map<string, TabRecord>();
   const hosts = new Map<string, SupervisorHostLike>();
+  /**
+   * In-flight spawns, so two callers cannot start two hosts for one tab. A
+   * pre-warm and the renderer's first `messages.get` arrive together after a
+   * relaunch; without this, both saw no host, both spawned, and one host (and
+   * its session file) was orphaned (plan step 25).
+   */
+  const spawning = new Map<string, Promise<SupervisorHostLike>>();
   /** Per-tab `session.create` defaults (per-project model/thinking + trust, step 10). */
   const createParams = new Map<
     string,
@@ -499,6 +506,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     }
     const existing = hosts.get(tab.id);
     if (existing) return existing;
+    const inFlight = spawning.get(tab.id);
+    if (inFlight) return inFlight;
+    const spawn = spawnHost(tab).finally(() => spawning.delete(tab.id));
+    spawning.set(tab.id, spawn);
+    return spawn;
+  };
+
+  const spawnHost = async (tab: TabRecord): Promise<SupervisorHostLike> => {
     setStatus(tab, "starting");
 
     const host = await deps.supervisor.start({

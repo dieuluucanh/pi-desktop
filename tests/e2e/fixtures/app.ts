@@ -28,6 +28,17 @@ export interface LaunchOptions {
   prefs?: Record<string, unknown>;
   /** Any other top-level app-state fields (projects, tabs, …). */
   appState?: Record<string, unknown>;
+  /** Extra environment variables for the app process (and the hosts it spawns). */
+  env?: Record<string, string>;
+  /** Reuse an existing app-state directory (restart tests). */
+  userDataDir?: string;
+  /** Reuse an existing Pi profile (restart tests). */
+  profileDir?: string;
+  /**
+   * Skip seeding `settings.json`/`models.json`/`app-state.json`. A restart must
+   * keep whatever the first run persisted, not overwrite it with the seed.
+   */
+  noSeed?: boolean;
 }
 
 export interface LaunchPaths {
@@ -60,10 +71,12 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
     throw new Error(`E2E needs a build first: ${main} is missing (run \`npm run build\`).`);
   }
 
-  const userDataDir = mkdtempSync(join(tmpdir(), "pi-desktop-e2e-state-"));
-  const profileDir = mkdtempSync(join(tmpdir(), "pi-desktop-e2e-profile-"));
-  seedProfile(profileDir, options);
-  seedAppState(userDataDir, options);
+  const userDataDir = options.userDataDir ?? mkdtempSync(join(tmpdir(), "pi-desktop-e2e-state-"));
+  const profileDir = options.profileDir ?? mkdtempSync(join(tmpdir(), "pi-desktop-e2e-profile-"));
+  if (!options.noSeed) {
+    seedProfile(profileDir, options);
+    seedAppState(userDataDir, options);
+  }
 
   const app = await electron.launch({
     // The app *directory* (whose package.json `main` points at out/main/index.mjs)
@@ -81,6 +94,7 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
       PI_DESKTOP_E2E: "1",
       // Never let an E2E run inherit a developer's proxy/offline switches.
       PI_OFFLINE: "",
+      ...(options.env ?? {}),
     },
   });
 

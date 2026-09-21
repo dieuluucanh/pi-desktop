@@ -10,13 +10,40 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
-    // Coverage spans both projects (`npm run test:coverage`); thresholds are
-    // enforced in plan step 25.
+    // Coverage spans both projects (`npm run test:coverage`); the thresholds are
+    // enforced in plan step 25 and run in CI (`checks.yml`, coverage job).
     coverage: {
       provider: "v8",
       reporter: ["text", "lcov"],
       include: ["src/**/*.{ts,tsx}"],
-      exclude: ["src/renderer/src/**/*.d.ts", "src/renderer/src/main.tsx"],
+      exclude: [
+        "src/renderer/src/**/*.d.ts",
+        "src/renderer/src/main.tsx",
+        // Electron-only wiring. It cannot be exercised by a Vitest run (it needs
+        // `app`, `BrowserWindow` and a live renderer); the Playwright-Electron
+        // E2E suite is its coverage. Excluding it keeps the thresholds a
+        // meaningful statement about the unit-testable surface.
+        "src/main/index.ts",
+        "src/main/ipc.ts",
+        "src/main/web-view-host.ts",
+        "src/preload/**",
+        // The host entry point / composition root: it wires the SDK adapters and
+        // the service loop together, so only the live host tests can run it.
+        "src/host/index.ts",
+      ],
+      // A floor just under the current suite, plus tighter floors for the three
+      // groups the plan names (host, protocol/shared, renderer utilities).
+      // Raising a floor is a deliberate act; falling below one fails `npm run
+      // test:coverage` and the CI coverage job.
+      thresholds: {
+        statements: 75,
+        branches: 68,
+        functions: 70,
+        lines: 78,
+        "src/shared/**": { statements: 88, branches: 78, functions: 88, lines: 90 },
+        "src/host/**": { statements: 78, branches: 68, functions: 72, lines: 80 },
+        "src/renderer/src/**": { statements: 58, branches: 42, functions: 52, lines: 57 },
+      },
     },
     projects: [
       {

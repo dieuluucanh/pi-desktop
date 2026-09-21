@@ -1354,10 +1354,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         },
       });
     } catch {
-      // A session that cannot report history still streams; hydration is best effort.
+      // A session that cannot report history still streams, so this is best
+      // effort — but a failed read must not be cached as "no history": after a
+      // relaunch the host may still be starting, and the view retries hydration
+      // when the tab status changes (plan step 25).
       const base = get().transcripts[tabId] ?? createTranscriptState();
       set({
-        transcripts: { ...get().transcripts, [tabId]: { ...base, hydrated: true } },
+        transcripts: { ...get().transcripts, [tabId]: { ...base, hydrated: false } },
       });
     }
   },

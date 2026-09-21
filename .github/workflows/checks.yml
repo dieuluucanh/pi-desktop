@@ -41,6 +41,12 @@ jobs:
       - name: Unit + integration tests
         run: npm test
 
+      # Coverage thresholds are enforced on one OS (the numbers are the same on
+      # all three; this keeps the matrix fast) — plan step 25.
+      - name: Coverage thresholds
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run test:coverage
+
       - name: Office manifest is in sync
         run: npm run office:manifest:check
 
@@ -67,11 +73,11 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Shell smoke (Playwright + Electron)
-        run: npm run e2e:smoke
-
-      - name: Startup budget (Playwright + Electron, plan step 24)
-        run: npm run e2e:perf
+      # The full E2E suite: shell smoke, the startup budget, and the
+      # deterministic-fake-provider flows (session, settings, persistence, web
+      # tab) — plan step 25. `e2e:smoke`/`e2e:perf` are the tagged subsets.
+      - name: End-to-end (Playwright + Electron)
+        run: npm run test:e2e
 
       - name: Upload traces on failure
         if: failure()

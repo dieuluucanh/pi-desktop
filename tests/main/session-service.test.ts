@@ -829,4 +829,22 @@ describe("web tabs (plan step 21)", () => {
     await service.createTab({ kind: "web", url: "http://localhost:1/" });
     await expect(service.promoteToOfficeHost("tab-1")).rejects.toThrow(/web tab/);
   });
+
+  it("dedupes a concurrent pre-warm and request into one host spawn (plan step 25)", async () => {
+    const harness = createHarness();
+    await harness.service.createTab({ cwd: "C:/work/app" });
+    const tabId = harness.stored.tabs[0]!.id;
+
+    // Simulate a relaunch: the tab is restored with no host running.
+    await harness.service.restoreTabs();
+    const before = harness.specs.length;
+
+    // A startup pre-warm and the renderer's first `messages.get` arrive together.
+    await Promise.all([
+      harness.service.activateTab(tabId),
+      harness.service.request(tabId, "state.get"),
+    ]);
+
+    expect(harness.specs.length - before).toBe(1);
+  });
 });

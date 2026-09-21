@@ -343,3 +343,51 @@ and the renderer all read it, so a budget change is one edit.
 
 The renderer project is configured in `vitest.config.ts` (`projects`), with
 `tests/renderer/setup.ts` for jest-dom and Testing Library cleanup.
+
+### Test suite and CI matrix (step 25)
+
+**Deterministic provider.** `tests/host/fixtures/fake-provider.ts` is a real
+OpenAI-compatible SSE server; `tests/host/fixtures/fixture-profile.ts` writes a
+throw-away profile whose `settings.json` selects the fake model and whose
+`models.json` points a custom provider at the server. `AgentSession` hard-wires
+its stream function to `ModelRuntime.streamSimple`, so scripting the wire bytes
+is the only injection point that still runs the SDK's own request → SSE parse →
+agent loop. A scripted queue of turns (`text`, `slowText`, `toolCall`,
+`thinking`, `error`) makes prompts, tools, retries and compaction deterministic.
+
+**Host integration harness.** `tests/host/integration.test.ts` drives the real
+`createSessionCore` with the real SDK runtime against that provider: a streamed
+reply, an image attachment, a `read` tool loop, a provider 500 that Pi retries,
+`compact`, `/reload`, `session.new` and `session.resume` from JSONL — plus an
+extension loaded from the fixture profile whose `ctx.ui.confirm()` round-trips
+through `oi.request`/`oi.respond`.
+
+**Method coverage.** `tests/host/method-coverage.test.ts` composes every handler
+factory (session core, control core, extension-UI port/bridge, renderer
+registry, provider-login bridge, the TUI surface and the service transport) and
+asserts the union is _exactly_ `HOST_METHODS`. It then requires every declared
+method to be named in another test file. Adding a method to `HOST_METHODS`
+without a handler fails the first check; adding a handler without declaring it
+fails the second; shipping either without a test fails the third.
+
+**Coverage thresholds.** `npm run test:coverage` enforces floors (global, plus
+tighter floors for `src/shared/**`, `src/host/**` and `src/renderer/src/**`) and
+runs on the Ubuntu leg of CI. Electron-only wiring (`src/main/index.ts`,
+`src/main/ipc.ts`, `src/main/web-view-host.ts`, `src/preload/**`) and the host
+entry point (`src/host/index.ts`) are excluded: they need a live Electron/host
+process, which is the Playwright suite's job, not a Vitest one.
+
+**Playwright-Electron E2E.** `tests/e2e/fixtures/fake-app.ts` launches the built
+app with the fake provider and a seeded project. `session.spec.ts` covers
+create → send → stream → abort, the steering/follow-up modes and two independent
+tabs; `settings.spec.ts` round-trips a preference across a restart;
+`persistence.spec.ts` restores a tab and its transcript; `web-tab.spec.ts` opens
+a loopback URL in an in-app tab; `shell.spec.ts` and `performance.spec.ts` stay
+as the tagged `@smoke`/`@perf` subsets. `npm run test:e2e` runs them all; CI runs
+it on Windows (the job must not inherit `ELECTRON_SKIP_BINARY_DOWNLOAD`).
+
+**Concurrency fix the E2E surfaced.** `ensureHost` had no in-flight dedupe, so a
+startup pre-warm and the renderer's first `messages.get` could both spawn a host
+for one tab, orphaning one host and its session file. It now memoises the spawn
+promise per tab (`spawning`), which also makes the restored-transcript test
+deterministic.
