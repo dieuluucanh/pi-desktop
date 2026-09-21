@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DiagnosticsExport, Incident } from "../../../shared/diagnostics";
+import { formatBytes, formatDuration } from "../../../shared/performance";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { useAppStore } from "../state/app-store";
@@ -169,8 +170,45 @@ export function DiagnosticsView() {
             </div>
           </section>
 
+          <section className="card flex flex-col gap-3" data-testid="diagnostics-startup">
+            <h2 className="text-sm font-semibold">Startup</h2>
+            <p className="text-xs text-ink-muted">
+              Measured from process start; the budgets are the plan's targets (window interactive{" "}
+              {formatDuration(snapshot.startup.windowInteractive.budgetMs)}, warm session{" "}
+              {formatDuration(snapshot.startup.sessionReady.budgetMs)}).
+            </p>
+            <dl className="facts">
+              <div className="contents">
+                <dt>App ready</dt>
+                <dd>{formatDuration(snapshot.startup.appReadyMs)}</dd>
+              </div>
+              <div className="contents">
+                <dt>Window interactive</dt>
+                <dd>
+                  <Badge tone={snapshot.startup.windowInteractive.status === "met" ? "ok" : "warn"}>
+                    {formatDuration(snapshot.startup.windowInteractiveMs)}
+                  </Badge>
+                </dd>
+              </div>
+              <div className="contents">
+                <dt>Warm session ready</dt>
+                <dd>
+                  <Badge tone={snapshot.startup.sessionReady.status === "met" ? "ok" : "warn"}>
+                    {formatDuration(snapshot.startup.sessionReadyMs)}
+                  </Badge>
+                </dd>
+              </div>
+            </dl>
+          </section>
+
           <section className="card flex flex-col gap-3" data-testid="diagnostics-hosts">
             <h2 className="text-sm font-semibold">Hosts</h2>
+            <p className="text-xs text-ink-muted">
+              {snapshot.capacity.hosts.used}/{snapshot.capacity.hosts.limit} hosts ·{" "}
+              {snapshot.capacity.tabs.used}/{snapshot.capacity.tabs.limit} tabs · per-host budget{" "}
+              {formatBytes(snapshot.memory.budgetBytes)} (recycle at{" "}
+              {formatBytes(snapshot.memory.restartBytes)})
+            </p>
             {snapshot.hosts.length === 0 ? (
               <p className="text-sm text-ink-muted">
                 No host process is running. Open a session to start one.
@@ -185,6 +223,13 @@ export function DiagnosticsView() {
                       {host.pid !== null ? ` · pid ${host.pid}` : ""}
                       {host.officeHost ? " · office" : ""}
                     </span>
+                    {host.rssBytes !== null ? (
+                      <Badge
+                        tone={host.rssBytes > snapshot.memory.budgetBytes ? "warn" : "neutral"}
+                      >
+                        RSS {formatBytes(host.rssBytes)}
+                      </Badge>
+                    ) : null}
                   </div>
                   <span className="truncate text-xs text-ink-muted" title={host.cwd}>
                     {host.cwd}

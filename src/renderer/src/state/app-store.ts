@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import type { AppInfo, WebTabOpenInput } from "../../../shared/ipc";
+import type { BlobRef } from "../../../shared/host-protocol";
 import {
   DEFAULT_PREFS,
   toggleFavoriteModel,
@@ -228,6 +229,13 @@ export interface TrustPrompt {
   /** The tab whose `session.create` was refused, when one exists. */
   tabId: string | null;
   status: ProjectTrustStatus;
+}
+
+export interface BlobState {
+  status: "loading" | "ready" | "error";
+  /** The raw spilled JSON, present once `ready`. */
+  contents?: string;
+  error?: string;
 }
 
 export interface AppStateShape {
@@ -508,6 +516,14 @@ export interface AppStateShape {
   /** The app-wide diagnostics snapshot (plan step 22), null until first loaded. */
   diagnostics: DiagnosticsSnapshot | null;
   diagnosticsError: string | null;
+  /**
+   * Bodies of spilled large payloads, fetched on demand and cached by blob path
+   * (plan step 24). A 50 MB tool result never crosses the event frame; it is
+   * read only when its card is rendered open.
+   */
+  blobs: Record<string, BlobState>;
+  /** Fetches a spilled payload's body once and caches it. */
+  loadBlob: (tabId: string, ref: BlobRef) => Promise<void>;
   loadDiagnostics: () => Promise<void>;
   /** Whether the right-rail Documents panel is open. */
   documentsPanelOpen: boolean;
@@ -946,6 +962,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   officeDocumentsLoaded: false,
   diagnostics: null,
   diagnosticsError: null,
+  blobs: {},
   documentsPanelOpen: false,
   webTabStates: {},
   webNavigationPrompt: null,
@@ -2676,6 +2693,43 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       set({ diagnostics: await api.diagnostics.get(), diagnosticsError: null });
     } catch (error) {
       set({ diagnosticsError: errorMessage(error) });
+    }
+  },
+
+  loadBlob: async (tabId, ref) => {
+    const path = ref.$blob;
+    if (get().blobs[path]) return;
+    set((state) => ({ blobs: { ...state.blobs, [path]: { status: "loading" } } }));
+    const api = bridge();
+    if (!api?.sessions) {
+      set((state) => ({
+        blobs: {
+          ...state.blobs,
+          [path]: { status: "error", error: "Sessions are unavailable." },
+        },
+      }));
+      return;
+    }
+    try {
+      const result = (await api.sessions.request({
+        tabId,
+        method: "host.blobs.read",
+        params: { path },
+      })) as { contents?: unknown } | null;
+      const contents = typeof result?.contents === "string" ? result.contents : null;
+      set((state) => ({
+        blobs: {
+          ...state.blobs,
+          [path]:
+            contents === null
+              ? { status: "error", error: "The spilled result is no longer on disk." }
+              : { status: "ready", contents },
+        },
+      }));
+    } catch (error) {
+      set((state) => ({
+        blobs: { ...state.blobs, [path]: { status: "error", error: errorMessage(error) } },
+      }));
     }
   },
 

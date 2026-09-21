@@ -220,6 +220,41 @@ The trust boundaries are declared in code and asserted by tests, not by prose:
   extensions do?”** page that says so, next to the gates the app does provide
   (project trust, install consent, safe mode).
 
+## Performance and resource guardrails (step 24)
+
+`src/shared/performance.ts` is the single source of the numbers; main, the host
+and the renderer all read it, so a budget change is one edit.
+
+- **Startup budget.** `createStartupMetrics()` records process start,
+  `appReady`, the window's first `ready-to-show` and the first pre-warmed
+  session. Main marks each; Diagnostics shows the result against the plan's
+  targets (window interactive ≤ 2.5 s, warm session ready ≤ 5 s). The E2E `@perf`
+  suite asserts the window budget on every CI run; the warm mark stays `unknown`
+  when there is no tab to pre-warm, so the measurement never lies.
+- **Lazy start and pre-warm.** The tab table is restored without spawning any
+  host; only the most recently used tab is pre-warmed in the background, and
+  safe mode skips even that.
+- **Delta coalescing, measured.** `message_update` frames batch for 33 ms or
+  1 KB before one IPC push; `sessionService.coalesceStats()` reports batches,
+  deltas, flush reason and the largest batch, and a test pins that a 400-delta
+  storm becomes far fewer pushes.
+- **Transcript virtualization.** Above 50 items the transcript mounts only the
+  window of rows plus overscan; a 10k-item test asserts the DOM stays bounded
+  while the scroll height covers the whole session.
+- **Blob spilling + lazy fetch.** A host response over 1 MB becomes one
+  `{$blob}` reference; a large field inside an _event_ payload (a tool result) is
+  replaced in place so the card keeps its identity, and the renderer fetches the
+  body through `host.blobs.read` only when the card is opened.
+- **Per-host memory.** Every host answers `host.metrics` with its own RSS (no
+  OS-specific process query). The supervisor polls it, Diagnostics shows it
+  against the soft budget, and an idle host over the hard threshold is recycled
+  (with a cooldown, so a host whose RSS does not drop cannot loop). The session
+  service drops a handle that reports `stopped`, so the next activation spawns a
+  fresh one.
+- **Caps and backpressure.** The supervisor enforces the host cap (8) and the
+  session service the tab cap (8); both raise a coded, user-facing sentence
+  (`capacityMessage`), and Diagnostics shows used/limit.
+
 ## Tests
 
 - `tests/shared/diagnostics.test.ts` — classification order, severity/recovery/
@@ -228,6 +263,17 @@ The trust boundaries are declared in code and asserted by tests, not by prose:
   third-party collection, and the package-refusal message (plan step 22).
 - `tests/main/diagnostics-service.test.ts` — snapshot shape, incident merge, the
   bundle structure, credential redaction and the allowlisted environment.
+- `tests/shared/performance.test.ts` — budget classification, the startup report,
+  the memory threshold, capacity and formatting (plan step 24).
+- `tests/main/host-supervisor.test.ts` — `host.metrics` polling, the RSS restart
+  cooldown, idle recycling and the coded host-cap error (plan step 24).
+- `tests/main/session-service.test.ts` — coalescing measurements, capacity and
+  the stopped-host handle drop (plan step 24).
+- `tests/host/service.test.ts` — in-place event spilling and `host.metrics`.
+- `tests/renderer/transcript.test.tsx` — 10k virtualization and the lazy blob
+  fetch.
+- `tests/e2e/performance.spec.ts` — the startup budget on the real built app
+  (`npm run e2e:perf`).
 - `tests/main/security.test.ts` — the CSP is strict in production and a superset
   in dev; the window/web-tab preferences keep the sandbox and drop the preload;
   the external-URL policy allows only http(s)/mailto (plan step 23).

@@ -70,6 +70,9 @@ jobs:
       - name: Shell smoke (Playwright + Electron)
         run: npm run e2e:smoke
 
+      - name: Startup budget (Playwright + Electron, plan step 24)
+        run: npm run e2e:perf
+
       - name: Upload traces on failure
         if: failure()
         uses: actions/upload-artifact@v4

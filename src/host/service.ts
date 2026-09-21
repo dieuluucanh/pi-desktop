@@ -16,6 +16,7 @@ import {
   type HostRole,
 } from "../shared/host-protocol";
 import { isPathInside } from "./path-guard";
+import type { HostMemoryMetrics } from "../shared/performance";
 
 /**
  * Host-side protocol service (plan step 4).
@@ -63,6 +64,11 @@ export interface HostServiceOptions {
   readBlob?: (path: string) => Promise<string | null>;
   /** Called after `host.shutdown` has been answered. */
   onShutdown?: () => void;
+  /**
+   * Samples this process's memory for `host.metrics` (plan step 24). Injectable
+   * so tests assert on a fixed sample instead of the test runner's own RSS.
+   */
+  readMemory?: () => HostMemoryMetrics;
   maxFrameBytes?: number;
 }
 
@@ -136,21 +142,57 @@ export function createHostService(options: HostServiceOptions): HostService {
     stdout.write(encodeFrame(frame));
   };
 
+  /**
+   * Emits an event, spilling any oversized field. Events are serialized through
+   * a promise chain so a spill (or a large payload) can never reorder them
+   * relative to one another (plan step 24).
+   */
+  let emitChain: Promise<void> = Promise.resolve();
   const emit = (event: string, payload?: unknown, sessionId?: string): void => {
-    send(sessionId ? { event, sessionId, payload } : { event, payload });
+    emitChain = emitChain
+      .then(async () => {
+        const spilled = await spillEvent(payload);
+        send(sessionId ? { event, sessionId, payload: spilled } : { event, payload: spilled });
+      })
+      .catch(() => undefined);
   };
 
   const respond = (id: number, result: unknown): void => send({ id, ok: true, result });
   const fail = (id: number, error: unknown): void =>
     send({ id, ok: false, error: toErrorBody(error) });
 
-  /** Replaces an oversized result with a blob reference. */
-  const spill = async (value: unknown): Promise<unknown> => {
-    if (!exceedsThreshold(value)) return value;
+  const writeBlobRef = async (value: unknown): Promise<BlobRef> => {
     const serialized = JSON.stringify(value) ?? "null";
     const path = await writeBlob(`${randomUUID()}.json`, serialized);
-    const reference: BlobRef = { $blob: path, bytes: Buffer.byteLength(serialized, "utf8") };
-    return reference;
+    return { $blob: path, bytes: Buffer.byteLength(serialized, "utf8") };
+  };
+
+  /** Replaces an oversized *response* with a single blob reference. */
+  const spillResponse = async (value: unknown): Promise<unknown> => {
+    return exceedsThreshold(value) ? writeBlobRef(value) : value;
+  };
+
+  /**
+   * Spills an oversized *event payload* in place: a large nested field (a tool
+   * result, a message body) is replaced by a BlobRef while the event keeps its
+   * identity (`toolName`, `toolCallId`, …), so the renderer can still render the
+   * card and fetch the body lazily via `host.blobs.read` (plan step 24).
+   */
+  const spillEvent = async (payload: unknown): Promise<unknown> => {
+    if (!exceedsThreshold(payload)) return payload;
+    if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+      const record = payload as Record<string, unknown>;
+      const next: Record<string, unknown> = { ...record };
+      let replaced = false;
+      for (const key of Object.keys(record)) {
+        if (exceedsThreshold(record[key])) {
+          next[key] = await writeBlobRef(record[key]);
+          replaced = true;
+        }
+      }
+      if (replaced) return next;
+    }
+    return writeBlobRef(payload);
   };
 
   const contextFor = (request: HostRequestFrame, method: HostMethod): HostRequestContext => ({
@@ -161,6 +203,24 @@ export function createHostService(options: HostServiceOptions): HostService {
   });
 
   handlers["host.ping"] = () => ({ pong: true, at: Date.now() });
+
+  const readMemory =
+    options.readMemory ??
+    ((): HostMemoryMetrics => {
+      const usage = process.memoryUsage();
+      return {
+        rssBytes: usage.rss,
+        heapUsedBytes: usage.heapUsed,
+        heapTotalBytes: usage.heapTotal,
+        uptimeMs: Math.round(process.uptime() * 1_000),
+        at: Date.now(),
+      };
+    });
+
+  // The host is the only process that can read its own RSS without an
+  // OS-specific query; the supervisor polls this for Diagnostics and the RSS
+  // restart threshold (plan step 24).
+  handlers["host.metrics"] = () => readMemory();
 
   handlers["host.hello"] = () => ({
     protocolVersion: HOST_PROTOCOL_VERSION,
@@ -212,7 +272,7 @@ export function createHostService(options: HostServiceOptions): HostService {
       const result = await handler(request.params, contextFor(request, method));
       // `host.blobs.read` is the escape hatch for oversized payloads, so its own
       // answer must never be spilled again.
-      respond(id, method === "host.blobs.read" ? result : await spill(result));
+      respond(id, method === "host.blobs.read" ? result : await spillResponse(result));
     } catch (error) {
       fail(id, error);
     }

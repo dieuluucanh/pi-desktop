@@ -92,6 +92,17 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 | Telemetry off by default, opt-in screen                                  | default on (`enableInstallTelemetry`) | ✅ step 23 (`PI_TELEMETRY=0` unless opted in; the shared `settings.json` is never rewritten)                                            |
 | “What extensions can do” trust page                                      | n/a                                   | ✅ step 23 (Extensions hub → What can extensions do?)                                                                                   |
 
+## Performance and resources
+
+| Capability                                      | Terminal Pi     | Pi Desktop                                                                                                                        |
+| ----------------------------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Startup to an interactive window (≤ 2.5 s)      | n/a             | ✅ step 24 (`createStartupMetrics`; Diagnostics shows it; `npm run e2e:perf` asserts it on CI)                                    |
+| Warm session ready (≤ 5 s)                      | n/a             | ✅ step 24 (only the last-used tab is pre-warmed; the mark stays `unknown` when there is nothing to warm)                         |
+| Streaming stays smooth (delta coalescing)       | ✅ (in-process) | ✅ step 24 (33 ms / 1 KB batches; `coalesceStats()` measured)                                                                     |
+| Very long sessions stay responsive              | ✅ (TUI)        | ✅ step 5/24 (transcript virtualizes above 50 items; a 10k-item test bounds the DOM)                                              |
+| Huge tool results do not block the UI           | ✅ (TUI)        | ✅ step 24 (a response over 1 MB spills to a blob; a tool result is spilled in place and fetched only when its card is opened)    |
+| Many parallel sessions without unbounded memory | ✅ (terminals)  | ✅ step 3/24 (host cap 8, idle recycling, per-host RSS in Diagnostics, RSS restart threshold with cooldown, backpressure message) |
+
 ## Platform
 
 | Capability                                           | Terminal Pi               | Pi Desktop                                                |

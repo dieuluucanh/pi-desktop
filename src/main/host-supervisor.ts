@@ -20,6 +20,16 @@ import {
 } from "../shared/host-protocol";
 import { createNodeFsPort, type FsPort } from "./fs-port";
 import { SESSION_ID_ENV, SERVICE_ENV, SERVICE_FLAG } from "../host/index";
+import {
+  HOST_RSS_RESTART_BYTES,
+  IDLE_HOST_TIMEOUT_MS,
+  MAX_HOSTS,
+  capacity,
+  capacityMessage,
+  shouldRestartForMemory,
+  type Capacity,
+  type HostMemoryMetrics,
+} from "../shared/performance";
 
 /**
  * Supervises Pi host processes (plan step 4): one per session tab, spawned with
@@ -97,6 +107,12 @@ export interface HostHandle {
   status(): HostStatus;
   /** The host's identity once the handshake completed, else null (plan step 22). */
   info(): HostInfo | null;
+  /**
+   * The host's last self-reported memory sample, or null before the first poll
+   * (plan step 24). The host reads its own RSS so no OS-specific process query
+   * is needed.
+   */
+  metrics(): HostMemoryMetrics | null;
   /** The tail of the host's own log, oldest first — the Diagnostics view reads it. */
   logs(): string[];
   request(method: HostMethod, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
@@ -140,6 +156,18 @@ export interface HostSupervisorOptions {
   idleTimeoutMs?: number;
   maxRestarts?: number;
   /**
+   * Recycle an idle host whose RSS reaches this (plan step 24). Defaults to
+   * `HOST_RSS_RESTART_BYTES`; `0` disables the threshold.
+   */
+  maxRssBytes?: number;
+  /** How often to poll `host.metrics`; `0` disables polling (tests). */
+  memoryPollMs?: number;
+  /**
+   * Minimum time between memory-triggered restarts of the same host, so a host
+   * whose RSS does not drop cannot restart in a loop (plan step 24).
+   */
+  memoryRestartCooldownMs?: number;
+  /**
    * Safe mode (plan step 22): passed to every child as `PI_DESKTOP_SAFE_MODE` so
    * the host loads no third-party resources and refuses package changes.
    */
@@ -161,13 +189,17 @@ export interface HostSupervisor {
   stopAll(): Promise<void>;
   /** Ports currently owned by hosts. */
   allocatedPorts(): number[];
+  /** Used/limit of the running host cap, for the UI's backpressure message. */
+  capacity(): Capacity;
 }
 
 export const OFFICE_BRIDGE_PORT = 38617;
 export const FIRST_GENERAL_PORT = 38618;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-export const DEFAULT_MAX_HOSTS = 8;
-export const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60_000;
+export const DEFAULT_MAX_HOSTS = MAX_HOSTS;
+export const DEFAULT_IDLE_TIMEOUT_MS = IDLE_HOST_TIMEOUT_MS;
+export const DEFAULT_METRICS_POLL_MS = 15_000;
+export const DEFAULT_MEMORY_RESTART_COOLDOWN_MS = 5 * 60_000;
 export const RESTART_BACKOFF_MS = [0, 500, 2_000] as const;
 
 interface Pending {
@@ -181,6 +213,21 @@ interface Pending {
 export class HostTimeoutError extends Error {
   constructor(method: string, timeoutMs: number) {
     super(`host request "${method}" timed out after ${timeoutMs} ms`);
+  }
+}
+
+/**
+ * The host cap was hit. Carries a stable `code` so IPC can map it to the
+ * backpressure sentence instead of matching prose (plan step 24).
+ */
+export class HostLimitError extends Error {
+  readonly code = "host_limit";
+
+  constructor(limit: number) {
+    super(
+      `host limit reached (${limit}); close a session tab first. ${capacityMessage("hosts", limit)}`,
+    );
+    this.name = "HostLimitError";
   }
 }
 
@@ -219,6 +266,11 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     private restarts = 0;
     private restartTimer: ReturnType<typeof setTimeout> | null = null;
     private idleTimer: ReturnType<typeof setTimeout> | null = null;
+    private memoryTimer: ReturnType<typeof setInterval> | null = null;
+    private memoryInFlight = false;
+    private lastMemory: HostMemoryMetrics | null = null;
+    private memoryRestartBlockedUntil = 0;
+    private lastActivityAt: number;
     private intentionalStop = false;
     private logBuffer: string[] = [];
     private lastInfo: HostInfo | null = null;
@@ -226,11 +278,16 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     private readyReject: ((error: Error) => void) | null = null;
     private readonly readyPromise: Promise<HostInfo>;
 
-    constructor(spec: HostSpawnSpec, port: number) {
+    constructor(
+      spec: HostSpawnSpec,
+      port: number,
+      private readonly onIdle?: () => void,
+    ) {
       this.spec = spec;
       this.sessionId = spec.sessionId;
       this.port = port;
       this.officeHost = spec.officeHost ?? false;
+      this.lastActivityAt = now();
       this.readyPromise = new Promise<HostInfo>((resolve, reject) => {
         this.readyResolve = resolve;
         this.readyReject = reject;
@@ -247,6 +304,15 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
 
     info(): HostInfo | null {
       return this.lastInfo;
+    }
+
+    metrics(): HostMemoryMetrics | null {
+      return this.lastMemory;
+    }
+
+    /** Any real traffic postpones idle recycling (plan step 24). */
+    private touch(): void {
+      this.lastActivityAt = now();
     }
 
     logs(): string[] {
@@ -285,6 +351,8 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
             continue;
           }
           if (isEventFrame(frame)) {
+            // An event means the session is doing work: never recycle it mid-flow.
+            this.touch();
             const event: HostEvent = {
               event: frame.event,
               ...(frame.sessionId ? { sessionId: frame.sessionId } : {}),
@@ -311,6 +379,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     }
 
     private spawnChild(): void {
+      this.stopMetricsPolling();
       const telemetry =
         typeof options.telemetryEnabled === "function"
           ? options.telemetryEnabled()
@@ -460,6 +529,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       this.emitter.emit("status", "ready");
       this.readyResolve?.(info);
       this.scheduleIdleCheck();
+      this.startMetricsPolling();
       return info;
     }
 
@@ -469,17 +539,70 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
 
     private scheduleIdleCheck(): void {
       const idleTimeoutMs = options.idleTimeoutMs;
-      if (!idleTimeoutMs || this.officeHost) return;
+      if (!idleTimeoutMs || idleTimeoutMs <= 0 || this.officeHost) return;
       if (this.idleTimer) clearTimeout(this.idleTimer);
       this.idleTimer = setTimeout(() => {
-        const listeners = this.emitter.listenerCount("event");
-        if (listeners === 0) {
-          this.appendLog("info", `recycling idle host after ${idleTimeoutMs} ms`);
-          void this.shutdown();
+        const since = now() - this.lastActivityAt;
+        // Recycle only when nothing is in flight and the host has had no real
+        // traffic for the whole window. The session service sees the `stopped`
+        // status, drops its stale handle and re-spawns on the next activation.
+        if (this.pending.size === 0 && since >= idleTimeoutMs) {
+          this.appendLog("info", `recycling idle host after ${Math.round(since / 1000)} s`);
+          this.onIdle?.();
+          return;
         }
+        this.scheduleIdleCheck();
       }, idleTimeoutMs);
       if (typeof this.idleTimer === "object" && this.idleTimer && "unref" in this.idleTimer)
         this.idleTimer.unref();
+    }
+
+    /** Polls `host.metrics` for the Diagnostics RSS readout and the restart cap. */
+    private startMetricsPolling(): void {
+      const intervalMs = options.memoryPollMs ?? DEFAULT_METRICS_POLL_MS;
+      if (!intervalMs || intervalMs <= 0) return;
+      if (this.memoryTimer) clearInterval(this.memoryTimer);
+      void this.pollMetrics();
+      this.memoryTimer = setInterval(() => void this.pollMetrics(), intervalMs);
+      if (typeof this.memoryTimer === "object" && this.memoryTimer && "unref" in this.memoryTimer)
+        this.memoryTimer.unref();
+    }
+
+    private stopMetricsPolling(): void {
+      if (this.memoryTimer) clearInterval(this.memoryTimer);
+      this.memoryTimer = null;
+      this.memoryInFlight = false;
+    }
+
+    private async pollMetrics(): Promise<void> {
+      if (this.memoryInFlight || this.state !== "ready" || !this.child) return;
+      this.memoryInFlight = true;
+      try {
+        const sample = (await this.request("host.metrics", {}, { timeoutMs: 5_000 })) as
+          HostMemoryMetrics | undefined;
+        if (!sample || typeof sample.rssBytes !== "number" || !Number.isFinite(sample.rssBytes)) {
+          return;
+        }
+        this.lastMemory = sample;
+        const threshold = options.maxRssBytes ?? HOST_RSS_RESTART_BYTES;
+        // `pending` is empty here (the metrics response was just consumed), so a
+        // host with an in-flight user request is never restarted under the user.
+        if (threshold > 0 && shouldRestartForMemory(sample, threshold) && this.pending.size === 0) {
+          if (now() < this.memoryRestartBlockedUntil) return;
+          const cooldown = options.memoryRestartCooldownMs ?? DEFAULT_MEMORY_RESTART_COOLDOWN_MS;
+          this.memoryRestartBlockedUntil = now() + cooldown;
+          const mb = (bytes: number): number => Math.round(bytes / (1024 * 1024));
+          this.appendLog(
+            "info",
+            `recycling host: RSS ${mb(sample.rssBytes)} MB is over the ${mb(threshold)} MB threshold`,
+          );
+          void this.restart("memory");
+        }
+      } catch {
+        // A metrics poll is best effort; a failure is not a host failure.
+      } finally {
+        this.memoryInFlight = false;
+      }
     }
 
     async start(): Promise<HostInfo> {
@@ -497,6 +620,9 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       const id = this.nextId++;
       const timeoutMs = requestOptions.timeoutMs ?? requestTimeoutMs;
       const frame: HostRequestFrame = { id, method, ...(params === undefined ? {} : { params }) };
+      // A metrics poll must not count as activity, or an idle host would never
+      // be recycled (plan step 24).
+      if (method !== "host.metrics") this.touch();
 
       return new Promise<unknown>((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -542,13 +668,20 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     }
   }
 
+  const stopHost = async (sessionId: string): Promise<void> => {
+    const host = hosts.get(sessionId);
+    if (!host) return;
+    await host.shutdown();
+    hosts.delete(sessionId);
+    ports.delete(host.port);
+    host.disposeHere();
+  };
+
   return {
     async start(spec: HostSpawnSpec): Promise<HostHandle> {
-      if (hosts.size >= maxHosts) {
-        throw new Error(`host limit reached (${maxHosts}); close a session tab first`);
-      }
+      if (hosts.size >= maxHosts) throw new HostLimitError(maxHosts);
       const port = allocatePort(spec.officeHost ?? false);
-      const host = new SupervisorHost(spec, port);
+      const host = new SupervisorHost(spec, port, () => void stopHost(spec.sessionId));
       hosts.set(spec.sessionId, host);
       try {
         await host.start();
@@ -562,16 +695,10 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     get: (sessionId) => hosts.get(sessionId),
     list: () => [...hosts.values()],
     allocatedPorts: () => [...ports],
-    async stop(sessionId) {
-      const host = hosts.get(sessionId);
-      if (!host) return;
-      await host.shutdown();
-      hosts.delete(sessionId);
-      ports.delete(host.port);
-      host.disposeHere();
-    },
+    capacity: () => capacity(hosts.size, maxHosts),
+    stop: stopHost,
     async stopAll() {
-      await Promise.all([...hosts.keys()].map((sessionId) => this.stop(sessionId)));
+      await Promise.all([...hosts.keys()].map((sessionId) => stopHost(sessionId)));
     },
   };
 }

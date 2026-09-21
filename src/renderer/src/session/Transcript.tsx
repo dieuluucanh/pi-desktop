@@ -10,13 +10,15 @@ import { OfficeToolCard } from "./OfficeToolCard";
 import { isOfficeTool, officeToolSummary } from "./office-tool-card";
 import { useMarkdownTransform } from "./useMarkdownTransform";
 import { useAppStore } from "../state/app-store";
+import { isBlobRef } from "../../../shared/host-protocol";
 import type { OfficeDocumentPane } from "../../../shared/office-documents";
-import type {
-  TranscriptBlock,
-  TranscriptItem,
-  TranscriptMessage,
-  TranscriptNotice,
-  TranscriptToolRun,
+import {
+  textOfPartial,
+  type TranscriptBlock,
+  type TranscriptItem,
+  type TranscriptMessage,
+  type TranscriptNotice,
+  type TranscriptToolRun,
 } from "./session-events";
 
 /**
@@ -135,7 +137,33 @@ export function ToolCard({
   };
   const officePanes = useAppStore((state) => state.officeDocuments?.panes ?? EMPTY_PANES);
   const diff = diffPropsFor(tool);
-  const output = tool.resultText ?? tool.partial ?? "";
+
+  // A large tool result arrives as a BlobRef *in place* (host plan step 24): the
+  // card keeps its identity and fetches the body only when it is opened.
+  const spilledRef = isBlobRef(tool.result)
+    ? tool.result
+    : isBlobRef(tool.partialResult)
+      ? tool.partialResult
+      : null;
+  const blobPath = spilledRef?.$blob ?? null;
+  const blob = useAppStore((state) => (blobPath ? state.blobs[blobPath] : undefined));
+  const loadBlob = useAppStore((state) => state.loadBlob);
+  useEffect(() => {
+    if (!open || !blobPath || !tabId || !spilledRef) return;
+    void loadBlob(tabId, spilledRef);
+  }, [open, blobPath, tabId, loadBlob, spilledRef]);
+  const spilledText = ((): string | null => {
+    if (!spilledRef || !blob || blob.status !== "ready") return null;
+    try {
+      return textOfPartial(JSON.parse(blob.contents ?? ""));
+    } catch {
+      return blob.contents ?? "";
+    }
+  })();
+  const loadingSpilled = spilledRef !== null && (blob?.status === "loading" || !blob);
+  const output = spilledRef
+    ? (spilledText ?? (blob?.status === "error" ? `[unavailable: ${blob.error}]` : ""))
+    : (tool.resultText ?? tool.partial ?? "");
   const summary = officeToolSummary(tool, officePanes) ?? toolSummary(tool);
 
   // What a tool without an extension renderer shows: the app's native diff or
@@ -143,12 +171,18 @@ export function ToolCard({
   const nativeBody = (
     <>
       {diff ? <DiffView {...diff} /> : null}
-      {output ? (
+      {loadingSpilled ? (
+        <p className="mt-2 text-xs text-ink-faint" data-testid="tool-result-loading">
+          Loading large result…
+        </p>
+      ) : output ? (
         <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap font-mono text-xs text-ink-muted">
           {output}
         </pre>
       ) : null}
-      {!diff && !output ? <p className="text-xs text-ink-faint">No output captured yet.</p> : null}
+      {!diff && !output && !loadingSpilled ? (
+        <p className="text-xs text-ink-faint">No output captured yet.</p>
+      ) : null}
     </>
   );
   // Office tools get the app's target/capability card (plan step 20); a tool

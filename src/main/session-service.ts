@@ -9,6 +9,16 @@ import {
   type IncidentKind,
 } from "../shared/diagnostics";
 import type { TrustAnswer } from "../shared/projects";
+import {
+  COALESCE_BYTES,
+  COALESCE_MS,
+  MAX_HOSTS,
+  MAX_TABS,
+  capacity,
+  capacityMessage,
+  type Capacity,
+  type HostMemoryMetrics,
+} from "../shared/performance";
 import { sanitizeWebUrl, webTabTitle } from "../shared/web-tabs";
 import {
   CONTROL_TAB_ID,
@@ -39,9 +49,29 @@ import {
 
 /** Host id of the single control host. */
 export const CONTROL_HOST_ID = CONTROL_TAB_ID;
-export const DEFAULT_COALESCE_MS = 33;
-export const DEFAULT_COALESCE_BYTES = 1024;
-export const DEFAULT_MAX_TABS = 8;
+export const DEFAULT_COALESCE_MS = COALESCE_MS;
+export const DEFAULT_COALESCE_BYTES = COALESCE_BYTES;
+export const DEFAULT_MAX_TABS = MAX_TABS;
+
+/**
+ * Measured shape of delta batching (plan step 24): how many renderer pushes a
+ * burst of streaming deltas actually produced, and why each batch flushed. The
+ * Diagnostics view and the perf tests read it instead of inferring from logs.
+ */
+export interface CoalesceStats {
+  /** Batches pushed to the renderer. */
+  batches: number;
+  /** Frame entries carried by those batches. */
+  events: number;
+  /** `message_update` entries among them (the storm the window exists for). */
+  deltas: number;
+  /** Batches flushed because the byte budget was hit. */
+  bytesFlushes: number;
+  /** Batches flushed by the window timer (the common case). */
+  timerFlushes: number;
+  /** The largest serialized batch observed. */
+  maxBatchBytes: number;
+}
 
 /** The host identity a supervisor reports after its handshake (structural). */
 export interface HostInfoLike {
@@ -62,6 +92,8 @@ export interface SupervisorHostLike {
   rememberSessionFile?(sessionFile: string): void;
   /** Host identity once ready (plan step 22). Optional for test doubles. */
   info?(): HostInfoLike | null;
+  /** Last self-reported RSS sample (plan step 24). Optional for test doubles. */
+  metrics?(): HostMemoryMetrics | null;
   /** The tail of the host's own log (plan step 22). Optional for test doubles. */
   logs?(): string[];
   shutdown(): Promise<void>;
@@ -79,6 +111,8 @@ export interface SupervisorLike {
   list(): SupervisorHostLike[];
   stop(sessionId: string): Promise<void>;
   stopAll(): Promise<void>;
+  /** Used/limit of the host cap (plan step 24). Optional for test doubles. */
+  capacity?(): Capacity;
 }
 
 export interface SessionStoreLike {
@@ -134,10 +168,18 @@ export interface SessionService {
   incidents(): Incident[];
   /** Which host is behind each tab, plus its log tail (plan step 22 Diagnostics). */
   diagnosticsHosts(): DiagnosticsHostInfo[];
+  /** Used/limit of the running host and tab caps (plan step 24 backpressure). */
+  capacity(): { hosts: Capacity; tabs: Capacity };
+  /** Measured delta-batching figures (plan step 24). */
+  coalesceStats(): CoalesceStats;
   /** Bounded `extension_error` history across tabs (plan step 22 Diagnostics). */
   extensionErrors(): DiagnosticsExtensionError[];
-  /** Re-spawns the last active tab in the background (plan step 24 pre-warm). */
-  prewarmLast(): Promise<void>;
+  /**
+   * Re-spawns the last active tab in the background (plan step 24 pre-warm).
+   * Resolves to true only when a session host actually became ready, so the
+   * startup measurement is never recorded for a no-op pre-warm.
+   */
+  prewarmLast(): Promise<boolean>;
   flush(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -192,6 +234,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   const pending = new Map<string, SessionEventEntry[]>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   const sequences = new Map<string, number>();
+  const coalesceStats: CoalesceStats = {
+    batches: 0,
+    events: 0,
+    deltas: 0,
+    bytesFlushes: 0,
+    timerFlushes: 0,
+    maxBatchBytes: 0,
+  };
   /** Failures seen this run, newest first (plan step 22). */
   let incidents: Incident[] = [];
   /** Bounded `extension_error` history across every tab (plan step 22). */
@@ -239,7 +289,10 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     deps.emit("event", { tabId, seq, events: entries } satisfies SessionEventEnvelope);
   };
 
-  const flushPending = (tabId: string): void => {
+  const flushPending = (
+    tabId: string,
+    reason: "timer" | "bytes" | "immediate" = "immediate",
+  ): void => {
     const timer = timers.get(tabId);
     if (timer) {
       clearTimeout(timer);
@@ -247,7 +300,21 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     }
     const entries = pending.get(tabId);
     pending.delete(tabId);
-    if (entries && entries.length > 0) pushEntries(tabId, entries);
+    if (entries && entries.length > 0) {
+      // Measurement (plan step 24): one push can carry hundreds of deltas.
+      coalesceStats.batches += 1;
+      coalesceStats.events += entries.length;
+      for (const entry of entries) {
+        if (entry.event === "message_update") coalesceStats.deltas += 1;
+      }
+      coalesceStats.maxBatchBytes = Math.max(
+        coalesceStats.maxBatchBytes,
+        JSON.stringify(entries).length,
+      );
+      if (reason === "bytes") coalesceStats.bytesFlushes += 1;
+      else if (reason === "timer") coalesceStats.timerFlushes += 1;
+      pushEntries(tabId, entries);
+    }
   };
 
   /**
@@ -261,11 +328,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     pending.set(tabId, list);
     const bytes = JSON.stringify(list).length;
     if (bytes >= coalesceBytes) {
-      flushPending(tabId);
+      flushPending(tabId, "bytes");
       return;
     }
     if (!timers.has(tabId)) {
-      const timer = setTimeout(() => flushPending(tabId), coalesceMs);
+      const timer = setTimeout(() => flushPending(tabId, "timer"), coalesceMs);
       unrefTimer(timer);
       timers.set(tabId, timer);
     }
@@ -391,7 +458,15 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
               },
             );
           }
-        } else if (next === "stopped") setStatus(tab, "stopped");
+        } else if (next === "stopped") {
+          // A stopped host (idle recycle, plan step 24) must not stay in the
+          // handle map: `ensureHost` has to spawn a fresh one on re-activation
+          // instead of handing out a dead process.
+          for (const off of unsubscribes.get(tab.id) ?? []) off();
+          unsubscribes.delete(tab.id);
+          hosts.delete(tab.id);
+          setStatus(tab, "stopped");
+        }
       }),
       host.on("crashed", (payload) => {
         flushPending(tab.id);
@@ -487,6 +562,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       officeHost: tab?.kind === "office",
       pid: typeof pads?.pid === "number" ? pads.pid : null,
       startedAt: typeof info?.startedAt === "number" ? info.startedAt : null,
+      rssBytes: host.metrics?.()?.rssBytes ?? null,
       logLines: host.logs?.() ?? [],
     };
   };
@@ -510,6 +586,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     incidents: () => [...incidents],
     extensionErrors: () => [...extensionErrors],
+    capacity: () => ({
+      hosts: deps.supervisor.capacity?.() ?? capacity(hosts.size + (control ? 1 : 0), MAX_HOSTS),
+      tabs: capacity(tabs.size, maxTabs),
+    }),
+    coalesceStats: () => ({ ...coalesceStats }),
     diagnosticsHosts: () => {
       const rows: DiagnosticsHostInfo[] = [];
       if (control) rows.push(describeHost(CONTROL_HOST_ID, control));
@@ -528,6 +609,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           officeHost: tab.kind === "office",
           pid: null,
           startedAt: null,
+          rssBytes: null,
           logLines: [],
         });
       }
@@ -563,7 +645,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       }
       if (tabs.size >= maxTabs) {
         throw new SessionServiceError(
-          `session limit reached (${maxTabs}); close a tab first`,
+          `session limit reached (${maxTabs}); close a tab first. ${capacityMessage("tabs", maxTabs)}`,
           "too_many_tabs",
         );
       }
@@ -743,11 +825,13 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       const tab = [...tabs.values()]
         .filter((entry) => entry.kind !== "web")
         .sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
-      if (!tab) return;
+      if (!tab) return false;
       try {
         await ensureHost(tab);
+        return true;
       } catch {
         // Pre-warming is an optimization; failing it must not disturb startup.
+        return false;
       }
     },
 

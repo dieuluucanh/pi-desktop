@@ -354,6 +354,38 @@ describe("event batching", () => {
 
     host.emit("message_update", { delta: "x".repeat(1_200) });
     expect(eventsOf(pushes)).toHaveLength(1);
+    expect(service.coalesceStats()).toMatchObject({ bytesFlushes: 1, timerFlushes: 0 });
+  });
+
+  it("measures a delta storm: hundreds of deltas become a handful of pushes", async () => {
+    const { service, newest, pushes } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const host = newest();
+    pushes.length = 0;
+
+    // 400 small deltas across four windows: unbatched this would be 400 pushes.
+    for (let window = 0; window < 4; window += 1) {
+      for (let index = 0; index < 100; index += 1) {
+        host.emit("message_update", { delta: `${window}-${index}` });
+      }
+      vi.advanceTimersByTime(33);
+    }
+
+    const batches = eventsOf(pushes);
+    const delivered = batches.flatMap((batch) => batch.events);
+    // Every delta still arrives, in order, exactly once.
+    expect(delivered).toHaveLength(400);
+    expect(delivered[0]).toMatchObject({ event: "message_update" });
+
+    const stats = service.coalesceStats();
+    expect(stats.batches).toBe(batches.length);
+    expect(stats.deltas).toBe(400);
+    expect(stats.events).toBe(400);
+    // Every batch has a known reason, and batching cuts the push count sharply
+    // (the byte budget deliberately flushes a ~1 KB batch early for latency, so
+    // the exact count is not fixed).
+    expect(stats.timerFlushes + stats.bytesFlushes).toBe(stats.batches);
+    expect(stats.batches).toBeLessThan(stats.deltas / 4);
   });
 
   it("routes state snapshots to the state channel and tracks running status", async () => {
@@ -502,6 +534,37 @@ describe("reliability and recovery (plan step 22)", () => {
       logLines: ["log line for tab-1"],
     });
   });
+
+  it("reports used/limit for hosts and tabs (plan step 24 backpressure)", async () => {
+    const { service } = createHarness({ maxTabs: 2 });
+    await service.controlHost();
+    await service.createTab({ cwd: "C:\\work\\app" });
+
+    const caps = service.capacity();
+    expect(caps.tabs).toEqual({ used: 1, limit: 2, atCapacity: false });
+    // The control host plus the one session host.
+    expect(caps.hosts.used).toBe(2);
+    expect(caps.hosts.limit).toBe(8);
+  });
+
+  it("drops a host handle that reports stopped, so the next activation re-spawns", async () => {
+    const { service, hosts, specs } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const host = hosts.get("tab-1");
+    if (!host) throw new Error("no host");
+
+    // What an idle recycle looks like through the supervisor's status event.
+    host.setStatus("stopped");
+    host.emitLifecycle("status", "stopped");
+    await Promise.resolve();
+
+    expect(service.tabs()[0]!.status).toBe("stopped");
+
+    // The service dropped its handle, so activation spawns a fresh process
+    // instead of handing out the dead one.
+    await service.activateTab("tab-1");
+    expect(specs.filter((spec) => spec.sessionId === "tab-1")).toHaveLength(2);
+  });
 });
 
 describe("persistence and restore", () => {
@@ -563,8 +626,16 @@ describe("persistence and restore", () => {
       },
     ];
     await service.restoreTabs();
-    await service.prewarmLast();
+    const warmed = await service.prewarmLast();
+    expect(warmed).toBe(true);
     expect(specs.map((spec) => spec.sessionId)).toEqual(["tab-2"]);
+  });
+
+  it("reports false from a pre-warm when there is nothing to warm", async () => {
+    const { service, specs } = createHarness();
+    await service.restoreTabs();
+    await expect(service.prewarmLast()).resolves.toBe(false);
+    expect(specs).toEqual([]);
   });
 });
 
@@ -747,7 +818,8 @@ describe("web tabs (plan step 21)", () => {
     await service.closeTab("tab-2");
     expect(hosts.has("tab-1")).toBe(true);
 
-    await service.prewarmLast();
+    const warmed = await service.prewarmLast();
+    expect(warmed).toBe(true);
     // The web tab was most recently active but is not pre-warmed; tab-1 is.
     expect(hosts.has("tab-1")).toBe(true);
   });

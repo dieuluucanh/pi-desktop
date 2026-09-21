@@ -48,6 +48,7 @@ import { createDiagnosticsService } from "./diagnostics-service";
 import { officeEvidenceLine } from "../shared/office-setup";
 import { appPaths, isSafeMode, resolveAppRoots, type AppPaths, type AppRoots } from "./paths";
 import { isOfflineEnv, classifyFailure } from "../shared/diagnostics";
+import { createStartupMetrics } from "../shared/performance";
 import type { DiagnosticsSaveResult } from "../shared/ipc";
 import { resolveAppRuntime, type RuntimeResolution } from "./runtime";
 import { rendererWindowOptions, sanitizeExternalUrl } from "./security";
@@ -63,6 +64,13 @@ import { rendererWindowOptions, sanitizeExternalUrl } from "./security";
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
 const safeMode = isSafeMode();
+
+/**
+ * The startup budget (plan step 24), measured from module load to the window's
+ * first paint and the first pre-warmed session. The Diagnostics view shows it;
+ * the E2E perf test asserts it.
+ */
+const startup = createStartupMetrics();
 
 /**
  * Pi's install telemetry (plan step 23). Off until the user opts in on the
@@ -344,7 +352,10 @@ function createWindow(): BrowserWindow {
   // cannot quietly drop `sandbox` or add `nodeIntegration`.
   const window = new BrowserWindow(rendererWindowOptions(join(currentDir, "../preload/index.cjs")));
 
-  window.once("ready-to-show", () => window.show());
+  window.once("ready-to-show", () => {
+    startup.markWindowInteractive();
+    window.show();
+  });
 
   const forwardState = (): void => {
     if (!window.isDestroyed()) window.webContents.send(IPC.windowState, windowStateOf(window));
@@ -437,6 +448,7 @@ const diagnostics = createDiagnosticsService({
         hosts: () => sessions.diagnosticsHosts(),
         incidents: () => sessions.incidents(),
         extensionErrors: () => sessions.extensionErrors(),
+        capacity: () => sessions.capacity(),
       }
     : null,
   office: () => {
@@ -451,6 +463,7 @@ const diagnostics = createDiagnosticsService({
     };
   },
   officeBundle: async () => officeSetup.diagnostics(),
+  startup: () => startup.report(),
   env: process.env,
 });
 
@@ -496,6 +509,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    startup.markAppReady();
     // Load the persisted preferences once before any host can spawn, so the
     // telemetry flag is correct for the first session (plan step 23).
     telemetryEnabled = (await appState.read()).prefs.telemetryEnabled;
@@ -647,8 +661,13 @@ if (!app.requestSingleInstanceLock()) {
     // Restore the tab table without spawning anything, then warm the most
     // recently used tab in the background (plan step 24 pre-warm). Safe mode
     // starts lazily: no session host runs until the user opens a tab.
-    void sessions?.restoreTabs().then(() => {
-      if (!safeMode) return sessions?.prewarmLast();
+    void sessions?.restoreTabs().then(async () => {
+      if (safeMode) return undefined;
+      // Pre-warm the most recently used tab and record how long a warm session
+      // takes to be ready (plan step 24). Only a session that actually became
+      // ready is recorded, so an empty install keeps the mark honest.
+      const warmed = await sessions?.prewarmLast();
+      if (warmed) startup.markSessionReady(undefined, true);
       return undefined;
     });
 

@@ -15,6 +15,15 @@ import {
   type IncidentKind,
 } from "../shared/diagnostics";
 import { redactSecrets } from "./office/troubleshoot";
+import {
+  HOST_RSS_BUDGET_BYTES,
+  HOST_RSS_RESTART_BYTES,
+  MAX_HOSTS,
+  MAX_TABS,
+  capacity,
+  type Capacity,
+  type StartupReport,
+} from "../shared/performance";
 
 /**
  * The app-wide diagnostics service (plan step 22).
@@ -33,6 +42,8 @@ export interface DiagnosticsSessionProvider {
   hosts(): DiagnosticsHostInfo[];
   incidents(): Incident[];
   extensionErrors(): DiagnosticsExtensionError[];
+  /** Used/limit of the running caps (plan step 24). Optional for test doubles. */
+  capacity?(): { hosts: Capacity; tabs: Capacity };
 }
 
 export interface DiagnosticsServiceDeps {
@@ -42,6 +53,8 @@ export interface DiagnosticsServiceDeps {
   office: () => DiagnosticsOfficeInfo;
   /** The Office wizard's own (already redacted) bundle text. */
   officeBundle: () => Promise<string>;
+  /** The startup-budget measurements so far (plan step 24). */
+  startup: () => StartupReport;
   /** The environment to sample; only `DIAGNOSTIC_ENV_KEYS` are ever read. */
   env?: Record<string, string | undefined>;
   now?: () => number;
@@ -225,12 +238,18 @@ export function createDiagnosticsService(deps: DiagnosticsServiceDeps): Diagnost
         appStateFile: info.appStateFile,
       },
       hosts: deps.sessions?.hosts() ?? [],
+      capacity: deps.sessions?.capacity?.() ?? {
+        hosts: capacity(0, MAX_HOSTS),
+        tabs: capacity(0, MAX_TABS),
+      },
+      memory: { budgetBytes: HOST_RSS_BUDGET_BYTES, restartBytes: HOST_RSS_RESTART_BYTES },
       incidents: [...mainIncidents, ...sessionIncidents]
         .sort((left, right) => right.at - left.at)
         .slice(0, DEFAULT_INCIDENT_LIMIT),
       extensionErrors: deps.sessions?.extensionErrors() ?? [],
       office: deps.office(),
       environment: collectDiagnosticEnvironment(env),
+      startup: deps.startup(),
     };
   };
 

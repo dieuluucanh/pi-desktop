@@ -115,6 +115,11 @@ function harness(
     npmCliPath?: string;
     safeMode?: boolean;
     telemetryEnabled?: boolean | (() => boolean);
+    /** Enable `host.metrics` polling; disabled by default so request order is stable. */
+    memoryPollMs?: number;
+    maxRssBytes?: number;
+    memoryRestartCooldownMs?: number;
+    idleTimeoutMs?: number;
   } = {},
 ) {
   const spawned: FakeHost[] = [];
@@ -144,7 +149,12 @@ function harness(
     fs,
     requestTimeoutMs: 1_000,
     maxHosts: options.maxHosts ?? 8,
-    idleTimeoutMs: 0,
+    idleTimeoutMs: options.idleTimeoutMs ?? 0,
+    memoryPollMs: options.memoryPollMs ?? 0,
+    ...(options.maxRssBytes ? { maxRssBytes: options.maxRssBytes } : {}),
+    ...(options.memoryRestartCooldownMs !== undefined
+      ? { memoryRestartCooldownMs: options.memoryRestartCooldownMs }
+      : {}),
     safeMode: options.safeMode ?? false,
     telemetryEnabled: options.telemetryEnabled ?? false,
   });
@@ -431,5 +441,98 @@ describe("host supervisor reliability (plan step 22)", () => {
     enabled = true;
     await supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
     expect(spawnCalls[1]?.env.PI_TELEMETRY).toBe("1");
+  });
+});
+
+describe("host supervisor resource guardrails (plan step 24)", () => {
+  const metricsAnswer = (rss: number) => (request: HostRequestFrame) =>
+    request.method === "host.metrics"
+      ? {
+          rssBytes: rss,
+          heapUsedBytes: 1,
+          heapTotalBytes: 2,
+          uptimeMs: 3,
+          at: 4,
+        }
+      : undefined;
+
+  it("reports used/limit of the host cap", async () => {
+    const { supervisor } = harness({ maxHosts: 2 });
+    expect(supervisor.capacity()).toEqual({ used: 0, limit: 2, atCapacity: false });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(supervisor.capacity()).toEqual({ used: 1, limit: 2, atCapacity: false });
+    await supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
+    expect(supervisor.capacity().atCapacity).toBe(true);
+  });
+
+  it("surfaces the host cap as a coded error, not a prose-only failure", async () => {
+    const { supervisor } = harness({ maxHosts: 1 });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    await expect(
+      supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") }),
+    ).rejects.toMatchObject({ code: "host_limit" });
+  });
+
+  it("polls host.metrics and exposes the last RSS sample", async () => {
+    const { supervisor } = harness({
+      memoryPollMs: 5,
+      behaviours: [{ answer: metricsAnswer(123_456_789) }],
+    });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    await vi.waitFor(() => {
+      expect(host.metrics()?.rssBytes).toBe(123_456_789);
+    });
+    // The poll is not user activity, so the host is still considered idle.
+    expect(host.status()).toBe("ready");
+  });
+
+  it("recycles a host that is over the RSS restart threshold", async () => {
+    const { supervisor, spawned } = harness({
+      memoryPollMs: 5,
+      maxRssBytes: 1_000,
+      memoryRestartCooldownMs: 60_000,
+      behaviours: [{ answer: metricsAnswer(5_000) }, { answer: metricsAnswer(5_000) }],
+    });
+    const host = await supervisor.start({
+      sessionId: "s1",
+      cwd: normalize("C:/work"),
+      sessionFile: normalize("C:/profile/sessions/s1.jsonl"),
+    });
+
+    await vi.waitFor(() => {
+      expect(spawned.length).toBe(2);
+    });
+    // The cooldown stops a host whose RSS does not drop from restarting in a loop.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(spawned).toHaveLength(2);
+    expect(host.logs().join("\n")).toContain("over the 0 MB threshold");
+    expect(spawned[1]?.requests.map((request) => request.method)).toContain("session.resume");
+  });
+
+  it("recycles an idle host and drops it from the supervisor so it can re-spawn", async () => {
+    const { supervisor, spawned } = harness({ idleTimeoutMs: 5 });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    await vi.waitFor(() => {
+      expect(supervisor.get("s1")).toBeUndefined();
+    });
+    expect(spawned[0]?.killed).toBe(true);
+
+    // Re-issuing the same id spawns a fresh process rather than returning a dead one.
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(spawned).toHaveLength(2);
+  });
+
+  it("never recycles the Office host, which owns the bridge port", async () => {
+    const { supervisor } = harness({ idleTimeoutMs: 5 });
+    await supervisor.start({
+      sessionId: "office",
+      cwd: normalize("C:/work"),
+      officeHost: true,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(supervisor.get("office")?.status()).toBe("ready");
   });
 });

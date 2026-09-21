@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEventEntry } from "../../src/shared/session-ipc";
@@ -9,6 +9,8 @@ import {
   type TranscriptItem,
 } from "../../src/renderer/src/session/session-events";
 import { installBridge } from "./fixtures";
+import { useAppStore } from "../../src/renderer/src/state/app-store";
+import { TRANSCRIPT_10K_ITEMS } from "../../src/shared/performance";
 
 /**
  * Transcript rendering (plan step 5). The fixture below drives the *real*
@@ -170,6 +172,71 @@ describe("transcript rendering", () => {
     render(<Transcript items={fixtureItems()} />);
     const list = screen.getByTestId("transcript");
     expect(within(list).getByText("please fix the bug")).toBeInTheDocument();
+  });
+
+  it("lazily fetches a spilled large tool result only when its card is opened", async () => {
+    const user = userEvent.setup();
+    const handles = installBridge();
+    const request = vi.fn(async () => ({
+      path: "C:\\blobs\\big.json",
+      contents: JSON.stringify({ content: [{ type: "text", text: "the whole 50 MB log" }] }),
+    }));
+    (handles.bridge.sessions as unknown as { request: unknown }).request = request;
+    useAppStore.setState({ blobs: {} });
+
+    const items = reduceSessionEvents(createTranscriptState(), [
+      {
+        event: "tool_execution_start",
+        payload: { toolCallId: "t9", toolName: "bash", args: { command: "cat huge.log" } },
+      },
+      {
+        event: "tool_execution_end",
+        // What the host writes for an oversized result (plan step 24).
+        payload: { toolCallId: "t9", result: { $blob: "C:\\blobs\\big.json", bytes: 50_000_000 } },
+      },
+    ]).items;
+
+    render(<Transcript items={items} tabId="tab-1" />);
+    // Collapsed: nothing is read from the blob cache yet.
+    expect(request).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: /bash/i }));
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: "tab-1",
+        method: "host.blobs.read",
+        params: { path: "C:\\blobs\\big.json" },
+      }),
+    );
+    expect(await screen.findByText("the whole 50 MB log")).toBeInTheDocument();
+  });
+
+  it("virtualizes a 10k-entry transcript instead of mounting every row", () => {
+    const items: TranscriptItem[] = Array.from({ length: TRANSCRIPT_10K_ITEMS }, (_, index) => ({
+      kind: "notice",
+      id: `item-${index}`,
+      notice: {
+        id: `notice-${index}`,
+        severity: "info",
+        event: "notice",
+        text: `notice ${index}`,
+      },
+    }));
+
+    const { container } = render(<Transcript items={items} />);
+
+    // The window renders a bounded slice; the scroll height proves the rest of
+    // the 10k items are addressable without being in the DOM (60 fps bar).
+    const rows = container.querySelectorAll("[data-index]");
+    expect(rows.length).toBeLessThan(200);
+
+    const list = screen.getByTestId("transcript");
+    const spacer = list.firstElementChild as HTMLElement | null;
+    expect(spacer).not.toBeNull();
+    expect(Number.parseInt(spacer?.style.height ?? "0", 10)).toBeGreaterThan(100_000);
+    // A row far outside the window never mounts, however large the session is.
+    expect(container.textContent).not.toContain("notice 9999");
   });
 });
 

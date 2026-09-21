@@ -330,6 +330,11 @@ function diagnosticsSnapshot(info: AppInfo): DiagnosticsSnapshot {
       appStateFile: info.appStateFile,
     },
     hosts: [],
+    capacity: {
+      hosts: { used: 0, limit: 8, atCapacity: false },
+      tabs: { used: 0, limit: 8, atCapacity: false },
+    },
+    memory: { budgetBytes: 536_870_912, restartBytes: 1_610_612_736 },
     incidents: [],
     extensionErrors: [],
     office: {
@@ -340,5 +345,28 @@ function diagnosticsSnapshot(info: AppInfo): DiagnosticsSnapshot {
       panes: 0,
     },
     environment: {},
+    startup: {
+      startedAt: 0,
+      appReadyAt: null,
+      windowInteractiveAt: null,
+      sessionReadyAt: null,
+      sessionWarm: false,
+      appReadyMs: null,
+      windowInteractiveMs: null,
+      sessionReadyMs: null,
+      windowInteractive: {
+        label: "Window interactive",
+        budgetMs: 2_500,
+        actualMs: null,
+        status: "unknown",
+      },
+      sessionReady: {
+        label: "Warm session ready",
+        budgetMs: 5_000,
+        actualMs: null,
+        status: "unknown",
+      },
+      status: "unknown",
+    },
   };
 }

@@ -1,6 +1,6 @@
 import { PassThrough } from "node:stream";
 import { join, normalize } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createHostService, type HostServiceOptions } from "../../src/host/service";
 import {
   decodeFrame,
@@ -258,5 +258,88 @@ describe("host service blob cache", () => {
     const host = harness();
     await host.request(1, "host.blobs.read", {});
     expect(host.last()).toMatchObject({ ok: false, error: { code: "bad_request" } });
+  });
+});
+
+describe("host service resource metrics (plan step 24)", () => {
+  it("reports a fixed memory sample supplied by the reader", async () => {
+    const host = harness({
+      readMemory: () => ({
+        rssBytes: 424_242,
+        heapUsedBytes: 100,
+        heapTotalBytes: 200,
+        uptimeMs: 9_000,
+        at: 1_700_000_000_000,
+      }),
+    });
+
+    await host.request(1, "host.metrics");
+
+    expect(host.lastResult()).toEqual({
+      rssBytes: 424_242,
+      heapUsedBytes: 100,
+      heapTotalBytes: 200,
+      uptimeMs: 9_000,
+      at: 1_700_000_000_000,
+    });
+  });
+
+  it("samples this process's own RSS by default", async () => {
+    const host = harness();
+    await host.request(1, "host.metrics");
+    const result = host.lastResult() as { rssBytes?: unknown; heapUsedBytes?: unknown };
+    expect(typeof result.rssBytes).toBe("number");
+    expect(result.rssBytes as number).toBeGreaterThan(0);
+    expect(typeof result.heapUsedBytes).toBe("number");
+  });
+});
+
+describe("host service event spilling (plan step 24)", () => {
+  it("spills an oversized event field in place, keeping the event identity", async () => {
+    const host = harness();
+
+    host.service.emit("tool_execution_end", {
+      toolName: "read",
+      toolCallId: "call-1",
+      result: { content: [{ type: "text", text: "y".repeat(1024 * 1024 + 1) }] },
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        host.frames().some((frame) => "event" in frame && frame.event === "tool_execution_end"),
+      ).toBe(true);
+    });
+    const frame = host
+      .frames()
+      .find((entry) => "event" in entry && entry.event === "tool_execution_end");
+    if (!frame || !("event" in frame)) throw new Error("no event frame");
+    const payload = frame.payload as { toolName?: unknown; toolCallId?: unknown; result?: unknown };
+
+    // The card still knows which tool ran; only the body became a reference.
+    expect(payload.toolName).toBe("read");
+    expect(payload.toolCallId).toBe("call-1");
+    expect(isBlobRef(payload.result)).toBe(true);
+
+    // And the blob reads back on demand.
+    if (!isBlobRef(payload.result)) throw new Error("expected a blob ref");
+    await host.request(1, "host.blobs.read", { path: payload.result.$blob });
+    const read = host.lastResult() as { contents?: string | null };
+    expect(read.contents?.length).toBeGreaterThan(1024 * 1024);
+  });
+
+  it("keeps small events untouched and their order", async () => {
+    const host = harness();
+    host.service.emit("message_update", { delta: "a" });
+    host.service.emit("message_update", { delta: "b" });
+    host.service.emit("message_end", { message: { role: "assistant" } });
+
+    await vi.waitFor(() => {
+      expect(host.frames().filter((frame) => "event" in frame)).toHaveLength(3);
+    });
+    const events = host
+      .frames()
+      .filter((frame): frame is { event: string; payload: unknown } => "event" in frame)
+      .map((frame) => frame.event);
+    expect(events).toEqual(["message_update", "message_update", "message_end"]);
   });
 });

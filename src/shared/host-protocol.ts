@@ -114,6 +114,10 @@ export const HOST_METHODS = [
   "host.ping",
   "host.shutdown",
   "host.blobs.read",
+  // Resource guardrails (plan step 24): the host reports its own memory so the
+  // app can show a per-host RSS readout and recycle an over-budget host without
+  // an OS-specific process query.
+  "host.metrics",
   // sessions
   "session.create",
   "session.open",

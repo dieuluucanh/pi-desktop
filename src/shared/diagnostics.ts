@@ -1,4 +1,5 @@
 import type { HostRole } from "./host-protocol";
+import type { Capacity, StartupReport } from "./performance";
 
 /**
  * Reliability, recovery and diagnostics — the pure wire model (plan step 22).
@@ -265,6 +266,8 @@ export interface DiagnosticsHostInfo {
   officeHost: boolean;
   pid: number | null;
   startedAt: number | null;
+  /** The host's last self-reported RSS in bytes, or null before the first poll. */
+  rssBytes: number | null;
   /** The tail of the host's own log file, oldest first. */
   logLines: string[];
 }
@@ -323,12 +326,18 @@ export interface DiagnosticsSnapshot {
   runtime: DiagnosticsRuntimeInfo;
   paths: DiagnosticsPathsInfo;
   hosts: DiagnosticsHostInfo[];
+  /** Used/limit of the host and tab caps (plan step 24 backpressure). */
+  capacity: { hosts: Capacity; tabs: Capacity };
+  /** The per-host memory budget and restart threshold, for the RSS readout. */
+  memory: { budgetBytes: number; restartBytes: number };
   incidents: Incident[];
   extensionErrors: DiagnosticsExtensionError[];
   office: DiagnosticsOfficeInfo;
   environment: Record<string, string>;
   /** True when the app is running with third-party code disabled (plan step 22). */
   safeMode: boolean;
+  /** The startup-budget measurements (plan step 24). */
+  startup: StartupReport;
 }
 
 export interface DiagnosticsExport {

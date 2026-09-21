@@ -25,9 +25,38 @@ function snapshot(overrides: Partial<DiagnosticsSnapshot> = {}): Partial<Diagnos
         officeHost: false,
         pid: 4242,
         startedAt: 1_700_000_000_000,
+        rssBytes: 268_435_456,
         logLines: ["spawned node host.mjs\n", "resumed session\n"],
       },
     ],
+    capacity: {
+      hosts: { used: 1, limit: 8, atCapacity: false },
+      tabs: { used: 1, limit: 8, atCapacity: false },
+    },
+    memory: { budgetBytes: 536_870_912, restartBytes: 1_610_612_736 },
+    startup: {
+      startedAt: 1,
+      appReadyAt: 100,
+      windowInteractiveAt: 1_200,
+      sessionReadyAt: null,
+      sessionWarm: false,
+      appReadyMs: 99,
+      windowInteractiveMs: 1_199,
+      sessionReadyMs: null,
+      windowInteractive: {
+        label: "Window interactive",
+        budgetMs: 2_500,
+        actualMs: 1_199,
+        status: "met",
+      },
+      sessionReady: {
+        label: "Warm session ready",
+        budgetMs: 5_000,
+        actualMs: null,
+        status: "unknown",
+      },
+      status: "unknown",
+    },
     incidents: [
       {
         id: "inc-1",
@@ -75,6 +104,11 @@ describe("DiagnosticsView", () => {
     expect(await screen.findByTestId("diagnostics-hosts")).toBeInTheDocument();
     expect(screen.getByText(/pid 4242/)).toBeInTheDocument();
     expect(screen.getByText(/resumed session/)).toBeInTheDocument();
+    // Per-host RSS and the used/limit caps (plan step 24).
+    expect(screen.getByText(/RSS 256 MB/)).toBeInTheDocument();
+    expect(screen.getByTestId("diagnostics-hosts")).toHaveTextContent("1/8 hosts");
+    expect(screen.getByTestId("diagnostics-hosts")).toHaveTextContent("512 MB");
+    expect(screen.getByTestId("diagnostics-startup")).toHaveTextContent("1.2 s");
     expect(screen.getByText("host for tab-1 crashed")).toBeInTheDocument();
     expect(screen.getByText(/Restart the session/)).toBeInTheDocument();
     expect(screen.getByTestId("diagnostics-extension-errors")).toHaveTextContent("boom");
