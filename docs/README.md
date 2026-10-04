@@ -31,6 +31,8 @@
 - [`guide/office-setup.md`](guide/office-setup.md) — Pi for Office as an optional integration.
 - [`guide/plannotator-web-tabs.md`](guide/plannotator-web-tabs.md) — in-app web tabs and reviews.
 - [`guide/troubleshooting.md`](guide/troubleshooting.md) — safe mode, recovery, diagnostics.
+- [`guide/branding.md`](guide/branding.md) — the logo set, which mark belongs to which product, and
+  how the icons are wired into the build.
 - [`guide/faq.md`](guide/faq.md) — common questions.
 
 ## Architecture

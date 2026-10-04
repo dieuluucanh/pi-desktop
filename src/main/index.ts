@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, clipboard, dialog, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, nativeImage, shell } from "electron";
 import {
   IPC,
   type AppInfo,
@@ -20,6 +20,7 @@ import type {
 } from "../shared/projects";
 import type { CreateTabInput, SessionTabsEnvelope } from "../shared/session-ipc";
 import { CONTROL_TAB_ID } from "../shared/session-ipc";
+import { APP_COPYRIGHT, APP_NAME, APP_USER_MODEL_ID, resolveBranding } from "./branding";
 import { createAppStore } from "./app-store";
 import { createNodeFsPort } from "./fs-port";
 import { createHostSupervisor } from "./host-supervisor";
@@ -97,6 +98,11 @@ let telemetryEnabled = false;
 const userDataOverride = process.env.PI_DESKTOP_USER_DATA_DIR?.trim();
 if (userDataOverride) app.setPath("userData", userDataOverride);
 
+// Windows groups taskbar buttons and attributes toasts by AppUserModelID. Setting
+// the packaged app's id in dev too keeps that identity stable across both, and it
+// must happen before the first window exists (plan step 28).
+if (process.platform === "win32") app.setAppUserModelId(APP_USER_MODEL_ID);
+
 /**
  * The profile choice lives in app state (plan step 26), but hosts are spawned
  * with a profile at module scope, so it is read once before the paths resolve.
@@ -131,6 +137,13 @@ const roots: AppRoots = resolveAppRoots({
   mainDir: currentDir,
 });
 const runtime: RuntimeResolution = resolveAppRuntime({
+  isPackaged: app.isPackaged,
+  resourcesPath: roots.resourcesDir,
+  appRoot: roots.appRoot,
+});
+
+/** Where the brand icons are (plan step 28): `resources/branding` or `assets/`. */
+const branding = resolveBranding({
   isPackaged: app.isPackaged,
   resourcesPath: roots.resourcesDir,
   appRoot: roots.appRoot,
@@ -302,7 +315,7 @@ export async function openExternal(rawUrl: unknown): Promise<boolean> {
 
 function currentAppInfo(): AppInfo {
   return {
-    name: app.getName(),
+    name: APP_NAME,
     version: app.getVersion(),
     electron: process.versions.electron ?? "unknown",
     chrome: process.versions.chrome ?? "unknown",
@@ -389,7 +402,16 @@ function createWindow(): BrowserWindow {
   // The window's security posture is declared once in `./security.ts`; the test
   // in `tests/main/security.test.ts` reads those options, so this call site
   // cannot quietly drop `sandbox` or add `nodeIntegration`.
-  const window = new BrowserWindow(rendererWindowOptions(join(currentDir, "../preload/index.cjs")));
+  //
+  // macOS ignores a window icon (the bundle's `.icns` owns the Dock), so the path
+  // is only supplied elsewhere — one less file read on a platform that would
+  // discard it (plan step 28).
+  const window = new BrowserWindow(
+    rendererWindowOptions(
+      join(currentDir, "../preload/index.cjs"),
+      process.platform === "darwin" ? undefined : { icon: branding.ico },
+    ),
+  );
 
   window.once("ready-to-show", () => {
     startup.markWindowInteractive();
@@ -446,7 +468,7 @@ const officeSetup = createOfficeSetupService({
     if (safe) await shell.openExternal(safe);
   },
   appInfo: {
-    name: app.getName(),
+    name: APP_NAME,
     version: app.getVersion(),
     electron: process.versions.electron ?? null,
     node: process.versions.node,
@@ -566,10 +588,27 @@ if (!app.requestSingleInstanceLock()) {
       onChange: (state) => broadcastToWindows(IPC.updatesState, state),
     });
 
+    // Brand identity (plan step 28). On macOS the Dock icon comes from the
+    // bundle's `.icns` once packaged, but a dev run has no bundle to read it
+    // from, so it is set from the same PNG every time. `applicationIcon` is a
+    // linux/win32-only option — macOS takes the about-panel icon from the bundle
+    // — and the 512px source is the largest available (Windows would prefer 48,
+    // which the set does not carry; the shell scales).
+    if (process.platform === "darwin" && app.dock) {
+      const dockIcon = nativeImage.createFromPath(branding.png512);
+      if (!dockIcon.isEmpty()) app.dock.setIcon(dockIcon);
+    }
+    app.setAboutPanelOptions({
+      applicationName: APP_NAME,
+      applicationVersion: app.getVersion(),
+      copyright: APP_COPYRIGHT,
+      ...(process.platform === "darwin" ? {} : { applicationIcon: branding.png512 }),
+    });
+
     // The application menu is the app's command surface; its items never touch
     // windows directly — they forward a MenuCommand to the renderer.
     await installAppMenu({
-      appName: app.getName(),
+      appName: APP_NAME,
       isMac: process.platform === "darwin",
       onCommand: (command) => broadcastToWindows(IPC.appMenuCommand, command),
       onOpenExternal: (url) => {

@@ -87,6 +87,17 @@ describe("app window preferences", () => {
       autoHideMenuBar: true,
     });
   });
+
+  it("carries a brand icon only when the caller supplies one", () => {
+    // Plan step 28. The key is passed through as a plain path (this module stays
+    // Electron-free), and it is *omitted* rather than `undefined` when absent, so
+    // a caller that has no icon cannot accidentally clear the window's.
+    expect(rendererWindowOptions("/p.cjs", { icon: "C:/app/assets/icon.ico" }).icon).toBe(
+      "C:/app/assets/icon.ico",
+    );
+    expect(rendererWindowOptions("/p.cjs", {}).icon).toBeUndefined();
+    expect(rendererWindowOptions("/p.cjs")).not.toHaveProperty("icon");
+  });
 });
 
 describe("web tab preferences", () => {

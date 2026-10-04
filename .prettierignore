@@ -9,3 +9,6 @@ resources/runtime
 resources/office/manifest.prod.xml
 package-lock.json
 .pi
+# Brand assets stay byte-stable: re-deriving a mark must be the only thing that
+# changes them, never a formatter run.
+assets

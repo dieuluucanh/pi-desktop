@@ -8,6 +8,7 @@ import {
   MessageSquarePlus,
   Plug,
 } from "lucide-react";
+import markUrl from "../../../../assets/pi-desktop-icon.svg";
 import { Button } from "../ui/button";
 import { Kbd } from "../ui/kbd";
 import { openProjectAction, newSessionAction } from "../menu-actions";
@@ -41,7 +42,10 @@ export function WelcomeView() {
   return (
     <div className="mx-auto flex h-full max-w-2xl flex-col justify-center gap-6 overflow-y-auto px-8 py-8">
       <div className="flex flex-col gap-2">
-        <h1 className="text-xl font-semibold">Pi Desktop</h1>
+        <div className="flex items-center gap-3">
+          <img src={markUrl} alt="" aria-hidden className="size-10" />
+          <h1 className="text-xl font-semibold">Pi Desktop</h1>
+        </div>
         <p className="text-sm text-ink-muted">
           The desktop UI for the Pi coding agent. Open a project folder and a session runs there
           with the same profile, models, extensions and settings as the{" "}

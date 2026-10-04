@@ -1,3 +1,4 @@
+import markUrl from "../../../../assets/pi-desktop-icon.svg";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { newSessionAction, openProjectAction } from "../menu-actions";
@@ -12,6 +13,9 @@ export function TitleBar() {
   return (
     <header className="flex h-11 shrink-0 items-center gap-3 border-b border-line bg-surface px-3">
       <div className="flex items-center gap-2 text-sm font-semibold">
+        {/* Decorative: the app name beside it is the accessible label, so this
+            carries no `alt` text (plan step 28). */}
+        <img src={markUrl} alt="" aria-hidden className="size-5" />
         <span
           className="size-2 rounded-full bg-ok"
           aria-hidden

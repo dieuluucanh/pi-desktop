@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -46,6 +46,29 @@ describe("electron-builder config (plan step 26)", () => {
     expect(builderYaml).toMatch(/from:\s*resources\/office/);
     expect(builderYaml).toMatch(/to:\s*runtime/);
     expect(builderYaml).toMatch(/to:\s*office/);
+  });
+
+  it("names a brand icon for every platform it targets, and ships them to the app", () => {
+    // Without these keys electron-builder silently falls back to its bundled
+    // Electron icon, so an installer can ship unbranded without any error.
+    expect(builderYaml).toMatch(/win:\n(?:.*\n)*?\s+icon:\s*assets\/icon\.ico/);
+    expect(builderYaml).toMatch(/mac:\n(?:.*\n)*?\s+icon:\s*assets\/icon-512\.png/);
+    expect(builderYaml).toMatch(/linux:\n(?:.*\n)*?\s+icon:\s*assets\/icon-512\.png/);
+    // The runtime reads the window/dock icons by path, so they travel outside
+    // the asar. Only these two do — the Office-branded SVGs stay behind.
+    expect(builderYaml).toMatch(/from:\s*assets/);
+    expect(builderYaml).toMatch(/to:\s*branding/);
+    expect(builderYaml).toMatch(/"icon\.ico"/);
+    expect(builderYaml).toMatch(/"icon-512\.png"/);
+  });
+
+  it("points those icon keys at files that exist", () => {
+    // A typo'd path is another way to get the default icon with no error.
+    const declared = [...builderYaml.matchAll(/icon:\s*(assets\/[^\s"']+)/g)].map(
+      (match) => match[1] ?? "",
+    );
+    expect(declared.length).toBeGreaterThanOrEqual(3);
+    for (const file of declared) expect(() => statSync(join(repoRoot, file)), file).not.toThrow();
   });
 
   it("unpacks the SDK, jiti, typebox and the runtime", () => {

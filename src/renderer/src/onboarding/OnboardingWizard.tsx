@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Check, FolderOpen, FolderPlus, Home, Mail } from "lucide-react";
+import markUrl from "../../../../assets/pi-desktop-icon.svg";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
@@ -110,6 +111,8 @@ function ONBOARDING_PROGRESS(step: OnboardingStep): { previous: boolean; next: b
 function WelcomeStep() {
   return (
     <div className="flex flex-col gap-3 text-sm text-ink-muted">
+      {/* Below the dialog's own title, which names the step (plan step 28). */}
+      <img src={markUrl} alt="" aria-hidden className="size-8" />
       <p>
         Pi Desktop is the graphical client for the Pi coding agent. It uses the same Pi profile as
         terminal Pi, so projects, sessions, credentials, extensions and settings are shared.

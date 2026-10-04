@@ -38,8 +38,21 @@ extraResources:
   - from: resources/office
     to: office
     filter: ["**/*"]
+  # The window and macOS dock icons are read by path at runtime, so they must be
+  # outside the asar too (plan step 28). The filter is an explicit list on
+  # purpose: the Office-branded SVGs and the add-in's 80px raster have no reason
+  # to travel inside the desktop app. Adding an asset here means adding it below,
+  # and `tests/packaging/icons.test.ts` guards the set.
+  - from: assets
+    to: branding
+    filter:
+      - "icon.ico"
+      - "icon-512.png"
 
 win:
+  # NSIS installer and uninstaller icons default to the app icon, so naming it
+  # once here is enough; no `nsis.installerIcon` keys are needed.
+  icon: assets/icon.ico
   target:
     - target: nsis
       arch: [x64]
@@ -57,6 +70,9 @@ portable:
 
 mac:
   category: public.app-category.developer-tools
+  # electron-builder converts this 512px PNG into the .icns itself, which is why
+  # no .icns is committed (plan step 28).
+  icon: assets/icon-512.png
   target:
     - target: dmg
       arch: [arm64, x64]
@@ -65,6 +81,8 @@ mac:
 
 linux:
   category: Development
+  # Same 512px source: electron-builder generates the deb/AppImage icon sizes.
+  icon: assets/icon-512.png
   target: [AppImage, deb]
 
 # GitHub Releases is the update feed (plan step 26): `publish` writes

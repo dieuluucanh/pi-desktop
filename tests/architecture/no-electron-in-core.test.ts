@@ -12,11 +12,12 @@ import { describe, expect, it } from "vitest";
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 const CORE_DIRS = ["src/host", "src/main/office", "src/main/packages", "src/main/runtime"] as const;
-/** Electron-free *modules* that live outside those directories (plan step 3/23). */
+/** Electron-free *modules* that live outside those directories (plan step 3/23/28). */
 const CORE_FILES = [
   "src/main/session-service.ts",
   "src/main/diagnostics-service.ts",
   "src/main/security.ts",
+  "src/main/branding.ts",
 ] as const;
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js"] as const;
 

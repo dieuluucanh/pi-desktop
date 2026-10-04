@@ -99,9 +99,20 @@ export interface RendererWindowOptions {
   title: string;
   autoHideMenuBar: boolean;
   webPreferences: SecureWebPreferences;
+  /** Brand icon path; absent when the caller has none, which keeps this a pure string. */
+  icon?: string;
 }
 
-export function rendererWindowOptions(preloadPath: string): RendererWindowOptions {
+/**
+ * `branding.icon` is a plain path (plan step 28), not an `Electron.NativeImage`:
+ * this module stays Electron-free so the security test can assert the window's
+ * posture without a runtime. The key is omitted rather than set to `undefined`
+ * when absent, so `toMatchObject` pins on the other options keep exact meaning.
+ */
+export function rendererWindowOptions(
+  preloadPath: string,
+  branding?: { icon?: string },
+): RendererWindowOptions {
   return {
     width: 1280,
     height: 860,
@@ -112,6 +123,7 @@ export function rendererWindowOptions(preloadPath: string): RendererWindowOption
     title: "Pi Desktop",
     autoHideMenuBar: true,
     webPreferences: rendererWebPreferences(preloadPath),
+    ...(branding?.icon ? { icon: branding.icon } : {}),
   };
 }
 

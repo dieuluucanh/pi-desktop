@@ -6,7 +6,7 @@ steps must extend it rather than re-invent it.
 ## Regions
 
 ```text
-title bar        brand, active project, Open project…, New session
+title bar        brand logo, active project, Open project…, New session
 sidebar          + New session · Open project… · Project · Sessions · Views
 tab strip        session tabs (empty until step 11) + the "+" action
 main area        the active view (welcome | session | settings | extensions |
@@ -107,6 +107,7 @@ src/main/menu.ts               the menu template (pure, unit tested) + installer
 src/main/ipc.ts               handlers + validation for every renderer channel
 src/main/app-store.ts          atomic app state (projects, prefs, tabs, integrations)
 src/main/integrations-service.ts  the consented-install record (plan step 19)
+src/main/branding.ts           Electron-free brand-icon resolution + APP_NAME (step 28)
 src/main/office/documents-service.ts  the live /health pane-registry poll (step 20)
 src/shared/office-documents.ts  the pure pane projection + mention/target helpers
 src/shared/web-tabs.ts         the web-tab wire model, URL policy and review parse
@@ -178,7 +179,8 @@ The trust boundaries are declared in code and asserted by tests, not by prose:
   (`contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`,
   `webviewTag: false`) and the Content Security Policy. The app window is created
   from that object, so `tests/main/security.test.ts` reads the posture the app
-  actually uses.
+  actually uses. It takes an optional `{ icon }` — a plain path resolved by
+  `src/main/branding.ts`, so the module stays Electron-free (plan step 28).
 - **The CSP.** A `file://` page cannot receive a CSP header — Electron's
   `webRequest.onHeadersReceived` never fires for the file scheme — so the policy
   lives in `src/renderer/index.html` as a `<meta>` tag with a

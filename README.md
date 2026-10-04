@@ -1,5 +1,7 @@
 # Pi Desktop
 
+<img src="assets/pi-desktop-logo-full.svg" alt="pi — PI DESKTOP" width="440">
+
 A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global
 installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
