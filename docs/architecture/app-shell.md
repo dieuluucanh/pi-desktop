@@ -427,12 +427,25 @@ nothing to install reports in the status bar instead of leaving a banner.
 after launch (skipped when `PI_OFFLINE`). A dev build reports `supported: false`.
 
 **Packaging.** `electron-builder.yml` targets Windows NSIS + portable, macOS
-dmg/zip on arm64 + x64, and Linux AppImage/deb. The bundled runtime and the
-Office manifest ship in `extraResources`; the SDK, `jiti`, `typebox` and the
-runtime are `asarUnpack`ed because extensions load from real files. `publish`
-is the GitHub provider, and `package.json` carries the `repository` URL so the
-builder and the updater agree. `package:win` fetches the runtime, builds, runs
-`runtime:verify` and only then invokes electron-builder, so an installer cannot
-ship without a working runtime. `tests/packaging/builder-config.test.ts` pins
-the targets, resources, unpack list, feed and the runtime artifacts each target
-needs; the installer itself is verified on a clean machine (step 27).
+dmg/zip on arm64 + x64, and Linux AppImage/deb on x64 + arm64. The bundled
+runtime and the Office manifest ship in `extraResources`.
+
+**Why the host's dependencies are unpacked.** The Pi host is spawned under the
+_bundled_ Node, never Electron, and that Node has no asar support — so anything
+the host can `import` at runtime must be a real file on disk. `asarUnpack`
+therefore covers `node_modules/**` wholesale (plus `out/**`, the host bundle
+itself) rather than a list: an earlier hand-maintained list named only the SDK,
+`jiti` and `typebox`, and the first packaged session died with
+`Cannot find package 'highlight.js'`. Unpacked entries stay readable _through_
+the asar, so the main process is unaffected; the cost is a larger install
+(`app.asar` ~60 MB, `app.asar.unpacked` ~68 MB). The generated runtime shims are
+rewritten for the packaged layout by the `afterPack` hook, since the ones made
+at fetch time point back into the build machine's repository.
+
+All three platforms are built by `npm run package:win|mac|linux`, which fetches
+the runtime, builds, runs `runtime:verify` and only then invokes electron-builder,
+so an installer cannot ship without a working runtime. `publish` is the GitHub
+provider, and `package.json` carries the `repository` URL so the builder and the
+updater agree. `tests/packaging/builder-config.test.ts` pins the targets,
+resources, unpack list, feed and the runtime artifacts each target needs; the
+installers themselves are verified on a clean machine (step 27).

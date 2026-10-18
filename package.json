@@ -1,10 +1,16 @@
 {
   "name": "pi-desktop",
+  "desktopName": "pi-desktop.desktop",
   "version": "0.1.0",
   "private": true,
   "description": "Pi Desktop — a standalone desktop app for the Pi coding agent (with zero-touch Pi for Office)",
   "type": "module",
   "license": "MIT",
+  "author": {
+    "name": "Pi Desktop contributors",
+    "email": "dieuluucanh@gmail.com"
+  },
+  "homepage": "https://github.com/dieuluucanh/pi-desktop",
   "repository": {
     "type": "git",
     "url": "https://github.com/dieuluucanh/pi-desktop.git"

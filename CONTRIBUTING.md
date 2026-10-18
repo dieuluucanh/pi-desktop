@@ -80,6 +80,31 @@ Windows NSIS + portable is the primary artefact; macOS and Linux are beta.
 `electron-builder.yml` publishes to GitHub Releases, which is also the
 `electron-updater` feed. Artefacts are unsigned in v0.1.0; signing is backlog.
 
+Each platform's `package:*` script fetches every runtime that platform ships
+(`package:linux` gets x64 **and** arm64, `package:mac` gets both macOS arches),
+because a foreign runtime is verified statically — it is never executed — so a
+Linux installer can be produced from a Windows machine and vice versa. Only the
+host platform's runtime is additionally run through `--version`.
+
+The Linux beta artefacts are also built in CI by the manually dispatched
+[`release-linux.yml`](.github/workflows/release-linux.yml) workflow, which is
+the preferred route: it runs on a real Ubuntu host, asserts the finished `.deb`
+and AppImage actually contain the bundled runtime and the host bundle, and can
+attach the files to a **draft** GitHub Release. Nothing publishes a live update
+feed for Linux, because the clean-install acceptance matrix has not been run
+there yet.
+
+To build Linux locally on a Linux machine (or WSL):
+
+```bash
+npm ci
+npm run build
+npm run runtime:fetch -- --platform linux-x64
+npm run runtime:fetch -- --platform linux-arm64   # only for arm64 artefacts
+npm run runtime:verify
+npx electron-builder --linux --x64 --publish never  # add --arm64 for arm64
+```
+
 ## Security
 
 Do not open a public issue for a vulnerability. Report it privately to the

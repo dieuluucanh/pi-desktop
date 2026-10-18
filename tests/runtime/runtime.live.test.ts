@@ -10,7 +10,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -29,6 +29,7 @@ const lock = JSON.parse(readFileSync(join(runtimeRoot, "node.lock.json"), "utf8"
     version: string;
     minimumEngine: string;
     artifacts: Record<string, { sha256: string; archive: string }>;
+    npmPayload?: Record<string, { path?: string; sha256: string }>;
   };
 };
 
@@ -88,6 +89,33 @@ function runShim(name: ShimName, args: string[]): ShimResult {
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
+/**
+ * Runs a shim and, when it fails, re-raises the failure with the information
+ * needed to place the bug: the host platform, the runtime that was installed in
+ * the repo (a foreign-platform one is the classic cause — the live shim tests
+ * only mean anything on the platform whose runtime is installed), and the
+ * interp that actually failed.
+ */
+function expectShimOk(name: ShimName, args: string[]): ShimResult {
+  const result = runShim(name, args);
+  if (result.status !== 0) {
+    const installed = readdirSync(join(runtimeRoot, "node"), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+    const expected = shimFileName(name, process.platform);
+    throw new Error(
+      [
+        `\`${expected}${args.length > 0 ? ` ${args.join(" ")}` : ""}\` exited ${result.status}`,
+        `  host        ${target} (a foreign runtime cannot be executed here)`,
+        `  installed   ${installed.join(", ") || "none"}`,
+        `  shim dir    ${resolution.binDir}`,
+        `  stderr      ${result.stderr.trim() || "(empty)"}`,
+      ].join("\n"),
+    );
+  }
+  return result;
+}
+
 describe("pinned runtime lock", () => {
   it("records a checksum for every supported target and respects the Pi engine gate", () => {
     expect(lock.node.minimumEngine).toBe("22.19.0");
@@ -106,6 +134,26 @@ describe("pinned runtime lock", () => {
       expect(artifact?.sha256).toMatch(/^[0-9a-f]{64}$/);
       expect(artifact?.archive).toContain(`v${lock.node.version}`);
     }
+  });
+
+  it("pins the npm payload digest that verifies a foreign-platform runtime", () => {
+    // A runtime for another platform can never be executed on this host, so
+    // `runtime:fetch` verifies it against this digest instead. Without it, a
+    // Linux installer could not be produced from a Windows machine at all (and
+    // installOne would hard-fail on any non-host platform).
+    const payload = lock.node.npmPayload;
+    expect(payload, "node.lock.json must carry node.npmPayload").toBeDefined();
+    const digests = new Set<string>();
+    for (const platform of ["win32", "linux", "darwin"]) {
+      const entry = payload?.[platform];
+      expect(entry, platform).toBeDefined();
+      expect(entry?.sha256, platform).toMatch(/^[0-9a-f]{64}$/);
+      expect(entry?.path, platform).toBeTruthy();
+      if (entry) digests.add(entry.sha256);
+    }
+    // One npm release is one payload: Windows ships it with CRLF, so the digest
+    // has to be taken over normalised text or the platforms would disagree.
+    expect(digests.size).toBe(1);
   });
 });
 
@@ -165,16 +213,14 @@ describe.skipIf(!runtimeReady)("PATH shims (live)", () => {
   });
 
   it("resolves `node --version` through the shim with no system Node on PATH", () => {
-    const result = runShim("node", ["--version"]);
-    expect(result.status).toBe(0);
+    const result = expectShimOk("node", ["--version"]);
     expect(result.stdout.trim()).toBe(`v${lock.node.version}`);
   });
 
   it(
     "resolves `pi --version` through the shim with no system Node on PATH",
     () => {
-      const result = runShim("pi", ["--version"]);
-      expect(result.status, result.stderr).toBe(0);
+      const result = expectShimOk("pi", ["--version"]);
       expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
     },
     SPAWN_TIMEOUT_MS,
@@ -183,8 +229,7 @@ describe.skipIf(!runtimeReady)("PATH shims (live)", () => {
   it(
     "resolves `npm --version` through the bundled npm with no system Node on PATH",
     () => {
-      const result = runShim("npm", ["--version"]);
-      expect(result.status, result.stderr).toBe(0);
+      const result = expectShimOk("npm", ["--version"]);
       expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
     },
     SPAWN_TIMEOUT_MS,
@@ -193,8 +238,7 @@ describe.skipIf(!runtimeReady)("PATH shims (live)", () => {
   it(
     "resolves `npx --version` through the bundled npm with no system Node on PATH",
     () => {
-      const result = runShim("npx", ["--version"]);
-      expect(result.status, result.stderr).toBe(0);
+      const result = expectShimOk("npx", ["--version"]);
       expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
     },
     SPAWN_TIMEOUT_MS,

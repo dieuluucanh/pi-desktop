@@ -10,11 +10,36 @@ and it uses the **same Pi profile as terminal Pi** — so the two are interchang
 | ------------- | ---------------------------------------------------------------- |
 | Windows (x64) | NSIS installer and a portable `.exe` (both unsigned — see below) |
 | macOS         | `.dmg` and `.zip`, arm64 + x64 (beta, unsigned)                  |
-| Linux         | AppImage and `.deb` (beta, unsigned)                             |
+| Linux         | AppImage and `.deb`, x64 + arm64 (beta, unsigned)                |
 
 Builds are published on GitHub Releases. The Windows installer is the primary
 artefact; versions are checked automatically once installed (see
 [Updates](#updates) below).
+
+### Installing on Linux
+
+Both artefacts are unsigned and self-contained — the app bundles its own Node
+runtime, so no system Node, npm or Pi install is needed.
+
+**AppImage** (any distribution, no install step):
+
+```bash
+chmod +x Pi-Desktop-*-linux-x86_64-appimage.AppImage
+./Pi-Desktop-*-linux-x86_64-appimage.AppImage
+```
+
+The AppImage needs FUSE. Without it, either install `fuse`/`libfuse2` or run
+`--appimage-extract-and-run`.
+
+**Debian / Ubuntu** (installs to `/opt/Pi Desktop`, adds a launcher entry):
+
+```bash
+sudo apt install ./Pi-Desktop-*-linux-amd64-deb.deb
+```
+
+Use `apt install ./file.deb` rather than `dpkg -i` so the GTK/NSS/asound
+runtime dependencies are resolved for you. ARM64 machines use the `arm64`
+artefacts instead. To remove: `sudo apt remove pi-desktop`.
 
 > **Unsigned builds.** Windows SmartScreen and macOS Gatekeeper will warn on
 > first launch. Choose “More info → Run anyway” (Windows) or right-click → Open

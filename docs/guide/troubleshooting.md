@@ -23,6 +23,25 @@ Safe mode loads no third-party code, refuses package mutations and starts no
 session host on its own, so you can reach Extensions and disable the offending
 resource. The window shows a safe-mode banner.
 
+### Linux: the AppImage or the window will not start
+
+- **`AppImage` won't run, or nothing happens on double-click.** The AppImage
+  format needs FUSE. Either install it (`sudo apt install libfuse2` on Ubuntu
+  22.04+, `fuse2` on Fedora/Arch) or run it without FUSE:
+  `./Pi-Desktop-*.AppImage --appimage-extract-and-run`.
+- **`error while loading shared libraries: libnspr4.so` (or `libnss3.so`,
+  `libasound.so.2`).** You extracted the AppImage or installed the `.deb` with
+  `dpkg -i`, which skips dependency resolution. Install through apt so they are
+  pulled in: `sudo apt install ./Pi-Desktop-*-linux-amd64-deb.deb`. If you must
+  use `dpkg -i`, follow it with `sudo apt-get -f install`.
+- **The window opens but shows a generic icon, or a second icon appears in the
+  dock.** The launcher entry and the window's `app_id` have to agree; the app
+  sets both to `pi-desktop`. Log out and back in after installing so the desktop
+  database is re-read (`update-desktop-database ~/.local/share/applications`).
+- **No tray/notification icon.** Some desktops need an indicator extension for
+  Electron's tray; unavailable-toast grouping also depends on the desktop
+  environment. Neither affects the app itself.
+
 ## A session stopped responding
 
 - Press `Esc` to stop the run (this clears the queue and restores the text).

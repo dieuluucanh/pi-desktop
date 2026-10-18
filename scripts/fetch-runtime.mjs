@@ -8,11 +8,27 @@
  *   npm run runtime:fetch -- --all         # every supported platform
  *   npm run runtime:fetch -- --force       # re-download and re-extract
  *   npm run runtime:fetch -- --mirror https://mirror.example/nodejs
+ *   npm run runtime:fetch -- --verify      # re-verify what is on disk (no network)
  *   npm run runtime:lock                   # refresh node.lock.json from SHASUMS256.txt
  *
  * Downloads are always verified against `resources/runtime/node.lock.json`
  * (sha256). Without `--force` an already installed runtime with the pinned
  * version is left untouched, so the command is safe to run repeatedly.
+ *
+ * A foreign-platform runtime can never be *executed* here — `node.exe` is not a
+ * Linux binary and vice versa — so an installed tree is verified without running
+ * it (plan R4: the Linux beta installer is produced from a Windows host):
+ *
+ *   - the archive checksum (sha256, pinned in the lock);
+ *   - the npm payload inside the distribution, digest-pinned per platform in
+ *     `node.lock.json`, which is what `installedVersion` used to stand for;
+ *   - the version stamped into the binary (`node.js/v24.21.0`) cross-checked
+ *     against `include/node/node_version.h` where the distribution ships it.
+ *
+ * Only the host platform's runtime is additionally executed, which is the one
+ * case where `--version` proves something the static checks cannot. `--all`
+ * therefore works from any host, and is what `package:mac` / `package:linux`
+ * rely on.
  *
  * The runtime is deliberately not part of the npm install: it is ~30 MB per
  * platform and only needed to run hosts, not to typecheck or test.
@@ -21,7 +37,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -44,6 +59,28 @@ const SUPPORTED = [
   "linux-arm64",
 ];
 
+/**
+ * The npm CLI shipped inside the Node distribution. Unlike `node` itself (a
+ * 126 MB binary) the npm payload is byte-identical on every platform of a given
+ * release, so its sha256 goes in the lock and pins what actually landed on disk.
+ */
+const NPM_PAYLOAD = {
+  win32: "node_modules/npm/package.json",
+  linux: "lib/node_modules/npm/package.json",
+  darwin: "lib/node_modules/npm/package.json",
+};
+
+/** `node.exe` sits at the root of the Windows ZIP; every other platform uses `bin/`. */
+function nodePayloadRelative(platform) {
+  return platform === "win32" ? "node.exe" : "bin/node";
+}
+
+/** Present in every non-Windows tarball; the Windows ZIP has no `include/`. */
+const VERSION_HEADER = "include/node/node_version.h";
+
+/** Every Node binary (`.exe`, ELF, Mach-O) embeds the literal `node.js/v24.21.0`. */
+const BINARY_VERSION_MARKER = "node.js/v";
+
 function hostTarget() {
   const arch = process.arch === "arm64" ? "arm64" : "x64";
   return `${process.platform}-${arch}`;
@@ -56,6 +93,16 @@ function fail(message) {
 
 function log(message) {
   process.stderr.write(`${message}\n`);
+}
+
+function platformOf(target) {
+  return target.split("-")[0];
+}
+
+/** `"24.21.0"` and `"v24.21.0"` compare equal. */
+function sameVersion(left, right) {
+  if (typeof left !== "string" || typeof right !== "string") return false;
+  return left.trim().replace(/^v/i, "") === right.trim().replace(/^v/i, "");
 }
 
 async function readLock() {
@@ -132,6 +179,17 @@ async function sha256File(target) {
   return hash.digest("hex");
 }
 
+/**
+ * sha256 of a text file with CRLF folded to LF. Node's Windows ZIP ships npm's
+ * files with CRLF while the tarballs ship LF, so the *content* is identical per
+ * release and only the line endings differ — hashing raw bytes would make the
+ * same npm release look like two different ones.
+ */
+async function sha256TextFile(target) {
+  const text = await readFile(target, "utf8");
+  return createHash("sha256").update(text.replace(/\r\n/g, "\n"), "utf8").digest("hex");
+}
+
 async function download(url, destination) {
   const response = await fetch(url);
   if (!response.ok || !response.body) {
@@ -202,7 +260,7 @@ function tarBinary() {
 }
 
 function nodeBinaryPath(target, nodeDir) {
-  return target.startsWith("win32") ? join(nodeDir, "node.exe") : join(nodeDir, "bin", "node");
+  return join(nodeDir, nodePayloadRelative(platformOf(target)));
 }
 
 function versionOf(nodePath) {
@@ -211,17 +269,90 @@ function versionOf(nodePath) {
   return result.stdout.trim();
 }
 
-async function installedVersion(target, lock) {
-  const nodeDir = join(runtimeRoot, "node", target);
-  const binary = nodeBinaryPath(target, nodeDir);
+/**
+ * The version stamped into the binary. Reading it needs no execution, which is
+ * what makes a foreign-platform runtime verifiable at all; every Node build
+ * embeds `node.js/v<version>`.
+ */
+async function stampedVersion(binaryPath) {
   try {
-    await stat(binary);
+    const bytes = await readFile(binaryPath);
+    const marker = Buffer.from(BINARY_VERSION_MARKER, "ascii");
+    const at = bytes.lastIndexOf(marker);
+    if (at < 0) return null;
+    const match = /^v?(\d+\.\d+\.\d+)/.exec(
+      bytes.subarray(at + marker.length, at + marker.length + 32).toString("ascii"),
+    );
+    return match ? match[1] : null;
   } catch {
     return null;
   }
-  const version = versionOf(binary);
-  const expected = lock.node.version.startsWith("v") ? lock.node.version : `v${lock.node.version}`;
-  return version === expected ? version : null;
+}
+
+/** `include/node/node_version.h` — also needs no execution. */
+async function headerVersion(nodeDir) {
+  try {
+    const text = await readFile(join(nodeDir, VERSION_HEADER), "utf8");
+    const major = /#define NODE_MAJOR_VERSION (\d+)/.exec(text);
+    const minor = /#define NODE_MINOR_VERSION (\d+)/.exec(text);
+    const patch = /#define NODE_PATCH_VERSION (\d+)/.exec(text);
+    if (!major || !minor || !patch) return null;
+    return `${major[1]}.${minor[1]}.${patch[1]}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Inspects an installed runtime without running it (except on the host platform,
+ * where `--version` is the last word). Returns `null` when nothing is installed
+ * and otherwise `{ target, version, problems }` — an empty `problems` means the
+ * tree is exactly the pinned release.
+ */
+async function inspectInstall(target, lock) {
+  const nodeDir = join(runtimeRoot, "node", target);
+  const binaryPath = nodeBinaryPath(target, nodeDir);
+  try {
+    await stat(binaryPath);
+  } catch {
+    return null;
+  }
+
+  const problems = [];
+  const expected = lock.node.version;
+  const platform = platformOf(target);
+
+  const header = await headerVersion(nodeDir);
+  const stamped = await stampedVersion(binaryPath);
+  const version = header ?? stamped;
+
+  if (version === null) {
+    problems.push("no readable version stamp (node_version.h and the binary are both silent)");
+  } else if (!sameVersion(version, expected)) {
+    problems.push(`version is ${version}, expected ${expected}`);
+  }
+  if (header && stamped && !sameVersion(header, stamped)) {
+    problems.push(`the header says ${header} but the binary says ${stamped}`);
+  }
+
+  const expectedNpm = lock.node.npmPayload?.[platform]?.sha256;
+  if (expectedNpm) {
+    const npmFile = join(nodeDir, NPM_PAYLOAD[platform]);
+    const digest = await sha256TextFile(npmFile).catch(() => null);
+    if (digest !== expectedNpm) {
+      problems.push(`npm payload digest is ${digest ?? "unreadable"}, expected ${expectedNpm}`);
+    }
+  }
+
+  // Only the host platform's binary is expected to run at all.
+  if (target === hostTarget()) {
+    const executed = versionOf(binaryPath);
+    if (!sameVersion(executed, expected)) {
+      problems.push(`\`${binaryPath} --version\` reported ${executed ?? "nothing"}`);
+    }
+  }
+
+  return { target, version, problems };
 }
 
 async function installOne(target, lock, { force, mirror }) {
@@ -231,17 +362,29 @@ async function installOne(target, lock, { force, mirror }) {
     fail(`the lock has no artifact for ${target} (supported: ${SUPPORTED.join(", ")})`);
 
   if (!force) {
-    const existing = await installedVersion(target, lock);
-    if (existing) {
-      log(`fetch-runtime: ${target} already installed (${existing}) — use --force to re-download`);
+    const installed = await inspectInstall(target, lock);
+    if (installed && installed.problems.length === 0) {
+      log(
+        `fetch-runtime: ${target} already installed (${installed.version}) — use --force to re-download`,
+      );
       return false;
+    }
+    if (installed) {
+      log(`fetch-runtime: ${target} is installed but failed verification, re-downloading:`);
+      for (const problem of installed.problems) log(`fetch-runtime:   - ${problem}`);
     }
   }
 
   const base = (mirror ?? lock.node.baseUrl ?? "https://nodejs.org/dist").replace(/\/+$/, "");
   const version = lock.node.version.startsWith("v") ? lock.node.version : `v${lock.node.version}`;
   const url = `${base}/${version}/${artifact.archive}`;
-  const staging = await mkdtemp(join(tmpdir(), `pi-desktop-node-${target}-`));
+
+  // Staged *inside* the destination filesystem on purpose: the install ends with
+  // a `rename()`, and a tmpdir on another mount (`/tmp` is tmpfs in WSL and in
+  // many CI images) makes that rename fail with EXDEV.
+  const nodeRoot = join(runtimeRoot, "node");
+  await mkdir(nodeRoot, { recursive: true });
+  const staging = await mkdtemp(join(nodeRoot, `.staging-${target}-`));
 
   try {
     const archive = join(staging, artifact.archive);
@@ -278,14 +421,95 @@ async function installOne(target, lock, { force, mirror }) {
     }
     await rename(extracted, nodeDir);
     await rm(previous, { recursive: true, force: true });
-
-    const version_ = versionOf(nodeBinaryPath(target, nodeDir));
-    if (!version_) fail(`${target}: the extracted runtime did not run`);
-    log(`fetch-runtime: installed ${target} (${version_}) at resources/runtime/node/${target}`);
+    const installed = await inspectInstall(target, lock);
+    if (!installed || installed.problems.length > 0) {
+      fail(
+        `${target}: the extracted runtime failed verification\n${(
+          installed?.problems ?? ["nothing was installed"]
+        )
+          .map((problem) => `  - ${problem}`)
+          .join("\n")}`,
+      );
+    }
+    log(
+      `fetch-runtime: installed ${target} (${installed.version}) at resources/runtime/node/${target}`,
+    );
     return true;
   } finally {
     await rm(staging, { recursive: true, force: true });
   }
+}
+
+/** `--verify`: re-checks every installed runtime and reports, without a download. */
+async function verifyInstalled(lock, requested) {
+  const targets = requested.filter((target) => SUPPORTED.includes(target));
+  let failed = 0;
+  for (const target of targets) {
+    const installed = await inspectInstall(target, lock);
+    if (!installed) {
+      log(`fetch-runtime: ${target} — not installed`);
+      continue;
+    }
+    if (installed.problems.length === 0) {
+      log(`fetch-runtime: ${target} — ok (${installed.version})`);
+      continue;
+    }
+    failed += 1;
+    log(`fetch-runtime: ${target} — FAILED (${installed.version ?? "unknown"})`);
+    for (const problem of installed.problems) log(`fetch-runtime:   - ${problem}`);
+  }
+  if (failed > 0) fail(`${failed} runtime(s) failed verification`);
+  log("fetch-runtime: all installed runtimes match the lock");
+}
+
+/**
+ * Records the npm payload digest into the lock. The payload is byte-identical on
+ * every platform of a release, so one digest covers them all: it is computed
+ * from whichever runtime is installed and written for every supported target.
+ * (This is why `runtime:lock` needs a fetched runtime for at least one platform.)
+ */
+async function updateNpmPayload(lock) {
+  const npmPayload = { ...(lock.node.npmPayload ?? {}) };
+
+  let sample = null;
+  for (const target of SUPPORTED) {
+    const npmFile = join(runtimeRoot, "node", target, NPM_PAYLOAD[platformOf(target)]);
+    try {
+      sample = { digest: await sha256TextFile(npmFile), from: target };
+      break;
+    } catch {
+      // Not installed on this host; the next candidate is tried.
+    }
+  }
+
+  if (!sample) {
+    const cached = Object.values(npmPayload)[0];
+    if (!cached) {
+      fail(
+        `cannot compute the npm payload digest: no runtime is installed.\n` +
+          `  Run \`npm run runtime:fetch\` first (or pass --force), then \`runtime:lock\`.`,
+      );
+    }
+    log(`fetch-runtime: npm payload digest reused from the lock (${cached.sha256.slice(0, 12)}…)`);
+    sample = { digest: cached.sha256, from: "lock" };
+  } else {
+    log(`fetch-runtime: npm payload digest ${sample.digest.slice(0, 12)}… (from ${sample.from})`);
+  }
+
+  for (const target of SUPPORTED) {
+    const platformName = platformOf(target);
+    npmPayload[platformName] = {
+      path: NPM_PAYLOAD[platformName],
+      sha256: sample.digest,
+    };
+  }
+
+  await writeFile(
+    lockPath,
+    `${JSON.stringify({ ...lock, node: { ...lock.node, npmPayload } }, null, 2)}\n`,
+    "utf8",
+  );
+  log(`fetch-runtime: npm payload digests recorded for ${SUPPORTED.length} platform(s)`);
 }
 
 async function generateShims(target) {
@@ -304,6 +528,7 @@ async function main() {
       all: { type: "boolean", default: false },
       force: { type: "boolean", default: false },
       mirror: { type: "string" },
+      verify: { type: "boolean", default: false },
       "update-lock": { type: "boolean", default: false },
       "skip-shims": { type: "boolean", default: false },
     },
@@ -322,6 +547,12 @@ async function main() {
 
   if (values["update-lock"]) {
     await updateLock({ mirror: values.mirror, platform: values.all ? "all" : values.platform });
+    await updateNpmPayload(lock);
+    return;
+  }
+
+  if (values.verify) {
+    await verifyInstalled(lock, requested);
     return;
   }
 

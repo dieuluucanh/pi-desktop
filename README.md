@@ -46,9 +46,9 @@ The feature-by-feature comparison with terminal Pi (including the explicit
 
 Download the installer for your platform from GitHub Releases. The Windows NSIS
 installer and portable `.exe` are the primary artefacts; macOS `.dmg`/`.zip`
-(arm64 + x64) and Linux AppImage/`.deb` are beta. Builds are unsigned in
-v0.1.0, so SmartScreen/Gatekeeper will warn on first launch (instructions in the
-guide).
+(arm64 + x64) and Linux AppImage/`.deb` (x64 + arm64) are beta. Builds are
+unsigned in v0.1.0, so SmartScreen/Gatekeeper will warn on first launch
+(instructions in the guide, including the Linux FUSE and apt notes).
 
 Installed builds check GitHub Releases after launch and show an update banner:
 **Download**, then **Restart & install**.

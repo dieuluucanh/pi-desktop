@@ -21,13 +21,29 @@ files:
   - package.json
   - "!**/*.map"
 
-# jiti-based extension loading, dynamic TypeScript extension resolution and the
-# SDK's asset reads all need real files on disk (plan D2).
+# The Pi host runs under the *bundled* Node (never Electron), which has no asar
+# support: `require()`/`import` inside the host resolve against real paths only.
+# So every module the host can load at runtime has to be a real file on disk —
+# unpacking only `@earendil-works`, `jiti` and `typebox` left `highlight.js` (and
+# ~200 other transitive dependencies of the SDK) inside the asar, and the first
+# session died with `Cannot find package 'highlight.js'`. Hence all of
+# `node_modules/**`, not a list that can fall behind the SDK's dependency tree.
+#
+# `out/**` is unpacked for the same reason: the supervisor spawns the host as
+# `<bundled node> <resources>/app.asar.unpacked/out/host/index.mjs`
+# (`src/main/runtime/resolve-runtime.ts`), and the packaged PATH shims point at
+# that path. Unpacked entries stay readable *through* the asar, so Electron
+# itself is unaffected; the cost is a larger install.
 asarUnpack:
-  - "**/node_modules/@earendil-works/**"
-  - "**/node_modules/jiti/**"
-  - "**/node_modules/typebox/**"
+  - out/**
+  - "**/node_modules/**"
   - resources/runtime/**
+
+# The runtime shims are generated when the runtime is fetched, so the copies in
+# `extraResources` bake in development paths. This hook rewrites them with the
+# packaged layout — `extraResources` is copied after the asar is packed, so the
+# shim directory only exists by `afterPack`.
+afterPack: scripts/electron-builder-after-pack.mjs
 
 # The bundled runtime and the vendored Office manifest are read by path, so
 # they must live outside the asar.
@@ -41,8 +57,8 @@ extraResources:
   # The window and macOS dock icons are read by path at runtime, so they must be
   # outside the asar too (plan step 28). The filter is an explicit list on
   # purpose: the Office-branded SVGs and the add-in's 80px raster have no reason
-  # to travel inside the desktop app. Adding an asset here means adding it below,
-  # and `tests/packaging/icons.test.ts` guards the set.
+  # to travel inside the desktop app. Adding an asset here means adding it just
+  # below, and `tests/packaging/icons.test.ts` guards the set.
   - from: assets
     to: branding
     filter:
@@ -83,7 +99,49 @@ linux:
   category: Development
   # Same 512px source: electron-builder generates the deb/AppImage icon sizes.
   icon: assets/icon-512.png
-  target: [AppImage, deb]
+  # `productName` ("Pi Desktop") contains a space: the .desktop `Exec` would
+  # need quoting, and the kebab-cased name is what a Linux user searches for.
+  # This sets the binary name, the .desktop filename, `StartupWMClass` and the
+  # `/opt/<name>` directory in one place.
+  executableName: pi-desktop
+  # Electron derives its `app_id` / `WM_CLASS` from `desktopName` in
+  # package.json, so without this a running window is not associated with the
+  # launcher entry (wrong icon, or a duplicate icon on some desktops).
+  syncDesktopName: true
+  # deb control `Maintainer:` / `Vendor:`; without it fpm refuses the package.
+  maintainer: Pi Desktop contributors <dieuluucanh@gmail.com>
+  vendor: Pi Desktop contributors
+  synopsis: Desktop app for the Pi coding agent
+  target:
+    - target: AppImage
+      arch: [x64, arm64]
+    - target: deb
+      arch: [x64, arm64]
+
+appImage:
+  # Same rule as NSIS/portable on Windows (plan step 27): each target gets its
+  # own name. AppImage and deb both write update info into `latest-linux.yml`,
+  # and the updater resolves the download through whatever that file names —
+  # sharing one pattern would let the second target overwrite the first's entry.
+  artifactName: "Pi-Desktop-${version}-linux-${arch}-appimage.${ext}"
+
+deb:
+  artifactName: "Pi-Desktop-${version}-linux-${arch}-deb.${ext}"
+  # The gtk-3/notify/nss/... set electron-builder defaults to is Ubuntu 20.04's
+  # naming and does not resolve on current Ubuntu. `libasound2t64` is the 24.04+
+  # rename; the grandchild alternative falls back to `libasound2` on older
+  # releases without pulling in both. t64→legacy wins when both exist.
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
+    - "libasound2t64 | libasound2"
 
 # GitHub Releases is the update feed (plan step 26): `publish` writes
 # `app-update.yml` into the packaged app, which `electron-updater` reads. The
