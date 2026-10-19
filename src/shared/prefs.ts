@@ -72,6 +72,15 @@ export interface UiPrefs {
 /** How many favourites are kept; the picker is a shortlist, not a catalogue. */
 export const MAX_FAVORITE_MODELS = 12;
 
+/**
+ * Longest favourite key kept. A key is `provider/id`, and the gateway editor's
+ * caps are 64 and 200 (`MAX_PROVIDER_ID_LENGTH`/`MAX_MODEL_ID_LENGTH` in
+ * `./custom-providers`), so 265 is the true worst case — this leaves headroom.
+ * `sanitizeFavorites` **drops** an over-long key silently, which would make a
+ * favourited rich-id model disappear on the next reload.
+ */
+export const MAX_FAVORITE_KEY_LENGTH = 300;
+
 /** The preference key for a model, matching the catalog's stable key. */
 export function favoriteModelKey(provider: string, id: string): string {
   return `${provider}/${id}`;
@@ -129,7 +138,9 @@ export function sanitizeFavorites(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   const favorites: string[] = [];
   for (const entry of input) {
-    if (typeof entry !== "string" || entry.length === 0 || entry.length > 200) continue;
+    if (typeof entry !== "string" || entry.length === 0 || entry.length > MAX_FAVORITE_KEY_LENGTH) {
+      continue;
+    }
     if (favorites.includes(entry)) continue;
     favorites.push(entry);
     if (favorites.length >= MAX_FAVORITE_MODELS) break;

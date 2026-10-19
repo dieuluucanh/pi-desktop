@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Search, Trash2 } from "lucide-react";
-import type { CustomProviderSummary } from "../../../shared/custom-providers";
+import {
+  modelIdError,
+  providerIdError,
+  type CustomProviderSummary,
+} from "../../../shared/custom-providers";
 import type { ProviderSummary } from "../../../shared/providers";
 import { useAppStore } from "../state/app-store";
 import { Badge } from "../ui/badge";
@@ -367,6 +371,24 @@ function CustomGatewaySheet({
   const [error, setError] = useState<string | null>(null);
 
   const submit = async (): Promise<void> => {
+    // Pre-check with the same shared rules the host enforces, so an obviously
+    // bad id is refused here with a specific message instead of costing a host
+    // round trip. The host stays the authority (it validates again).
+    const providerProblem = providerIdError(id);
+    if (providerProblem) {
+      setError(providerProblem);
+      return;
+    }
+    const modelIds = models
+      .split(",")
+      .map((model) => model.trim())
+      .filter((model) => model.length > 0);
+    const modelProblem = modelIds.map(modelIdError).find((message) => message !== null);
+    if (modelProblem) {
+      setError(modelProblem);
+      return;
+    }
+
     setBusy(true);
     setError(null);
     try {
@@ -376,11 +398,7 @@ function CustomGatewaySheet({
         baseUrl: baseUrl.trim(),
         ...(api.trim() ? { api: api.trim() } : {}),
         ...(apiKey.length > 0 ? { apiKey } : {}),
-        models: models
-          .split(",")
-          .map((model) => model.trim())
-          .filter((model) => model.length > 0)
-          .map((model) => ({ id: model })),
+        models: modelIds.map((model) => ({ id: model })),
       });
       setApiKey("");
       onClose();
@@ -420,6 +438,10 @@ function CustomGatewaySheet({
               className={field}
             />
           </label>
+          <p className="text-[11px] text-ink-faint" data-testid="provider-id-hint">
+            No spaces and no &quot;/&quot; — Pi splits provider/model at the first slash. Up to 64
+            characters.
+          </p>
           <label className="flex items-center gap-2">
             <span className="w-24 text-xs text-ink-muted">Name</span>
             <input
@@ -454,10 +476,16 @@ function CustomGatewaySheet({
               aria-label="Model ids"
               value={models}
               onChange={(event) => setModels(event.target.value)}
-              placeholder="gpt-5, gpt-5-mini"
+              placeholder="gpt-5, hf:deepseek-ai/DeepSeek-V4.1-Flash"
               className={field}
             />
           </label>
+          <p className="text-[11px] text-ink-faint" data-testid="model-ids-hint">
+            Comma-separated. An id may contain &quot;/&quot;, &quot;:&quot;, &quot;~&quot; or
+            &quot;@&quot; (e.g.{" "}
+            <code className="font-mono">hf:deepseek-ai/DeepSeek-V4.1-Flash</code>) — but no spaces
+            and no commas, and up to 200 characters.
+          </p>
           <label className="flex items-center gap-2">
             <span className="w-24 text-xs text-ink-muted">API key</span>
             <input

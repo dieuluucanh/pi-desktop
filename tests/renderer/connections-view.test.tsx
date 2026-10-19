@@ -179,4 +179,98 @@ describe("ConnectionsView", () => {
     );
     expect(document.body.textContent ?? "").not.toContain("sk-gateway-secret");
   });
+
+  // The bug this feature fixes: a real gateway model id (HuggingFace form) was
+  // refused by a package-name charset Pi does not apply.
+  it("submits a rich model id verbatim", async () => {
+    const request = stubRequest();
+    render(<ConnectionsView />);
+    await waitFor(() => expect(screen.getByTestId("group-custom")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: /Add gateway/ }));
+    await userEvent.type(screen.getByLabelText("Provider id"), "hf-router");
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://router.huggingface.co/v1");
+    await userEvent.type(
+      screen.getByLabelText("Model ids"),
+      "hf:deepseek-ai/DeepSeek-V4.1-Flash, ~anthropic/claude-opus-latest",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: "control",
+        method: "providers.custom",
+        params: {
+          action: "set",
+          provider: {
+            id: "hf-router",
+            baseUrl: "https://router.huggingface.co/v1",
+            api: "openai-completions",
+            models: [
+              { id: "hf:deepseek-ai/DeepSeek-V4.1-Flash" },
+              { id: "~anthropic/claude-opus-latest" },
+            ],
+          },
+        },
+      }),
+    );
+  });
+
+  it("refuses a bad provider id before calling the host", async () => {
+    const request = stubRequest();
+    render(<ConnectionsView />);
+    await waitFor(() => expect(screen.getByTestId("group-custom")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: /Add gateway/ }));
+    await userEvent.type(screen.getByLabelText("Provider id"), "my/fleet");
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://gateway.example.com/v1");
+    await userEvent.type(screen.getByLabelText("Model ids"), "gpt-5");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // The message is the shared rule's, naming the actual problem.
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/first slash/i);
+    // A `list` call is the normal mount load; a `set` must never happen.
+    expect(
+      request.mock.calls.some(
+        (call) =>
+          (call[0] as { method?: string; params?: { action?: string } }).params?.action === "set",
+      ),
+    ).toBe(false);
+  });
+
+  it("refuses a model id with a space before calling the host", async () => {
+    // A comma cannot reach an id here: the field splits on it, so `gpt-5,mini`
+    // is two models. The shared rule still refuses commas for API callers
+    // (pinned in tests/shared/custom-providers.test.ts).
+    const request = stubRequest();
+    render(<ConnectionsView />);
+    await waitFor(() => expect(screen.getByTestId("group-custom")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: /Add gateway/ }));
+    await userEvent.type(screen.getByLabelText("Provider id"), "my-gateway");
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://gateway.example.com/v1");
+    await userEvent.type(screen.getByLabelText("Model ids"), "gpt 5");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/model id/i);
+    expect(
+      request.mock.calls.some(
+        (call) =>
+          (call[0] as { method?: string; params?: { action?: string } }).params?.action === "set",
+      ),
+    ).toBe(false);
+  });
+
+  it("shows the id rules next to the fields", async () => {
+    stubRequest();
+    render(<ConnectionsView />);
+    await waitFor(() => expect(screen.getByTestId("group-custom")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /Add gateway/ }));
+
+    expect(screen.getByTestId("model-ids-hint").textContent).toMatch(/comma-separated/i);
+    expect(screen.getByTestId("model-ids-hint").textContent).toMatch(/200 characters/i);
+    expect(screen.getByTestId("provider-id-hint").textContent).toMatch(/first slash/i);
+  });
 });

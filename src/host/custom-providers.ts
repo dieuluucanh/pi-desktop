@@ -14,6 +14,8 @@
 import type { HostMethod } from "../shared/host-protocol";
 import {
   isCustomProviderAction,
+  modelIdError,
+  providerIdError,
   type CustomProviderInput,
   type CustomProviderSummary,
 } from "../shared/custom-providers";
@@ -41,9 +43,6 @@ export interface CustomProviderStore {
   remove(providerId: string): Promise<void>;
 }
 
-const ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
-const MAX_ID_LENGTH = 64;
-
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
@@ -52,15 +51,21 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function requireId(value: unknown, label: string): string {
-  const id = optionalString(value);
-  if (!id) throw new ProviderError(`${label} is required`);
-  if (id.length > MAX_ID_LENGTH || !ID_PATTERN.test(id)) {
-    throw new ProviderError(
-      `${label} must start with a letter or digit and contain only letters, digits, ".", "_" or "-"`,
-    );
-  }
-  return id;
+/**
+ * The id rules live in `src/shared/custom-providers.ts` (plan step 29) so the
+ * dialog and this handler can never disagree; here they become exceptions.
+ * The message is the shared one verbatim — the renderer shows the same string.
+ */
+function requireProviderId(value: unknown): string {
+  const message = providerIdError(value);
+  if (message) throw new ProviderError(message);
+  return (value as string).trim();
+}
+
+function requireModelId(value: unknown): string {
+  const message = modelIdError(value);
+  if (message) throw new ProviderError(message);
+  return (value as string).trim();
 }
 
 function requireBaseUrl(value: unknown): string {
@@ -116,9 +121,19 @@ export interface ModelsJsonProviderEntry {
   models: Array<{ id: string; name?: string; contextWindow?: number; maxTokens?: number }>;
 }
 
+/**
+ * A `providers.<id>` object as the file actually holds it: everything the
+ * editor validates, plus the hand-written keys the app preserves but never
+ * interprets (`oauth`, `authHeader`, `modelOverrides`, per-model `cost`/…).
+ * Parsed JSON is untrusted, so the extra keys are `unknown` by construction.
+ */
+export interface StoredCustomProviderEntry extends ModelsJsonProviderEntry {
+  [key: string]: unknown;
+}
+
 /** Validates and normalises one gateway for storage. Throws `ProviderError`. */
 export function validateCustomProvider(input: CustomProviderInput): ModelsJsonProviderEntry {
-  requireId(input?.id, "a provider id");
+  requireProviderId(input?.id);
   const baseUrl = requireBaseUrl(input?.baseUrl);
   const api = optionalString(input?.api);
   const name = optionalString(input?.name);
@@ -139,7 +154,7 @@ export function validateCustomProvider(input: CustomProviderInput): ModelsJsonPr
   const seen = new Set<string>();
   const models: ModelsJsonProviderEntry["models"] = [];
   for (const model of input.models) {
-    const modelId = requireId((model as { id?: unknown })?.id, "a model id");
+    const modelId = requireModelId((model as { id?: unknown })?.id);
     if (seen.has(modelId)) continue;
     seen.add(modelId);
     const entry: ModelsJsonProviderEntry["models"][number] = { id: modelId };
@@ -208,6 +223,64 @@ export function summarizeCustomProviders(
     .map((id) => summarizeCustomProvider(id, providers[id]));
 }
 
+/**
+ * Folds a validated entry over whatever is already stored (plan step 29).
+ *
+ * `upsertCustomProvider` used to assign the entry wholesale, which silently
+ * deleted every key the editor does not render — a hand-written `oauth`,
+ * `modelOverrides`, per-model `cost`/`reasoning`/`input`, and even the stored
+ * `apiKey` (the dialog's placeholder promises "leave blank to keep"). The four
+ * key classes have deliberately different rules:
+ *
+ *  - **rendered scalars** (`name`, `baseUrl`, `api`) are authoritative: the
+ *    input wins, and an absent value **clears** the stored one, because the
+ *    dialog is the thing that renders them (blank means blank);
+ *  - **`apiKey`** is write-only: present overwrites, absent **keeps** the
+ *    stored key (there is no UI affordance to clear it — a documented gap);
+ *  - **`headers`/`compat`** are real input fields the dialog cannot render:
+ *    present wins, absent **preserves** what is stored (clearing them is a
+ *    hand-edit, exactly as today);
+ *  - **everything else** (`oauth`, `authHeader`, `modelOverrides`, unknown
+ *    keys) is preserved untouched — the app never writes those.
+ *
+ * `models` merge **by id**: a stored per-model object keeps its unrendered keys
+ * and the input's rendered ones win, ids missing from the input are removed, and
+ * the input order is the stored order.
+ */
+export function mergeCustomProviderEntry(
+  stored: unknown,
+  entry: ModelsJsonProviderEntry,
+): StoredCustomProviderEntry {
+  const previous = record(stored);
+  const merged: Record<string, unknown> = { ...previous };
+
+  merged.baseUrl = entry.baseUrl;
+  if (entry.name === undefined) delete merged.name;
+  else merged.name = entry.name;
+  if (entry.api === undefined) delete merged.api;
+  else merged.api = entry.api;
+
+  if (entry.apiKey !== undefined) merged.apiKey = entry.apiKey;
+  if (entry.headers !== undefined) merged.headers = entry.headers;
+  if (entry.compat !== undefined) merged.compat = entry.compat;
+
+  const storedModels = Array.isArray(previous.models) ? previous.models : [];
+  const storedById = new Map<string, Record<string, unknown>>();
+  for (const model of storedModels) {
+    const value = record(model);
+    if (typeof value.id === "string") storedById.set(value.id, value);
+  }
+  merged.models = entry.models.map((model) => ({
+    ...(storedById.get(model.id) ?? {}),
+    ...model,
+  }));
+
+  // SAFETY: every field the interface requires was just assigned above
+  // (`baseUrl`, `models`) or came from the stored entry that Pi already loads;
+  // the spread is what carries the unrendered keys the interface cannot name.
+  return merged as StoredCustomProviderEntry;
+}
+
 /** Returns `text` with `entry` stored under `providers.<id>` (unknown keys kept). */
 export function upsertCustomProvider(
   text: string | null,
@@ -217,8 +290,26 @@ export function upsertCustomProvider(
 ): string {
   const root = parseModelsJson(text, path);
   const providers = { ...record(root.providers) };
-  providers[id] = entry;
+  providers[id] = mergeCustomProviderEntry(providers[id], entry);
   return `${JSON.stringify({ ...root, providers }, null, 2)}\n`;
+}
+
+/**
+ * The raw `providers.<id>` object currently in `text`, or `undefined`. Used to
+ * summarize what is **actually on disk** after an update instead of echoing the
+ * input back (the merge means the two differ).
+ */
+export function storedCustomProviderEntry(
+  text: string | null,
+  path: string,
+  providerId: string,
+): StoredCustomProviderEntry | undefined {
+  const entry = record(parseModelsJson(text, path).providers)[providerId];
+  if (entry === undefined) return undefined;
+  // SAFETY: `entry` is one value of the parsed `providers` map. It is untrusted
+  // JSON, which is exactly what `StoredCustomProviderEntry` models — a known
+  // core plus unknown extra keys — and callers only read it defensively.
+  return entry as StoredCustomProviderEntry;
 }
 
 /** Returns `text` without `providers.<id>`. */
@@ -260,12 +351,12 @@ export function createCustomProviderHandlers(options: CustomProviderHandlerOptio
         if (action === "set") {
           const providerInput = (input.provider ?? {}) as CustomProviderInput;
           const entry = validateCustomProvider(providerInput);
-          const providerId = requireId(providerInput.id, "a provider id");
+          const providerId = requireProviderId(providerInput.id);
           return {
             provider: await store().set({ ...providerInput, ...entry, id: providerId }),
           };
         }
-        const providerId = requireId(input.providerId ?? input.id, "a provider id");
+        const providerId = requireProviderId(input.providerId ?? input.id);
         await store().remove(providerId);
         return { removed: true, providerId };
       },

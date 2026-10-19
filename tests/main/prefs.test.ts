@@ -3,10 +3,13 @@ import {
   DEFAULT_PREFS,
   MAX_DRAFT_LENGTH,
   MAX_DRAFT_TABS,
+  MAX_FAVORITE_KEY_LENGTH,
+  MAX_FAVORITE_MODELS,
   MAX_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
   mergePrefs,
   sanitizeDrafts,
+  sanitizeFavorites,
   sanitizePrefs,
 } from "../../src/shared/prefs";
 
@@ -126,5 +129,38 @@ describe("drafts (plan step 6)", () => {
     const prefs = sanitizePrefs({ theme: "light", drafts: { "tab-1": "a draft" } });
     expect(prefs.drafts).toEqual({ "tab-1": "a draft" });
     expect(sanitizePrefs({}).drafts).toEqual({});
+  });
+});
+
+/**
+ * Favourites are `provider/id` keys living in app state, so their bound has to
+ * cover the gateway editor's caps (64 + 1 + 200). A key past the bound is
+ * **dropped**, not truncated, so a too-small bound loses the model silently on
+ * the next reload.
+ */
+describe("favorites (plan step 8, bound raised in step 29)", () => {
+  it("keeps a key at the true worst-case length", () => {
+    const key = `${"p".repeat(64)}/${"m".repeat(200)}`;
+    expect(key.length).toBe(265);
+    expect(sanitizeFavorites([key])).toEqual([key]);
+    expect(sanitizePrefs({ favoriteModels: [key] }).favoriteModels).toEqual([key]);
+  });
+
+  it("still drops an over-long, empty or non-string key", () => {
+    const tooLong = "x".repeat(MAX_FAVORITE_KEY_LENGTH + 1);
+    expect(sanitizeFavorites([tooLong])).toEqual([]);
+    expect(sanitizeFavorites(["", "a", 42, null])).toEqual(["a"]);
+  });
+
+  it("still dedupes and caps the list", () => {
+    const many = Array.from({ length: MAX_FAVORITE_MODELS + 5 }, (_, index) => `p/m-${index}`);
+    const kept = sanitizeFavorites([...many, "p/m-0"]);
+    expect(kept).toHaveLength(MAX_FAVORITE_MODELS);
+    expect(new Set(kept).size).toBe(MAX_FAVORITE_MODELS);
+  });
+
+  it("returns an empty list for junk", () => {
+    expect(sanitizeFavorites(null)).toEqual([]);
+    expect(sanitizeFavorites("nope")).toEqual([]);
   });
 });

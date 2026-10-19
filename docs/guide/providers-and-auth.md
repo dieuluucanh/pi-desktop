@@ -41,6 +41,32 @@ is written **atomically**, and the app verifies the entry loads in a throw-away
 Pi runtime before keeping it; on failure the previous bytes are restored. A
 malformed file is surfaced, never overwritten.
 
+Pi’s own schema accepts **any** non-empty string as a model id, and real catalogs
+ship ids containing `/`, `:`, `~` and `@` (`~anthropic/claude-opus-latest`,
+`@cf/meta/llama-3.1-8b-instruct`). The editor allows the same, so a HuggingFace
+or router-style id works as-is:
+
+- **Model ids** are comma-separated. An id may contain `/`, `:`, `~`, `@` and
+  other punctuation — e.g. `hf:deepseek-ai/DeepSeek-V4.1-Flash` — but not
+  whitespace, control characters or a comma (a comma would split it into two
+  models), and at most 200 characters. A `/` is fine here: Pi tries the full
+  `provider/id` reference first, and the provider id below is guaranteed not to
+  contain one.
+- **Provider ids** follow the same permissive charset, but may not contain `/`
+  — Pi splits `provider/model` at the first slash, so one there would make the
+  provider’s own models unreferencable and break the favourite-model key. They
+  are also limited to 64 characters and refuse the JSON-key hazards
+  (`__proto__`, `prototype`, `constructor`, `.`, `..`), because the id is the
+  key in the file’s `providers` map.
+- **A blank API key keeps the stored one.** Leave the field empty to edit a
+  gateway without retyping its credential; typing a value replaces it.
+- **Editing a gateway keeps what this editor does not show.** Keys written by
+  hand — `modelOverrides`, per-model `cost`/`reasoning`/`input`, `oauth`,
+  `authHeader` — survive a save from the app exactly as they were. The rendered
+  fields (name, base URL, API flavour, the model list) are authoritative, so
+  clearing one clears it, and removing a model id from the list removes it from
+  the file.
+
 ## Proxy and offline
 
 - `httpProxy` (Settings → Network) is a Pi `settings.json` key and is inherited

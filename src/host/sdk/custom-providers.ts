@@ -11,6 +11,7 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { CustomProviderInput, CustomProviderSummary } from "../../shared/custom-providers";
 import {
   removeCustomProvider,
+  storedCustomProviderEntry,
   summarizeCustomProvider,
   summarizeCustomProviders,
   upsertCustomProvider,
@@ -72,7 +73,13 @@ export function createSdkCustomProviderStore(
         else await io.write(modelsPath, previous);
         throw error;
       }
-      return summarizeCustomProvider(providerId, entry);
+      // Summarize what the file **now holds**, not the input: the write merges
+      // over any existing entry (unrendered keys, the stored key), so echoing
+      // the input back would describe something the profile does not contain.
+      return summarizeCustomProvider(
+        providerId,
+        storedCustomProviderEntry(await io.read(modelsPath), modelsPath, providerId),
+      );
     },
 
     async remove(providerId: string): Promise<void> {

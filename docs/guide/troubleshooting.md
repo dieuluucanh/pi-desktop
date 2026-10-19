@@ -57,6 +57,17 @@ resource. The window shows a safe-mode banner.
 - **Wrong or missing credentials** — check **Connections**; a provider shows a
   status badge and a sign-in route. `auth.json` is shared, so terminal Pi sees
   the same credentials.
+- **A custom model id will not save** — the dialog names the exact problem. An id
+  may contain `/`, `:`, `~`, `@` and other punctuation (e.g.
+  `hf:deepseek-ai/DeepSeek-V4.1-Flash`), but not spaces, control characters or a
+  comma, and at most 200 characters. A comma cannot be typed into the
+  comma-separated field: add such an id to `models.json` by hand instead. Provider
+  ids additionally cannot contain `/` (Pi splits `provider/model` at the first
+  slash), are capped at 64 characters, and refuse `__proto__` and friends because
+  the id is a JSON object key.
+- **A custom gateway lost its API key after an edit** — leave the key field
+  blank to keep the stored value; typing a value replaces it. Deleting a gateway
+  with the button removes the whole entry, key included.
 - **Proxy** — set `httpProxy` in Settings → Network; every host inherits it.
 
 ## Disk and permission problems

@@ -97,6 +97,87 @@ describe("createSdkCustomProviderStore", () => {
     expect(memory.text()).toBe(original);
   });
 
+  // The summary must describe the file after the merge, not the input: an edit
+  // keeps unrendered keys and (when the field is blank) the stored key.
+  describe("summarizing the stored entry", () => {
+    const HAND_WRITTEN = JSON.stringify({
+      providers: {
+        "my-gateway": {
+          name: "Old",
+          baseUrl: "https://old.test/v1",
+          apiKey: SECRET,
+          headers: { "x-tenant": "acme" },
+          compat: { supportsReasoning: true },
+          modelOverrides: { "gpt-5": { name: "Renamed" } },
+          models: [{ id: "gpt-5", cost: { input: 1, output: 2 } }],
+        },
+      },
+    });
+
+    it("keeps unrendered keys and the stored key when the input omits them", async () => {
+      const memory = memoryIo(HAND_WRITTEN);
+      const store = createSdkCustomProviderStore({
+        modelsPath: PATH,
+        io: memory.io,
+        verify: async () => true,
+      });
+
+      const summary = await store.set({
+        ...INPUT,
+        name: "Updated",
+        baseUrl: "https://new.test/v1",
+        apiKey: undefined,
+      });
+
+      const stored = (
+        JSON.parse(memory.text()!) as { providers: Record<string, Record<string, unknown>> }
+      ).providers["my-gateway"] as Record<string, unknown>;
+      expect(stored.modelOverrides).toEqual({ "gpt-5": { name: "Renamed" } });
+      expect(stored.compat).toEqual({ supportsReasoning: true });
+      expect(stored.apiKey).toBe(SECRET);
+      // The summary reflects the file, so the kept key still reads as stored…
+      expect(summary).toMatchObject({ name: "Updated", baseUrl: "https://new.test/v1" });
+      expect(summary.hasApiKey).toBe(true);
+      expect(summary.headerNames).toEqual(["x-tenant"]);
+      // …and it still never carries the key itself.
+      expect(JSON.stringify(summary)).not.toContain(SECRET);
+    });
+
+    it("reports a rich model id verbatim from the file", async () => {
+      const memory = memoryIo(null);
+      const store = createSdkCustomProviderStore({
+        modelsPath: PATH,
+        io: memory.io,
+        verify: async () => true,
+      });
+
+      const summary = await store.set({
+        ...INPUT,
+        id: "hf-router",
+        models: [{ id: "hf:deepseek-ai/DeepSeek-V4.1-Flash" }],
+      });
+
+      expect(memory.text()).toContain("hf:deepseek-ai/DeepSeek-V4.1-Flash");
+      expect(summary.modelIds).toEqual(["hf:deepseek-ai/DeepSeek-V4.1-Flash"]);
+    });
+
+    it("still reverts when the merged entry cannot load", async () => {
+      // The merge can change what Pi sees (e.g. a stale unrendered `oauth`), so
+      // the revert path has to cover it: the file goes back untouched.
+      const memory = memoryIo(HAND_WRITTEN);
+      const store = createSdkCustomProviderStore({
+        modelsPath: PATH,
+        io: memory.io,
+        verify: async () => false,
+      });
+
+      await expect(
+        store.set({ ...INPUT, name: "Updated", apiKey: undefined }),
+      ).rejects.toMatchObject({ code: "validation_failed" });
+      expect(memory.text()).toBe(HAND_WRITTEN);
+    });
+  });
+
   it("removes the file again when a first-ever write fails verification", async () => {
     const memory = memoryIo(null);
     const store = createSdkCustomProviderStore({

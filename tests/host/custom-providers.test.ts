@@ -3,6 +3,7 @@ import {
   createCustomProviderHandlers,
   parseModelsJson,
   removeCustomProvider,
+  storedCustomProviderEntry,
   summarizeCustomProviders,
   upsertCustomProvider,
   validateCustomProvider,
@@ -67,6 +68,49 @@ describe("validateCustomProvider", () => {
     expect(() => validateCustomProvider({ ...INPUT, models: [] })).toThrow(/at least one model/i);
   });
 
+  // The bug this feature fixes: a real gateway id such as the HuggingFace form
+  // was rejected by a package-name charset that Pi itself does not apply.
+  it("accepts the model ids Pi accepts, verbatim", () => {
+    const entry = validateCustomProvider({
+      ...INPUT,
+      models: [
+        { id: "hf:deepseek-ai/DeepSeek-V4.1-Flash" },
+        { id: "~anthropic/claude-opus-latest" },
+        { id: "@cf/meta/llama-3.1-8b-instruct" },
+        { id: "openrouter/auto:exacto" },
+        { id: ":free" },
+      ],
+    });
+    expect(entry.models.map((model) => model.id)).toEqual([
+      "hf:deepseek-ai/DeepSeek-V4.1-Flash",
+      "~anthropic/claude-opus-latest",
+      "@cf/meta/llama-3.1-8b-instruct",
+      "openrouter/auto:exacto",
+      ":free",
+    ]);
+  });
+
+  it("trims a model id before storing it", () => {
+    const entry = validateCustomProvider({ ...INPUT, models: [{ id: "  hf:deepseek-ai/x  " }] });
+    expect(entry.models[0]?.id).toBe("hf:deepseek-ai/x");
+  });
+
+  it("names the model, not the provider, when a model id is bad", () => {
+    // The two errors must stay distinguishable: "a provider id …" on a model id
+    // sends the user to the wrong field.
+    for (const id of ["gpt 5", "gpt\t5", "gpt-5,mini", "m".repeat(201)]) {
+      expect(() => validateCustomProvider({ ...INPUT, models: [{ id }] }), id).toThrow(
+        /^a model id/i,
+      );
+    }
+  });
+
+  it("still refuses provider ids Pi cannot reference", () => {
+    for (const id of ["a/b", "__proto__", "constructor", ".", "..", "p".repeat(65), "a b"]) {
+      expect(() => validateCustomProvider({ ...INPUT, id }), id).toThrow(/provider id/i);
+    }
+  });
+
   it("deduplicates model ids and drops unknown scalar fields", () => {
     const entry = validateCustomProvider({
       ...INPUT,
@@ -93,6 +137,130 @@ describe("models.json editing", () => {
   it("surfaces a malformed file instead of replacing it", () => {
     expect(() => parseModelsJson("{ not json", PATH)).toThrow(/not valid JSON/i);
     expect(() => parseModelsJson("[1,2,3]", PATH)).toThrow(/JSON object/i);
+  });
+
+  // The second half of the bug: the sheet only renders a few fields, and the
+  // old wholesale replace deleted everything else — including hand-written
+  // provider config and the stored key (whose placeholder says "leave blank to
+  // keep").
+  describe("merging over an existing entry", () => {
+    const handWritten = JSON.stringify({
+      providers: {
+        existing: {
+          name: "Old name",
+          baseUrl: "https://old.test/v1",
+          api: "openai-responses",
+          apiKey: SECRET,
+          headers: { "x-tenant": "acme" },
+          compat: { supportsReasoning: true },
+          oauth: "radius",
+          authHeader: false,
+          modelOverrides: { "gpt-5": { name: "Renamed" } },
+          models: [
+            { id: "gpt-5", name: "GPT-5", cost: { input: 1, output: 2 }, reasoning: true },
+            { id: "drop-me", name: "Gone" },
+          ],
+        },
+      },
+    });
+
+    function upsert(text: string, patch: Record<string, unknown>): Record<string, unknown> {
+      const next = upsertCustomProvider(
+        text,
+        "existing",
+        validateCustomProvider({ ...INPUT, id: "existing", ...patch }),
+        PATH,
+      );
+      return (JSON.parse(next) as { providers: Record<string, Record<string, unknown>> }).providers
+        .existing as Record<string, unknown>;
+    }
+
+    it("preserves keys the editor does not render", () => {
+      const entry = upsert(handWritten, {
+        name: "New name",
+        baseUrl: "https://new.test/v1",
+        api: "openai-completions",
+        models: [{ id: "gpt-5" }],
+      });
+      expect(entry.oauth).toBe("radius");
+      expect(entry.authHeader).toBe(false);
+      expect(entry.modelOverrides).toEqual({ "gpt-5": { name: "Renamed" } });
+    });
+
+    it("keeps the stored key when the input omits one", () => {
+      // `INPUT` always carries a key, so drop it explicitly: this is the
+      // "stored — leave blank to keep" promise the placeholder makes.
+      const next = upsertCustomProvider(
+        handWritten,
+        "existing",
+        validateCustomProvider({ ...INPUT, id: "existing", apiKey: undefined }),
+        PATH,
+      );
+      const entry = (JSON.parse(next) as { providers: Record<string, Record<string, unknown>> })
+        .providers.existing as Record<string, unknown>;
+      expect(entry.apiKey).toBe(SECRET);
+    });
+
+    it("lets a submitted key overwrite the stored one", () => {
+      const entry = upsert(handWritten, { apiKey: "sk-replaced" });
+      expect(entry.apiKey).toBe("sk-replaced");
+    });
+
+    it("lets the input overwrite headers and compat, and preserves them when absent", () => {
+      // headers/compat are real input fields, so present wins...
+      expect(upsert(handWritten, { headers: { "x-new": "1" } }).headers).toEqual({ "x-new": "1" });
+      expect(upsert(handWritten, { compat: { streamUsage: true } }).compat).toEqual({
+        streamUsage: true,
+      });
+      // ...while absent preserves what is on disk (clearing is a hand-edit).
+      expect(upsert(handWritten, { headers: undefined }).headers).toEqual({ "x-tenant": "acme" });
+      expect(upsert(handWritten, { compat: undefined }).compat).toEqual({
+        supportsReasoning: true,
+      });
+    });
+
+    it("merges models by id, keeping unrendered per-model keys", () => {
+      const entry = upsert(handWritten, { models: [{ id: "gpt-5", contextWindow: 128_000 }] });
+      expect(entry.models).toEqual([
+        {
+          id: "gpt-5",
+          name: "GPT-5",
+          cost: { input: 1, output: 2 },
+          reasoning: true,
+          contextWindow: 128_000,
+        },
+      ]);
+    });
+
+    it("removes a model id that the input no longer lists, in input order", () => {
+      const entry = upsert(handWritten, { models: [{ id: "new-a" }, { id: "gpt-5" }] });
+      expect((entry.models as Array<{ id: string }>).map((model) => model.id)).toEqual([
+        "new-a",
+        "gpt-5",
+      ]);
+    });
+
+    it("clears a rendered scalar when the input omits it", () => {
+      const entry = upsert(handWritten, { name: undefined, api: undefined });
+      expect("name" in entry).toBe(false);
+      expect("api" in entry).toBe(false);
+    });
+
+    it("applies the same merge through storedCustomProviderEntry after a reload", () => {
+      const text = upsertCustomProvider(
+        handWritten,
+        "existing",
+        validateCustomProvider({ ...INPUT, id: "existing", apiKey: undefined }),
+        PATH,
+      );
+      const stored = storedCustomProviderEntry(text, PATH, "existing") as {
+        apiKey?: string;
+        oauth?: string;
+      };
+      expect(stored.apiKey).toBe(SECRET);
+      expect(stored.oauth).toBe("radius");
+      expect(storedCustomProviderEntry(text, PATH, "missing")).toBeUndefined();
+    });
   });
 
   it("removes an entry without disturbing the rest", () => {
