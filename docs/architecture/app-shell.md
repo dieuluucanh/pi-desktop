@@ -11,12 +11,49 @@ sidebar          + New session · Open project… · Project · Sessions · View
 tab strip        session tabs (empty until step 11) + the "+" action
 main area        the active view (welcome | session | settings | extensions |
                  connections | skills | diagnostics)
-status bar       Pi profile · bundled runtime · view mode · transient hints
+status bar       slim app-level facts only: build version · Pi profile ·
+                 bundled runtime · transient hints · notifications
+composer footer  session facts, bound to the prompt input: cwd (branch) · model ·
+                 thinking · context/tokens/cost, then one dim line of extension
+                 statuses (ctx.ui.setStatus), ANSI-coloured
 overlays         command palette (Ctrl+K), toast host
 ```
 
 The sidebar and the tab strip are fixed parts of the frame: step 11 fills the tab
 strip, step 10 fills the project section — neither re-lays-out the window.
+
+**Two status surfaces, one job each (2026-10-19 UI rework).** The status bar is
+app-level and mounted on every view; it never carries session facts. Everything
+session-scoped lives in `ComposerFooter`, under the prompt input, the way
+terminal Pi binds its footer to the editor. Extension statuses
+(`ctx.ui.setStatus`) render in that footer's dim second line — for example the
+Office bridge's `office: Excel attached (bridge :38617)` — not in the status bar.
+The footer is rendered as a **sibling of the editor branch**, not inside
+`<Composer>`, so its facts and mode chip survive when an extension installs its
+own editor component and `<TuiSurface>` replaces the composer.
+
+**The workflow mode is shown as text, not just colour.** The composer's textarea
+border reflects the Workflow extension's mode (`Plan` → warn, `Build` → accent),
+decoded from its status text by `src/shared/workflow-mode.ts`; an unrecognised
+value degrades to the neutral border rather than guessing. The desktop names
+exactly the extension's three modes (Default/Plan/Build): the Plannotator
+`reviewing in browser` phrase is a Plan sub-state, so the mode chip reads the
+mode — `Plan` — never the sub-state (2026-10-20 startup-tab-cycle plan). Because colour alone is
+not an indicator, the mode is also named: a badge on the composer's top edge and a
+`mode: …` chip in the footer, both exposed through `role="status"`. Every
+recognised mode has a label, including `Default`. The badge renders at every
+window width — it used to be hidden below the `sm` breakpoint.
+
+**Global CSS lives in `@layer base`.** Tailwind v4 emits its own rules into
+cascade layers, and in CSS an _unlayered_ rule beats every layered one regardless
+of specificity. `src/renderer/src/styles.css` therefore wraps its document-level
+rules in `@layer base`; a bare `:focus-visible` there used to override Tailwind's
+`.outline-none` utility and painted a blue ring over the mode-coloured composer
+border. `tests/styles-layering.test.ts` fails if a future rule is added outside
+the layer. (The workflow border class literals live in `src/shared/`, outside the
+renderer's Tailwind scan root, so `styles.css` also declares them with
+`@source`/`@source inline(...)`; the same test pins that list against
+`workflowBorderClass`.)
 
 ## View model
 
@@ -274,6 +311,23 @@ and the renderer all read it, so a budget change is one edit.
 - `tests/host/service.test.ts` — in-place event spilling and `host.metrics`.
 - `tests/renderer/transcript.test.tsx` — 10k virtualization and the lazy blob
   fetch.
+- `tests/shared/workflow-mode.test.ts` — the workflow status decoder: every
+  shipped label, ANSI-wrapped text, progress extraction, a label for every
+  recognised mode (including `Default`), and null-on-unknown degradation
+  (2026-10-19 UI rework).
+- `tests/styles-layering.test.ts` — the global stylesheet stays inside
+  `@layer base` (an unlayered rule beats Tailwind's utilities), and the
+  `@source inline(...)` list matches every class `workflowBorderClass` returns.
+- `tests/renderer/composer-footer.test.tsx` — the composer-bound session footer:
+  cwd/branch/model/thinking and the context budget, the ANSI-coloured extension
+  status line, and the `mode: …` chip for every recognised mode.
+- `tests/renderer/composer.test.tsx` — Enter vs Shift+Enter, IME safety, the
+  steer/follow-up choice, the hint row, the workflow mode border/badge
+  (always visible, announced, focus ring does not mask it) and Tab dispatch to a
+  registered extension shortcut before completion.
+- `tests/renderer/session-events.test.ts` — the reducer, including the
+  hidden-item boundary: a `display: false` custom message is dropped (live and on
+  reload), and the rule never keys on `customType`.
 - `tests/e2e/performance.spec.ts` — the startup budget on the real built app
   (`npm run e2e:perf`).
 - `tests/main/security.test.ts` — the CSP is strict in production and a superset
@@ -311,8 +365,9 @@ and the renderer all read it, so a budget change is one edit.
 - `tests/main/menu.test.ts` — every `MenuCommand` has exactly one menu item, New
   Session keeps `Ctrl+N`, Office stays out of the primary menus.
 - `tests/renderer/shell.test.tsx` — the shell renders navigation and the welcome
-  state, the old scaffold placeholder copy is gone, and Pi for Office is not a
-  primary-navigation button.
+  state, the old scaffold placeholder copy is gone, Pi for Office is not a
+  primary-navigation button, and the slim status bar reports the resolved profile
+  through `data-profile`.
 - `tests/renderer/extensions.test.tsx` — the Office card mounts under Extensions →
   Integrations and the wizard panel appears once the bridge is installed; the hub
   lists resources, shows load/live errors, writes an enable/disable override and

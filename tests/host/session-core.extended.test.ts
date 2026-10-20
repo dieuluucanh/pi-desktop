@@ -124,7 +124,11 @@ function fakeManager() {
 }
 
 function harness(overrides: Record<string, unknown> = {}) {
-  const session = fakeSession(overrides);
+  // `keybindingPort` and `wrapShortcutRunner` are host deps, not session
+  // fields: pull them out before building the fake session (2026-10-20
+  // startup-tab-cycle plan).
+  const { keybindingPort, wrapShortcutRunner, ...sessionOverrides } = overrides;
+  const session = fakeSession(sessionOverrides);
   const manager = fakeManager();
   const emitted: Array<{ event: string; payload?: unknown }> = [];
   const runtime = {
@@ -154,6 +158,8 @@ function harness(overrides: Record<string, unknown> = {}) {
     createRuntime: async () => ({ runtime, session }) as never,
     newSessionManager: () => manager as never,
     openSessionManager: () => manager as never,
+    ...(keybindingPort == null ? {} : { keybindingPort: keybindingPort as never }),
+    ...(wrapShortcutRunner == null ? {} : { wrapShortcutRunner: wrapShortcutRunner as never }),
   });
 
   const handlers = core.handlers();
@@ -243,6 +249,51 @@ describe("commands.list", () => {
       ["skill:brave-search", "skill"],
     ]);
     expect(commands[1]?.argumentHint).toBe("<file>");
+  });
+});
+
+describe("shortcuts.list", () => {
+  it("resolves shortcuts against Pi's effective keybindings, not the raw user document", async () => {
+    // Parity with terminal Pi (2026-10-20 startup-tab-cycle plan): a user
+    // override replaces the default entirely, and every other id keeps its
+    // documented default. Here the user unbinds `tui.input.tab`, so the
+    // runner must see `[]` for it and Pi's default for everything else.
+    const seen: unknown[] = [];
+    const context = await started({
+      keybindingPort: {
+        path: () => "/profile/keybindings.json",
+        read: () => JSON.stringify({ "tui.input.tab": [] }),
+        write: async () => undefined,
+        remove: async () => undefined,
+      },
+      wrapShortcutRunner: (runner: unknown) => {
+        const inner = runner as {
+          getShortcuts: (resolved: unknown) => Map<string, unknown>;
+          getShortcutDiagnostics: () => [];
+          createContext: () => object;
+          invokeShortcut: (key: string, ctx: object) => Promise<unknown>;
+        };
+        return {
+          getShortcuts: (resolved: unknown) => {
+            seen.push(resolved);
+            return inner.getShortcuts(resolved);
+          },
+          getShortcutDiagnostics: () => inner.getShortcutDiagnostics(),
+          createContext: () => inner.createContext(),
+          invokeShortcut: (key: string, ctx: object) => inner.invokeShortcut(key, ctx),
+        };
+      },
+      extensionRunner: {
+        getShortcuts: () => new Map(),
+        getShortcutDiagnostics: () => [],
+        createContext: () => ({}),
+        invokeShortcut: async () => undefined,
+      },
+    });
+    await context.call("shortcuts.list");
+    const resolved = seen[0] as Record<string, string[]>;
+    expect(resolved["tui.input.tab"]).toEqual([]);
+    expect(resolved["tui.input.submit"]).toEqual(["enter"]);
   });
 });
 

@@ -243,11 +243,42 @@ describe("WorkingRow", () => {
 });
 
 describe("StatusBar and notification centre", () => {
-  it("shows extension status entries for the active tab", () => {
+  it("carries only app-level facts, with the full path in the title", () => {
+    // Extension statuses moved to the composer footer (2026-10-19 UI rework),
+    // because they describe a session rather than the app. The bar keeps the
+    // build, the profile and the runtime — each with its exact value in `title`
+    // so the visible chrome can stay one line.
+    useAppStore.setState({
+      info: {
+        ...(useAppStore.getState().info ?? ({} as never)),
+        version: "0.1.0",
+        profileDir: "C:\\Users\\test\\.pi\\agent",
+        runtimeSource: "bundled",
+        runtimeNodeVersion: "22.11.0",
+        runtimeProblems: [],
+      },
+      hint: null,
+    });
+    render(<StatusBar />);
+
+    expect(screen.getByTestId("status-profile")).toHaveTextContent("profile: agent");
+    expect(screen.getByTestId("status-profile")).toHaveAttribute(
+      "title",
+      "The profile shared with terminal Pi: C:\\Users\\test\\.pi\\agent",
+    );
+    expect(screen.getByTestId("status-runtime")).toHaveTextContent(
+      "runtime: bundled · node 22.11.0",
+    );
+    expect(screen.getByTestId("status-version")).toHaveTextContent("v0.1.0");
+  });
+
+  it("does not render extension statuses any more", () => {
+    // The regression this pins: the bar must not quietly regain a second home
+    // for session-scoped status text.
     useAppStore.setState({
       extensionUi: {
         [TAB]: {
-          statuses: { build: "passing" },
+          statuses: { workflow: "▶ build 3/8" },
           widgets: [],
           working: { message: null, visible: null, frames: null, intervalMs: null },
           hiddenThinkingLabel: null,
@@ -259,7 +290,26 @@ describe("StatusBar and notification centre", () => {
       },
     });
     render(<StatusBar />);
-    expect(screen.getByTestId("extension-status-build")).toHaveTextContent("passing");
+    expect(screen.queryByTestId("extension-status-workflow")).toBeNull();
+    expect(screen.queryByText(/build 3\/8/)).toBeNull();
+  });
+
+  it("marks the runtime chip when the bundled runtime reported problems", () => {
+    useAppStore.setState({
+      info: {
+        ...(useAppStore.getState().info ?? ({} as never)),
+        profileDir: "C:\\p",
+        runtimeSource: "system",
+        runtimeNodeVersion: "20.0.0",
+        runtimeProblems: ["missing node"],
+      },
+    });
+    render(<StatusBar />);
+    expect(screen.getByTestId("status-runtime")).toHaveClass("text-warn");
+    expect(screen.getByTestId("status-runtime")).toHaveAttribute(
+      "title",
+      expect.stringContaining("1 problem(s)"),
+    );
   });
 
   it("opens the notification history and clears it", async () => {

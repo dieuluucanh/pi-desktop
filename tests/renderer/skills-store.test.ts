@@ -29,6 +29,7 @@ function resetStore() {
     keybindingsLoaded: false,
     shortcutsLoaded: false,
     shortcutsError: null,
+    shortcutsTabId: null,
     shortcutsHelpOpen: false,
     settings: null,
     settingsLoaded: false,
@@ -189,6 +190,114 @@ describe("shortcuts actions", () => {
     const request = stubRequest(async () => ({}));
     expect(await useAppStore.getState().invokeShortcut("ctrl+g")).toBe(false);
     expect(request).not.toHaveBeenCalled();
+  });
+
+  // The composer's Tab mode cycle (2026-10-19) needs the list at boot, so the
+  // loader became tab-scoped and idempotent: one request per tab, refetched only
+  // on an explicit refresh. These cases pin that contract.
+  it("lists once per tab and reuses the list for the same tab", async () => {
+    useAppStore.setState({
+      tabs: [{ id: "tab-1", kind: "session", cwd: "C:/work", title: "s" } as never],
+      activeTabId: "tab-1",
+    });
+    const request = stubRequest(async () => ({
+      shortcuts: [{ key: "tab", extensionPath: "C:/x/workflow", source: "workflow" }],
+      diagnostics: [],
+      loadedAt: 1,
+    }));
+    await useAppStore.getState().loadShortcuts();
+    await useAppStore.getState().loadShortcuts();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().shortcutsTabId).toBe("tab-1");
+    expect(useAppStore.getState().shortcuts.shortcuts[0]?.key).toBe("tab");
+  });
+
+  it("refetches on an explicit refresh", async () => {
+    useAppStore.setState({
+      tabs: [{ id: "tab-1", kind: "session", cwd: "C:/work", title: "s" } as never],
+      activeTabId: "tab-1",
+    });
+    const request = stubRequest(async () => ({ shortcuts: [], diagnostics: [], loadedAt: 1 }));
+    await useAppStore.getState().loadShortcuts();
+    await useAppStore.getState().loadShortcuts({ refresh: true });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("refetches when the active session tab changes", async () => {
+    const request = stubRequest(async () => ({ shortcuts: [], diagnostics: [], loadedAt: 1 }));
+    useAppStore.setState({
+      tabs: [{ id: "tab-1", kind: "session", cwd: "C:/work", title: "s" } as never],
+      activeTabId: "tab-1",
+    });
+    await useAppStore.getState().loadShortcuts();
+    useAppStore.setState({
+      tabs: [
+        { id: "tab-1", kind: "session", cwd: "C:/work", title: "s" } as never,
+        { id: "tab-2", kind: "session", cwd: "C:/other", title: "s2" } as never,
+      ],
+      activeTabId: "tab-2",
+    });
+    await useAppStore.getState().loadShortcuts();
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenLastCalledWith(expect.objectContaining({ tabId: "tab-2" }));
+  });
+
+  it("does not ask the control host for a list it cannot serve", async () => {
+    const request = stubRequest(async () => {
+      throw new Error("shortcuts are not available in this host");
+    });
+    await useAppStore.getState().loadShortcuts();
+    expect(request).not.toHaveBeenCalled();
+    expect(useAppStore.getState().shortcutsError).toBeNull();
+  });
+
+  it("retries a failed list on the next load instead of latching the empty list (2026-10-20 startup race)", async () => {
+    useAppStore.setState({
+      tabs: [{ id: "tab-1", kind: "session", cwd: "C:/work", title: "s" } as never],
+      activeTabId: "tab-1",
+    });
+    let attempts = 0;
+    const request = stubRequest(async (method) => {
+      if (method === "shortcuts.list") {
+        attempts += 1;
+        // The boot-time attempt races the session open and fails the way a
+        // session-less host fails it; the retry (host ready) succeeds.
+        if (attempts === 1) throw new Error("shortcuts are not available in this host");
+        return {
+          shortcuts: [{ key: "tab", extensionPath: "C:/x/workflow", source: "workflow" }],
+          diagnostics: [],
+          loadedAt: 2,
+        };
+      }
+      throw new Error(`unexpected ${method}`);
+    });
+    await useAppStore.getState().loadShortcuts();
+    expect(useAppStore.getState().shortcutsError).toMatch(/not available/);
+    expect(useAppStore.getState().shortcuts.shortcuts).toHaveLength(0);
+
+    // The composer's Tab fallback (`onRequestShortcuts`) and the SessionView
+    // readiness effect both funnel through here for the same tab.
+    await useAppStore.getState().loadShortcuts();
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().shortcutsError).toBeNull();
+    expect(useAppStore.getState().shortcuts.shortcuts[0]?.key).toBe("tab");
+  });
+
+  it("reloads the list when a tab's host is restarted", async () => {
+    useAppStore.setState({
+      tabs: [{ id: "tab-1", kind: "session", cwd: "C:/work", title: "s" } as never],
+      activeTabId: "tab-1",
+    });
+    const request = stubRequest(async (method) => {
+      if (method === "shortcuts.list") return { shortcuts: [], diagnostics: [], loadedAt: 1 };
+      return {};
+    });
+    await useAppStore.getState().loadShortcuts();
+    await useAppStore.getState().restartTab("tab-1");
+    // The restart rebinds extensions, so the list is refetched (once for the
+    // initial load, once for the restart).
+    const listCalls = request.mock.calls.filter(([input]) => input.method === "shortcuts.list");
+    expect(listCalls).toHaveLength(2);
   });
 });
 

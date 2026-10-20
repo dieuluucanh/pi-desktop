@@ -4,51 +4,78 @@
 /*
  * Base layer (plan step 1). Everything component-shaped lives in Tailwind
  * utilities or in `ui/*`; this file only sets document-level defaults.
+ *
+ * **These rules must stay inside `@layer base`.** Tailwind v4 emits every rule
+ * it generates into a cascade layer (`@layer theme, base, components,
+ * utilities`). An *unlayered* rule beats every layered rule regardless of
+ * specificity or source order, so a bare `:focus-visible` here silently
+ * overpowered Tailwind's `.outline-none` utility and painted a blue accent ring
+ * over every input that asked for no outline — masking the workflow-mode
+ * border on the composer (2026-10-19). Layering this file puts it where the
+ * cascade expects document defaults to live, so a utility can override it.
+ *
+ * `styles/office-panel.css` is deliberately *not* layered: its rules are
+ * component-scoped and it is deleted by plan step 19.
  */
 
-* {
-  box-sizing: border-box;
-}
+/*
+ * The workflow-mode border classes are chosen at runtime from
+ * `src/shared/workflow-mode.ts` (`workflowBorderClass`), which is outside the
+ * renderer's scan root (`electron.vite.config.ts` → root `src/renderer`), so
+ * Tailwind never saw its literals and `border-warn` compiled to nothing.
+ * `@source` registers the module directory, and `@source inline(...)` pins the
+ * exact utilities so a directory move cannot silently drop them again.
+ * `tests/styles-layering.test.ts` keeps this list in sync with the
+ * function's return values.
+ */
+@source "../../../shared";
+@source inline("border-line border-accent border-warn");
 
-html,
-body,
-#root {
-  height: 100%;
-  margin: 0;
-}
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
 
-body {
-  background: var(--color-canvas);
-  color: var(--color-ink);
-  font-family: var(--font-ui);
-  font-size: 14px;
-  -webkit-font-smoothing: antialiased;
-  overflow: hidden;
-}
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
 
-button {
-  font-family: inherit;
-}
+  body {
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
 
-:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 1px;
-}
+  button {
+    font-family: inherit;
+  }
 
-/* Thin, theme-aware scrollbars for the app chrome. */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-line-strong) transparent;
-}
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
 
-*::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
+  /* Thin, theme-aware scrollbars for the app chrome. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
 
-*::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  border-radius: 999px;
-  background-clip: content-box;
-  background-color: var(--color-line-strong);
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
+    background-color: var(--color-line-strong);
+  }
 }

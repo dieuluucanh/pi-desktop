@@ -113,6 +113,14 @@ export interface ExtensionBlockProps {
   expanded: boolean;
   /** The native card to keep when there is no renderer. */
   fallback: ReactNode;
+  /**
+   * Pi hides a bare `CustomEntry` entirely when no `registerEntryRenderer`
+   * matched it (`addCustomEntryToChat` → `CustomEntryComponent.hasContent()`),
+   * whereas a `CustomMessage` always renders its own default box. A renderer that
+   * *threw* still shows a card (Pi shows an error box), so only the genuinely
+   * renderer-less case hides.
+   */
+  hideWhenUnrendered?: boolean;
   className?: string;
 }
 
@@ -121,6 +129,7 @@ export function ExtensionBlock({
   input,
   expanded,
   fallback,
+  hideWhenUnrendered = false,
   className,
 }: ExtensionBlockProps): ReactElement {
   const request = useAppStore((state) => state.extensionRender);
@@ -151,13 +160,21 @@ export function ExtensionBlock({
 
   const frame = state?.key === key ? state.frame : null;
 
+  // The container stays mounted with nothing in it so the width measurement (and
+  // therefore the render request) still works; only the contents are hidden.
+  const body =
+    frame && frame.rendered && frame.lines.length > 0 ? (
+      <AnsiBlock frame={toTuiFrame(frame)} className="font-mono text-xs leading-tight" />
+    ) : frame?.error ? (
+      // A renderer existed and failed: Pi shows its own fallback here.
+      fallback
+    ) : hideWhenUnrendered ? null : (
+      fallback
+    );
+
   return (
     <div ref={containerRef} data-extension-render="" className={className}>
-      {frame && frame.rendered && frame.lines.length > 0 ? (
-        <AnsiBlock frame={toTuiFrame(frame)} className="font-mono text-xs leading-tight" />
-      ) : (
-        fallback
-      )}
+      {body}
     </div>
   );
 }

@@ -107,4 +107,59 @@ describe("ExtensionBlock", () => {
       );
     });
   });
+
+  it("hides the fallback for a rendererless entry when asked", async () => {
+    // Pi renders nothing for a bare `CustomEntry` with no registered renderer
+    // (`addCustomEntryToChat` → `hasContent()`); this is what keeps the workflow
+    // extension's state entries out of the transcript.
+    stubRequest(async () => ({ rendered: false, width: 40, lines: [] }));
+    const { container } = render(
+      <ExtensionBlock
+        tabId={TAB}
+        input={{ target: "entry", type: "workflow", version: 1 }}
+        expanded={false}
+        fallback={<span>native card</span>}
+        hideWhenUnrendered
+      />,
+    );
+
+    await vi.waitFor(() => {
+      // The request must still be made (the measurement drives the render)…
+      expect(container.querySelector("[data-extension-render]")).not.toBeNull();
+    });
+    expect(screen.queryByText("native card")).not.toBeInTheDocument();
+  });
+
+  it("shows the fallback for an entry whose renderer threw", async () => {
+    // Pi shows an error box when a renderer exists but fails, so a failure must
+    // not be silently swallowed the way a missing renderer is.
+    stubRequest(async () => ({ rendered: false, width: 40, lines: [], error: "boom" }));
+    render(
+      <ExtensionBlock
+        tabId={TAB}
+        input={{ target: "entry", type: "workflow", version: 1 }}
+        expanded={false}
+        fallback={<span>native card</span>}
+        hideWhenUnrendered
+      />,
+    );
+
+    expect(await screen.findByText("native card")).toBeInTheDocument();
+  });
+
+  it("still shows an ANSI frame for an entry that does have a renderer", async () => {
+    stubRequest(async () => ({ rendered: true, width: 40, lines: ["review band"] }));
+    render(
+      <ExtensionBlock
+        tabId={TAB}
+        input={{ target: "entry", type: "workflow-review-mode", version: 1 }}
+        expanded={false}
+        fallback={<span>native card</span>}
+        hideWhenUnrendered
+      />,
+    );
+
+    expect(await screen.findByText("review band")).toBeInTheDocument();
+    expect(screen.queryByText("native card")).not.toBeInTheDocument();
+  });
 });

@@ -287,6 +287,90 @@ describe("queue and notices", () => {
     expect(entry.message.customPayload).toMatchObject({ type: "custom", data: { body: "hi" } });
   });
 
+  it("drops a `display: false` custom_message from entry_appended", () => {
+    // The workflow extension injects its Plan-Mode context with `display: false`
+    // (`index.ts:7019–7022`); Pi never shows it, so the app must not either.
+    const state = reduceSessionEvents(createTranscriptState(), [
+      {
+        event: "entry_appended",
+        payload: {
+          entry: {
+            type: "custom_message",
+            id: "c1",
+            customType: "workflow-plan-context",
+            content: "[PLAN MODE ACTIVE]",
+            display: false,
+          },
+        },
+      },
+    ]);
+    expect(items(state)).toEqual([]);
+  });
+
+  it("drops a live `display: false` custom message from message_start/end", () => {
+    // The live pair is emitted by `_appendCustomMessage` with `role: "custom"`,
+    // so without this rule the hidden context renders as an assistant bubble.
+    const hidden = {
+      role: "custom",
+      customType: "workflow-plan-context",
+      content: "[PLAN MODE ACTIVE]",
+      display: false,
+    };
+    let state = reduceSessionEvents(createTranscriptState(), [
+      { event: "message_start", payload: { message: hidden } },
+      { event: "message_end", payload: { message: hidden } },
+    ]);
+    expect(items(state)).toEqual([]);
+    expect(state.openMessageId).toBeNull();
+
+    // …and the end must not disturb a real message that is still streaming.
+    state = reduceSessionEvents(state, [
+      { event: "message_start", payload: { message: { role: "assistant" } } },
+      { event: "message_end", payload: { message: hidden } },
+    ]);
+    const streaming = items(state)[0];
+    if (streaming?.kind !== "message") throw new Error("expected the assistant message");
+    expect(streaming.message.role).toBe("assistant");
+  });
+
+  it("keeps a `display: true` custom message", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      {
+        event: "message_start",
+        payload: {
+          message: {
+            role: "custom",
+            customType: "workflow-btw",
+            content: "[BTW] note",
+            display: true,
+          },
+        },
+      },
+    ]);
+    const message = firstMessage(state);
+    expect(message.role).toBe("custom");
+    expect(message.blocks).toEqual([{ kind: "text", text: "[BTW] note" }]);
+  });
+
+  it("renders a bare `workflow` entry as a custom entry with no text", () => {
+    // The Tab-cycle noise: `persistState()` appends a bare `custom` entry with
+    // data and no content. The reducer forwards it (the renderer decides); it
+    // must never carry text that would show as chat.
+    const state = reduceSessionEvents(createTranscriptState(), [
+      {
+        event: "entry_appended",
+        payload: {
+          entry: { type: "custom", id: "w1", customType: "workflow", data: { mode: "plan" } },
+        },
+      },
+    ]);
+    const message = firstMessage(state);
+    expect(message.role).toBe("custom");
+    expect(message.customKind).toBe("entry");
+    expect(message.customType).toBe("workflow");
+    expect(message.blocks).toEqual([]);
+  });
+
   it("ignores events that carry no transcript meaning", () => {
     const state = reduceSessionEvents(createTranscriptState(), [
       { event: "turn_start", payload: {} },
@@ -317,6 +401,116 @@ describe("history hydration", () => {
     expect(replaced.message.blocks).toEqual([{ kind: "text", text: "replaced" }]);
     expect(items(state)).toHaveLength(2);
   });
+
+  it("drops hidden custom context on reload, exactly as the live stream did", () => {
+    // Regression: a reload used to replay the workflow extension's hidden
+    // Plan-Mode context as an assistant bubble.
+    const state = hydrateMessages(createTranscriptState(), [
+      { id: "h1", role: "user", content: "hi" },
+      {
+        id: "h2",
+        role: "custom_message",
+        customType: "workflow-plan-context",
+        content: "[PLAN MODE ACTIVE]",
+        display: false,
+      },
+      { id: "h3", role: "assistant", content: "ok" },
+    ]);
+    expect(items(state)).toHaveLength(2);
+    expect(items(state).map((item) => (item.kind === "message" ? item.message.role : ""))).toEqual([
+      "user",
+      "assistant",
+    ]);
+  });
+
+  it("keeps a visible custom message on reload", () => {
+    const state = hydrateMessages(createTranscriptState(), [
+      {
+        id: "h1",
+        role: "custom_message",
+        customType: "workflow-btw",
+        content: "[BTW] note",
+        display: true,
+      },
+    ]);
+    expect(firstMessage(state).role).toBe("custom");
+    expect(firstMessage(state).customType).toBe("workflow-btw");
+  });
+});
+
+/**
+ * The boundary of the Pi-parity rule (2026-10-19 UI rework).
+ *
+ * The transcript hides exactly two things: a `custom_message` Pi marked
+ * `display: false`, and (in the renderer) a bare `custom` entry with no
+ * registered renderer. It must **not** hide by customType, and it must not hide
+ * a custom *message* — those are the tempting shortcuts that would break the
+ * next extension whose entries are worth showing.
+ */
+describe("hidden-item boundary", () => {
+  it("does not key the rule on the workflow customType", () => {
+    // A bare `custom` entry is forwarded whatever its type; the renderer decides
+    // by asking the host whether a renderer exists. If the reducer dropped
+    // `workflow` by name, the review bands (which share the prefix) would vanish.
+    for (const customType of ["workflow", "workflow-review-mode", "note", "todo"]) {
+      const state = reduceSessionEvents(createTranscriptState(), [
+        { event: "entry_appended", payload: { entry: { type: "custom", id: "e", customType } } },
+      ]);
+      const message = firstMessage(state);
+      expect(message.customType, customType).toBe(customType);
+      expect(message.customKind, customType).toBe("entry");
+    }
+  });
+
+  it("hides only `display: false`, not a missing display flag", () => {
+    // Pi treats an absent `display` as displayable for a custom entry; only an
+    // explicit `false` hides. `display: 0`/`null` are not the flag either.
+    for (const display of [undefined, true, null, 0, "false"]) {
+      const state = reduceSessionEvents(createTranscriptState(), [
+        {
+          event: "entry_appended",
+          payload: {
+            entry: { type: "custom_message", id: "c", customType: "t", content: "x", display },
+          },
+        },
+      ]);
+      expect(items(state), JSON.stringify(display)).toHaveLength(1);
+    }
+  });
+
+  it("never hides a user or assistant message", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "message_start", payload: { message: { role: "user", content: "ask" } } },
+      { event: "message_end", payload: { message: { role: "user", content: "ask" } } },
+      { event: "message_start", payload: { message: { role: "assistant" } } },
+      { event: "message_end", payload: { message: { role: "assistant", content: "answer" } } },
+    ]);
+    expect(items(state)).toHaveLength(2);
+    expect(items(state).map((item) => (item.kind === "message" ? item.message.role : ""))).toEqual([
+      "user",
+      "assistant",
+    ]);
+  });
+
+  it("does not hide a custom message that merely has no text", () => {
+    // An image-only custom message has empty blocks but is still displayable; the
+    // rule keys on `display`, never on emptiness.
+    const state = reduceSessionEvents(createTranscriptState(), [
+      {
+        event: "entry_appended",
+        payload: {
+          entry: {
+            type: "custom_message",
+            id: "c",
+            customType: "screenshot",
+            content: [{ type: "image", mimeType: "image/png", data: "AAA" }],
+            display: true,
+          },
+        },
+      },
+    ]);
+    expect(items(state)).toHaveLength(1);
+  });
 });
 
 describe("content conversion", () => {
@@ -342,6 +536,31 @@ describe("content conversion", () => {
     const message = messageFromSdk({ role: "bashExecution", output: "total 0" });
     expect(message.role).toBe("bashExecution");
     expect(message.blocks).toEqual([{ kind: "text", text: "total 0" }]);
+  });
+
+  it("maps the SDK's `custom` role to the app's custom kind, never assistant", () => {
+    // Regression: `role: "custom"` used to fall through to `assistant`, so a
+    // workflow context message rendered as an assistant bubble.
+    const message = messageFromSdk({
+      role: "custom",
+      customType: "workflow-plan-context",
+      content: "[PLAN MODE ACTIVE]",
+      display: false,
+    });
+    expect(message.role).toBe("custom");
+    expect(message.role).not.toBe("assistant");
+    expect(message.customType).toBe("workflow-plan-context");
+    expect(message.customKind).toBe("message");
+  });
+
+  it("still maps a custom_message to a custom message", () => {
+    const message = messageFromSdk({
+      role: "custom_message",
+      customType: "todo",
+      content: "3 items",
+    });
+    expect(message.role).toBe("custom");
+    expect(message.customKind).toBe("message");
   });
 
   it("reads tool result text", () => {

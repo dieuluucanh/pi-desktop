@@ -335,7 +335,10 @@ function MessageView({
 
   if (message.role === "custom") {
     // A custom message goes through `registerMessageRenderer`, a bare custom
-    // entry through `registerEntryRenderer`; both fall back to this text card.
+    // entry through `registerEntryRenderer`. Both fall back to this text card,
+    // except a bare entry: Pi renders nothing for an entry whose renderer is
+    // missing, and that is what keeps a mode switch (the workflow extension's
+    // `pi.appendEntry("workflow", …)`) out of the transcript entirely.
     const fallback = (
       <div className="my-2 rounded-sm border border-dashed border-line px-3 py-2">
         <div className="text-[11px] text-ink-faint">{message.customType ?? "custom message"}</div>
@@ -355,6 +358,7 @@ function MessageView({
         }}
         expanded={toolsExpanded === true}
         fallback={fallback}
+        hideWhenUnrendered={isEntry}
       />
     );
   }

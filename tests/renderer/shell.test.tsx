@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { App } from "../../src/renderer/src/App";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
-import { installBridge } from "./fixtures";
+import { appInfoFixture, installBridge } from "./fixtures";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 
 /**
@@ -62,7 +62,13 @@ describe("app shell", () => {
   });
 
   it("reports the shared Pi profile in the status bar", async () => {
+    // The bar is now slim and app-level: the chip shows a compact label and
+    // keeps the exact path in `data-profile`/`title`, which is what proves the
+    // resolved profile actually reached the renderer.
     render(<App />);
-    expect(await screen.findByText(/profile: C:\\Users\\test\\\.pi\\agent/)).toBeInTheDocument();
+    const chip = await screen.findByTestId("status-profile");
+    const { profileDir } = appInfoFixture();
+    expect(chip).toHaveAttribute("data-profile", profileDir);
+    expect(chip).toHaveAttribute("title", `The profile shared with terminal Pi: ${profileDir}`);
   });
 });

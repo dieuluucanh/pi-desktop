@@ -504,10 +504,18 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     if (tab.kind === "web") {
       throw new SessionServiceError("a web tab has no Pi host", "web_tab");
     }
-    const existing = hosts.get(tab.id);
-    if (existing) return existing;
+    // Readiness gate (2026-10-20 startup-tab-cycle plan): a request for a tab
+    // is only forwarded to a host that has finished opening its session.
+    // `spawnHost` publishes its handle into `hosts` before `session.resume` /
+    // `session.create` resolves, so the published handle must not win over an
+    // in-flight spawn — otherwise a request that arrives during the resume
+    // window is answered by a session-less host (`no_session` / shortcuts
+    // unavailable). Prefer the in-flight spawn; it settles only after the
+    // session is open.
     const inFlight = spawning.get(tab.id);
     if (inFlight) return inFlight;
+    const existing = hosts.get(tab.id);
+    if (existing) return existing;
     const spawn = spawnHost(tab);
     spawning.set(tab.id, spawn);
     // The spawn is shared by everyone who asked for this tab, and the tab can be
@@ -555,6 +563,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       rememberSession(host, tab);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // The session never opened: drop the published handle so the next
+      // request re-spawns instead of being answered by a session-less host.
+      hosts.delete(tab.id);
       setStatus(tab, "failed", message);
       throw error;
     }
@@ -842,6 +853,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       for (const off of unsubscribes.get(tabId) ?? []) off();
       unsubscribes.delete(tabId);
       hosts.delete(tabId);
+      // Drop a stale in-flight spawn so the fresh `activateTab` below cannot
+      // inherit it; the orphaned spawn fails closed via its tab check.
+      spawning.delete(tabId);
       try {
         await deps.supervisor.stop(tabId);
       } catch {

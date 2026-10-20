@@ -5,6 +5,7 @@ import type { SessionEventEntry } from "../../src/shared/session-ipc";
 import { Transcript, toolSummary } from "../../src/renderer/src/session/Transcript";
 import {
   createTranscriptState,
+  hydrateMessages,
   reduceSessionEvents,
   type TranscriptItem,
 } from "../../src/renderer/src/session/session-events";
@@ -371,5 +372,43 @@ describe("extension renderers", () => {
     render(<Transcript items={items} tabId={RENDER_TAB} />);
 
     expect(await screen.findByText(/TRANSFORMED/)).toBeInTheDocument();
+  });
+
+  it("renders nothing for a rendererless bare custom entry", async () => {
+    // The exact user-visible bug this fixes: pressing Tab made the workflow
+    // extension append `pi.appendEntry("workflow", …)`, and the transcript
+    // rendered a dashed card headed with the literal customType.
+    const items = itemsOf([
+      {
+        event: "entry_appended",
+        payload: {
+          entry: { type: "custom", id: "w1", customType: "workflow", data: { mode: "plan" } },
+        },
+      },
+    ]);
+    render(<Transcript items={items} tabId={RENDER_TAB} />);
+
+    // The stub renderer answers `rendered: false` for anything but bash/todo.
+    await vi.waitFor(() => {
+      expect(screen.queryByText("workflow")).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText(/workflow-plane/)).not.toBeInTheDocument();
+  });
+
+  it("hides the workflow extension's display:false context on reload", async () => {
+    // Reloaded history must not resurrect the plan-mode context as an assistant
+    // bubble — the second half of the same bug.
+    const items = hydrateMessages(createTranscriptState(), [
+      {
+        id: "h1",
+        role: "custom_message",
+        customType: "workflow-plan-context",
+        content: "[PLAN MODE ACTIVE]",
+        display: false,
+      },
+    ]).items;
+    render(<Transcript items={items} tabId={RENDER_TAB} />);
+
+    expect(screen.queryByText(/PLAN MODE ACTIVE/)).not.toBeInTheDocument();
   });
 });

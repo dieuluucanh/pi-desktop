@@ -884,4 +884,54 @@ describe("web tabs (plan step 21)", () => {
 
     expect(harness.specs.length - before).toBe(1);
   });
+
+  it("waits for the in-flight session open before answering a tab request (2026-10-20 startup race)", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let holdSpawn = false;
+    const harness = createHarness({
+      onStart: async () => {
+        if (holdSpawn) await gate;
+      },
+    });
+    await harness.service.createTab({ cwd: "C:/work/app" });
+    const tabId = harness.stored.tabs[0]!.id;
+
+    // Simulate a relaunch: the tab is restored with no host running.
+    await harness.service.restoreTabs();
+    holdSpawn = true;
+    const before = harness.specs.length;
+
+    // The first activation starts the spawn and parks inside `supervisor.start`;
+    // the renderer's boot-time `shortcuts.list` arrives while the session is
+    // still opening and must wait for it instead of hitting a session-less host.
+    const activating = harness.service.activateTab(tabId);
+    // Let the spawn reach the gate before issuing the concurrent request.
+    await Promise.resolve();
+    await Promise.resolve();
+    const requesting = harness.service.request(tabId, "shortcuts.list");
+    release();
+    const [, result] = await Promise.all([activating, requesting]);
+
+    expect(result).toEqual({});
+    expect(harness.specs.length - before).toBe(1);
+    expect(harness.hosts.get(tabId)?.requests.map((request) => request.method)).toContain(
+      "session.resume",
+    );
+  });
+
+  it("forwards a request issued after the spawn settles straight to the ready host", async () => {
+    const harness = createHarness();
+    await harness.service.createTab({ cwd: "C:/work/app" });
+    const tabId = harness.stored.tabs[0]!.id;
+    const before = harness.specs.length;
+
+    const result = await harness.service.request(tabId, "state.get");
+
+    expect(result).toMatchObject({ sessionId: "session-1" });
+    // No new host was spawned for the settled tab.
+    expect(harness.specs.length).toBe(before);
+  });
 });

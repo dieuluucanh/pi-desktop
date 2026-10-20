@@ -661,7 +661,13 @@ export interface AppStateShape {
   shortcutsLoaded: boolean;
   shortcutsBusy: boolean;
   shortcutsError: string | null;
-  loadShortcuts: () => Promise<void>;
+  /**
+   * The tab the current `shortcuts` were listed from. `loadShortcuts` reuses
+   * them for that tab and only refetches for another tab or a `refresh`, so a
+   * tab activation costs one request at most (mirrors `resourcesTabId`).
+   */
+  shortcutsTabId: string | null;
+  loadShortcuts: (options?: { refresh?: boolean }) => Promise<void>;
   invokeShortcut: (key: string) => Promise<boolean>;
   /** The shortcuts help dialog (Ctrl+/). */
   shortcutsHelpOpen: boolean;
@@ -1023,6 +1029,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   shortcutsLoaded: false,
   shortcutsBusy: false,
   shortcutsError: null,
+  shortcutsTabId: null,
   shortcutsHelpOpen: false,
   extensionUi: {},
   extensionDialogs: [],
@@ -1432,6 +1439,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
           transcripts: { ...get().transcripts, [tabId]: { ...base, hydrated: false } },
         });
       }
+      // A restarted host rebinds its extensions, so any shortcut registered by
+      // the fresh session must be re-listed (the previous list may be stale).
+      if (get().activeTabId === tabId) void get().loadShortcuts({ refresh: true });
     } catch (error) {
       get().noteFailure(error);
     }
@@ -2602,10 +2612,32 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  loadShortcuts: async () => {
+  loadShortcuts: async (options) => {
     const api = bridge();
     if (!api?.sessions) return;
     const target = resourcesTarget(get());
+    const current = get();
+    // A control host has no extension runner, so `shortcuts.list` would fail
+    // with `not_implemented`; leave the (empty) list alone rather than flapping
+    // into an error state on every activation without a session.
+    if (target === CONTROL_TAB_ID && !options?.refresh) {
+      if (!current.shortcutsLoaded) set({ shortcutsLoaded: true, shortcutsTabId: CONTROL_TAB_ID });
+      return;
+    }
+    // The list belongs to a tab: reuse it for the same tab and only refetch on a
+    // refresh or when the active session changed. This is what makes it cheap to
+    // call from `activateTab` (plan step 7). A failed attempt is never latched:
+    // when the last attempt for this tab errored (`shortcutsError`), the next
+    // call retries instead of returning the empty list forever (2026-10-20
+    // startup-tab-cycle plan).
+    if (
+      options?.refresh !== true &&
+      current.shortcutsLoaded &&
+      current.shortcutsTabId === target &&
+      !current.shortcutsError
+    ) {
+      return;
+    }
     set({ shortcutsBusy: true, shortcutsError: null });
     try {
       const raw = await api.sessions.request({ tabId: target, method: "shortcuts.list" });
@@ -2614,6 +2646,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         shortcutsLoaded: true,
         shortcutsBusy: false,
         shortcutsError: null,
+        shortcutsTabId: target,
       });
     } catch (error) {
       set({
@@ -2621,6 +2654,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         shortcutsLoaded: true,
         shortcutsError: errorMessage(error),
         shortcuts: EMPTY_SHORTCUTS,
+        shortcutsTabId: target,
       });
     }
   },
@@ -3235,6 +3269,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // The TUI surface is per host too (plan step 17).
       void get().loadTuiSurface(tabId);
     }
+    // Extension shortcuts belong to the tab's live session (the workflow
+    // extension registers `tab` for its mode cycle), so they are listed when the
+    // tab becomes active. `loadShortcuts` is idempotent: it only refetches when
+    // the tab changed, so switching back and forth costs nothing.
+    void get().loadShortcuts();
     try {
       get().applyTabs(await api.sessions.activate(tabId));
     } catch (error) {

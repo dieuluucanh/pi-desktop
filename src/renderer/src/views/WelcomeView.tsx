@@ -150,13 +150,6 @@ export function WelcomeView() {
         </span>
       </div>
 
-      {info ? (
-        <p className="text-[11px] text-ink-faint">
-          profile {info.profileDir} · runtime {info.runtimeSource ?? "unavailable"}
-          {info.runtimeNodeVersion ? ` (node ${info.runtimeNodeVersion})` : ""}
-        </p>
-      ) : null}
-
       <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} />
       <CloneProjectDialog open={cloneOpen} onOpenChange={setCloneOpen} />
     </div>

@@ -193,18 +193,38 @@ export function blocksFromContent(content: unknown): TranscriptBlock[] {
   return blocks;
 }
 
+/**
+ * True when Pi would hide this message entirely.
+ *
+ * A `custom_message` with `display: false` participates in LLM context but is
+ * never shown (`agent-session.js:1101–1145` emits it as a live
+ * `message_start`/`message_end` pair with `role: "custom"`; Pi's interactive
+ * mode gates rendering on `message.display`). The app must drop it in the
+ * reducer, because its `role` is not one of the renderable ones.
+ */
+export function isHiddenCustomMessage(message: unknown): boolean {
+  const record = asRecord(message);
+  const role = asString(record.role);
+  if (role !== "custom" && role !== "custom_message") return false;
+  return record.display === false;
+}
+
 /** Converts one SDK message into a transcript message. */
 export function messageFromSdk(message: unknown, id: string = nextId("msg")): TranscriptMessage {
   const record = asRecord(message);
   const role = asString(record.role);
+  // `custom` is the SDK's own role for `CustomMessage` (`agent-session.js:1100`);
+  // it must never fall through to `assistant`, or a hidden workflow context
+  // message would render as an assistant bubble.
   const mappedRole: TranscriptMessageRole =
     role === "user" || role === "assistant"
       ? role
-      : role === "custom_message"
+      : role === "custom" || role === "custom_message"
         ? "custom"
         : role === "bashExecution"
           ? "bashExecution"
           : "assistant";
+  const isCustom = mappedRole === "custom";
   const text = role === "bashExecution" ? asString(record.output) : record.content;
   return {
     id,
@@ -213,11 +233,9 @@ export function messageFromSdk(message: unknown, id: string = nextId("msg")): Tr
     ...(typeof record.timestamp === "number" ? { timestamp: record.timestamp } : {}),
     streaming: false,
     ...(typeof record.customType === "string" ? { customType: record.customType } : {}),
-    // A `custom_message` is a message renderer's input; keep the raw payload so
-    // the renderer receives exactly what Pi's `MessageRenderer` expects.
-    ...(role === "custom_message"
-      ? { customKind: "message" as const, customPayload: message }
-      : {}),
+    // Both custom shapes render through a message renderer; keep the raw payload
+    // so the renderer receives exactly what Pi's `MessageRenderer` expects.
+    ...(isCustom ? { customKind: "message" as const, customPayload: message } : {}),
     ...(typeof record.model === "string" ? { model: record.model } : {}),
     ...(typeof record.stopReason === "string" ? { stopReason: record.stopReason } : {}),
   };
@@ -393,6 +411,11 @@ function applyDelta(
 
 /** Replaces a message's content with the authoritative `message_end` payload. */
 function finishMessage(state: TranscriptState, message: unknown): TranscriptState {
+  // Hidden context never entered the transcript, so its end must not close (or
+  // append) anything: `message_start` was skipped, leaving `openMessageId` for
+  // whatever real message is still streaming. Falling through here would apply
+  // this payload to that unrelated message.
+  if (isHiddenCustomMessage(message)) return state;
   const record = asRecord(message);
   const id = asString(record.id);
   // Resolution order matters: an explicit id wins, then the message that
@@ -482,6 +505,8 @@ export function reduceSessionEvents(
     const payload = asRecord(entry.payload);
     switch (entry.event) {
       case "message_start": {
+        // A `display: false` custom message is context, not transcript content.
+        if (isHiddenCustomMessage(payload.message)) break;
         const raw = asRecord(payload.message);
         const id = asString(raw.id) || nextId("msg");
         next = appendItem(next, {
@@ -590,6 +615,9 @@ export function reduceSessionEvents(
 
       case "entry_appended": {
         const entry = asRecord(payload.entry);
+        // A hidden `custom_message` is context-only, exactly as in the live
+        // `message_start` path above.
+        if (entry.type === "custom_message" && entry.display === false) break;
         if (entry.type === "custom_message" || entry.type === "custom") {
           const entryId = asString(entry.id) || nextId("custom");
           next = appendItem(next, {
@@ -664,6 +692,9 @@ export function hydrateMessages(
 ): TranscriptState {
   let next: TranscriptState = { ...state, hydrated: true };
   for (const message of messages) {
+    // Reload must hide the same items the live stream hid; otherwise the
+    // workflow extension's context-only messages reappear as bubbles.
+    if (isHiddenCustomMessage(message)) continue;
     const record = asRecord(message);
     const id = asString(record.id) || nextId("history");
     next = appendItem(next, { kind: "message", id, message: messageFromSdk(message, id) });

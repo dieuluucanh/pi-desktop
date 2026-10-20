@@ -4,9 +4,17 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
 import { fileToAttachment, isImageFile, type ImageAttachment } from "./image-attachment";
+import {
+  parseWorkflowStatus,
+  statusLineText,
+  workflowBorderClass,
+  workflowModeLabel,
+  type WorkflowModeView,
+} from "../../../shared/workflow-mode";
 import type { TranscriptQueue } from "./session-events";
 import type { SendMode } from "../state/app-store";
 import { CompletionOverlay } from "../completion/CompletionOverlay";
+import { matchShortcut } from "../shortcuts/dom-keys";
 import { joinBuffer, offsetToPosition, positionToOffset, splitBuffer } from "../completion/token";
 import type {
   CompletionItem,
@@ -40,7 +48,6 @@ export interface ComposerProps {
   draft: string;
   queue: TranscriptQueue;
   sendMode: SendMode;
-  contextLabel?: string | null;
   onDraftChange: (text: string) => void;
   onSend: (
     text: string,
@@ -49,6 +56,18 @@ export interface ComposerProps {
   ) => Promise<boolean>;
   onStop: () => void;
   onClearQueue: () => void;
+  /** The `workflow` extension status, decoded into a composer border colour. */
+  workflowStatus?: string | null;
+  /**
+   * The session's registered extension shortcuts, used to give Tab to the mode
+   * cycle (the workflow extension registers `tab`). Empty until the store loads
+   * them, which the composer requests through `onRequestShortcuts`.
+   */
+  extensionShortcuts?: readonly { key: string }[];
+  /** Runs one extension shortcut through `shortcuts.invoke`. */
+  onInvokeShortcut?: (key: string) => void;
+  /** Asks the store to load the extension shortcuts (once). */
+  onRequestShortcuts?: () => void;
   onSendModeChange: (mode: SendMode) => void;
   onHistoryStep: (direction: 1 | -1) => string | null;
   /** The completion engine (plan step 7); omit it to disable completion. */
@@ -151,7 +170,10 @@ export function Composer({
   draft,
   queue,
   sendMode,
-  contextLabel,
+  workflowStatus,
+  extensionShortcuts,
+  onInvokeShortcut,
+  onRequestShortcuts,
   onDraftChange,
   onSend,
   onStop,
@@ -175,6 +197,16 @@ export function Composer({
   const completionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const queued = [...queue.steering, ...queue.followUp];
+
+  // The workflow extension reports its mode only through `ctx.ui.setStatus`, so
+  // the composer decodes that text into a border colour and a badge label.
+  // An unknown value degrades to the neutral border and no badge.
+  const workflowMode: WorkflowModeView | null = parseWorkflowStatus(workflowStatus);
+  const workflowLabel = workflowModeLabel(workflowMode);
+  // Empty until the store loads the session's shortcuts (the composer asks via
+  // `onRequestShortcuts` on the first Tab); an unknown list means Tab keeps its
+  // completion behaviour rather than swallowing the key.
+  const shortcuts = extensionShortcuts ?? [];
 
   /** The buffer and caret as the provider contract wants them: lines + column. */
   const currentBuffer = useCallback(() => {
@@ -297,7 +329,7 @@ export function Composer({
   return (
     <div
       className={cn(
-        "shrink-0 border-t border-line bg-surface px-3 py-2",
+        "relative shrink-0 border-t border-line bg-surface px-3 py-2",
         dragging && "ring-1 ring-accent",
       )}
       onDragOver={(event) => {
@@ -311,8 +343,25 @@ export function Composer({
         void addFiles([...event.dataTransfer.files]);
       }}
     >
-      {queued.length > 0 ? <QueueChips queue={queue} onClear={onClearQueue} /> : null}
+      {/* The mode badge rides the composer's top edge, the way Pi's editor shows
+          its border label. It is the primary *textual* indicator of the active
+          mode, so it renders at every width and is announced to assistive tech
+          (`role="status"`) — colour alone must never be the only signal. The
+          full extension status (profile/role/commit policy) stays reachable
+          through `title`. */}
+      {workflowLabel ? (
+        <span
+          data-testid="workflow-mode-badge"
+          role="status"
+          aria-live="polite"
+          title={statusLineText(workflowStatus)}
+          className="pointer-events-none absolute -top-2 right-3 rounded-xs border border-line bg-surface px-1.5 text-[10px] font-medium text-ink-muted"
+        >
+          {workflowLabel}
+        </span>
+      ) : null}
 
+      {queued.length > 0 ? <QueueChips queue={queue} onClear={onClearQueue} /> : null}
       {attachments.length > 0 ? (
         <AttachmentChips
           attachments={attachments}
@@ -345,7 +394,18 @@ export function Composer({
               : "This session is not running — start it above to send a prompt."
           }
           disabled={!enabled}
-          className="max-h-48 min-h-16 flex-1 resize-y rounded-sm border border-line bg-sunken px-2 py-1.5 font-mono text-sm outline-none placeholder:text-ink-faint disabled:opacity-60"
+          className={cn(
+            // The border tracks the workflow mode, mirroring Pi's editor border
+            // (which tracks the thinking level). `border-line` is the neutral
+            // default and the only class the placeholder set assumes.
+            //
+            // Focus is an *outer* ring (a box-shadow), never an outline: the
+            // ring is painted outside the border, so the mode colour stays
+            // readable while the composer is focused. This replaces the global
+            // `:focus-visible` outline, which used to cover it in blue.
+            "max-h-48 min-h-16 flex-1 resize-y rounded-sm border bg-sunken px-2 py-1.5 font-mono text-sm outline-none focus-visible:ring-2 focus-visible:ring-line-strong placeholder:text-ink-faint disabled:opacity-60",
+            workflowBorderClass(workflowMode),
+          )}
           onChange={(event) => {
             caretRef.current = event.target.selectionStart;
             setPickedSource(undefined);
@@ -363,9 +423,44 @@ export function Composer({
             // IME guard first: Enter during composition belongs to the input method.
             if (event.nativeEvent.isComposing) return;
 
+            const menu = suggestions;
+            const menuOpen = Boolean(menu && menu.items.length > 0);
+            // The keys an open completion menu owns. Everything *else* still
+            // reaches an extension shortcut, and a closed menu blocks nothing.
+            const menuKey =
+              menuOpen &&
+              (event.key === "ArrowDown" ||
+                event.key === "ArrowUp" ||
+                event.key === "Escape" ||
+                event.key === "Tab" ||
+                event.key === "Enter");
+
+            // Extension shortcuts come first, exactly as in Pi's editor
+            // (`custom-editor.js:60` checks `onExtensionShortcut` before any
+            // editor handling). This is what lets the workflow extension's `tab`
+            // cycle the mode, and its `ctrl+alt+p` alias too. Matching against
+            // the registered chord list is inherently safe for a text input: a
+            // key only fires if the session actually registered it.
+            if (!menuKey) {
+              const matched = matchShortcut(
+                {
+                  key: event.key,
+                  ctrlKey: event.ctrlKey,
+                  altKey: event.altKey,
+                  shiftKey: event.shiftKey,
+                  metaKey: event.metaKey,
+                },
+                shortcuts,
+              );
+              if (matched && onInvokeShortcut) {
+                event.preventDefault();
+                onInvokeShortcut(matched);
+                return;
+              }
+            }
+
             // The completion menu owns these keys while it is open, so Enter
             // accepts a suggestion instead of sending half a command.
-            const menu = suggestions;
             if (menu && menu.items.length > 0) {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
@@ -390,11 +485,17 @@ export function Composer({
                   return;
                 }
               }
-            } else if (event.key === "Tab" && completion) {
-              // Tab on a path-shaped token asks explicitly (Pi's editor does too).
-              event.preventDefault();
-              refreshCompletion(true);
-              return;
+            } else if (event.key === "Tab") {
+              // No extension shortcut claimed Tab and no menu is open: keep the
+              // original completion behaviour. If the list has not been fetched
+              // yet, ask for it so the *next* Tab can cycle the mode.
+              if (shortcuts.length === 0) onRequestShortcuts?.();
+              if (completion) {
+                // Tab on a path-shaped token asks explicitly (Pi's editor does too).
+                event.preventDefault();
+                refreshCompletion(true);
+                return;
+              }
             }
 
             if (event.key === "Escape" && running) {
@@ -499,7 +600,6 @@ export function Composer({
           <span className="font-mono">#</span> documents
         </span>
         <span>Enter sends · Shift+Enter newline{running ? " · Esc stops" : ""}</span>
-        {contextLabel ? <span className="ml-auto">{contextLabel}</span> : null}
       </div>
     </div>
   );

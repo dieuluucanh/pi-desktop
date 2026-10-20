@@ -51,8 +51,12 @@ test("@smoke runs against the isolated profile and exits cleanly", async () => {
   launched = app;
 
   // The status bar proves `PI_CODING_AGENT_DIR` reached the app: the E2E profile
-  // is a temp directory, never the developer's real ~/.pi/agent.
-  await expect(app.window.locator("footer")).toContainText(app.paths.profileDir);
+  // is a temp directory, never the developer's real ~/.pi/agent. The chip is
+  // compact, so the exact path is asserted through `data-profile`.
+  await expect(app.window.getByTestId("status-profile")).toHaveAttribute(
+    "data-profile",
+    app.paths.profileDir,
+  );
 
   const exitCode = await app.close();
   expect(exitCode).toBe(0);

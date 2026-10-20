@@ -14,7 +14,7 @@ import {
   withFavoritesFirst,
   type ModelCatalogEntry,
 } from "../../src/renderer/src/session/model-catalog";
-import { usageLine } from "../../src/renderer/src/views/SessionView";
+import { contextFooterText } from "../../src/renderer/src/session/ComposerFooter";
 
 /**
  * Model/usage helpers (plan step 8). Two things here are easy to get wrong and
@@ -158,14 +158,12 @@ describe("context usage (Pi reports 0-100)", () => {
     expect(formatTokens(null)).toBe("unknown");
   });
 
-  it("renders the header line as a percentage, not a fraction times 100", () => {
-    // Regression: 42 means 42%, so the line must not read "4200% ctx".
-    const line = usageLine({
-      contextUsage: { tokens: 42_000, contextWindow: 100_000, percent: 42 },
-      tokens: { total: 12_340, cost: 0.0432 },
-      messageCount: 7,
-    });
-    expect(line).toBe("42% ctx · 12.3k tokens · $0.0432 · 7 messages");
+  it("renders the footer context line as a percentage, not a fraction times 100", () => {
+    // Regression: Pi reports 42 meaning 42%, so the line must not read "4200%".
+    // The line moved from the session header to the composer footer (2026-10-19
+    // UI rework), so the guard moved with it.
+    const line = contextFooterText({ tokens: 42_000, contextWindow: 100_000, percent: 42 }, 0.0432);
+    expect(line).toBe("42% of 100.0k · 42.0k tokens · $0.0432");
   });
 
   it("reads thinking levels the host reported", () => {

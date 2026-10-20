@@ -1,9 +1,10 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { Composer, isSendKey } from "../../src/renderer/src/session/Composer";
 import type { ImageAttachment } from "../../src/renderer/src/session/image-attachment";
-
+import type { CompletionProvider } from "../../src/renderer/src/completion/types";
 /**
  * The composer (plan step 6). The behaviours worth pinning are the ones that
  * silently lose a user's work or send at the wrong moment: Enter vs Shift+Enter,
@@ -30,8 +31,8 @@ function renderComposer(overrides: Partial<Parameters<typeof Composer>[0]> = {})
     onHistoryStep: () => null,
     ...overrides,
   };
-  render(<Composer {...props} />);
-  return { onSend, onStop, onClearQueue, onSendModeChange, onDraftChange };
+  const rendered = render(<Composer {...props} />);
+  return { onSend, onStop, onClearQueue, onSendModeChange, onDraftChange, ...rendered };
 }
 
 describe("sending", () => {
@@ -183,5 +184,183 @@ describe("send mode memory", () => {
     renderComposer();
     const hints = screen.getByText(/commands/);
     expect(hints.textContent).toContain("commands");
+  });
+
+  it("stops at the hint row, since the footer is a sibling in the session view", () => {
+    // 2026-10-19: the session footer moved out of the composer (so it survives an
+    // extension-owned editor), so the composer now ends at its hint row.
+    renderComposer();
+    expect(screen.getByText(/commands/)).toBeInTheDocument();
+    expect(screen.queryByTestId("composer-footer")).toBeNull();
+  });
+});
+
+describe("workflow mode border", () => {
+  function promptBox(): HTMLElement {
+    return screen.getByLabelText("Prompt");
+  }
+
+  it("colours the border and shows a badge in Plan and Build modes", () => {
+    // The extension's own status colours (`index.ts:919/928`): plan → warning,
+    // build → accent. The border is what tells the user Tab did something —
+    // without it the mode changes with no visible feedback in the composer.
+    const plan = renderComposer({ workflowStatus: "\u23f8 plan" });
+    expect(promptBox()).toHaveClass("border-warn");
+    expect(screen.getByTestId("workflow-mode-badge")).toHaveTextContent("Plan");
+    plan.unmount();
+
+    renderComposer({ workflowStatus: "\u25b6 build 3/8" });
+    expect(promptBox()).toHaveClass("border-accent");
+    expect(screen.getByTestId("workflow-mode-badge")).toHaveTextContent("Build");
+  });
+
+  it("decodes an ANSI-coloured status exactly like a plain one", () => {
+    renderComposer({ workflowStatus: "\x1b[33m\u23f8 plan\x1b[0m" });
+    expect(promptBox()).toHaveClass("border-warn");
+  });
+
+  it("labels the plannotator browser-review phase as Plan, not Review", () => {
+    // The "reviewing in browser" phrase is a Plan sub-state (Plannotator's
+    // phase label), never a mode: the badge always reads Plan (2026-10-20
+    // startup-tab-cycle plan). The raw phrase stays visible in the badge's
+    // tooltip and the footer's extension-status row.
+    renderComposer({ workflowStatus: "\u23f8 plan — reviewing in browser" });
+    expect(promptBox()).toHaveClass("border-warn");
+    expect(screen.getByTestId("workflow-mode-badge")).toHaveTextContent("Plan");
+  });
+
+  it("names the default mode instead of showing nothing", () => {
+    // 2026-10-19: the badge was silent in Default, so the only mode with no
+    // workflow had no textual indicator at all. Every recognised mode is named.
+    renderComposer({ workflowStatus: "\u25e6 commits:never" });
+    expect(promptBox()).toHaveClass("border-line");
+    expect(screen.getByTestId("workflow-mode-badge")).toHaveTextContent("Default");
+  });
+
+  it("keeps the badge readable at every width and to assistive tech", () => {
+    renderComposer({ workflowStatus: "\u23f8 plan" });
+    const badge = screen.getByTestId("workflow-mode-badge");
+    // No breakpoint hiding: the old badge vanished below `sm`.
+    expect(badge.className).not.toMatch(/\bhidden\b/);
+    expect(badge.className).not.toMatch(/sm:inline-block/);
+    // Announced, not `aria-hidden`.
+    expect(badge).not.toHaveAttribute("aria-hidden");
+    expect(badge).toHaveAttribute("role", "status");
+    // The full status stays reachable on hover (profile/role/commit policy).
+    expect(badge.getAttribute("title")?.startsWith("\u23f8 plan")).toBe(true);
+  });
+
+  it("survives focus without a ring that hides the mode colour", () => {
+    // The global `:focus-visible` used to paint a blue outline over the border.
+    // Focus is now an outer ring, so `border-*` stays legible; the textarea must
+    // never carry a `focus:border-*` that would clobber the mode colour.
+    renderComposer({ workflowStatus: "\u25b6 build" });
+    const box = promptBox();
+    expect(box).toHaveClass("outline-none");
+    expect(box.className).toMatch(/focus-visible:ring-2/);
+    expect(box.className).toMatch(/ring-line-strong/);
+    expect(box.className).not.toMatch(/focus:border-/);
+    expect(box).toHaveClass("border-accent");
+  });
+
+  it("stays neutral for a missing, empty or unknown status", () => {
+    // A wrong colour is worse than no colour: another extension's status must
+    // never be misread as a workflow mode.
+    for (const value of [undefined, null, "", "office: Excel attached (bridge :38617)"]) {
+      const view = renderComposer({ workflowStatus: value });
+      expect(promptBox()).toHaveClass("border-line");
+      expect(screen.queryByTestId("workflow-mode-badge")).toBeNull();
+      view.unmount();
+    }
+  });
+});
+
+describe("extension shortcut dispatch (Tab)", () => {
+  function promptBox(): HTMLElement {
+    return screen.getByLabelText("Prompt");
+  }
+
+  it("runs a registered `tab` shortcut instead of asking for completion", () => {
+    // The workflow extension registers `tab` for its mode cycle
+    // (`index.ts:2591`). Terminal Pi checks extension shortcuts before the
+    // editor (`custom-editor.js:60`), so Tab must reach it — this is the bug
+    // that left the mode stuck in Default.
+    const onInvokeShortcut = vi.fn();
+    renderComposer({
+      extensionShortcuts: [{ key: "tab" }],
+      onInvokeShortcut,
+    });
+    fireEvent.keyDown(promptBox(), { key: "Tab" });
+    expect(onInvokeShortcut).toHaveBeenCalledTimes(1);
+    expect(onInvokeShortcut).toHaveBeenCalledWith("tab");
+  });
+
+  it("matches modifiers canonically, so a remap still fires", () => {
+    const onInvokeShortcut = vi.fn();
+    renderComposer({
+      extensionShortcuts: [{ key: "ctrl+alt+p" }],
+      onInvokeShortcut,
+    });
+    fireEvent.keyDown(promptBox(), { key: "p", ctrlKey: true, altKey: true });
+    expect(onInvokeShortcut).toHaveBeenCalledWith("ctrl+alt+p");
+  });
+
+  it("requests the list when no shortcut is known yet", () => {
+    // On a fresh session the shortcuts have not been listed, so the first Tab
+    // asks for them (and still falls back to completion).
+    const onRequestShortcuts = vi.fn();
+    renderComposer({ extensionShortcuts: [], onRequestShortcuts });
+    fireEvent.keyDown(promptBox(), { key: "Tab" });
+    expect(onRequestShortcuts).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves Tab to an open completion menu", async () => {
+    // A visible menu means the user is picking a suggestion; the mode cycle must
+    // never steal that Tab (deliberate deviation from Pi, documented in D7).
+    const onInvokeShortcut = vi.fn();
+    const provider: CompletionProvider = {
+      id: "fake",
+      async getSuggestions(lines, cursorLine, cursorCol) {
+        const line = lines[cursorLine] ?? "";
+        if (cursorLine !== 0 || !line.slice(0, cursorCol).startsWith("/")) return null;
+        return {
+          items: [{ value: "/deploy", label: "/deploy", source: "extension" }],
+          prefix: line.slice(0, cursorCol),
+        };
+      },
+      applyCompletion: (lines) => ({ lines: [...lines], cursorLine: 0, cursorCol: 7 }),
+    };
+
+    function Harness() {
+      const [draft, setDraft] = useState("/");
+      return (
+        <Composer
+          tabId="tab-1"
+          running={false}
+          draft={draft}
+          queue={{ steering: [], followUp: [] }}
+          sendMode="steer"
+          onDraftChange={setDraft}
+          onSend={async () => true}
+          onStop={() => undefined}
+          onClearQueue={() => undefined}
+          onSendModeChange={() => undefined}
+          onHistoryStep={() => null}
+          extensionShortcuts={[{ key: "tab" }]}
+          onInvokeShortcut={onInvokeShortcut}
+          completion={{ provider }}
+        />
+      );
+    }
+
+    render(<Harness />);
+    const user = userEvent.setup();
+    const box = screen.getByLabelText("Prompt");
+    await user.click(box);
+    await user.keyboard("/");
+    await screen.findByTestId("completion-overlay");
+    // The menu is open now: a following Tab accepts the item, not the mode.
+    await user.keyboard("{Tab}");
+    expect(onInvokeShortcut).not.toHaveBeenCalled();
   });
 });

@@ -141,7 +141,12 @@ describe("session shortcuts", () => {
     });
     await call("session.create", {});
     await call("shortcuts.list");
-    expect(seen).toEqual([{ "app.exit": ["ctrl+q"] }]);
+    // Effective config, like terminal Pi (2026-10-20 startup-tab-cycle plan):
+    // the user override replaces the default, and every other id keeps its
+    // documented default.
+    const resolved = seen[0] as Record<string, string[]>;
+    expect(resolved["app.exit"]).toEqual(["ctrl+q"]);
+    expect(resolved["tui.input.submit"]).toEqual(["enter"]);
   });
 
   it("falls back without an SDK adapter (lists, but cannot invoke)", async () => {

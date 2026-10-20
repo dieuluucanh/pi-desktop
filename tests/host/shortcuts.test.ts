@@ -60,6 +60,27 @@ describe("createShortcutHandlers", () => {
     expect(invokeShortcut).toHaveBeenCalledWith("ctrl+g", context);
   });
 
+  it("forwards the resolved keybindings to the runner", async () => {
+    // The session core resolves Pi's *effective* config (defaults + user
+    // overrides); the handler must pass that object through untouched so a
+    // user remap is honoured the way terminal Pi honours it (2026-10-20
+    // startup-tab-cycle plan).
+    const seen: unknown[] = [];
+    const resolved = { "tui.input.tab": ["tab"], "tui.input.submit": ["enter"] };
+    const handlers = createShortcutHandlers({
+      resolveRunner: () =>
+        runner({
+          getShortcuts: (bindings) => {
+            seen.push(bindings);
+            return new Map();
+          },
+        }),
+      resolveKeybindings: () => resolved,
+    }).handlers();
+    await handlers["shortcuts.list"]?.({}, {} as never);
+    expect(seen).toEqual([resolved]);
+  });
+
   it("requires a key and a runner", async () => {
     const handlers = createShortcutHandlers({
       resolveRunner: () => runner(),

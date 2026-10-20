@@ -88,8 +88,13 @@ export function App() {
     const offMenu = api.onMenuCommand((command) => handleMenuCommand(command));
     // Session pushes (plan step 3): the tab table, per-tab state snapshots and
     // the host event batches the transcript will consume in step 5.
-    void loadTabs();
     void useAppStore.getState().loadOfficeDocuments();
+    // Extension shortcuts (plan step 15) are needed by the composer's Tab mode
+    // cycle (2026-10-19), not only by the help dialog. They must be listed
+    // *after* the tab table lands, or `resourcesTarget` sees no active session
+    // and asks the control host (which has no extension runner). `loadShortcuts`
+    // is idempotent and no-ops for the control host.
+    void loadTabs().then(() => useAppStore.getState().loadShortcuts());
     // The updater's state (plan step 26): read once, then follow main's pushes
     // so a check started from the menu or the banner updates everywhere.
     void loadUpdateState();

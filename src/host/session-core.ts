@@ -1,4 +1,8 @@
 import type { HostMethod } from "../shared/host-protocol";
+import {
+  KEYBINDING_DEFINITIONS,
+  resolveKeybindings as resolveEffectiveKeybindings,
+} from "../shared/keybindings";
 import type { ExtensionRuntimeErrorSummary } from "../shared/resources";
 import {
   eventToFrame,
@@ -722,7 +726,12 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         const document = parseKeybindingsDocument(await deps.keybindingPort.read());
         const user: Record<string, unknown> = {};
         for (const [id, value] of Object.entries(document)) user[id] = value;
-        return user;
+        // Parity with terminal Pi (2026-10-20 startup-tab-cycle plan): Pi
+        // resolves shortcuts against the *effective* config (documented
+        // defaults with the user's overrides applied), not the raw user
+        // document, so a user override of a reserved chord is honoured here
+        // exactly the way the terminal honours it.
+        return resolveEffectiveKeybindings(user, KEYBINDING_DEFINITIONS);
       },
     }).handlers(),
 

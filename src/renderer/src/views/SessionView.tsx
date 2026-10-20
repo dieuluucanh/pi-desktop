@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Composer } from "../session/Composer";
+import { ComposerFooter } from "../session/ComposerFooter";
+import { parseWorkflowStatus } from "../../../shared/workflow-mode";
 import { Transcript } from "../session/Transcript";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -50,31 +52,12 @@ const documentMentionSource = {
   list: () => toDocumentMentions(useAppStore.getState().officeDocuments?.panes ?? []),
 };
 
-/** "42% ctx · 12.3k tokens · $0.04" from the host's state snapshot. */
-export function usageLine(state: unknown): string | null {
-  if (!state || typeof state !== "object") return null;
-  const record = state as Record<string, unknown>;
-  const parts: string[] = [];
-  const usage = record.contextUsage;
-  if (usage && typeof usage === "object") {
-    // Pi reports context usage as 0-100 (`(tokens / contextWindow) * 100`), so
-    // this is a percentage already — scaling it again claimed "4200% ctx".
-    const percent = (usage as { percent?: unknown }).percent;
-    if (typeof percent === "number") parts.push(`${Math.round(percent)}% ctx`);
-  }
-  const tokens = record.tokens;
-  if (tokens && typeof tokens === "object") {
-    const total = (tokens as { total?: unknown }).total;
-    const cost = (tokens as { cost?: unknown }).cost;
-    if (typeof total === "number" && total > 0) {
-      parts.push(`${total >= 1000 ? `${(total / 1000).toFixed(1)}k` : total} tokens`);
-    }
-    if (typeof cost === "number" && cost > 0) parts.push(`$${cost.toFixed(4)}`);
-  }
-  const count = record.messageCount;
-  if (typeof count === "number" && count > 0) parts.push(`${count} messages`);
-  return parts.length > 0 ? parts.join(" · ") : null;
-}
+/**
+ * The session-scoped facts line that used to summarize context usage moved to
+ * `ComposerFooter` (`contextFooterText`), which the composer renders under the
+ * input. `usageLine` was removed with it; the percentage-not-fraction guard now
+ * lives in `tests/renderer/composer-footer.test.tsx`.
+ */
 
 export function SessionView() {
   const project = useAppStore((state) => state.project);
@@ -118,8 +101,18 @@ export function SessionView() {
     activeTabId ? state.toolsExpanded[activeTabId] : undefined,
   );
   const toggleToolsExpanded = useAppStore((state) => state.toggleToolsExpanded);
+  // The git branch shown in the composer footer comes from the project
+  // inspection the sidebar already triggers, so no new fetch is needed.
+  const gitBranch = useAppStore((state) =>
+    project ? (state.projectInspections[project.path]?.gitBranch ?? null) : null,
+  );
   const extensionCompletion = useAppStore((state) => state.extensionCompletion);
   const extensionApplyCompletion = useAppStore((state) => state.extensionApplyCompletion);
+  // Extension shortcuts (plan step 15) drive the composer's Tab mode cycle; the
+  // store loads them per tab (step 7), so both the list and the invoker are here.
+  const shortcuts = useAppStore((state) => state.shortcuts);
+  const loadShortcuts = useAppStore((state) => state.loadShortcuts);
+  const invokeShortcut = useAppStore((state) => state.invokeShortcut);
   const tuiSurface = useAppStore((state) =>
     activeTabId ? state.tuiSurfaces[activeTabId] : undefined,
   );
@@ -186,11 +179,21 @@ export function SessionView() {
     if (activeId && active?.kind !== "web") void hydrateTranscript(activeId);
   }, [activeId, active?.kind, active?.status, hydrateTranscript]);
 
+  // The extension shortcut list feeds the composer's Tab mode cycle. Like the
+  // transcript hydration above, the first attempt can run before the host's
+  // session is open and must not be cached as an empty list (2026-10-20
+  // startup-tab-cycle plan): `loadShortcuts` retries a tab whose last attempt
+  // failed, so re-running it here on status change recovers the Tab cycle once
+  // the host resumes. Cheap when the list is already loaded (the store's
+  // idempotence guard returns early without a request).
+  useEffect(() => {
+    if (activeId && active?.kind === "session") void loadShortcuts();
+  }, [activeId, active?.kind, active?.status, loadShortcuts]);
+
   if (!active) return <WelcomeView />;
   if (active.kind === "web") return <WebTabView tab={active} />;
 
   const transcript = transcripts[active.id];
-  const usage = usageLine(sessionStates[active.id]);
   const contextUsage = contextUsageOf(sessionStates[active.id]);
   const levels = thinkingLevels[active.id] ?? thinkingLevelsOf(sessionStates[active.id]);
   const activeState = sessionStates[active.id] as
@@ -374,7 +377,10 @@ export function SessionView() {
                 draft={drafts[active.id] ?? ""}
                 queue={transcript?.queue ?? { steering: [], followUp: [] }}
                 sendMode={sendModes[active.id] ?? "steer"}
-                contextLabel={usage}
+                workflowStatus={extensionUi?.statuses?.workflow ?? null}
+                extensionShortcuts={shortcuts.shortcuts}
+                onInvokeShortcut={(key) => void invokeShortcut(key)}
+                onRequestShortcuts={() => void loadShortcuts()}
                 onDraftChange={(text) => setDraft(active.id, text)}
                 onSend={async (text, images, options) => {
                   const mode = sendModes[active.id] ?? "steer";
@@ -411,6 +417,23 @@ export function SessionView() {
               className="shrink-0 border-t border-line px-3 py-1"
             />
           ) : null}
+
+          {/* The session footer renders *outside* the editor branch above, so the
+              mode chip and extension statuses survive when an extension installs
+              its own editor (`tuiOwnsEditor`) and replaces `<Composer>`. */}
+          <ComposerFooter
+            className="shrink-0 px-3 pb-1"
+            facts={{
+              cwd: active.cwd,
+              branch: gitBranch,
+              model: active.model,
+              thinking: thinkingLevel,
+              context: contextUsage,
+              cost,
+              workflow: parseWorkflowStatus(extensionUi?.statuses?.workflow ?? null),
+            }}
+            statuses={extensionUi?.statuses}
+          />
         </div>
         <DocumentsPanel />
       </div>
