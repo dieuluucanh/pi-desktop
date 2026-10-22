@@ -2,6 +2,7 @@ import type { CSSProperties, ReactElement } from "react";
 
 import { parseAnsiLine, visibleWidth, type AnsiSpan, type AnsiStyle } from "../../../shared/ansi";
 import type { TuiFrame } from "../../../shared/tui-surface";
+import { isSelectedSpan, selectedSpanStyle, SELECTED_SPAN_CLASS } from "./selection";
 
 /**
  * ANSI → HTML for the extension TUI surface (plan step 17).
@@ -36,14 +37,25 @@ function openHref(href: string): void {
   void window.pi?.openExternal(href).catch(() => undefined);
 }
 
-function AnsiSpanView({ span }: { span: AnsiSpan }): ReactElement {
-  const style = ansiStyleToCss(span.style);
+function AnsiSpanView({
+  span,
+  selected,
+}: {
+  span: AnsiSpan;
+  /** Repaint a background-filled span with the app's selection style. */
+  selected?: boolean;
+}): ReactElement {
+  const style =
+    selected && isSelectedSpan(span.style)
+      ? selectedSpanStyle(span.style)
+      : ansiStyleToCss(span.style);
+  const className = selected && isSelectedSpan(span.style) ? SELECTED_SPAN_CLASS : undefined;
   if (span.href) {
     return (
       <a
         href={span.href}
         style={style}
-        className="underline"
+        className={className ? `underline ${className}` : "underline"}
         onClick={(event) => {
           // Electron owns external navigation; never let the app window navigate.
           event.preventDefault();
@@ -54,24 +66,39 @@ function AnsiSpanView({ span }: { span: AnsiSpan }): ReactElement {
       </a>
     );
   }
-  return <span style={style}>{span.text}</span>;
+  return (
+    <span style={style} className={className}>
+      {span.text}
+    </span>
+  );
 }
 
 export interface AnsiLineProps {
   line: string;
   /** Terminal columns the line should occupy. */
   width: number;
+  /**
+   * Repaint a background-filled span with the app's selection style (plan step
+   * 2). Pi marks the selected element of an extension-drawn component with a
+   * background fill; the app paints that with its own tokens.
+   */
+  selection?: boolean;
 }
 
-export function AnsiLine({ line, width }: AnsiLineProps): ReactElement {
+export function AnsiLine({ line, width, selection }: AnsiLineProps): ReactElement {
   const spans = parseAnsiLine(line);
   const pad = Math.max(0, width - visibleWidth(line));
   // The padding keeps the last span's background so a filled row stays filled.
-  const padStyle = spans.length > 0 ? ansiStyleToCss(spans[spans.length - 1]!.style) : undefined;
+  // A selection is the exception: it marks one element and must not bleed into
+  // the rest of the line.
+  const last = spans.length > 0 ? spans[spans.length - 1]! : undefined;
+  const padStyle = last
+    ? ansiStyleToCss(selection ? { ...last.style, bg: null } : last.style)
+    : undefined;
   return (
     <div className="ansi-line whitespace-pre" data-ansi-line="">
       {spans.map((span, index) => (
-        <AnsiSpanView key={index} span={span} />
+        <AnsiSpanView key={index} span={span} selected={selection === true} />
       ))}
       {pad > 0 ? <span style={padStyle}>{" ".repeat(pad)}</span> : null}
     </div>
@@ -81,14 +108,16 @@ export function AnsiLine({ line, width }: AnsiLineProps): ReactElement {
 export interface AnsiBlockProps {
   frame: TuiFrame;
   className?: string;
+  /** See `AnsiLineProps.selection`. */
+  selection?: boolean;
 }
 
 /** A whole rendered frame, one line per host row. */
-export function AnsiBlock({ frame, className }: AnsiBlockProps): ReactElement {
+export function AnsiBlock({ frame, className, selection }: AnsiBlockProps): ReactElement {
   return (
     <div className={className} data-tui-frame={frame.seq}>
       {frame.lines.map((line, index) => (
-        <AnsiLine key={index} line={line} width={frame.width} />
+        <AnsiLine key={index} line={line} width={frame.width} selection={selection} />
       ))}
     </div>
   );

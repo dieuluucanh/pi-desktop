@@ -70,4 +70,38 @@ describe("AnsiBlock", () => {
     const { container } = render(<AnsiLine line="ab" width={5} />);
     expect(container.textContent).toBe("ab   ");
   });
+
+  it("repaints a background-filled span with the app's selection style", () => {
+    // Pi marks the selected element of an extension-drawn component with a
+    // background fill (`theme.bg("selectedBg", …)`). With the selection flag
+    // the app paints that with its own token; without it the raw terminal hex
+    // is kept, exactly as before (plan step 2).
+    const line = "\x1b[48;2;58;58;74m Scope \x1b[49m";
+
+    const selected = render(<AnsiLine line={line} width={20} selection />);
+    const marked = selected.container.querySelector("span");
+    // The surface and the underline are token-driven classes; only the
+    // foreground stays inline (it is Pi's own colour).
+    expect(marked?.className).toContain("bg-selected");
+    expect(marked?.className).toContain("decoration-accent");
+    expect(marked?.style.fontWeight).toBe("600");
+
+    selected.unmount();
+    const plain = render(<AnsiLine line={line} width={20} />);
+    const raw = plain.container.querySelector("span");
+    expect(raw?.style.backgroundColor).toBe("rgb(58, 58, 74)");
+    expect(raw?.className).toBe("");
+  });
+
+  it("never lets a selection bleed into the line padding", () => {
+    // The padding copies the last span's background so a filled row stays
+    // filled; a selection marks one element and must stop there.
+    const { container } = render(
+      <AnsiLine line={"\x1b[48;2;58;58;74m Scope \x1b[49m"} width={20} selection />,
+    );
+    const spans = container.querySelectorAll("span");
+    const padding = spans[spans.length - 1];
+    expect(padding?.textContent).toBe(" ".repeat(13));
+    expect(padding?.style.backgroundColor).toBe("");
+  });
 });

@@ -16,6 +16,7 @@ import type { SendMode } from "../state/app-store";
 import { CompletionOverlay } from "../completion/CompletionOverlay";
 import { matchShortcut } from "../shortcuts/dom-keys";
 import { joinBuffer, offsetToPosition, positionToOffset, splitBuffer } from "../completion/token";
+import { caretLabel, caretPosition, type CaretPosition } from "./caret";
 import type {
   CompletionItem,
   CompletionProvider,
@@ -191,8 +192,12 @@ export function Composer({
   const [activeIndex, setActiveIndex] = useState(0);
   // The source of the item the user picked, when a name was ambiguous. It is
   // cleared as soon as they type, so it only ever describes the current token.
-  const [pickedSource, setPickedSource] = useState<CompletionSource | undefined>(undefined);
+  const [pickedSource, setPickedSource] = useState<CompletionSource | undefined>();
   const caretRef = useRef(0);
+  // The caret's line/column, shown in the status row (plan step 1). The browser's
+  // own caret is a thin blinking line that is easy to lose in a long buffer; the
+  // readout is the explicit, always-readable position.
+  const [caret, setCaret] = useState<CaretPosition>({ line: 1, column: 1 });
   const completionAbortRef = useRef<AbortController | null>(null);
   const completionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -217,6 +222,21 @@ export function Composer({
   const closeCompletion = useCallback(() => {
     setSuggestions(null);
     setActiveIndex(0);
+  }, []);
+
+  /**
+   * Mirrors the DOM caret into the completion engine (`caretRef`) and into the
+   * readout. One source of truth: the offset the providers see is the offset
+   * the user sees.
+   */
+  const syncCaret = useCallback((node: HTMLTextAreaElement | null) => {
+    if (!node) return;
+    const offset = node.selectionStart ?? 0;
+    caretRef.current = offset;
+    const next = caretPosition(node.value, offset);
+    setCaret((previous) =>
+      previous.line === next.line && previous.column === next.column ? previous : next,
+    );
   }, []);
 
   const refreshCompletion = useCallback(
@@ -283,6 +303,7 @@ export function Composer({
         node.focus();
         node.setSelectionRange(caret, caret);
         caretRef.current = caret;
+        setCaret(caretPosition(text, caret));
       });
     },
     [closeCompletion, completion, currentBuffer, onDraftChange, suggestions],
@@ -296,6 +317,14 @@ export function Composer({
     },
     [],
   );
+
+  // A draft that changed from outside the textarea (the history walk, a
+  // restored draft) moves the caret too, so the readout is re-read once the
+  // DOM carries the new value.
+  useEffect(() => {
+    const node = textareaRef.current;
+    if (node && node.value === draft) syncCaret(node);
+  }, [draft, syncCaret]);
 
   const submit = useCallback(async () => {
     if (!enabled || busy) return;
@@ -404,16 +433,26 @@ export function Composer({
             // readable while the composer is focused. This replaces the global
             // `:focus-visible` outline, which used to cover it in blue.
             "max-h-48 min-h-16 flex-1 resize-y rounded-sm border bg-sunken px-2 py-1.5 font-mono text-sm outline-none focus-visible:ring-2 focus-visible:ring-line-strong placeholder:text-ink-faint disabled:opacity-60",
+            // The caret is the app's own accent colour, and a selection is
+            // tinted with it, so the cursor is never lost in a dark buffer
+            // (plan step 1).
+            "caret-accent selection:bg-accent/25",
             workflowBorderClass(workflowMode),
           )}
           onChange={(event) => {
-            caretRef.current = event.target.selectionStart;
+            syncCaret(event.target);
             setPickedSource(undefined);
             onDraftChange(event.target.value);
             refreshCompletion(false);
           }}
           onSelect={(event) => {
-            caretRef.current = event.currentTarget.selectionStart;
+            syncCaret(event.currentTarget);
+          }}
+          onClick={(event) => {
+            syncCaret(event.currentTarget);
+          }}
+          onKeyUp={(event) => {
+            syncCaret(event.currentTarget);
           }}
           onPaste={(event) => {
             const files = [...(event.clipboardData?.files ?? [])];
@@ -590,16 +629,32 @@ export function Composer({
       </div>
 
       <div className="mt-1 flex items-center gap-3 text-[11px] text-ink-faint">
-        <span>
-          <span className="font-mono">/</span> commands
+        {/* The hints shrink and clip rather than pushing the readout off the
+            row (plan step 6). */}
+        <div className="flex min-w-0 shrink items-center gap-3 overflow-hidden">
+          <span className="shrink-0">
+            <span className="font-mono">/</span> commands
+          </span>
+          <span className="shrink-0">
+            <span className="font-mono">@</span> files
+          </span>
+          <span className="shrink-0">
+            <span className="font-mono">#</span> documents
+          </span>
+          <span className="shrink-0">
+            Enter sends · Shift+Enter newline{running ? " · Esc stops" : ""}
+          </span>
+        </div>
+        {/* Where the cursor is. The browser's caret is a thin blinking line that
+            is easy to lose in a long buffer, so the position is also spelled
+            out (plan step 1). */}
+        <span
+          data-testid="composer-caret"
+          className="ml-auto shrink-0 tabular-nums"
+          title="Cursor position"
+        >
+          {caretLabel(caret)}
         </span>
-        <span>
-          <span className="font-mono">@</span> files
-        </span>
-        <span>
-          <span className="font-mono">#</span> documents
-        </span>
-        <span>Enter sends · Shift+Enter newline{running ? " · Esc stops" : ""}</span>
       </div>
     </div>
   );

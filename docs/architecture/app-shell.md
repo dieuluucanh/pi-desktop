@@ -44,6 +44,21 @@ not an indicator, the mode is also named: a badge on the composer's top edge and
 recognised mode has a label, including `Default`. The badge renders at every
 window width — it used to be hidden below the `sm` breakpoint.
 
+**The composer says where the cursor is (2026-10-21).** The textarea's caret
+carries the app's accent colour, and the composer's status row spells the
+position out (`Ln 2 · Col 7`) next to the shortcut hints. The offset is the one
+the completion engine already tracks (`caretRef`), so the readout and the
+providers can never disagree; `src/renderer/src/session/caret.ts` turns the
+offset into the line/column pair.
+
+**The session header is one cluster (2026-10-21).** The title, the status badge
+and the restart action are the left group; the controls on the right are one
+row of equally-weighted ghost buttons — model, thinking level, the context ring,
+a vertical rule, the view mode, the documents panel, the linked reviews and
+`Stop`. The view mode was a native `<select>`, the only unstyled control in the
+header; it is now a menu in the app's own vocabulary, with a `✓` on the active
+mode. The title truncates and the hints clip, so the row never wraps.
+
 **Global CSS lives in `@layer base`.** Tailwind v4 emits its own rules into
 cascade layers, and in CSS an _unlayered_ rule beats every layered one regardless
 of specificity. `src/renderer/src/styles.css` therefore wraps its document-level

@@ -245,18 +245,28 @@ function parseSgr(params: string): ParsedSgr {
   return result;
 }
 
+/**
+ * Applies one SGR sequence to a style.
+ *
+ * The result is always a **new** object. The spans already pushed into the
+ * result hold a reference to the style they were parsed with, so mutating that
+ * object in place would rewrite them: Pi closes every background fill with
+ * `\x1b[49m`, and an in-place reset wiped the fill of the span that had just
+ * been flushed — the selected element of an extension-drawn component lost its
+ * background entirely (plan step 2).
+ */
 function applySgr(style: AnsiStyle, sgr: ParsedSgr): AnsiStyle {
-  if (sgr.reset) style = { ...EMPTY_ANSI_STYLE };
-  if (sgr.fg !== undefined) style.fg = sgr.fg;
-  if (sgr.bg !== undefined) style.bg = sgr.bg;
-  if (sgr.bold !== undefined) style.bold = sgr.bold;
-  if (sgr.dim !== undefined) style.dim = sgr.dim;
-  if (sgr.italic !== undefined) style.italic = sgr.italic;
-  if (sgr.underline !== undefined) style.underline = sgr.underline;
-  if (sgr.inverse !== undefined) style.inverse = sgr.inverse;
-  if (sgr.strike !== undefined) style.strike = sgr.strike;
-  if (sgr.hidden !== undefined) style.hidden = sgr.hidden;
-  return style;
+  const next: AnsiStyle = sgr.reset ? { ...EMPTY_ANSI_STYLE } : { ...style };
+  if (sgr.fg !== undefined) next.fg = sgr.fg;
+  if (sgr.bg !== undefined) next.bg = sgr.bg;
+  if (sgr.bold !== undefined) next.bold = sgr.bold;
+  if (sgr.dim !== undefined) next.dim = sgr.dim;
+  if (sgr.italic !== undefined) next.italic = sgr.italic;
+  if (sgr.underline !== undefined) next.underline = sgr.underline;
+  if (sgr.inverse !== undefined) next.inverse = sgr.inverse;
+  if (sgr.strike !== undefined) next.strike = sgr.strike;
+  if (sgr.hidden !== undefined) next.hidden = sgr.hidden;
+  return next;
 }
 
 /** Parses the payload of an OSC-8 sequence (`8;params;url`). */

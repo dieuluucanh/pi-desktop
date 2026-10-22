@@ -59,6 +59,21 @@ describe("ansi parsing", () => {
     expect(spans[1]?.style).toMatchObject({ bold: false, fg: ANSI_16_COLORS[1] });
   });
 
+  it("keeps a background fill that the line closes with a background reset", () => {
+    // Pi closes every filled span with `\x1b[49m` (`theme.bg(color, text)`).
+    // The style of an already-parsed span must not change when that reset
+    // arrives: an in-place reset wiped the fill of the selected element of an
+    // extension-drawn component, so the app could not show which tab was
+    // active (plan step 2).
+    const spans = parseAnsiLine("\x1b[48;2;58;58;74m Scope \x1b[49m");
+    expect(spans[0]).toMatchObject({ text: " Scope ", style: { bg: "#3a3a4a" } });
+  });
+
+  it("keeps a foreground that the line closes with a foreground reset", () => {
+    const spans = parseAnsiLine("\x1b[38;2;212;212;212m Scope \x1b[39m");
+    expect(spans[0]).toMatchObject({ text: " Scope ", style: { fg: "#d4d4d4" } });
+  });
+
   it("captures OSC-8 hyperlinks and closes them", () => {
     const spans = parseAnsiLine("\x1b]8;;https://pi.dev\x07link\x1b]8;;\x07 text");
     expect(spans[0]).toMatchObject({ text: "link", href: "https://pi.dev" });

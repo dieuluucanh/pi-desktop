@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { cn } from "../ui/cn";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { useAppStore } from "../state/app-store";
 import type { ExtensionDialogRequest } from "../../../shared/extension-ui";
@@ -103,29 +104,7 @@ function DialogBody({
   const [text, setText] = useState(dialog.method === "editor" ? (dialog.prefill ?? "") : "");
 
   if (dialog.method === "select") {
-    return (
-      <div className="flex flex-col gap-1 px-4 pb-4">
-        {dialog.options.length === 0 ? (
-          <p className="text-xs text-ink-muted">The extension offered no options.</p>
-        ) : null}
-        {dialog.options.map((option, index) => (
-          <Button
-            key={`${option}-${index}`}
-            variant="secondary"
-            autoFocus={index === 0}
-            className="justify-start"
-            onClick={() => onAnswer(dialog, { value: option })}
-          >
-            {option}
-          </Button>
-        ))}
-        <div className="mt-2 flex justify-end">
-          <Button variant="ghost" onClick={onCancel}>
-            Cancel
-          </Button>
-        </div>
-      </div>
-    );
+    return <SelectOptions dialog={dialog} onAnswer={onAnswer} onCancel={onCancel} />;
   }
 
   if (dialog.method === "confirm") {
@@ -184,5 +163,110 @@ function DialogBody({
         </Button>
       </div>
     </form>
+  );
+}
+
+/**
+ * The select dialog (plan step 4).
+ *
+ * Pi's own select list marks the selected row with a `→ ` prefix in the accent
+ * colour and moves the selection with the arrow keys, so the answer is always
+ * visible before it is given. The app follows that model: the list is a
+ * listbox, the selected row is marked, `↑`/`↓` move the selection (wrapping),
+ * `Enter` answers with the selected option and `Esc` cancels (the dialog
+ * handles that). A click still answers immediately.
+ */
+function SelectOptions({
+  dialog,
+  onAnswer,
+  onCancel,
+}: {
+  dialog: ExtensionDialogRequest;
+  onAnswer: (
+    dialog: ExtensionDialogRequest,
+    answer: { value?: string; confirmed?: boolean },
+  ) => void;
+  onCancel: () => void;
+}) {
+  const options = dialog.options;
+  const [selected, setSelected] = useState(0);
+  const rows = useRef<(HTMLButtonElement | null)[]>([]);
+
+  /** Moves the selection and the focus together, so Enter answers it. */
+  const move = (delta: number): void => {
+    if (options.length === 0) return;
+    const next = (selected + delta + options.length) % options.length;
+    setSelected(next);
+    rows.current[next]?.focus();
+  };
+
+  if (options.length === 0) {
+    return (
+      <div className="flex flex-col gap-1 px-4 pb-4">
+        <p className="text-xs text-ink-muted">The extension offered no options.</p>
+        <div className="mt-2 flex justify-end">
+          <Button variant="ghost" onClick={onCancel}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      role="listbox"
+      aria-label={dialog.title || "Options"}
+      className="flex flex-col gap-1 px-4 pb-4"
+      onKeyDown={(event) => {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          move(1);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          move(-1);
+        }
+      }}
+    >
+      {options.map((option, index) => {
+        const isSelected = index === selected;
+        return (
+          <Button
+            key={`${option}-${index}`}
+            variant="secondary"
+            role="option"
+            aria-selected={isSelected}
+            autoFocus={index === 0}
+            ref={(node: HTMLButtonElement | null) => {
+              rows.current[index] = node;
+            }}
+            className={cn(
+              "h-auto w-full justify-start gap-2 whitespace-normal py-1.5 text-left",
+              isSelected && "border-accent bg-selected underline decoration-2 decoration-accent",
+            )}
+            onFocus={() => setSelected(index)}
+            onClick={() => onAnswer(dialog, { value: option })}
+          >
+            <span
+              aria-hidden
+              className={cn(
+                "w-3 shrink-0 text-center font-mono",
+                isSelected ? "text-accent" : "text-transparent",
+              )}
+            >
+              {isSelected ? "→" : " "}
+            </span>
+            <span className="min-w-0 flex-1">{option}</span>
+          </Button>
+        );
+      })}
+      <div className="mt-2 flex justify-end">
+        <Button variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
   );
 }

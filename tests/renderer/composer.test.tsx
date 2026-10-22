@@ -364,3 +364,63 @@ describe("extension shortcut dispatch (Tab)", () => {
     expect(onInvokeShortcut).not.toHaveBeenCalled();
   });
 });
+
+describe("caret readout", () => {
+  // The composer is a controlled textarea, so the readout can only be trusted
+  // when the draft follows the keystrokes: this harness keeps them in step.
+  function ControlledComposer({ initial = "" }: { initial?: string }) {
+    const [draft, setDraft] = useState(initial);
+    return (
+      <Composer
+        tabId="tab-1"
+        running={false}
+        draft={draft}
+        queue={{ steering: [], followUp: [] }}
+        sendMode="steer"
+        onDraftChange={setDraft}
+        onSend={async () => true}
+        onStop={() => undefined}
+        onClearQueue={() => undefined}
+        onSendModeChange={() => undefined}
+        onHistoryStep={() => null}
+      />
+    );
+  }
+
+  it("starts at the first line and column", () => {
+    render(<ControlledComposer />);
+    expect(screen.getByTestId("composer-caret")).toHaveTextContent("Ln 1 · Col 1");
+  });
+
+  it("follows the typed characters", async () => {
+    const user = userEvent.setup();
+    render(<ControlledComposer />);
+    await user.type(screen.getByLabelText("Prompt"), "ab");
+    expect(screen.getByTestId("composer-caret")).toHaveTextContent("Ln 1 · Col 3");
+  });
+
+  it("follows the caret onto a second line", async () => {
+    const user = userEvent.setup();
+    render(<ControlledComposer />);
+    // Shift+Enter inserts the newline; plain Enter would send the prompt.
+    await user.type(screen.getByLabelText("Prompt"), "one{Shift>}{Enter}{/Shift}two");
+    expect(screen.getByTestId("composer-caret")).toHaveTextContent("Ln 2 · Col 4");
+  });
+
+  it("follows a caret move inside the text", async () => {
+    const user = userEvent.setup();
+    render(<ControlledComposer initial="hello" />);
+    const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(box);
+    box.setSelectionRange(2, 2);
+    fireEvent.keyUp(box, { key: "ArrowRight" });
+    expect(screen.getByTestId("composer-caret")).toHaveTextContent("Ln 1 · Col 3");
+  });
+
+  it("paints the caret with the app accent", () => {
+    // The browser's own caret is a thin blinking line; the accent makes it
+    // findable in a dark buffer (plan step 1).
+    renderComposer();
+    expect(screen.getByLabelText("Prompt")).toHaveClass("caret-accent");
+  });
+});

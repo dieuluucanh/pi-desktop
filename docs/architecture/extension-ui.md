@@ -69,6 +69,42 @@ markdown transformers) go through `render.request` / `render.markdown`: the host
 runs the renderer with the live `Theme` and returns ANSI lines; a missing or
 throwing renderer falls back to the native HTML card, exactly as Pi does.
 
+### The selection in an extension-drawn surface (2026-10-21)
+
+**Pi marks the selected element of a `ctx.ui.custom` component with a
+background fill** — `theme.bg("selectedBg", …)`. The Workflow extension's
+questionnaire is the case the app meets in the wild: its tab row draws the
+active tab with that fill and nothing else (the `■`/`□` glyphs mean
+answered/unanswered, and the `✓` belongs to the Submit tab).
+
+Two rules make that state legible in the desktop:
+
+- **A background fill inside a TUI frame means "selected".** The app repaints
+  such a span with its own selection surface (`--color-selected`, derived from
+  the accent) and an accent underline instead of Pi's raw terminal hex
+  (`src/renderer/src/tui/selection.ts`). The rule is applied to the TUI surface
+  **only**: an extension _renderer_ (a tool card, a custom message) paints
+  `userMessageBg` and `toolPendingBg` surfaces, and those are surfaces, not
+  selections.
+- **A parsed span never changes afterwards.** `applySgr` returns a new style
+  object; it used to mutate the one the parsed spans hold, so Pi's closing
+  `\x1b[39m` / `\x1b[49m` wiped the colour of the span that had just been
+  parsed (and a fill set for the next span bled backwards). The selected tab
+  therefore had **no** background on screen, and the accent `"> "` marker of
+  the option list had no accent either. `tests/shared/ansi.test.ts` pins it.
+
+**The surface has chrome, because it owns the keyboard.** While a custom
+component is mounted, the panel replaces the composer and the keys go to the
+extension. The panel says so: a caption row (`Extension UI` · _keys are
+forwarded to the extension_) and an accent border. The read-only header/footer
+slots (`TuiSlotFrame`) stay plain chrome.
+
+**`ctx.ui.select` is a listbox.** The dialog renders a `role="listbox"` whose
+rows are `role="option"` with `aria-selected`; the selected row carries the
+same `→` marker and selection surface as the TUI surface, `↑`/`↓` move the
+selection (wrapping), `Enter` answers with it and `Esc` cancels. A click still
+answers immediately.
+
 ### Pi-parity rules for custom transcript items (2026-10-19 UI rework)
 
 Pi hides some custom items entirely, and the app must match it or a mode switch

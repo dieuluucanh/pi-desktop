@@ -5,6 +5,14 @@ import { parseWorkflowStatus } from "../../../shared/workflow-mode";
 import { Transcript } from "../session/Transcript";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { cn } from "../ui/cn";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
+import { Separator } from "../ui/separator";
 import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
 import { WidgetStrip } from "../extension-ui/WidgetStrip";
@@ -41,6 +49,57 @@ const STATUS_TONE: Record<TabStatus, "neutral" | "accent" | "ok" | "warn" | "dan
   failed: "danger",
   stopped: "neutral",
 };
+
+/** The transcript density modes, in the order the menu lists them. */
+const VIEW_MODES: readonly ViewMode[] = ["normal", "verbose", "summary"];
+
+const VIEW_MODE_LABELS: Record<ViewMode, string> = {
+  normal: "Normal",
+  verbose: "Verbose",
+  summary: "Summary",
+};
+
+/**
+ * The view-mode control (plan step 6).
+ *
+ * A native `<select>` was the only unstyled control in the session header: it
+ * did not match the buttons beside it, and it could not show which mode was
+ * active in the app's own vocabulary. The menu does both — and the marker on
+ * the active entry is the same one the extension dialogs use (plan step 4).
+ */
+function ViewModeMenu({
+  value,
+  onChange,
+}: {
+  value: ViewMode;
+  onChange: (mode: ViewMode) => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button size="sm" variant="ghost" aria-label="View mode" title={`View mode: ${value}`}>
+          {VIEW_MODE_LABELS[value]}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {VIEW_MODES.map((mode) => (
+          <DropdownMenuItem key={mode} onSelect={() => onChange(mode)}>
+            <span
+              aria-hidden
+              className={cn(
+                "w-3 shrink-0 text-center font-mono",
+                mode === value ? "text-accent" : "text-transparent",
+              )}
+            >
+              {mode === value ? "✓" : " "}
+            </span>
+            {VIEW_MODE_LABELS[mode]}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 /**
  * The `#` completion source (plan step 20). It reads the live pane registry from
@@ -219,45 +278,52 @@ export function SessionView() {
   return (
     <div className="relative flex h-full flex-col">
       <header className="flex shrink-0 items-center gap-3 border-b border-line px-4 py-2">
-        {editingName ? (
-          <input
-            aria-label="Session name"
-            autoFocus
-            defaultValue={active.title}
-            onBlur={(event) => {
-              setEditingName(false);
-              void renameSession(active.id, event.target.value);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
+        {/* The session's identity on the left: the title truncates rather than
+            pushing the controls off the row (plan step 6). */}
+        <div className="flex min-w-0 shrink items-center gap-2">
+          {editingName ? (
+            <input
+              aria-label="Session name"
+              autoFocus
+              defaultValue={active.title}
+              onBlur={(event) => {
                 setEditingName(false);
-                void renameSession(active.id, event.currentTarget.value);
-              }
-              if (event.key === "Escape") setEditingName(false);
-            }}
-            className="min-w-0 flex-1 rounded-sm border border-line bg-raised px-2 py-0.5 text-sm text-ink outline-none"
-          />
-        ) : (
-          <h1
-            className="truncate text-sm font-semibold"
-            title="Double-click to rename"
-            onDoubleClick={() => setEditingName(true)}
-          >
-            {active.title}
-          </h1>
-        )}
-        <Badge tone={STATUS_TONE[active.status]}>{active.status}</Badge>
-        {needsRestart ? (
-          <button
-            type="button"
-            className="text-xs text-accent underline"
-            onClick={() => void activateTab(active.id)}
-          >
-            {active.status === "stopped" ? "Start session" : "Restart session"}
-          </button>
-        ) : null}
+                void renameSession(active.id, event.target.value);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  setEditingName(false);
+                  void renameSession(active.id, event.currentTarget.value);
+                }
+                if (event.key === "Escape") setEditingName(false);
+              }}
+              className="min-w-0 flex-1 rounded-sm border border-line bg-raised px-2 py-0.5 text-sm text-ink outline-none"
+            />
+          ) : (
+            <h1
+              className="min-w-0 truncate text-sm font-semibold"
+              title="Double-click to rename"
+              onDoubleClick={() => setEditingName(true)}
+            >
+              {active.title}
+            </h1>
+          )}
+          <Badge tone={STATUS_TONE[active.status]}>{active.status}</Badge>
+          {needsRestart ? (
+            <button
+              type="button"
+              className="shrink-0 text-xs text-accent underline"
+              onClick={() => void activateTab(active.id)}
+            >
+              {active.status === "stopped" ? "Start session" : "Restart session"}
+            </button>
+          ) : null}
+        </div>
 
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+        {/* The controls on the right: one row of equally-weighted buttons,
+            split into the session's facts and the session's actions by a thin
+            rule, so the cluster reads as one group (plan step 6). */}
+        <div className="ml-auto flex min-w-0 shrink items-center gap-1">
           <Button
             size="sm"
             variant="ghost"
@@ -280,16 +346,8 @@ export function SessionView() {
             {thinkingLevel ?? "thinking"}
           </Button>
           <ContextRing usage={contextUsage} cost={cost} />
-          <select
-            aria-label="View mode"
-            value={viewMode}
-            onChange={(event) => setViewMode(event.target.value as ViewMode)}
-            className="rounded-sm border border-line bg-raised px-1 py-0.5 text-[11px] text-ink-faint"
-          >
-            <option value="normal">Normal</option>
-            <option value="verbose">Verbose</option>
-            <option value="summary">Summary</option>
-          </select>
+          <Separator orientation="vertical" className="mx-1" />
+          <ViewModeMenu value={viewMode} onChange={(mode) => setViewMode(mode)} />
           {officeDocuments?.available ? (
             <Button
               size="sm"

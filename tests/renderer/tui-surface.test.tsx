@@ -112,6 +112,36 @@ describe("TuiSurface", () => {
     fireEvent.keyDown(screen.getByLabelText("Extension input"), { key: "k", metaKey: true });
     expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ method: "tui.input" }));
   });
+
+  it("frames the extension surface with chrome that says it owns the keyboard", () => {
+    // While the panel is up it *is* the editor: the composer is gone and the
+    // keys go to the extension. The caption says that in words and the accent
+    // border says it at a glance (plan step 2).
+    stubRequest(async () => ({ ok: true }));
+    render(<TuiSurface tabId={TAB} snapshot={customFrame()} />);
+    const panel = document.querySelector('[data-tui-surface="panel"]');
+    expect(panel?.className).toContain("border-accent");
+    expect(screen.getByText("Extension UI")).toBeInTheDocument();
+    expect(screen.getByText(/keys are forwarded to the extension/)).toBeInTheDocument();
+  });
+
+  it("paints the extension's selected element with the app's selection style", () => {
+    // Pi marks the selected element with a background fill; the surface hands
+    // that to the app's selection treatment (plan step 2).
+    stubRequest(async () => ({ ok: true }));
+    const snapshot = customFrame({
+      custom: {
+        seq: 1,
+        width: 30,
+        height: 1,
+        lines: ["\x1b[48;2;58;58;74m Scope \x1b[49m"],
+        cursor: null,
+      },
+    });
+    render(<TuiSurface tabId={TAB} snapshot={snapshot} />);
+    const marked = document.querySelector("[data-ansi-line] span");
+    expect(marked?.className).toContain("bg-selected");
+  });
 });
 
 describe("TuiSlotFrame", () => {

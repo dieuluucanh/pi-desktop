@@ -79,11 +79,53 @@ describe("ExtensionDialog", () => {
       ],
     });
     render(<ExtensionDialog />);
-    await userEvent.click(screen.getByRole("button", { name: "Sheet2" }));
+    await userEvent.click(screen.getByRole("option", { name: "Sheet2" }));
     expect(request).toHaveBeenCalledWith({
       tabId: TAB,
       method: "oi.respond",
       params: { id: "ui-1", value: "Sheet2" },
+    });
+  });
+
+  it("marks the selected option and moves it with the arrow keys", async () => {
+    // Pi's select list marks the selected row and moves it with the arrow
+    // keys, so the answer is visible before it is given (plan step 4).
+    const request = stubRequest();
+    useAppStore.setState({
+      extensionDialogs: [
+        {
+          id: "ui-3",
+          method: "select",
+          title: "Pick a target",
+          options: ["Sheet1", "Sheet2", "Sheet3"],
+          message: "",
+          placeholder: null,
+          prefill: null,
+          timeout: null,
+          tabId: TAB,
+          at: Date.now(),
+        },
+      ],
+    });
+    render(<ExtensionDialog />);
+
+    const options = screen.getAllByRole("option");
+    expect(options[0]).toHaveAttribute("aria-selected", "true");
+    expect(options[1]).toHaveAttribute("aria-selected", "false");
+    // The marker is what says "this one" — the same marker Pi's list uses.
+    expect(options[0]?.textContent).toContain("→");
+    expect(options[1]?.textContent).not.toContain("→");
+
+    await userEvent.keyboard("{ArrowDown}");
+    const moved = screen.getAllByRole("option");
+    expect(moved[1]).toHaveAttribute("aria-selected", "true");
+    expect(moved[0]).toHaveAttribute("aria-selected", "false");
+
+    await userEvent.keyboard("{Enter}");
+    expect(request).toHaveBeenCalledWith({
+      tabId: TAB,
+      method: "oi.respond",
+      params: { id: "ui-3", value: "Sheet2" },
     });
   });
 

@@ -142,6 +142,14 @@ export const HOST_METHODS = [
   "tree.get",
   "stats.get",
   "commands.list",
+  // Extension command execution (extension-command parity plan). No RPC
+  // equivalent: Pi's TUI runs extension commands in-process through
+  // `session.prompt`, but the desktop needs to execute one directly (so it
+  // works while streaming with no send-mode plumbing) and to evaluate a
+  // command's `getArgumentCompletions` (whose function cannot cross the frame
+  // boundary, so the host runs it and returns plain items).
+  "commands.run",
+  "commands.complete",
   "tools.list",
   "tools.setActive",
   "model.list",

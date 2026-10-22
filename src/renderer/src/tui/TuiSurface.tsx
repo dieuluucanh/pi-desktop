@@ -200,9 +200,9 @@ export function TuiSurface({ tabId, snapshot }: TuiSurfaceProps): ReactElement |
   const body = (
     <>
       <CellProbe />
-      <div ref={scrollRef} className="max-h-72 overflow-auto" onWheel={input.onWheel}>
+      <div ref={scrollRef} className="max-h-72 overflow-auto px-2 pb-2" onWheel={input.onWheel}>
         <div className="relative inline-block">
-          <AnsiBlock frame={frame} className="font-mono text-xs leading-tight" />
+          <AnsiBlock frame={frame} className="font-mono text-xs leading-tight" selection />
           <Cursor frame={frame} cell={cell} />
         </div>
       </div>
@@ -220,7 +220,9 @@ export function TuiSurface({ tabId, snapshot }: TuiSurfaceProps): ReactElement |
           autoFocus
           data-tui-surface="overlay"
           aria-label="Extension dialog"
-          className="absolute overflow-hidden rounded-sm border border-line-strong bg-surface shadow-lg outline-none"
+          // The overlay owns the keyboard while it is up, so it wears the
+          // accent border (plan step 2).
+          className="absolute overflow-hidden rounded-sm border border-accent bg-surface shadow-lg outline-none"
           style={{
             top: (bounds?.row ?? 0) * cell.height,
             left: (bounds?.col ?? 0) * cell.width,
@@ -242,10 +244,17 @@ export function TuiSurface({ tabId, snapshot }: TuiSurfaceProps): ReactElement |
       autoFocus
       data-tui-surface="panel"
       aria-label="Extension input"
-      className="mx-3 my-2 max-h-80 overflow-hidden rounded-sm border border-line bg-sunken p-2 outline-none"
+      // While the panel is up it *is* the editor: the composer is gone and the
+      // keys go to the extension. The caption says that in words and the
+      // accent border says it at a glance (plan step 2).
+      className="mx-3 my-2 max-h-80 overflow-hidden rounded-sm border border-accent bg-sunken outline-none"
       onKeyDown={input.onKeyDown}
       onPaste={input.onPaste}
     >
+      <div className="flex items-center gap-2 border-b border-line px-2 py-1 text-[11px] text-ink-faint">
+        <span className="font-medium text-ink-muted">Extension UI</span>
+        <span>keys are forwarded to the extension</span>
+      </div>
       {body}
     </div>
   );

@@ -25,6 +25,13 @@
   --color-warn: #e0af68;
   --color-ok: #9ece6a;
   --color-info: #7dcfff;
+  /*
+   * The selection surface. An extension-drawn component marks its selected
+   * element with a background fill (Pi's `selectedBg`), and the app re-paints
+   * that fill with this token (plan step 2). It is derived from the accent and
+   * the raised surface, so it follows the theme instead of adding a palette.
+   */
+  --color-selected: color-mix(in srgb, var(--color-accent) 20%, var(--color-raised));
 
   --radius-xs: 6px;
   --radius-sm: 8px;

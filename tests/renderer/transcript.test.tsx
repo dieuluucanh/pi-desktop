@@ -122,6 +122,57 @@ describe("transcript rendering", () => {
     expect(container.textContent).toContain("1 failing");
   });
 
+  it("carries the vertical rhythm in the row, not in a margin on the item", () => {
+    // The virtualizer measures each row's border box, so a margin on the item
+    // would sit outside the measurement: the gaps vanished (and the rows
+    // overlapped) once a session passed the virtualization threshold. The
+    // rhythm is padding on the row instead (plan step 5).
+    const items = fixtureItems();
+    const { container } = render(<Transcript items={items} />);
+
+    const rows = container.querySelectorAll("[data-testid='transcript-row']");
+    expect(rows.length).toBe(items.length);
+    for (const row of rows) {
+      expect(row.className).toContain("py-1.5");
+      const item = row.firstElementChild as HTMLElement | null;
+      expect(item?.className ?? "").not.toMatch(/\bmy-\d/);
+    }
+  });
+
+  it("names the speaker on a user turn", () => {
+    // The bubble stays (a chat affordance the terminal cannot have), but the
+    // role is spelled out, so a dense column stays readable (plan step 5).
+    render(<Transcript items={fixtureItems()} />);
+    expect(screen.getByText("You")).toBeInTheDocument();
+  });
+
+  it("shows a status glyph on a tool card", () => {
+    // Pi's tool header carries the state: `●` running, `✓` done, `✗` failed.
+    const items = reduceSessionEvents(createTranscriptState(), [
+      { event: "tool_execution_start", payload: { toolCallId: "t1", toolName: "bash", args: {} } },
+    ]).items;
+    const running = render(<Transcript items={items} />);
+    expect(running.container.textContent).toContain("●");
+    running.unmount();
+
+    const done = reduceSessionEvents(createTranscriptState(), [
+      { event: "tool_execution_start", payload: { toolCallId: "t1", toolName: "bash", args: {} } },
+      { event: "tool_execution_end", payload: { toolCallId: "t1", result: { content: [] } } },
+    ]).items;
+    const finished = render(<Transcript items={done} />);
+    expect(finished.container.textContent).toContain("✓");
+
+    const failed = reduceSessionEvents(createTranscriptState(), [
+      { event: "tool_execution_start", payload: { toolCallId: "t1", toolName: "bash", args: {} } },
+      {
+        event: "tool_execution_end",
+        payload: { toolCallId: "t1", isError: true, result: { content: [] } },
+      },
+    ]).items;
+    const broken = render(<Transcript items={failed} />);
+    expect(broken.container.textContent).toContain("✗");
+  });
+
   it("marks the assistant message as streaming while deltas are still arriving", () => {
     const state = reduceSessionEvents(createTranscriptState(), [
       { event: "message_start", payload: { message: { role: "assistant" } } },

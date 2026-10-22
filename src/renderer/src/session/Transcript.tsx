@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { diffLines } from "diff";
 import { Badge } from "../ui/badge";
@@ -53,6 +53,27 @@ export function toolSummary(tool: TranscriptToolRun): string {
 
 function textOf(blocks: readonly TranscriptBlock[]): string {
   return blocks.map((block) => (block.kind === "text" ? block.text : "")).join("");
+}
+
+/**
+ * One transcript row (plan step 5).
+ *
+ * The vertical rhythm lives here, as **padding**, and not as a margin on the
+ * item itself: the virtualizer measures each row's border box, so a margin
+ * would sit outside the measurement — the gaps disappeared (and the rows
+ * overlapped) as soon as a session passed the virtualization threshold.
+ *
+ * The same wrapper is used by the plain list and by the virtualized list, so
+ * a short session and a long one are spaced the same way.
+ */
+const ROW_PADDING = "px-1 py-1.5";
+
+function TranscriptRow({ children }: { children: ReactNode }) {
+  return (
+    <div data-testid="transcript-row" className={ROW_PADDING}>
+      {children}
+    </div>
+  );
 }
 
 export function ThinkingBlock({ text, label }: { text: string; label?: string }) {
@@ -218,7 +239,7 @@ export function ToolCard({
   return (
     <div
       className={cn(
-        "my-2 rounded-sm border bg-raised/60",
+        "rounded-sm border bg-raised/60",
         tool.isError ? "border-danger/60" : "border-line",
       )}
     >
@@ -228,10 +249,22 @@ export function ToolCard({
         onClick={toggle}
         aria-expanded={open}
       >
-        <Badge tone={tool.isError ? "danger" : tool.done ? "ok" : "accent"}>{tool.toolName}</Badge>
+        {/* Pi's tool header: a status glyph plus the tool name in bold
+            (`theme.fg("toolTitle", theme.bold(toolName))`). The glyph says the
+            state at a glance; the name stays plain text. */}
+        <span
+          aria-hidden
+          className={cn(
+            "font-mono leading-none",
+            tool.isError ? "text-danger" : tool.done ? "text-ok" : "text-accent",
+          )}
+        >
+          {tool.isError ? "✗" : tool.done ? "✓" : "●"}
+        </span>
+        <span className="font-medium text-ink">{tool.toolName}</span>
         {summary ? <span className="truncate text-ink-muted">{summary}</span> : null}
         <span className="ml-auto text-ink-faint">
-          {tool.done ? (open ? "hide" : "show") : "running…"}
+          {tool.done ? (open ? "▾" : "▸") : "running…"}
         </span>
       </button>
       {open ? <div className="border-t border-line px-3 py-2">{body}</div> : null}
@@ -251,7 +284,7 @@ function NoticeView({
   const tone =
     notice.severity === "error" ? "danger" : notice.severity === "warning" ? "warn" : "neutral";
   return (
-    <div className="my-2 flex items-start gap-3 rounded-sm border border-line bg-surface px-3 py-2 text-xs">
+    <div className="flex items-start gap-3 rounded-sm border border-line bg-surface px-3 py-2 text-xs">
       <Badge tone={tone}>{notice.severity}</Badge>
       <div className="flex-1">
         <div>{notice.text}</div>
@@ -324,7 +357,7 @@ function MessageView({
 
   if (message.role === "compaction" || message.role === "branchSummary") {
     return (
-      <details className="my-2 rounded-sm border border-line bg-sunken/60 px-3 py-2">
+      <details className="rounded-sm border border-line bg-sunken/60 px-3 py-2">
         <summary className="cursor-pointer text-xs text-ink-muted">
           {message.role === "compaction" ? "Context compacted" : "Branch summary"}
         </summary>
@@ -340,7 +373,7 @@ function MessageView({
     // missing, and that is what keeps a mode switch (the workflow extension's
     // `pi.appendEntry("workflow", …)`) out of the transcript entirely.
     const fallback = (
-      <div className="my-2 rounded-sm border border-dashed border-line px-3 py-2">
+      <div className="rounded-sm border border-dashed border-line px-3 py-2">
         <div className="text-[11px] text-ink-faint">{message.customType ?? "custom message"}</div>
         <Markdown className="mt-1">{text}</Markdown>
       </div>
@@ -365,7 +398,7 @@ function MessageView({
 
   if (message.role === "bashExecution") {
     return (
-      <pre className="my-2 overflow-x-auto rounded-sm border border-line bg-sunken p-2 font-mono text-xs">
+      <pre className="overflow-x-auto rounded-sm border border-line bg-sunken p-2 font-mono text-xs">
         {text}
       </pre>
     );
@@ -408,14 +441,20 @@ function MessageView({
   );
 
   if (message.role === "user") {
+    // The desktop keeps the bubble (a chat affordance the terminal cannot
+    // have) and names the speaker, so the two roles stay readable in a dense
+    // column (plan step 5).
     return (
-      <div className="my-3 ml-auto max-w-[85%] rounded-md border border-line bg-surface px-3 py-2">
-        {body}
+      <div className="ml-auto max-w-[85%]">
+        <div className="mb-1 text-right text-[10px] uppercase tracking-wide text-ink-faint">
+          You
+        </div>
+        <div className="rounded-md border border-line bg-surface px-3 py-2">{body}</div>
       </div>
     );
   }
 
-  return <div className="my-3 max-w-[95%]">{body}</div>;
+  return <div className="max-w-[95%]">{body}</div>;
 }
 
 function TranscriptItemView({
@@ -567,16 +606,17 @@ export function Transcript({
         data-testid="transcript"
       >
         {items.map((item) => (
-          <TranscriptItemView
-            key={item.id}
-            item={item}
-            {...(tabId ? { tabId } : {})}
-            {...(onAbort ? { onAbort } : {})}
-            {...(running === undefined ? {} : { running })}
-            {...(thinkingLabel ? { thinkingLabel } : {})}
-            {...(toolsExpanded === null || toolsExpanded === undefined ? {} : { toolsExpanded })}
-            {...(onToggleToolsExpanded ? { onToggleToolsExpanded } : {})}
-          />
+          <TranscriptRow key={item.id}>
+            <TranscriptItemView
+              item={item}
+              {...(tabId ? { tabId } : {})}
+              {...(onAbort ? { onAbort } : {})}
+              {...(running === undefined ? {} : { running })}
+              {...(thinkingLabel ? { thinkingLabel } : {})}
+              {...(toolsExpanded === null || toolsExpanded === undefined ? {} : { toolsExpanded })}
+              {...(onToggleToolsExpanded ? { onToggleToolsExpanded } : {})}
+            />
+          </TranscriptRow>
         ))}
       </div>
     );
@@ -601,17 +641,19 @@ export function Transcript({
               className="absolute left-0 top-0 w-full"
               style={{ transform: `translateY(${row.start}px)` }}
             >
-              <TranscriptItemView
-                item={item}
-                {...(tabId ? { tabId } : {})}
-                {...(onAbort ? { onAbort } : {})}
-                {...(running === undefined ? {} : { running })}
-                {...(thinkingLabel ? { thinkingLabel } : {})}
-                {...(toolsExpanded === null || toolsExpanded === undefined
-                  ? {}
-                  : { toolsExpanded })}
-                {...(onToggleToolsExpanded ? { onToggleToolsExpanded } : {})}
-              />
+              <TranscriptRow>
+                <TranscriptItemView
+                  item={item}
+                  {...(tabId ? { tabId } : {})}
+                  {...(onAbort ? { onAbort } : {})}
+                  {...(running === undefined ? {} : { running })}
+                  {...(thinkingLabel ? { thinkingLabel } : {})}
+                  {...(toolsExpanded === null || toolsExpanded === undefined
+                    ? {}
+                    : { toolsExpanded })}
+                  {...(onToggleToolsExpanded ? { onToggleToolsExpanded } : {})}
+                />
+              </TranscriptRow>
             </div>
           );
         })}
