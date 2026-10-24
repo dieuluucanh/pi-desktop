@@ -31,6 +31,8 @@ export interface ModelPickerProps {
   auth: Readonly<Record<string, unknown>>;
   /** `provider/id` of the active model, when known. */
   currentKey?: string | null;
+  /** Search text supplied by `/model <query>`; reset whenever the dialog opens. */
+  initialQuery?: string;
   favorites: readonly string[];
   error?: string | null;
   onPick: (entry: ModelCatalogEntry, options: { persist: boolean }) => void;
@@ -45,6 +47,7 @@ export function ModelPicker({
   entries,
   auth,
   currentKey = null,
+  initialQuery = "",
   favorites,
   error = null,
   onPick,
@@ -53,7 +56,10 @@ export function ModelPicker({
   onOpenModelsJson,
   onClose,
 }: ModelPickerProps) {
-  const [query, setQuery] = useState("");
+  // The dialog is keyed by `initialQuery`/open state in SessionView, so a
+  // `/model <query>` command mounts it with that search already typed and a
+  // later header click mounts it empty.
+  const [query, setQuery] = useState(initialQuery);
   const [persist, setPersist] = useState(false);
 
   const matched = filterModels(entries, query);

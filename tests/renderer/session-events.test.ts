@@ -239,6 +239,25 @@ describe("queue and notices", () => {
     expect(notices[2]).toMatchObject({ severity: "error", detail: "kaboom" });
   });
 
+  it("turns oi.notify into a transcript notice with the full message and severity", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "oi.notify", payload: { message: "line one\nline two", type: "warning" } },
+      { event: "oi.notify", payload: { message: "plain info", type: "info" } },
+      { event: "oi.notify", payload: { message: "failed", type: "error" } },
+      { event: "oi.notify", payload: {} },
+    ]);
+
+    const notices = items(state).map((item) => (item.kind === "notice" ? item.notice : null));
+    expect(notices).toHaveLength(3);
+    expect(notices[0]).toMatchObject({
+      event: "oi.notify",
+      severity: "warning",
+      text: "line one\nline two",
+    });
+    expect(notices[1]).toMatchObject({ severity: "info", text: "plain info" });
+    expect(notices[2]).toMatchObject({ severity: "error", text: "failed" });
+  });
+
   it("renders compaction as a card, a cancellation, and a failure", () => {
     const summary = reduceSessionEvents(createTranscriptState(), [
       { event: "compaction_end", payload: { result: { summary: "condensed" } } },

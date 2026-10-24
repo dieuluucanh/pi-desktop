@@ -3,6 +3,7 @@ import {
   authFor,
   contextUsageOf,
   filterModels,
+  findExactModelEntry,
   formatTokens,
   groupByProvider,
   modelKeyOf,
@@ -90,6 +91,20 @@ describe("the catalog", () => {
     expect(filterModels(catalog, "sonnet").map((entry) => entry.id)).toEqual(["claude-sonnet-4-5"]);
     expect(filterModels(catalog, "openai").map((entry) => entry.id)).toEqual(["gpt-5"]);
     expect(filterModels(catalog, "")).toHaveLength(2);
+  });
+
+  it("finds an exact model reference, and a bare id only when unambiguous", () => {
+    const entries = toCatalog([
+      { id: "gpt-5", provider: "openai" },
+      { id: "shared", provider: "openai" },
+      { id: "shared", provider: "anthropic" },
+    ]);
+
+    expect(findExactModelEntry(entries, "openai/gpt-5")?.id).toBe("gpt-5");
+    expect(findExactModelEntry(entries, "gpt-5")?.id).toBe("gpt-5");
+    expect(findExactModelEntry(entries, "shared")).toBeNull();
+    expect(findExactModelEntry(entries, "nope")).toBeNull();
+    expect(findExactModelEntry(entries, " ")).toBeNull();
   });
 
   it("puts favourites first, in the user's order", () => {

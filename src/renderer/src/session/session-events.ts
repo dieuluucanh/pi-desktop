@@ -473,6 +473,20 @@ const NOTICE_SEVERITY: Record<string, TranscriptNotice["severity"]> = {
   extension_error: "error",
 };
 
+/** One `ctx.ui.notify` payload as a transcript notice, or null when malformed. */
+function notificationNotice(
+  payload: unknown,
+): { text: string; severity: TranscriptNotice["severity"] } | null {
+  const record = asRecord(payload);
+  const text = asString(record.message);
+  if (!text) return null;
+  const type = record.type ?? record.notifyType;
+  return {
+    text,
+    severity: type === "warning" || type === "error" ? type : "info",
+  };
+}
+
 const NOTICE_TEXT: Record<string, string> = {
   session_started: "Session started",
   session_replaced: "Session replaced",
@@ -638,6 +652,15 @@ export function reduceSessionEvents(
             },
           });
         }
+        break;
+      }
+
+      case "oi.notify": {
+        // Extension command output is chat content in terminal Pi. Keep the
+        // full multi-line message; the notification archive/toast path is
+        // handled separately by the store.
+        const notice = notificationNotice(payload);
+        if (notice) next = appendNotice(next, "oi.notify", notice.severity, notice.text);
         break;
       }
 

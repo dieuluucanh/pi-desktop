@@ -184,6 +184,9 @@ export { createSdkKeybindingPort, type SdkKeybindingPortOptions } from "./keybin
 /** Extension shortcuts over a live `ExtensionRunner` (plan step 15). */
 export { createSdkShortcutRunner, type SdkExtensionRunner } from "./shortcuts";
 
+/** Extension commands: direct execution and argument completion (2026-10-24). */
+export { createSdkCommandRunner, type SdkCommandRunner } from "./commands";
+
 /**
  * Extension-driven model/thinking selections: `AgentSession` announces these
  * to the extension runner only, so the host observes `emit` to refresh state.

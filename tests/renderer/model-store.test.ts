@@ -55,6 +55,9 @@ beforeEach(() => {
     providerAuth: {},
     thinkingLevels: {},
     picker: null,
+    pickerError: null,
+    pickerSearch: "",
+    connectionsFocus: null,
     view: "session",
     hint: null,
   });
@@ -214,6 +217,81 @@ describe("setThinking", () => {
       params: { level: "high", persist: false },
     });
     expect(useAppStore.getState().picker).toBeNull();
+  });
+});
+
+describe("built-in command arguments", () => {
+  it("/model provider/id sets the exact model", async () => {
+    const request = stubRequest();
+    const outcome = await useAppStore.getState().runCommandInput("tab-1", "/model openai/gpt-5");
+
+    expect(outcome).toEqual({ handled: true, sent: true });
+    const call = request.mock.calls.find((entry) => entry[0]?.method === "model.set");
+    expect(call?.[0]?.params).toMatchObject({ model: { provider: "openai", id: "gpt-5" } });
+  });
+
+  it("/model query opens the picker with the search prefilled", async () => {
+    stubRequest();
+    const outcome = await useAppStore.getState().runCommandInput("tab-1", "/model gpt");
+
+    expect(outcome).toEqual({ handled: true, sent: false });
+    expect(useAppStore.getState().picker).toBe("model");
+    expect(useAppStore.getState().pickerSearch).toBe("gpt");
+  });
+
+  it("/thinking level sets an exact level", async () => {
+    const request = stubRequest();
+    useAppStore.setState({ thinkingLevels: { "tab-1": ["off", "low", "high"] } });
+    const outcome = await useAppStore.getState().runCommandInput("tab-1", "/thinking HIGH");
+
+    expect(outcome).toEqual({ handled: true, sent: true });
+    const call = request.mock.calls.find((entry) => entry[0]?.method === "thinking.set");
+    expect(call?.[0]?.params).toEqual({ level: "high", persist: false });
+  });
+
+  it("/thinking unknown reports the available levels", async () => {
+    stubRequest();
+    useAppStore.setState({ thinkingLevels: { "tab-1": ["off", "high"] }, hint: null });
+    const outcome = await useAppStore.getState().runCommandInput("tab-1", "/thinking ultra");
+
+    expect(outcome).toEqual({ handled: true, sent: false });
+    expect(useAppStore.getState().hint).toMatch(/Unknown thinking level/);
+    expect(useAppStore.getState().hint).toContain("off, high");
+  });
+
+  it("/login provider opens that provider's sheet", async () => {
+    stubRequest(async (input) =>
+      input.method === "providers.list"
+        ? {
+            providers: [
+              {
+                id: "anthropic",
+                label: "Anthropic",
+                authTypes: ["oauth"],
+                subscription: true,
+                configured: false,
+                modelCount: 1,
+                envVars: [],
+                envAvailable: false,
+              },
+            ],
+          }
+        : {},
+    );
+    useAppStore.setState({ providers: [], providersLoaded: false, connectionsFocus: null });
+    const outcome = await useAppStore.getState().runCommandInput("tab-1", "/login anthropic");
+
+    expect(outcome).toEqual({ handled: true, sent: false });
+    expect(useAppStore.getState().view).toBe("connections");
+    expect(useAppStore.getState().connectionsFocus).toEqual({ providerId: "anthropic" });
+  });
+
+  it("/login unknown seeds the Connections search", async () => {
+    stubRequest(async () => ({}));
+    useAppStore.setState({ providers: [], providersLoaded: true, connectionsFocus: null });
+    await useAppStore.getState().runCommandInput("tab-1", "/login without");
+
+    expect(useAppStore.getState().connectionsFocus).toEqual({ query: "without" });
   });
 });
 

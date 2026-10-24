@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   fuzzyFilter as upstreamFilter,
   fuzzyMatch as upstreamMatch,
@@ -33,6 +33,7 @@ function signal(): AbortSignal {
 
 const HOST_COMMANDS = [
   { name: "deploy", description: "Deploy the app", source: "extension" },
+  { name: "profile", description: "Manage profiles", source: "extension" },
   { name: "model", description: "An extension that also claims /model", source: "extension" },
   {
     name: "settings",
@@ -95,7 +96,30 @@ describe("fuzzy ranking matches Pi's own matcher", () => {
 });
 
 describe("command completion", () => {
-  const provider = createCommandProvider({ loadCommands: async () => HOST_COMMANDS });
+  const hostComplete = vi.fn(async ({ name, prefix }: { name: string; prefix: string }) => {
+    if (name !== "profile") return null;
+    return [
+      { value: "use ", label: "use", description: "activate a profile" },
+      { value: "list", label: "list" },
+    ].filter((item) => item.label.startsWith(prefix));
+  });
+  const appComplete = vi.fn(async ({ name, prefix }: { name: string; prefix: string }) =>
+    name === "model" && "test/model".startsWith(prefix)
+      ? [
+          {
+            value: "test/model",
+            label: "model",
+            description: "test",
+            source: "app" as const,
+          },
+        ]
+      : null,
+  );
+  const provider = createCommandProvider({
+    loadCommands: async () => HOST_COMMANDS,
+    completeCommand: hostComplete,
+    completeAppArgument: appComplete,
+  });
 
   it("lists app commands, extensions, templates and skills on the first line", async () => {
     const result = await provider.getSuggestions(["/"], 0, 1, { signal: signal() });
@@ -122,14 +146,90 @@ describe("command completion", () => {
     expect(result?.prefix).toBe("/dep");
   });
 
-  it("stays out of the way after the first space (arguments are not commands)", async () => {
+  it("asks the host for the full argument prefix after the first space", async () => {
+    hostComplete.mockClear();
+    const result = await provider.getSuggestions(["/profile u"], 0, 10, {
+      signal: signal(),
+    });
+
+    expect(hostComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "profile", prefix: "u" }),
+    );
+    expect(result?.prefix).toBe("u");
+    expect(result?.items).toEqual([
+      {
+        value: "use ",
+        label: "use",
+        description: "activate a profile",
+        source: "extension",
+        appendSpace: false,
+      },
+    ]);
+  });
+
+  it("passes the whole multi-token argument, not just the last word", async () => {
+    hostComplete.mockClear();
+    await provider.getSuggestions(["/profile use S"], 0, 14, { signal: signal() });
+    expect(hostComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "profile", prefix: "use S" }),
+    );
+  });
+
+  it("uses the app completer for a reserved name and never the host hook", async () => {
+    hostComplete.mockClear();
+    appComplete.mockClear();
+    const result = await provider.getSuggestions(["/model test"], 0, 11, {
+      signal: signal(),
+    });
+
+    expect(appComplete).toHaveBeenCalledWith(expect.objectContaining({ name: "model" }));
+    expect(hostComplete).not.toHaveBeenCalled();
+    expect(result?.items[0]).toMatchObject({
+      value: "test/model",
+      label: "model",
+      source: "app",
+      appendSpace: false,
+    });
+  });
+
+  it("applies an argument value verbatim, preserving its trailing space", async () => {
+    const result = await provider.getSuggestions(["/profile u"], 0, 10, {
+      signal: signal(),
+    });
+    const applied = provider.applyCompletion(
+      ["/profile u"],
+      0,
+      10,
+      result!.items[0]!,
+      result!.prefix,
+    );
+    expect(applied.lines[0]).toBe("/profile use ");
+    expect(applied.cursorCol).toBe(13);
+  });
+
+  it("returns null for an unknown command, a failed hook, or an aborted request", async () => {
+    expect(await provider.getSuggestions(["/zzzz arg"], 0, 9, { signal: signal() })).toBeNull();
+
+    const broken = createCommandProvider({
+      loadCommands: async () => HOST_COMMANDS,
+      completeCommand: async () => {
+        throw new Error("boom");
+      },
+    });
+    expect(await broken.getSuggestions(["/deploy now"], 0, 11, { signal: signal() })).toBeNull();
+
+    const controller = new AbortController();
+    controller.abort();
     expect(
-      await provider.getSuggestions(["/name my session"], 0, 16, { signal: signal() }),
+      await provider.getSuggestions(["/profile u"], 0, 10, { signal: controller.signal }),
     ).toBeNull();
   });
 
   it("only triggers on the first line", async () => {
     expect(await provider.getSuggestions(["hello", "/na"], 1, 3, { signal: signal() })).toBeNull();
+    expect(
+      await provider.getSuggestions(["hello", "/profile u"], 1, 10, { signal: signal() }),
+    ).toBeNull();
   });
 
   it("returns nothing when the prefix matches no command", async () => {
@@ -290,6 +390,39 @@ describe("the stack", () => {
   it("does not ask for files on a plain word unless Tab was pressed", async () => {
     expect(provider.shouldTriggerFileCompletion?.(["/na"], 0, 3)).toBe(false);
     expect(provider.shouldTriggerFileCompletion?.(["src/app"], 0, 7)).toBe(true);
+    expect(provider.shouldTriggerFileCompletion?.(["/profile use"], 0, 12)).toBe(false);
+  });
+
+  it("routes command arguments to the command provider, including on a forced Tab", async () => {
+    const loadFiles = vi.fn(async () => ({ files: ["src/app.ts"] }));
+    const completeCommand = vi.fn(async () => [
+      { value: "use ", label: "use", description: "activate" },
+    ]);
+    const argumentProvider = createCompletionProvider({
+      command: createCommandProvider({
+        loadCommands: async () => HOST_COMMANDS,
+        completeCommand,
+      }),
+      file: createFileProvider({ loadFiles }),
+    });
+
+    const natural = await argumentProvider.getSuggestions(["/profile "], 0, 9, {
+      signal: signal(),
+    });
+    expect(natural?.items[0]?.value).toBe("use ");
+    expect(completeCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "profile", prefix: "" }),
+    );
+
+    completeCommand.mockClear();
+    loadFiles.mockClear();
+    const forced = await argumentProvider.getSuggestions(["/profile "], 0, 9, {
+      signal: signal(),
+      force: true,
+    });
+    expect(forced?.items[0]?.value).toBe("use ");
+    expect(completeCommand).toHaveBeenCalled();
+    expect(loadFiles).not.toHaveBeenCalled();
   });
 
   it("applies a command with a trailing space so arguments can be typed", () => {

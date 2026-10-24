@@ -272,8 +272,8 @@ export function Composer({
   );
 
   const applySuggestion = useCallback(
-    async (item: CompletionItem) => {
-      if (!completion || !suggestions) return;
+    async (item: CompletionItem): Promise<{ text: string; source?: CompletionSource } | null> => {
+      if (!completion || !suggestions) return null;
       const { lines, position } = currentBuffer();
       let next = completion.provider.applyCompletion(
         lines,
@@ -305,6 +305,7 @@ export function Composer({
         caretRef.current = caret;
         setCaret(caretPosition(text, caret));
       });
+      return { text, ...(item.source ? { source: item.source } : {}) };
     },
     [closeCompletion, completion, currentBuffer, onDraftChange, suggestions],
   );
@@ -326,23 +327,36 @@ export function Composer({
     if (node && node.value === draft) syncCaret(node);
   }, [draft, syncCaret]);
 
-  const submit = useCallback(async () => {
-    if (!enabled || busy) return;
-    if (draft.trim().length === 0 && attachments.length === 0) return;
-    setBusy(true);
-    try {
-      const sent = await onSend(draft, attachments, {
-        ...(pickedSource ? { preferredSource: pickedSource } : {}),
-      });
-      if (sent) {
-        setAttachments([]);
-        setPickedSource(undefined);
-        closeCompletion();
+  /**
+   * Sends an explicit text and source. The Enter-on-completion path must not
+   * read the `draft` prop or `pickedSource` state: both are stale while a
+   * remote apply is awaited, and sending the old text would lose the fill.
+   */
+  const submitText = useCallback(
+    async (text: string, source?: CompletionSource): Promise<boolean> => {
+      if (!enabled || busy) return false;
+      if (text.trim().length === 0 && attachments.length === 0) return false;
+      setBusy(true);
+      try {
+        const sent = await onSend(text, attachments, {
+          ...(source ? { preferredSource: source } : {}),
+        });
+        if (sent) {
+          setAttachments([]);
+          setPickedSource(undefined);
+          closeCompletion();
+        }
+        return sent;
+      } finally {
+        setBusy(false);
       }
-    } finally {
-      setBusy(false);
-    }
-  }, [attachments, busy, closeCompletion, draft, enabled, onSend, pickedSource]);
+    },
+    [attachments, busy, closeCompletion, enabled, onSend],
+  );
+
+  const submit = useCallback(async () => {
+    await submitText(draft, pickedSource);
+  }, [draft, pickedSource, submitText]);
 
   const addFiles = useCallback(async (files: readonly File[]) => {
     const images = files.filter((file) => isImageFile(file));
@@ -520,7 +534,18 @@ export function Composer({
                 const item = menu.items[activeIndex];
                 if (item) {
                   event.preventDefault();
-                  applySuggestion(item);
+                  // Pi parity: Enter on a command-name completion applies it
+                  // and submits in one keystroke. Argument completions apply
+                  // only; the user keeps finishing the command line. Tab never
+                  // submits.
+                  if (event.key === "Enter" && menu.prefix.startsWith("/")) {
+                    void (async () => {
+                      const applied = await applySuggestion(item);
+                      if (applied) await submitText(applied.text, applied.source);
+                    })();
+                  } else {
+                    void applySuggestion(item);
+                  }
                   return;
                 }
               }

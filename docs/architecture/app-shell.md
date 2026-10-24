@@ -51,6 +51,16 @@ the completion engine already tracks (`caretRef`), so the readout and the
 providers can never disagree; `src/renderer/src/session/caret.ts` turns the
 offset into the line/column pair.
 
+**The composer completes three levels (2026-10-24).** `/` names a command;
+after the first space the same provider asks for the command's arguments
+(extension hooks via `commands.complete`, app completers for `/model`,
+`/thinking` and `/login`); `@` and `#` remain file and document sources. The
+first line of a `/` buffer is never treated as a path, including its argument
+section, so Tab re-queries the command menu rather than forcing files. Argument
+items replace their whole prefix verbatim, command names keep the trailing
+space, and Enter on a command-name suggestion runs it in one keystroke while an
+argument suggestion only fills.
+
 **The session header is one cluster (2026-10-21).** The title, the status badge
 and the restart action are the left group; the controls on the right are one
 row of equally-weighted ghost buttons — model, thinking level, the context ring,

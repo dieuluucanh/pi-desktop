@@ -99,6 +99,23 @@ export function modelKeyOf(model: unknown): string | null {
   return favoriteModelKey(provider, id);
 }
 
+/**
+ * Finds the model a `/model <ref>` argument names. Mirrors the host's
+ * `applyModel`: an exact `provider/id` always wins, and a bare id is accepted
+ * only when it is unambiguous.
+ */
+export function findExactModelEntry(
+  entries: readonly ModelCatalogEntry[],
+  reference: string,
+): ModelCatalogEntry | null {
+  const wanted = reference.trim().toLowerCase();
+  if (wanted.length === 0) return null;
+  const exact = entries.find((entry) => entry.key.toLowerCase() === wanted);
+  if (exact) return exact;
+  const bare = entries.filter((entry) => entry.id.toLowerCase() === wanted);
+  return bare.length === 1 ? (bare[0] ?? null) : null;
+}
+
 /** Coerces Pi's auth status into a badge; an unknown value means "not configured". */
 export function toAuthBadge(value: unknown): ProviderAuthBadge {
   const record = asRecord(value);

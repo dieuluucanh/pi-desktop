@@ -13,6 +13,7 @@ import { installBridge } from "./fixtures";
 const HOST_COMMANDS = [
   { name: "deploy", description: "Deploy", source: "extension" },
   { name: "model", description: "An extension claiming /model", source: "extension" },
+  { name: "review", description: "Review a change", source: "prompt" },
 ];
 
 function tab(): TabRecord {
@@ -34,6 +35,7 @@ function stubRequest(handler?: (input: { method: string; params?: unknown }) => 
     if (input.method === "commands.list") return { commands: HOST_COMMANDS };
     if (input.method === "files.list")
       return { root: "/work/app", files: ["src/app.ts"], truncated: false };
+    if (input.method === "commands.run") return { ran: true };
     return handler ? handler(input) : {};
   });
   (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = request;
@@ -79,13 +81,84 @@ describe("runCommandInput", () => {
     expect(rename?.[0]?.params).toEqual({ name: "Renamed session" });
   });
 
-  it("handles extension commands as prompts so the SDK expands them", async () => {
+  it("runs an extension command directly, even while streaming", async () => {
     const request = stubRequest();
+    useAppStore.setState({
+      tabs: [{ ...tab(), status: "running" }],
+      sendModes: { "tab-1": "steer" },
+    });
     const outcome = await useAppStore.getState().runCommandInput("tab-1", "/deploy now");
 
     expect(outcome).toEqual({ handled: true, sent: true });
+    const run = request.mock.calls.find((call) => call[0]?.method === "commands.run");
+    expect(run?.[0]?.params).toEqual({ name: "deploy", args: "now" });
+    expect(request.mock.calls.some((call) => call[0]?.method === "prompt")).toBe(false);
+    expect(useAppStore.getState().draftHistory["tab-1"]).toEqual(["/deploy now"]);
+  });
+
+  it("keeps prompt templates on the prompt path with the send mode", async () => {
+    const request = stubRequest();
+    useAppStore.setState({ tabs: [{ ...tab(), status: "running" }] });
+    const sent = await useAppStore
+      .getState()
+      .sendPrompt("tab-1", "/review the diff", { mode: "followUp" });
+
+    expect(sent).toBe(true);
     const prompt = request.mock.calls.find((call) => call[0]?.method === "prompt");
-    expect(prompt?.[0]?.params).toMatchObject({ text: "/deploy now" });
+    expect(prompt?.[0]?.params).toMatchObject({
+      text: "/review the diff",
+      streamingBehavior: "followUp",
+    });
+    expect(request.mock.calls.some((call) => call[0]?.method === "commands.run")).toBe(false);
+  });
+
+  it("falls back to prompt when the host cannot run commands directly", async () => {
+    const request = vi.fn(async (input: { method: string; params?: unknown }) => {
+      if (input.method === "commands.list") return { commands: HOST_COMMANDS };
+      if (input.method === "commands.run") throw new Error("not implemented");
+      return {};
+    });
+    (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = request;
+    const outcome = await useAppStore.getState().runCommandInput("tab-1", "/deploy now");
+
+    expect(outcome).toEqual({ handled: true, sent: true });
+    expect(request.mock.calls.some((call) => call[0]?.method === "prompt")).toBe(true);
+  });
+
+  it("refreshes once and hints when the command is no longer live", async () => {
+    const request = vi.fn(async (input: { method: string; params?: unknown }) => {
+      if (input.method === "commands.list") return { commands: HOST_COMMANDS };
+      if (input.method === "commands.run") return { ran: false };
+      return {};
+    });
+    (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = request;
+    const outcome = await useAppStore.getState().runCommandInput("tab-1", "/deploy now");
+
+    expect(outcome).toEqual({ handled: true, sent: false });
+    expect(useAppStore.getState().hint).toMatch(/no longer available/);
+    expect(request.mock.calls.filter((call) => call[0]?.method === "commands.list")).toHaveLength(
+      2,
+    );
+    expect(request.mock.calls.some((call) => call[0]?.method === "prompt")).toBe(false);
+  });
+
+  it("refreshes once before treating a valid command as unknown", async () => {
+    let listCalls = 0;
+    const request = vi.fn(async (input: { method: string; params?: unknown }) => {
+      if (input.method === "commands.list") {
+        listCalls += 1;
+        return { commands: listCalls === 1 ? [] : HOST_COMMANDS };
+      }
+      if (input.method === "commands.run") return { ran: true };
+      return {};
+    });
+    (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = request;
+
+    const outcome = await useAppStore.getState().runCommandInput("tab-1", "/deploy now");
+
+    expect(outcome).toEqual({ handled: true, sent: true });
+    expect(listCalls).toBe(2);
+    expect(request.mock.calls.some((call) => call[0]?.method === "commands.run")).toBe(true);
   });
 
   it("shows a hint for an unknown command and never sends it as prose", async () => {
@@ -131,9 +204,12 @@ describe("runCommandInput", () => {
     expect(useAppStore.getState().picker).toBe("model");
     expect(request.mock.calls.some((call) => call[0]?.method === "prompt")).toBe(false);
 
-    // …but picking the extension's entry sends it to the prompt instead.
-    await useAppStore.getState().runCommandInput("tab-1", "/model", "extension");
-    expect(request.mock.calls.some((call) => call[0]?.method === "prompt")).toBe(true);
+    // …but picking the extension's entry runs it directly instead.
+    await useAppStore.getState().runCommandInput("tab-1", "/model", {
+      preferredSource: "extension",
+    });
+    expect(request.mock.calls.some((call) => call[0]?.method === "commands.run")).toBe(true);
+    expect(request.mock.calls.some((call) => call[0]?.method === "prompt")).toBe(false);
   });
 
   it("leaves ordinary text alone", async () => {
@@ -168,13 +244,86 @@ describe("sendPrompt routing", () => {
   });
 });
 
+describe("command argument transport", () => {
+  it("sends the command name and full argument prefix to commands.complete", async () => {
+    const request = stubRequest(async (input) =>
+      input.method === "commands.complete"
+        ? { items: [{ value: "use ", label: "use", description: "activate" }] }
+        : {},
+    );
+
+    const items = await useAppStore
+      .getState()
+      .completeCommandArguments("tab-1", "profile", "use S");
+
+    expect(items).toEqual([{ value: "use ", label: "use", description: "activate" }]);
+    expect(
+      request.mock.calls.find((call) => call[0]?.method === "commands.complete")?.[0]?.params,
+    ).toEqual({ name: "profile", prefix: "use S" });
+  });
+
+  it("returns null for a malformed or failed completion response", async () => {
+    stubRequest(async () => ({ items: [{ value: 3, label: "bad" }] }));
+    await expect(
+      useAppStore.getState().completeCommandArguments("tab-1", "profile", ""),
+    ).resolves.toBeNull();
+  });
+
+  it("uses the app completers and loads their data only once per tab", async () => {
+    const request = stubRequest(async (input) => {
+      if (input.method === "model.available") {
+        return {
+          models: [{ id: "gpt-5", provider: "openai", name: "gpt-5" }],
+          auth: {},
+          thinkingLevels: ["high"],
+        };
+      }
+      if (input.method === "providers.list") {
+        return {
+          providers: [
+            {
+              id: "openai",
+              label: "OpenAI",
+              authTypes: ["api_key"],
+              subscription: false,
+              configured: true,
+              modelCount: 1,
+              envVars: [],
+              envAvailable: false,
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    const first = await useAppStore.getState().completeAppCommandArguments("tab-1", "model", "gpt");
+    const second = await useAppStore
+      .getState()
+      .completeAppCommandArguments("tab-1", "model", "gpt");
+    const login = await useAppStore
+      .getState()
+      .completeAppCommandArguments("tab-1", "login", "open");
+
+    expect(first?.[0]).toMatchObject({ value: "openai/gpt-5", source: "app" });
+    expect(second?.[0]?.value).toBe("openai/gpt-5");
+    expect(login?.[0]).toMatchObject({ value: "openai", label: "openai" });
+    expect(request.mock.calls.filter((call) => call[0]?.method === "model.available")).toHaveLength(
+      1,
+    );
+    expect(request.mock.calls.filter((call) => call[0]?.method === "providers.list")).toHaveLength(
+      1,
+    );
+  });
+});
+
 describe("completion caches", () => {
   it("fetches the command list once and reuses it", async () => {
     const request = stubRequest();
     const first = await useAppStore.getState().loadCommands("tab-1");
     const second = await useAppStore.getState().loadCommands("tab-1");
 
-    expect(first).toHaveLength(2);
+    expect(first).toHaveLength(HOST_COMMANDS.length);
     expect(second).toEqual(first);
     expect(request.mock.calls.filter((call) => call[0]?.method === "commands.list")).toHaveLength(
       1,
@@ -185,6 +334,17 @@ describe("completion caches", () => {
     const request = stubRequest();
     await useAppStore.getState().loadCommands("tab-1");
     await useAppStore.getState().loadCommands("tab-1", { refresh: true });
+    expect(request.mock.calls.filter((call) => call[0]?.method === "commands.list")).toHaveLength(
+      2,
+    );
+  });
+
+  it("drops the command list so the next lookup refetches it", async () => {
+    const request = stubRequest();
+    await useAppStore.getState().loadCommands("tab-1");
+    useAppStore.getState().invalidateCommands("tab-1");
+    await useAppStore.getState().loadCommands("tab-1");
+
     expect(request.mock.calls.filter((call) => call[0]?.method === "commands.list")).toHaveLength(
       2,
     );

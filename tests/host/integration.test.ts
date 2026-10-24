@@ -6,6 +6,7 @@ import { createExtensionUiPort } from "../../src/host/extension-ui";
 import {
   ProjectTrustStore,
   SessionManager,
+  createSdkCommandRunner,
   createSdkExtensionBinder,
   createSdkSessionRuntime,
   createSdkTuiSurface,
@@ -80,8 +81,10 @@ async function startHarness(
     cwd: profile.projectDir,
     agentDir: profile.dir,
     ...(bindSession ? { bindSession } : {}),
-    // The composition root's model observer (the real adapter): an extension's
-    // `pi.setModel` must push a state snapshot through the real SDK path.
+    // The composition root's adapters (the real implementations): command
+    // execution/completion and extension-driven model changes must go through
+    // the same SDK paths the app uses.
+    wrapCommandRunner: (runner) => createSdkCommandRunner(runner as never),
     observeModelChanges: observeSdkModelChanges,
     emit: (event, payload) => emitted.push({ event, payload }),
     trustStore: new ProjectTrustStore(profile.dir),
@@ -309,6 +312,42 @@ describe("host integration: extension UI round-trip", () => {
     expect(harness.provider.requests).toHaveLength(0);
     const notify = harness.payloads("oi.notify").at(-1) as { message: string };
     expect(notify.message).toBe("confirmed by user");
+  });
+});
+
+describe("host integration: extension command arguments", () => {
+  it("completes a command's arguments and runs its handler directly", async () => {
+    const harness = await startHarness({ extensions: true });
+    harness.profile.writeExtension(
+      "args.js",
+      `export default function (pi) {
+  pi.registerCommand("test-args", {
+    description: "Exercise argument completion",
+    getArgumentCompletions: (prefix) => [
+      { value: "use ", label: "use", description: "activate" },
+      { value: "list", label: "list" },
+    ].filter((item) => item.label.startsWith(prefix)),
+    handler: async (args, ctx) => {
+      ctx.ui.notify("args:" + args, "info");
+    },
+  });
+}
+`,
+    );
+
+    await harness.call("session.create");
+    await expect(
+      harness.call("commands.complete", { name: "test-args", prefix: "u" }),
+    ).resolves.toEqual({
+      items: [{ value: "use ", label: "use", description: "activate" }],
+    });
+    await expect(
+      harness.call("commands.run", { name: "test-args", args: "use Profile-A" }),
+    ).resolves.toEqual({ ran: true });
+
+    const notify = harness.payloads("oi.notify").at(-1) as { message: string };
+    expect(notify.message).toBe("args:use Profile-A");
+    expect(harness.provider.requests).toHaveLength(0);
   });
 });
 

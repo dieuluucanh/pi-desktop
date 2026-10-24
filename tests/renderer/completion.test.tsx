@@ -6,7 +6,12 @@ import { Composer } from "../../src/renderer/src/session/Composer";
 import { createCompletionProvider } from "../../src/renderer/src/completion/stack";
 import { createCommandProvider } from "../../src/renderer/src/completion/command-source";
 import { createFileProvider } from "../../src/renderer/src/completion/file-source";
-import type { CompletionProvider } from "../../src/renderer/src/completion/types";
+import type {
+  CompletionItem,
+  CompletionProvider,
+  CompletionResult,
+  CompletionSuggestions,
+} from "../../src/renderer/src/completion/types";
 
 /**
  * The completion overlay inside the composer (plan step 7): `/` opens a list,
@@ -51,6 +56,11 @@ function renderComposer(
     draft?: string;
     running?: boolean;
     onSend?: (text: string, sendOptions?: { preferredSource?: string }) => Promise<boolean>;
+    apply?: (
+      item: CompletionItem,
+      suggestions: CompletionSuggestions,
+      buffer: { lines: string[]; line: number; col: number },
+    ) => Promise<CompletionResult | null>;
   } = {},
 ) {
   const onSend = vi.fn(
@@ -80,7 +90,10 @@ function renderComposer(
         onClearQueue={() => undefined}
         onSendModeChange={() => undefined}
         onHistoryStep={() => null}
-        completion={{ provider: options.provider ?? fakeProvider() }}
+        completion={{
+          provider: options.provider ?? fakeProvider(),
+          ...(options.apply ? { apply: options.apply } : {}),
+        }}
       />
     );
   }
@@ -103,7 +116,7 @@ describe("the completion overlay", () => {
     expect(overlay.textContent).toContain("skill");
   });
 
-  it("accepts the highlighted suggestion with Enter instead of sending", async () => {
+  it("accepts a command name with Enter and submits in the same keystroke", async () => {
     const user = userEvent.setup();
     const { onSend, onDraftChange } = renderComposer();
     await user.click(screen.getByLabelText("Prompt"));
@@ -112,7 +125,8 @@ describe("the completion overlay", () => {
 
     await user.keyboard("{Enter}");
     await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith("/deploy "));
-    expect(onSend).not.toHaveBeenCalled();
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]?.[0]).toBe("/deploy ");
   });
 
   it("moves the selection with the arrow keys and accepts with Tab", async () => {
@@ -142,18 +156,14 @@ describe("the completion overlay", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
-  it("passes the picked source with the send, so a collision can be resolved", async () => {
+  it("passes the picked source with the same-keystroke send", async () => {
     const user = userEvent.setup();
     const { onSend } = renderComposer();
     await user.click(screen.getByLabelText("Prompt"));
     await user.keyboard("/");
     await screen.findByTestId("completion-overlay");
 
-    // Accept the extension's entry, then send what it produced.
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(screen.queryByTestId("completion-overlay")).toBeNull());
-    await user.click(screen.getByRole("button", { name: /send/i }));
-
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
     expect(onSend.mock.calls[0]?.[0]).toBe("/deploy ");
     // The picked source travels with the send, which is how a name the app also
@@ -163,6 +173,76 @@ describe("the completion overlay", () => {
 });
 
 describe("the real engine behind the composer", () => {
+  it("submits the text the remote apply produced, not a stale draft", async () => {
+    const user = userEvent.setup();
+    const apply = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { lines: ["/remote-applied "], cursorLine: 0, cursorCol: 16 };
+    });
+    const { onSend } = renderComposer({ apply });
+
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("/");
+    await screen.findByTestId("completion-overlay");
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]?.[0]).toBe("/remote-applied ");
+  });
+
+  it("applies an argument suggestion without sending", async () => {
+    const user = userEvent.setup();
+    const { onSend } = renderComposer({
+      provider: createCompletionProvider({
+        command: createCommandProvider({
+          loadCommands: async () => [
+            { name: "profile", description: "Profiles", source: "extension" },
+          ],
+          completeCommand: async () => [
+            { value: "use ", label: "use", description: "activate a profile" },
+          ],
+        }),
+      }),
+    });
+
+    const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(box);
+    await user.type(box, "/profile ");
+    await screen.findByTestId("completion-overlay");
+
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(box.value).toBe("/profile use "));
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("shows and applies sub-command suggestions after the first space", async () => {
+    const user = userEvent.setup();
+    const { onSend } = renderComposer({
+      provider: createCompletionProvider({
+        command: createCommandProvider({
+          loadCommands: async () => [
+            { name: "profile", description: "Profiles", source: "extension" },
+          ],
+          completeCommand: async () => [
+            { value: "use ", label: "use", description: "activate a profile" },
+          ],
+        }),
+      }),
+    });
+
+    const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(box);
+    await user.type(box, "/profile ");
+
+    const overlay = await screen.findByTestId("completion-overlay");
+    expect(overlay.textContent).toContain("use");
+    expect(overlay.textContent).toContain("activate a profile");
+
+    await user.keyboard("{Tab}");
+    await waitFor(() => expect(box.value).toBe("/profile use "));
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it("drives commands and files through the same composer", async () => {
     const user = userEvent.setup();
     const provider = createCompletionProvider({

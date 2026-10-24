@@ -16,6 +16,7 @@ import {
   type TrustAnswer,
   type TrustStoreLike,
 } from "./project-trust";
+import { createCommandHandlers, type CommandRunner } from "./commands";
 import { createSettingsHandlers, type SettingsPort } from "./settings";
 import { createShortcutHandlers, ShortcutError, type ShortcutRunner } from "./shortcuts";
 import { createThemeHandlers, type ThemePort } from "./themes";
@@ -276,6 +277,13 @@ export interface SessionCoreDeps {
    * `ShortcutRunner`.
    */
   wrapShortcutRunner?(runner: unknown): ShortcutRunner | null;
+  /**
+   * Wraps the session's live `extensionRunner` in the SDK command adapter
+   * (2026-10-24 command parity plan). Lives in `src/host/sdk/*`; the core only
+   * sees `CommandRunner`, so command execution and argument completion stay
+   * testable with a fictitious runner.
+   */
+  wrapCommandRunner?(runner: unknown): CommandRunner | null;
   emit(event: string, payload?: unknown, sessionId?: string): void;
   now?: () => number;
 }
@@ -754,6 +762,17 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         // exactly the way the terminal honours it.
         return resolveEffectiveKeybindings(user, KEYBINDING_DEFINITIONS);
       },
+    }).handlers(),
+    // Extension commands (2026-10-24 command parity plan): `commands.run`
+    // executes the live handler (including while streaming) and
+    // `commands.complete` evaluates its `getArgumentCompletions` in the host.
+    ...createCommandHandlers({
+      resolveRunner: () => {
+        const runner = session?.extensionRunner;
+        if (!runner) return null;
+        return deps.wrapCommandRunner?.(runner) ?? null;
+      },
+      emit: deps.emit,
     }).handlers(),
 
     "files.list": async (params) => {

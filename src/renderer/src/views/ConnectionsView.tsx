@@ -35,14 +35,26 @@ export function ConnectionsView() {
   const customProviders = useAppStore((state) => state.customProviders);
   const customProvidersLoaded = useAppStore((state) => state.customProvidersLoaded);
   const loadCustomProviders = useAppStore((state) => state.loadCustomProviders);
-  const [query, setQuery] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const connectionsFocus = useAppStore((state) => state.connectionsFocus);
+  const clearConnectionsFocus = useAppStore((state) => state.clearConnectionsFocus);
+  const [localQuery, setLocalQuery] = useState("");
+  const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
   const [gatewayOpen, setGatewayOpen] = useState(false);
 
   useEffect(() => {
     void loadProviders();
     void loadCustomProviders();
   }, [loadProviders, loadCustomProviders]);
+
+  // `/login <provider>` either opens that provider's sheet or seeds the search.
+  // The focus overrides the local state until the user touches the view; then
+  // it is released so the controls become editable again. `setView` also
+  // releases it when the user navigates away.
+  const query = connectionsFocus?.query ?? localQuery;
+  const selectedId = connectionsFocus?.providerId ?? localSelectedId;
+  const releaseFocus = (): void => {
+    if (connectionsFocus) clearConnectionsFocus();
+  };
 
   const groups = useMemo(() => groupProviders(providers), [providers]);
   const filtered = useMemo(() => {
@@ -80,7 +92,10 @@ export function ConnectionsView() {
         <input
           aria-label="Search providers"
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => {
+            releaseFocus();
+            setLocalQuery(event.target.value);
+          }}
           placeholder="Search providers"
           className="w-full bg-transparent text-xs text-ink outline-none"
         />
@@ -124,7 +139,13 @@ export function ConnectionsView() {
                     {provider.modelCount} models
                   </span>
                 </div>
-                <Button size="sm" onClick={() => setSelectedId(provider.id)}>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    releaseFocus();
+                    setLocalSelectedId(provider.id);
+                  }}
+                >
                   Manage
                 </Button>
               </li>
@@ -174,7 +195,13 @@ export function ConnectionsView() {
                     {gateway.modelIds.length} models
                   </span>
                 </div>
-                <Button size="sm" onClick={() => setSelectedId(`custom:${gateway.id}`)}>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    releaseFocus();
+                    setLocalSelectedId(`custom:${gateway.id}`);
+                  }}
+                >
                   Edit
                 </Button>
               </li>
@@ -183,14 +210,23 @@ export function ConnectionsView() {
         )}
       </section>
 
-      {selected ? <ProviderSheet provider={selected} onClose={() => setSelectedId(null)} /> : null}
+      {selected ? (
+        <ProviderSheet
+          provider={selected}
+          onClose={() => {
+            releaseFocus();
+            setLocalSelectedId(null);
+          }}
+        />
+      ) : null}
 
       {gatewayOpen || selectedId?.startsWith("custom:") ? (
         <CustomGatewaySheet
           gateway={customProviders.find((entry) => `custom:${entry.id}` === selectedId) ?? null}
           onClose={() => {
             setGatewayOpen(false);
-            setSelectedId(null);
+            releaseFocus();
+            setLocalSelectedId(null);
           }}
         />
       ) : null}

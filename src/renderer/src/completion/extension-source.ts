@@ -19,6 +19,7 @@ import {
   type ExtensionCompletionResult,
   type ExtensionCompletionSuggestions,
 } from "../../../shared/extension-ui";
+import { toCompletionSource } from "./command-source";
 import type { CompletionProvider } from "./types";
 
 /** The host calls the renderer makes for extension completion. */
@@ -54,6 +55,8 @@ export function createExtensionCompletionProvider(
                 value: item.value,
                 label: item.label,
                 ...(item.description === undefined ? {} : { description: item.description }),
+                ...(item.source === undefined ? {} : { source: item.source }),
+                ...(item.appendSpace === undefined ? {} : { appendSpace: item.appendSpace }),
               })),
             }
           : null,
@@ -63,7 +66,11 @@ export function createExtensionCompletionProvider(
         prefix: remote.prefix,
         items: remote.items.map((item) => ({
           ...item,
-          source: "extension" as const,
+          // A delegating provider returns the base items unchanged; preserve
+          // their provenance and apply semantics. Extension-created items have
+          // no source and are treated as extension items.
+          source: toCompletionSource(item.source) ?? ("extension" as const),
+          remote: true,
         })),
       };
     },

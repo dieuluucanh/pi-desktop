@@ -72,6 +72,13 @@ describe("ModelPicker", () => {
     expect(screen.getByTestId("signed-out-note")).toHaveTextContent("1 provider");
   });
 
+  it("starts with the search a /model command supplied", () => {
+    renderPicker({ initialQuery: "gpt" });
+    expect(screen.getByLabelText("Search models")).toHaveValue("gpt");
+    expect(screen.getByText("GPT-5")).toBeInTheDocument();
+    expect(screen.queryByText("Sonnet 4.5")).toBeNull();
+  });
+
   it("filters by search", async () => {
     const user = userEvent.setup();
     renderPicker();

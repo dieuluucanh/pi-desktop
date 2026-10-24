@@ -72,6 +72,9 @@ export function createBaseProvider(options: CompletionStackOptions): CompletionP
     },
     applyCompletion: applyCompletionInPlace,
     shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+      // A `/` command line is never a file path — including its argument
+      // section, where Tab asks the command hook again (Pi parity).
+      if (cursorLine === 0 && (lines[0] ?? "").startsWith("/")) return false;
       const token = tokenAtCursor(lines, cursorLine, cursorCol);
       if (token.query.startsWith("@") || token.query.startsWith("#")) return false;
       return !token.query.startsWith("/");
@@ -101,8 +104,10 @@ function selectProvider(
 ): CompletionProvider | null {
   const token = tokenAtCursor(lines, cursorLine, cursorCol).query;
 
-  // A `/` on the first line before any space is always a command, never a path.
-  if (cursorLine === 0 && token.startsWith("/")) return options.command ?? null;
+  // A `/` on the first line is always a command line (name or arguments),
+  // never a path. Checking the whole line matters after the first space: the
+  // token is then `use`, not `/profile`, but the provider must still answer.
+  if (cursorLine === 0 && (lines[0] ?? "").startsWith("/")) return options.command ?? null;
   if (token.startsWith("@")) return options.file ?? null;
   if (token.startsWith("#")) return options.document ?? null;
   if (force && options.file) return options.file;

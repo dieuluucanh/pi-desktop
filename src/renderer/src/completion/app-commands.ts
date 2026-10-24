@@ -55,6 +55,8 @@ export interface AppCommand {
   name: string;
   description: string;
   argumentHint?: string;
+  /** Which app-owned argument completer (and submit behaviour) this command uses. */
+  argumentKind?: "model" | "thinking" | "provider";
   action: AppCommandAction;
 }
 
@@ -108,6 +110,8 @@ export const APP_COMMANDS: readonly AppCommand[] = [
   {
     name: "login",
     description: "Sign in to a provider",
+    argumentHint: "[provider]",
+    argumentKind: "provider",
     action: { kind: "view", view: "connections" },
   },
   {
@@ -143,11 +147,15 @@ export const APP_COMMANDS: readonly AppCommand[] = [
   {
     name: "model",
     description: "Choose the model",
+    argumentHint: "[provider/model]",
+    argumentKind: "model",
     action: { kind: "picker", picker: "model" },
   },
   {
     name: "thinking",
     description: "Choose the thinking level",
+    argumentHint: "[level]",
+    argumentKind: "thinking",
     action: { kind: "picker", picker: "thinking" },
   },
   {

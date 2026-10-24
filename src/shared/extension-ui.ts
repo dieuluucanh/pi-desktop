@@ -282,6 +282,17 @@ export interface ExtensionCompletionItem {
   value: string;
   label: string;
   description?: string;
+  /**
+   * Provenance of a base provider item that a delegating extension returns
+   * unchanged. A wire item without a source is treated as an extension item.
+   */
+  source?: string;
+  /**
+   * Argument items replace their prefix verbatim; "use " already carries the
+   * trailing space. Preserved across the host chain so delegation cannot add a
+   * second space.
+   */
+  appendSpace?: boolean;
 }
 
 export interface ExtensionCompletionSuggestions {
@@ -347,6 +358,10 @@ function sanitizeCompletionItems(value: unknown): ExtensionCompletionItem[] {
       value: itemValue,
       label,
       ...(typeof record.description === "string" ? { description: record.description } : {}),
+      ...(typeof record.source === "string" && record.source.length > 0
+        ? { source: record.source }
+        : {}),
+      ...(typeof record.appendSpace === "boolean" ? { appendSpace: record.appendSpace } : {}),
     });
   }
   return items;
@@ -400,7 +415,7 @@ export function sanitizeCompletionApplyRequest(
   return { lines, cursorLine, cursorCol, item, prefix };
 }
 
-/** The default apply: replace `prefix` before the caret, then add a space. */
+/** The default apply: replace `prefix` before the caret, then add a space unless verbatim. */
 export function applyCompletionInPlace(
   lines: string[],
   cursorLine: number,
@@ -411,7 +426,7 @@ export function applyCompletionInPlace(
   const next = [...lines];
   const line = next[cursorLine] ?? "";
   const start = Math.max(0, cursorCol - prefix.length);
-  const insertion = `${item.value} `;
+  const insertion = item.appendSpace === false ? item.value : `${item.value} `;
   next[cursorLine] = `${line.slice(0, start)}${insertion}${line.slice(cursorCol)}`;
   return { lines: next, cursorLine, cursorCol: start + insertion.length };
 }

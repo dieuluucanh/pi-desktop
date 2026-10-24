@@ -188,7 +188,7 @@ describe("notifications, theme and shutdown", () => {
 });
 
 describe("applySessionEvents routing", () => {
-  it("keeps extension UI events out of the transcript", () => {
+  it("puts notify output in the transcript but keeps dialogs and state out", () => {
     useAppStore.getState().applySessionEvents({
       tabId: TAB,
       seq: 1,
@@ -200,10 +200,15 @@ describe("applySessionEvents routing", () => {
         },
       ],
     });
+    // The archive still receives every notification.
     expect(useAppStore.getState().extensionNotifications).toHaveLength(1);
     const items = useAppStore.getState().transcripts[TAB]?.items ?? [];
-    expect(items.some((item) => item.kind === "notice")).toBe(false);
-    expect(items).toHaveLength(1);
+    expect(items).toHaveLength(2);
+    const notice = items[0];
+    expect(notice?.kind).toBe("notice");
+    if (notice?.kind !== "notice") throw new Error("expected a notify notice");
+    expect(notice.notice).toMatchObject({ event: "oi.notify", severity: "info", text: "hi" });
+    expect(items[1]?.kind).toBe("message");
   });
 });
 

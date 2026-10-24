@@ -59,12 +59,20 @@ describe("createExtensionCompletionProvider", () => {
         lines: ["#do"],
         cursorLine: 0,
         cursorCol: 3,
-        base: { prefix: "@", items: [{ value: "@src", label: "@src" }] },
+        base: { prefix: "@", items: [{ value: "@src", label: "@src", source: "file" }] },
       }),
     );
     expect(result).toEqual({
       prefix: "#do",
-      items: [{ value: "#doc", label: "#doc", description: "Excel", source: "extension" }],
+      items: [
+        {
+          value: "#doc",
+          label: "#doc",
+          description: "Excel",
+          source: "extension",
+          remote: true,
+        },
+      ],
     });
   });
 
@@ -94,6 +102,65 @@ describe("createExtensionCompletionProvider", () => {
     });
     expect(suggest).toHaveBeenCalled();
     expect(result?.items[0]).toMatchObject({ value: "#one", source: "extension" });
+  });
+
+  it("preserves the source and apply semantics of base items a provider delegates", async () => {
+    const delegated: CompletionSuggestions = {
+      prefix: "",
+      items: [
+        {
+          value: "use ",
+          label: "use",
+          source: "extension",
+          appendSpace: false,
+        },
+        { value: "test/model", label: "model", source: "app", appendSpace: false },
+      ],
+    };
+    const suggest = vi.fn(async () => delegated);
+    const provider = createExtensionCompletionProvider(
+      baseProvider({
+        async getSuggestions() {
+          return delegated;
+        },
+      }),
+      bridge({ suggest }),
+    );
+
+    const result = await provider.getSuggestions(["/profile "], 0, 9, {
+      signal: new AbortController().signal,
+    });
+
+    expect(suggest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        base: {
+          prefix: "",
+          items: [
+            {
+              value: "use ",
+              label: "use",
+              source: "extension",
+              appendSpace: false,
+            },
+            { value: "test/model", label: "model", source: "app", appendSpace: false },
+          ],
+        },
+      }),
+    );
+    expect(result?.items).toEqual([
+      expect.objectContaining({
+        value: "use ",
+        source: "extension",
+        appendSpace: false,
+        remote: true,
+      }),
+      expect.objectContaining({
+        value: "test/model",
+        source: "app",
+        appendSpace: false,
+        remote: true,
+      }),
+    ]);
   });
 
   it("does not consult the host without a bridge", async () => {

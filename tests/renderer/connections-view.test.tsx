@@ -88,6 +88,26 @@ describe("ConnectionsView", () => {
     expect(within(screen.getByTestId("group-local")).getByText("Ollama")).toBeInTheDocument();
   });
 
+  it("opens the provider sheet a /login command asked for", async () => {
+    stubRequest();
+    useAppStore.setState({ connectionsFocus: { providerId: "anthropic" } });
+    render(<ConnectionsView />);
+
+    await waitFor(() => expect(screen.getByTestId("provider-sheet")).toBeInTheDocument());
+    expect(within(screen.getByTestId("provider-sheet")).getByText("Anthropic")).toBeInTheDocument();
+  });
+
+  it("seeds the provider search from a /login command", async () => {
+    stubRequest();
+    useAppStore.setState({ connectionsFocus: { query: "anth" } });
+    render(<ConnectionsView />);
+
+    expect(screen.getByLabelText("Search providers")).toHaveValue("anth");
+    await waitFor(() => expect(screen.getByTestId("group-apiKey")).toBeInTheDocument());
+    expect(within(screen.getByTestId("group-apiKey")).getByText("Anthropic")).toBeInTheDocument();
+    expect(within(screen.getByTestId("group-apiKey")).queryByText("Ollama")).toBeNull();
+  });
+
   it("shows the credential status and starts sign-in from the sheet", async () => {
     const request = stubRequest();
     render(<ConnectionsView />);

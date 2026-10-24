@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
 import type { HostMethod } from "../../src/shared/host-protocol";
 import { createSessionCore } from "../../src/host/session-core";
+import type { CommandRunner } from "../../src/host/commands";
 
 /**
  * The step-4 protocol surface (session side), driven through the real core with
@@ -128,7 +129,7 @@ function harness(overrides: Record<string, unknown> = {}) {
   // `keybindingPort` and `wrapShortcutRunner` are host deps, not session
   // fields: pull them out before building the fake session (2026-10-20
   // startup-tab-cycle plan).
-  const { keybindingPort, wrapShortcutRunner, ...sessionOverrides } = overrides;
+  const { keybindingPort, wrapShortcutRunner, wrapCommandRunner, ...sessionOverrides } = overrides;
   const session = fakeSession(sessionOverrides);
   const manager = fakeManager();
   const emitted: Array<{ event: string; payload?: unknown }> = [];
@@ -161,6 +162,7 @@ function harness(overrides: Record<string, unknown> = {}) {
     openSessionManager: () => manager as never,
     ...(keybindingPort == null ? {} : { keybindingPort: keybindingPort as never }),
     ...(wrapShortcutRunner == null ? {} : { wrapShortcutRunner: wrapShortcutRunner as never }),
+    ...(wrapCommandRunner == null ? {} : { wrapCommandRunner: wrapCommandRunner as never }),
   });
 
   const handlers = core.handlers();
@@ -250,6 +252,48 @@ describe("commands.list", () => {
       ["skill:brave-search", "skill"],
     ]);
     expect(commands[1]?.argumentHint).toBe("<file>");
+  });
+});
+
+describe("commands.run / commands.complete", () => {
+  const context = { source: "fake-command-context" };
+
+  function commandRunner(handler = vi.fn(async () => undefined)): CommandRunner {
+    return {
+      getCommand: (name) =>
+        name === "plan"
+          ? {
+              getArgumentCompletions: (prefix) =>
+                prefix === "u" ? [{ value: "use ", label: "use" }] : null,
+              handler,
+            }
+          : undefined,
+      createCommandContext: () => context,
+      emitError: vi.fn(),
+    };
+  }
+
+  it("answers not_implemented before a session exists", async () => {
+    const { call } = harness({ wrapCommandRunner: () => commandRunner() });
+    await expect(call("commands.complete", { name: "plan", prefix: "" })).rejects.toMatchObject({
+      code: "not_implemented",
+    });
+    await expect(call("commands.run", { name: "plan", args: "" })).rejects.toMatchObject({
+      code: "not_implemented",
+    });
+  });
+
+  it("completes and runs through the live runner", async () => {
+    const handler = vi.fn(async () => undefined);
+    const { call } = await started({ wrapCommandRunner: () => commandRunner(handler) });
+
+    await expect(call("commands.complete", { name: "plan", prefix: "u" })).resolves.toEqual({
+      items: [{ value: "use ", label: "use" }],
+    });
+    await expect(call("commands.run", { name: "plan", args: "use x" })).resolves.toEqual({
+      ran: true,
+    });
+    expect(handler).toHaveBeenCalledWith("use x", context);
   });
 });
 

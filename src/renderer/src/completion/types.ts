@@ -26,6 +26,17 @@ export interface CompletionItem {
   source?: CompletionSource;
   /** Set for directory-like entries so accepting them does not add a space. */
   continueAfter?: boolean;
+  /**
+   * Argument completions replace the whole argument prefix verbatim; the value
+   * itself owns any trailing space (`"use "`). Command-name, file and document
+   * completions keep the historical trailing space.
+   */
+  appendSpace?: boolean;
+  /**
+   * True only for items produced by a host-run extension autocomplete provider.
+   * Such items are applied in the host (the provider's function cannot run here).
+   */
+  remote?: boolean;
 }
 
 export interface CompletionSuggestions {
@@ -83,7 +94,8 @@ export function applyCompletionInPlace(
   const next = [...lines];
   const line = next[cursorLine] ?? "";
   const start = Math.max(0, cursorCol - prefix.length);
-  const insertion = item.continueAfter ? item.value : `${item.value} `;
+  const insertion =
+    item.continueAfter || item.appendSpace === false ? item.value : `${item.value} `;
   next[cursorLine] = `${line.slice(0, start)}${insertion}${line.slice(cursorCol)}`;
   return { lines: next, cursorLine, cursorCol: start + insertion.length };
 }

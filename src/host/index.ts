@@ -40,6 +40,7 @@ import {
   ProjectTrustStore,
   SessionManager,
   createSdkCustomProviderStore,
+  createSdkCommandRunner,
   createSdkExtensionBinder,
   createSdkKeybindingPort,
   createSdkPackagePort,
@@ -170,6 +171,9 @@ function createCore(options: {
     // Extension shortcuts (plan step 15) run through the live runner with
     // the app's effective bindings, so a user remap is honoured.
     wrapShortcutRunner: (runner) => createSdkShortcutRunner(runner as never),
+    // Extension commands: direct execution and argument completion through
+    // the live runner (2026-10-24 command parity plan).
+    wrapCommandRunner: (runner) => createSdkCommandRunner(runner as never),
     // Extension-driven model/thinking selections (`/profile`, role switches)
     // are announced only on the extension runner; refresh the snapshot from
     // that broadcast so the header/footer follow the live session.

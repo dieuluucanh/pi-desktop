@@ -91,7 +91,7 @@ drives the real bundle when `out/host/index.mjs` has been built.
 | transport         | `host.hello` (reports `role`), `host.ping`, `host.shutdown`, `host.blobs.read`, `host.metrics` (own RSS/heap/uptime)                                                                                                                                                                                                                                                                                                                                                                                                                            | `src/host/service.ts`                                                                                                             |
 | sessions          | `session.create`, `session.open`, `session.resume`, `session.list`, `session.new`, `session.switch`, `session.clone`, `session.fork`, `session.forkMessages`, `session.rename`, `session.reload`, `session.lastAssistantText`, `session.exportHtml`, `session.navigateTree`, `session.setLabel`                                                                                                                                                                                                                                                 | `src/host/session-core.ts`                                                                                                        |
 | conversation      | `prompt` (images + `streamingBehavior`), `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `src/host/session-core.ts`                                                                                                        |
-| state             | `state.get`, `messages.get`, `entries.get` (`since` cursor), `tree.get`, `stats.get` (`contextUsage`, `tokens`, queue modes), `compact`, `tools.list`, `tools.setActive`, `commands.list`, `files.list` (workspace listing for `@` completion, rooted at the session's own cwd)                                                                                                                                                                                                                                                                 | `src/host/session-core.ts`                                                                                                        |
+| state             | `state.get`, `messages.get`, `entries.get` (`since` cursor), `tree.get`, `stats.get` (`contextUsage`, `tokens`, queue modes), `compact`, `tools.list`, `tools.setActive`, `commands.list`, `commands.complete` (a live command's `getArgumentCompletions`), `commands.run` (direct handler execution), `files.list` (workspace listing for `@` completion, rooted at the session's own cwd)                                                                                                                                                     | `src/host/session-core.ts`                                                                                                        |
 | models & thinking | `model.list`, `model.available`, `model.set`, `model.cycle`, `thinking.levels`, `thinking.set`, `thinking.cycle`                                                                                                                                                                                                                                                                                                                                                                                                                                | `src/host/session-core.ts`                                                                                                        |
 | session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `src/host/session-core.ts`                                                                                                        |
 | settings          | `settings.get`, `settings.set`, `settings.raw` (read **or** write a whole scope), `settings.flush`; every response carries **both** scopes, the two file paths + mtimes, `drainErrors` and the project-trust flag. Writes are schema-validated: a named `SettingsManager` setter when Pi has one, otherwise an atomic whole-document edit, always with a backup before the first write                                                                                                                                                          | `src/host/settings.ts` + `src/host/sdk/settings.ts`, in both cores                                                                |
@@ -312,6 +312,7 @@ refuses project writes exactly as Pi does.
 | `state.get` / `messages.get` / `stats.get`                            | `get_state` / `get_messages` / `get_session_stats`                |
 | `entries.get` (`since`) / `tree.get`                                  | `get_entries` / `get_tree`                                        |
 | `commands.list`                                                       | `get_commands`                                                    |
+| `commands.complete` / `commands.run`                                  | **no RPC equivalent** (see below)                                 |
 | `model.available` / `model.cycle`                                     | `get_available_models` / `cycle_model`                            |
 | `thinking.cycle` / `thinking.set`                                     | `cycle_thinking_level` / `set_thinking_level`                     |
 | `session.new` / `session.switch` / `session.clone` / `session.fork`   | `new_session` / `switch_session` / `clone` / `fork`               |
@@ -334,10 +335,26 @@ tree selector in-process), `session.queueMode`'s single envelope,
 (project inspection and trust: the TUI resolves trust through its own session,
 so RPC has no command for it), `themes.list/import` (RPC mode never lists
 themes), `keybindings.get/set/reset` (RPC mode never reads `keybindings.json`),
-`shortcuts.list/invoke` (RPC mode has no shortcut protocol), `oi.state`,
-`oi.editorText`, `completion.suggest`, `completion.apply` (RPC mode has no
-session-state channel, no editor mirror, and cannot evaluate extension
+`shortcuts.list/invoke` (RPC mode has no shortcut protocol), `commands.run` /
+`commands.complete` (RPC mode's `prompt` runs an extension command in-process
+and its client cannot evaluate a function-valued argument hook),
+`oi.state`, `oi.editorText`, `completion.suggest`, `completion.apply` (RPC mode
+has no session-state channel, no editor mirror, and cannot evaluate extension
 autocomplete providers), `tui.state`/`tui.resize`/`tui.input` (RPC mode's
 `custom()` returns `undefined`, so it has no terminal to render into or feed
 keys to), `render.request`/`render.markdown` (RPC mode renders tool/message
 components in-process; it has no client that could display ANSI lines).
+
+### Extension commands and argument completion (2026-10-24)
+
+`commands.list` keeps Pi's RPC shape. `commands.complete({ name, prefix })` asks
+the live command for `getArgumentCompletions(prefix)` and returns sanitised
+`{ value, label, description? }` items (values keep trailing spaces, capped at
+50). `commands.run({ name, args })` executes the command's handler with
+`ExtensionRunner.createCommandContext()`; a handler error is reported through
+the runner and as an `extension_error` transcript notice, and the invocation
+still counts as handled. Both methods are session-host only and answer
+`not_implemented` before a session exists. Direct execution is deliberate: a
+command runs even while the agent streams, exactly as terminal Pi's
+`_tryExecuteExtensionCommand` does, while prompt templates and `/skill:*` keep
+the `prompt` path.

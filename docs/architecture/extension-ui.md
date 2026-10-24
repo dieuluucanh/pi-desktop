@@ -18,24 +18,24 @@ of the SDK's `ExtensionUIContext` appears here.
 
 ## Member mapping
 
-| `ExtensionUIContext` member                                       | Where it lands                                                      | Notes                                                                                      |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `select` / `confirm` / `input` / `editor`                         | native dialogs through `oi.request` / `oi.respond`                  | keyboard-first, live `timeout` countdown, `signal` cancel, Escape/overlay cancel           |
-| `notify(message, type)`                                           | toast centre + a notification history panel (`oi.notify`)           | history survives tab switches; `undefined`-style clears are not applicable                 |
-| `setStatus(key, text)`                                            | the composer footer’s dim status line (`oi.state`)                  | `undefined` removes the entry; values are sanitised for `title` and rendered ANSI-aware    |
-| `setWidget(key, lines, opts)`                                     | widget strip above/below the composer (`oi.state`)                  | string arrays; a component **factory** is ignored (documented limitation)                  |
-| `setWorkingMessage` / `setWorkingVisible` / `setWorkingIndicator` | the working row above the composer                                  | custom frames + interval honoured; `visible:false` hides it                                |
-| `setHiddenThinkingLabel`                                          | transcript thinking blocks                                          | replaces the collapsed thinking label                                                      |
-| `setTitle`                                                        | window title (validated in main)                                    | bounded, single-line                                                                       |
-| `getToolsExpanded` / `setToolsExpanded`                           | transcript tool-card expansion (`oi.state` + `oi.setToolsExpanded`) | the app owns `Ctrl+O` and the view mode; the host’s copy stays truthful                    |
-| `pasteToEditor` / `setEditorText`                                 | composer mirror (`oi.editorText`)                                   | renderer reports its buffer back, debounced per tab                                        |
-| `getEditorText`                                                   | the mirror                                                          | **eventually consistent** — the host cannot read a textarea synchronously                  |
-| `addAutocompleteProvider`                                         | the composer’s completion stack (`completion.suggest` / `apply`)    | the host runs `factory(current)`; the renderer sends its `/`, `@`, `#` result as `current` |
-| `onTerminalInput`                                                 | first shot at keys in the TUI surface                               | runs before the surface’s own handling                                                     |
-| `custom(factory, opts)`                                           | the TUI surface (`tui.state` frames)                                | `overlay`/`overlayOptions`/`onHandle` supported; returns `undefined` when nothing is shown |
-| `setFooter` / `setHeader`                                         | TUI slots above/below the transcript                                | the factory’s component is rendered per frame                                              |
-| `setEditorComponent` / `getEditorComponent`                       | the composer slot’s TUI editor                                      | replaces the composer while set                                                            |
-| `theme` / `getAllThemes` / `getTheme` / `setTheme`                | host theme + `oi.theme`                                             | `setTheme` installs the theme in the host process and persists Pi’s `theme` setting        |
+| `ExtensionUIContext` member                                       | Where it lands                                                            | Notes                                                                                      |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `select` / `confirm` / `input` / `editor`                         | native dialogs through `oi.request` / `oi.respond`                        | keyboard-first, live `timeout` countdown, `signal` cancel, Escape/overlay cancel           |
+| `notify(message, type)`                                           | transcript notice + history panel; warning/error also toast (`oi.notify`) | info output is chat content as in terminal Pi; the archive keeps every notification        |
+| `setStatus(key, text)`                                            | the composer footer’s dim status line (`oi.state`)                        | `undefined` removes the entry; values are sanitised for `title` and rendered ANSI-aware    |
+| `setWidget(key, lines, opts)`                                     | widget strip above/below the composer (`oi.state`)                        | string arrays; a component **factory** is ignored (documented limitation)                  |
+| `setWorkingMessage` / `setWorkingVisible` / `setWorkingIndicator` | the working row above the composer                                        | custom frames + interval honoured; `visible:false` hides it                                |
+| `setHiddenThinkingLabel`                                          | transcript thinking blocks                                                | replaces the collapsed thinking label                                                      |
+| `setTitle`                                                        | window title (validated in main)                                          | bounded, single-line                                                                       |
+| `getToolsExpanded` / `setToolsExpanded`                           | transcript tool-card expansion (`oi.state` + `oi.setToolsExpanded`)       | the app owns `Ctrl+O` and the view mode; the host’s copy stays truthful                    |
+| `pasteToEditor` / `setEditorText`                                 | composer mirror (`oi.editorText`)                                         | renderer reports its buffer back, debounced per tab                                        |
+| `getEditorText`                                                   | the mirror                                                                | **eventually consistent** — the host cannot read a textarea synchronously                  |
+| `addAutocompleteProvider`                                         | the composer’s completion stack (`completion.suggest` / `apply`)          | the host runs `factory(current)`; the renderer sends its `/`, `@`, `#` result as `current` |
+| `onTerminalInput`                                                 | first shot at keys in the TUI surface                                     | runs before the surface’s own handling                                                     |
+| `custom(factory, opts)`                                           | the TUI surface (`tui.state` frames)                                      | `overlay`/`overlayOptions`/`onHandle` supported; returns `undefined` when nothing is shown |
+| `setFooter` / `setHeader`                                         | TUI slots above/below the transcript                                      | the factory’s component is rendered per frame                                              |
+| `setEditorComponent` / `getEditorComponent`                       | the composer slot’s TUI editor                                            | replaces the composer while set                                                            |
+| `theme` / `getAllThemes` / `getTheme` / `setTheme`                | host theme + `oi.theme`                                                   | `setTheme` installs the theme in the host process and persists Pi’s `theme` setting        |
 
 | `shortcuts` (registered via `pi.registerShortcut`) | the composer’s Tab cycle and the session’s other chords (`shortcuts.list` / `shortcuts.invoke`) | checked before the editor’s own handling, as in Pi; the list is listed per tab on activation |
 
@@ -172,6 +172,20 @@ last attempt errored retries on the next load, on the next Tab press, and when
 the tab becomes ready (2026-10-20 startup-tab-cycle plan). Shortcuts resolve
 against Pi’s effective keybindings (documented defaults with the user’s
 overrides applied), so a user remap behaves exactly as it does in terminal Pi.
+
+**Command arguments fill like terminal Pi (2026-10-24).** The first line of a
+`/` buffer is one command context: before the first whitespace the menu lists
+command names, and after it the host evaluates the command’s
+`getArgumentCompletions(prefix)` (`commands.complete`). App-owned commands use
+renderer completers instead: `/model` suggests `provider/id`, `/thinking`
+suggests levels, `/login` suggests provider ids. Argument items replace the
+whole argument prefix verbatim — their value owns any trailing space
+(`"use "`) — while command-name/file/document items keep the historical
+trailing space. **Enter** on a command-name suggestion applies it and submits
+in the same keystroke; Enter on an argument suggestion applies only; Tab always
+applies only. A delegating autocomplete provider preserves the base item’s
+source and `appendSpace`, so it cannot turn an argument fill into an
+auto-spaced one.
 
 ## Tests
 

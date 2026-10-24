@@ -8,6 +8,7 @@ import {
   parseExtensionNotification,
   sanitizeCompletionApplyRequest,
   sanitizeCompletionRequest,
+  sanitizeCompletionSuggestions,
   sanitizeExtensionUiSnapshot,
   sanitizeExtensionWidget,
 } from "../../src/shared/extension-ui";
@@ -208,5 +209,27 @@ describe("completion wire shapes", () => {
       cursorLine: 0,
       cursorCol: 5,
     });
+  });
+
+  it("preserves source and argument apply semantics across the wire", () => {
+    const suggestions = sanitizeCompletionSuggestions({
+      prefix: "",
+      items: [{ value: "use ", label: "use", source: "extension", appendSpace: false }],
+    });
+    expect(suggestions?.items[0]).toMatchObject({
+      value: "use ",
+      source: "extension",
+      appendSpace: false,
+    });
+
+    expect(
+      applyCompletionInPlace(
+        ["/profile "],
+        0,
+        9,
+        { value: "use ", label: "use", appendSpace: false },
+        "",
+      ),
+    ).toEqual({ lines: ["/profile use "], cursorLine: 0, cursorCol: 13 });
   });
 });

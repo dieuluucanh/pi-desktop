@@ -158,8 +158,19 @@ import {
 import { appCommandNames, resolveCommandInput } from "../completion/dispatch";
 import type { HostCommandEntry } from "../completion/command-source";
 import type { FileListSnapshot } from "../completion/file-source";
-import type { CompletionSource } from "../completion/types";
-import { thinkingLevelsOf, toCatalog, type ModelCatalogEntry } from "../session/model-catalog";
+import { appArgumentItems } from "../completion/app-arguments";
+import type { CompletionItem, CompletionSource } from "../completion/types";
+import {
+  parseCommandCompleteResult,
+  parseCommandRunResult,
+  type CommandArgumentItem,
+} from "../../../shared/commands";
+import {
+  findExactModelEntry,
+  thinkingLevelsOf,
+  toCatalog,
+  type ModelCatalogEntry,
+} from "../session/model-catalog";
 import { classifyFailure, isOfflineError } from "../../../shared/diagnostics";
 import type { DiagnosticsSnapshot } from "../../../shared/diagnostics";
 import { sanitizeUpdateState, type UpdateState } from "../../../shared/updates";
@@ -406,6 +417,20 @@ export interface AppStateShape {
   completionCommands: Record<string, HostCommandEntry[]>;
   completionFiles: Record<string, FileCacheEntry>;
   loadCommands: (tabId: string, options?: { refresh?: boolean }) => Promise<HostCommandEntry[]>;
+  /** Drops a tab's cached command list so the next lookup refetches it. */
+  invalidateCommands: (tabId: string) => void;
+  /** Runs `commands.complete` for one extension command's argument prefix. */
+  completeCommandArguments: (
+    tabId: string,
+    name: string,
+    prefix: string,
+  ) => Promise<CommandArgumentItem[] | null>;
+  /** Runs the app-owned completers for `/model`, `/thinking` and `/login`. */
+  completeAppCommandArguments: (
+    tabId: string,
+    name: string,
+    prefix: string,
+  ) => Promise<CompletionItem[] | null>;
   loadFiles: (tabId: string, options?: { refresh?: boolean }) => Promise<FileListSnapshot | null>;
   /**
    * Runs a submitted `/command`. `handled: false` means the text is not a
@@ -415,7 +440,7 @@ export interface AppStateShape {
   runCommandInput: (
     tabId: string,
     text: string,
-    preferredSource?: CompletionSource,
+    options?: { preferredSource?: CompletionSource; mode?: SendMode; images?: PromptImage[] },
   ) => Promise<CommandOutcome>;
 
   /** Model, thinking and usage UX (plan step 8). */
@@ -424,6 +449,8 @@ export interface AppStateShape {
   thinkingLevels: Record<string, string[]>;
   picker: PickerKind | null;
   pickerError: string | null;
+  /** Initial search text for the model picker (`/model <query>`). */
+  pickerSearch: string;
   loadModels: (tabId: string) => Promise<void>;
   setModel: (
     tabId: string,
@@ -436,8 +463,12 @@ export interface AppStateShape {
   renameSession: (tabId: string, name: string) => Promise<void>;
   toggleFavorite: (key: string) => void;
   setViewMode: (mode: ViewMode) => void;
-  openPicker: (picker: PickerKind) => void;
+  openPicker: (picker: PickerKind, options?: { search?: string }) => void;
   closePicker: () => void;
+  /** What `/login <provider>` asked Connections to show, consumed by the view. */
+  connectionsFocus: { providerId?: string; query?: string } | null;
+  openConnections: (focus?: { providerId?: string; query?: string }) => void;
+  clearConnectionsFocus: () => void;
 
   /** Connections — providers, credentials and sign-in (plan step 9). */
   providers: ProviderSummary[];
@@ -897,7 +928,9 @@ function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {
 const EXTENSION_UI_EVENTS = new Set<string>([
   EXTENSION_UI_REQUEST_EVENT,
   EXTENSION_UI_STATE_EVENT,
-  EXTENSION_UI_NOTIFY_EVENT,
+  // `oi.notify` is deliberately absent: command output is transcript content
+  // (2026-10-24 command parity plan). `handleExtensionUiEvent` still archives it
+  // and toasts warnings/errors.
   EXTENSION_UI_THEME_EVENT,
   SESSION_SHUTDOWN_REQUEST_EVENT,
   // The extension TUI surface (plan step 17) is rendered by its own component,
@@ -905,11 +938,26 @@ const EXTENSION_UI_EVENTS = new Set<string>([
   TUI_STATE_EVENT,
 ]);
 
-/** Toast copy per notification kind; `error` also stays in the history panel. */
+/**
+ * Warnings and errors get transient attention; info output already lands in the
+ * transcript (Pi parity). The history panel keeps every notification.
+ */
 function notifyToast(message: string, type: ExtensionNotification["type"]): void {
   if (type === "error") toast.error(message);
   else if (type === "warning") toast.warning(message);
-  else toast(message);
+}
+
+/** Records one executed send in the draft history, exactly once. */
+function rememberDraft(tabId: string, text: string): void {
+  const trimmed = text.trim();
+  const history = useAppStore.getState().draftHistory[tabId] ?? [];
+  useAppStore.setState({
+    draftHistory: {
+      ...useAppStore.getState().draftHistory,
+      [tabId]: [trimmed, ...history].slice(0, 50),
+    },
+    historyIndex: { ...useAppStore.getState().historyIndex, [tabId]: -1 },
+  });
 }
 
 /**
@@ -981,6 +1029,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   thinkingLevels: {},
   picker: null,
   pickerError: null,
+  pickerSearch: "",
+  connectionsFocus: null,
   providers: [],
   providersLoaded: false,
   providersError: null,
@@ -1044,7 +1094,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   tuiSurfaces: {},
   toolsExpanded: {},
 
-  setView: (view) => set({ view, hint: null }),
+  setView: (view) =>
+    set({
+      view,
+      hint: null,
+      // A `/login` focus belongs to the Connections visit that created it.
+      ...(view === "connections" ? {} : { connectionsFocus: null }),
+    }),
   focusIntegrations: () => set({ view: "extensions", extensionsFocus: "integrations", hint: null }),
   clearExtensionsFocus: () => set({ extensionsFocus: null }),
   openPalette: () => set({ paletteOpen: true }),
@@ -1464,6 +1520,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // A restarted host rebinds its extensions, so any shortcut registered by
       // the fresh session must be re-listed (the previous list may be stale).
       if (get().activeTabId === tabId) void get().loadShortcuts({ refresh: true });
+      get().invalidateCommands(tabId);
     } catch (error) {
       get().noteFailure(error);
     }
@@ -1716,8 +1773,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     );
   },
 
-  openPicker: (picker) => set({ picker, pickerError: null }),
-  closePicker: () => set({ picker: null, pickerError: null }),
+  openPicker: (picker, options = {}) =>
+    set({ picker, pickerError: null, pickerSearch: options.search ?? "" }),
+  closePicker: () => set({ picker: null, pickerError: null, pickerSearch: "" }),
+
+  openConnections: (focus) =>
+    set({ view: "connections", hint: null, connectionsFocus: focus ?? null }),
+  clearConnectionsFocus: () => set({ connectionsFocus: null }),
 
   loadModels: async (tabId) => {
     const api = bridge();
@@ -1849,11 +1911,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       await api.sessions.request({ tabId, method: "prompt", params });
       get().setDraft(tabId, "");
-      const history = get().draftHistory[tabId] ?? [];
-      set({
-        draftHistory: { ...get().draftHistory, [tabId]: [trimmed, ...history].slice(0, 50) },
-        historyIndex: { ...get().historyIndex, [tabId]: -1 },
-      });
+      rememberDraft(tabId, trimmed);
       return true;
     } catch (error) {
       get().noteFailure(error);
@@ -1867,7 +1925,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
    */
   sendPrompt: async (tabId, text, options = {}) => {
     if (text.trim().startsWith("/")) {
-      const outcome = await get().runCommandInput(tabId, text, options.preferredSource);
+      const outcome = await get().runCommandInput(tabId, text, options);
       // `handled` covers an executed command, a view switch and an unknown name:
       // in every one of those cases the text was consumed, not sent as prose.
       if (outcome.handled) return true;
@@ -1890,6 +1948,44 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       get().noteFailure(error);
       return cached ?? [];
     }
+  },
+
+  invalidateCommands: (tabId) => {
+    const { [tabId]: _removed, ...rest } = get().completionCommands;
+    set({ completionCommands: rest });
+  },
+
+  completeCommandArguments: async (tabId, name, prefix) => {
+    const api = bridge();
+    if (!api?.sessions) return null;
+    try {
+      const response = await api.sessions.request({
+        tabId,
+        method: "commands.complete",
+        params: { name, prefix },
+      });
+      return parseCommandCompleteResult(response);
+    } catch {
+      return null;
+    }
+  },
+
+  completeAppCommandArguments: async (tabId, name, prefix) => {
+    // The catalog is fetched lazily: a command line should not issue a host
+    // request per keystroke, only the first `/model` completion of a tab.
+    if (name === "model" && get().modelCatalog[tabId] === undefined) {
+      await get().loadModels(tabId);
+    }
+    if (name === "login" && !get().providersLoaded) {
+      await get().loadProviders();
+    }
+    const state = get();
+    const levels = state.thinkingLevels[tabId] ?? thinkingLevelsOf(state.sessionStates[tabId]);
+    return appArgumentItems(name, prefix, {
+      models: state.modelCatalog[tabId] ?? [],
+      thinkingLevels: levels,
+      providers: state.providers,
+    });
   },
 
   loadFiles: async (tabId, options = {}) => {
@@ -1915,24 +2011,102 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  runCommandInput: async (tabId, text, preferredSource) => {
+  runCommandInput: async (tabId, text, options = {}) => {
+    const preferredSource = options.preferredSource;
+    const context = (hostCommands: HostCommandEntry[]) =>
+      resolveCommandInput(text, {
+        hostCommands,
+        ...(preferredSource ? { preferredSource } : {}),
+      });
     const hostCommands = await get().loadCommands(tabId);
-    const resolution = resolveCommandInput(text, {
-      hostCommands,
-      ...(preferredSource ? { preferredSource } : {}),
-    });
+    const resolution = context(hostCommands);
 
     if (resolution.kind === "not-a-command") return { handled: false, sent: false };
 
     if (resolution.kind === "unknown") {
+      // The cache can be stale after `/reload` or a resumed session. Refresh
+      // once; a valid command must never be swallowed as a typo.
+      const fresh = await get().loadCommands(tabId, { refresh: true });
+      const retry = context(fresh);
+      if (retry.kind !== "unknown") return get().runCommandInput(tabId, text, options);
       set({ hint: `Unknown command /${resolution.name} — press / to list commands.` });
       return { handled: true, sent: false };
     }
 
-    // Extension commands, prompt templates and /skill:* are sent as a prompt so
-    // the SDK expands them; nothing is interpreted here.
+    // Extension commands run directly in the host, exactly like terminal Pi:
+    // this works while the agent is streaming and needs no send mode. Prompt
+    // templates and /skill:* keep the `prompt` path so the SDK expands them.
     if (resolution.kind === "host") {
-      const sent = await get().sendPromptNow(tabId, text);
+      const { name, argument, command } = resolution;
+      if (command.source !== "extension") {
+        const sent = await get().sendPromptNow(tabId, text, options);
+        return { handled: true, sent };
+      }
+
+      const api = bridge();
+      if (!api?.sessions) {
+        set({ hint: "The preload bridge is unavailable." });
+        return { handled: true, sent: false };
+      }
+
+      let state: "ran" | "missing" | "unavailable";
+      try {
+        const response = await api.sessions.request({
+          tabId,
+          method: "commands.run",
+          params: { name, args: argument },
+        });
+        state = parseCommandRunResult(response).ran ? "ran" : "missing";
+      } catch {
+        // An older host answers `not_implemented`; fall through to `prompt` so
+        // idle use still works after a downgrade.
+        state = "unavailable";
+      }
+
+      if (state === "ran") {
+        get().setDraft(tabId, "");
+        rememberDraft(tabId, text);
+        return { handled: true, sent: true };
+      }
+
+      if (state === "missing") {
+        const fresh = await get().loadCommands(tabId, { refresh: true });
+        const retry = context(fresh);
+        if (retry.kind === "host" && retry.command.source === "extension") {
+          try {
+            const response = await api.sessions.request({
+              tabId,
+              method: "commands.run",
+              params: { name: retry.name, args: retry.argument },
+            });
+            if (parseCommandRunResult(response).ran) {
+              get().setDraft(tabId, "");
+              rememberDraft(tabId, text);
+              return { handled: true, sent: true };
+            }
+          } catch {
+            state = "unavailable";
+          }
+        }
+        if (state === "missing") {
+          if (retry.kind === "unknown") {
+            set({ hint: `/${name} is no longer available — run /reload and try again.` });
+            return { handled: true, sent: false };
+          }
+          // The command changed kind (e.g. became a prompt template): dispatch
+          // again against the freshly cached list.
+          if (retry.kind !== "host" || retry.command.source !== "extension") {
+            return get().runCommandInput(tabId, text, options);
+          }
+          set({ hint: `/${name} is no longer available — run /reload and try again.` });
+          return { handled: true, sent: false };
+        }
+      }
+
+      // Direct execution is unavailable (an older host): keep the legacy prompt
+      // path, with the caller's mode/images forwarded so it still works while
+      // streaming.
+      const sent = await get().sendPromptNow(tabId, text, options);
       return { handled: true, sent };
     }
 
@@ -1949,13 +2123,76 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return { handled: true, sent: false };
     }
     if (action.kind === "view") {
+      // `/login <provider>` opens the provider's sheet; an unknown or ambiguous
+      // ref seeds the Connections search instead (the desktop equivalent of
+      // Pi's provider selector). Bare `/login` keeps today's view.
+      if (
+        action.view === "connections" &&
+        command.argumentKind === "provider" &&
+        argument.length > 0
+      ) {
+        if (!get().providersLoaded) await get().loadProviders();
+        const reference = argument.trim().toLowerCase();
+        const matches = get().providers.filter(
+          (provider) =>
+            provider.id.toLowerCase() === reference || provider.label.toLowerCase() === reference,
+        );
+        if (matches.length === 1 && matches[0]) {
+          get().openConnections({ providerId: matches[0].id });
+        } else {
+          get().openConnections({ query: argument });
+        }
+        return { handled: true, sent: false };
+      }
       set({ view: action.view, hint: null });
       return { handled: true, sent: false };
     }
     if (action.kind === "picker") {
-      // The model picker needs the catalog, so it is fetched as the dialog opens.
-      set({ picker: action.picker, hint: null });
-      if (action.picker === "model") void get().loadModels(tabId);
+      if (action.picker === "model") {
+        // `/model provider/id` sets an exact match directly; anything else
+        // opens the picker with the search prefilled (Pi's handleModelCommand).
+        if (argument.length > 0) {
+          if (get().modelCatalog[tabId] === undefined) await get().loadModels(tabId);
+          const exact = findExactModelEntry(get().modelCatalog[tabId] ?? [], argument);
+          if (exact) {
+            set({ pickerError: null });
+            await get().setModel(tabId, exact, { persist: false });
+            const failure = get().pickerError;
+            if (failure) {
+              get().openPicker("model", { search: argument });
+              set({ pickerError: failure });
+              return { handled: true, sent: false };
+            }
+            return { handled: true, sent: true };
+          }
+          get().openPicker("model", { search: argument });
+          void get().loadModels(tabId);
+          return { handled: true, sent: false };
+        }
+        get().openPicker("model");
+        void get().loadModels(tabId);
+        return { handled: true, sent: false };
+      }
+
+      // `/thinking <level>` sets an exact level; an unknown level is an error
+      // with the available list (Pi's handleThinkingCommand).
+      if (argument.length > 0) {
+        const levels = get().thinkingLevels[tabId] ?? thinkingLevelsOf(get().sessionStates[tabId]);
+        const wanted = argument.trim().toLowerCase();
+        const level = levels.find((candidate) => candidate.toLowerCase() === wanted);
+        if (level) {
+          await get().setThinking(tabId, level, { persist: false });
+          return { handled: true, sent: true };
+        }
+        set({
+          hint:
+            levels.length > 0
+              ? `Unknown thinking level "${argument}". Available: ${levels.join(", ")}.`
+              : `Unknown thinking level "${argument}". This model reports no thinking levels.`,
+        });
+        return { handled: true, sent: false };
+      }
+      get().openPicker("thinking");
       return { handled: true, sent: false };
     }
     if (action.kind === "trust") {
@@ -2001,6 +2238,14 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         method: action.method,
         params: action.params ? action.params(argument) : {},
       });
+      // A new/cloned/reloaded session has a fresh extension runner.
+      if (
+        action.method === "session.new" ||
+        action.method === "session.clone" ||
+        action.method === "session.reload"
+      ) {
+        get().invalidateCommands(tabId);
+      }
       return { handled: true, sent: true };
     } catch (error) {
       get().noteFailure(error);
@@ -2500,6 +2745,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       } catch {
         // A failed runtime reload still re-lists: the list is the source of truth.
       }
+      // Extensions may have appeared or disappeared; the next `/` or argument
+      // completion must rebuild `commands.list` instead of serving a stale one.
+      get().invalidateCommands(target);
     }
     await get().loadResources({ refresh: true });
     const change = diffResources(before, get().resources.resources);

@@ -136,12 +136,15 @@ export function SessionView() {
   const drafts = useAppStore((state) => state.prefs.drafts);
   const sendModes = useAppStore((state) => state.sendModes);
   const loadCommands = useAppStore((state) => state.loadCommands);
+  const completeCommandArguments = useAppStore((state) => state.completeCommandArguments);
+  const completeAppCommandArguments = useAppStore((state) => state.completeAppCommandArguments);
   const loadFiles = useAppStore((state) => state.loadFiles);
   const modelCatalog = useAppStore((state) => state.modelCatalog);
   const providerAuth = useAppStore((state) => state.providerAuth);
   const thinkingLevels = useAppStore((state) => state.thinkingLevels);
   const picker = useAppStore((state) => state.picker);
   const pickerError = useAppStore((state) => state.pickerError);
+  const pickerSearch = useAppStore((state) => state.pickerSearch);
   const loadModels = useAppStore((state) => state.loadModels);
   const setModel = useAppStore((state) => state.setModel);
   const setThinking = useAppStore((state) => state.setThinking);
@@ -191,7 +194,13 @@ export function SessionView() {
   const completion = useMemo(
     () => ({
       provider: createCompletionProvider({
-        command: createCommandProvider({ loadCommands: () => loadCommands(activeTabId ?? "") }),
+        command: createCommandProvider({
+          loadCommands: () => loadCommands(activeTabId ?? ""),
+          completeCommand: (request) =>
+            completeCommandArguments(activeTabId ?? "", request.name, request.prefix),
+          completeAppArgument: (request) =>
+            completeAppCommandArguments(activeTabId ?? "", request.name, request.prefix),
+        }),
         file: createFileProvider({ loadFiles: () => loadFiles(activeTabId ?? "") }),
         document: createDocumentProvider(documentMentionSource),
         extension: activeTabId
@@ -206,9 +215,10 @@ export function SessionView() {
         suggestions: CompletionSuggestions,
         buffer: { lines: string[]; line: number; col: number },
       ) => {
-        // Only host-run extension items need the remote apply; the built-in
-        // sources are applied locally by the provider itself.
-        if (!activeTabId || item.source !== "extension") return null;
+        // Only host-run extension-provider items need the remote apply. An
+        // extension *command* item also carries source "extension" but is
+        // applied locally, so provenance is the `remote` flag, not the source.
+        if (!activeTabId || item.remote !== true) return null;
         return extensionApplyCompletion(activeTabId, {
           lines: buffer.lines,
           cursorLine: buffer.line,
@@ -217,12 +227,22 @@ export function SessionView() {
             value: item.value,
             label: item.label,
             ...(item.description === undefined ? {} : { description: item.description }),
+            ...(item.source === undefined ? {} : { source: item.source }),
+            ...(item.appendSpace === undefined ? {} : { appendSpace: item.appendSpace }),
           },
           prefix: suggestions.prefix,
         });
       },
     }),
-    [activeTabId, loadCommands, loadFiles, extensionCompletion, extensionApplyCompletion],
+    [
+      activeTabId,
+      loadCommands,
+      completeCommandArguments,
+      completeAppCommandArguments,
+      loadFiles,
+      extensionCompletion,
+      extensionApplyCompletion,
+    ],
   );
 
   const active = tabs.find((tab) => tab.id === activeTabId) ?? null;
@@ -504,11 +524,12 @@ export function SessionView() {
       ) : null}
 
       <ModelPicker
-        key={active.id}
+        key={`${active.id}:${picker === "model" ? `open:${pickerSearch}` : "closed"}`}
         open={picker === "model"}
         entries={modelCatalog[active.id] ?? []}
         auth={providerAuth[active.id] ?? {}}
         currentKey={currentModelKey}
+        initialQuery={pickerSearch}
         favorites={favorites}
         error={pickerError}
         onPick={(entry, options) => void setModel(active.id, entry, options)}
