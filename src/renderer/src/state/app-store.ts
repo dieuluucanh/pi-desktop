@@ -423,6 +423,7 @@ export interface AppStateShape {
   providerAuth: Record<string, Record<string, unknown>>;
   thinkingLevels: Record<string, string[]>;
   picker: PickerKind | null;
+  pickerError: string | null;
   loadModels: (tabId: string) => Promise<void>;
   setModel: (
     tabId: string,
@@ -854,6 +855,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Element-wise comparison for the small string lists the host reports. */
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 /**
  * Turns a `settings.*` snapshot into the store slice it updates, so every
  * settings action records the file mtimes for external-edit detection the same
@@ -974,6 +980,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   providerAuth: {},
   thinkingLevels: {},
   picker: null,
+  pickerError: null,
   providers: [],
   providersLoaded: false,
   providersError: null,
@@ -1385,8 +1392,23 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     });
   },
 
-  applySessionState: (envelope) =>
-    set({ sessionStates: { ...get().sessionStates, [envelope.tabId]: envelope.state } }),
+  applySessionState: (envelope) => {
+    // A model switch can change the thinking levels a session accepts. The host
+    // sends them in every snapshot, but `ThinkingPicker` prefers this cache, so
+    // refresh it here — and only when the list actually changed, because this
+    // runs on every state frame (including `message_end` while streaming).
+    const state = envelope.state as { thinkingLevels?: unknown } | null | undefined;
+    const levels = Array.isArray(state?.thinkingLevels) ? thinkingLevelsOf(state) : null;
+    const cached = get().thinkingLevels[envelope.tabId];
+    const thinkingLevels =
+      levels && (!cached || levels.length !== cached.length || !sameStrings(levels, cached))
+        ? { ...get().thinkingLevels, [envelope.tabId]: levels }
+        : get().thinkingLevels;
+    set({
+      sessionStates: { ...get().sessionStates, [envelope.tabId]: envelope.state },
+      thinkingLevels,
+    });
+  },
 
   hydrateTranscript: async (tabId) => {
     const api = bridge();
@@ -1694,8 +1716,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     );
   },
 
-  openPicker: (picker) => set({ picker }),
-  closePicker: () => set({ picker: null }),
+  openPicker: (picker) => set({ picker, pickerError: null }),
+  closePicker: () => set({ picker: null, pickerError: null }),
 
   loadModels: async (tabId) => {
     const api = bridge();
@@ -1733,6 +1755,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         method: "model.set",
         params: { model: entry.raw, persist: options.persist === true },
       });
+      // Defence in depth (plan step 4): the host also emits a `state` event,
+      // but the response alone must move the UI — otherwise a missed or
+      // coalesced event leaves the header on the old model.
+      get().applySessionState({ tabId, state: response });
+      // A persisted pick rewrites Pi's default; refresh settings so the
+      // Settings view shows the new `defaultModel` (plan step 7).
+      if (options.persist === true) void get().loadSettings({ refresh: true });
       // A different model can mean a different set of thinking levels, so the
       // clamp is re-read from the state the host returns instead of cached.
       set({
@@ -1740,6 +1769,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         thinkingLevels: { ...get().thinkingLevels, [tabId]: thinkingLevelsOf(response) },
       });
     } catch (error) {
+      set({ pickerError: errorMessage(error) });
       get().noteFailure(error);
     }
   },

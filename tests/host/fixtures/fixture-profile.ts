@@ -37,6 +37,8 @@ export interface FixtureProfileOptions {
   providerId?: string;
   /** Model id (default `fake-1`). */
   modelId?: string;
+  /** Extra model ids to declare under the same provider (the first is the default). */
+  modelIds?: string[];
   /** Extra `settings.json` keys merged last (override the defaults). */
   settings?: Record<string, unknown>;
 }
@@ -49,6 +51,9 @@ export function createFixtureProfile(options: FixtureProfileOptions): FixturePro
 
   const providerId = options.providerId ?? "fake";
   const modelId = options.modelId ?? "fake-1";
+  // Keep the saved default first; extras are additional selectable models (the
+  // integration harness uses this to prove an extension switch reaches a request).
+  const modelIds = [...new Set([modelId, ...(options.modelIds ?? [])])];
 
   const settingsPath = join(dir, "settings.json");
   writeFileSync(
@@ -81,15 +86,13 @@ export function createFixtureProfile(options: FixtureProfileOptions): FixturePro
             api: "openai-completions",
             apiKey: "fake-key",
             compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
-            models: [
-              {
-                id: modelId,
-                name: "Fake Model",
-                input: ["text", "image"],
-                contextWindow: 200000,
-                maxTokens: 8192,
-              },
-            ],
+            models: modelIds.map((id) => ({
+              id,
+              name: id === modelId ? "Fake Model" : `Fake ${id}`,
+              input: ["text", "image"],
+              contextWindow: 200000,
+              maxTokens: 8192,
+            })),
           },
         },
       },

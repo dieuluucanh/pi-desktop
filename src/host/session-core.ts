@@ -246,6 +246,14 @@ export interface SessionCoreDeps {
    */
   bindSession?(session: HostSession, runtime: RuntimeLike): Promise<void>;
   /**
+   * Observes extension-driven model/thinking selections (workflow `/profile`,
+   * role switches). Pi announces `model_select` only on the extension runner,
+   * never on the session's subscriber stream, so the core needs this port to
+   * refresh its state snapshot. The returned disposer restores the runner and
+   * is called on rebind and dispose.
+   */
+  observeModelChanges?(session: HostSession, onChange: () => void): () => void;
+  /**
    * Settings writes (plan step 12). The composition root supplies the SDK port
    * built over this session's own manager, so `settings.set` here is visible to
    * the session without a second manager.
@@ -312,6 +320,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   let manager: SessionManagerHandle | null = null;
   let unsubscribe: (() => void) | null = null;
   let unsubscribeErrors: (() => void) | null = null;
+  let unsubscribeModelChanges: (() => void) | null = null;
   let settingsManager: SettingsLike | null = null;
 
   /**
@@ -371,6 +380,10 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     "compaction_end",
     "message_end",
     "session_info_changed",
+    // `setThinkingLevel` emits this on the session's own bus. It is the only
+    // signal for a same-model thinking change (an extension re-applying a role
+    // level), because `model_select` fires only when the model itself differs.
+    "thinking_level_changed",
   ]);
 
   const emitState = (): void => {
@@ -380,8 +393,16 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   const attach = (next: HostSession): void => {
     unsubscribe?.();
     unsubscribeErrors?.();
+    unsubscribeModelChanges?.();
     session = next;
     unsubscribeErrors = next.extensionRunner?.onError?.(recordRuntimeError) ?? null;
+    // A broken observer must not prevent the session from opening; the state
+    // still refreshes on the ordinary SDK events above.
+    try {
+      unsubscribeModelChanges = deps.observeModelChanges?.(next, emitState) ?? null;
+    } catch {
+      unsubscribeModelChanges = null;
+    }
     const listener = (event: { type: string; [key: string]: unknown }): void => {
       const frame = eventToFrame(event);
       deps.emit(frame.event, frame.payload, next.sessionId ?? undefined);
@@ -1042,6 +1063,8 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       unsubscribe = null;
       unsubscribeErrors?.();
       unsubscribeErrors = null;
+      unsubscribeModelChanges?.();
+      unsubscribeModelChanges = null;
       await runtime?.dispose?.();
       runtime = null;
       session = null;
@@ -1057,17 +1080,25 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 async function applyModel(session: HostSession, wanted: string): Promise<boolean> {
   if (!session.setModel) return false;
   const catalog = session.modelRuntime?.getAvailableSnapshot?.() ?? session.scopedModels ?? [];
-  const match = catalog.find((entry) => {
+  const keyOf = (entry: unknown): { id: string | null; key: string | null } => {
     const record = asRecord(entry);
     const inner =
       record.model && typeof record.model === "object" ? asRecord(record.model) : record;
     const id = typeof inner.id === "string" ? inner.id : null;
     const provider = typeof inner.provider === "string" ? inner.provider : null;
-    if (!id) return false;
-    return `${provider ?? ""}/${id}` === wanted || id === wanted;
-  });
-  if (!match) return false;
-  await session.setModel(match, { persist: false });
+    if (!id) return { id: null, key: null };
+    return { id, key: `${provider ?? ""}/${id}` };
+  };
+  // Exact `provider/id` first, so a bare id can never steal another provider's model.
+  const exact = catalog.find((entry) => keyOf(entry).key === wanted);
+  if (exact) {
+    await session.setModel(exact, { persist: false });
+    return true;
+  }
+  // Bare ids only resolve when unambiguous in this catalog.
+  const bare = catalog.filter((entry) => keyOf(entry).id === wanted);
+  if (bare.length !== 1 || !bare[0]) return false;
+  await session.setModel(bare[0], { persist: false });
   return true;
 }
 

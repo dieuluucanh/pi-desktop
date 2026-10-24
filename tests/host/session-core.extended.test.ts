@@ -11,6 +11,7 @@ import { createSessionCore } from "../../src/host/session-core";
 
 interface TestSession {
   prompt: Mock<(text: string, options?: unknown) => Promise<void>>;
+  setModel: Mock<(model: unknown, options?: unknown) => Promise<void>>;
   cycleModel: Mock<(direction?: string, options?: unknown) => Promise<unknown>>;
   cycleThinkingLevel: Mock<(options?: unknown) => unknown>;
   setAutoCompactionEnabled: Mock<(enabled: boolean) => void>;
@@ -304,6 +305,32 @@ describe("model & thinking", () => {
     await call("model.cycle", { direction: "backward", persist: true });
     expect(session.cycleModel).toHaveBeenNthCalledWith(1, "forward", { persist: false });
     expect(session.cycleModel).toHaveBeenNthCalledWith(2, "backward", { persist: true });
+  });
+
+  it("keeps a session-local pick out of the durable defaults, and resumes it", async () => {
+    const setDefaultModelAndProvider = vi.fn();
+    const context = await started();
+    const settingsManager = context.runtime.services.settingsManager as unknown as {
+      setDefaultModelAndProvider?: unknown;
+    };
+    settingsManager.setDefaultModelAndProvider = setDefaultModelAndProvider;
+    const picked = { id: "other-model", provider: "synthetic" };
+
+    await context.call("model.set", { model: picked, persist: false });
+
+    // The switch reaches Pi with persist:false — Pi records it in the session
+    // JSONL (`appendModelChange`) and leaves settings.json alone.
+    expect(context.session.setModel).toHaveBeenCalledWith(picked, { persist: false });
+    expect(setDefaultModelAndProvider).not.toHaveBeenCalled();
+
+    // A persisted pick is the opposite: Pi is told to write the default.
+    await context.call("model.set", { model: picked, persist: true });
+    expect(context.session.setModel).toHaveBeenLastCalledWith(picked, { persist: true });
+
+    // Resuming never re-applies a project default, so the recorded model stands.
+    context.session.setModel = vi.fn(async () => undefined);
+    await context.call("session.resume", { sessionFile: "/profile/sessions/s1.jsonl" });
+    expect(context.session.setModel).not.toHaveBeenCalled();
   });
 
   it("lists the session's scoped models and current model", async () => {

@@ -86,6 +86,47 @@ describe("loadModels", () => {
   });
 });
 
+describe("applySessionState", () => {
+  it("refreshes the thinking-level cache from a state frame", () => {
+    useAppStore.setState({ thinkingLevels: { "tab-1": ["off", "low"] } });
+
+    useAppStore.getState().applySessionState({
+      tabId: "tab-1",
+      state: { model: { provider: "openai", id: "gpt-5" }, thinkingLevels: ["off", "high"] },
+    });
+
+    expect(useAppStore.getState().thinkingLevels["tab-1"]).toEqual(["off", "high"]);
+    expect(useAppStore.getState().sessionStates["tab-1"]).toMatchObject({
+      model: { provider: "openai", id: "gpt-5" },
+    });
+  });
+
+  it("keeps the cached list when the frame reports the same levels", () => {
+    const levels = ["off", "low"];
+    useAppStore.setState({ thinkingLevels: { "tab-1": levels } });
+
+    useAppStore.getState().applySessionState({
+      tabId: "tab-1",
+      state: { thinkingLevels: ["off", "low"] },
+    });
+
+    // A new array on every `message_end` would re-render the thinking picker.
+    expect(useAppStore.getState().thinkingLevels["tab-1"]).toBe(levels);
+  });
+
+  it("leaves the cache alone when the snapshot has no thinking levels", () => {
+    const levels = ["off", "low"];
+    useAppStore.setState({ thinkingLevels: { "tab-1": levels } });
+
+    useAppStore.getState().applySessionState({
+      tabId: "tab-1",
+      state: { model: { provider: "openai", id: "gpt-5" } },
+    });
+
+    expect(useAppStore.getState().thinkingLevels["tab-1"]).toBe(levels);
+  });
+});
+
 describe("setModel", () => {
   it("sends the raw model with the persist flag and closes the picker", async () => {
     const request = stubRequest();
@@ -104,6 +145,20 @@ describe("setModel", () => {
     expect(useAppStore.getState().picker).toBeNull();
   });
 
+  it("refreshes settings after a persisted pick, and not for a session-only one", async () => {
+    const request = stubRequest();
+    const loadSettings = vi.fn(async () => undefined);
+    useAppStore.setState({ loadSettings });
+    const entry = { key: "openai/gpt-5", id: "gpt-5", provider: "openai", label: "GPT-5", raw: {} };
+
+    await useAppStore.getState().setModel("tab-1", entry);
+    expect(loadSettings).not.toHaveBeenCalled();
+
+    await useAppStore.getState().setModel("tab-1", entry, { persist: true });
+    expect(loadSettings).toHaveBeenCalledWith({ refresh: true });
+    expect(request).toHaveBeenCalled();
+  });
+
   it("re-reads thinking levels from the state the host returns", async () => {
     stubRequest();
     useAppStore.setState({ thinkingLevels: { "tab-1": ["off", "low", "high"] } });
@@ -113,6 +168,38 @@ describe("setModel", () => {
 
     // A model change can remove levels, so the clamp is refreshed rather than reused.
     expect(useAppStore.getState().thinkingLevels["tab-1"]).toEqual(["off", "high"]);
+  });
+
+  it("applies the model.set response snapshot without waiting for a state event", async () => {
+    stubRequest();
+    const entry = { key: "openai/gpt-5", id: "gpt-5", provider: "openai", label: "GPT-5", raw: {} };
+
+    await useAppStore.getState().setModel("tab-1", entry);
+
+    expect(useAppStore.getState().sessionStates["tab-1"]).toMatchObject({
+      model: { id: "gpt-5" },
+    });
+  });
+
+  it("keeps the picker open and records the error when model.set is rejected", async () => {
+    const request = vi.fn(async (input: { method: string }) => {
+      if (input.method === "model.set") throw new Error("No API key for synthetic/other-model");
+      return {};
+    });
+    (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = request;
+    useAppStore.setState({ picker: "model", pickerError: null });
+    const entry = {
+      key: "synthetic/other-model",
+      id: "other-model",
+      provider: "synthetic",
+      label: "Other",
+      raw: {},
+    };
+
+    await useAppStore.getState().setModel("tab-1", entry);
+
+    expect(useAppStore.getState().picker).toBe("model");
+    expect(useAppStore.getState().pickerError).toMatch(/No API key for synthetic\//);
   });
 });
 

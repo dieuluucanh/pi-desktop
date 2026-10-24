@@ -94,6 +94,26 @@ describe("per-project model and thinking defaults (plan step 10)", () => {
     expect(unknown.appliedModels).toEqual([]);
   });
 
+  it("prefers an exact provider/id over a same-id model from another provider", async () => {
+    const catalog = [
+      { id: "kimi-k2.6", provider: "moonshotai", name: "Kimi" },
+      { id: "kimi-k2.6", provider: "synthetic", name: "Kimi via gateway" },
+    ];
+    const exact = core(catalog);
+    await exact.call("session.create", { cwd: CWD, model: "synthetic/kimi-k2.6" });
+    expect(exact.appliedModels).toEqual([catalog[1]]);
+  });
+
+  it("leaves an ambiguous bare id unapplied instead of guessing a provider", async () => {
+    const catalog = [
+      { id: "kimi-k2.6", provider: "moonshotai", name: "Kimi" },
+      { id: "kimi-k2.6", provider: "synthetic", name: "Kimi via gateway" },
+    ];
+    const ambiguous = core(catalog);
+    await ambiguous.call("session.create", { cwd: CWD, model: "kimi-k2.6" });
+    expect(ambiguous.appliedModels).toEqual([]);
+  });
+
   it("never applies defaults when a session is resumed or opened", async () => {
     const { call, appliedModels, appliedThinking } = core(CATALOG);
 

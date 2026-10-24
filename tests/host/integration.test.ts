@@ -10,6 +10,7 @@ import {
   createSdkSessionRuntime,
   createSdkTuiSurface,
   hasTrustRequiringProjectResources,
+  observeSdkModelChanges,
 } from "../../src/host/sdk";
 import type { HostMethod } from "../../src/shared/host-protocol";
 import { createFakeProvider, type FakeProvider } from "./fixtures/fake-provider";
@@ -44,9 +45,14 @@ afterEach(async () => {
   active = null;
 });
 
-async function startHarness(options: { extensions?: boolean } = {}): Promise<Harness> {
+async function startHarness(
+  options: { extensions?: boolean; modelIds?: string[] } = {},
+): Promise<Harness> {
   const provider = await createFakeProvider();
-  const profile = createFixtureProfile({ baseUrl: provider.baseUrl });
+  const profile = createFixtureProfile({
+    baseUrl: provider.baseUrl,
+    ...(options.modelIds ? { modelIds: options.modelIds } : {}),
+  });
   const emitted: Array<{ event: string; payload: unknown }> = [];
   const emit = (event: string, payload?: unknown): void => {
     emitted.push({ event, payload });
@@ -74,6 +80,9 @@ async function startHarness(options: { extensions?: boolean } = {}): Promise<Har
     cwd: profile.projectDir,
     agentDir: profile.dir,
     ...(bindSession ? { bindSession } : {}),
+    // The composition root's model observer (the real adapter): an extension's
+    // `pi.setModel` must push a state snapshot through the real SDK path.
+    observeModelChanges: observeSdkModelChanges,
     emit: (event, payload) => emitted.push({ event, payload }),
     trustStore: new ProjectTrustStore(profile.dir),
     requiresTrust: (cwd) => hasTrustRequiringProjectResources(cwd),
@@ -300,6 +309,51 @@ describe("host integration: extension UI round-trip", () => {
     expect(harness.provider.requests).toHaveLength(0);
     const notify = harness.payloads("oi.notify").at(-1) as { message: string };
     expect(notify.message).toBe("confirmed by user");
+  });
+});
+
+describe("host integration: extension model changes", () => {
+  it("emits a state snapshot and drives the next request after an extension switch", async () => {
+    const harness = await startHarness({
+      extensions: true,
+      modelIds: ["fake-1", "fake-2"],
+    });
+    harness.profile.writeExtension(
+      "switch-model.js",
+      `export default function (pi) {
+  pi.registerCommand("test-switch-model", {
+    description: "Switch to the second fake model",
+    handler: async (args, ctx) => {
+      const model = ctx.modelRegistry.find("fake", "fake-2");
+      if (!model) throw new Error("fake-2 is not in the registry");
+      const switched = await pi.setModel(model);
+      if (!switched) throw new Error("fake-2 has no configured auth");
+      ctx.ui.notify("switched to fake-2", "info");
+    },
+  });
+}
+`,
+    );
+
+    await harness.call("session.create");
+    const before = (await harness.call("state.get")) as { model?: { id?: string } };
+    expect(before.model?.id).toBe("fake-1");
+
+    await harness.call("prompt", { text: "/test-switch-model" });
+
+    // The workflow `/profile` path is exactly this: an extension calls
+    // `pi.setModel`, which the session bus never reports. Without the observer
+    // the last state frame would still say fake-1.
+    const states = harness.payloads("state") as Array<{ model?: { id?: string } }>;
+    expect(states.at(-1)?.model?.id).toBe("fake-2");
+    const after = (await harness.call("state.get")) as { model?: { id?: string } };
+    expect(after.model?.id).toBe("fake-2");
+
+    // The actual session (not only the app's snapshot) moved: the next prompt
+    // goes to the new model, matching terminal Pi after `/profile use`.
+    harness.provider.enqueue({ kind: "text", text: "on the new model" });
+    await harness.call("prompt", { text: "hello from the new model" });
+    expect(harness.provider.requests.at(-1)?.body.model).toBe("fake-2");
   });
 });
 

@@ -104,6 +104,41 @@ describe("ModelPicker", () => {
     expect(sections[0]?.textContent).toContain("Favourites");
   });
 
+  it("shows a picker-scoped error when one is set, and none otherwise", () => {
+    const { rerender } = render(
+      <ModelPicker
+        open
+        entries={CATALOG}
+        auth={AUTH}
+        favorites={[]}
+        onPick={vi.fn()}
+        onToggleFavorite={vi.fn()}
+        onSignIn={vi.fn()}
+        onOpenModelsJson={vi.fn()}
+        onClose={vi.fn()}
+        error="No API key for synthetic/other-model"
+      />,
+    );
+    expect(screen.getByTestId("model-picker-error")).toHaveTextContent(
+      "No API key for synthetic/other-model",
+    );
+    rerender(
+      <ModelPicker
+        open
+        entries={CATALOG}
+        auth={AUTH}
+        favorites={[]}
+        onPick={vi.fn()}
+        onToggleFavorite={vi.fn()}
+        onSignIn={vi.fn()}
+        onOpenModelsJson={vi.fn()}
+        onClose={vi.fn()}
+        error={null}
+      />,
+    );
+    expect(screen.queryByTestId("model-picker-error")).toBeNull();
+  });
+
   it("offers the models.json entry point", async () => {
     const user = userEvent.setup();
     const { onOpenModelsJson } = renderPicker();

@@ -185,6 +185,12 @@ export { createSdkKeybindingPort, type SdkKeybindingPortOptions } from "./keybin
 export { createSdkShortcutRunner, type SdkExtensionRunner } from "./shortcuts";
 
 /**
+ * Extension-driven model/thinking selections: `AgentSession` announces these
+ * to the extension runner only, so the host observes `emit` to refresh state.
+ */
+export { observeSdkModelChanges } from "./model-changes";
+
+/**
  * The extension-UI host (plan step 16): Pi's `ExtensionUIContext` over the
  * SDK-free UI port, plus the `bindSession` callback the session core calls.
  */

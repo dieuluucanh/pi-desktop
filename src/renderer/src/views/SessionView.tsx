@@ -141,6 +141,7 @@ export function SessionView() {
   const providerAuth = useAppStore((state) => state.providerAuth);
   const thinkingLevels = useAppStore((state) => state.thinkingLevels);
   const picker = useAppStore((state) => state.picker);
+  const pickerError = useAppStore((state) => state.pickerError);
   const loadModels = useAppStore((state) => state.loadModels);
   const setModel = useAppStore((state) => state.setModel);
   const setThinking = useAppStore((state) => state.setThinking);
@@ -261,6 +262,9 @@ export function SessionView() {
   const thinkingLevel =
     typeof activeState?.thinkingLevel === "string" ? activeState.thinkingLevel : null;
   const currentModelKey = modelKeyOf(activeState?.model);
+  // The header/footer follow the live session state; the tab record is the
+  // fallback before the first state frame arrives (plan step 3).
+  const modelLabel = modelKeyOf(activeState?.model) ?? active.model;
   const needsRestart =
     active.status === "stopped" || active.status === "crashed" || active.status === "failed";
   // A non-overlay `custom`/`editor` component owns the composer region; an
@@ -328,13 +332,13 @@ export function SessionView() {
             size="sm"
             variant="ghost"
             aria-label="Change model"
-            title={active.model ?? "Choose a model"}
+            title={modelLabel ?? "Choose a model"}
             onClick={() => {
               openPicker("model");
               void loadModels(active.id);
             }}
           >
-            <span className="max-w-40 truncate">{active.model ?? "Choose model"}</span>
+            <span className="max-w-40 truncate">{modelLabel ?? "Choose model"}</span>
           </Button>
           <Button
             size="sm"
@@ -405,7 +409,7 @@ export function SessionView() {
               tabId={active.id}
               running={active.status === "running"}
               onAbort={() => void stopRun(active.id)}
-              empty={{ cwd: active.cwd, project: project?.path ?? null, model: active.model }}
+              empty={{ cwd: active.cwd, project: project?.path ?? null, model: modelLabel }}
               thinkingLabel={extensionUi?.hiddenThinkingLabel ?? null}
               toolsExpanded={effectiveToolsExpanded}
               onToggleToolsExpanded={() => toggleToolsExpanded(active.id)}
@@ -484,7 +488,7 @@ export function SessionView() {
             facts={{
               cwd: active.cwd,
               branch: gitBranch,
-              model: active.model,
+              model: modelLabel,
               thinking: thinkingLevel,
               context: contextUsage,
               cost,
@@ -500,11 +504,13 @@ export function SessionView() {
       ) : null}
 
       <ModelPicker
+        key={active.id}
         open={picker === "model"}
         entries={modelCatalog[active.id] ?? []}
         auth={providerAuth[active.id] ?? {}}
         currentKey={currentModelKey}
         favorites={favorites}
+        error={pickerError}
         onPick={(entry, options) => void setModel(active.id, entry, options)}
         onToggleFavorite={toggleFavorite}
         onSignIn={(provider) => {

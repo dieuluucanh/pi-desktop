@@ -391,8 +391,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     });
   };
 
-  const applySnapshot = (tab: TabRecord, snapshot: unknown): void => {
-    const record = asRecord(snapshot) as SnapshotLike;
+  /** Copies the fields the tab strip renders from any state snapshot. */
+  const projectSnapshot = (tab: TabRecord, record: SnapshotLike): void => {
     if (typeof record.sessionFile === "string") tab.sessionFile = record.sessionFile;
     if (typeof record.sessionName === "string" && record.sessionName.length > 0) {
       tab.title = record.sessionName;
@@ -400,6 +400,10 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     const model = record.model;
     if (model && typeof model === "object" && typeof model.id === "string") tab.model = model.id;
     tab.status = record.streaming === true ? "running" : "idle";
+  };
+
+  const applySnapshot = (tab: TabRecord, snapshot: unknown): void => {
+    projectSnapshot(tab, asRecord(snapshot) as SnapshotLike);
     delete tab.error;
     emitState(tab.id, snapshot);
     publishTabs();
@@ -432,8 +436,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         if (entry.event === "state") {
           flushPending(tab.id);
           emitState(tab.id, entry.payload);
-          const state = asRecord(entry.payload);
-          tab.status = state.streaming === true ? "running" : "idle";
+          projectSnapshot(tab, asRecord(entry.payload) as SnapshotLike);
           publishTabs();
           return;
         }

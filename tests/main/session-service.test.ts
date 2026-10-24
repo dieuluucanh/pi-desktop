@@ -409,6 +409,13 @@ describe("event batching", () => {
     const state = pushes.find((push) => push.channel === "state");
     expect(state?.payload).toMatchObject({ tabId: "tab-1" });
     expect(service.tabs()[0]!.status).toBe("running");
+    // The live model from a `state` frame must reach the tab record the
+    // header renders, not just the state channel (plan step 1).
+    newest().emit("state", {
+      streaming: false,
+      model: { provider: "synthetic", id: "other-model" },
+    });
+    expect(service.tabs()[0]!.model).toBe("other-model");
   });
 });
 

@@ -31,6 +31,8 @@ function fakeSession(options: FakeSessionOptions = {}) {
     sessionName: "Budget work",
     messages: options.messages ?? [],
     streaming: false,
+    model: { id: "claude-sonnet-4", provider: "anthropic", name: "Claude Sonnet 4" },
+    thinkingLevel: "medium",
   };
 
   const session: HostSession = {
@@ -44,10 +46,10 @@ function fakeSession(options: FakeSessionOptions = {}) {
       return state.sessionName;
     },
     get model() {
-      return { id: "claude-sonnet-4", provider: "anthropic", name: "Claude Sonnet 4" };
+      return state.model;
     },
     get thinkingLevel() {
-      return "medium";
+      return state.thinkingLevel;
     },
     get isStreaming() {
       return state.streaming;
@@ -88,8 +90,12 @@ function fakeSession(options: FakeSessionOptions = {}) {
       state.streaming = false;
     },
     clearQueue: () => ({ steering: ["a"], followUp: [] }),
-    async setModel() {},
-    setThinkingLevel() {},
+    async setModel(model) {
+      state.model = model as typeof state.model;
+    },
+    setThinkingLevel(level) {
+      state.thinkingLevel = level;
+    },
     setActiveToolsByName() {},
   };
 
@@ -315,6 +321,60 @@ describe("session core conversation", () => {
     // The fake session exposes neither steer nor followUp.
     await expect(call("steer", { text: "stop" })).rejects.toThrow(/not supported/);
     await expect(call("followUp", { text: "then" })).rejects.toThrow(/not supported/);
+  });
+});
+
+describe("extension model changes", () => {
+  it("emits a state snapshot when an extension selects a model", async () => {
+    let notify: (() => void) | null = null;
+    const { call, emitted, primary } = harness({
+      observeModelChanges: (_session, onChange) => {
+        notify = onChange;
+        return () => {
+          notify = null;
+        };
+      },
+    });
+    await call("session.create");
+
+    primary.state.model = { id: "gpt-5", provider: "openai", name: "GPT-5" };
+    notify!();
+
+    const states = emitted.filter((entry) => entry.event === "state");
+    expect(states.at(-1)?.payload).toMatchObject({
+      model: { id: "gpt-5", provider: "openai", name: "GPT-5" },
+    });
+  });
+
+  it("emits a state snapshot for a thinking-level change on the session bus", async () => {
+    const { call, emitted, primary } = harness();
+    await call("session.create");
+
+    primary.state.thinkingLevel = "high";
+    primary.emit({ type: "thinking_level_changed", level: "high" });
+
+    const states = emitted.filter((entry) => entry.event === "state");
+    expect(states.at(-1)?.payload).toMatchObject({ thinkingLevel: "high" });
+  });
+
+  it("reinstalls the observer on rebind and disposes it with the core", async () => {
+    const observers: Array<() => void> = [];
+    const disposed = vi.fn();
+    const { call, core } = harness({
+      observeModelChanges: (_session, onChange) => {
+        observers.push(onChange);
+        return disposed;
+      },
+    });
+    await call("session.create");
+    expect(observers).toHaveLength(1);
+
+    await call("session.reload");
+    expect(observers).toHaveLength(2);
+    expect(disposed).toHaveBeenCalledTimes(1);
+
+    await core.dispose();
+    expect(disposed).toHaveBeenCalledTimes(2);
   });
 });
 

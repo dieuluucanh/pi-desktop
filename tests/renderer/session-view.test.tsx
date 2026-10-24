@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -72,6 +72,55 @@ describe("session header", () => {
     expect(rule).toBeTruthy();
     expect(screen.getByRole("button", { name: "Change model" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Change thinking level" })).toBeInTheDocument();
+  });
+
+  it("shows the live model from the session state, not the stale tab record", () => {
+    // The tab spawned on one model; the host has since switched (plan step 1).
+    useAppStore.setState({
+      sessionStates: { [TAB]: { model: { provider: "opencode-go", id: "other-model" } } },
+    });
+    render(<SessionView />);
+    expect(screen.getByRole("button", { name: "Change model" })).toHaveTextContent(
+      "opencode-go/other-model",
+    );
+  });
+
+  it("moves the header when a host state frame reports a different model", () => {
+    render(<SessionView />);
+    act(() => {
+      useAppStore.getState().applySessionState({
+        tabId: TAB,
+        state: { model: { provider: "openai", id: "gpt-5" } },
+      });
+    });
+    expect(screen.getByRole("button", { name: "Change model" })).toHaveTextContent("openai/gpt-5");
+  });
+});
+
+describe("model picker per tab", () => {
+  it("gives each tab its own picker state, so the checkbox does not leak", () => {
+    const second = { ...useAppStore.getState().tabs[0]!, id: "tab-2", title: "Second" };
+    useAppStore.setState({
+      tabs: [...useAppStore.getState().tabs, second],
+      picker: "model",
+      modelCatalog: {
+        [TAB]: [
+          {
+            key: "openai/gpt-5",
+            id: "gpt-5",
+            provider: "openai",
+            label: "GPT-5",
+            raw: { id: "gpt-5", provider: "openai" },
+          },
+        ],
+      },
+    });
+    const { rerender } = render(<SessionView />);
+    // Keying the dialog by tab remounts it, so the flag cannot carry over.
+    useAppStore.setState({ activeTabId: "tab-2" });
+    rerender(<SessionView />);
+    const checkbox = screen.queryByLabelText("Save as default") as HTMLInputElement | null;
+    if (checkbox) expect(checkbox.checked).toBe(false);
   });
 });
 

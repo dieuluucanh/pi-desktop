@@ -32,6 +32,7 @@ export interface ModelPickerProps {
   /** `provider/id` of the active model, when known. */
   currentKey?: string | null;
   favorites: readonly string[];
+  error?: string | null;
   onPick: (entry: ModelCatalogEntry, options: { persist: boolean }) => void;
   onToggleFavorite: (key: string) => void;
   onSignIn: (provider: string) => void;
@@ -45,6 +46,7 @@ export function ModelPicker({
   auth,
   currentKey = null,
   favorites,
+  error = null,
   onPick,
   onToggleFavorite,
   onSignIn,
@@ -101,9 +103,14 @@ export function ModelPicker({
       <DialogContent aria-label="Choose a model">
         <DialogTitle>Choose a model</DialogTitle>
         <DialogDescription>
-          Grouped by provider. The star keeps a model in your shortlist; “save as default” writes
-          the choice to Pi’s settings.
+          Grouped by provider. The star keeps a model in your shortlist. Unchecked: this session
+          only · checked: writes Pi’s default.
         </DialogDescription>
+        {error ? (
+          <p role="alert" data-testid="model-picker-error" className="mt-2 text-xs text-danger">
+            {error}
+          </p>
+        ) : null}
 
         <label className="mt-3 flex items-center gap-2 rounded-sm border border-line px-2 py-1">
           <Search className="size-3 text-ink-faint" aria-hidden />

@@ -123,6 +123,26 @@ describe("DiagnosticsView", () => {
     expect(screen.getByTestId("diagnostics-app")).toHaveTextContent("PI_OFFLINE");
   });
 
+  it("shows the profile override and warns only while a profile switch is unapplied", async () => {
+    installBridge({ appInfo: { profileMode: "shared" }, diagnostics: snapshot() });
+    useAppStore.setState({
+      info: { profileMode: "shared" } as never,
+      prefs: { ...useAppStore.getState().prefs, profileMode: "shared" },
+    });
+    render(<DiagnosticsView />);
+
+    expect(await screen.findByTestId("diagnostics-profile-override")).toHaveTextContent(
+      "C:\\Users\\test\\.pi\\agent",
+    );
+    expect(screen.queryByTestId("diagnostics-profile-stale")).toBeNull();
+
+    // A mode chosen after launch is pending until the app restarts.
+    useAppStore.setState({ prefs: { ...useAppStore.getState().prefs, profileMode: "app" } });
+    expect(await screen.findByTestId("diagnostics-profile-stale")).toHaveTextContent(
+      /restart to apply/,
+    );
+  });
+
   it("says so when nothing has failed", async () => {
     installBridge({ diagnostics: snapshot({ hosts: [], incidents: [], extensionErrors: [] }) });
     render(<DiagnosticsView />);

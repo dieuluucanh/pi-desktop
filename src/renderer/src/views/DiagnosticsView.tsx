@@ -27,6 +27,7 @@ function formatTime(at: number): string {
 
 export function DiagnosticsView() {
   const info = useAppStore((state) => state.info);
+  const prefs = useAppStore((state) => state.prefs);
   const snapshot = useAppStore((state) => state.diagnostics);
   const error = useAppStore((state) => state.diagnosticsError);
   const loadDiagnostics = useAppStore((state) => state.loadDiagnostics);
@@ -36,6 +37,12 @@ export function DiagnosticsView() {
   useEffect(() => {
     void loadDiagnostics();
   }, [loadDiagnostics]);
+
+  // A profile switch is resolved at launch (plan step 8): until the app is
+  // relaunched, the running hosts keep the old `PI_CODING_AGENT_DIR`. Warn here
+  // rather than gating session operations — the onboarding banner already asks
+  // for the restart.
+  const profileStale = info != null && prefs.profileMode !== info.profileMode;
 
   const copyBundle = useCallback(async () => {
     const api = window.pi;
@@ -151,6 +158,22 @@ export function DiagnosticsView() {
                 <dt>Pi profile</dt>
                 <dd title={snapshot.paths.profileDir}>{snapshot.paths.profileDir}</dd>
               </div>
+              <div className="contents">
+                <dt>PI_CODING_AGENT_DIR</dt>
+                <dd data-testid="diagnostics-profile-override">
+                  {snapshot.environment.PI_CODING_AGENT_DIR ?? "—"}
+                </dd>
+              </div>
+              {profileStale ? (
+                <div className="contents">
+                  <dt>Profile change</dt>
+                  <dd>
+                    <Badge tone="warn" data-testid="diagnostics-profile-stale">
+                      changed this run; restart to apply
+                    </Badge>
+                  </dd>
+                </div>
+              ) : null}
               <div className="contents">
                 <dt>Logs</dt>
                 <dd title={snapshot.paths.logsDir}>{snapshot.paths.logsDir}</dd>

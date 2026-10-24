@@ -53,6 +53,7 @@ import {
   createThemeSettingsManager,
   hasTrustRequiringProjectResources,
   listAllSessions,
+  observeSdkModelChanges,
   renameStoredSession,
 } from "./sdk";
 
@@ -169,6 +170,10 @@ function createCore(options: {
     // Extension shortcuts (plan step 15) run through the live runner with
     // the app's effective bindings, so a user remap is honoured.
     wrapShortcutRunner: (runner) => createSdkShortcutRunner(runner as never),
+    // Extension-driven model/thinking selections (`/profile`, role switches)
+    // are announced only on the extension runner; refresh the snapshot from
+    // that broadcast so the header/footer follow the live session.
+    observeModelChanges: observeSdkModelChanges,
     createRuntime: async (request) => {
       // Annotated with the adapter's own parameter type: if the SDK adapter ever
       // requires another field, this line fails to compile instead of drifting.
