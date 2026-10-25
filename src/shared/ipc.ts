@@ -71,6 +71,8 @@ export const IPC = {
   sessionPromoteOffice: "session:promote-office",
   sessionActivate: "session:activate",
   sessionRestore: "session:restore",
+  /** Re-checks host/session readiness after suspend or a missed push (no spawn). */
+  sessionReconcile: "session:reconcile",
   /** Stops and re-spawns a tab's host, resuming its session (plan step 22). */
   sessionRestart: "session:restart",
   sessionRequest: "session:request",
@@ -238,6 +240,8 @@ export interface SessionsBridge {
   /** Makes this tab the single Office host (plan step 20), restarting its host. */
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Makes the tab table truthful after sleep/resume or a lost host. */
+  reconcile(): Promise<SessionTabsEnvelope>;
   restore(): Promise<SessionTabsEnvelope>;
   /** Recovers a crashed/wedged host by re-spawning it (plan step 22). */
   restart(tabId: string): Promise<SessionTabsEnvelope>;

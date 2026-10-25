@@ -73,7 +73,11 @@ export interface HostSpawnSpec {
   role?: HostRole;
   /** The Office tab owns port 38617; every other host gets 38618+. */
   officeHost?: boolean;
-  /** Session JSONL to resume after a crash (plan step 5 fills this in). */
+  /**
+   * Session JSONL carried with the spawn for Diagnostics/compatibility. The
+   * supervisor no longer resumes it itself: `session-service` owns the session
+   * and reopens it after a process restart.
+   */
   sessionFile?: string | null;
   /** Extra arguments passed to the host (debugging). */
   args?: readonly string[];
@@ -124,12 +128,6 @@ export interface HostHandle {
   request(method: HostMethod, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
   on(event: string, listener: HostEventListener): () => void;
   restart(reason?: string): Promise<HostInfo>;
-  /**
-   * Records the session file so a later crash-restart resumes *this* session.
-   * The spawn spec is created before the session exists, so without this a
-   * recovered host would come back with an empty session (plan step 3).
-   */
-  rememberSessionFile(sessionFile: string): void;
   shutdown(): Promise<void>;
 }
 
@@ -176,11 +174,6 @@ export interface HostSupervisorOptions {
   /** How often to poll `host.metrics`; `0` disables polling (tests). */
   memoryPollMs?: number;
   /**
-   * Minimum time between memory-triggered restarts of the same host, so a host
-   * whose RSS does not drop cannot restart in a loop (plan step 24).
-   */
-  memoryRestartCooldownMs?: number;
-  /**
    * Safe mode (plan step 22): passed to every child as `PI_DESKTOP_SAFE_MODE` so
    * the host loads no third-party resources and refuses package changes.
    */
@@ -212,7 +205,6 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 export const DEFAULT_MAX_HOSTS = MAX_HOSTS;
 export const DEFAULT_IDLE_TIMEOUT_MS = IDLE_HOST_TIMEOUT_MS;
 export const DEFAULT_METRICS_POLL_MS = 15_000;
-export const DEFAULT_MEMORY_RESTART_COOLDOWN_MS = 5 * 60_000;
 export const RESTART_BACKOFF_MS = [0, 500, 2_000] as const;
 
 interface Pending {
@@ -226,6 +218,16 @@ interface Pending {
 export class HostTimeoutError extends Error {
   constructor(method: string, timeoutMs: number) {
     super(`host request "${method}" timed out after ${timeoutMs} ms`);
+  }
+}
+
+/** The child is gone (or was never started); the request was never dispatched. */
+export class HostNotRunningError extends Error {
+  readonly code = "host_not_running";
+
+  constructor(sessionId: string) {
+    super(`host for ${sessionId} is not running`);
+    this.name = "host_not_running";
   }
 }
 
@@ -282,7 +284,6 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     private memoryTimer: ReturnType<typeof setInterval> | null = null;
     private memoryInFlight = false;
     private lastMemory: HostMemoryMetrics | null = null;
-    private memoryRestartBlockedUntil = 0;
     private lastActivityAt: number;
     private intentionalStop = false;
     private logBuffer: string[] = [];
@@ -392,6 +393,11 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     }
 
     private spawnChild(): void {
+      if (this.child) {
+        // A second child for one session would share the port and the session
+        // file. `restart()` terminates the old child before calling this.
+        throw new Error(`host for ${this.sessionId} is already running`);
+      }
       this.stopMetricsPolling();
       const telemetry =
         typeof options.telemetryEnabled === "function"
@@ -440,7 +446,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       );
 
       child.on("exit", (code: unknown, signal: unknown) => {
-        this.handleExit(Number(code ?? -1), String(signal ?? ""));
+        this.handleExit(child, Number(code ?? -1), String(signal ?? ""));
       });
       child.on("error", (error: unknown) => {
         this.appendLog(
@@ -452,18 +458,29 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       this.captureStderr();
     }
 
-    private handleExit(code: number, signal: string): void {
-      const wasIntentional = this.intentionalStop;
-      this.child = null;
+    /** Rejects every in-flight request against the process being replaced. */
+    private rejectPending(reason: string): void {
       for (const [id, pending] of this.pending) {
         if (pending.timer) clearTimeout(pending.timer);
-        pending.reject(
-          new Error(
-            `host exited (code ${code}${signal ? `, signal ${signal}` : ""}) during "${pending.method}"`,
-          ),
-        );
+        pending.reject(new Error(`${reason} during "${pending.method}"`));
         this.pending.delete(id);
       }
+    }
+
+    private handleExit(child: SpawnedHostProcess, code: number, signal: string): void {
+      // A terminated/replaced child must never speak for the new one. Without
+      // this, the old process's exit nulls `this.child` and emits `crashed` for
+      // the replacement (the long-session restart corruption).
+      if (this.child !== child) {
+        this.appendLog(
+          "error",
+          `ignored exit from a superseded host (code ${code}${signal ? `, signal ${signal}` : ""})`,
+        );
+        return;
+      }
+      const wasIntentional = this.intentionalStop;
+      this.child = null;
+      this.rejectPending(`host exited (code ${code}${signal ? `, signal ${signal}` : ""})`);
       if (wasIntentional) {
         this.state = "stopped";
         this.emitter.emit("status", "stopped");
@@ -511,7 +528,11 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         this.restartTimer.unref();
     }
 
-    /** Restarts the process and, when a session file is known, resumes it. */
+    /**
+     * Stops the current child (if any), then starts a fresh process and
+     * handshakes. It deliberately does **not** resume a session: the session
+     * service owns the JSONL and reopens it after `status: ready`.
+     */
     async restart(reason: string = "manual"): Promise<HostInfo> {
       if (this.restartTimer) {
         clearTimeout(this.restartTimer);
@@ -522,24 +543,60 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       if (this.intentionalStop) {
         throw new Error(`host ${this.sessionId} is shutting down`);
       }
+      const previous = this.child;
       this.state = "restarting";
       this.emitter.emit("status", "restarting");
+      if (previous) {
+        await this.terminateChild(previous);
+        this.rejectPending(`host restarted (${reason})`);
+      }
       this.spawnChild();
       const info = await this.handshake();
       this.appendLog("info", `host restarted (${reason}) pid ${info.pids.pid}`);
-      if (this.spec.sessionFile) {
-        try {
-          await this.request("session.resume", { sessionFile: this.spec.sessionFile });
-          this.appendLog("info", `resumed session ${this.spec.sessionFile}`);
-          this.emitter.emit("resumed", { sessionFile: this.spec.sessionFile });
-        } catch (error) {
-          this.appendLog(
-            "error",
-            `could not resume ${this.spec.sessionFile}: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
-      }
+      this.emitter.emit("restarted", { reason, sessionId: this.sessionId });
       return info;
+    }
+
+    /**
+     * Asks the child to shut down, then kills and waits for it. The child is
+     * detached from `this.child` first, so its exit is treated as superseded.
+     */
+    private async terminateChild(child: SpawnedHostProcess): Promise<void> {
+      if (this.child === child) this.child = null;
+      const exited = new Promise<void>((resolve) => {
+        child.on("exit", () => resolve());
+      });
+      try {
+        await this.requestOn(child, "host.shutdown", {}, 2_000);
+      } catch {
+        // Fall through to SIGTERM.
+      }
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // Already gone.
+      }
+      await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 1_000))]);
+    }
+
+    /** Sends one frame to a specific child (used while replacing the current one). */
+    private requestOn(
+      child: SpawnedHostProcess,
+      method: HostMethod,
+      params: unknown,
+      timeoutMs: number,
+    ): Promise<unknown> {
+      const id = this.nextId++;
+      const frame: HostRequestFrame = { id, method, ...(params === undefined ? {} : { params }) };
+      return new Promise<unknown>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.pending.delete(id);
+          reject(new HostTimeoutError(method, timeoutMs));
+        }, timeoutMs);
+        if (typeof timer === "object" && timer && "unref" in timer) timer.unref();
+        this.pending.set(id, { method, resolve, reject, timer });
+        child.stdin.write(encodeFrame(frame));
+      });
     }
 
     /** Sends `host.hello` and resolves with the host's identity. */
@@ -562,10 +619,6 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       this.scheduleIdleCheck();
       this.startMetricsPolling();
       return info;
-    }
-
-    rememberSessionFile(sessionFile: string): void {
-      this.spec = { ...this.spec, sessionFile };
     }
 
     private scheduleIdleCheck(): void {
@@ -617,22 +670,17 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         this.lastMemory = sample;
         const threshold = options.maxRssBytes ?? HOST_RSS_RESTART_BYTES;
         // `pending` is empty here (the metrics response was just consumed), so a
-        // host with an in-flight user request is never restarted under the user.
+        // host with an in-flight user request is never recycled under the user.
+        // A recycle is a stop, not an in-place restart: the old process is gone
+        // and the next interaction/ensure resumes from JSONL. This is the same
+        // path as an idle recycle, so it cannot orphan a child or race a handshake.
         if (threshold > 0 && shouldRestartForMemory(sample, threshold) && this.pending.size === 0) {
-          if (now() < this.memoryRestartBlockedUntil) return;
-          const cooldown = options.memoryRestartCooldownMs ?? DEFAULT_MEMORY_RESTART_COOLDOWN_MS;
-          this.memoryRestartBlockedUntil = now() + cooldown;
           const mb = (bytes: number): number => Math.round(bytes / (1024 * 1024));
           this.appendLog(
             "info",
             `recycling host: RSS ${mb(sample.rssBytes)} MB is over the ${mb(threshold)} MB threshold`,
           );
-          void this.restart("memory").catch((error: unknown) => {
-            this.appendLog(
-              "error",
-              `memory restart failed: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          });
+          this.onIdle?.();
         }
       } catch {
         // A metrics poll is best effort; a failure is not a host failure.
@@ -652,7 +700,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       requestOptions: { timeoutMs?: number } = {},
     ): Promise<unknown> {
       const child = this.child;
-      if (!child) return Promise.reject(new Error(`host for ${this.sessionId} is not running`));
+      if (!child) return Promise.reject(new HostNotRunningError(this.sessionId));
       const id = this.nextId++;
       const timeoutMs = requestOptions.timeoutMs ?? requestTimeoutMs;
       const frame: HostRequestFrame = { id, method, ...(params === undefined ? {} : { params }) };

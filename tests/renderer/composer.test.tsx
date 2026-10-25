@@ -384,6 +384,44 @@ describe("sleeping session (2026-10-24 plan)", () => {
     expect(onWake).toHaveBeenCalledTimes(3);
   });
 
+  it("wakes on interaction even when the tab is ready, not only when asleep", () => {
+    const onWake = vi.fn();
+    renderComposer({ enabled: true, sleeping: false, onWake });
+    const box = screen.getByLabelText("Prompt");
+
+    fireEvent.focus(box);
+    fireEvent.pointerDown(box);
+    fireEvent.change(box, { target: { value: "hello" } });
+
+    expect(onWake).toHaveBeenCalledTimes(3);
+  });
+
+  it("focuses the composer when the view asks (transcript background click)", () => {
+    const { rerender } = renderComposer({ enabled: true });
+    const box = screen.getByLabelText("Prompt");
+    box.blur();
+    expect(box).not.toHaveFocus();
+
+    rerender(
+      <Composer
+        tabId="tab-1"
+        running={false}
+        draft=""
+        queue={{ steering: [], followUp: [] }}
+        sendMode="steer"
+        onDraftChange={() => undefined}
+        onSend={async () => true}
+        onStop={() => undefined}
+        onClearQueue={() => undefined}
+        onSendModeChange={() => undefined}
+        onHistoryStep={() => null}
+        focusToken={1}
+      />,
+    );
+
+    expect(box).toHaveFocus();
+  });
+
   it("still gives Tab to the workflow shortcut while sleeping", () => {
     const onInvokeShortcut = vi.fn();
     renderComposer({

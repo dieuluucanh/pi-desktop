@@ -67,6 +67,8 @@ export interface IpcSessionDeps {
   /** Makes one tab the single Office host (plan step 20). */
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Re-checks host/session readiness after suspend or a missed push. */
+  reconcile(): Promise<SessionTabsEnvelope>;
   restore(): Promise<SessionTabsEnvelope>;
   /** Stops and re-spawns a tab's host, resuming its session (plan step 22). */
   restart(tabId: string): Promise<SessionTabsEnvelope>;
@@ -266,6 +268,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.sessionActivate, (_event, tabId: unknown) =>
     deps.sessions.activate(requireTabId(deps, tabId)),
   );
+  ipcMain.handle(IPC.sessionReconcile, () => deps.sessions.reconcile());
   ipcMain.handle(IPC.sessionRestart, (_event, tabId: unknown) =>
     deps.sessions.restart(requireTabId(deps, tabId)),
   );

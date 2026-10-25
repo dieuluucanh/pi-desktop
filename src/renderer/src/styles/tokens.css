@@ -43,6 +43,17 @@
 }
 
 /* Light palette: same token names, different values. */
+/*
+ * A transcript row whose only content is an extension block that settled with
+ * nothing to draw must not keep its vertical rhythm. The block stays mounted so
+ * its width measurement still drives the render request; only the padding is
+ * collapsed. This is the second line of defence after the reducer drops
+ * renderer-less entries outright.
+ */
+[data-testid="transcript-row"]:has([data-extension-render][data-empty="true"]) {
+  padding-block: 0;
+}
+
 [data-theme="light"] {
   --color-canvas: #f6f7f9;
   --color-surface: #ffffff;

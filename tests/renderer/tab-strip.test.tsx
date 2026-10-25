@@ -96,6 +96,11 @@ describe("TabStrip", () => {
       "data-status",
       "idle",
     );
+    // The persisted lifecycle value stays `idle`; the tooltip speaks `ready`.
+    expect(screen.getByRole("tab", { name: /pi-desktop/ })).toHaveAttribute(
+      "title",
+      expect.stringContaining("ready"),
+    );
   });
 
   it("activates a tab when clicked", () => {

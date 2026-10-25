@@ -27,7 +27,7 @@ import { copyToClipboard } from "../web/clipboard";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { newSessionAction } from "../menu-actions";
 import { useAppStore } from "../state/app-store";
-import type { TabRecord, TabStatus } from "../../../shared/session-ipc";
+import { SESSION_STATUS_LABEL, type TabRecord, type TabStatus } from "../../../shared/session-ipc";
 
 /**
  * Session tab strip (plan step 1 shell, real tabs since step 3, full lifecycle
@@ -93,7 +93,7 @@ export function TabStrip() {
               role="tab"
               aria-selected={active}
               onClick={() => void activateTab(tab.id)}
-              title={tab.error ?? `${tab.cwd} · ${tab.status}`}
+              title={tab.error ?? `${tab.cwd} · ${SESSION_STATUS_LABEL[tab.status]}`}
               className="flex items-center gap-2"
             >
               {tab.kind === "web" ? (

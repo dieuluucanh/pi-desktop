@@ -227,8 +227,15 @@ const appliedEditorSeq = new Map<string, number>();
 /** Per-tab debounce for the `oi.editorText` mirror, so typing is not one frame per key. */
 const editorTextTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-/** In-flight wake operations, so focus + click + first keystroke share one activation. */
-const wakingSessions = new Map<string, Promise<void>>();
+/** In-flight ensures, so focus + click + first keystroke share one activation. */
+const sessionEnsuring = new Map<string, Promise<boolean>>();
+/** Last successful interaction-driven activation per tab (throttles keystrokes). */
+const sessionEnsuredAt = new Map<string, number>();
+/** Minimum gap between non-forced ensures; a send/tab switch always forces. */
+export const SESSION_ENSURE_THROTTLE_MS = 2_000;
+/** Minimum gap between window-focus/visibility reconciliations. */
+const SESSION_RESYNC_THROTTLE_MS = 1_000;
+let lastSessionResyncAt = 0;
 export const EDITOR_TEXT_DELAY_MS = 250;
 
 export const APP_VIEWS: readonly AppView[] = [
@@ -787,8 +794,13 @@ export interface AppStateShape {
 
   createSessionTab: (kind?: TabKind) => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
-  /** Wakes a stopped session on interaction; spawns/resumes its host. */
-  wakeSession: (tabId: string) => Promise<void>;
+  /**
+   * Ensures a tab has a live host and an open session. Interaction calls it
+   * without a status gate; `force` bypasses the throttle (send/tab switch).
+   */
+  ensureSession: (tabId: string, options?: { force?: boolean }) => Promise<boolean>;
+  /** Reconciles the tab table after sleep/resume/window focus, then ensures the active tab. */
+  resyncSessions: () => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
   closeActiveTab: () => Promise<void>;
   cycleTab: (direction: 1 | -1) => Promise<void>;
@@ -1431,6 +1443,15 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   applyTabs: (envelope) => {
     const ids = new Set(envelope.tabs.map((tab) => tab.id));
+    // A tab that went to sleep or errored must re-check on the next interaction;
+    // a `ready` state change does not clear an in-flight ensure's timestamp.
+    const previousStatus = new Map(get().tabs.map((tab) => [tab.id, tab.status]));
+    for (const tab of envelope.tabs) {
+      if (previousStatus.get(tab.id) === tab.status) continue;
+      if (tab.status === "stopped" || tab.status === "crashed" || tab.status === "failed") {
+        sessionEnsuredAt.delete(tab.id);
+      }
+    }
     // Web-tab state and any pending navigation belong to a tab that still
     // exists; a closed tab must not leave a stale native view or dialog behind.
     const webTabStates = Object.fromEntries(
@@ -1959,14 +1980,21 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   sendPromptNow: async (tabId, text, options = {}) => {
     const api = bridge();
     const trimmed = text.trim();
-    if (!api?.sessions || trimmed.length === 0) return false;
-    const running = get().tabs.find((tab) => tab.id === tabId)?.status === "running";
-    // Mirrors the host's rule (step 4): while streaming, a delivery mode is
-    // required, so the caller must have chosen steer or follow-up first.
-    if (running && !options.mode) return false;
+    const tab = get().tabs.find((entry) => entry.id === tabId);
+    if (!api?.sessions || !tab || trimmed.length === 0) return false;
+    // A stale idle/stopped tab is verified and repaired before the prompt; the
+    // main-side request path is a second safety net, not the first interaction.
+    if (tab.status !== "running") {
+      const ready = await get().ensureSession(tabId, { force: true });
+      if (!ready) return false;
+    }
+    // Re-read after the ensure: the host may already be streaming while the
+    // renderer still showed idle, and a streamed send needs a delivery mode.
+    const running = get().tabs.find((entry) => entry.id === tabId)?.status === "running";
+    const mode = running ? (options.mode ?? get().sendModes[tabId] ?? "steer") : undefined;
     const params: Record<string, unknown> = { text: trimmed };
     if (options.images && options.images.length > 0) params.images = options.images;
-    if (running && options.mode) params.streamingBehavior = options.mode;
+    if (mode) params.streamingBehavior = mode;
     try {
       await api.sessions.request({ tabId, method: "prompt", params });
       get().setDraft(tabId, "");
@@ -3607,33 +3635,26 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.sessions) return;
     set({ activeTabId: tabId, view: "session" });
-    // A web tab has no Pi host (plan step 21), so there is no extension UI or
-    // TUI surface to fetch for it.
     const tab = get().tabs.find((entry) => entry.id === tabId);
-    if (tab?.kind !== "web") {
-      // The extension UI state is per host: fetch it for the tab being shown
-      // (statuses, widgets, working state) instead of trusting a stale snapshot.
-      void get().loadExtensionUi(tabId);
-      // The TUI surface is per host too (plan step 17).
-      void get().loadTuiSurface(tabId);
-    }
-    try {
-      get().applyTabs(await api.sessions.activate(tabId));
-      // Extension shortcuts belong to the tab's live session (the workflow
-      // extension registers `tab` for its mode cycle). Load them after the host
-      // is awake, not before: an activation of a stopped tab spawns/resumes it.
-      if (tab?.kind !== "web") await get().loadShortcuts({ refresh: true });
-    } catch (error) {
-      get().noteFailure(error);
-    }
+    if (tab?.kind === "web") return;
+    // Switching tabs always re-checks; the ensure refreshes extension UI, the
+    // TUI surface, shortcuts and the command cache after the host is awake.
+    await get().ensureSession(tabId, { force: true });
   },
 
-  wakeSession: async (tabId) => {
+  ensureSession: async (tabId, options = {}) => {
     const api = bridge();
     const tab = get().tabs.find((entry) => entry.id === tabId);
-    if (!api?.sessions || !tab || tab.kind === "web" || tab.status !== "stopped") return;
-    const inFlight = wakingSessions.get(tabId);
+    if (!api?.sessions || !tab || tab.kind === "web") return false;
+    // A crashed/failed tab needs the explicit Restart action (or the banner),
+    // not an accidental spawn from a keystroke.
+    if (tab.status === "crashed" || tab.status === "failed") return false;
+    const inFlight = sessionEnsuring.get(tabId);
     if (inFlight) return inFlight;
+    if (!options.force && (tab.status === "idle" || tab.status === "running")) {
+      const last = sessionEnsuredAt.get(tabId) ?? 0;
+      if (Date.now() - last < SESSION_ENSURE_THROTTLE_MS) return true;
+    }
     const run = (async () => {
       try {
         get().applyTabs(await api.sessions.activate(tabId));
@@ -3643,17 +3664,40 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
           get().loadTuiSurface(tabId),
         ]);
         get().invalidateCommands(tabId);
-        // A wake spawns a host from the current bundle, so any stale-host
+        // An ensure may spawn a host from the current bundle, so any stale-host
         // banner for the previous process is obsolete.
         get().clearStaleHost(tabId);
+        sessionEnsuredAt.set(tabId, Date.now());
+        const current = get().tabs.find((entry) => entry.id === tabId);
+        return current?.status !== "failed";
       } catch (error) {
         get().noteFailure(error);
+        return false;
       } finally {
-        wakingSessions.delete(tabId);
+        sessionEnsuring.delete(tabId);
       }
     })();
-    wakingSessions.set(tabId, run);
+    sessionEnsuring.set(tabId, run);
     return run;
+  },
+
+  resyncSessions: async () => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    const now = Date.now();
+    if (now - lastSessionResyncAt < SESSION_RESYNC_THROTTLE_MS) return;
+    lastSessionResyncAt = now;
+    try {
+      get().applyTabs(await api.sessions.reconcile());
+    } catch {
+      // A failed reconcile must not break the shell; fall back to the plain list.
+      await get().loadTabs();
+    }
+    const activeId = get().activeTabId;
+    const active = activeId ? get().tabs.find((tab) => tab.id === activeId) : undefined;
+    if (activeId && active && active.kind !== "web") {
+      await get().ensureSession(activeId, { force: true });
+    }
   },
 
   closeTab: async (tabId) => {

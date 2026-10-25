@@ -136,6 +136,11 @@ export function ExtensionBlock({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const width = useElementColumns(containerRef);
   const [state, setState] = useState<{ key: string; frame: RenderedFrame } | null>(null);
+  // The key whose render request has settled. Before it settles the row keeps
+  // its normal rhythm; after a genuinely empty result `data-empty` lets the
+  // transcript collapse the row padding (a zero-line renderer must not leave a
+  // blank line behind).
+  const [settledKey, setSettledKey] = useState<string | null>(null);
 
   const key = `${input.target}:${input.type}:${input.toolCallId ?? ""}:${String(
     input.version ?? "",
@@ -147,9 +152,15 @@ export function ExtensionBlock({
   useEffect(() => {
     let cancelled = false;
     const timer = setTimeout(() => {
-      void request(tabId, buildRequest(input, width, expanded)).then((frame) => {
-        if (!cancelled && frame) setState({ key, frame });
-      });
+      void request(tabId, buildRequest(input, width, expanded))
+        .then((frame) => {
+          if (cancelled) return;
+          if (frame) setState({ key, frame });
+          setSettledKey(key);
+        })
+        .catch(() => {
+          if (!cancelled) setSettledKey(key);
+        });
     }, RENDER_DEBOUNCE_MS);
     return () => {
       cancelled = true;
@@ -173,7 +184,12 @@ export function ExtensionBlock({
     );
 
   return (
-    <div ref={containerRef} data-extension-render="" className={className}>
+    <div
+      ref={containerRef}
+      data-extension-render=""
+      {...(settledKey === key && body === null ? { "data-empty": "true" } : {})}
+      className={className}
+    >
       {body}
     </div>
   );

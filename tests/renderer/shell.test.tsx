@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../src/renderer/src/App";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { appInfoFixture, installBridge } from "./fixtures";
@@ -59,6 +59,20 @@ describe("app shell", () => {
     for (const text of PLACEHOLDER_STRINGS) {
       expect(container.textContent).not.toContain(text);
     }
+  });
+
+  it("reconciles sessions when the window becomes active again", async () => {
+    const { bridge } = installBridge({
+      prefs: { privacyAcknowledged: true, onboardingCompletedAt: 1 },
+    });
+    const reconcile = vi.fn(async () => ({ tabs: [], activeTabId: null }));
+    (bridge.sessions as unknown as { reconcile: unknown }).reconcile = reconcile;
+
+    render(<App />);
+    await screen.findByText(/the desktop ui for the pi coding agent/i);
+
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1));
   });
 
   it("reports the shared Pi profile in the status bar", async () => {

@@ -126,6 +126,11 @@ describe("ExtensionBlock", () => {
     await vi.waitFor(() => {
       // The request must still be made (the measurement drives the render)…
       expect(container.querySelector("[data-extension-render]")).not.toBeNull();
+      // …and a settled empty result marks the block so the row padding collapses.
+      expect(container.querySelector("[data-extension-render]")).toHaveAttribute(
+        "data-empty",
+        "true",
+      );
     });
     expect(screen.queryByText("native card")).not.toBeInTheDocument();
   });
@@ -145,6 +150,22 @@ describe("ExtensionBlock", () => {
     );
 
     expect(await screen.findByText("native card")).toBeInTheDocument();
+  });
+
+  it("does not mark a rendered entry as empty", async () => {
+    stubRequest(async () => ({ rendered: true, width: 40, lines: ["review band"] }));
+    const { container } = render(
+      <ExtensionBlock
+        tabId={TAB}
+        input={{ target: "entry", type: "workflow-review-mode", version: 1 }}
+        expanded={false}
+        fallback={<span>native card</span>}
+        hideWhenUnrendered
+      />,
+    );
+
+    await screen.findByText("review band");
+    expect(container.querySelector("[data-extension-render]")).not.toHaveAttribute("data-empty");
   });
 
   it("still shows an ANSI frame for an entry that does have a renderer", async () => {

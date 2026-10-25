@@ -64,12 +64,17 @@ describe("sendPrompt", () => {
     expect(useAppStore.getState().draftHistory["tab-1"]).toEqual(["please fix it"]);
   });
 
-  it("refuses a plain prompt while the agent is streaming", async () => {
+  it("falls back to steer when a stale renderer sends without a mode during a turn", async () => {
     const request = stubRequest(async () => ({}));
     useAppStore.setState({ tabs: [tab("running")] });
 
-    await expect(useAppStore.getState().sendPrompt("tab-1", "one more thing")).resolves.toBe(false);
-    expect(request).not.toHaveBeenCalled();
+    await expect(useAppStore.getState().sendPrompt("tab-1", "one more thing")).resolves.toBe(true);
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "prompt",
+        params: { text: "one more thing", streamingBehavior: "steer" },
+      }),
+    );
   });
 
   it("delivers a steer or a follow-up with the mode the host requires", async () => {
@@ -93,7 +98,8 @@ describe("sendPrompt", () => {
     await useAppStore.getState().sendPrompt("tab-1", "look", {
       images: [{ type: "image", data: "AAAA", mimeType: "image/png" }],
     });
-    expect(request.mock.calls[0]?.[0]).toMatchObject({
+    const promptCall = request.mock.calls.find(([input]) => input.method === "prompt");
+    expect(promptCall?.[0]).toMatchObject({
       params: { images: [{ type: "image", data: "AAAA", mimeType: "image/png" }] },
     });
   });

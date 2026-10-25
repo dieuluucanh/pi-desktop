@@ -209,6 +209,17 @@ export function isHiddenCustomMessage(message: unknown): boolean {
   return record.display === false;
 }
 
+/**
+ * A bare `custom` entry is transcript content only when the host found a
+ * registered entry renderer for it (`entryRenderable`, plan step 2). Pi's
+ * terminal hides a renderer-less `CustomEntry` entirely; without this rule the
+ * reducer keeps it and the row's padding turns every mode switch into a blank
+ * line and a scroll jump. Absence of the annotation is "not renderable".
+ */
+export function isRenderableCustomEntry(payload: unknown): boolean {
+  return asRecord(payload).entryRenderable === true;
+}
+
 /** Converts one SDK message into a transcript message. */
 export function messageFromSdk(message: unknown, id: string = nextId("msg")): TranscriptMessage {
   const record = asRecord(message);
@@ -632,6 +643,9 @@ export function reduceSessionEvents(
         // A hidden `custom_message` is context-only, exactly as in the live
         // `message_start` path above.
         if (entry.type === "custom_message" && entry.display === false) break;
+        // A renderer-less bare entry is not transcript content. The host is the
+        // only side that knows the registry, so it annotates the event.
+        if (entry.type === "custom" && !isRenderableCustomEntry(payload)) break;
         if (entry.type === "custom_message" || entry.type === "custom") {
           const entryId = asString(entry.id) || nextId("custom");
           next = appendItem(next, {

@@ -210,9 +210,17 @@ The app treats failure as a first-class state rather than a silent no-op:
   unhandled rejections through `diagnostics:record` (validated in main).
 - **Recovery.** A crashed or wedged tab shows a banner with **Restart**
   (`session:restart`): the old host is stopped and a fresh one resumes the same
-  JSONL, so history returns. The supervisor also emits `timeout` and forwards
-  `crashed`/`resumed`, which the session service turns into `session.timeout`,
+  JSONL, so history returns. The supervisor owns processes only: on a crash it
+  restarts the child and emits `crashed`/`ready`; the session service reopens
+  the session and turns the transition into `session.timeout`,
   `session.crashed` and `session.recovered` transcript notices.
+- **Status is a readiness claim.** A tab is `starting` until `session.create`
+  or `session.resume` returns (or a real `state` frame carries a session id),
+  then **ready** (`idle` internally); a streaming turn is **working**; a stopped
+  host is **asleep**. The UI never shows the raw word `idle`, so a ready
+  session does not read as inactive. Window focus/visibility and
+  `powerMonitor` resume call `sessions.reconcile()`; any interaction calls the
+  coalesced `ensureSession()`, which repairs a stopped or sessionless host.
 - **Stale host.** A host process keeps the bundle it was spawned from. The app
   compares its `buildId` with `out/host/index.mjs`; an idle stale session is
   recycled before the next request, and a busy one shows a persistent banner
@@ -318,9 +326,10 @@ and the renderer all read it, so a budget change is one edit.
 - **Per-host memory.** Every host answers `host.metrics` with its own RSS (no
   OS-specific process query). The supervisor polls it, Diagnostics shows it
   against the soft budget, and an idle host over the hard threshold is recycled
-  (with a cooldown, so a host whose RSS does not drop cannot loop). The session
-  service drops a handle that reports `stopped`, so the next activation spawns a
-  fresh one.
+  by **stopping** it (the same path as an idle recycle), not by restarting in
+  place. The session service drops a handle that reports `stopped`, so the next
+  interaction spawns a fresh process and resumes from JSONL. The 15-minute
+  time-based idle recycler remains opt-in (see the host protocol table).
 - **Caps and backpressure.** The supervisor enforces the host cap (8) and the
   session service the tab cap (8); both raise a coded, user-facing sentence
   (`capacityMessage`), and Diagnostics shows used/limit.

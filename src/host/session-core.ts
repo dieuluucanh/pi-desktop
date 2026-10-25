@@ -96,6 +96,12 @@ export interface HostSession extends SessionStateLike {
   extensionRunner?: {
     getRegisteredCommands?: () => readonly unknown[];
     /**
+     * The entry-renderer lookup (`registerEntryRenderer`), used to tell the app
+     * whether a bare `custom` entry has anything to display. Structural so the
+     * core stays SDK-free.
+     */
+    getEntryRenderer?: (customType: string) => unknown;
+    /**
      * Live `extension_error` history (plan step 13): Pi reports an error an
      * extension threw while handling an event, which a loader error cannot show.
      */
@@ -398,6 +404,32 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     deps.emit("state", snapshot(), session?.sessionId ?? undefined);
   };
 
+  /**
+   * A bare `custom` entry is transcript content only when an extension
+   * registered an entry renderer for its type — Pi's
+   * `CustomEntryComponent.hasContent()`. The host is the only side that knows
+   * the registry, so the event carries the answer; the renderer must not keep a
+   * second copy. A throw or a missing runner is `false` (hide), never a card.
+   */
+  const withEntryRenderability = (
+    current: HostSession,
+    event: { type: string; [key: string]: unknown },
+  ): { type: string; [key: string]: unknown } => {
+    if (event.type !== "entry_appended") return event;
+    const entry = asRecord(event.entry);
+    if (entry.type !== "custom") return event;
+    const customType = typeof entry.customType === "string" ? entry.customType : "";
+    let renderable = false;
+    if (customType.length > 0) {
+      try {
+        renderable = Boolean(current.extensionRunner?.getEntryRenderer?.(customType));
+      } catch {
+        renderable = false;
+      }
+    }
+    return { ...event, entryRenderable: renderable };
+  };
+
   const attach = (next: HostSession): void => {
     unsubscribe?.();
     unsubscribeErrors?.();
@@ -412,7 +444,8 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       unsubscribeModelChanges = null;
     }
     const listener = (event: { type: string; [key: string]: unknown }): void => {
-      const frame = eventToFrame(event);
+      const enriched = withEntryRenderability(next, event);
+      const frame = eventToFrame(enriched);
       deps.emit(frame.event, frame.payload, next.sessionId ?? undefined);
       if (STATE_EVENTS.has(event.type)) emitState();
     };

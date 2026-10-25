@@ -91,8 +91,6 @@ export interface SupervisorHostLike {
   status(): string;
   request(method: HostMethod, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
   on(event: string, listener: (payload: unknown) => void): () => void;
-  /** Optional so simple test doubles stay simple; the real host implements it. */
-  rememberSessionFile?(sessionFile: string): void;
   /** Host identity once ready (plan step 22). Optional for test doubles. */
   info?(): HostInfoLike | null;
   /** Last self-reported RSS sample (plan step 24). Optional for test doubles. */
@@ -156,6 +154,12 @@ export interface SessionService {
   restoreTabs(): Promise<SessionTabsEnvelope>;
   createTab(input: CreateTabInput): Promise<SessionTabsEnvelope>;
   activateTab(tabId: string): Promise<SessionTabsEnvelope>;
+  /**
+   * Makes the tab table truthful about host/session readiness after a suspend,
+   * a lost process, or a renderer that missed pushes. It never spawns; the next
+   * interaction/wake does that.
+   */
+  reconcile(): Promise<SessionTabsEnvelope>;
   closeTab(tabId: string): Promise<SessionTabsEnvelope>;
   /** Closes every tab except `tabId` (the tab strip's "close others", step 11). */
   closeOthers(tabId: string): Promise<SessionTabsEnvelope>;
@@ -232,6 +236,53 @@ function isMissingCommandComplete(error: unknown): boolean {
   return MISSING_COMMAND_COMPLETE_MESSAGES.some((message) => error.message.startsWith(message));
 }
 
+/** Errors that prove the request never reached a live session (safe to repair). */
+function isSessionLostError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return (
+    error.name === "no_session" ||
+    error.name === "host_not_running" ||
+    code === "no_session" ||
+    code === "host_not_running"
+  );
+}
+
+/** A host response that carries a session snapshot (create/open/resume/fork/new). */
+function isSessionSnapshot(value: unknown): boolean {
+  const record = asRecord(value);
+  return (
+    typeof record.sessionId === "string" ||
+    typeof record.sessionFile === "string" ||
+    typeof record.streaming === "boolean"
+  );
+}
+
+/** Methods that establish/replace a session and must reach the host unchanged. */
+const SESSION_ESTABLISHING_METHODS: ReadonlySet<string> = new Set([
+  "session.create",
+  "session.open",
+  "session.resume",
+  "session.new",
+  "session.switch",
+  "session.clone",
+  "session.fork",
+]);
+
+/** Repair-and-retry is safe only for methods that cannot change user state. */
+const READ_ONLY_RETRY_METHODS: ReadonlySet<string> = new Set([
+  "state.get",
+  "messages.get",
+  "entries.get",
+  "tree.get",
+  "stats.get",
+  "commands.list",
+  "commands.complete",
+  "shortcuts.list",
+  "oi.state",
+  "tui.state",
+]);
+
 /** Normalizes a supervisor event payload into a protocol entry. */
 function toEntry(payload: unknown): SessionEventEntry | null {
   const record = asRecord(payload);
@@ -250,12 +301,26 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   const tabs = new Map<string, TabRecord>();
   const hosts = new Map<string, SupervisorHostLike>();
   /**
-   * In-flight spawns, so two callers cannot start two hosts for one tab. A
-   * pre-warm and the renderer's first `messages.get` arrive together after a
-   * relaunch; without this, both saw no host, both spawned, and one host (and
-   * its session file) was orphaned (plan step 25).
+   * In-flight *process* starts, so two callers cannot spawn two children for
+   * one tab. This is the old `spawning` coalescer and does not imply a session
+   * is open (explicit `session.create` uses it directly).
    */
-  const spawning = new Map<string, Promise<SupervisorHostLike>>();
+  const starting = new Map<string, Promise<SupervisorHostLike>>();
+  /**
+   * In-flight session opens/resumes, separate from process starts. A tab can
+   * have a live host that is not session-ready (crash restart, failed resume,
+   * trust retry); only this map coalesces the reopen.
+   */
+  const opening = new Map<string, Promise<SupervisorHostLike>>();
+  /** Tabs whose host has confirmed `session.create`/`resume` / a state frame. */
+  const sessionReady = new Set<string>();
+  /**
+   * Per-tab generation, bumped by every detach. A late spawn/open compares it
+   * and stops the process it just started instead of publishing a stale host.
+   */
+  const generations = new Map<string, number>();
+  /** Tabs recovering from an unexpected crash (drives the recovered notice). */
+  const recovering = new Set<string>();
   /**
    * In-flight stop+respawn of a stale host, per tab (2026-10-24 stale-host
    * plan). Two completion requests from the same keystroke burst must share one
@@ -441,25 +506,6 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     publishTabs();
   };
 
-  const refreshState = async (tab: TabRecord, host: SupervisorHostLike): Promise<void> => {
-    try {
-      const snapshot = await host.request("state.get");
-      applySnapshot(tab, snapshot);
-      rememberSession(host, tab);
-    } catch {
-      // A state refresh is best effort: the tab keeps the status it had.
-    }
-  };
-
-  /**
-   * Tells the supervisor which session file to resume after a crash. Without
-   * this a restarted host would silently come back with an empty session, because
-   * the spawn spec predates the session file.
-   */
-  const rememberSession = (host: SupervisorHostLike, tab: TabRecord): void => {
-    if (tab.sessionFile) host.rememberSessionFile?.(tab.sessionFile);
-  };
-
   /** The bundle fingerprint currently on disk, or null when unreadable. */
   const currentHostBuildId = (): string | null => {
     if (!deps.hostBuildId) return null;
@@ -498,16 +544,30 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     );
   };
 
-  /** Stops a tab's host and drops everything tied to it, leaving it stopped. */
-  const detachHost = async (tabId: string): Promise<void> => {
+  /** Forgets a tab's handle/subscriptions without stopping the supervisor process. */
+  const forgetHost = (tabId: string): void => {
     flushPending(tabId);
     timers.delete(tabId);
     pending.delete(tabId);
     for (const off of unsubscribes.get(tabId) ?? []) off();
     unsubscribes.delete(tabId);
     hosts.delete(tabId);
-    // An in-flight spawn must not be inherited by the replacement host.
-    spawning.delete(tabId);
+    starting.delete(tabId);
+    sessionReady.delete(tabId);
+    recovering.delete(tabId);
+  };
+
+  /**
+   * Stops a tab's host and drops everything tied to it, leaving it stopped.
+   * The generation bump makes any in-flight spawn/open stop the process it just
+   * created instead of publishing it over the replacement.
+   */
+  const detachHost = async (tabId: string): Promise<void> => {
+    generations.set(tabId, (generations.get(tabId) ?? 0) + 1);
+    // Do not let a new spawn reuse the old open promise; the generation guard is
+    // what cancels the late completion.
+    opening.delete(tabId);
+    forgetHost(tabId);
     try {
       await deps.supervisor.stop(tabId);
     } catch {
@@ -527,8 +587,15 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         if (!entry) return;
         if (entry.event === "state") {
           flushPending(tab.id);
+          const snapshot = asRecord(entry.payload);
+          // The host emits a state frame only after its session is attached, so a
+          // real session id is a readiness signal (and closes the handshake
+          // window where `ready` used to lie about the session).
+          if (typeof snapshot.sessionId === "string" && snapshot.sessionId.length > 0) {
+            sessionReady.add(tab.id);
+          }
           emitState(tab.id, entry.payload);
-          projectSnapshot(tab, asRecord(entry.payload) as SnapshotLike);
+          projectSnapshot(tab, snapshot as SnapshotLike);
           publishTabs();
           return;
         }
@@ -544,8 +611,18 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       }),
       host.on("status", (status) => {
         const next = String(status);
-        if (next === "ready") setStatus(tab, tab.status === "running" ? "running" : "idle");
-        else if (next === "failed") {
+        if (next === "ready") {
+          // A process handshake is not a session. If no spawn/open is in flight
+          // this is a crash auto-restart: let the ensure path reopen from JSONL.
+          // Never set `idle` here — that was the "ready but sessionless" window.
+          if (!opening.has(tab.id) && !sessionReady.has(tab.id) && tabs.has(tab.id)) {
+            void ensureSession(tab).catch(() => undefined);
+          }
+        } else if (next === "restarting") {
+          sessionReady.delete(tab.id);
+          if (tabs.has(tab.id) && tab.status !== "failed") setStatus(tab, "starting");
+        } else if (next === "failed") {
+          sessionReady.delete(tab.id);
           setStatus(tab, "failed");
           if (
             !incidents.some(
@@ -561,17 +638,16 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
             );
           }
         } else if (next === "stopped") {
-          // A stopped host (idle recycle, plan step 24) must not stay in the
-          // handle map: `ensureHost` has to spawn a fresh one on re-activation
-          // instead of handing out a dead process.
-          for (const off of unsubscribes.get(tab.id) ?? []) off();
-          unsubscribes.delete(tab.id);
-          hosts.delete(tab.id);
+          // A stopped host (idle/RSS recycle) must not stay in the handle map:
+          // the next interaction spawns/resumes a fresh one.
+          forgetHost(tab.id);
           setStatus(tab, "stopped");
         }
       }),
       host.on("crashed", (payload) => {
         flushPending(tab.id);
+        sessionReady.delete(tab.id);
+        recovering.add(tab.id);
         setStatus(tab, "crashed");
         recordIncident("host_crash", `host for ${tab.id} crashed`, { tabId: tab.id });
         pushEntries(tab.id, [{ event: "session.crashed", payload }]);
@@ -583,50 +659,18 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         recordIncident("host_timeout", `host did not answer "${method}"`, { tabId: tab.id });
         pushEntries(tab.id, [{ event: "session.timeout", payload }]);
       }),
-      host.on("resumed", (payload) => {
-        flushPending(tab.id);
-        setStatus(tab, "idle");
-        pushEntries(tab.id, [{ event: "session.recovered", payload }]);
-        void refreshState(tab, host);
-      }),
     ];
     unsubscribes.set(tab.id, off);
   };
 
-  const ensureHost = async (tab: TabRecord): Promise<SupervisorHostLike> => {
-    // A web tab (plan step 21) has no Pi host: it is a `WebContentsView` main
-    // owns, and no host method can ever apply to it.
-    if (tab.kind === "web") {
-      throw new SessionServiceError("a web tab has no Pi host", "web_tab");
-    }
-    // Readiness gate (2026-10-20 startup-tab-cycle plan): a request for a tab
-    // is only forwarded to a host that has finished opening its session.
-    // `spawnHost` publishes its handle into `hosts` before `session.resume` /
-    // `session.create` resolves, so the published handle must not win over an
-    // in-flight spawn — otherwise a request that arrives during the resume
-    // window is answered by a session-less host (`no_session` / shortcuts
-    // unavailable). Prefer the in-flight spawn; it settles only after the
-    // session is open.
-    const inFlight = spawning.get(tab.id);
-    if (inFlight) return inFlight;
-    const existing = hosts.get(tab.id);
-    if (existing) return existing;
-    const spawn = spawnHost(tab);
-    spawning.set(tab.id, spawn);
-    // The spawn is shared by everyone who asked for this tab, and the tab can be
-    // closed (or the service disposed) while it is in flight. Observe the
-    // rejection once so a caller that is already gone cannot turn it into an
-    // unhandled rejection; the handle is dropped on either outcome (step 27).
-    void spawn.then(
-      () => spawning.delete(tab.id),
-      () => spawning.delete(tab.id),
-    );
-    return spawn;
-  };
-
-  const spawnHost = async (tab: TabRecord): Promise<SupervisorHostLike> => {
+  /**
+   * Starts (or returns) a *process* for a tab. It deliberately does not open a
+   * session: explicit `session.create`/`resume` requests must reach the host
+   * unchanged (the trust retry and `/new` depend on it).
+   */
+  const startProcess = async (tab: TabRecord): Promise<SupervisorHostLike> => {
     setStatus(tab, "starting");
-
+    const generation = generations.get(tab.id) ?? 0;
     const host = await deps.supervisor.start({
       sessionId: tab.id,
       cwd: tab.cwd,
@@ -634,16 +678,48 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       officeHost: tab.kind === "office",
       sessionFile: tab.sessionFile,
     });
-    // `closeTab` or `dispose` may have run while the spawn was in flight: the
-    // supervisor now holds a process for a tab that no longer exists, and
-    // registering it here would leave a host with no owner and no stop path
-    // (plan step 27). Stop it and fail the spawn instead of orphaning it.
-    if (disposed || !tabs.has(tab.id)) {
+    // `closeTab`/`dispose`/a newer detach may have run while the spawn was in
+    // flight. Never publish a host over the replacement; stop the orphan.
+    if (disposed || !tabs.has(tab.id) || (generations.get(tab.id) ?? 0) !== generation) {
       await deps.supervisor.stop(tab.id).catch(() => undefined);
       throw new SessionServiceError("tab closed while its host was starting", "tab_closed");
     }
     hosts.set(tab.id, host);
     subscribe(tab, host);
+    return host;
+  };
+
+  /** Process-start coalescer: one child per tab, never opens a session. */
+  const ensureProcess = async (tab: TabRecord): Promise<SupervisorHostLike> => {
+    if (tab.kind === "web") {
+      throw new SessionServiceError("a web tab has no Pi host", "web_tab");
+    }
+    const inFlight = starting.get(tab.id);
+    if (inFlight) return inFlight;
+    const existing = hosts.get(tab.id);
+    if (existing && existing.status() === "ready") return existing;
+    if (existing) await detachHost(tab.id);
+    const run = startProcess(tab);
+    starting.set(tab.id, run);
+    void run.then(
+      () => starting.delete(tab.id),
+      () => starting.delete(tab.id),
+    );
+    return run;
+  };
+
+  /**
+   * Opens (or resumes) a tab's session on an already-live host. A successful
+   * `session.create`/`resume` response is the only thing that makes a tab idle
+   * besides a real `state` frame.
+   */
+  const openSession = async (
+    tab: TabRecord,
+    host: SupervisorHostLike,
+    reason: "spawn" | "recover",
+  ): Promise<SupervisorHostLike> => {
+    const generation = generations.get(tab.id) ?? 0;
+    setStatus(tab, "starting");
     try {
       const extra = createParams.get(tab.id);
       const snapshot = tab.sessionFile
@@ -654,17 +730,66 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
             ...(extra?.thinking ? { thinking: extra.thinking } : {}),
             ...(extra?.trust ? { trust: extra.trust } : {}),
           });
+      if (disposed || !tabs.has(tab.id) || (generations.get(tab.id) ?? 0) !== generation) {
+        await deps.supervisor.stop(tab.id).catch(() => undefined);
+        throw new SessionServiceError("tab closed while its session was opening", "tab_closed");
+      }
       applySnapshot(tab, snapshot);
-      rememberSession(host, tab);
+      sessionReady.add(tab.id);
+      const wasRecovering = recovering.delete(tab.id);
+      if (reason === "recover" || wasRecovering) {
+        pushEntries(tab.id, [
+          { event: "session.recovered", payload: { sessionFile: tab.sessionFile } },
+        ]);
+      }
+      return host;
     } catch (error) {
+      sessionReady.delete(tab.id);
+      // A trust refusal leaves a live host so the renderer's prompt can retry
+      // `session.create`; every other failure drops the process so the next
+      // ensure starts cleanly rather than talking to a sessionless host.
+      if (host.status() !== "ready") await detachHost(tab.id);
       const message = error instanceof Error ? error.message : String(error);
-      // The session never opened: drop the published handle so the next
-      // request re-spawns instead of being answered by a session-less host.
-      hosts.delete(tab.id);
       setStatus(tab, "failed", message);
       throw error;
     }
-    return host;
+  };
+
+  /**
+   * The interaction entry point: a live host with an open session. Coalesces
+   * concurrent callers; repairs a sessionless/dead host with a fresh process
+   * and one open. `ready` is never returned before this settles.
+   */
+  const ensureSession = async (tab: TabRecord): Promise<SupervisorHostLike> => {
+    if (tab.kind === "web") {
+      throw new SessionServiceError("a web tab has no Pi host", "web_tab");
+    }
+    const inFlight = opening.get(tab.id);
+    if (inFlight) return inFlight;
+    // Capture before `detachHost` clears it: a crash recovery gets one notice,
+    // a normal open/wake does not.
+    const wasRecovering = recovering.has(tab.id);
+    const reason = wasRecovering ? "recover" : "spawn";
+    const run = (async (): Promise<SupervisorHostLike> => {
+      let host = await ensureProcess(tab);
+      if (host.status() === "ready" && sessionReady.has(tab.id)) return host;
+      if (host.status() === "ready") return openSession(tab, host, reason);
+      // The supervisor is restarting, failed, or has no child: preempt its
+      // backoff with a deterministic fresh process, then open once.
+      await detachHost(tab.id);
+      host = await ensureProcess(tab);
+      return openSession(tab, host, reason);
+    })();
+    opening.set(tab.id, run);
+    void run.then(
+      () => {
+        if (opening.get(tab.id) === run) opening.delete(tab.id);
+      },
+      () => {
+        if (opening.get(tab.id) === run) opening.delete(tab.id);
+      },
+    );
+    return run;
   };
 
   /**
@@ -676,7 +801,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     const inFlight = recycling.get(tab.id);
     if (inFlight) return inFlight;
     const run = (async (): Promise<SupervisorHostLike> => {
-      const host = await ensureHost(tab);
+      const host = await ensureSession(tab);
       if (!hostIsStale(host)) return host;
       let snapshot: unknown;
       try {
@@ -689,9 +814,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       const record = asRecord(snapshot);
       if (typeof record.sessionFile === "string") tab.sessionFile = record.sessionFile;
       if (hostIsBusy(record) || !tab.sessionFile) return host;
-      rememberSession(host, tab);
       await detachHost(tab.id);
-      return ensureHost(tab);
+      return ensureSession(tab);
     })();
     recycling.set(tab.id, run);
     try {
@@ -798,6 +922,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       const state = await deps.store.read();
       tabs.clear();
       hosts.clear();
+      starting.clear();
+      opening.clear();
+      sessionReady.clear();
+      generations.clear();
+      recovering.clear();
       for (const tab of sanitizeTabs(state.tabs).slice(0, maxTabs)) {
         // Nothing is running yet after a relaunch: a restored tab is "stopped"
         // until the user activates it (or `prewarmLast` does). A web tab has no
@@ -864,20 +993,56 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       publishTabs();
       // A web tab has no host to start (plan step 21); main's web-tab manager
       // reconciles the view from the tab table instead.
-      if (tab.kind !== "web") await ensureHost(tab);
+      if (tab.kind !== "web") await ensureSession(tab);
       await persist();
+      return envelope();
+    },
+
+    async reconcile() {
+      for (const tab of tabs.values()) {
+        if (tab.kind === "web") continue;
+        if (opening.has(tab.id) || starting.has(tab.id)) {
+          tab.status = "starting";
+          continue;
+        }
+        const host = hosts.get(tab.id);
+        if (!host) {
+          sessionReady.delete(tab.id);
+          if (tab.status !== "stopped" && tab.status !== "failed") tab.status = "stopped";
+          continue;
+        }
+        const status = host.status();
+        if (status === "ready") {
+          if (!sessionReady.has(tab.id)) {
+            tab.status = "starting";
+          } else if (
+            tab.status === "stopped" ||
+            tab.status === "failed" ||
+            tab.status === "crashed"
+          ) {
+            // The host is alive and its session is open; a stale lifecycle word
+            // from a missed push must not stay on screen.
+            tab.status = "idle";
+          }
+        } else if (status === "restarting" || status === "starting") {
+          sessionReady.delete(tab.id);
+          tab.status = "starting";
+        } else if (status === "stopped") {
+          forgetHost(tab.id);
+          tab.status = "stopped";
+        } else if (status === "failed") {
+          sessionReady.delete(tab.id);
+          tab.status = "failed";
+        }
+      }
+      publishTabs();
       return envelope();
     },
 
     async closeTab(tabId) {
       const tab = tabs.get(tabId);
       if (!tab) return envelope();
-      flushPending(tabId);
-      timers.delete(tabId);
-      pending.delete(tabId);
-      for (const off of unsubscribes.get(tabId) ?? []) off();
-      unsubscribes.delete(tabId);
-      hosts.delete(tabId);
+      forgetHost(tabId);
       recycling.delete(tabId);
       createParams.delete(tabId);
       tabs.delete(tabId);
@@ -932,31 +1097,18 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // Already the office host and running: nothing to restart.
       if (tab.kind === "office" && hosts.has(tabId)) return envelope();
 
-      const detach = async (id: string): Promise<void> => {
-        for (const off of unsubscribes.get(id) ?? []) off();
-        unsubscribes.delete(id);
-        flushPending(id);
-        timers.delete(id);
-        pending.delete(id);
-        hosts.delete(id);
-        recycling.delete(id);
-        try {
-          await deps.supervisor.stop(id);
-        } catch {
-          // A host that is already gone is not an error for the user.
-        }
-      };
-
       // One office host only: demote every other `office` tab and stop its host
       // so port 38617 is free for the promoted tab (plan step 20 acceptance).
       for (const [id, record] of [...tabs]) {
         if (id === tabId || record.kind !== "office") continue;
-        await detach(id);
+        recycling.delete(id);
+        await detachHost(id);
         tabs.set(id, { ...record, kind: "session", status: "stopped" });
       }
 
       // Restart the promoted tab so its host is spawned with `officeHost: true`.
-      await detach(tabId);
+      recycling.delete(tabId);
+      await detachHost(tabId);
       tab.kind = "office";
       tab.status = "stopped";
       publishTabs();
@@ -974,7 +1126,21 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         return host.request(method, params);
       }
       const tab = requireTab(tabId);
-      let host = await ensureHost(tab);
+      // Explicit session lifecycle commands bypass auto-open: the caller owns
+      // the operation (trust retry, /new, fork). Only the process is ensured.
+      if (SESSION_ESTABLISHING_METHODS.has(method)) {
+        const inFlight = opening.get(tab.id);
+        if (inFlight) await inFlight.catch(() => undefined);
+        const host = await ensureProcess(tab);
+        const result = await host.request(method, params);
+        if (isSessionSnapshot(result)) {
+          applySnapshot(tab, result);
+          sessionReady.add(tab.id);
+          recovering.delete(tab.id);
+        }
+        return result;
+      }
+      let host = await ensureSession(tab);
       if (hostIsStale(host)) {
         try {
           host = await recycleStaleHost(tab);
@@ -988,6 +1154,24 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       } catch (error) {
         if (method === "commands.complete" && isMissingCommandComplete(error)) {
           return { items: null, unsupported: true } satisfies CommandCompleteResult;
+        }
+        if (isSessionLostError(error)) {
+          // The host outlived/replaced its session between ensure and dispatch.
+          // Reopen once; only a read-only call is safe to replay automatically.
+          sessionReady.delete(tab.id);
+          recovering.add(tab.id);
+          try {
+            host = await ensureSession(tab);
+            if (READ_ONLY_RETRY_METHODS.has(method)) return await host.request(method, params);
+          } catch {
+            // Keep the original error: it names the operation that failed.
+          }
+          if (method === "prompt") {
+            throw new SessionServiceError(
+              "The session host restarted before it received your prompt. Your draft is intact — press Enter to try again.",
+              "session_lost",
+            );
+          }
         }
         throw error;
       }
@@ -1015,7 +1199,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         .sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
       if (!tab) return false;
       try {
-        await ensureHost(tab);
+        await ensureSession(tab);
         return true;
       } catch {
         // Pre-warming is an optimization; failing it must not disturb startup.
@@ -1040,7 +1224,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       hosts.clear();
       // Any in-flight spawn sees `disposed` and stops its own host; dropping the
       // handles here keeps nothing pointing at a process during shutdown.
-      spawning.clear();
+      starting.clear();
+      opening.clear();
+      sessionReady.clear();
+      generations.clear();
+      recovering.clear();
       recycling.clear();
       createParams.clear();
       control = null;

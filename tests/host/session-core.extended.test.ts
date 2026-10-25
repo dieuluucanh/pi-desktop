@@ -215,6 +215,55 @@ describe("stats.get", () => {
   });
 });
 
+describe("entry_appended renderability", () => {
+  it("tells the app whether a bare custom entry has a registered renderer", async () => {
+    type Listener = (event: { type: string; [key: string]: unknown }) => void;
+    let listener: Listener | null = null;
+    const context = await started({
+      subscribe: (next: Listener) => {
+        listener = next;
+        return () => undefined;
+      },
+      extensionRunner: {
+        getRegisteredCommands: () => [],
+        getEntryRenderer: (customType: string) => {
+          if (customType === "boom") throw new Error("broken registry");
+          return customType === "review-band" ? () => undefined : undefined;
+        },
+      },
+    });
+    if (!listener) throw new Error("the session listener was not attached");
+
+    const append = (entry: Record<string, unknown>): Record<string, unknown> => {
+      context.emitted.length = 0;
+      listener!({ type: "entry_appended", entry });
+      const frame = context.emitted.find((entry) => entry.event === "entry_appended");
+      if (!frame) throw new Error("no entry_appended frame was emitted");
+      return frame.payload as Record<string, unknown>;
+    };
+
+    // No renderer: the workflow mode entry must be marked hidden.
+    const workflow = { type: "custom", id: "w1", customType: "workflow", data: { mode: "plan" } };
+    const hidden = append(workflow);
+    expect(hidden.entryRenderable).toBe(false);
+    expect(hidden.entry).toEqual(workflow);
+
+    // A registered entry renderer (the review bands) must stay displayable.
+    expect(append({ type: "custom", id: "r1", customType: "review-band" }).entryRenderable).toBe(
+      true,
+    );
+
+    // A custom *message* always has Pi's fallback card; leave it unannotated.
+    const message = { type: "custom_message", id: "c1", customType: "workflow-btw" };
+    const untouched = append(message);
+    expect(untouched).not.toHaveProperty("entryRenderable");
+    expect(untouched.entry).toEqual(message);
+
+    // A registry that throws is treated as "no renderer", not a crash.
+    expect(append({ type: "custom", id: "b1", customType: "boom" }).entryRenderable).toBe(false);
+  });
+});
+
 describe("entries.get / tree.get", () => {
   it("returns entries with the leaf id", async () => {
     const { call } = await started();

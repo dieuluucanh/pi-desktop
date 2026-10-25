@@ -120,8 +120,8 @@ function harness(
     /** Enable `host.metrics` polling; disabled by default so request order is stable. */
     memoryPollMs?: number;
     maxRssBytes?: number;
-    memoryRestartCooldownMs?: number;
     idleTimeoutMs?: number;
+    maxRestarts?: number;
   } = {},
 ) {
   const spawned: FakeHost[] = [];
@@ -152,11 +152,9 @@ function harness(
     requestTimeoutMs: 1_000,
     maxHosts: options.maxHosts ?? 8,
     idleTimeoutMs: options.idleTimeoutMs ?? 0,
+    ...(options.maxRestarts === undefined ? {} : { maxRestarts: options.maxRestarts }),
     memoryPollMs: options.memoryPollMs ?? 0,
     ...(options.maxRssBytes ? { maxRssBytes: options.maxRssBytes } : {}),
-    ...(options.memoryRestartCooldownMs !== undefined
-      ? { memoryRestartCooldownMs: options.memoryRestartCooldownMs }
-      : {}),
     safeMode: options.safeMode ?? false,
     telemetryEnabled: options.telemetryEnabled ?? false,
     ...(options.hostBuildId ? { hostBuildId: options.hostBuildId } : {}),
@@ -282,7 +280,7 @@ describe("host supervisor requests", () => {
 });
 
 describe("host supervisor recovery", () => {
-  it("restarts a crashed host and resumes the session", async () => {
+  it("restarts a crashed process without resuming the session itself", async () => {
     const { supervisor, spawned } = harness({
       sessionFile: normalize("C:/profile/sessions/s1.jsonl"),
     });
@@ -292,9 +290,9 @@ describe("host supervisor recovery", () => {
       sessionFile: normalize("C:/profile/sessions/s1.jsonl"),
     });
     const crashed = vi.fn();
-    const resumed = vi.fn();
+    const restarted = vi.fn();
     host.on("crashed", crashed);
-    host.on("resumed", resumed);
+    host.on("restarted", restarted);
 
     spawned[0]?.crash(3);
 
@@ -302,31 +300,45 @@ describe("host supervisor recovery", () => {
       expect(spawned.length).toBe(2);
     });
     await vi.waitFor(() => {
-      expect(resumed).toHaveBeenCalledWith({
-        sessionFile: normalize("C:/profile/sessions/s1.jsonl"),
-      });
+      expect(restarted).toHaveBeenCalledWith({ reason: "crash", sessionId: "s1" });
     });
 
     expect(crashed).toHaveBeenCalledWith(expect.objectContaining({ code: 3, sessionId: "s1" }));
     expect(host.status()).toBe("ready");
-    expect(spawned[1]?.requests.map((request) => request.method)).toEqual([
-      "host.hello",
-      "session.resume",
-    ]);
+    // The session service owns `session.resume`; a process restart only handshakes.
+    expect(spawned[1]?.requests.map((request) => request.method)).toEqual(["host.hello"]);
+  });
+
+  it("ignores a late exit from a superseded child", async () => {
+    const { supervisor, spawned } = harness();
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    const crashed = vi.fn();
+    host.on("crashed", crashed);
+
+    const old = spawned[0]!;
+    // A crash schedules a replacement; the old child then emits a second exit
+    // (for example a SIGTERM after the crash). It must not speak for the new one.
+    old.crash(9);
+    await vi.waitFor(() => expect(spawned.length).toBe(2));
+    const fresh = spawned[1]!;
+    old.crash(9);
+
+    expect(spawned.length).toBe(2);
+    expect(crashed).toHaveBeenCalledTimes(1);
+    expect(host.status()).toBe("ready");
+    expect(fresh.requests.map((request) => request.method)).toEqual(["host.hello"]);
   });
 
   it("gives up after the restart budget is exhausted", async () => {
-    const { supervisor, spawned } = harness({ behaviours: [{}, {}, {}, {}] });
+    const { supervisor, spawned } = harness({ maxRestarts: 1 });
     const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
 
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const child = spawned.at(-1);
-      if (!child) break;
-      child.crash(9);
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    // Crash each *new* child; a repeated exit from the same child is ignored.
+    spawned[0]?.crash(9);
+    await vi.waitFor(() => expect(spawned.length).toBe(2));
+    spawned[1]?.crash(9);
 
-    expect(host.status()).toBe("failed");
+    await vi.waitFor(() => expect(host.status()).toBe("failed"));
     expect(supervisor.get("s1")?.status()).toBe("failed");
   });
 
@@ -523,12 +535,11 @@ describe("host supervisor resource guardrails (plan step 24)", () => {
     expect(host.status()).toBe("ready");
   });
 
-  it("recycles a host that is over the RSS restart threshold", async () => {
+  it("recycles a host that is over the RSS threshold by stopping it", async () => {
     const { supervisor, spawned } = harness({
       memoryPollMs: 5,
       maxRssBytes: 1_000,
-      memoryRestartCooldownMs: 60_000,
-      behaviours: [{ answer: metricsAnswer(5_000) }, { answer: metricsAnswer(5_000) }],
+      behaviours: [{ answer: metricsAnswer(5_000) }],
     });
     const host = await supervisor.start({
       sessionId: "s1",
@@ -537,13 +548,19 @@ describe("host supervisor resource guardrails (plan step 24)", () => {
     });
 
     await vi.waitFor(() => {
-      expect(spawned.length).toBe(2);
+      expect(supervisor.get("s1")).toBeUndefined();
     });
-    // The cooldown stops a host whose RSS does not drop from restarting in a loop.
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(spawned).toHaveLength(2);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]?.killed).toBe(true);
     expect(host.logs().join("\n")).toContain("over the 0 MB threshold");
-    expect(spawned[1]?.requests.map((request) => request.method)).toContain("session.resume");
+    expect(host.status()).toBe("stopped");
+
+    // A recycle never resumes by itself; re-starting the id is a fresh process
+    // and `session-service` performs the resume.
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(spawned).toHaveLength(2);
+    expect(spawned[1]?.requests.map((request) => request.method)).toContain("host.hello");
+    expect(spawned[1]?.requests.map((request) => request.method)).not.toContain("session.resume");
   });
 
   it("recycles an idle host and drops it from the supervisor so it can re-spawn", async () => {

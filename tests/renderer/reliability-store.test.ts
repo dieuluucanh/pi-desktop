@@ -15,6 +15,20 @@ beforeEach(() => {
   useAppStore.setState({
     view: "session",
     prefs: { ...DEFAULT_PREFS },
+    tabs: [
+      {
+        id: "tab-1",
+        kind: "session",
+        cwd: "C:/work/app",
+        title: "app",
+        sessionFile: null,
+        status: "idle",
+        createdAt: 1,
+        lastActiveAt: 1,
+        model: null,
+      } as never,
+    ],
+    activeTabId: "tab-1",
     hint: null,
     offlineNotice: null,
     transcripts: { "tab-1": { ...createTranscriptState(), hydrated: true } },

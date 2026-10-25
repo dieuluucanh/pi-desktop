@@ -290,6 +290,7 @@ describe("queue and notices", () => {
         event: "entry_appended",
         payload: {
           entry: { type: "custom", id: "e1", customType: "note", data: { body: "hi" } },
+          entryRenderable: true,
         },
       },
     ]);
@@ -371,23 +372,50 @@ describe("queue and notices", () => {
     expect(message.blocks).toEqual([{ kind: "text", text: "[BTW] note" }]);
   });
 
-  it("renders a bare `workflow` entry as a custom entry with no text", () => {
+  it("drops the renderer-less `workflow` mode entry", () => {
     // The Tab-cycle noise: `persistState()` appends a bare `custom` entry with
-    // data and no content. The reducer forwards it (the renderer decides); it
-    // must never carry text that would show as chat.
+    // data and no content, and no entry renderer. Pi shows nothing for it; the
+    // host annotates the event and the reducer drops it, so a mode switch never
+    // adds a blank row or scroll movement.
     const state = reduceSessionEvents(createTranscriptState(), [
       {
         event: "entry_appended",
         payload: {
           entry: { type: "custom", id: "w1", customType: "workflow", data: { mode: "plan" } },
+          entryRenderable: false,
+        },
+      },
+    ]);
+    expect(items(state)).toEqual([]);
+  });
+
+  it("keeps a bare custom entry when the host found an entry renderer", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      {
+        event: "entry_appended",
+        payload: {
+          entry: {
+            type: "custom",
+            id: "b1",
+            customType: "workflow-review-mode",
+            data: { band: "review" },
+          },
+          entryRenderable: true,
         },
       },
     ]);
     const message = firstMessage(state);
     expect(message.role).toBe("custom");
     expect(message.customKind).toBe("entry");
-    expect(message.customType).toBe("workflow");
+    expect(message.customType).toBe("workflow-review-mode");
     expect(message.blocks).toEqual([]);
+  });
+
+  it("hides a bare custom entry when the annotation is absent (legacy host)", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "entry_appended", payload: { entry: { type: "custom", id: "e" } } },
+    ]);
+    expect(items(state)).toEqual([]);
   });
 
   it("ignores events that carry no transcript meaning", () => {
@@ -468,14 +496,31 @@ describe("history hydration", () => {
  */
 describe("hidden-item boundary", () => {
   it("does not key the rule on the workflow customType", () => {
-    // A bare `custom` entry is forwarded whatever its type; the renderer decides
-    // by asking the host whether a renderer exists. If the reducer dropped
-    // `workflow` by name, the review bands (which share the prefix) would vanish.
+    // The rule is the host's renderer annotation, not a name match. A workflow
+    // entry with a renderer must survive; a review-band entry without one must
+    // not. If the reducer keyed on the `workflow` prefix, this would fail.
     for (const customType of ["workflow", "workflow-review-mode", "note", "todo"]) {
-      const state = reduceSessionEvents(createTranscriptState(), [
-        { event: "entry_appended", payload: { entry: { type: "custom", id: "e", customType } } },
+      const hidden = reduceSessionEvents(createTranscriptState(), [
+        {
+          event: "entry_appended",
+          payload: {
+            entry: { type: "custom", id: "e", customType },
+            entryRenderable: false,
+          },
+        },
       ]);
-      const message = firstMessage(state);
+      expect(items(hidden), customType).toEqual([]);
+
+      const visible = reduceSessionEvents(createTranscriptState(), [
+        {
+          event: "entry_appended",
+          payload: {
+            entry: { type: "custom", id: "e", customType },
+            entryRenderable: true,
+          },
+        },
+      ]);
+      const message = firstMessage(visible);
       expect(message.customType, customType).toBe(customType);
       expect(message.customKind, customType).toBe("entry");
     }

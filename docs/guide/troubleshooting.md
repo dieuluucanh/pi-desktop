@@ -42,6 +42,23 @@ resource. The window shows a safe-mode banner.
   Electron's tray; unavailable-toast grouping also depends on the desktop
   environment. Neither affects the app itself.
 
+## A session looks idle/asleep after a long break
+
+- **`ready` is the normal idle state.** The host and session are open and no turn
+  is streaming; type a prompt and it runs normally. The badge says `working`
+  while a turn is streaming.
+- **Clicking the transcript background focuses the composer**, and focusing or
+  typing runs a readiness check. If the host was recycled (RSS or an explicit
+  stop), the badge shows `starting` and returns to `ready` when the session has
+  resumed; your draft is preserved.
+- **Sleep/resume or a hidden window** can miss pushes. Returning to the window
+  (or `powerMonitor` resume/unlock) reconciles the tab table and repairs the
+  active tab; other tabs stay asleep until you interact with them.
+- **A tab that says `asleep`** has no running host. Clicking it, focusing the
+  composer or typing wakes it; you do not need the Start session link.
+- The time-based 15-minute idle recycler is **not enabled by default**; the
+  high-RSS guardrail is. Both show up in the host log and Diagnostics.
+
 ## A session stopped responding
 
 - Press `Esc` to stop the run (this clears the queue and restores the text).

@@ -48,8 +48,10 @@ export interface ComposerProps {
   enabled?: boolean;
   /** True while a stopped tab is asleep; the first interaction wakes it. */
   sleeping?: boolean;
-  /** Wakes a sleeping session (activation on focus/pointer-down/typing). */
+  /** Ensures the session is ready (activation on focus/pointer-down/typing). */
   onWake?: () => void;
+  /** Incremented by the view to put the caret in the composer (transcript click). */
+  focusToken?: number;
   draft: string;
   queue: TranscriptQueue;
   sendMode: SendMode;
@@ -174,6 +176,7 @@ export function Composer({
   enabled = true,
   sleeping = false,
   onWake,
+  focusToken = 0,
   draft,
   queue,
   sendMode,
@@ -333,6 +336,14 @@ export function Composer({
     if (node && node.value === draft) syncCaret(node);
   }, [draft, syncCaret]);
 
+  // Clicking the transcript background is an explicit "talk to this session"
+  // gesture; the view increments the token instead of reaching into the DOM.
+  useEffect(() => {
+    if (focusToken <= 0) return;
+    const node = textareaRef.current;
+    if (node && !node.disabled) node.focus();
+  }, [focusToken]);
+
   /**
    * Sends an explicit text and source. The Enter-on-completion path must not
    * read the `draft` prop or `pickedSource` state: both are stale while a
@@ -464,15 +475,15 @@ export function Composer({
           onChange={(event) => {
             syncCaret(event.target);
             setPickedSource(undefined);
-            if (sleeping) onWake?.();
+            onWake?.();
             onDraftChange(event.target.value);
             refreshCompletion(false);
           }}
           onFocus={() => {
-            if (sleeping) onWake?.();
+            onWake?.();
           }}
           onPointerDown={() => {
-            if (sleeping) onWake?.();
+            onWake?.();
           }}
           onSelect={(event) => {
             syncCaret(event.currentTarget);

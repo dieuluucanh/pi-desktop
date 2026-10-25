@@ -31,7 +31,7 @@ import { ModelPicker } from "../session/ModelPicker";
 import { ThinkingPicker } from "../session/ThinkingPicker";
 import { contextUsageOf, modelKeyOf, thinkingLevelsOf } from "../session/model-catalog";
 import type { ViewMode } from "../../../shared/prefs";
-import type { TabStatus } from "../../../shared/session-ipc";
+import { SESSION_STATUS_LABEL, type TabStatus } from "../../../shared/session-ipc";
 
 /**
  * Session view (plan step 5).
@@ -125,7 +125,7 @@ export function SessionView() {
   const sessionStates = useAppStore((state) => state.sessionStates);
   const transcripts = useAppStore((state) => state.transcripts);
   const activateTab = useAppStore((state) => state.activateTab);
-  const wakeSession = useAppStore((state) => state.wakeSession);
+  const ensureSession = useAppStore((state) => state.ensureSession);
   const restartTab = useAppStore((state) => state.restartTab);
   const hydrateTranscript = useAppStore((state) => state.hydrateTranscript);
   const sendPrompt = useAppStore((state) => state.sendPrompt);
@@ -184,6 +184,7 @@ export function SessionView() {
   const toggleDocumentsPanel = useAppStore((state) => state.toggleDocumentsPanel);
   const webTabStates = useAppStore((state) => state.webTabStates);
   const [editingName, setEditingName] = useState(false);
+  const [composerFocusToken, setComposerFocusToken] = useState(0);
 
   /**
    * The completion stack for this tab (plan step 7): commands from the host's
@@ -333,13 +334,18 @@ export function SessionView() {
               {active.title}
             </h1>
           )}
-          <Badge tone={STATUS_TONE[active.status]}>{active.status}</Badge>
+          <Badge
+            tone={STATUS_TONE[active.status]}
+            title={`Session status: ${SESSION_STATUS_LABEL[active.status]}`}
+          >
+            {SESSION_STATUS_LABEL[active.status]}
+          </Badge>
           {needsRestart ? (
             <button
               type="button"
               className="shrink-0 text-xs text-accent underline"
               onClick={() => {
-                if (active.status === "stopped") void wakeSession(active.id);
+                if (active.status === "stopped") void ensureSession(active.id, { force: true });
                 else void activateTab(active.id);
               }}
             >
@@ -430,7 +436,25 @@ export function SessionView() {
           <div
             className="min-h-0 flex-1"
             onPointerDown={() => {
-              if (active.status === "stopped") void wakeSession(active.id);
+              // A ready tab is already awake; a stopped/stale one is repaired
+              // here. Crashed/failed stay on the explicit Restart path.
+              if (active.status !== "crashed" && active.status !== "failed") {
+                void ensureSession(active.id);
+              }
+            }}
+            onClick={(event) => {
+              const target = event.target as HTMLElement;
+              // Focus only the empty background/empty state: clicking a message
+              // row must keep click-to-select and double-click word selection.
+              if (
+                target.closest(
+                  "button, a, input, textarea, select, summary, [contenteditable], [data-testid='transcript-row'], [data-no-composer-focus]",
+                )
+              ) {
+                return;
+              }
+              if (window.getSelection()?.isCollapsed === false) return;
+              setComposerFocusToken((token) => token + 1);
             }}
           >
             <Transcript
@@ -464,13 +488,10 @@ export function SessionView() {
               <Composer
                 tabId={active.id}
                 running={active.status === "running"}
-                enabled={
-                  active.status === "running" ||
-                  active.status === "idle" ||
-                  active.status === "stopped"
-                }
+                enabled={active.status !== "crashed" && active.status !== "failed"}
                 sleeping={active.status === "stopped"}
-                onWake={() => void wakeSession(active.id)}
+                focusToken={composerFocusToken}
+                onWake={() => void ensureSession(active.id)}
                 draft={drafts[active.id] ?? ""}
                 queue={transcript?.queue ?? { steering: [], followUp: [] }}
                 sendMode={sendModes[active.id] ?? "steer"}

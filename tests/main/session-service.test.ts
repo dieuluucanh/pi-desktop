@@ -472,16 +472,17 @@ describe("crash recovery", () => {
     expect(service.tabs()[0]!.status).toBe("crashed");
     expect(eventsOf(pushes)[0]!.events.map((entry) => entry.event)).toEqual(["session.crashed"]);
 
-    host.emitLifecycle("resumed", { sessionFile: "/profile/sessions/s1.jsonl" });
-    await vi.runOnlyPendingTimersAsync();
+    // The supervisor restarts the process and reports ready; the *service*
+    // reopens the session from JSONL (the supervisor no longer resumes).
+    host.emitLifecycle("status", "ready");
+    await vi.waitFor(() => expect(service.tabs()[0]!.status).toBe("idle"));
 
-    expect(service.tabs()[0]!.status).toBe("idle");
     expect(
       eventsOf(pushes)
         .at(-1)!
         .events.map((entry) => entry.event),
     ).toEqual(["session.recovered"]);
-    expect(host.requests.map((request) => request.method)).toContain("state.get");
+    expect(host.requests.map((request) => request.method)).toContain("session.resume");
   });
 });
 
@@ -690,6 +691,90 @@ describe("reliability and recovery (plan step 22)", () => {
   });
 });
 
+describe("session readiness (2026-10-25 plan)", () => {
+  it("keeps a tab starting until resume resolves, then reports idle", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { service, stored } = createHarness({
+      onStart: async () => {
+        await gate;
+      },
+    });
+    stored.tabs = [
+      {
+        id: "tab-1",
+        kind: "session",
+        cwd: "C:\\work\\app",
+        title: "app",
+        sessionFile: "/profile/sessions/s1.jsonl",
+        status: "stopped",
+        createdAt: 1,
+        lastActiveAt: 1,
+        model: null,
+      },
+    ];
+    stored.activeTabId = "tab-1";
+    await service.restoreTabs();
+
+    const activation = service.activateTab("tab-1");
+    await vi.waitFor(() => expect(service.tabs()[0]!.status).toBe("starting"));
+    release();
+    await activation;
+
+    expect(service.tabs()[0]!.status).toBe("idle");
+  });
+});
+
+describe("reconcile (sleep/resume and stale pushes)", () => {
+  it("turns a tab with no host into stopped instead of leaving idle", async () => {
+    const { service, newest } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    expect(service.tabs()[0]!.status).toBe("idle");
+
+    // A stopped supervisor event drops the service's handle; then a stale push
+    // leaves the visible status at idle. Reconcile must correct it.
+    newest().emitLifecycle("status", "stopped");
+    await Promise.resolve();
+    service.tabs()[0]!.status = "idle";
+    const envelope = await service.reconcile();
+
+    expect(service.tabs()[0]!.status).toBe("stopped");
+    expect(envelope.tabs[0]!.status).toBe("stopped");
+  });
+
+  it("turns a ready-but-sessionless host into starting, not idle", async () => {
+    const { service, hosts } = createHarness({ createdSessionFile: null });
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const host = hosts.get("tab-1");
+    if (!host) throw new Error("no host");
+    // A crash restart can leave a fresh, session-less process in the map.
+    host.setStatus("ready");
+    // There is no public way to clear readiness; a failed reopen is simulated by
+    // a host that reports ready while the tab is still starting.
+    service.tabs()[0]!.status = "starting";
+
+    const envelope = await service.reconcile();
+    expect(envelope.tabs[0]!.status).toBe("starting");
+  });
+
+  it("keeps a stopped tab stopped and does not spawn", async () => {
+    const { service, hosts, specs } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const host = hosts.get("tab-1");
+    if (!host) throw new Error("no host");
+    host.setStatus("stopped");
+    host.emitLifecycle("status", "stopped");
+    await Promise.resolve();
+    const spawnedBefore = specs.length;
+
+    const envelope = await service.reconcile();
+    expect(envelope.tabs[0]!.status).toBe("stopped");
+    expect(specs).toHaveLength(spawnedBefore);
+  });
+});
+
 describe("persistence and restore", () => {
   it("restores the tab table without spawning any host", async () => {
     const { service, hosts, stored } = createHarness();
@@ -786,6 +871,65 @@ describe("requests", () => {
   it("rejects an unknown tab", async () => {
     const { service } = createHarness();
     await expect(service.request("tab-nope", "state.get")).rejects.toThrow(/unknown session tab/);
+  });
+
+  it("repairs a lost session and retries a read-only request once", async () => {
+    const { service, newest, pushes } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const host = newest();
+    const original = host.request.bind(host);
+    let lost = true;
+    host.request = async (method: HostMethod, params?: unknown) => {
+      if (method === "state.get" && lost) {
+        lost = false;
+        const error = new Error("no session is open");
+        error.name = "no_session";
+        throw error;
+      }
+      return original(method, params);
+    };
+
+    const result = (await service.request("tab-1", "state.get")) as Record<string, unknown>;
+    expect(result).toMatchObject({ sessionId: "session-1" });
+    expect(host.requests.map((request) => request.method)).toContain("session.resume");
+    expect(pushes.some((push) => push.channel === "event")).toBe(true);
+    expect(service.tabs()[0]!.status).toBe("idle");
+  });
+
+  it("does not replay a prompt after a lost session", async () => {
+    const { service, newest } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const host = newest();
+    const original = host.request.bind(host);
+    host.request = async (method: HostMethod, params?: unknown) => {
+      if (method === "prompt") {
+        const error = new Error("no session is open");
+        error.name = "no_session";
+        throw error;
+      }
+      return original(method, params);
+    };
+
+    await expect(service.request("tab-1", "prompt", { text: "hello" })).rejects.toThrow(
+      /draft is intact/,
+    );
+    expect(host.requests.map((request) => request.method)).toContain("session.resume");
+    expect(host.requests.filter((request) => request.method === "prompt")).toHaveLength(0);
+  });
+
+  it("forwards an explicit session.create with trust without auto-resuming", async () => {
+    const { service, newest } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const host = newest();
+    host.requests.length = 0;
+
+    await service.request("tab-1", "session.create", {
+      cwd: "C:\\work\\app",
+      trust: "session",
+    });
+
+    expect(host.requests.map((request) => request.method)).toEqual(["session.create"]);
+    expect(service.tabs()[0]!.status).toBe("idle");
   });
 });
 

@@ -171,6 +171,7 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
       reorder: async () => ({ tabs: [], activeTabId: null }),
       promoteOfficeHost: async () => ({ tabs: [], activeTabId: null }),
       activate: async () => ({ tabs: [], activeTabId: null }),
+      reconcile: async () => ({ tabs: [], activeTabId: null }),
       restore: async () => ({ tabs: [], activeTabId: null }),
       restart: async () => ({ tabs: [], activeTabId: null }),
       request: async () => ({}),

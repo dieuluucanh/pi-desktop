@@ -48,6 +48,12 @@ beforeEach(() => {
 });
 
 describe("session header", () => {
+  it("uses the user-facing lifecycle word for an idle session", () => {
+    render(<SessionView />);
+    expect(screen.getByTitle("Session status: ready")).toHaveTextContent("ready");
+    expect(screen.queryByText("idle")).toBeNull();
+  });
+
   it("shows the view mode as one of the header's buttons, not a native select", () => {
     render(<SessionView />);
     // A native select was the only unstyled control in the header.
@@ -134,6 +140,17 @@ describe("composer rows", () => {
 });
 
 describe("idle session wake (2026-10-24 plan)", () => {
+  it("focuses the composer when the transcript background is clicked", () => {
+    render(<SessionView />);
+    const box = screen.getByLabelText("Prompt");
+    box.blur();
+    expect(box).not.toHaveFocus();
+
+    fireEvent.click(screen.getByText("This session is ready"));
+
+    expect(box).toHaveFocus();
+  });
+
   it("wakes a stopped session when the composer is focused", async () => {
     const handles = installBridge();
     const activate = vi.spyOn(handles.bridge.sessions, "activate");

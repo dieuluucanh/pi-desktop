@@ -3,6 +3,7 @@ import {
   isTabKind,
   sanitizeTabRecord,
   sanitizeTabs,
+  SESSION_STATUS_LABEL,
   sessionTitle,
   TAB_KINDS,
 } from "../../src/shared/session-ipc";
@@ -77,6 +78,19 @@ describe("sanitizeTabRecord", () => {
     expect(sanitizeTabRecord({ id: "t", kind: "session", cwd: "" })).toBeNull();
     expect(sanitizeTabRecord({ kind: "session", cwd: "C:\\x" })).toBeNull();
     expect(sanitizeTabRecord(null)).toBeNull();
+  });
+});
+
+describe("session status labels", () => {
+  it("shows ready/working/asleep instead of the internal lifecycle words", () => {
+    expect(SESSION_STATUS_LABEL).toEqual({
+      starting: "starting",
+      idle: "ready",
+      running: "working",
+      crashed: "crashed",
+      failed: "failed",
+      stopped: "asleep",
+    });
   });
 });
 

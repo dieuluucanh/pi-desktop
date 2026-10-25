@@ -146,6 +146,22 @@ export function App() {
   }, [loadTabs, setInfo, loadUpdateState]);
 
   useEffect(() => {
+    // A laptop that slept, or a window that was hidden, can miss main's tab
+    // pushes. Reconcile on the first real interaction with the window, then
+    // ensure the active session (which repairs a stopped/stale host).
+    const resync = (): void => {
+      if (document.visibilityState === "hidden") return;
+      void useAppStore.getState().resyncSessions();
+    };
+    window.addEventListener("focus", resync);
+    document.addEventListener("visibilitychange", resync);
+    return () => {
+      window.removeEventListener("focus", resync);
+      document.removeEventListener("visibilitychange", resync);
+    };
+  }, []);
+
+  useEffect(() => {
     // The appearance preference paints first paint; once the Pi theme loads,
     // the active Pi theme owns the chrome (plan step 15) and this yields.
     if (useAppStore.getState().themesLoaded) return;

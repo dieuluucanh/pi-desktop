@@ -69,6 +69,13 @@ markdown transformers) go through `render.request` / `render.markdown`: the host
 runs the renderer with the live `Theme` and returns ANSI lines; a missing or
 throwing renderer falls back to the native HTML card, exactly as Pi does.
 
+A bare `custom` entry (`pi.appendEntry`) is different: Pi hides it when no
+`registerEntryRenderer` matched, so the host annotates its `entry_appended`
+event with `entryRenderable` from the live runner and the transcript reducer
+drops the item when it is not `true`. This is what keeps the Workflow mode
+switches (state entries with no renderer) out of the transcript instead of
+leaving blank padded rows. `custom_message` entries keep their fallback card.
+
 ### The selection in an extension-drawn surface (2026-10-21)
 
 **Pi marks the selected element of a `ctx.ui.custom` component with a

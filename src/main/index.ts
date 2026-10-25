@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, clipboard, dialog, nativeImage, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, nativeImage, powerMonitor, shell } from "electron";
 import {
   IPC,
   type AppInfo,
@@ -283,6 +283,7 @@ const sessionsIpc: IpcSessionDeps = {
   reorder: (tabId: string, toIndex: number) => requireSessions().reorderTab(tabId, toIndex),
   promoteOfficeHost: (tabId: string) => requireSessions().promoteToOfficeHost(tabId),
   activate: (tabId: string) => requireSessions().activateTab(tabId),
+  reconcile: () => requireSessions().reconcile(),
   restore: () => requireSessions().restoreTabs(),
   restart: (tabId: string) => requireSessions().restartTab(tabId),
   request: (input) => requireSessions().request(input.tabId, input.method, input.params),
@@ -784,6 +785,15 @@ if (!app.requestSingleInstanceLock()) {
     // bridge that a terminal Pi session owns, so it runs whenever the app does.
     // Safe mode starts with zero third-party code, so the poll stays off there.
     if (!safeMode) officeDocuments.start();
+
+    // A suspended machine can lose a child process or miss status pushes. Make
+    // the tab table truthful on return; the renderer's focus resync wakes the
+    // active tab. `reconcile` never spawns, so background tabs stay asleep.
+    const reconcileSessions = (): void => {
+      void sessions?.reconcile().catch(() => undefined);
+    };
+    powerMonitor.on("resume", reconcileSessions);
+    powerMonitor.on("unlock-screen", reconcileSessions);
 
     // Restore the tab table without spawning anything, then warm the most
     // recently used tab in the background (plan step 24 pre-warm). Safe mode

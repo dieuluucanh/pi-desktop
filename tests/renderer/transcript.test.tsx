@@ -425,6 +425,30 @@ describe("extension renderers", () => {
     expect(await screen.findByText(/TRANSFORMED/)).toBeInTheDocument();
   });
 
+  it("keeps the empty state and row count through a Tab mode cycle", () => {
+    // The exact regression: each `persistState()` entry used to become a padded
+    // (invisible) row, so the empty state vanished after the first Tab and the
+    // transcript scrolled one blank row per press.
+    const modeEntries: SessionEventEntry[] = Array.from({ length: 6 }, (_, index) => ({
+      event: "entry_appended",
+      payload: {
+        entry: {
+          type: "custom",
+          id: `w${index}`,
+          customType: "workflow",
+          data: { mode: index % 2 === 0 ? "plan" : "build" },
+        },
+        entryRenderable: false,
+      },
+    }));
+    const state = reduceSessionEvents(createTranscriptState(), modeEntries);
+    expect(state.items).toHaveLength(0);
+
+    const { container } = render(<Transcript items={state.items} empty={{ cwd: "C:/work/app" }} />);
+    expect(screen.getByText("This session is ready")).toBeInTheDocument();
+    expect(container.querySelectorAll("[data-testid='transcript-row']")).toHaveLength(0);
+  });
+
   it("renders nothing for a rendererless bare custom entry", async () => {
     // The exact user-visible bug this fixes: pressing Tab made the workflow
     // extension append `pi.appendEntry("workflow", …)`, and the transcript

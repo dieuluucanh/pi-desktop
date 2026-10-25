@@ -126,6 +126,21 @@ const TAB_STATUSES: readonly TabStatus[] = [
   "stopped",
 ];
 
+/**
+ * The words the session chrome shows for a lifecycle value. `idle` is the
+ * internal name for "host + session are open and nothing is streaming"; the
+ * user-facing word is `ready`, because `idle` reads like the session is
+ * inactive. The persisted shape stays `TabStatus` (no migration).
+ */
+export const SESSION_STATUS_LABEL: Record<TabStatus, string> = {
+  starting: "starting",
+  idle: "ready",
+  running: "working",
+  crashed: "crashed",
+  failed: "failed",
+  stopped: "asleep",
+};
+
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
