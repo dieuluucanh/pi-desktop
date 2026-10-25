@@ -93,6 +93,27 @@ describe("createSdkSettingsPort", () => {
     expect(await readJson(globalPath())).toEqual({});
   });
 
+  it("writes the model scope through Pi's own setter and deletes it on undefined", async () => {
+    const port = makePort();
+    const patterns = ["fake/fake-2", "fake/fake-3:high"];
+
+    await port.write(null, "enabledModels", patterns, "global");
+    expect((await port.read(null)).global.enabledModels).toEqual(patterns);
+    expect(await readJson(globalPath())).toMatchObject({ enabledModels: patterns });
+
+    // `undefined` removes the key (Pi's "no scope" state), not an empty list.
+    await port.write(null, "enabledModels", undefined, "global");
+    expect((await port.read(null)).global.enabledModels).toBeUndefined();
+    expect(await readJson(globalPath())).not.toHaveProperty("enabledModels");
+  });
+
+  it("writes a project model scope through the document editor", async () => {
+    const port = makePort();
+    await port.write(projectDir, "enabledModels", ["fake/fake-2"], "project");
+    expect((await port.read(projectDir)).project.enabledModels).toEqual(["fake/fake-2"]);
+    expect(await readJson(projectPath())).toMatchObject({ enabledModels: ["fake/fake-2"] });
+  });
+
   it("writes project settings when the project is trusted", async () => {
     const port = makePort();
     await port.write(projectDir, "theme", "light", "project");

@@ -47,12 +47,17 @@ afterEach(async () => {
 });
 
 async function startHarness(
-  options: { extensions?: boolean; modelIds?: string[] } = {},
+  options: {
+    extensions?: boolean;
+    modelIds?: string[];
+    enabledModels?: string[];
+  } = {},
 ): Promise<Harness> {
   const provider = await createFakeProvider();
   const profile = createFixtureProfile({
     baseUrl: provider.baseUrl,
     ...(options.modelIds ? { modelIds: options.modelIds } : {}),
+    ...(options.enabledModels ? { settings: { enabledModels: options.enabledModels } } : {}),
   });
   const emitted: Array<{ event: string; payload: unknown }> = [];
   const emit = (event: string, payload?: unknown): void => {
@@ -393,6 +398,68 @@ describe("host integration: extension model changes", () => {
     harness.provider.enqueue({ kind: "text", text: "on the new model" });
     await harness.call("prompt", { text: "hello from the new model" });
     expect(harness.provider.requests.at(-1)?.body.model).toBe("fake-2");
+  });
+});
+
+describe("host integration: model scope", () => {
+  it("resolves enabledModels into the session scope without changing the startup model", async () => {
+    const harness = await startHarness({
+      modelIds: ["fake-2", "fake-3"],
+      enabledModels: ["fake/fake-2", "fake/fake-3"],
+    });
+
+    await harness.call("session.create");
+
+    const listed = (await harness.call("model.list")) as {
+      scoped?: Array<{ model?: { id?: string } }>;
+      current?: { id?: string };
+    };
+    expect(listed.scoped?.map((entry) => entry.model?.id)).toEqual(["fake-2", "fake-3"]);
+
+    // The scope reaches the renderer's model dialog through `model.available`.
+    const available = (await harness.call("model.available")) as {
+      scoped?: Array<{ model?: { id?: string } }>;
+      models?: Array<{ id?: string }>;
+    };
+    expect(available.scoped?.map((entry) => entry.model?.id)).toEqual(["fake-2", "fake-3"]);
+    expect(available.models?.length).toBeGreaterThanOrEqual(3);
+
+    // Passing the scope does not pick the startup model: the SDK's
+    // `createAgentSession` still resolves the saved default (fake-1), which is
+    // outside the scope here.
+    const state = (await harness.call("state.get")) as { model?: { id?: string } };
+    expect(state.model?.id).toBe("fake-1");
+  });
+
+  it("cycles within the scope, matching terminal Pi", async () => {
+    const harness = await startHarness({
+      modelIds: ["fake-2", "fake-3"],
+      enabledModels: ["fake/fake-2", "fake/fake-3"],
+    });
+    await harness.call("session.create");
+
+    const available = (await harness.call("model.available")) as {
+      models?: Array<{ id?: string; provider?: string }>;
+    };
+    const fake2 = available.models?.find((model) => model.id === "fake-2");
+    expect(fake2).toBeDefined();
+    await harness.call("model.set", { model: fake2 });
+    const before = (await harness.call("state.get")) as { model?: { id?: string } };
+    expect(before.model?.id).toBe("fake-2");
+
+    // Only the two scoped models are in play: fake-3 follows, not fake-1.
+    const cycled = (await harness.call("model.cycle", { direction: "forward" })) as {
+      model?: { id?: string };
+    };
+    expect(cycled.model?.id).toBe("fake-3");
+  });
+
+  it("leaves the session unscoped when enabledModels is absent", async () => {
+    const harness = await startHarness({ modelIds: ["fake-2"] });
+    await harness.call("session.create");
+
+    const listed = (await harness.call("model.list")) as { scoped?: unknown[] };
+    expect(listed.scoped).toEqual([]);
   });
 });
 

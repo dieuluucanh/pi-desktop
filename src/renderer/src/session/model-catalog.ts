@@ -9,8 +9,12 @@
  * (`agent-session.js` computes `(tokens / contextWindow) * 100`), not a fraction.
  */
 
-import { favoriteModelKey } from "../../../shared/prefs";
 import { fuzzyFilter } from "../completion/fuzzy";
+
+/** The stable catalog key for a model (`provider/id`), also the scope key. */
+function modelKey(provider: string, id: string): string {
+  return `${provider}/${id}`;
+}
 
 /** One selectable model, with the raw object kept for `model.set`. */
 export interface ModelCatalogEntry {
@@ -68,7 +72,7 @@ export function toCatalogEntry(value: unknown): ModelCatalogEntry | null {
   const label = stringOf(inner.name) ?? stringOf(inner.label) ?? id;
   const thinkingLevel = stringOf(record.thinkingLevel);
   return {
-    key: favoriteModelKey(provider, id),
+    key: modelKey(provider, id),
     id,
     provider,
     label,
@@ -96,7 +100,7 @@ export function modelKeyOf(model: unknown): string | null {
   const id = stringOf(record.id) ?? stringOf(record.modelId);
   const provider = stringOf(record.provider) ?? stringOf(record.providerId);
   if (!id || !provider) return null;
-  return favoriteModelKey(provider, id);
+  return modelKey(provider, id);
 }
 
 /**
@@ -163,19 +167,19 @@ export function filterModels(
   return fuzzyFilter(entries, query, (entry) => `${entry.label} ${entry.key}`);
 }
 
-/** The favourites first, in the user's order, then everything else. */
-export function withFavoritesFirst(
+/** Scoped models first, in the user's scope order, then everything else. */
+export function withScopedFirst(
   entries: readonly ModelCatalogEntry[],
-  favorites: readonly string[],
-): { favorites: ModelCatalogEntry[]; others: ModelCatalogEntry[] } {
+  scoped: readonly string[],
+): { scoped: ModelCatalogEntry[]; others: ModelCatalogEntry[] } {
   const byKey = new Map(entries.map((entry) => [entry.key, entry]));
-  const favoriteEntries = favorites
+  const scopedEntries = scoped
     .map((key) => byKey.get(key))
     .filter((entry): entry is ModelCatalogEntry => entry !== undefined);
-  const favoriteKeys = new Set(favoriteEntries.map((entry) => entry.key));
+  const scopedKeys = new Set(scopedEntries.map((entry) => entry.key));
   return {
-    favorites: favoriteEntries,
-    others: entries.filter((entry) => !favoriteKeys.has(entry.key)),
+    scoped: scopedEntries,
+    others: entries.filter((entry) => !scopedKeys.has(entry.key)),
   };
 }
 

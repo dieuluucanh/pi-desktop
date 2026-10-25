@@ -3,6 +3,12 @@ import {
   KEYBINDING_DEFINITIONS,
   resolveKeybindings as resolveEffectiveKeybindings,
 } from "../shared/keybindings";
+import {
+  SCOPE_PATTERN_MAX_LENGTH,
+  effectiveScopePatterns,
+  normalizeScopePatterns,
+  scopeWriteTarget,
+} from "../shared/model-scope";
 import type { ExtensionRuntimeErrorSummary } from "../shared/resources";
 import {
   eventToFrame,
@@ -81,6 +87,12 @@ export interface HostSession extends SessionStateLike {
   getLastAssistantText?(): string | undefined;
   /** Models the user has scoped through `enabledModels`, with their own thinking level. */
   scopedModels?: readonly unknown[];
+  /**
+   * Replaces the live scope (Pi's `AgentSession.setScopedModels`). The model
+   * dialog's star applies a scope edit to the running session without waiting
+   * for a reload, so extension pickers and `cycleModel` see it immediately.
+   */
+  setScopedModels?(scopedModels: readonly unknown[]): void;
   /**
    * Pi's `ModelRuntime`, reached the way the RPC mode does: the picker needs the
    * available catalog and the per-provider credential state (plan step 8), and
@@ -188,8 +200,45 @@ export interface SettingsLike {
   /** Pi's `Settings` objects, forwarded verbatim (see the control core). */
   getGlobalSettings?(): PiPayload;
   getProjectSettings?(): PiPayload;
+  /** The effective `enabledModels` after Pi's project-over-global merge. */
+  getEnabledModels?(): string[] | undefined;
   flush?(): Promise<void>;
   drainErrors?(): unknown[];
+}
+
+/** One scope diagnostic, in the shape the host already uses for setup warnings. */
+export interface ModelScopeDiagnosticInfo {
+  type: "warning";
+  message: string;
+}
+
+export interface ModelScopeResolution {
+  scopedModels: readonly unknown[];
+  diagnostics: readonly ModelScopeDiagnosticInfo[];
+}
+
+export interface ModelScopeToggleInput {
+  liveScoped: readonly unknown[];
+  patterns: readonly string[] | undefined;
+  runtime: unknown;
+  provider: string;
+  id: string;
+  enabled: boolean;
+}
+
+export interface ModelScopeToggleResult extends ModelScopeResolution {
+  /** `undefined` means "no scope": the handler deletes `enabledModels`. */
+  patterns: string[] | undefined;
+}
+
+/**
+ * The model-scope adapter (implemented in `src/host/sdk/model-scope.ts`).
+ * Injected so this core stays SDK-free: it resolves `enabledModels` into models
+ * and rewrites the pattern list for one star toggle.
+ */
+export interface ModelScopePort {
+  resolve(patterns: readonly string[] | undefined, runtime: unknown): Promise<ModelScopeResolution>;
+  toggle(input: ModelScopeToggleInput): Promise<ModelScopeToggleResult>;
 }
 
 export interface SessionRuntimeRequest {
@@ -266,6 +315,12 @@ export interface SessionCoreDeps {
    * the session without a second manager.
    */
   createSettingsPort?(manager: SettingsLike | null): SettingsPort;
+  /**
+   * The model-scope adapter. Session creation resolves the scope in
+   * `src/host/sdk/index.ts`; this port is for the live edits
+   * (`model.scope.apply` / `model.scope.toggle`).
+   */
+  modelScope?: ModelScopePort;
   /**
    * Theme catalogue (plan step 15). Built over the session's own manager and
    * loader when a session is open, so the active theme and project themes are
@@ -384,6 +439,44 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   const settingsSetHandler = createSettingsHandlers({
     resolvePort: resolveSettingsPort,
   }).handlers()["settings.set"];
+
+  /**
+   * The effective `enabledModels` for this session. Prefer the SDK manager's
+   * merged getter (project over global); the document fallback keeps the core
+   * usable with a narrow/fake settings manager.
+   */
+  const effectiveModelScope = (): string[] =>
+    normalizeScopePatterns(
+      settingsManager?.getEnabledModels?.() ??
+        effectiveScopePatterns(readSettingsScopes(settingsManager)),
+    );
+
+  /**
+   * Writes the scope to the document that currently defines it. A failure
+   * throws before the live session is touched, so a refused write can never
+   * leave `settings.json` and the session scope disagreeing.
+   */
+  const persistModelScope = async (patterns: string[] | undefined): Promise<void> => {
+    const port = resolveSettingsPort();
+    if (!port) {
+      throw new SessionCoreError(
+        "settings are not available; the model scope was not changed",
+        "unsupported",
+      );
+    }
+    const target = scopeWriteTarget(readSettingsScopes(settingsManager));
+    await port.write(cwd, "enabledModels", patterns, target);
+  };
+
+  const requireModelScope = (current: HostSession): ModelScopePort => {
+    if (!deps.modelScope) {
+      throw new SessionCoreError("the model scope is not supported", "unsupported");
+    }
+    if (!current.setScopedModels) {
+      throw new SessionCoreError("changing the model scope is not supported", "unsupported");
+    }
+    return deps.modelScope;
+  };
 
   /** Events after which the app should refresh its state snapshot. */
   const STATE_EVENTS = new Set([
@@ -1050,6 +1143,67 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     "model.list": () => {
       const current = ensure();
       return { scoped: current.scopedModels ?? [], current: snapshot().model };
+    },
+
+    // Re-reads `enabledModels` from the settings file and applies it to this
+    // session. Used after another host writes the scope (the Settings view) and
+    // by every other open tab after a star toggle.
+    "model.scope.apply": async () => {
+      const current = ensure();
+      const scope = requireModelScope(current);
+      const settings = resolveSettingsPort();
+      if (settings) {
+        try {
+          await settings.reload(cwd);
+        } catch {
+          // Keep the cached settings: a stale scope beats a dead dialog.
+        }
+      }
+      const patterns = effectiveModelScope();
+      const resolution = await scope.resolve(patterns, current.modelRuntime);
+      current.setScopedModels?.(resolution.scopedModels);
+      emitState();
+      return {
+        enabledModels: patterns,
+        scoped: resolution.scopedModels,
+        diagnostics: resolution.diagnostics,
+      };
+    },
+
+    // One star toggle: rewrite the pattern list from the live scope, persist it,
+    // then apply the resolved models to this session.
+    "model.scope.toggle": async (params) => {
+      const current = ensure();
+      const scope = requireModelScope(current);
+      const input = asRecord(params);
+      const provider = requireString(input.provider, "provider").trim();
+      const id = requireString(input.id, "id").trim();
+      if (provider.length === 0 || id.length === 0 || provider.includes("/")) {
+        throw new SessionCoreError("provider/id must name exactly one model", "bad_request");
+      }
+      const ref = `${provider}/${id}`;
+      if (ref.length > SCOPE_PATTERN_MAX_LENGTH) {
+        throw new SessionCoreError("the model reference is too long", "bad_request");
+      }
+      const result = await scope.toggle({
+        liveScoped: current.scopedModels ?? [],
+        patterns: effectiveModelScope(),
+        runtime: current.modelRuntime,
+        provider,
+        id,
+        enabled: input.enabled === true,
+      });
+      await persistModelScope(result.patterns);
+      // "No scope" must always mean an empty live scope, even if an adapter
+      // one day returns an empty pattern list with stale models attached.
+      const scopedModels = result.patterns === undefined ? [] : result.scopedModels;
+      current.setScopedModels?.(scopedModels);
+      emitState();
+      return {
+        enabledModels: result.patterns ?? [],
+        scoped: scopedModels,
+        diagnostics: result.diagnostics,
+      };
     },
 
     "model.set": async (params) => {

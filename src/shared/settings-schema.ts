@@ -119,8 +119,9 @@ export const SETTINGS_GROUPS = [
   },
   {
     id: "model-cycling",
-    label: "Model Cycling",
-    description: "Model patterns included when cycling with Ctrl+P.",
+    label: "Model scope",
+    description:
+      "Models available to Ctrl+Alt cycling, the model dialog's stars and extension pickers.",
   },
   {
     id: "markdown",
@@ -679,12 +680,13 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     scope: "both",
   },
 
-  // ---- Model Cycling ----------------------------------------------------
+  // ---- Model scope (Pi's enabledModels) --------------------------------
   {
     key: "enabledModels",
     group: "model-cycling",
-    label: "Cycling patterns",
-    description: "Model patterns included when cycling.",
+    label: "Model scope",
+    description:
+      "Models in scope for Ctrl+Alt cycling, the model dialog's stars and extension pickers (/profile, /role). Empty means every model.",
     type: "string-list",
     scope: "both",
   },

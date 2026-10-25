@@ -15,7 +15,6 @@ export const PREF_KEYS = [
   "sidebarWidth",
   "viewMode",
   "drafts",
-  "favoriteModels",
   "telemetryEnabled",
   "privacyAcknowledged",
   "profileMode",
@@ -38,12 +37,6 @@ export interface UiPrefs {
    * tab switch or an app restart. Bounded below: a draft is not a document.
    */
   drafts: Record<string, string>;
-  /**
-   * Favourite models as `provider/id` keys (plan step 8), so the picker can keep
-   * the handful of models a project actually uses at the top without inventing a
-   * second settings file — these are app preferences, not Pi state.
-   */
-  favoriteModels: string[];
   /**
    * Pi's install telemetry (plan step 23). **Off by default**: every host is
    * spawned with `PI_TELEMETRY=0` unless this is true, so the app never sends an
@@ -69,29 +62,6 @@ export interface UiPrefs {
   onboardingCompletedAt: number | null;
 }
 
-/** How many favourites are kept; the picker is a shortlist, not a catalogue. */
-export const MAX_FAVORITE_MODELS = 12;
-
-/**
- * Longest favourite key kept. A key is `provider/id`, and the gateway editor's
- * caps are 64 and 200 (`MAX_PROVIDER_ID_LENGTH`/`MAX_MODEL_ID_LENGTH` in
- * `./custom-providers`), so 265 is the true worst case — this leaves headroom.
- * `sanitizeFavorites` **drops** an over-long key silently, which would make a
- * favourited rich-id model disappear on the next reload.
- */
-export const MAX_FAVORITE_KEY_LENGTH = 300;
-
-/** The preference key for a model, matching the catalog's stable key. */
-export function favoriteModelKey(provider: string, id: string): string {
-  return `${provider}/${id}`;
-}
-
-/** Adds or removes a favourite, preserving order and the cap. */
-export function toggleFavoriteModel(favorites: readonly string[], key: string): string[] {
-  if (favorites.includes(key)) return favorites.filter((entry) => entry !== key);
-  return [...favorites, key].slice(-MAX_FAVORITE_MODELS);
-}
-
 /** Longest draft kept per tab, and how many tabs may hold one. */
 export const MAX_DRAFT_LENGTH = 20_000;
 export const MAX_DRAFT_TABS = 50;
@@ -106,7 +76,6 @@ export const DEFAULT_PREFS: UiPrefs = {
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   viewMode: "normal",
   drafts: {},
-  favoriteModels: [],
   telemetryEnabled: false,
   privacyAcknowledged: false,
   profileMode: DEFAULT_PROFILE_MODE,
@@ -133,22 +102,7 @@ export function sanitizeDrafts(input: unknown): Record<string, string> {
   return drafts;
 }
 
-/** Keeps the favourite list to unique, non-empty keys of a bounded length. */
-export function sanitizeFavorites(input: unknown): string[] {
-  if (!Array.isArray(input)) return [];
-  const favorites: string[] = [];
-  for (const entry of input) {
-    if (typeof entry !== "string" || entry.length === 0 || entry.length > MAX_FAVORITE_KEY_LENGTH) {
-      continue;
-    }
-    if (favorites.includes(entry)) continue;
-    favorites.push(entry);
-    if (favorites.length >= MAX_FAVORITE_MODELS) break;
-  }
-  return favorites;
-}
-
-/** Coerces an untrusted value into a valid `UiPrefs`, ignoring unknown keys. */
+/** Keeps the draft map small and string-valued; unknown tabs are dropped. */
 export function sanitizePrefs(input: unknown): UiPrefs {
   const source = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
   const theme = source.theme;
@@ -167,7 +121,6 @@ export function sanitizePrefs(input: unknown): UiPrefs {
       ? (viewMode as ViewMode)
       : DEFAULT_PREFS.viewMode,
     drafts: sanitizeDrafts(source.drafts),
-    favoriteModels: sanitizeFavorites(source.favoriteModels),
     // A missing value is off: an older app-state.json (or a fresh profile) must
     // never opt the user into telemetry by omission.
     telemetryEnabled:

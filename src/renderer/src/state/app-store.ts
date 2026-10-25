@@ -2,12 +2,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import type { AppInfo, WebTabOpenInput } from "../../../shared/ipc";
 import type { BlobRef } from "../../../shared/host-protocol";
-import {
-  DEFAULT_PREFS,
-  toggleFavoriteModel,
-  type UiPrefs,
-  type ViewMode,
-} from "../../../shared/prefs";
+import { DEFAULT_PREFS, type UiPrefs, type ViewMode } from "../../../shared/prefs";
 import {
   findProject,
   projectNameOf,
@@ -27,6 +22,7 @@ import {
   type ProviderLoginEvent,
   type ProviderSummary,
 } from "../../../shared/providers";
+import { scopeKeys } from "../../../shared/model-scope";
 import type { CustomProviderInput, CustomProviderSummary } from "../../../shared/custom-providers";
 import {
   findSettingsField,
@@ -467,6 +463,10 @@ export interface AppStateShape {
   modelCatalog: Record<string, ModelCatalogEntry[]>;
   providerAuth: Record<string, Record<string, unknown>>;
   thinkingLevels: Record<string, string[]>;
+  /** `provider/id` keys of the live session scope (Pi's `enabledModels`). */
+  modelScope: Record<string, string[]>;
+  /** The model key a star toggle is currently writing, per tab. */
+  modelScopeBusy: Record<string, string | null>;
   picker: PickerKind | null;
   pickerError: string | null;
   /** Initial search text for the model picker (`/model <query>`). */
@@ -481,7 +481,13 @@ export interface AppStateShape {
   cycleModel: (tabId: string, direction: 1 | -1) => Promise<void>;
   cycleThinking: (tabId: string) => Promise<void>;
   renameSession: (tabId: string, name: string) => Promise<void>;
-  toggleFavorite: (key: string) => void;
+  /**
+   * Adds/removes one model in Pi's scope (`enabledModels`). Persists the
+   * rewrite, applies it to this tab, then refreshes every other open tab.
+   */
+  toggleModelScope: (tabId: string, provider: string, id: string) => Promise<void>;
+  /** Re-reads `enabledModels` into each open session (no write). */
+  applyModelScopeToTabs: (exceptTabId?: string) => Promise<void>;
   setViewMode: (mode: ViewMode) => void;
   openPicker: (picker: PickerKind, options?: { search?: string }) => void;
   closePicker: () => void;
@@ -1071,6 +1077,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   modelCatalog: {},
   providerAuth: {},
   thinkingLevels: {},
+  modelScope: {},
+  modelScopeBusy: {},
   picker: null,
   pickerError: null,
   pickerSearch: "",
@@ -1868,6 +1876,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       const response = (await api.sessions.request({ tabId, method: "model.available" })) as
         | {
             models?: unknown[];
+            scoped?: unknown[];
             auth?: Record<string, unknown>;
             thinkingLevels?: unknown[];
           }
@@ -1876,6 +1885,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         modelCatalog: {
           ...get().modelCatalog,
           [tabId]: toCatalog(Array.isArray(response?.models) ? response.models : []),
+        },
+        modelScope: {
+          ...get().modelScope,
+          [tabId]: scopeKeys(Array.isArray(response?.scoped) ? response.scoped : []),
         },
         providerAuth: { ...get().providerAuth, [tabId]: response?.auth ?? {} },
         thinkingLevels: {
@@ -1966,10 +1979,72 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  toggleFavorite: (key) => {
-    const favorites = toggleFavoriteModel(get().prefs.favoriteModels, key);
-    set({ prefs: { ...get().prefs, favoriteModels: favorites } });
-    void bridge()?.prefs.set({ favoriteModels: favorites });
+  toggleModelScope: async (tabId, provider, id) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    // One settings rewrite per tab at a time: a second click could interleave
+    // two writes and lose one of them.
+    if (get().modelScopeBusy[tabId]) return;
+    const key = `${provider}/${id}`;
+    const before = get().modelScope[tabId] ?? [];
+    const enabled = !before.includes(key);
+    const optimistic = enabled ? [...before, key] : before.filter((entry) => entry !== key);
+    set({
+      modelScope: { ...get().modelScope, [tabId]: optimistic },
+      modelScopeBusy: { ...get().modelScopeBusy, [tabId]: key },
+      pickerError: null,
+    });
+    try {
+      const response = (await api.sessions.request({
+        tabId,
+        method: "model.scope.toggle",
+        params: { provider, id, enabled },
+      })) as { scoped?: unknown[] } | undefined;
+      set({
+        modelScope: {
+          ...get().modelScope,
+          [tabId]: scopeKeys(Array.isArray(response?.scoped) ? response.scoped : []),
+        },
+      });
+      await get().loadSettings({ refresh: true });
+      await get().applyModelScopeToTabs(tabId);
+    } catch (error) {
+      set({
+        modelScope: { ...get().modelScope, [tabId]: before },
+        pickerError: errorMessage(error),
+      });
+      get().noteFailure(error);
+    } finally {
+      const busy = { ...get().modelScopeBusy };
+      delete busy[tabId];
+      set({ modelScopeBusy: busy });
+    }
+  },
+
+  applyModelScopeToTabs: async (exceptTabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    const targets = get().tabs.filter((tab) => tab.id !== exceptTabId && tab.kind === "session");
+    await Promise.all(
+      targets.map(async (tab) => {
+        try {
+          const response = (await api.sessions.request({
+            tabId: tab.id,
+            method: "model.scope.apply",
+          })) as { scoped?: unknown[] } | undefined;
+          set({
+            modelScope: {
+              ...get().modelScope,
+              [tab.id]: scopeKeys(Array.isArray(response?.scoped) ? response.scoped : []),
+            },
+          });
+        } catch {
+          // A starting/crashed tab has no live session; it converges on its
+          // next session or /reload, so one dead tab must not fail the star.
+        }
+        return undefined;
+      }),
+    );
   },
 
   setViewMode: (mode) => {
@@ -2673,6 +2748,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         params: { cwd, key, value, scope },
       })) as SettingsSnapshot;
       set(settingsStateFrom(snapshot, cwd));
+      // The scope lives on the live session too. A Settings edit must reach the
+      // open tabs without waiting for a reload, or the dialog's stars and the
+      // extension pickers would disagree with the file.
+      if (key === "enabledModels") {
+        await get().applyModelScopeToTabs();
+      }
       return true;
     } catch (error) {
       set({ settingsBusy: false, settingsError: errorMessage(error) });

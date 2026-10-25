@@ -24,7 +24,7 @@ const AUTH = {
 
 function renderPicker(overrides: Partial<Parameters<typeof ModelPicker>[0]> = {}) {
   const onPick = vi.fn();
-  const onToggleFavorite = vi.fn();
+  const onToggleScope = vi.fn();
   const onSignIn = vi.fn();
   const onOpenModelsJson = vi.fn();
   const onClose = vi.fn();
@@ -34,16 +34,16 @@ function renderPicker(overrides: Partial<Parameters<typeof ModelPicker>[0]> = {}
       entries={CATALOG}
       auth={AUTH}
       currentKey="anthropic/claude-sonnet-4-5"
-      favorites={[]}
+      scoped={[]}
       onPick={onPick}
-      onToggleFavorite={onToggleFavorite}
+      onToggleScope={onToggleScope}
       onSignIn={onSignIn}
       onOpenModelsJson={onOpenModelsJson}
       onClose={onClose}
       {...overrides}
     />,
   );
-  return { onPick, onToggleFavorite, onSignIn, onOpenModelsJson, onClose };
+  return { onPick, onToggleScope, onSignIn, onOpenModelsJson, onClose };
 }
 
 describe("ModelPicker", () => {
@@ -98,17 +98,28 @@ describe("ModelPicker", () => {
     expect(onPick).toHaveBeenLastCalledWith(CATALOG[1], { persist: true });
   });
 
-  it("toggles a favourite from the star", async () => {
+  it("toggles a model in the scope from the star", async () => {
     const user = userEvent.setup();
-    const { onToggleFavorite } = renderPicker();
-    await user.click(screen.getByRole("button", { name: "Favourite GPT-5" }));
-    expect(onToggleFavorite).toHaveBeenCalledWith("openai/gpt-5");
+    const { onToggleScope } = renderPicker();
+    await user.click(screen.getByRole("button", { name: "Add GPT-5 to scope" }));
+    expect(onToggleScope).toHaveBeenCalledWith(CATALOG[1]);
   });
 
-  it("lists favourites first", () => {
-    renderPicker({ favorites: ["openai/gpt-5"] });
+  it("lists the scoped models first, in scope order", () => {
+    renderPicker({ scoped: ["openai/gpt-5", "anthropic/claude-sonnet-4-5"] });
     const sections = screen.getByTestId("model-list").querySelectorAll("h3");
-    expect(sections[0]?.textContent).toContain("Favourites");
+    expect(sections[0]?.textContent).toContain("Scoped (2)");
+    expect(screen.queryByTestId("no-scope-note")).toBeNull();
+  });
+
+  it("explains that an empty scope still offers every model", () => {
+    renderPicker();
+    expect(screen.getByTestId("no-scope-note")).toHaveTextContent(/every model is available/);
+  });
+
+  it("disables the star while that model's scope write is in flight", () => {
+    renderPicker({ scoped: ["openai/gpt-5"], scopeBusyKey: "openai/gpt-5" });
+    expect(screen.getByRole("button", { name: "Remove GPT-5 from scope" })).toBeDisabled();
   });
 
   it("shows a picker-scoped error when one is set, and none otherwise", () => {
@@ -117,9 +128,9 @@ describe("ModelPicker", () => {
         open
         entries={CATALOG}
         auth={AUTH}
-        favorites={[]}
+        scoped={[]}
         onPick={vi.fn()}
-        onToggleFavorite={vi.fn()}
+        onToggleScope={vi.fn()}
         onSignIn={vi.fn()}
         onOpenModelsJson={vi.fn()}
         onClose={vi.fn()}
@@ -134,9 +145,9 @@ describe("ModelPicker", () => {
         open
         entries={CATALOG}
         auth={AUTH}
-        favorites={[]}
+        scoped={[]}
         onPick={vi.fn()}
-        onToggleFavorite={vi.fn()}
+        onToggleScope={vi.fn()}
         onSignIn={vi.fn()}
         onOpenModelsJson={vi.fn()}
         onClose={vi.fn()}

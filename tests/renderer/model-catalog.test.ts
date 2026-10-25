@@ -12,7 +12,7 @@ import {
   toAuthBadge,
   toCatalog,
   toCatalogEntry,
-  withFavoritesFirst,
+  withScopedFirst,
   type ModelCatalogEntry,
 } from "../../src/renderer/src/session/model-catalog";
 import { contextFooterText } from "../../src/renderer/src/session/ComposerFooter";
@@ -107,20 +107,20 @@ describe("the catalog", () => {
     expect(findExactModelEntry(entries, " ")).toBeNull();
   });
 
-  it("puts favourites first, in the user's order", () => {
+  it("puts scoped models first, in the user's order", () => {
     const catalog = toCatalog([
       { id: "a", provider: "p" },
       { id: "b", provider: "p" },
       { id: "c", provider: "p" },
     ]);
-    const split = withFavoritesFirst(catalog, ["p/c", "p/a"]);
-    expect(split.favorites.map((entry) => entry.key)).toEqual(["p/c", "p/a"]);
+    const split = withScopedFirst(catalog, ["p/c", "p/a"]);
+    expect(split.scoped.map((entry) => entry.key)).toEqual(["p/c", "p/a"]);
     expect(split.others.map((entry) => entry.key)).toEqual(["p/b"]);
   });
 
-  it("ignores a favourite whose model is not in the catalog", () => {
+  it("ignores a scoped key whose model is not in the catalog", () => {
     const catalog = toCatalog([{ id: "a", provider: "p" }]);
-    expect(withFavoritesFirst(catalog, ["gone/model"]).favorites).toEqual([]);
+    expect(withScopedFirst(catalog, ["gone/model"]).scoped).toEqual([]);
   });
 
   it("reads a model key from either spelling Pi uses", () => {

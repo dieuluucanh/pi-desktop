@@ -6,23 +6,23 @@ terminal Pi sees the change immediately.
 
 ## Groups
 
-| Group             | What it covers                                           |
-| ----------------- | -------------------------------------------------------- |
-| Model & Thinking  | Startup provider/model, thinking level, per-model levels |
-| UI & Display      | Theme, editor chrome, tree filters, analytics            |
-| Network           | Proxy and network settings                               |
-| Warnings          | Transcript warnings the agent may show                   |
-| Compaction        | When and how the conversation is compacted               |
-| Branch Summary    | How branch history is summarised                         |
-| Retry             | Automatic retries for transient provider errors          |
-| Message Delivery  | Steering/follow-up modes and transport timeouts          |
-| Terminal & Images | Terminal rendering overrides and image handling          |
-| Shell             | The shell and npm used for tools and packages            |
-| Tools             | Which built-in tools are enabled at startup              |
-| Sessions          | Where session files are stored                           |
-| Model Cycling     | Model patterns included when cycling                     |
-| Markdown          | Code-block indentation and Mermaid rendering             |
-| Resources         | Packages, extensions, skills, prompts and themes         |
+| Group             | What it covers                                                        |
+| ----------------- | --------------------------------------------------------------------- |
+| Model & Thinking  | Startup provider/model, thinking level, per-model levels              |
+| UI & Display      | Theme, editor chrome, tree filters, analytics                         |
+| Network           | Proxy and network settings                                            |
+| Warnings          | Transcript warnings the agent may show                                |
+| Compaction        | When and how the conversation is compacted                            |
+| Branch Summary    | How branch history is summarised                                      |
+| Retry             | Automatic retries for transient provider errors                       |
+| Message Delivery  | Steering/follow-up modes and transport timeouts                       |
+| Terminal & Images | Terminal rendering overrides and image handling                       |
+| Shell             | The shell and npm used for tools and packages                         |
+| Tools             | Which built-in tools are enabled at startup                           |
+| Sessions          | Where session files are stored                                        |
+| Model scope       | Models for Ctrl+Alt cycling, the dialog's stars and extension pickers |
+| Markdown          | Code-block indentation and Mermaid rendering                          |
+| Resources         | Packages, extensions, skills, prompts and themes                      |
 
 Each field shows a **provenance badge** — where its effective value came from
 (default, global, project). Values are validated before anything is written; an
@@ -61,7 +61,7 @@ A few things live in app state on purpose, so they never change terminal Pi’s
 behaviour:
 
 - theme fallback before Pi’s theme loads (`prefs.theme`);
-- sidebar layout, view mode, favourites and per-tab drafts;
+- sidebar layout, view mode and per-tab drafts;
 - telemetry opt-in (`PI_TELEMETRY=0` unless enabled);
 - the Pi profile choice (shared vs app-private);
 - `externalEditor` is a Pi setting, but the launcher that spawns the editor is

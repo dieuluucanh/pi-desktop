@@ -26,7 +26,8 @@ skills, themes and settings are managed through a UI, using the **same
 - **Context and commands** — `/` commands (app, extension, prompt, skill), `@`
   files, image paste/drop, `#` Office document mentions.
 - **Providers and models** — OAuth subscriptions, write-only API keys, custom
-  gateways, model/thinking pickers, favourites and per-project defaults.
+  gateways, model/thinking pickers, the model scope (shared with Ctrl+Alt cycling
+  and extension pickers) and per-project defaults.
 - **Extensions and packages** — the same discovery as terminal Pi, with
   provenance, load-error diagnostics, enable/disable, install consent and the
   full `ExtensionUIContext` (dialogs, widgets, status, and the TUI rendering

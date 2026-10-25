@@ -5,7 +5,9 @@
  *  - models are grouped by provider and carry an **auth badge**; a provider
  *    without credentials offers "Sign in", which routes to Connections rather
  *    than silently failing on the first prompt;
- *  - favourites are app preferences (`favoriteModels`), not Pi state;
+ *  - the star is Pi's **model scope** (`enabledModels`): it drives Ctrl+Alt
+ *    cycling and the extension model pickers (`/profile`, `/role`), not just
+ *    this dialog. An empty scope means every available model is usable;
  *  - "save as default" maps to the SDK's `persist` option: unchecked means the
  *    switch lasts for this session, checked writes it as the project default.
  */
@@ -20,7 +22,7 @@ import {
   filterModels,
   groupByProvider,
   toAuthBadge,
-  withFavoritesFirst,
+  withScopedFirst,
   type ModelCatalogEntry,
 } from "./model-catalog";
 
@@ -33,10 +35,13 @@ export interface ModelPickerProps {
   currentKey?: string | null;
   /** Search text supplied by `/model <query>`; reset whenever the dialog opens. */
   initialQuery?: string;
-  favorites: readonly string[];
+  /** `provider/id` keys of the live model scope (Pi's `enabledModels`). */
+  scoped: readonly string[];
+  /** The model key whose scope write is in flight, if any. */
+  scopeBusyKey?: string | null;
   error?: string | null;
   onPick: (entry: ModelCatalogEntry, options: { persist: boolean }) => void;
-  onToggleFavorite: (key: string) => void;
+  onToggleScope: (entry: ModelCatalogEntry) => void;
   onSignIn: (provider: string) => void;
   onOpenModelsJson: () => void;
   onClose: () => void;
@@ -48,10 +53,11 @@ export function ModelPicker({
   auth,
   currentKey = null,
   initialQuery = "",
-  favorites,
+  scoped,
+  scopeBusyKey = null,
   error = null,
   onPick,
-  onToggleFavorite,
+  onToggleScope,
   onSignIn,
   onOpenModelsJson,
   onClose,
@@ -63,7 +69,7 @@ export function ModelPicker({
   const [persist, setPersist] = useState(false);
 
   const matched = filterModels(entries, query);
-  const { favorites: favoriteEntries, others } = withFavoritesFirst(matched, favorites);
+  const { scoped: scopedEntries, others } = withScopedFirst(matched, scoped);
   const groups = groupByProvider(others, auth);
   const signedOutProviders = [...new Set(entries.map((entry) => entry.provider))].filter(
     (provider) => !toAuthBadge(auth[provider]).configured,
@@ -71,7 +77,7 @@ export function ModelPicker({
 
   function renderEntry(entry: ModelCatalogEntry) {
     const active = entry.key === currentKey;
-    const favorite = favorites.includes(entry.key);
+    const isScoped = scoped.includes(entry.key);
     return (
       <div key={entry.key} className="flex items-center gap-1">
         <button
@@ -93,12 +99,16 @@ export function ModelPicker({
         </button>
         <button
           type="button"
-          aria-label={favorite ? `Unfavourite ${entry.label}` : `Favourite ${entry.label}`}
-          aria-pressed={favorite}
-          onClick={() => onToggleFavorite(entry.key)}
-          className={cn("rounded-xs p-1", favorite ? "text-warn" : "text-ink-faint hover:text-ink")}
+          aria-label={isScoped ? `Remove ${entry.label} from scope` : `Add ${entry.label} to scope`}
+          aria-pressed={isScoped}
+          disabled={scopeBusyKey === entry.key}
+          onClick={() => onToggleScope(entry)}
+          className={cn(
+            "rounded-xs p-1 disabled:opacity-40",
+            isScoped ? "text-warn" : "text-ink-faint hover:text-ink",
+          )}
         >
-          <Star className={cn("size-3", favorite && "fill-current")} aria-hidden />
+          <Star className={cn("size-3", isScoped && "fill-current")} aria-hidden />
         </button>
       </div>
     );
@@ -109,8 +119,8 @@ export function ModelPicker({
       <DialogContent aria-label="Choose a model">
         <DialogTitle>Choose a model</DialogTitle>
         <DialogDescription>
-          Grouped by provider. The star keeps a model in your shortlist. Unchecked: this session
-          only · checked: writes Pi’s default.
+          Grouped by provider. The star is your model scope — it drives Ctrl+Alt cycling and the
+          /profile and /role pickers. Unchecked: this session only · checked: writes Pi’s default.
         </DialogDescription>
         {error ? (
           <p role="alert" data-testid="model-picker-error" className="mt-2 text-xs text-danger">
@@ -131,13 +141,20 @@ export function ModelPicker({
         </label>
 
         <div className="mt-3 max-h-[50vh] overflow-y-auto" data-testid="model-list">
-          {favoriteEntries.length > 0 ? (
+          {scopedEntries.length > 0 ? (
             <section className="mb-3">
               <h3 className="px-2 pb-1 text-[10px] uppercase tracking-wide text-ink-faint">
-                Favourites
+                Scoped ({scopedEntries.length})
               </h3>
-              {favoriteEntries.map(renderEntry)}
+              {scopedEntries.map(renderEntry)}
             </section>
+          ) : null}
+
+          {scoped.length === 0 ? (
+            <p className="px-2 pb-2 text-[11px] text-ink-faint" data-testid="no-scope-note">
+              No scope — every model is available to Ctrl+Alt cycling and the /profile, /role
+              pickers. Star a model to narrow the set.
+            </p>
           ) : null}
 
           {groups.map((group) => (

@@ -10,9 +10,9 @@ provider and shows:
 
 - **auth badges** — a provider you are not signed in to says “Sign in” and routes
   to Connections;
-- **search** and your **favourites** (stored as an app preference, not Pi state);
-- the **scoped models** Pi is configured to offer (`enabledModels`);
-- the thinking levels the selected model supports;
+- **search**;
+- your **model scope** (`enabledModels`) — the starred models, listed first;
+- the thinking level the selected model supports;
 - the model the session actually reports, which may differ from the one you
   asked for if the provider resolves a catalog entry to its own choice. The app
   shows the recorded model rather than the requested one.
@@ -23,6 +23,24 @@ and thinking level (see [Projects](projects.md)).
 
 Switching models mid-session records a `model_change` entry in the session file,
 so resuming restores the same model.
+
+## Model scope
+
+The star in the model picker is Pi’s **model scope** (`enabledModels`), the same
+list as _Settings → Model scope_. It is the set used by `Ctrl/Cmd+Alt+↓/↑`
+cycling and by extension model pickers such as `/profile` and `/role`, so one
+star controls all of them:
+
+- **starred** — in scope; the dialog lists these first under **Scoped**;
+- **no stars** — no scope is configured, so every available model is usable and
+  cycling covers all of them (the dialog says so);
+- **changing it** writes `enabledModels` immediately and applies it to every open
+  session. When a project defines its own scope in `.pi/settings.json`, the edit
+  follows that project scope; otherwise it writes the global setting.
+
+The dialog still lists every available model. Selecting one outside the scope is
+allowed (Pi appends it to the live scope), so a star click never makes a model
+unreachable. Editing the same list in Settings is equivalent.
 
 ## Thinking level
 
@@ -38,6 +56,9 @@ Cycling shortcuts (from Pi’s keybindings):
 | Next model           | `Ctrl/Cmd+Alt+↓` |
 | Previous model       | `Ctrl/Cmd+Alt+↑` |
 | Cycle thinking level | `Ctrl/Cmd+Alt+T` |
+
+Next/Previous model walk the **model scope** (see above); with no scope
+configured they walk every available model.
 
 These are editable in `keybindings.json` (see
 [Skills, themes and keybindings](skills-themes-keybindings.md)).

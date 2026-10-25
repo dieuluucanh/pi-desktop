@@ -50,6 +50,9 @@ const STATUS_TONE: Record<TabStatus, "neutral" | "accent" | "ok" | "warn" | "dan
   stopped: "neutral",
 };
 
+/** Stable empty scope for a tab whose scope has not loaded yet. */
+const EMPTY_SCOPE: readonly string[] = [];
+
 /** The transcript density modes, in the order the menu lists them. */
 const VIEW_MODES: readonly ViewMode[] = ["normal", "verbose", "summary"];
 
@@ -149,14 +152,19 @@ export function SessionView() {
   const loadModels = useAppStore((state) => state.loadModels);
   const setModel = useAppStore((state) => state.setModel);
   const setThinking = useAppStore((state) => state.setThinking);
-  const toggleFavorite = useAppStore((state) => state.toggleFavorite);
+  const toggleModelScope = useAppStore((state) => state.toggleModelScope);
   const renameSession = useAppStore((state) => state.renameSession);
   const setViewMode = useAppStore((state) => state.setViewMode);
   const openPicker = useAppStore((state) => state.openPicker);
   const closePicker = useAppStore((state) => state.closePicker);
   const setView = useAppStore((state) => state.setView);
   const setHint = useAppStore((state) => state.setHint);
-  const favorites = useAppStore((state) => state.prefs.favoriteModels);
+  const scopedModels = useAppStore((state) =>
+    activeTabId ? state.modelScope[activeTabId] : undefined,
+  );
+  const scopeBusyKey = useAppStore((state) =>
+    activeTabId ? (state.modelScopeBusy[activeTabId] ?? null) : null,
+  );
   const viewMode = useAppStore((state) => state.prefs.viewMode);
   const extensionUi = useAppStore((state) =>
     activeTabId ? state.extensionUi[activeTabId] : undefined,
@@ -566,10 +574,11 @@ export function SessionView() {
         auth={providerAuth[active.id] ?? {}}
         currentKey={currentModelKey}
         initialQuery={pickerSearch}
-        favorites={favorites}
+        scoped={scopedModels ?? EMPTY_SCOPE}
+        scopeBusyKey={scopeBusyKey}
         error={pickerError}
         onPick={(entry, options) => void setModel(active.id, entry, options)}
-        onToggleFavorite={toggleFavorite}
+        onToggleScope={(entry) => void toggleModelScope(active.id, entry.provider, entry.id)}
         onSignIn={(provider) => {
           closePicker();
           setView("connections");

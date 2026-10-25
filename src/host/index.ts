@@ -44,6 +44,7 @@ import {
   createSdkCommandRunner,
   createSdkExtensionBinder,
   createSdkKeybindingPort,
+  createSdkModelScope,
   createSdkPackagePort,
   createSdkProviderPort,
   createSdkResourceInspector,
@@ -179,6 +180,9 @@ function createCore(options: {
     // are announced only on the extension runner; refresh the snapshot from
     // that broadcast so the header/footer follow the live session.
     observeModelChanges: observeSdkModelChanges,
+    // Resolve and rewrite the model scope (`enabledModels`) for the live scope
+    // methods. The session-creation resolution lives in `createSdkSessionRuntime`.
+    modelScope: createSdkModelScope(),
     createRuntime: async (request) => {
       // Annotated with the adapter's own parameter type: if the SDK adapter ever
       // requires another field, this line fails to compile instead of drifting.

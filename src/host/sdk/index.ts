@@ -19,6 +19,7 @@ import {
   hasTrustRequiringProjectResources,
 } from "@earendil-works/pi-coding-agent";
 import { SAFE_MODE_RESOURCE_LOADER_OPTIONS } from "../safe-mode";
+import { resolveSessionScope } from "./model-scope";
 import type {
   AgentSession,
   AgentSessionEvent,
@@ -87,8 +88,31 @@ export const createSdkSessionRuntime: SessionRuntimeFactory = async (options) =>
       // skills, prompt templates, themes or project context files.
       ...(options.safeMode ? { resourceLoaderOptions: SAFE_MODE_RESOURCE_LOADER_OPTIONS } : {}),
     });
-    const created = await createAgentSessionFromServices({ services, sessionManager });
-    return { ...created, services, diagnostics: services.diagnostics };
+    // Resolve `enabledModels` exactly as terminal Pi does at startup. The scope
+    // is what extensions see as `ctx.scopedModels` and what `cycleModel` walks;
+    // without it the workflow pickers believe no scope is configured and mark
+    // every catalogue entry as out of scope. It does NOT pick the startup model:
+    // `createAgentSession` calls `findInitialModel({ scopedModels: [] })`
+    // internally, so the saved default still wins.
+    const scope = await resolveSessionScope({
+      patterns: settingsManager.getEnabledModels(),
+      runtime: services.modelRuntime,
+    });
+    for (const diagnostic of scope.diagnostics) {
+      // Same information terminal Pi prints; the host's stderr is captured in
+      // the Diagnostics view's log tail.
+      console.warn(`Warning: ${diagnostic.message}`);
+    }
+    const created = await createAgentSessionFromServices({
+      services,
+      sessionManager,
+      ...(scope.scopedModels.length > 0 ? { scopedModels: scope.scopedModels } : {}),
+    });
+    return {
+      ...created,
+      services,
+      diagnostics: [...services.diagnostics, ...scope.diagnostics],
+    };
   };
 
   const runtime = await createAgentSessionRuntime(buildRuntime, {
@@ -192,6 +216,15 @@ export { createSdkCommandRunner, type SdkCommandRunner } from "./commands";
  * to the extension runner only, so the host observes `emit` to refresh state.
  */
 export { observeSdkModelChanges } from "./model-changes";
+
+/** Model scope (`enabledModels`): resolution and one-model star toggles. */
+export {
+  createSdkModelScope,
+  ModelScopeError,
+  resolveSessionScope,
+  type ModelScopeResolver,
+  type SdkModelScope,
+} from "./model-scope";
 
 /**
  * The extension-UI host (plan step 16): Pi's `ExtensionUIContext` over the

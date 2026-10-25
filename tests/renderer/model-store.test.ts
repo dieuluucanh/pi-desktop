@@ -23,14 +23,17 @@ function tab(): TabRecord {
   };
 }
 
-function stubRequest(impl?: (input: { method: string; params?: unknown }) => Promise<unknown>) {
-  const request = vi.fn(async (input: { method: string; params?: unknown }) => {
+function stubRequest(
+  impl?: (input: { method: string; tabId?: string; params?: unknown }) => Promise<unknown>,
+) {
+  const request = vi.fn(async (input: { method: string; tabId?: string; params?: unknown }) => {
     if (input.method === "model.available") {
       return {
         models: [
           { id: "claude-sonnet-4-5", provider: "anthropic", name: "Sonnet 4.5" },
           { model: { id: "gpt-5", provider: "openai", name: "GPT-5" }, thinkingLevel: "high" },
         ],
+        scoped: [{ model: { id: "gpt-5", provider: "openai" }, thinkingLevel: "high" }],
         auth: { anthropic: { configured: true, source: "stored" }, openai: { configured: false } },
         thinkingLevels: ["off", "low", "high"],
       };
@@ -54,6 +57,8 @@ beforeEach(() => {
     modelCatalog: {},
     providerAuth: {},
     thinkingLevels: {},
+    modelScope: {},
+    modelScopeBusy: {},
     picker: null,
     pickerError: null,
     pickerSearch: "",
@@ -77,6 +82,8 @@ describe("loadModels", () => {
     expect(state.modelCatalog["tab-1"]?.[1]?.thinkingLevel).toBe("high");
     expect(state.providerAuth["tab-1"]?.["openai"]).toMatchObject({ configured: false });
     expect(state.thinkingLevels["tab-1"]).toEqual(["off", "low", "high"]);
+    // The live scope is what the dialog's stars and the extension pickers use.
+    expect(state.modelScope["tab-1"]).toEqual(["openai/gpt-5"]);
   });
 
   it("reports a host failure as a hint instead of throwing", async () => {
@@ -86,6 +93,134 @@ describe("loadModels", () => {
     (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = request;
     await useAppStore.getState().loadModels("tab-1");
     expect(useAppStore.getState().hint).toMatch(/no session/);
+  });
+});
+
+describe("model scope", () => {
+  it("writes one star toggle and refreshes the other session tabs", async () => {
+    const request = stubRequest(async (input) => {
+      if (input.method === "model.scope.toggle") {
+        return { scoped: [{ model: { provider: "openai", id: "gpt-5" } }] };
+      }
+      if (input.method === "model.scope.apply") {
+        return { scoped: [{ model: { provider: "anthropic", id: "claude" } }] };
+      }
+      return {};
+    });
+    useAppStore.setState({
+      tabs: [tab(), { ...tab(), id: "tab-2" }],
+      modelScope: { "tab-1": ["anthropic/claude"], "tab-2": ["anthropic/claude"] },
+    });
+
+    await useAppStore.getState().toggleModelScope("tab-1", "openai", "gpt-5");
+
+    expect(request).toHaveBeenCalledWith({
+      tabId: "tab-1",
+      method: "model.scope.toggle",
+      params: { provider: "openai", id: "gpt-5", enabled: true },
+    });
+    expect(request).toHaveBeenCalledWith({ tabId: "tab-2", method: "model.scope.apply" });
+    const state = useAppStore.getState();
+    expect(state.modelScope["tab-1"]).toEqual(["openai/gpt-5"]);
+    expect(state.modelScope["tab-2"]).toEqual(["anthropic/claude"]);
+    expect(state.modelScopeBusy["tab-1"]).toBeUndefined();
+  });
+
+  it("rolls the star back when the host refuses the write", async () => {
+    stubRequest(async (input) => {
+      if (input.method === "model.scope.toggle") throw new Error("settings write failed");
+      return {};
+    });
+    useAppStore.setState({ modelScope: { "tab-1": ["anthropic/claude"] } });
+
+    await useAppStore.getState().toggleModelScope("tab-1", "openai", "gpt-5");
+
+    const state = useAppStore.getState();
+    expect(state.modelScope["tab-1"]).toEqual(["anthropic/claude"]);
+    expect(state.pickerError).toMatch(/settings write failed/);
+    expect(state.hint).toMatch(/settings write failed/);
+  });
+
+  it("ignores a second star while a write is in flight", async () => {
+    const request = stubRequest();
+    useAppStore.setState({
+      modelScope: { "tab-1": ["anthropic/claude"] },
+      modelScopeBusy: { "tab-1": "openai/gpt-5" },
+    });
+
+    await useAppStore.getState().toggleModelScope("tab-1", "openai", "gpt-5");
+
+    expect(request).not.toHaveBeenCalled();
+    expect(useAppStore.getState().modelScope["tab-1"]).toEqual(["anthropic/claude"]);
+  });
+
+  it("applies the refresh to every other session tab and ignores a dead one", async () => {
+    const request = stubRequest(async (input) => {
+      if (input.method !== "model.scope.apply") return {};
+      if (input.tabId === "tab-3") throw new Error("host gone");
+      return { scoped: [{ model: { provider: "fake", id: "fake-2" } }] };
+    });
+    useAppStore.setState({
+      tabs: [
+        tab(),
+        { ...tab(), id: "tab-2" },
+        { ...tab(), id: "tab-3" },
+        { ...tab(), id: "web-1", kind: "web" },
+      ],
+    });
+
+    await useAppStore.getState().applyModelScopeToTabs("tab-1");
+
+    const state = useAppStore.getState();
+    expect(state.modelScope["tab-2"]).toEqual(["fake/fake-2"]);
+    expect(state.modelScope["tab-3"]).toBeUndefined();
+    expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ tabId: "tab-1" }));
+    expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ tabId: "web-1" }));
+  });
+
+  it("re-applies the scope to open sessions after a Settings edit", async () => {
+    const request = stubRequest(async (input) => {
+      if (input.method === "model.scope.apply") return { scoped: [] };
+      if (input.method === "settings.set") {
+        return {
+          settings: { global: { enabledModels: [] }, project: {} },
+          errors: [],
+          files: {
+            global: { path: "/profile/settings.json", exists: true, mtimeMs: 1 },
+            project: { path: "/work/app/.pi/settings.json", exists: false, mtimeMs: 0 },
+          },
+          projectTrusted: true,
+        };
+      }
+      return {};
+    });
+
+    const ok = await useAppStore.getState().setSetting("enabledModels", [], "global");
+
+    expect(ok).toBe(true);
+    expect(request).toHaveBeenCalledWith({ tabId: "tab-1", method: "model.scope.apply" });
+  });
+
+  it("does not re-apply the scope for an unrelated setting", async () => {
+    const request = stubRequest(async (input) => {
+      if (input.method === "settings.set") {
+        return {
+          settings: { global: { theme: "light" }, project: {} },
+          errors: [],
+          files: {
+            global: { path: "/profile/settings.json", exists: true, mtimeMs: 1 },
+            project: { path: "/work/app/.pi/settings.json", exists: false, mtimeMs: 0 },
+          },
+          projectTrusted: true,
+        };
+      }
+      return {};
+    });
+
+    await useAppStore.getState().setSetting("theme", "light", "global");
+    expect(request).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: "model.scope.apply" }),
+    );
   });
 });
 
@@ -331,20 +466,6 @@ describe("renameSession", () => {
 });
 
 describe("preferences", () => {
-  it("keeps a favourite and persists the list", async () => {
-    const set = vi.fn(async () => ({}));
-    (window.pi as unknown as { prefs: { set: unknown } }).prefs.set = set;
-
-    useAppStore.getState().toggleFavorite("anthropic/claude-sonnet-4-5");
-
-    expect(useAppStore.getState().prefs.favoriteModels).toEqual(["anthropic/claude-sonnet-4-5"]);
-    expect(set).toHaveBeenCalledWith({ favoriteModels: ["anthropic/claude-sonnet-4-5"] });
-
-    // Toggling again removes it.
-    useAppStore.getState().toggleFavorite("anthropic/claude-sonnet-4-5");
-    expect(useAppStore.getState().prefs.favoriteModels).toEqual([]);
-  });
-
   it("persists the view mode per app, not per session", async () => {
     const set = vi.fn(async () => ({}));
     (window.pi as unknown as { prefs: { set: unknown } }).prefs.set = set;

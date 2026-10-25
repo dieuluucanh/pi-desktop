@@ -163,6 +163,11 @@ export const HOST_METHODS = [
   "model.list",
   "model.set",
   "model.cycle",
+  // Model scope (2026-10-25 model-scope plan). No RPC equivalent: Pi's TUI edits
+  // the session scope in-process. `apply` reloads `enabledModels` into the live
+  // session; `toggle` rewrites and persists one model's membership.
+  "model.scope.apply",
+  "model.scope.toggle",
   "thinking.set",
   "thinking.cycle",
   "thinking.levels",

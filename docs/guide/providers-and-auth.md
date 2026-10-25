@@ -54,7 +54,7 @@ or router-style id works as-is:
   contain one.
 - **Provider ids** follow the same permissive charset, but may not contain `/`
   — Pi splits `provider/model` at the first slash, so one there would make the
-  provider’s own models unreferencable and break the favourite-model key. They
+  provider’s own models unreferencable and break the model key. They
   are also limited to 64 characters and refuse the JSON-key hazards
   (`__proto__`, `prototype`, `constructor`, `.`, `..`), because the id is the
   key in the file’s `providers` map.
