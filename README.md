@@ -59,7 +59,7 @@ Installed builds check GitHub Releases after launch and show an update banner:
 ```bash
 npm ci
 npm run runtime:fetch      # bundled Node + npm + shims (~37 MB, not committed)
-npm run dev                # Electron with the renderer dev server
+npm run dev                # Electron with main/preload + host watch and the renderer dev server
 ```
 
 Gates (run before every commit; CI runs the same set):

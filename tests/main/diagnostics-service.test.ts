@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AppInfo } from "../../src/shared/ipc";
+import { HOST_METHODS } from "../../src/shared/host-protocol";
 import type { DiagnosticsHostInfo, Incident } from "../../src/shared/diagnostics";
 import {
   collectDiagnosticEnvironment,
@@ -39,6 +40,7 @@ function appInfo(overrides: Partial<AppInfo> = {}): AppInfo {
     runtimeSource: "bundled",
     runtimeNodeVersion: "24.21.0",
     runtimeProblems: [],
+    hostMethods: [...HOST_METHODS],
     ...overrides,
   };
 }

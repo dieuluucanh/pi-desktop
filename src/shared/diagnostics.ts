@@ -65,7 +65,7 @@ const TIMEOUT_PATTERN = /timed out|timeout|deadline exceeded/i;
 const CRASH_PATTERN = /crashed|exited unexpectedly|host exited|crash loop/i;
 const SPAWN_PATTERN = /not running|failed to spawn|spawn error|enoent|is not running/i;
 const STALE_HOST_PATTERN =
-  /host build|host process does not serve command suggestions|stale host|method not implemented yet: commands\.complete|unknown method: commands\.complete/i;
+  /host build|host is a stale build|host process does not serve command suggestions|stale host|commands\.complete|model\.scope\.(?:apply|toggle)|the model scope is not supported/i;
 const UNAVAILABLE_PATTERN = /unavailable|not available|cannot start|no such route/i;
 const BAD_REQUEST_PATTERN = /unknown method|bad request|invalid|unsupported|is required/i;
 

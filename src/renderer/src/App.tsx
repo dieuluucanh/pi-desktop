@@ -70,6 +70,8 @@ export function App() {
   const piOffline = useAppStore((state) => state.info?.piOffline ?? false);
   const offlineNotice = useAppStore((state) => state.offlineNotice);
   const clearOffline = useAppStore((state) => state.clearOffline);
+  const mainOutdated = useAppStore((state) => state.mainOutdated);
+  const relaunchApp = useAppStore((state) => state.relaunchApp);
   const activeTabId = useAppStore((state) => state.activeTabId);
   const staleHostMessage = useAppStore((state) =>
     state.activeTabId ? state.staleHosts[state.activeTabId] : undefined,
@@ -213,6 +215,18 @@ export function App() {
               Dismiss
             </button>
           ) : null}
+        </div>
+      ) : null}
+      {mainOutdated ? (
+        <div
+          className="banner banner--warn m-3 flex items-center justify-between gap-3"
+          role="status"
+          data-testid="main-outdated-banner"
+        >
+          <span>{mainOutdated}</span>
+          <button type="button" className="text-xs underline" onClick={() => void relaunchApp()}>
+            Restart app
+          </button>
         </div>
       ) : null}
       {staleHostMessage && activeTabId ? (

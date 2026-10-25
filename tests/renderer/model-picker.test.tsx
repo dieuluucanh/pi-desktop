@@ -87,15 +87,17 @@ describe("ModelPicker", () => {
     expect(screen.getByRole("option", { name: /GPT-5/ })).toBeInTheDocument();
   });
 
-  it("picks session-only by default and persists when asked", async () => {
+  it("always saves the picked model as the default", async () => {
     const user = userEvent.setup();
     const { onPick } = renderPicker();
     await user.click(screen.getByRole("option", { name: /GPT-5/ }));
-    expect(onPick).toHaveBeenCalledWith(CATALOG[1], { persist: false });
+    expect(onPick).toHaveBeenCalledWith(CATALOG[1], { persist: true });
+  });
 
-    await user.click(screen.getByLabelText("Save as default"));
-    await user.click(screen.getByRole("option", { name: /GPT-5/ }));
-    expect(onPick).toHaveBeenLastCalledWith(CATALOG[1], { persist: true });
+  it("no longer offers a save-as-default switch", () => {
+    renderPicker();
+    expect(screen.queryByLabelText("Save as default")).toBeNull();
+    expect(screen.queryByText("Save as default")).toBeNull();
   });
 
   it("toggles a model in the scope from the star", async () => {
@@ -186,7 +188,20 @@ describe("ThinkingPicker", () => {
     expect(screen.getByRole("option", { name: /high/ })).toHaveAttribute("aria-selected", "true");
 
     await user.click(screen.getByRole("option", { name: /off/ }));
-    expect(onPick).toHaveBeenCalledWith("off", { persist: false });
+    expect(onPick).toHaveBeenCalledWith("off", { persist: true });
+  });
+
+  it("no longer offers a save-as-default switch", () => {
+    render(
+      <ThinkingPicker
+        open
+        levels={["off", "high"]}
+        current="high"
+        onPick={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.queryByLabelText("Save as default")).toBeNull();
   });
 
   it("says so when the model cannot think", () => {

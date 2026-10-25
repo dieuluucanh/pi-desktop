@@ -1,4 +1,5 @@
 import type { AppInfo, PiDesktopBridge, WebTabOpenInput } from "../../src/shared/ipc";
+import { HOST_METHODS } from "../../src/shared/host-protocol";
 import type { DiagnosticsSnapshot } from "../../src/shared/diagnostics";
 import type {
   WebCommand,
@@ -46,6 +47,7 @@ export function appInfoFixture(overrides: Partial<AppInfo> = {}): AppInfo {
     runtimeSource: "bundled",
     runtimeNodeVersion: "24.21.0",
     runtimeProblems: [],
+    hostMethods: [...HOST_METHODS],
     ...overrides,
   };
 }

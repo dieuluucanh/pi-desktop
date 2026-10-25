@@ -146,6 +146,14 @@ describe("command completion", () => {
     expect(result?.prefix).toBe("/dep");
   });
 
+  it("suggests /scoped-models for the singular typo", async () => {
+    const result = await provider.getSuggestions(["/scoped-model"], 0, 13, {
+      signal: signal(),
+    });
+    expect(result?.items.map((item) => item.label)).toContain("/scoped-models");
+    expect(result?.items.find((item) => item.label === "/scoped-models")?.source).toBe("app");
+  });
+
   it("asks the host for the full argument prefix after the first space", async () => {
     hostComplete.mockClear();
     const result = await provider.getSuggestions(["/profile u"], 0, 10, {

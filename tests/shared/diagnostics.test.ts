@@ -30,6 +30,13 @@ describe("classifyFailure", () => {
     expect(classifyFailure("This session's host process does not serve command suggestions.")).toBe(
       "host_stale",
     );
+    expect(
+      classifyFailure(
+        "This session's host is a stale build, so command suggestions or model scope may be unavailable.",
+      ),
+    ).toBe("host_stale");
+    expect(classifyFailure("unknown method: model.scope.toggle")).toBe("host_stale");
+    expect(classifyFailure("changing the model scope is not supported")).toBe("host_stale");
     expect(classifyFailure("the runtime is unavailable")).toBe("unavailable");
   });
 

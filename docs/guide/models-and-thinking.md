@@ -17,9 +17,20 @@ provider and shows:
   asked for if the provider resolves a catalog entry to its own choice. The app
   shows the recorded model rather than the requested one.
 
-You can apply a model **for this session only** or tick **save as default**,
-which writes the durable Pi setting. A project can define its own default model
-and thinking level (see [Projects](projects.md)).
+You can apply a model for this session; picking one **also saves it as the
+default**, so the next session starts on it (there is no “save as default”
+switch to tick). The durable value is Pi’s `defaultProvider`/`defaultModel`
+(plus `defaultThinkingLevel` when you change the level); choosing a thinking
+level saves that too. A project can define its own default model and thinking
+level (see [Projects](projects.md)).
+
+When the workflow extension is installed it additionally records
+`workflow.modelDefault`, which makes the choice stick even when the model is not
+in your scope: Pi’s own startup resolution prefers the first `enabledModels`
+entry over a saved default, and the extension applies its record on
+`session_start` for a new session. `/profile use` and `/role set` in that
+extension save their model the same way, so the most recent model, profile or
+role choice wins.
 
 Switching models mid-session records a `model_change` entry in the session file,
 so resuming restores the same model.
@@ -41,6 +52,9 @@ star controls all of them:
 The dialog still lists every available model. Selecting one outside the scope is
 allowed (Pi appends it to the live scope), so a star click never makes a model
 unreachable. Editing the same list in Settings is equivalent.
+
+`/scoped-models` opens the same picker (Pi’s terminal command name); the star
+remains the only persisted scope state.
 
 ## Thinking level
 

@@ -50,12 +50,13 @@ answer you chose, so you never have to retype a prompt.
 
 ## Where state lives
 
-| What                         | Where                             |
-| ---------------------------- | --------------------------------- |
-| Project config and overrides | `<project>/.pi/`                  |
-| Per-project session files    | the profile’s `sessions/` tree    |
-| Default model/thinking       | `app-state.json` (app preference) |
-| Project extensions/packages  | `<project>/.pi/npm`, `.pi/…`      |
+| What                                                        | Where                             |
+| ----------------------------------------------------------- | --------------------------------- |
+| Project config and overrides                                | `<project>/.pi/`                  |
+| Per-project session files                                   | the profile’s `sessions/` tree    |
+| Per-project default model/thinking                          | `app-state.json` (app preference) |
+| Global default model/thinking (what picking a model writes) | the Pi profile’s `settings.json`  |
+| Project extensions/packages                                 | `<project>/.pi/npm`, `.pi/…`      |
 
 ## Related
 

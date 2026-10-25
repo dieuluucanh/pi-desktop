@@ -8,8 +8,13 @@
  *  - the star is Pi's **model scope** (`enabledModels`): it drives Ctrl+Alt
  *    cycling and the extension model pickers (`/profile`, `/role`), not just
  *    this dialog. An empty scope means every available model is usable;
- *  - "save as default" maps to the SDK's `persist` option: unchecked means the
- *    switch lasts for this session, checked writes it as the project default.
+ *  - picking a model **always** saves it as the default. There is no
+ *    "save as default" choice any more: the switch is removed and every pick
+ *    is sent with `persist: true`, so Pi's own `setModel(..., {persist:true})`
+ *    writes `settings.json` and the next session starts on that model. When
+ *    the workflow extension is installed it also records
+ *    `workflow.modelDefault`, which is what makes a default outside
+ *    `enabledModels` stick (Pi prefers the first scoped model on startup).
  */
 
 import { useState } from "react";
@@ -66,7 +71,6 @@ export function ModelPicker({
   // `/model <query>` command mounts it with that search already typed and a
   // later header click mounts it empty.
   const [query, setQuery] = useState(initialQuery);
-  const [persist, setPersist] = useState(false);
 
   const matched = filterModels(entries, query);
   const { scoped: scopedEntries, others } = withScopedFirst(matched, scoped);
@@ -85,7 +89,7 @@ export function ModelPicker({
           role="option"
           aria-selected={active}
           data-model-key={entry.key}
-          onClick={() => onPick(entry, { persist })}
+          onClick={() => onPick(entry, { persist: true })}
           className={cn(
             "flex flex-1 items-center gap-2 rounded-sm px-2 py-1 text-left text-xs",
             active ? "bg-accent/15 text-ink" : "text-ink-faint hover:bg-raised",
@@ -120,7 +124,8 @@ export function ModelPicker({
         <DialogTitle>Choose a model</DialogTitle>
         <DialogDescription>
           Grouped by provider. The star is your model scope — it drives Ctrl+Alt cycling and the
-          /profile and /role pickers. Unchecked: this session only · checked: writes Pi’s default.
+          /profile and /role pickers. Picking a model saves it as the default, so the next session
+          starts on it.
         </DialogDescription>
         {error ? (
           <p role="alert" data-testid="model-picker-error" className="mt-2 text-xs text-danger">
@@ -192,16 +197,7 @@ export function ModelPicker({
           </p>
         ) : null}
 
-        <div className="mt-3 flex items-center justify-between border-t border-line pt-2">
-          <label className="flex items-center gap-2 text-[11px] text-ink-faint">
-            <input
-              type="checkbox"
-              checked={persist}
-              onChange={(event) => setPersist(event.target.checked)}
-              aria-label="Save as default"
-            />
-            Save as default
-          </label>
+        <div className="mt-3 flex items-center justify-end border-t border-line pt-2">
           <Button size="sm" variant="ghost" onClick={onOpenModelsJson}>
             Edit models.json…
           </Button>

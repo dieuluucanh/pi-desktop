@@ -116,6 +116,13 @@ describe("help", () => {
     }
   });
 
+  it("reserves /scoped-models as the unified scope editor", () => {
+    const result = resolveCommandInput("/scoped-models", { hostCommands: [] });
+    expect(result.kind).toBe("app");
+    if (result.kind === "app") expect(result.command.action.kind).toBe("scope");
+    expect(appCommandNames()).toContain("/scoped-models");
+  });
+
   it("routes the session-history commands to their dialogs (plan step 11)", () => {
     const expected: Record<string, string> = {
       "/resume": "browser",

@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useAppStore } from "../../src/renderer/src/state/app-store";
+import { HOST_STALE_MESSAGE, useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { TabRecord } from "../../src/shared/session-ipc";
-import { installBridge } from "./fixtures";
+import { appInfoFixture, installBridge } from "./fixtures";
 
 /**
  * Model/thinking/usage actions (plan step 8). These assert what reaches the host
@@ -51,6 +51,8 @@ beforeEach(() => {
   installBridge();
   useAppStore.setState({
     prefs: { ...DEFAULT_PREFS },
+    info: appInfoFixture(),
+    mainOutdated: null,
     tabs: [tab()],
     activeTabId: "tab-1",
     sessionStates: {},
@@ -141,6 +143,57 @@ describe("model scope", () => {
     expect(state.hint).toMatch(/settings write failed/);
   });
 
+  it("surfaces a stale host that lacks model scope as the existing banner", async () => {
+    stubRequest(async (input) => {
+      if (input.method === "model.scope.toggle") {
+        throw new Error("unknown method: model.scope.toggle");
+      }
+      return {};
+    });
+    useAppStore.setState({ modelScope: { "tab-1": ["anthropic/claude"] } });
+
+    await useAppStore.getState().toggleModelScope("tab-1", "openai", "gpt-5");
+
+    const state = useAppStore.getState();
+    expect(state.modelScope["tab-1"]).toEqual(["anthropic/claude"]);
+    expect(state.staleHosts["tab-1"]).toBe(HOST_STALE_MESSAGE);
+  });
+
+  it("does not call the host when main predates model scope", async () => {
+    const request = stubRequest();
+    useAppStore.getState().setInfo(appInfoFixture({ hostMethods: [] }));
+    useAppStore.setState({ modelScope: { "tab-1": ["anthropic/claude"] } });
+
+    await useAppStore.getState().toggleModelScope("tab-1", "openai", "gpt-5");
+
+    expect(request).not.toHaveBeenCalled();
+    const state = useAppStore.getState();
+    expect(state.modelScope["tab-1"]).toEqual(["anthropic/claude"]);
+    expect(state.pickerError).toMatch(/newer than the app's main process/);
+    expect(state.mainOutdated).toMatch(/Restart the app/);
+  });
+
+  it("opens the unified picker for /scoped-models without selecting a model", async () => {
+    const request = stubRequest();
+
+    const outcome = await useAppStore.getState().runCommandInput("tab-1", "/scoped-models gpt");
+
+    expect(outcome).toEqual({ handled: true, sent: false });
+    expect(useAppStore.getState().picker).toBe("model");
+    expect(useAppStore.getState().pickerSearch).toBe("gpt");
+    expect(request.mock.calls.some((call) => call[0]?.method === "model.set")).toBe(false);
+  });
+
+  it("marks main outdated from AppInfo and clears it for a current build", () => {
+    useAppStore.getState().setInfo(appInfoFixture({ hostMethods: ["model.scope.apply"] }));
+    expect(useAppStore.getState().mainOutdated).toMatch(/Restart the app/);
+
+    useAppStore
+      .getState()
+      .setInfo(appInfoFixture({ hostMethods: ["model.scope.apply", "model.scope.toggle"] }));
+    expect(useAppStore.getState().mainOutdated).toBeNull();
+  });
+
   it("ignores a second star while a write is in flight", async () => {
     const request = stubRequest();
     useAppStore.setState({
@@ -176,6 +229,26 @@ describe("model scope", () => {
     expect(state.modelScope["tab-3"]).toBeUndefined();
     expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ tabId: "tab-1" }));
     expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ tabId: "web-1" }));
+  });
+
+  it("fans out to office tabs but never to a web tab", async () => {
+    const request = stubRequest(async (input) => {
+      if (input.method !== "model.scope.apply") return {};
+      return { scoped: [{ model: { provider: "fake", id: "fake-2" } }] };
+    });
+    useAppStore.setState({
+      tabs: [
+        tab(),
+        { ...tab(), id: "office-1", kind: "office" },
+        { ...tab(), id: "web-1", kind: "web" },
+      ],
+    });
+
+    await useAppStore.getState().applyModelScopeToTabs("tab-1");
+
+    expect(request).toHaveBeenCalledWith({ tabId: "office-1", method: "model.scope.apply" });
+    expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ tabId: "web-1" }));
+    expect(useAppStore.getState().modelScope["office-1"]).toEqual(["fake/fake-2"]);
   });
 
   it("re-applies the scope to open sessions after a Settings edit", async () => {
@@ -283,7 +356,7 @@ describe("setModel", () => {
     expect(useAppStore.getState().picker).toBeNull();
   });
 
-  it("refreshes settings after a persisted pick, and not for a session-only one", async () => {
+  it("refreshes settings only when the call asks Pi to persist the default", async () => {
     const request = stubRequest();
     const loadSettings = vi.fn(async () => undefined);
     useAppStore.setState({ loadSettings });

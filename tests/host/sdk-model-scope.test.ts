@@ -165,6 +165,40 @@ describe("toggleScope", () => {
     expect(result.scopedModels).toEqual([scoped("a", "one")]);
   });
 
+  it("keeps persisted models when an empty live scope means resolution failed", async () => {
+    const calls: string[][] = [];
+    const resolve = fakeResolver(async (patterns) => {
+      calls.push(patterns);
+      return {
+        scopedModels: patterns.map((pattern) =>
+          scoped(...(pattern.split("/") as [string, string])),
+        ),
+        diagnostics: [],
+      };
+    });
+
+    const result = await toggleScope(
+      {
+        liveScoped: [],
+        patterns: ["a/one", "b/two"],
+        runtime: RUNTIME,
+        provider: "c",
+        id: "three",
+        enabled: true,
+      },
+      { resolve },
+    );
+
+    expect(calls[0]).toEqual(["a/one", "b/two"]);
+    expect(calls[1]).toEqual(["a/one", "b/two", "c/three"]);
+    expect(result.patterns).toEqual(["a/one", "b/two", "c/three"]);
+    expect(result.scopedModels).toEqual([
+      scoped("a", "one"),
+      scoped("b", "two"),
+      scoped("c", "three"),
+    ]);
+  });
+
   it("expands a matching glob to explicit ids so un-starring really removes a model", async () => {
     const calls: string[][] = [];
     const resolve = fakeResolver(async (patterns) => {

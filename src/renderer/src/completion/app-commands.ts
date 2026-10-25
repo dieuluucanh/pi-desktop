@@ -39,6 +39,8 @@ export type AppCommandAction =
   | { kind: "pending"; message: string }
   /** Opens one of the app's pickers (plan step 8). */
   | { kind: "picker"; picker: "model" | "thinking" }
+  /** Opens the unified model picker as the scope editor (2026-10-25). */
+  | { kind: "scope" }
   /** Opens the project trust prompt (plan step 10). */
   | { kind: "trust" }
   /** Opens the session browser (plan step 11). */
@@ -150,6 +152,11 @@ export const APP_COMMANDS: readonly AppCommand[] = [
     argumentHint: "[provider/model]",
     argumentKind: "model",
     action: { kind: "picker", picker: "model" },
+  },
+  {
+    name: "scoped-models",
+    description: "Choose the model scope (starred models)",
+    action: { kind: "scope" },
   },
   {
     name: "thinking",

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import type { AppInfo, WebTabOpenInput } from "../../../shared/ipc";
-import type { BlobRef } from "../../../shared/host-protocol";
+import type { BlobRef, HostMethod } from "../../../shared/host-protocol";
 import { DEFAULT_PREFS, type UiPrefs, type ViewMode } from "../../../shared/prefs";
 import {
   findProject,
@@ -289,6 +289,12 @@ export interface AppStateShape {
   onboardingStep: OnboardingStep | null;
   paletteOpen: boolean;
   info: AppInfo | null;
+  /**
+   * Persistent explanation for a renderer that is newer than the running main
+   * process (2026-10-25 model-scope plan). Restarting the app loads the current
+   * main build; a raw `session: unsupported host method …` error is not shown.
+   */
+  mainOutdated: string | null;
   /** Transient, user-visible explanation for an action that is not wired yet. */
   hint: string | null;
   /** A connectivity failure the user should see until it is dismissed or a call works. */
@@ -862,13 +868,53 @@ export const FILE_CACHE_TTL_MS = 30_000;
  * silent empty menu is what made the original failure look like a routing bug.
  */
 export const HOST_STALE_MESSAGE =
-  "This session's host process does not serve command suggestions. Restart the session to load the current host build.";
+  "This session's host is a stale build, so command suggestions or model scope may be unavailable. Restart the session to load the current host build.";
 
-/** True when a request failed because the live host lacks `commands.complete`. */
+/**
+ * A renderer that hot-reloaded after a main-process build once showed the
+ * model-scope stars while main still rejected `model.scope.toggle` (2026-10-25).
+ * The banner names the real fix: restart the app, not the session.
+ */
+export const MAIN_OUTDATED_MESSAGE =
+  "This window is newer than the app's main process, so model scope is unavailable. Restart the app (in development, restart `npm run dev`) to load the current build.";
+
+/** The host methods model scope needs from the main process's allowlist. */
+export const REQUIRED_MAIN_METHODS: readonly HostMethod[] = [
+  "model.scope.apply",
+  "model.scope.toggle",
+];
+
+/**
+ * Whether the loaded `AppInfo` says main accepts `method`. Before `AppInfo`
+ * arrives (`null`) the answer is "unknown, let the call through": a real old
+ * main is then classified from the error by `toggleModelScope`, so a slow
+ * `getAppInfo` cannot disable the star with a false banner.
+ */
+export function mainSupports(info: AppInfo | null, method: HostMethod): boolean {
+  if (!info) return true;
+  return Array.isArray(info.hostMethods) && info.hostMethods.includes(method);
+}
+
+/** The main-process side of the old-main failure (thrown by `src/main/ipc.ts`). */
+function isMainUnsupportedScopeError(message: string): boolean {
+  return /unsupported host method model\.scope\.(?:apply|toggle)/i.test(message);
+}
+
+/** The banner message for a loaded `AppInfo` that predates model scope. */
+export function mainOutdatedMessage(info: AppInfo | null): string | null {
+  if (!info) return null;
+  return REQUIRED_MAIN_METHODS.some((method) => !mainSupports(info, method))
+    ? MAIN_OUTDATED_MESSAGE
+    : null;
+}
+
+/** True when a request failed because the live host predates the method. */
 function isStaleHostError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? "");
-  return /not implemented yet: commands\.complete|unknown method: commands\.complete/i.test(
-    message,
+  return (
+    /(?:not implemented yet|unknown method): (?:commands\.complete|model\.scope\.(?:apply|toggle))/i.test(
+      message,
+    ) || /(?:the |changing the )?model scope is not supported/i.test(message)
   );
 }
 
@@ -1050,6 +1096,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   paletteOpen: false,
   extensionsFocus: null,
   info: null,
+  mainOutdated: null,
   hint: null,
   offlineNotice: null,
   staleHosts: {},
@@ -1167,7 +1214,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   toggleSidebar: () => get().setPrefs({ sidebarCollapsed: !get().prefs.sidebarCollapsed }),
 
-  setInfo: (info) => set({ info }),
+  setInfo: (info) => set({ info, mainOutdated: mainOutdatedMessage(info) }),
 
   openProject: async (path) => {
     const api = bridge();
@@ -1982,6 +2029,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   toggleModelScope: async (tabId, provider, id) => {
     const api = bridge();
     if (!api?.sessions) return;
+    // A hot-reloaded renderer can outlive the main process that was started
+    // before `model.scope.toggle` existed. Block before IPC and name the fix.
+    if (!mainSupports(get().info, "model.scope.toggle")) {
+      set({ pickerError: MAIN_OUTDATED_MESSAGE, hint: MAIN_OUTDATED_MESSAGE });
+      return;
+    }
     // One settings rewrite per tab at a time: a second click could interleave
     // two writes and lose one of them.
     if (get().modelScopeBusy[tabId]) return;
@@ -2009,10 +2062,15 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       await get().loadSettings({ refresh: true });
       await get().applyModelScopeToTabs(tabId);
     } catch (error) {
+      const message = errorMessage(error);
       set({
         modelScope: { ...get().modelScope, [tabId]: before },
-        pickerError: errorMessage(error),
+        pickerError: message,
+        ...(isMainUnsupportedScopeError(message) ? { mainOutdated: MAIN_OUTDATED_MESSAGE } : {}),
       });
+      if (!isMainUnsupportedScopeError(message) && isStaleHostError(message)) {
+        get().noteStaleHost(tabId);
+      }
       get().noteFailure(error);
     } finally {
       const busy = { ...get().modelScopeBusy };
@@ -2024,7 +2082,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   applyModelScopeToTabs: async (exceptTabId) => {
     const api = bridge();
     if (!api?.sessions) return;
-    const targets = get().tabs.filter((tab) => tab.id !== exceptTabId && tab.kind === "session");
+    if (!mainSupports(get().info, "model.scope.apply")) return;
+    // Office tabs are host-backed sessions too; only a web tab has no Pi host.
+    const targets = get().tabs.filter((tab) => tab.id !== exceptTabId && tab.kind !== "web");
     await Promise.all(
       targets.map(async (tab) => {
         try {
@@ -2038,9 +2098,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
               [tab.id]: scopeKeys(Array.isArray(response?.scoped) ? response.scoped : []),
             },
           });
-        } catch {
+        } catch (error) {
           // A starting/crashed tab has no live session; it converges on its
           // next session or /reload, so one dead tab must not fail the star.
+          // A host that predates `model.scope.apply` still deserves the banner.
+          if (isStaleHostError(error)) get().noteStaleHost(tab.id);
         }
         return undefined;
       }),
@@ -2313,6 +2375,18 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         return { handled: true, sent: false };
       }
       set({ view: action.view, hint: null });
+      return { handled: true, sent: false };
+    }
+    // The unified scope editor is the model picker: scoped models first, the
+    // star toggles them. It must never take `/model`'s exact-match shortcut, or
+    // `/scoped-models provider/id` would switch the model instead of filtering.
+    if (action.kind === "scope") {
+      if (argument.length > 0) {
+        get().openPicker("model", { search: argument });
+      } else {
+        get().openPicker("model");
+      }
+      void get().loadModels(tabId);
       return { handled: true, sent: false };
     }
     if (action.kind === "picker") {

@@ -7,6 +7,11 @@
  * host kept executing old code. This runner keeps the host bundle on a watch
  * build and starts electron-vite beside it; the app then sees the new build id
  * and recycles an idle host before the next request.
+ *
+ * electron-vite is started with `--watch` too (see `dev:electron`): a change to
+ * a shared protocol module imported by main must rebuild main and restart
+ * Electron, otherwise the renderer can be current while main still rejects a
+ * newly added host method. The host watch and the main watch are both required.
  */
 
 import { spawn } from "node:child_process";

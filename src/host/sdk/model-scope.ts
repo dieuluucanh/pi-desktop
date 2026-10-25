@@ -173,9 +173,9 @@ export async function toggleScope(
   const resolve = resolverOf(deps);
   const signal = signalFor(deps, input.signal);
 
+  let before: ModelScopeResolution | undefined;
   let preserved: string[] = [];
   if (patterns.length > 0) {
-    let before: ModelScopeResolution;
     try {
       before = await resolve(patterns, input.runtime, { signal });
     } catch (error) {
@@ -186,8 +186,15 @@ export async function toggleScope(
       .map((diagnostic) => diagnostic.pattern);
   }
 
+  // Normally the live scope is the user-visible truth (it also contains models
+  // Pi appended through `setModel`). An empty live scope, however, means the
+  // resolution failed/ran offline: seeding from the persisted matches keeps a
+  // star click from erasing the whole scope. When there are no patterns there
+  // is nothing to seed, so the empty-array case is unchanged.
+  const baseScoped = input.liveScoped.length > 0 ? input.liveScoped : (before?.scopedModels ?? []);
+
   const next = nextScopePatterns({
-    liveScoped: input.liveScoped,
+    liveScoped: baseScoped,
     preserved,
     provider: input.provider,
     id: input.id,

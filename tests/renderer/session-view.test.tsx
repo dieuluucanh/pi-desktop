@@ -104,7 +104,7 @@ describe("session header", () => {
 });
 
 describe("model picker per tab", () => {
-  it("gives each tab its own picker state, so the checkbox does not leak", () => {
+  it("remounts the picker per tab and never offers a save-as-default switch", () => {
     const second = { ...useAppStore.getState().tabs[0]!, id: "tab-2", title: "Second" };
     useAppStore.setState({
       tabs: [...useAppStore.getState().tabs, second],
@@ -122,11 +122,12 @@ describe("model picker per tab", () => {
       },
     });
     const { rerender } = render(<SessionView />);
-    // Keying the dialog by tab remounts it, so the flag cannot carry over.
+    // Keying the dialog by tab remounts it, so transient state cannot carry over.
     useAppStore.setState({ activeTabId: "tab-2" });
     rerender(<SessionView />);
-    const checkbox = screen.queryByLabelText("Save as default") as HTMLInputElement | null;
-    if (checkbox) expect(checkbox.checked).toBe(false);
+    expect(screen.getByLabelText("Choose a model")).toBeInTheDocument();
+    // Every pick now saves as the default, so the switch is gone for good.
+    expect(screen.queryByLabelText("Save as default")).toBeNull();
   });
 });
 

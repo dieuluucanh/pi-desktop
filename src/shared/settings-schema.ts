@@ -153,7 +153,8 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     key: "defaultModel",
     group: "model-thinking",
     label: "Default model",
-    description: "Startup model id, e.g. claude-sonnet-4-20250514.",
+    description:
+      "Startup model id. Picking a model in the app or terminal Pi updates this too, so the next session starts on it.",
     type: "string",
     scope: "both",
   },
@@ -161,7 +162,8 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     key: "defaultThinkingLevel",
     group: "model-thinking",
     label: "Default thinking level",
-    description: "Startup thinking level.",
+    description:
+      "Startup thinking level. Changing the level in the app or terminal Pi updates this too.",
     type: "enum",
     options: THINKING_LEVELS,
     scope: "both",

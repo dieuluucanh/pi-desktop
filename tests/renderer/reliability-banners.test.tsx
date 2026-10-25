@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../src/renderer/src/App";
-import { HOST_STALE_MESSAGE, useAppStore } from "../../src/renderer/src/state/app-store";
+import {
+  HOST_STALE_MESSAGE,
+  MAIN_OUTDATED_MESSAGE,
+  useAppStore,
+} from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { installBridge } from "./fixtures";
 
@@ -47,6 +51,19 @@ describe("reliability banners", () => {
     expect(screen.queryByTestId("safe-mode-banner")).toBeNull();
     expect(screen.queryByTestId("offline-banner")).toBeNull();
     expect(screen.queryByTestId("stale-host-banner")).toBeNull();
+  });
+
+  it("shows the outdated-main banner and restarts the app", async () => {
+    const handles = installBridge({ appInfo: { hostMethods: [] } });
+    const relaunch = vi.spyOn(handles.bridge, "relaunch");
+
+    render(<App />);
+
+    expect(await screen.findByTestId("main-outdated-banner")).toHaveTextContent(
+      MAIN_OUTDATED_MESSAGE,
+    );
+    fireEvent.click(screen.getByText(/restart app/i));
+    await waitFor(() => expect(relaunch).toHaveBeenCalledTimes(1));
   });
 
   it("shows the stale-host banner and restarts the session", async () => {

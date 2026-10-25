@@ -77,10 +77,26 @@ renderer is current but the host is not.
 - Restart the session tab (or the app). The app also shows a **stale host**
   banner with **Restart session** when it detects the mismatch, and Diagnostics
   marks the host `stale build`.
-- `npm run dev` runs a host watch build beside Electron. If you start
-  `electron-vite dev` yourself, run `npm run build:host` after host edits.
+- `npm run dev` runs a host watch build beside `electron-vite dev --watch`:
+  host, main and preload bundles all rebuild, and Electron restarts when
+  main/preload changes. If you start `electron-vite dev` yourself, pass
+  `--watch` and run `npm run build:host` after host edits.
 - In an idle session the app recycles a stale host automatically before the next
   request; it never interrupts a streaming, compacting or queued session.
+
+## A model star fails with “unsupported host method model.scope.toggle”
+
+The star is a `session.request` whose method is validated by the **main
+process** before it reaches a host. A hot-reloaded renderer can be newer than a
+main process started before `model.scope.toggle` was added, so the star is
+visible while main still rejects the call.
+
+- Restart the app. `npm run dev` now runs `electron-vite dev --watch`, so a main
+  or shared-protocol edit rebuilds main and restarts Electron. When a running
+  main is detected as older, the app shows a **Restart app** banner instead of
+  the raw IPC error.
+- If you start `electron-vite dev` yourself, pass `--watch`; for host edits also
+  run `npm run build:host`.
 
 ## Provider or network problems
 

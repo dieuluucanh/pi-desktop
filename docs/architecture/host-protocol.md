@@ -368,8 +368,18 @@ main returns `{ items: null, unsupported: true }` instead of an IPC error. The
 renderer shows a persistent banner with **Restart session**, and Diagnostics
 records a `host_stale` incident. The `unsupported` field is synthesized by
 **main**, never sent by a host. `npm run dev` runs a watch build for the host
-bundle beside `electron-vite dev`; a manual `electron-vite dev` still needs
+bundle beside `electron-vite dev --watch`, so host, main and preload bundles all
+rebuild and Electron restarts when main/preload changes. A manual
+`electron-vite dev` without `--watch` still needs a restart after main edits and
 `npm run build:host` after host edits.
+
+Adding a method to `HOST_METHODS` is additive: it does not bump
+`HOST_PROTOCOL_VERSION`, because a current main can still talk to a current
+host. Skew inside a development session is handled instead by the watch above
+and by `AppInfo.hostMethods`, a copy of main's compiled allowlist. The renderer
+uses it to block a method main does not advertise and to show a
+**Restart app** banner rather than a raw
+`session: unsupported host method …` error.
 
 ### Extension commands and argument completion (2026-10-24)
 

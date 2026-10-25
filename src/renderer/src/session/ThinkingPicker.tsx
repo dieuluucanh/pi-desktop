@@ -6,9 +6,12 @@
  * level the model does not support — the clamping is Pi's, not a second rule
  * invented here. Choosing a level after switching models therefore stays valid,
  * and an empty list is reported as "this model does not support thinking".
+ *
+ * Picking a level always saves it as the default (the workflow extension
+ * records it on `thinking_level_select` when the model is the saved default),
+ * so there is no "save as default" switch to forget to tick.
  */
 
-import { useState } from "react";
 import { Check } from "lucide-react";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
@@ -33,8 +36,6 @@ const DESCRIPTIONS: Record<string, string> = {
 };
 
 export function ThinkingPicker({ open, levels, current, onPick, onClose }: ThinkingPickerProps) {
-  const [persist, setPersist] = useState(false);
-
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? undefined : onClose())}>
       <DialogContent aria-label="Choose a thinking level">
@@ -56,7 +57,7 @@ export function ThinkingPicker({ open, levels, current, onPick, onClose }: Think
                   role="option"
                   aria-selected={active}
                   data-level={level}
-                  onClick={() => onPick(level, { persist })}
+                  onClick={() => onPick(level, { persist: true })}
                   className={cn(
                     "flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-xs",
                     active ? "bg-accent/15 text-ink" : "text-ink-faint hover:bg-raised",
@@ -71,16 +72,7 @@ export function ThinkingPicker({ open, levels, current, onPick, onClose }: Think
           )}
         </div>
 
-        <div className="mt-3 flex items-center justify-between border-t border-line pt-2">
-          <label className="flex items-center gap-2 text-[11px] text-ink-faint">
-            <input
-              type="checkbox"
-              checked={persist}
-              onChange={(event) => setPersist(event.target.checked)}
-              aria-label="Save as default"
-            />
-            Save as default
-          </label>
+        <div className="mt-3 flex items-center justify-end border-t border-line pt-2">
           <Button size="sm" variant="ghost" onClick={onClose}>
             Close
           </Button>

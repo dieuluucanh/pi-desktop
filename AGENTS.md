@@ -61,7 +61,8 @@ tests/           vitest: node project (tests/**) + jsdom renderer project (tests
 
 ## Workflow
 
-- `npm run dev` starts the Electron app with the renderer dev server.
+- `npm run dev` starts the Electron app with main/preload watch, the host bundle
+  watch and the renderer dev server.
 - `npm run build` builds the host bundle plus main/preload/renderer.
 - `npm run package:win|mac|linux` produces installers (unsigned; signing is backlog B1/B2).
 - One plan step per change set; commit as `feat(<area>): <what> (plan step N)`.

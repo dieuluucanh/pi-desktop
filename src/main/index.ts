@@ -20,6 +20,7 @@ import type {
 } from "../shared/projects";
 import type { CreateTabInput, SessionTabsEnvelope } from "../shared/session-ipc";
 import { CONTROL_TAB_ID } from "../shared/session-ipc";
+import { HOST_METHODS } from "../shared/host-protocol";
 import { APP_COPYRIGHT, APP_NAME, APP_USER_MODEL_ID, resolveBranding } from "./branding";
 import { createAppStore } from "./app-store";
 import { createNodeFsPort } from "./fs-port";
@@ -354,6 +355,9 @@ function currentAppInfo(): AppInfo {
     runtimeSource: runtime.source,
     runtimeNodeVersion: runtime.nodeVersion,
     runtimeProblems: runtime.problems,
+    // A copy of the allowlist this main process was built with. A hot-reloaded
+    // renderer uses it to detect a main process that predates a new method.
+    hostMethods: [...HOST_METHODS],
   };
 }
 

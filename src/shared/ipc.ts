@@ -5,6 +5,7 @@ import type { DiagnosticsExport, DiagnosticsSnapshot } from "./diagnostics";
 import type { IntegrationsState, OfficeIntegrationRecordPatch } from "./integrations";
 import type { UiPrefs } from "./prefs";
 import type { ProfileMode } from "./profile";
+import type { HostMethod } from "./host-protocol";
 import type { UpdateState } from "./updates";
 import type {
   CloneProjectInput,
@@ -220,6 +221,14 @@ export interface AppInfo {
   runtimeSource: string | null;
   runtimeNodeVersion: string | null;
   runtimeProblems: string[];
+  /**
+   * The host methods this main process accepts (`HOST_METHODS` as compiled into
+   * main). The renderer compares this with the methods it needs: in development
+   * a hot-reloaded renderer can be newer than a main process started before the
+   * method was added, and without this check the user sees a raw
+   * `session: unsupported host method …` IPC error.
+   */
+  hostMethods: HostMethod[];
 }
 
 export interface WindowState {
