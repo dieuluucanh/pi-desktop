@@ -32,6 +32,12 @@ export interface CommandArgumentItem {
 /** Response of `commands.complete`. `items: null` means "no menu". */
 export interface CommandCompleteResult {
   items: CommandArgumentItem[] | null;
+  /**
+   * Synthesized by **main**, never sent by a host: the live host predates
+   * `commands.complete` (an old bundle). The renderer shows a restart banner
+   * instead of silently treating the empty menu as "no suggestions".
+   */
+  unsupported?: boolean;
 }
 
 /** Response of `commands.run`. `ran: false` means the command was not live. */
@@ -83,6 +89,15 @@ export function sanitizeCommandArgumentItems(value: unknown): CommandArgumentIte
 export function parseCommandCompleteResult(value: unknown): CommandArgumentItem[] | null {
   const items = sanitizeCommandArgumentItems(asRecord(value).items);
   return items.length > 0 ? items : null;
+}
+
+/**
+ * True when main marked the response as "this host predates the method". The
+ * flag is separate from `items`: a current host with no hook also returns
+ * `items: null`, and that must not show a restart banner.
+ */
+export function isUnsupportedCommandComplete(value: unknown): boolean {
+  return asRecord(value).unsupported === true;
 }
 
 /** Reads the `{ ran, error? }` response the host sends. Malformed → not run. */

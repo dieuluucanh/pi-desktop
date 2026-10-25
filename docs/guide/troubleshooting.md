@@ -50,6 +50,21 @@ resource. The window shows a safe-mode banner.
 - A closed tab mid-run leaves no orphan process: hosts are owned by the main
   process and stopped on close and on quit.
 
+## Slash-command suggestions stopped working after a host edit
+
+Extension sub-commands (`/profile `, `/commit-policy `, `/write-policy `) are
+computed by the **host process**, which keeps running the bundle it was spawned
+from. If `out/host/index.mjs` was rebuilt while the app stayed open, the
+renderer is current but the host is not.
+
+- Restart the session tab (or the app). The app also shows a **stale host**
+  banner with **Restart session** when it detects the mismatch, and Diagnostics
+  marks the host `stale build`.
+- `npm run dev` runs a host watch build beside Electron. If you start
+  `electron-vite dev` yourself, run `npm run build:host` after host edits.
+- In an idle session the app recycles a stale host automatically before the next
+  request; it never interrupts a streaming, compacting or queued session.
+
 ## Provider or network problems
 
 - **Offline banner** — `PI_OFFLINE` is set or a request failed with a

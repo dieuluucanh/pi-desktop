@@ -26,6 +26,11 @@ describe("classifyFailure", () => {
     expect(classifyFailure('host request "prompt" timed out after 30000 ms')).toBe("host_timeout");
     expect(classifyFailure("host for tab-1 is not running")).toBe("host_spawn");
     expect(classifyFailure("host for tab-1 crashed 3 times; giving up")).toBe("host_crash");
+    expect(classifyFailure("method not implemented yet: commands.complete")).toBe("host_stale");
+    expect(classifyFailure("This session's host process does not serve command suggestions.")).toBe(
+      "host_stale",
+    );
+    expect(classifyFailure("the runtime is unavailable")).toBe("unavailable");
   });
 
   it("recognises the environment families", () => {
@@ -60,6 +65,7 @@ describe("severity, recovery and fixes", () => {
     expect(isRecoverable("host_crash")).toBe(true);
     expect(isRecoverable("host_timeout")).toBe(true);
     expect(isRecoverable("host_failed")).toBe(true);
+    expect(isRecoverable("host_stale")).toBe(true);
     expect(isRecoverable("offline")).toBe(false);
     expect(isRecoverable("read_only")).toBe(false);
     expect(isRecoverable("permission")).toBe(false);
@@ -67,6 +73,7 @@ describe("severity, recovery and fixes", () => {
 
   it("gives every actionable family a fix and leaves the rest alone", () => {
     expect(incidentFix("host_crash")).toMatch(/Restart the session/);
+    expect(incidentFix("host_stale")).toMatch(/current host build/);
     expect(incidentFix("offline")).toMatch(/offline/);
     expect(incidentFix("read_only")).toMatch(/read-only/);
     expect(incidentFix("permission")).toMatch(/permissions/);
@@ -76,10 +83,14 @@ describe("severity, recovery and fixes", () => {
 
   it("assigns error severity to crashes and warning to connectivity", () => {
     expect(incidentSeverity("host_crash")).toBe("error");
+    expect(incidentSeverity("host_stale")).toBe("warning");
     expect(incidentSeverity("offline")).toBe("warning");
     expect(incidentSeverity("bad_request")).toBe("warning");
     expect(incidentHeadline(createIncident({ kind: "host_crash", message: "x" }))).toMatch(
       /crashed/,
+    );
+    expect(incidentHeadline(createIncident({ kind: "host_stale", message: "x" }))).toMatch(
+      /older build/,
     );
   });
 });

@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import {
   BACKUP_DIR_ENV,
   BLOB_DIR_ENV,
+  HOST_BUILD_ENV,
   HOST_PROTOCOL_VERSION,
   HOST_ROLE_ENV,
   JsonlFrameDecoder,
@@ -91,6 +92,11 @@ export interface HostInfo {
   bridgePort: number | null;
   pids: { pid: number; ppid: number };
   startedAt: number;
+  /**
+   * Fingerprint of the bundle this host was spawned from. Optional: a host
+   * started by an older main process never reports one.
+   */
+  buildId?: string | null;
 }
 
 export interface HostEvent {
@@ -147,6 +153,13 @@ export interface HostSupervisorOptions {
   npmCliPath?: string;
   /** Base environment (the process env of the app). */
   env?: Record<string, string | undefined>;
+  /**
+   * Fingerprint of the host bundle currently on disk. Called at every spawn and
+   * passed to the child as `PI_DESKTOP_HOST_BUILD`, so a later comparison can
+   * tell whether the running host predates a rebuild (2026-10-24 stale-host
+   * plan). Absent in tests and when the bundle is unreadable.
+   */
+  hostBuildId?: () => string | null;
   profileDir: string;
   spawner?: HostSpawner;
   fs?: FsPort;
@@ -402,6 +415,8 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
           : options.binDir;
       env[NODE_BIN_ENV] = options.nodePath;
       env.PI_DESKTOP_HOST_ENTRY = options.hostPath;
+      const buildId = options.hostBuildId?.() ?? null;
+      if (buildId) env[HOST_BUILD_ENV] = buildId;
       if (options.npmCliPath) env[NPM_CLI_ENV] = options.npmCliPath;
       if (options.backupDir) env[BACKUP_DIR_ENV] = options.backupDir;
 

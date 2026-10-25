@@ -139,7 +139,7 @@ export function renderDiagnosticsBundle(snapshot: DiagnosticsSnapshot, officeTex
   if (snapshot.hosts.length === 0) lines.push("(none)");
   for (const host of snapshot.hosts) {
     lines.push(
-      `- ${host.tabId} role=${host.role} status=${host.status} pid=${host.pid ?? "?"} cwd=${host.cwd}`,
+      `- ${host.tabId} role=${host.role} status=${host.status} pid=${host.pid ?? "?"} build=${host.buildId ?? "unknown"}${host.stale ? " (stale)" : ""} cwd=${host.cwd}`,
     );
     if (host.startedAt !== null) lines.push(`  started: ${iso(host.startedAt)}`);
     if (host.sessionFile) lines.push(`  session: ${host.sessionFile}`);

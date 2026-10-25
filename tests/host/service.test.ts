@@ -48,6 +48,7 @@ function harness(options: Partial<HostServiceOptions> = {}) {
       nodeVersion: "v24.21.0",
       piVersion: "0.85.1",
       startedAt: 1_700_000_000_000,
+      buildId: "build-1",
     },
     writeBlob: async (name, contents) => {
       const path = join(BLOB_DIR, name);
@@ -119,7 +120,23 @@ describe("host service dispatch", () => {
       sessionId: "session-1",
       bridgePort: 38618,
       pids: { pid: process.pid },
+      buildId: "build-1",
     });
+  });
+
+  it("reports a null build id when the supervisor did not stamp one", async () => {
+    const host = harness({
+      info: {
+        sessionId: "session-1",
+        cwd: normalize("C:/work"),
+        bridgePort: 38618,
+        nodeVersion: "v24.21.0",
+        piVersion: "0.85.1",
+        startedAt: 1_700_000_000_000,
+      },
+    });
+    await host.request(1, "host.hello");
+    expect(host.lastResult()).toMatchObject({ buildId: null });
   });
 
   it("rejects an unknown method without dropping the connection", async () => {

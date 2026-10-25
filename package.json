@@ -20,7 +20,9 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "dev": "npm run build:host && electron-vite dev",
+    "dev": "npm run build:host && node scripts/dev.mjs",
+    "dev:host": "vite build --watch --config vite.host.config.ts",
+    "dev:electron": "electron-vite dev",
     "build": "npm run build:host && electron-vite build",
     "build:host": "vite build --config vite.host.config.ts",
     "preview": "electron-vite preview",

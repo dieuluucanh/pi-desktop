@@ -460,3 +460,51 @@ describe("host integration: session replacement", () => {
     expect(await lastAssistantText(harness)).toBe("after reload");
   });
 });
+
+const workflowExtension = process.env.PI_WORKFLOW_EXTENSION ?? "";
+
+/**
+ * Optional live check (2026-10-24 stale-host plan): set
+ * `PI_WORKFLOW_EXTENSION` to a local `@dieulc/workflow/index.ts` to run the
+ * real extension's argument hooks through the same host path the app uses.
+ * Skipped by default so CI does not depend on a developer's profile.
+ */
+describe.skipIf(workflowExtension.length === 0)(
+  "host integration: real workflow extension (live)",
+  () => {
+    it("serves /profile and /commit-policy argument completions", async () => {
+      const harness = await startHarness({ extensions: true });
+      harness.profile.writeExtension(
+        "workflow-live.js",
+        `export { default } from ${JSON.stringify(workflowExtension)};`,
+      );
+      // The extension reads its own profile for defaults; never touch the
+      // developer's real `~/.pi/agent` from a test.
+      const previous = process.env.PI_CODING_AGENT_DIR;
+      process.env.PI_CODING_AGENT_DIR = harness.profile.dir;
+      try {
+        await harness.call("session.create");
+
+        const profile = (await harness.call("commands.complete", {
+          name: "profile",
+          prefix: "",
+        })) as { items?: Array<{ value: string; label: string }> | null };
+        const profileLabels = profile.items?.map((item) => item.label) ?? [];
+        expect(profileLabels).toEqual(expect.arrayContaining(["list"]));
+        expect(profileLabels.some((label) => label.startsWith("use"))).toBe(true);
+        expect(profileLabels.some((label) => label.startsWith("rename"))).toBe(true);
+
+        const policy = (await harness.call("commands.complete", {
+          name: "commit-policy",
+          prefix: "",
+        })) as { items?: Array<{ value: string; label: string }> | null };
+        expect(policy.items?.map((item) => item.label)).toEqual(
+          expect.arrayContaining(["never", "ask", "allow"]),
+        );
+      } finally {
+        if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+        else process.env.PI_CODING_AGENT_DIR = previous;
+      }
+    }, 120_000);
+  },
+);

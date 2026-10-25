@@ -40,6 +40,14 @@ export const SERVICE_ENV = "PI_DESKTOP_HOST_MODE";
 export const SESSION_ID_ENV = "PI_DESKTOP_SESSION_ID";
 
 /**
+ * Content fingerprint of the host bundle (`out/host/index.mjs`) the supervisor
+ * spawned. A long-lived host keeps running the code it started with, so the app
+ * compares this with the file on disk before trusting a host that may predate a
+ * rebuild (2026-10-24 stale-host plan).
+ */
+export const HOST_BUILD_ENV = "PI_DESKTOP_HOST_BUILD";
+
+/**
  * Which kind of host a process is (plan D-A3).
  *
  * `control` hosts serve app-wide state (settings, providers, packages, session

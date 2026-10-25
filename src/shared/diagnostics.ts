@@ -23,6 +23,7 @@ export type IncidentKind =
   | "host_timeout"
   | "host_spawn"
   | "host_failed"
+  | "host_stale"
   | "extension_error"
   | "unhandled_rejection"
   | "uncaught_exception"
@@ -63,6 +64,8 @@ const DISK_FULL_PATTERN = /enospc|no space left|disk (is )?full|insufficient (di
 const TIMEOUT_PATTERN = /timed out|timeout|deadline exceeded/i;
 const CRASH_PATTERN = /crashed|exited unexpectedly|host exited|crash loop/i;
 const SPAWN_PATTERN = /not running|failed to spawn|spawn error|enoent|is not running/i;
+const STALE_HOST_PATTERN =
+  /host build|host process does not serve command suggestions|stale host|method not implemented yet: commands\.complete|unknown method: commands\.complete/i;
 const UNAVAILABLE_PATTERN = /unavailable|not available|cannot start|no such route/i;
 const BAD_REQUEST_PATTERN = /unknown method|bad request|invalid|unsupported|is required/i;
 
@@ -80,6 +83,7 @@ export function classifyFailure(message: string): IncidentKind {
   if (TIMEOUT_PATTERN.test(text)) return "host_timeout";
   if (CRASH_PATTERN.test(text)) return "host_crash";
   if (SPAWN_PATTERN.test(text)) return "host_spawn";
+  if (STALE_HOST_PATTERN.test(text)) return "host_stale";
   if (UNAVAILABLE_PATTERN.test(text)) return "unavailable";
   if (BAD_REQUEST_PATTERN.test(text)) return "bad_request";
   return "unknown";
@@ -106,6 +110,7 @@ const SEVERITY_BY_KIND: Record<IncidentKind, IncidentSeverity> = {
   host_timeout: "error",
   host_spawn: "error",
   host_failed: "error",
+  host_stale: "warning",
   extension_error: "error",
   unhandled_rejection: "error",
   uncaught_exception: "error",
@@ -133,7 +138,8 @@ export function isRecoverable(kind: IncidentKind): boolean {
     kind === "host_crash" ||
     kind === "host_timeout" ||
     kind === "host_spawn" ||
-    kind === "host_failed"
+    kind === "host_failed" ||
+    kind === "host_stale"
   );
 }
 
@@ -152,6 +158,8 @@ export function incidentFix(kind: IncidentKind): string | null {
       return "The host process could not start. Check the runtime in Diagnostics, then restart the tab.";
     case "host_failed":
       return "The host crashed repeatedly and was stopped. Restart it, or launch with --safe-mode to rule out an extension.";
+    case "host_stale":
+      return "Restart the session tab to load the current host build; history comes back from the JSONL.";
     case "extension_error":
       return "Disable the extension in Extensions, or start with --safe-mode, then reload the session.";
     case "offline":
@@ -268,6 +276,10 @@ export interface DiagnosticsHostInfo {
   startedAt: number | null;
   /** The host's last self-reported RSS in bytes, or null before the first poll. */
   rssBytes: number | null;
+  /** Fingerprint reported by `host.hello`; null for a pre-change host. */
+  buildId: string | null;
+  /** True when the running host predates the bundle on disk. */
+  stale: boolean;
   /** The tail of the host's own log file, oldest first. */
   logLines: string[];
 }
@@ -357,6 +369,8 @@ export function incidentHeadline(incident: Incident): string {
       return "The session host could not start";
     case "host_failed":
       return "The session host was stopped after repeated crashes";
+    case "host_stale":
+      return "The session host is running an older build";
     case "extension_error":
       return "An extension raised an error";
     case "offline":

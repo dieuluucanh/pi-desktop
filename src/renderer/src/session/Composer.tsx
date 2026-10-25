@@ -44,8 +44,12 @@ import type {
 export interface ComposerProps {
   tabId: string;
   running: boolean;
-  /** False when the session cannot accept prompts (failed/stopped). */
+  /** False when the session cannot accept prompts (failed/crashed). */
   enabled?: boolean;
+  /** True while a stopped tab is asleep; the first interaction wakes it. */
+  sleeping?: boolean;
+  /** Wakes a sleeping session (activation on focus/pointer-down/typing). */
+  onWake?: () => void;
   draft: string;
   queue: TranscriptQueue;
   sendMode: SendMode;
@@ -168,6 +172,8 @@ function AttachmentChips({
 export function Composer({
   running,
   enabled = true,
+  sleeping = false,
+  onWake,
   draft,
   queue,
   sendMode,
@@ -430,11 +436,13 @@ export function Composer({
           rows={2}
           value={draft}
           placeholder={
-            enabled
-              ? running
-                ? `Type to steer the run (${sendMode === "steer" ? "steer" : "follow-up"})…`
-                : "Ask Pi to change something…  / commands · @ files · # documents"
-              : "This session is not running — start it above to send a prompt."
+            sleeping && enabled
+              ? "This session is asleep — type or press Tab to wake it…"
+              : enabled
+                ? running
+                  ? `Type to steer the run (${sendMode === "steer" ? "steer" : "follow-up"})…`
+                  : "Ask Pi to change something…  / commands · @ files · # documents"
+                : "This session is not running — start it above to send a prompt."
           }
           disabled={!enabled}
           className={cn(
@@ -456,8 +464,15 @@ export function Composer({
           onChange={(event) => {
             syncCaret(event.target);
             setPickedSource(undefined);
+            if (sleeping) onWake?.();
             onDraftChange(event.target.value);
             refreshCompletion(false);
+          }}
+          onFocus={() => {
+            if (sleeping) onWake?.();
+          }}
+          onPointerDown={() => {
+            if (sleeping) onWake?.();
           }}
           onSelect={(event) => {
             syncCaret(event.currentTarget);

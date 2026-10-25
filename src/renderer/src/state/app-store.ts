@@ -161,6 +161,7 @@ import type { FileListSnapshot } from "../completion/file-source";
 import { appArgumentItems } from "../completion/app-arguments";
 import type { CompletionItem, CompletionSource } from "../completion/types";
 import {
+  isUnsupportedCommandComplete,
   parseCommandCompleteResult,
   parseCommandRunResult,
   type CommandArgumentItem,
@@ -225,6 +226,9 @@ const appliedEditorSeq = new Map<string, number>();
 
 /** Per-tab debounce for the `oi.editorText` mirror, so typing is not one frame per key. */
 const editorTextTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** In-flight wake operations, so focus + click + first keystroke share one activation. */
+const wakingSessions = new Map<string, Promise<void>>();
 export const EDITOR_TEXT_DELAY_MS = 250;
 
 export const APP_VIEWS: readonly AppView[] = [
@@ -286,6 +290,11 @@ export interface AppStateShape {
   hint: string | null;
   /** A connectivity failure the user should see until it is dismissed or a call works. */
   offlineNotice: string | null;
+  /**
+   * Per-tab stale-host explanation (2026-10-24 stale-host plan). Persistent
+   * until the tab is restarted, a completion succeeds, or `session.recovered`.
+   */
+  staleHosts: Record<string, string>;
   /** Open session tabs (plan step 3); the main process owns their hosts. */
   tabs: TabRecord[];
   activeTabId: string | null;
@@ -373,6 +382,10 @@ export interface AppStateShape {
    * (plan step 22). Every user-visible catch path funnels through here.
    */
   noteFailure: (error: unknown) => void;
+  /** Marks a tab's host as too old for command completion, once per tab. */
+  noteStaleHost: (tabId: string) => void;
+  /** Clears the stale-host banner for a tab (restart, recovery, success). */
+  clearStaleHost: (tabId: string) => void;
   /** Clears the offline banner (a retry worked, or the user dismissed it). */
   clearOffline: () => void;
   loadPrefs: () => Promise<void>;
@@ -774,6 +787,8 @@ export interface AppStateShape {
 
   createSessionTab: (kind?: TabKind) => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
+  /** Wakes a stopped session on interaction; spawns/resumes its host. */
+  wakeSession: (tabId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
   closeActiveTab: () => Promise<void>;
   cycleTab: (direction: 1 | -1) => Promise<void>;
@@ -822,6 +837,22 @@ export interface AppStateShape {
 
 /** How long a `files.list` result is reused before it is fetched again. */
 export const FILE_CACHE_TTL_MS = 30_000;
+
+/**
+ * Persistent, per-tab explanation for a host that predates
+ * `commands.complete` (2026-10-24 stale-host plan). A banner, not a hint: the
+ * silent empty menu is what made the original failure look like a routing bug.
+ */
+export const HOST_STALE_MESSAGE =
+  "This session's host process does not serve command suggestions. Restart the session to load the current host build.";
+
+/** True when a request failed because the live host lacks `commands.complete`. */
+function isStaleHostError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /not implemented yet: commands\.complete|unknown method: commands\.complete/i.test(
+    message,
+  );
+}
 
 export interface FileCacheEntry {
   files: string[];
@@ -1003,6 +1034,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   info: null,
   hint: null,
   offlineNotice: null,
+  staleHosts: {},
   tabs: [],
   activeTabId: null,
   transcripts: {},
@@ -1353,6 +1385,26 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   clearOffline: () => set({ offlineNotice: null }),
 
+  noteStaleHost: (tabId) => {
+    if (get().staleHosts[tabId]) return;
+    set({ staleHosts: { ...get().staleHosts, [tabId]: HOST_STALE_MESSAGE } });
+    // Record once, directly with the tab id. `noteFailure` would add a
+    // transient hint on top of the banner and lose the tab association.
+    void bridge()
+      ?.diagnostics?.record({
+        kind: "host_stale",
+        message: HOST_STALE_MESSAGE,
+        tabId,
+      })
+      .catch(() => undefined);
+  },
+
+  clearStaleHost: (tabId) => {
+    if (!(tabId in get().staleHosts)) return;
+    const { [tabId]: _removed, ...rest } = get().staleHosts;
+    set({ staleHosts: rest });
+  },
+
   loadPrefs: async () => {
     const api = bridge();
     if (!api) {
@@ -1399,6 +1451,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (envelope.tabId === CONTROL_TAB_ID) {
       for (const entry of envelope.events) get().applyControlEvent(entry);
       return;
+    }
+    if (envelope.events.some((entry) => entry.event === "session.recovered")) {
+      get().clearStaleHost(envelope.tabId);
+      get().invalidateCommands(envelope.tabId);
     }
     // A trust refusal is a project-level question, not transcript content: raise
     // the prompt and keep it out of the message list (plan step 10).
@@ -1507,6 +1563,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   restartTab: async (tabId) => {
     const api = bridge();
     if (!api?.sessions) return;
+    // The banner's action is an explicit fix; drop it before the IPC so it disappears
+    // immediately and a failed restart surfaces through `noteFailure` instead.
+    get().clearStaleHost(tabId);
     try {
       await api.sessions.restart(tabId);
       // The host is new, so the transcript has to be rebuilt from `messages.get`
@@ -1964,8 +2023,14 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         method: "commands.complete",
         params: { name, prefix },
       });
+      if (isUnsupportedCommandComplete(response)) {
+        get().noteStaleHost(tabId);
+        return null;
+      }
+      get().clearStaleHost(tabId);
       return parseCommandCompleteResult(response);
-    } catch {
+    } catch (error) {
+      if (isStaleHostError(error)) get().noteStaleHost(tabId);
       return null;
     }
   },
@@ -2912,10 +2977,15 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       options?.refresh !== true &&
       current.shortcutsLoaded &&
       current.shortcutsTabId === target &&
-      !current.shortcutsError
+      !current.shortcutsError &&
+      // An empty successful response is not a reason to stop asking: a session
+      // that resumed before its extension runner bound can answer `{shortcuts: []}`
+      // once, and the composer's Tab fallback needs the retry (2026-10-24 plan).
+      current.shortcuts.shortcuts.length > 0
     ) {
       return;
     }
+    if (current.shortcutsBusy) return;
     set({ shortcutsBusy: true, shortcutsError: null });
     try {
       const raw = await api.sessions.request({ tabId: target, method: "shortcuts.list" });
@@ -3547,16 +3617,43 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // The TUI surface is per host too (plan step 17).
       void get().loadTuiSurface(tabId);
     }
-    // Extension shortcuts belong to the tab's live session (the workflow
-    // extension registers `tab` for its mode cycle), so they are listed when the
-    // tab becomes active. `loadShortcuts` is idempotent: it only refetches when
-    // the tab changed, so switching back and forth costs nothing.
-    void get().loadShortcuts();
     try {
       get().applyTabs(await api.sessions.activate(tabId));
+      // Extension shortcuts belong to the tab's live session (the workflow
+      // extension registers `tab` for its mode cycle). Load them after the host
+      // is awake, not before: an activation of a stopped tab spawns/resumes it.
+      if (tab?.kind !== "web") await get().loadShortcuts({ refresh: true });
     } catch (error) {
       get().noteFailure(error);
     }
+  },
+
+  wakeSession: async (tabId) => {
+    const api = bridge();
+    const tab = get().tabs.find((entry) => entry.id === tabId);
+    if (!api?.sessions || !tab || tab.kind === "web" || tab.status !== "stopped") return;
+    const inFlight = wakingSessions.get(tabId);
+    if (inFlight) return inFlight;
+    const run = (async () => {
+      try {
+        get().applyTabs(await api.sessions.activate(tabId));
+        await Promise.all([
+          get().loadShortcuts({ refresh: true }),
+          get().loadExtensionUi(tabId),
+          get().loadTuiSurface(tabId),
+        ]);
+        get().invalidateCommands(tabId);
+        // A wake spawns a host from the current bundle, so any stale-host
+        // banner for the previous process is obsolete.
+        get().clearStaleHost(tabId);
+      } catch (error) {
+        get().noteFailure(error);
+      } finally {
+        wakingSessions.delete(tabId);
+      }
+    })();
+    wakingSessions.set(tabId, run);
+    return run;
   },
 
   closeTab: async (tabId) => {

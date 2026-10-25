@@ -213,6 +213,12 @@ The app treats failure as a first-class state rather than a silent no-op:
   JSONL, so history returns. The supervisor also emits `timeout` and forwards
   `crashed`/`resumed`, which the session service turns into `session.timeout`,
   `session.crashed` and `session.recovered` transcript notices.
+- **Stale host.** A host process keeps the bundle it was spawned from. The app
+  compares its `buildId` with `out/host/index.mjs`; an idle stale session is
+  recycled before the next request, and a busy one shows a persistent banner
+  with **Restart session**. Diagnostics shows the host build id and a
+  `stale build` badge. The renderer's `commands.complete` fallback also converts
+  a missing host method into a banner instead of an empty completion menu.
 - **Cancellation.** Abort/clear-queue already restore the queued text; closing a
   tab mid-run stops its host through the supervisor (a test pins that no host is
   left behind).

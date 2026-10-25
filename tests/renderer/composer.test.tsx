@@ -365,6 +365,40 @@ describe("extension shortcut dispatch (Tab)", () => {
   });
 });
 
+describe("sleeping session (2026-10-24 plan)", () => {
+  it("stays enabled and wakes on focus, pointer-down and typing", () => {
+    const onWake = vi.fn();
+    renderComposer({ enabled: true, sleeping: true, onWake });
+    const box = screen.getByLabelText("Prompt");
+
+    expect(box).toBeEnabled();
+    expect(screen.getByPlaceholderText(/asleep/i)).toBe(box);
+
+    fireEvent.focus(box);
+    expect(onWake).toHaveBeenCalledTimes(1);
+
+    fireEvent.pointerDown(box);
+    expect(onWake).toHaveBeenCalledTimes(2);
+
+    fireEvent.change(box, { target: { value: "/profile" } });
+    expect(onWake).toHaveBeenCalledTimes(3);
+  });
+
+  it("still gives Tab to the workflow shortcut while sleeping", () => {
+    const onInvokeShortcut = vi.fn();
+    renderComposer({
+      enabled: true,
+      sleeping: true,
+      extensionShortcuts: [{ key: "tab" }],
+      onInvokeShortcut,
+    });
+
+    fireEvent.keyDown(screen.getByLabelText("Prompt"), { key: "Tab" });
+
+    expect(onInvokeShortcut).toHaveBeenCalledWith("tab");
+  });
+});
+
 describe("caret readout", () => {
   // The composer is a controlled textarea, so the readout can only be trusted
   // when the draft follows the keystrokes: this harness keeps them in step.

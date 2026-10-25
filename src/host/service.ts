@@ -51,6 +51,11 @@ export interface HostServiceInfo {
   startedAt: number;
   /** `control` hosts serve app-wide state and own no `AgentSession` (plan D-A3). */
   role?: HostRole;
+  /**
+   * Fingerprint of the bundle this process was spawned from. `null` for a host
+   * started by an older main process that did not pass one.
+   */
+  buildId?: string | null;
 }
 
 export interface HostServiceOptions {
@@ -233,6 +238,7 @@ export function createHostService(options: HostServiceOptions): HostService {
     pids: { pid: process.pid, ppid: process.ppid },
     env: { blobDir: blobDir || process.env[BLOB_DIR_ENV] || null },
     startedAt: options.info.startedAt,
+    buildId: options.info.buildId ?? null,
   });
 
   handlers["host.blobs.read"] = async (

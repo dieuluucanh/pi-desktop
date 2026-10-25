@@ -97,6 +97,7 @@ function defaultAnswer(request: HostRequestFrame): unknown {
         bridgePort: 38618,
         pids: { pid: 1234, ppid: 1 },
         startedAt: 1,
+        buildId: "build-1",
       };
     case "host.ping":
       return { pong: true };
@@ -115,6 +116,7 @@ function harness(
     npmCliPath?: string;
     safeMode?: boolean;
     telemetryEnabled?: boolean | (() => boolean);
+    hostBuildId?: () => string | null;
     /** Enable `host.metrics` polling; disabled by default so request order is stable. */
     memoryPollMs?: number;
     maxRssBytes?: number;
@@ -157,6 +159,7 @@ function harness(
       : {}),
     safeMode: options.safeMode ?? false,
     telemetryEnabled: options.telemetryEnabled ?? false,
+    ...(options.hostBuildId ? { hostBuildId: options.hostBuildId } : {}),
   });
 
   return { supervisor, spawned, spawnCalls, fs };
@@ -181,6 +184,18 @@ describe("host supervisor startup", () => {
     // The host learns where the bundled runtime is (plan step 14).
     expect(spawnCalls[0]?.env.PI_DESKTOP_NODE).toBe(NODE_PATH);
     expect(spawnCalls[0]?.env.PI_DESKTOP_HOST_MODE).toBe("service");
+  });
+
+  it("stamps the spawn with the host bundle fingerprint", async () => {
+    const { supervisor, spawnCalls } = harness({ hostBuildId: () => "build-1" });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    expect(spawnCalls[0]?.env.PI_DESKTOP_HOST_BUILD).toBe("build-1");
+    expect(host.info()?.buildId).toBe("build-1");
+
+    const bare = harness();
+    await bare.supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(bare.spawnCalls[0]?.env).not.toHaveProperty("PI_DESKTOP_HOST_BUILD");
   });
 
   it("passes the bundled npm CLI to the host when the runtime resolved one", async () => {

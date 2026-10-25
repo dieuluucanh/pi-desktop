@@ -11,13 +11,19 @@ git clone https://github.com/dieuluucanh/pi-desktop.git
 cd pi-desktop
 npm ci
 npm run runtime:fetch      # bundled Node + npm + PATH shims (~37 MB, not committed)
-npm run dev                # Electron with the renderer dev server
+npm run dev                # Electron + host bundle watch (src/host/** rebuilds)
 ```
 
 `npm run runtime:fetch` is optional for typecheck/lint/unit tests (the live
 runtime suites skip without it) but required for `dev`, `runtime:verify` and
 packaging. `npm run doctor` probes the runtime, profile, extensions, bridge, git
 and Office state on the current machine.
+
+`npm run dev` starts `vite build --watch` for the host bundle and
+`electron-vite dev` together through `scripts/dev.mjs`. The app compares the
+running host's build id with the bundle on disk and recycles an idle stale host
+before the next request, so editing `src/host/**` takes effect without a manual
+restart. `npm run build:host` remains the one-shot build.
 
 ## Gates
 

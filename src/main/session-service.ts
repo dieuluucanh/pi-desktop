@@ -1,4 +1,5 @@
 import type { HostMethod, HostRole } from "../shared/host-protocol";
+import type { CommandCompleteResult } from "../shared/commands";
 import {
   appendIncident,
   createIncident,
@@ -80,6 +81,8 @@ export interface HostInfoLike {
   sessionId?: string | null;
   startedAt?: number;
   pids?: { pid?: number };
+  /** Build fingerprint reported by `host.hello` (2026-10-24 stale-host plan). */
+  buildId?: string | null;
 }
 
 /** The narrow supervisor surface this service drives. */
@@ -129,6 +132,12 @@ export interface SessionServiceDeps {
   controlCwd: string;
   /** Pushes to the renderer; the main process maps these to IPC channels. */
   emit(channel: SessionEmitChannel, payload: unknown): void;
+  /**
+   * Fingerprint of the host bundle currently on disk (2026-10-24 stale-host
+   * plan). Absent in tests and when the bundle cannot be read; the stale check
+   * is then skipped.
+   */
+  hostBuildId?: () => string | null;
   now?: () => number;
   newId?: () => string;
   /** Delta batching window for `message_update` (plan step 3). */
@@ -206,6 +215,23 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+/**
+ * The service-level errors a host emits when it was built before the method
+ * existed (2026-10-24 stale-host plan). A `CommandError` such as "open a
+ * session first" also carries `not_implemented`, so the message prefix is what
+ * distinguishes a stale bundle from an unavailable session.
+ */
+const MISSING_COMMAND_COMPLETE_MESSAGES = [
+  "method not implemented yet: commands.complete",
+  "unknown method: commands.complete",
+] as const;
+
+function isMissingCommandComplete(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.name !== "not_implemented" && error.name !== "unknown_method") return false;
+  return MISSING_COMMAND_COMPLETE_MESSAGES.some((message) => error.message.startsWith(message));
+}
+
 /** Normalizes a supervisor event payload into a protocol entry. */
 function toEntry(payload: unknown): SessionEventEntry | null {
   const record = asRecord(payload);
@@ -230,6 +256,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    * its session file) was orphaned (plan step 25).
    */
   const spawning = new Map<string, Promise<SupervisorHostLike>>();
+  /**
+   * In-flight stop+respawn of a stale host, per tab (2026-10-24 stale-host
+   * plan). Two completion requests from the same keystroke burst must share one
+   * recycle, or they would stop each other's freshly spawned host.
+   */
+  const recycling = new Map<string, Promise<SupervisorHostLike>>();
   /** Per-tab `session.create` defaults (per-project model/thinking + trust, step 10). */
   const createParams = new Map<
     string,
@@ -428,6 +460,66 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     if (tab.sessionFile) host.rememberSessionFile?.(tab.sessionFile);
   };
 
+  /** The bundle fingerprint currently on disk, or null when unreadable. */
+  const currentHostBuildId = (): string | null => {
+    if (!deps.hostBuildId) return null;
+    try {
+      return deps.hostBuildId();
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * True when the live host was spawned from a different bundle than the one on
+   * disk. A pre-change host reports no `buildId` and therefore counts as stale
+   * as soon as a fingerprint is available; a host with no identity at all is
+   * left alone rather than guessed about.
+   */
+  const hostIsStale = (host: SupervisorHostLike): boolean => {
+    const expected = currentHostBuildId();
+    if (!expected) return false;
+    const info = host.info?.();
+    if (!info) return false;
+    return info.buildId !== expected;
+  };
+
+  /** Whether a `state.get` snapshot says the host must not be recycled. */
+  const hostIsBusy = (snapshot: unknown): boolean => {
+    const record = asRecord(snapshot);
+    const nonEmpty = (value: unknown): boolean => Array.isArray(value) && value.length > 0;
+    return (
+      record.streaming === true ||
+      record.compacting === true ||
+      record.retrying === true ||
+      (typeof record.pendingMessages === "number" && record.pendingMessages > 0) ||
+      nonEmpty(record.steering) ||
+      nonEmpty(record.followUp)
+    );
+  };
+
+  /** Stops a tab's host and drops everything tied to it, leaving it stopped. */
+  const detachHost = async (tabId: string): Promise<void> => {
+    flushPending(tabId);
+    timers.delete(tabId);
+    pending.delete(tabId);
+    for (const off of unsubscribes.get(tabId) ?? []) off();
+    unsubscribes.delete(tabId);
+    hosts.delete(tabId);
+    // An in-flight spawn must not be inherited by the replacement host.
+    spawning.delete(tabId);
+    try {
+      await deps.supervisor.stop(tabId);
+    } catch {
+      // A host that is already gone is exactly the state we want.
+    }
+    const tab = tabs.get(tabId);
+    if (tab) {
+      tab.status = "stopped";
+      publishTabs();
+    }
+  };
+
   const subscribe = (tab: TabRecord, host: SupervisorHostLike): void => {
     const off = [
       host.on("event", (payload) => {
@@ -576,6 +668,40 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   };
 
   /**
+   * Recycles a host that predates the bundle on disk, but only when `state.get`
+   * proves it is idle and the session can be resumed. Concurrent requests share
+   * one stop+respawn (2026-10-24 stale-host plan).
+   */
+  const recycleStaleHost = async (tab: TabRecord): Promise<SupervisorHostLike> => {
+    const inFlight = recycling.get(tab.id);
+    if (inFlight) return inFlight;
+    const run = (async (): Promise<SupervisorHostLike> => {
+      const host = await ensureHost(tab);
+      if (!hostIsStale(host)) return host;
+      let snapshot: unknown;
+      try {
+        // A short probe: a wedged host must not add the 30 s request timeout to
+        // a keystroke. On failure, keep the old host and let the caller decide.
+        snapshot = await host.request("state.get", undefined, { timeoutMs: 2_000 });
+      } catch {
+        return host;
+      }
+      const record = asRecord(snapshot);
+      if (typeof record.sessionFile === "string") tab.sessionFile = record.sessionFile;
+      if (hostIsBusy(record) || !tab.sessionFile) return host;
+      rememberSession(host, tab);
+      await detachHost(tab.id);
+      return ensureHost(tab);
+    })();
+    recycling.set(tab.id, run);
+    try {
+      return await run;
+    } finally {
+      recycling.delete(tab.id);
+    }
+  };
+
+  /**
    * Control-host events are app-wide (provider login progress and prompts, plan
    * step 9), so they are forwarded under the control address rather than a tab.
    */
@@ -598,9 +724,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     const tab = tabs.get(tabId);
     const info = host.info?.() ?? null;
     const pads = info?.pids;
+    const role: HostRole = info?.role === "control" ? "control" : "session";
+    const buildId = info?.buildId ?? null;
+    const stale = role === "session" && hostIsStale(host);
     return {
       tabId,
-      role: info?.role === "control" ? "control" : "session",
+      role,
       status: host.status(),
       cwd: typeof info?.cwd === "string" ? info.cwd : (tab?.cwd ?? ""),
       sessionFile: tab?.sessionFile ?? null,
@@ -608,6 +737,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       pid: typeof pads?.pid === "number" ? pads.pid : null,
       startedAt: typeof info?.startedAt === "number" ? info.startedAt : null,
       rssBytes: host.metrics?.()?.rssBytes ?? null,
+      buildId,
+      stale,
       logLines: host.logs?.() ?? [],
     };
   };
@@ -655,6 +786,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           pid: null,
           startedAt: null,
           rssBytes: null,
+          buildId: null,
+          stale: false,
           logLines: [],
         });
       }
@@ -745,6 +878,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       for (const off of unsubscribes.get(tabId) ?? []) off();
       unsubscribes.delete(tabId);
       hosts.delete(tabId);
+      recycling.delete(tabId);
       createParams.delete(tabId);
       tabs.delete(tabId);
       try {
@@ -805,6 +939,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         timers.delete(id);
         pending.delete(id);
         hosts.delete(id);
+        recycling.delete(id);
         try {
           await deps.supervisor.stop(id);
         } catch {
@@ -839,8 +974,23 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         return host.request(method, params);
       }
       const tab = requireTab(tabId);
-      const host = await ensureHost(tab);
-      return host.request(method, params);
+      let host = await ensureHost(tab);
+      if (hostIsStale(host)) {
+        try {
+          host = await recycleStaleHost(tab);
+        } catch {
+          // Keep the old host: a completion must not lose its request because a
+          // respawn failed, and the unsupported fallback below still applies.
+        }
+      }
+      try {
+        return await host.request(method, params);
+      } catch (error) {
+        if (method === "commands.complete" && isMissingCommandComplete(error)) {
+          return { items: null, unsupported: true } satisfies CommandCompleteResult;
+        }
+        throw error;
+      }
     },
 
     async restartTab(tabId) {
@@ -848,24 +998,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       if (tab.kind === "web") {
         throw new SessionServiceError("a web tab has no Pi host to restart", "web_tab");
       }
+      // Let an in-flight stale recycle settle first; otherwise it could spawn a
+      // host after this detach and leave two processes for one tab.
+      const inFlightRecycle = recycling.get(tabId);
+      if (inFlightRecycle) await inFlightRecycle.catch(() => undefined);
+      recycling.delete(tabId);
       // Detach the old host the same way `closeTab` does, then let `activateTab`
       // spawn a fresh one. The session file is untouched, so history returns.
-      flushPending(tabId);
-      timers.delete(tabId);
-      pending.delete(tabId);
-      for (const off of unsubscribes.get(tabId) ?? []) off();
-      unsubscribes.delete(tabId);
-      hosts.delete(tabId);
-      // Drop a stale in-flight spawn so the fresh `activateTab` below cannot
-      // inherit it; the orphaned spawn fails closed via its tab check.
-      spawning.delete(tabId);
-      try {
-        await deps.supervisor.stop(tabId);
-      } catch {
-        // A host that is already gone is exactly the state we want.
-      }
-      tab.status = "stopped";
-      publishTabs();
+      await detachHost(tabId);
       return service.activateTab(tabId);
     },
 
@@ -901,6 +1041,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // Any in-flight spawn sees `disposed` and stops its own host; dropping the
       // handles here keeps nothing pointing at a process during shutdown.
       spawning.clear();
+      recycling.clear();
       createParams.clear();
       control = null;
       await deps.supervisor.stopAll();

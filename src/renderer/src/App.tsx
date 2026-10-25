@@ -70,6 +70,11 @@ export function App() {
   const piOffline = useAppStore((state) => state.info?.piOffline ?? false);
   const offlineNotice = useAppStore((state) => state.offlineNotice);
   const clearOffline = useAppStore((state) => state.clearOffline);
+  const activeTabId = useAppStore((state) => state.activeTabId);
+  const staleHostMessage = useAppStore((state) =>
+    state.activeTabId ? state.staleHosts[state.activeTabId] : undefined,
+  );
+  const restartTab = useAppStore((state) => state.restartTab);
   useEffect(() => {
     void loadPrefs();
     void loadProjects();
@@ -192,6 +197,22 @@ export function App() {
               Dismiss
             </button>
           ) : null}
+        </div>
+      ) : null}
+      {staleHostMessage && activeTabId ? (
+        <div
+          className="banner banner--warn m-3 flex items-center justify-between gap-3"
+          role="status"
+          data-testid="stale-host-banner"
+        >
+          <span>{staleHostMessage}</span>
+          <button
+            type="button"
+            className="text-xs underline"
+            onClick={() => void restartTab(activeTabId)}
+          >
+            Restart session
+          </button>
         </div>
       ) : null}
       <div className="flex min-h-0 flex-1">

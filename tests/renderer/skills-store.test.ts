@@ -299,6 +299,101 @@ describe("shortcuts actions", () => {
     const listCalls = request.mock.calls.filter(([input]) => input.method === "shortcuts.list");
     expect(listCalls).toHaveLength(2);
   });
+
+  it("does not latch a successful empty list, so the Tab fallback can retry", async () => {
+    useAppStore.setState({
+      tabs: [{ id: "tab-1", kind: "session", cwd: "C:/work", title: "s" } as never],
+      activeTabId: "tab-1",
+    });
+    let attempts = 0;
+    const request = stubRequest(async (method) => {
+      if (method !== "shortcuts.list") return {};
+      attempts += 1;
+      return attempts === 1
+        ? { shortcuts: [], diagnostics: [], loadedAt: 1 }
+        : {
+            shortcuts: [{ key: "tab", extensionPath: "C:/x/workflow", source: "workflow" }],
+            diagnostics: [],
+            loadedAt: 2,
+          };
+    });
+
+    await useAppStore.getState().loadShortcuts();
+    expect(useAppStore.getState().shortcuts.shortcuts).toHaveLength(0);
+
+    // The composer's `onRequestShortcuts` path must not be a no-op after a
+    // successful-but-empty response (2026-10-24 idle-session plan).
+    await useAppStore.getState().loadShortcuts();
+    expect(request.mock.calls.filter(([input]) => input.method === "shortcuts.list")).toHaveLength(
+      2,
+    );
+    expect(useAppStore.getState().shortcuts.shortcuts[0]?.key).toBe("tab");
+  });
+
+  it("wakes a stopped tab, loads its shortcuts, and coalesces concurrent wakes", async () => {
+    const tab = {
+      id: "tab-1",
+      kind: "session",
+      cwd: "C:/work",
+      title: "s",
+      sessionFile: "C:/sessions/s1.jsonl",
+      status: "stopped",
+      createdAt: 1,
+      lastActiveAt: 1,
+      model: null,
+    };
+    useAppStore.setState({
+      tabs: [tab as never],
+      activeTabId: "tab-1",
+      completionCommands: { "tab-1": [] },
+    });
+    const request = stubRequest(async (method) => {
+      if (method === "shortcuts.list") {
+        return {
+          shortcuts: [{ key: "tab", extensionPath: "C:/x/workflow", source: "workflow" }],
+          diagnostics: [],
+          loadedAt: 1,
+        };
+      }
+      return {};
+    });
+    const activate = vi.fn(async () => ({
+      tabs: [{ ...tab, status: "idle" } as never],
+      activeTabId: "tab-1",
+    }));
+    (window.pi as unknown as { sessions: { activate: unknown } }).sessions.activate = activate;
+
+    await Promise.all([
+      useAppStore.getState().wakeSession("tab-1"),
+      useAppStore.getState().wakeSession("tab-1"),
+    ]);
+
+    expect(activate).toHaveBeenCalledTimes(1);
+    expect(activate).toHaveBeenCalledWith("tab-1");
+    expect(request.mock.calls.some(([input]) => input.method === "shortcuts.list")).toBe(true);
+    expect(useAppStore.getState().shortcuts.shortcuts[0]?.key).toBe("tab");
+    expect(useAppStore.getState().completionCommands["tab-1"]).toBeUndefined();
+  });
+
+  it("does not wake an idle or crashed tab", async () => {
+    useAppStore.setState({
+      tabs: [{ id: "tab-1", kind: "session", cwd: "C:/work", title: "s", status: "idle" } as never],
+      activeTabId: "tab-1",
+    });
+    const activate = vi.fn();
+    (window.pi as unknown as { sessions: { activate: unknown } }).sessions.activate = activate;
+
+    await useAppStore.getState().wakeSession("tab-1");
+    expect(activate).not.toHaveBeenCalled();
+
+    useAppStore.setState({
+      tabs: [
+        { id: "tab-1", kind: "session", cwd: "C:/work", title: "s", status: "crashed" } as never,
+      ],
+    });
+    await useAppStore.getState().wakeSession("tab-1");
+    expect(activate).not.toHaveBeenCalled();
+  });
 });
 
 describe("runSkill", () => {

@@ -58,9 +58,13 @@ truth and supersedes the group table's implications.
   before rewriting it; plan step 12), `PI_DESKTOP_NODE`,
   `PI_DESKTOP_NPM_CLI` (absolute path to the bundled `npm-cli.js`, so package
   operations use the app's runtime and work with `npm` absent from PATH; plan
-  step 14), `PI_DESKTOP_HOST_ENTRY`, and `PATH` prefixed with the shim directory.
-- `host.hello` reports protocol version, node/pi version, cwd, bridge port and
-  pid/ppid. A protocol mismatch is logged, not fatal (risk R8).
+  step 14), `PI_DESKTOP_HOST_ENTRY`, `PI_DESKTOP_HOST_BUILD` (a fingerprint of
+  the host bundle this process was spawned from; see the stale-host section),
+  and `PATH` prefixed with the shim directory.
+- `host.hello` reports protocol version, node/pi version, cwd, bridge port,
+  pid/ppid and `buildId` (the `PI_DESKTOP_HOST_BUILD` value, or `null` for a
+  host started by an older main). A protocol mismatch is logged, not fatal
+  (risk R8).
 
 ## Supervisor behaviour (`src/main/host-supervisor.ts`)
 
@@ -344,6 +348,28 @@ autocomplete providers), `tui.state`/`tui.resize`/`tui.input` (RPC mode's
 `custom()` returns `undefined`, so it has no terminal to render into or feed
 keys to), `render.request`/`render.markdown` (RPC mode renders tool/message
 components in-process; it has no client that could display ANSI lines).
+
+### Host build identity and stale recycling (2026-10-24)
+
+A host is a long-lived child process, so it keeps running the
+`out/host/index.mjs` that existed when it was spawned. The supervisor stamps
+every spawn with a fingerprint of that file (SHA-256, first 16 hex characters)
+via `PI_DESKTOP_HOST_BUILD`; `host.hello` echoes it as `buildId`. Before
+forwarding a renderer request, the session service compares `buildId` with the
+current file. If they differ and `state.get` reports an idle session (not
+streaming/compacting/retrying, no pending/steering/follow-up messages, and a
+known session file), it stops the host and lets `ensureHost` spawn a replacement
+that resumes the JSONL. Streaming or queued work is never interrupted, and the
+control host is never recycled this way.
+
+`commands.complete` has one extra fallback: when the live host answers
+`method not implemented yet: commands.complete` (or `unknown method: ...`),
+main returns `{ items: null, unsupported: true }` instead of an IPC error. The
+renderer shows a persistent banner with **Restart session**, and Diagnostics
+records a `host_stale` incident. The `unsupported` field is synthesized by
+**main**, never sent by a host. `npm run dev` runs a watch build for the host
+bundle beside `electron-vite dev`; a manual `electron-vite dev` still needs
+`npm run build:host` after host edits.
 
 ### Extension commands and argument completion (2026-10-24)
 

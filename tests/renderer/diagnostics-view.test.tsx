@@ -26,6 +26,8 @@ function snapshot(overrides: Partial<DiagnosticsSnapshot> = {}): Partial<Diagnos
         pid: 4242,
         startedAt: 1_700_000_000_000,
         rssBytes: 268_435_456,
+        buildId: "build-1",
+        stale: false,
         logLines: ["spawned node host.mjs\n", "resumed session\n"],
       },
     ],
@@ -108,12 +110,23 @@ describe("DiagnosticsView", () => {
     expect(screen.getByText(/RSS 256 MB/)).toBeInTheDocument();
     expect(screen.getByTestId("diagnostics-hosts")).toHaveTextContent("1/8 hosts");
     expect(screen.getByTestId("diagnostics-hosts")).toHaveTextContent("512 MB");
+    expect(screen.getByTestId("diagnostics-hosts")).toHaveTextContent("build build-1");
     expect(screen.getByTestId("diagnostics-startup")).toHaveTextContent("1.2 s");
     expect(screen.getByText("host for tab-1 crashed")).toBeInTheDocument();
     expect(screen.getByText(/Restart the session/)).toBeInTheDocument();
     expect(screen.getByTestId("diagnostics-extension-errors")).toHaveTextContent("boom");
     expect(screen.getByTestId("diagnostics-office")).toHaveTextContent("38617");
     expect(screen.getByTestId("diagnostics-environment")).toHaveTextContent("PI_OFFLINE");
+  });
+
+  it("marks a host running an older build", async () => {
+    const base = snapshot();
+    const first = base.hosts?.[0];
+    installBridge({
+      diagnostics: snapshot({ hosts: first ? [{ ...first, stale: true }] : [] }),
+    });
+    render(<DiagnosticsView />);
+    expect(await screen.findByTestId("diagnostics-hosts")).toHaveTextContent("stale build");
   });
 
   it("badges safe mode and PI_OFFLINE", async () => {

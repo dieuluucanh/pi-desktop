@@ -125,6 +125,7 @@ export function SessionView() {
   const sessionStates = useAppStore((state) => state.sessionStates);
   const transcripts = useAppStore((state) => state.transcripts);
   const activateTab = useAppStore((state) => state.activateTab);
+  const wakeSession = useAppStore((state) => state.wakeSession);
   const restartTab = useAppStore((state) => state.restartTab);
   const hydrateTranscript = useAppStore((state) => state.hydrateTranscript);
   const sendPrompt = useAppStore((state) => state.sendPrompt);
@@ -337,7 +338,10 @@ export function SessionView() {
             <button
               type="button"
               className="shrink-0 text-xs text-accent underline"
-              onClick={() => void activateTab(active.id)}
+              onClick={() => {
+                if (active.status === "stopped") void wakeSession(active.id);
+                else void activateTab(active.id);
+              }}
             >
               {active.status === "stopped" ? "Start session" : "Restart session"}
             </button>
@@ -423,7 +427,12 @@ export function SessionView() {
 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className="min-h-0 flex-1">
+          <div
+            className="min-h-0 flex-1"
+            onPointerDown={() => {
+              if (active.status === "stopped") void wakeSession(active.id);
+            }}
+          >
             <Transcript
               items={transcript?.items ?? []}
               tabId={active.id}
@@ -455,7 +464,13 @@ export function SessionView() {
               <Composer
                 tabId={active.id}
                 running={active.status === "running"}
-                enabled={active.status === "running" || active.status === "idle"}
+                enabled={
+                  active.status === "running" ||
+                  active.status === "idle" ||
+                  active.status === "stopped"
+                }
+                sleeping={active.status === "stopped"}
+                onWake={() => void wakeSession(active.id)}
                 draft={drafts[active.id] ?? ""}
                 queue={transcript?.queue ?? { steering: [], followUp: [] }}
                 sendMode={sendModes[active.id] ?? "steer"}

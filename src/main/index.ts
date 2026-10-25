@@ -23,6 +23,7 @@ import { CONTROL_TAB_ID } from "../shared/session-ipc";
 import { APP_COPYRIGHT, APP_NAME, APP_USER_MODEL_ID, resolveBranding } from "./branding";
 import { createAppStore } from "./app-store";
 import { createNodeFsPort } from "./fs-port";
+import { createHostBuildId } from "./host-build";
 import { createHostSupervisor } from "./host-supervisor";
 import { createQuitTeardown } from "./lifecycle";
 import {
@@ -142,6 +143,14 @@ const runtime: RuntimeResolution = resolveAppRuntime({
   appRoot: roots.appRoot,
 });
 
+/**
+ * Content fingerprint of the host bundle on disk (2026-10-24 stale-host plan).
+ * The supervisor stamps each spawn with it and the session service compares it
+ * with the running host before trusting completion requests. One provider is
+ * shared by both so the comparison is meaningful.
+ */
+const hostBuildId = createHostBuildId(runtime.piHostPath);
+
 /** Where the brand icons are (plan step 28): `resources/branding` or `assets/`. */
 const branding = resolveBranding({
   isPackaged: app.isPackaged,
@@ -210,6 +219,9 @@ const hosts = runtime.nodePath
       safeMode,
       // Install telemetry (plan step 23): off unless the user opted in.
       telemetryEnabled: () => telemetryEnabled,
+      // The running host reports this id in `host.hello`; a later rebuild makes
+      // it differ from the file on disk (2026-10-24 stale-host plan).
+      hostBuildId,
     })
   : null;
 
@@ -234,6 +246,9 @@ const sessions: SessionService | null = hosts
       supervisor: hosts,
       store: appState,
       controlCwd: app.getPath("home"),
+      // Compare the running host's build id with the bundle on disk; an idle,
+      // stale host is recycled before the next request (2026-10-24 plan).
+      hostBuildId,
       emit: (channel, payload) => {
         broadcastToWindows(SESSION_CHANNELS[channel], payload);
         // The tab table is the web-tab service's reconciliation input: a web tab

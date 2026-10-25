@@ -1,6 +1,6 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { SessionView } from "../../src/renderer/src/views/SessionView";
@@ -130,5 +130,39 @@ describe("composer rows", () => {
     const row = screen.getByTestId("composer-caret").parentElement;
     expect(row?.textContent).toContain("commands");
     expect(row?.textContent).toContain("Ln 1 · Col 1");
+  });
+});
+
+describe("idle session wake (2026-10-24 plan)", () => {
+  it("wakes a stopped session when the composer is focused", async () => {
+    const handles = installBridge();
+    const activate = vi.spyOn(handles.bridge.sessions, "activate");
+    useAppStore.setState({
+      tabs: [{ ...useAppStore.getState().tabs[0]!, status: "stopped" }],
+      activeTabId: TAB,
+    });
+
+    render(<SessionView />);
+    const box = screen.getByLabelText("Prompt");
+    expect(box).toBeEnabled();
+
+    fireEvent.focus(box);
+    await waitFor(() => expect(activate).toHaveBeenCalledWith(TAB));
+  });
+
+  it("does not auto-wake a crashed session", () => {
+    const handles = installBridge();
+    const activate = vi.spyOn(handles.bridge.sessions, "activate");
+    useAppStore.setState({
+      tabs: [{ ...useAppStore.getState().tabs[0]!, status: "crashed" }],
+      activeTabId: TAB,
+    });
+
+    render(<SessionView />);
+    const box = screen.getByLabelText("Prompt");
+    expect(box).toBeDisabled();
+
+    fireEvent.focus(box);
+    expect(activate).not.toHaveBeenCalled();
   });
 });

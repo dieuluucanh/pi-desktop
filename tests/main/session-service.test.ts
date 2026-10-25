@@ -28,11 +28,30 @@ class FakeHost implements SupervisorHostLike {
   readonly sessionId: string;
   readonly requests: Array<{ method: string; params?: unknown }> = [];
   shutdownCount = 0;
+  buildId: string | null;
   private statusValue = "ready";
   private readonly listeners = new Map<string, Set<(payload: unknown) => void>>();
+  private readonly state: Record<string, unknown>;
+  private readonly createdSessionFile: string | null;
+  private readonly fail: { method: string; error: Error } | undefined;
 
-  constructor(sessionId: string) {
+  constructor(
+    sessionId: string,
+    options: {
+      buildId?: string | null;
+      state?: Record<string, unknown>;
+      createdSessionFile?: string | null;
+      fail?: { method: string; error: Error };
+    } = {},
+  ) {
     this.sessionId = sessionId;
+    this.buildId = options.buildId ?? "build-1";
+    this.state = options.state ?? {};
+    this.createdSessionFile =
+      options.createdSessionFile === undefined
+        ? "/profile/sessions/s1.jsonl"
+        : options.createdSessionFile;
+    this.fail = options.fail;
   }
 
   status(): string {
@@ -45,6 +64,7 @@ class FakeHost implements SupervisorHostLike {
 
   request(method: HostMethod, params?: unknown): Promise<unknown> {
     this.requests.push(params === undefined ? { method } : { method, params });
+    if (this.fail?.method === method) return Promise.reject(this.fail.error);
     return Promise.resolve(this.reply(method));
   }
 
@@ -52,7 +72,7 @@ class FakeHost implements SupervisorHostLike {
     if (method === "session.create" || method === "session.resume") {
       return {
         sessionId: "session-1",
-        sessionFile: "/profile/sessions/s1.jsonl",
+        sessionFile: this.createdSessionFile,
         streaming: false,
         model: { id: "test-model" },
       };
@@ -60,10 +80,11 @@ class FakeHost implements SupervisorHostLike {
     if (method === "state.get") {
       return {
         sessionId: "session-1",
-        sessionFile: "/profile/sessions/s1.jsonl",
+        sessionFile: this.createdSessionFile,
         streaming: false,
         model: { id: "test-model" },
         messageCount: 3,
+        ...this.state,
       };
     }
     return {};
@@ -87,6 +108,7 @@ class FakeHost implements SupervisorHostLike {
     sessionId: string;
     startedAt: number;
     pids: { pid: number };
+    buildId: string | null;
   } {
     return {
       role: this.sessionId === CONTROL_HOST_ID ? "control" : "session",
@@ -94,6 +116,7 @@ class FakeHost implements SupervisorHostLike {
       sessionId: this.sessionId,
       startedAt: 5,
       pids: { pid: 900 },
+      buildId: this.buildId,
     };
   }
 
@@ -116,6 +139,16 @@ function createHarness(
   options: {
     maxTabs?: number;
     failCreate?: Error;
+    /** Expected bundle fingerprint; absent disables the stale check. */
+    hostBuildId?: () => string | null;
+    /** Per-spawn build ids (index 0 = the first host). */
+    buildIds?: Array<string | null>;
+    /** Extra `state.get` fields (busy flags, session file, …). */
+    state?: Record<string, unknown>;
+    /** The session snapshot's `sessionFile`, or null for a just-created session. */
+    createdSessionFile?: string | null;
+    /** Makes one host method reject (e.g. a wedged `state.get`). */
+    fail?: { method: HostMethod; error: Error };
     /** Awaited inside the fake `supervisor.start`, to hold a spawn in flight. */
     onStart?: (spec: SpawnSpec) => Promise<void> | void;
   } = {},
@@ -138,7 +171,14 @@ function createHarness(
     start: async (spec) => {
       specs.push(spec);
       await options.onStart?.(spec);
-      const host = new FakeHost(spec.sessionId);
+      const host = new FakeHost(spec.sessionId, {
+        buildId: options.buildIds?.[specs.length - 1] ?? "build-1",
+        ...(options.state ? { state: options.state } : {}),
+        ...(options.createdSessionFile === undefined
+          ? {}
+          : { createdSessionFile: options.createdSessionFile }),
+        ...(options.fail ? { fail: options.fail } : {}),
+      });
       if (options.failCreate) {
         host.request = (method: HostMethod, params?: unknown) => {
           host.requests.push(params === undefined ? { method } : { method, params });
@@ -176,6 +216,7 @@ function createHarness(
     controlCwd: "C:\\state",
     now: () => 1_000,
     newId: () => `tab-${++counter}`,
+    ...(options.hostBuildId ? { hostBuildId: options.hostBuildId } : {}),
     ...(options.maxTabs === undefined ? {} : { maxTabs: options.maxTabs }),
     emit: (channel, payload) => pushes.push({ channel, payload }),
   });
@@ -559,6 +600,42 @@ describe("reliability and recovery (plan step 22)", () => {
     expect(service.diagnosticsHosts()).toEqual([]);
   });
 
+  it("marks a session host whose build predates the bundle", async () => {
+    const { service } = createHarness({ hostBuildId: () => "new", buildIds: ["old"] });
+    await service.createTab({ cwd: "C:\\work\\app" });
+
+    const tab = service.diagnosticsHosts().find((row) => row.tabId === "tab-1");
+    expect(tab).toMatchObject({ buildId: "old", stale: true });
+  });
+
+  it("never marks the control host stale", async () => {
+    const { service } = createHarness({ hostBuildId: () => "new", buildIds: ["old"] });
+    await service.controlHost();
+
+    const control = service.diagnosticsHosts().find((row) => row.tabId === CONTROL_HOST_ID);
+    expect(control).toMatchObject({ buildId: "old", stale: false });
+  });
+
+  it("reports null build and stale=false for a tab without a host", async () => {
+    const { service, stored } = createHarness({ hostBuildId: () => "new" });
+    stored.tabs = [
+      {
+        id: "tab-1",
+        kind: "session",
+        cwd: "C:\\work\\a",
+        title: "a",
+        sessionFile: null,
+        status: "stopped",
+        createdAt: 1,
+        lastActiveAt: 1,
+        model: null,
+      },
+    ];
+    await service.restoreTabs();
+
+    expect(service.diagnosticsHosts()[0]).toMatchObject({ buildId: null, stale: false });
+  });
+
   it("describes each tab and the control host for Diagnostics", async () => {
     const { service } = createHarness();
     await service.controlHost();
@@ -568,13 +645,15 @@ describe("reliability and recovery (plan step 22)", () => {
     const control = rows.find((row) => row.tabId === CONTROL_HOST_ID);
     const tab = rows.find((row) => row.tabId === "tab-1");
 
-    expect(control).toMatchObject({ role: "control", pid: 900, startedAt: 5 });
+    expect(control).toMatchObject({ role: "control", pid: 900, startedAt: 5, stale: false });
     expect(control?.logLines[0]).toContain("control");
     expect(tab).toMatchObject({
       role: "session",
       // The host process is ready; the tab's own status is tracked separately.
       status: "ready",
       sessionFile: "/profile/sessions/s1.jsonl",
+      buildId: "build-1",
+      stale: false,
       logLines: ["log line for tab-1"],
     });
   });
@@ -707,6 +786,182 @@ describe("requests", () => {
   it("rejects an unknown tab", async () => {
     const { service } = createHarness();
     await expect(service.request("tab-nope", "state.get")).rejects.toThrow(/unknown session tab/);
+  });
+});
+
+describe("stale host recycling (2026-10-24 plan)", () => {
+  async function tabOf(service: SessionService): Promise<string> {
+    const envelope = await service.createTab({ cwd: "C:\\work\\app" });
+    const id = envelope.activeTabId ?? envelope.tabs[0]?.id;
+    if (!id) throw new Error("createTab returned no tab");
+    return id;
+  }
+
+  it("recycles an idle host whose build predates the bundle", async () => {
+    const harness = createHarness({ hostBuildId: () => "new", buildIds: ["old", "new"] });
+    const tabId = await tabOf(harness.service);
+    const first = harness.hosts.get(tabId)!;
+
+    await harness.service.request(tabId, "commands.complete", { name: "profile", prefix: "" });
+
+    expect(harness.stopped).toContain(tabId);
+    expect(harness.specs).toHaveLength(2);
+    expect(harness.hosts.get(tabId)).not.toBe(first);
+    expect(harness.hosts.get(tabId)?.info()?.buildId).toBe("new");
+    expect(harness.hosts.get(tabId)?.requests.map((request) => request.method)).toContain(
+      "commands.complete",
+    );
+  });
+
+  it.each([
+    ["streaming", { streaming: true }],
+    ["compacting", { compacting: true }],
+    ["retrying", { retrying: true }],
+    ["pendingMessages", { pendingMessages: 1 }],
+    ["steering", { steering: ["queued"] }],
+    ["followUp", { followUp: ["queued"] }],
+  ])("never recycles a busy host (%s)", async (_label, state) => {
+    const harness = createHarness({
+      hostBuildId: () => "new",
+      buildIds: ["old", "new"],
+      state: state as Record<string, unknown>,
+    });
+    const tabId = await tabOf(harness.service);
+    const first = harness.hosts.get(tabId)!;
+
+    await harness.service.request(tabId, "commands.complete", { name: "profile", prefix: "" });
+
+    expect(harness.stopped).toEqual([]);
+    expect(harness.specs).toHaveLength(1);
+    expect(harness.hosts.get(tabId)).toBe(first);
+    expect(first.requests.map((request) => request.method)).toContain("commands.complete");
+  });
+
+  it("does not recycle when the session file is unknown", async () => {
+    const harness = createHarness({
+      hostBuildId: () => "new",
+      buildIds: ["old", "new"],
+      createdSessionFile: null,
+      state: { sessionFile: null },
+    });
+    const tabId = await tabOf(harness.service);
+
+    await harness.service.request(tabId, "commands.complete", { name: "profile", prefix: "" });
+
+    expect(harness.stopped).toEqual([]);
+    expect(harness.specs).toHaveLength(1);
+  });
+
+  it("forwards to the old host when the idle probe fails", async () => {
+    const harness = createHarness({
+      hostBuildId: () => "new",
+      buildIds: ["old", "new"],
+      fail: { method: "state.get", error: new Error("wedged") },
+    });
+    const tabId = await tabOf(harness.service);
+    const first = harness.hosts.get(tabId)!;
+
+    await harness.service.request(tabId, "commands.complete", { name: "profile", prefix: "" });
+
+    expect(harness.stopped).toEqual([]);
+    expect(harness.specs).toHaveLength(1);
+    expect(first.requests.map((request) => request.method)).toContain("commands.complete");
+  });
+
+  it("does nothing when the build ids match", async () => {
+    const harness = createHarness({ hostBuildId: () => "new", buildIds: ["new"] });
+    const tabId = await tabOf(harness.service);
+    const first = harness.hosts.get(tabId)!;
+
+    await harness.service.request(tabId, "commands.complete", { name: "profile", prefix: "" });
+
+    expect(harness.stopped).toEqual([]);
+    expect(harness.specs).toHaveLength(1);
+    expect(first.requests.some((request) => request.method === "state.get")).toBe(false);
+    expect(first.requests.map((request) => request.method)).toContain("commands.complete");
+  });
+
+  it("skips the stale check when no provider is configured", async () => {
+    const harness = createHarness({ buildIds: ["old"] });
+    const tabId = await tabOf(harness.service);
+    const first = harness.hosts.get(tabId)!;
+
+    await harness.service.request(tabId, "commands.complete", { name: "profile", prefix: "" });
+
+    expect(harness.stopped).toEqual([]);
+    expect(harness.specs).toHaveLength(1);
+    expect(first.requests.some((request) => request.method === "state.get")).toBe(false);
+  });
+
+  it("does not stale-check the control host", async () => {
+    const harness = createHarness({ hostBuildId: () => "new", buildIds: ["old"] });
+
+    await harness.service.request(CONTROL_HOST_ID, "commands.complete");
+
+    expect(harness.specs.map((spec) => spec.role)).toEqual(["control"]);
+    expect(harness.stopped).toEqual([]);
+  });
+
+  it("coalesces concurrent requests into one recycle", async () => {
+    const harness = createHarness({ hostBuildId: () => "new", buildIds: ["old", "new"] });
+    const tabId = await tabOf(harness.service);
+
+    await Promise.all([
+      harness.service.request(tabId, "commands.complete", { name: "profile", prefix: "" }),
+      harness.service.request(tabId, "commands.complete", { name: "profile", prefix: "" }),
+    ]);
+
+    expect(harness.stopped.filter((id) => id === tabId)).toHaveLength(1);
+    expect(harness.specs).toHaveLength(2);
+  });
+
+  function hostError(message: string, name: string): Error {
+    return Object.assign(new Error(message), { name });
+  }
+
+  it("maps a missing commands.complete to an unsupported result", async () => {
+    const harness = createHarness({
+      fail: {
+        method: "commands.complete",
+        error: hostError("method not implemented yet: commands.complete", "not_implemented"),
+      },
+    });
+    const tabId = await tabOf(harness.service);
+
+    await expect(
+      harness.service.request(tabId, "commands.complete", { name: "profile", prefix: "" }),
+    ).resolves.toEqual({ items: null, unsupported: true });
+  });
+
+  it("maps unknown_method for commands.complete to the same result", async () => {
+    const harness = createHarness({
+      fail: {
+        method: "commands.complete",
+        error: hostError("unknown method: commands.complete", "unknown_method"),
+      },
+    });
+    const tabId = await tabOf(harness.service);
+
+    await expect(
+      harness.service.request(tabId, "commands.complete", { name: "profile", prefix: "" }),
+    ).resolves.toEqual({ items: null, unsupported: true });
+  });
+
+  it("does not swallow a CommandError that only shares the not_implemented name", async () => {
+    const harness = createHarness({
+      fail: {
+        method: "commands.complete",
+        error: hostError(
+          "extension commands are not available in this host: open a session first",
+          "not_implemented",
+        ),
+      },
+    });
+    const tabId = await tabOf(harness.service);
+
+    await expect(
+      harness.service.request(tabId, "commands.complete", { name: "profile", prefix: "" }),
+    ).rejects.toThrow(/open a session first/);
   });
 });
 

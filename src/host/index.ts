@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import {
   BACKUP_DIR_ENV,
   BLOB_DIR_ENV,
+  HOST_BUILD_ENV,
   HOST_ROLE_ENV,
   NODE_BIN_ENV,
   NPM_CLI_ENV,
@@ -456,6 +457,7 @@ export function runService(
         piVersion: null,
         role,
         startedAt: Date.now(),
+        buildId: env[HOST_BUILD_ENV]?.trim() || null,
       },
       onShutdown: () => {
         service.stop();

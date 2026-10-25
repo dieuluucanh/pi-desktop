@@ -54,6 +54,8 @@ function host(overrides: Partial<DiagnosticsHostInfo> = {}): DiagnosticsHostInfo
     pid: 4242,
     startedAt: 1_700_000_000_000,
     rssBytes: 268_435_456,
+    buildId: "build-1",
+    stale: false,
     logLines: ["spawned node host.mjs\n", "resumed session\n"],
     ...overrides,
   };
@@ -188,7 +190,7 @@ describe("renderDiagnosticsBundle", () => {
 
     expect(text).toContain("Pi Desktop — diagnostics bundle");
     expect(text).toContain("## Hosts (1)");
-    expect(text).toContain("role=session status=ready pid=4242");
+    expect(text).toContain("role=session status=ready pid=4242 build=build-1");
     expect(text).toContain("log (tail");
     expect(text).toContain("host_crash");
     expect(text).toContain("office wizard text");

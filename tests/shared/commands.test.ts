@@ -4,6 +4,7 @@ import {
   COMMAND_ARGUMENT_DESCRIPTION_MAX,
   COMMAND_ARGUMENT_LIMIT,
   COMMAND_ARGUMENT_VALUE_MAX,
+  isUnsupportedCommandComplete,
   parseCommandCompleteResult,
   parseCommandRunResult,
   sanitizeCommandArgumentItems,
@@ -100,5 +101,18 @@ describe("parseCommandRunResult", () => {
     expect(parseCommandRunResult({ ran: false })).toEqual({ ran: false });
     expect(parseCommandRunResult({})).toEqual({ ran: false });
     expect(parseCommandRunResult(null)).toEqual({ ran: false });
+  });
+});
+
+describe("isUnsupportedCommandComplete", () => {
+  it("recognises the flag main synthesizes for an old host", () => {
+    expect(isUnsupportedCommandComplete({ items: null, unsupported: true })).toBe(true);
+  });
+
+  it("does not confuse a current host's empty result with an unsupported host", () => {
+    expect(isUnsupportedCommandComplete({ items: null })).toBe(false);
+    expect(isUnsupportedCommandComplete({ items: [] })).toBe(false);
+    expect(isUnsupportedCommandComplete({ unsupported: "yes" })).toBe(false);
+    expect(isUnsupportedCommandComplete(undefined)).toBe(false);
   });
 });

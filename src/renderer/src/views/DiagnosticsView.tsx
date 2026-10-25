@@ -244,8 +244,10 @@ export function DiagnosticsView() {
                     <span className="text-xs text-ink-muted">
                       {host.role} · {host.tabId}
                       {host.pid !== null ? ` · pid ${host.pid}` : ""}
+                      {host.buildId ? ` · build ${host.buildId.slice(0, 12)}` : ""}
                       {host.officeHost ? " · office" : ""}
                     </span>
+                    {host.stale ? <Badge tone="warn">stale build</Badge> : null}
                     {host.rssBytes !== null ? (
                       <Badge
                         tone={host.rssBytes > snapshot.memory.budgetBytes ? "warn" : "neutral"}

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useAppStore } from "../../src/renderer/src/state/app-store";
+import { HOST_STALE_MESSAGE, useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { TabRecord } from "../../src/shared/session-ipc";
 import { installBridge } from "./fixtures";
@@ -60,6 +60,7 @@ beforeEach(() => {
     thinkingLevels: {},
     picker: null,
     view: "session",
+    staleHosts: {},
     hint: null,
   });
 });
@@ -356,5 +357,56 @@ describe("completion caches", () => {
     expect(files?.files).toEqual(["src/app.ts"]);
     await useAppStore.getState().loadFiles("tab-1");
     expect(request.mock.calls.filter((call) => call[0]?.method === "files.list")).toHaveLength(1);
+  });
+});
+
+describe("stale host banner", () => {
+  it("flags an unsupported completion once and records one incident", async () => {
+    const record = vi.fn(async () => true);
+    (window.pi as unknown as { diagnostics: { record: typeof record } }).diagnostics.record =
+      record;
+    stubRequest(async (input) =>
+      input.method === "commands.complete" ? { items: null, unsupported: true } : {},
+    );
+
+    await useAppStore.getState().completeCommandArguments("tab-1", "profile", "");
+    await useAppStore.getState().completeCommandArguments("tab-1", "profile", "");
+
+    expect(useAppStore.getState().staleHosts["tab-1"]).toBe(HOST_STALE_MESSAGE);
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "host_stale", tabId: "tab-1" }),
+    );
+  });
+
+  it("clears the banner after a successful completion", async () => {
+    useAppStore.setState({ staleHosts: { "tab-1": HOST_STALE_MESSAGE } });
+    stubRequest(async (input) =>
+      input.method === "commands.complete" ? { items: [{ value: "use ", label: "use" }] } : {},
+    );
+
+    const items = await useAppStore.getState().completeCommandArguments("tab-1", "profile", "u");
+
+    expect(items).toEqual([{ value: "use ", label: "use" }]);
+    expect(useAppStore.getState().staleHosts["tab-1"]).toBeUndefined();
+  });
+
+  it("clears the banner on restart and on session recovery", async () => {
+    useAppStore.setState({ staleHosts: { "tab-1": HOST_STALE_MESSAGE } });
+    await useAppStore.getState().restartTab("tab-1");
+    expect(useAppStore.getState().staleHosts["tab-1"]).toBeUndefined();
+
+    useAppStore.setState({
+      staleHosts: { "tab-1": HOST_STALE_MESSAGE },
+      completionCommands: { "tab-1": HOST_COMMANDS },
+    });
+    useAppStore.getState().applySessionEvents({
+      tabId: "tab-1",
+      seq: 1,
+      events: [{ event: "session.recovered", payload: {} }],
+    });
+
+    expect(useAppStore.getState().staleHosts["tab-1"]).toBeUndefined();
+    expect(useAppStore.getState().completionCommands["tab-1"]).toBeUndefined();
   });
 });
