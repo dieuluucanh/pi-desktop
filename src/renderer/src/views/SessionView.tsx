@@ -162,6 +162,12 @@ export function SessionView() {
   const scopedModels = useAppStore((state) =>
     activeTabId ? state.modelScope[activeTabId] : undefined,
   );
+  const scopedPatterns = useAppStore((state) =>
+    activeTabId ? state.modelScopePatterns[activeTabId] : undefined,
+  );
+  const scopeTarget = useAppStore((state) =>
+    activeTabId ? state.modelScopeTarget[activeTabId] : undefined,
+  );
   const scopeBusyKey = useAppStore((state) =>
     activeTabId ? (state.modelScopeBusy[activeTabId] ?? null) : null,
   );
@@ -575,6 +581,8 @@ export function SessionView() {
         currentKey={currentModelKey}
         initialQuery={pickerSearch}
         scoped={scopedModels ?? EMPTY_SCOPE}
+        patterns={scopedPatterns ?? EMPTY_SCOPE}
+        scopeTarget={scopeTarget ?? "global"}
         scopeBusyKey={scopeBusyKey}
         error={pickerError}
         onPick={(entry, options) => void setModel(active.id, entry, options)}

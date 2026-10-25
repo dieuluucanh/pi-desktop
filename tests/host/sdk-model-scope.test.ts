@@ -76,7 +76,14 @@ describe("resolveSessionScope", () => {
     expect(options.signal).toBeInstanceOf(AbortSignal);
     expect(result).toEqual({
       scopedModels: [scoped("a", "one")],
-      diagnostics: [{ type: "warning", message: 'No models match pattern "gone/*"' }],
+      diagnostics: [
+        {
+          type: "warning",
+          message: 'No models match pattern "gone/*"',
+          code: "no-match",
+          pattern: "gone/*",
+        },
+      ],
     });
   });
 
@@ -90,6 +97,7 @@ describe("resolveSessionScope", () => {
     );
     expect(result.scopedModels).toEqual([]);
     expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0]?.code).toBe("resolve-failed");
     expect(result.diagnostics[0]?.message).toContain("auth store is locked");
     expect(result.diagnostics[0]?.message).toContain("every available model is usable");
   });
@@ -103,12 +111,13 @@ describe("resolveSessionScope", () => {
       { resolve },
     );
     expect(result.scopedModels).toEqual([]);
+    expect(result.diagnostics[0]?.code).toBe("resolve-failed");
     expect(result.diagnostics[0]?.message).toContain("boom");
   });
 });
 
 describe("toggleScope", () => {
-  it("disables a model by materialising the rest of the live scope", async () => {
+  it("disables a model by materialising the rest of the persisted scope", async () => {
     const calls: string[][] = [];
     const resolve = fakeResolver(async (patterns) => {
       calls.push(patterns);
@@ -120,7 +129,6 @@ describe("toggleScope", () => {
 
     const result = await toggleScope(
       {
-        liveScoped: [scoped("a", "one", "high"), scoped("b", "two")],
         patterns: ["a/one:high", "b/two"],
         runtime: RUNTIME,
         provider: "a",
@@ -136,7 +144,7 @@ describe("toggleScope", () => {
     expect(result.diagnostics).toEqual([]);
   });
 
-  it("enables a model that was not in the live scope with a single resolution", async () => {
+  it("creates a one-model scope when nothing is configured", async () => {
     const calls: string[][] = [];
     const resolve = fakeResolver(async (patterns) => {
       calls.push(patterns);
@@ -150,7 +158,6 @@ describe("toggleScope", () => {
 
     const result = await toggleScope(
       {
-        liveScoped: [],
         patterns: [],
         runtime: RUNTIME,
         provider: "a",
@@ -165,7 +172,7 @@ describe("toggleScope", () => {
     expect(result.scopedModels).toEqual([scoped("a", "one")]);
   });
 
-  it("keeps persisted models when an empty live scope means resolution failed", async () => {
+  it("uses every resolved persisted model as the rewrite base", async () => {
     const calls: string[][] = [];
     const resolve = fakeResolver(async (patterns) => {
       calls.push(patterns);
@@ -179,7 +186,6 @@ describe("toggleScope", () => {
 
     const result = await toggleScope(
       {
-        liveScoped: [],
         patterns: ["a/one", "b/two"],
         runtime: RUNTIME,
         provider: "c",
@@ -214,7 +220,6 @@ describe("toggleScope", () => {
 
     const result = await toggleScope(
       {
-        liveScoped: [scoped("opencode", "a"), scoped("opencode", "b")],
         patterns: ["opencode/*"],
         runtime: RUNTIME,
         provider: "opencode",
@@ -240,7 +245,6 @@ describe("toggleScope", () => {
 
     const result = await toggleScope(
       {
-        liveScoped: [scoped("a", "one")],
         patterns: ["a/one", "offline/*"],
         runtime: RUNTIME,
         provider: "a",
@@ -253,7 +257,12 @@ describe("toggleScope", () => {
     expect(calls[1]).toEqual(["offline/*"]);
     expect(result.patterns).toEqual(["offline/*"]);
     expect(result.diagnostics).toEqual([
-      { type: "warning", message: 'No models match pattern "offline/*"' },
+      {
+        type: "warning",
+        message: 'No models match pattern "offline/*"',
+        code: "no-match",
+        pattern: "offline/*",
+      },
     ]);
   });
 
@@ -265,7 +274,6 @@ describe("toggleScope", () => {
 
     const result = await toggleScope(
       {
-        liveScoped: [scoped("a", "one")],
         patterns: ["a/one"],
         runtime: RUNTIME,
         provider: "a",
@@ -287,7 +295,6 @@ describe("toggleScope", () => {
 
     const result = await toggleScope(
       {
-        liveScoped: [scoped("a", "one")],
         patterns: ["a/one"],
         runtime: RUNTIME,
         provider: "b",
@@ -307,7 +314,6 @@ describe("toggleScope", () => {
     await expect(
       toggleScope(
         {
-          liveScoped: [scoped("a", "one")],
           patterns: ["a/one"],
           runtime: RUNTIME,
           provider: "a",
@@ -328,7 +334,6 @@ describe("toggleScope", () => {
     await expect(
       toggleScope(
         {
-          liveScoped: [scoped("a", "one")],
           patterns: ["a/one"],
           runtime: RUNTIME,
           provider: "b",
@@ -355,7 +360,6 @@ describe("createSdkModelScope", () => {
     });
     await expect(
       port.toggle({
-        liveScoped: [scoped("a", "one")],
         patterns: ["a/one"],
         runtime: RUNTIME,
         provider: "b",

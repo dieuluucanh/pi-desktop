@@ -31,12 +31,10 @@ import {
   type ScopedModel,
 } from "@earendil-works/pi-coding-agent";
 import { nextScopePatterns, normalizeScopePatterns } from "../../shared/model-scope";
+import type { ScopeDiagnosticInfo } from "../../shared/model-scope";
 
-/** One warning the host can show/log; mirrors `AgentSessionRuntimeDiagnostic`. */
-export interface ScopeDiagnosticInfo {
-  type: "warning";
-  message: string;
-}
+/** Re-exported so host code keeps one diagnostic shape. */
+export type { ScopeDiagnosticInfo };
 
 export interface ScopeResolution {
   scopedModels: ScopedModel[];
@@ -72,7 +70,12 @@ function messageOf(error: unknown): string {
 }
 
 function toInfo(diagnostic: ModelScopeDiagnostic): ScopeDiagnosticInfo {
-  return { type: "warning", message: diagnostic.message };
+  return {
+    type: "warning",
+    message: diagnostic.message,
+    code: diagnostic.code,
+    ...(diagnostic.pattern ? { pattern: diagnostic.pattern } : {}),
+  };
 }
 
 function resolverOf(deps: ModelScopeDeps): ModelScopeResolver {
@@ -118,6 +121,7 @@ export async function resolveSessionScope(
       diagnostics: [
         {
           type: "warning",
+          code: "resolve-failed",
           message: `Model scope could not be resolved (${messageOf(
             error,
           )}); every available model is usable.`,
@@ -136,8 +140,6 @@ export class ModelScopeError extends Error {
 }
 
 export interface ToggleScopeInput {
-  /** The live session scope (`session.scopedModels`) — what the stars show. */
-  liveScoped: readonly unknown[];
   /** The effective persisted patterns (`enabledModels`, project over global). */
   patterns: readonly string[] | undefined;
   runtime: unknown;
@@ -156,14 +158,16 @@ export interface ToggleScopeResult {
 
 /**
  * One star toggle: resolve the persisted patterns to find the ones that match
- * nothing, rewrite the live scope, then resolve the result once.
+ * nothing, rewrite from the **resolved persisted** scope, then resolve the
+ * result once.
  *
  * - Resolved patterns (including globs) become explicit ids, so un-starring a
  *   model a glob covered really removes it.
  * - `no-match` patterns are preserved verbatim (an offline provider or a typo
  *   must survive an unrelated click).
- * - The rewrite starts from the **live** scope, so models Pi appended through
- *   `setModel` are not silently dropped.
+ * - The rewrite never seeds from the session's live scope. A live-only model
+ *   appended by `setModel` is not persisted state; using it as the base is what
+ *   let a Desktop click erase patterns terminal Pi had added.
  */
 export async function toggleScope(
   input: ToggleScopeInput,
@@ -186,15 +190,10 @@ export async function toggleScope(
       .map((diagnostic) => diagnostic.pattern);
   }
 
-  // Normally the live scope is the user-visible truth (it also contains models
-  // Pi appended through `setModel`). An empty live scope, however, means the
-  // resolution failed/ran offline: seeding from the persisted matches keeps a
-  // star click from erasing the whole scope. When there are no patterns there
-  // is nothing to seed, so the empty-array case is unchanged.
-  const baseScoped = input.liveScoped.length > 0 ? input.liveScoped : (before?.scopedModels ?? []);
+  const baseScoped = before?.scopedModels ?? [];
 
   const next = nextScopePatterns({
-    liveScoped: baseScoped,
+    baseScoped,
     preserved,
     provider: input.provider,
     id: input.id,

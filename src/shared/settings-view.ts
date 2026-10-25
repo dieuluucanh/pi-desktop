@@ -53,6 +53,26 @@ export function settingsValueProvenance(
   return { source: "unset", effective: undefined, global, project };
 }
 
+/**
+ * The provenance the global-only Settings view needs: the global value (or the
+ * documented default) is what an edit changes, while `project` still exposes a
+ * project override for the row's "project override" badge.
+ */
+export function settingsGlobalValueProvenance(
+  field: SettingsField,
+  scopes: SettingsScopes,
+  defaults: Record<string, unknown> = settingsDefaultsDocument(),
+): SettingsValueProvenance {
+  const global = getSettingsValue(scopes.global, field.key);
+  const project = getSettingsValue(scopes.project, field.key);
+  const fallback = getSettingsValue(defaults, field.key);
+  if (global !== undefined) return { source: "global", effective: global, global, project };
+  if (fallback !== undefined) {
+    return { source: "default", effective: fallback, global, project };
+  }
+  return { source: "unset", effective: undefined, global, project };
+}
+
 /** The editable text for a field's current value; `""` means “unset”. */
 export function formatSettingsDraft(field: SettingsField, value: unknown): string {
   if (value === undefined || value === null) return "";

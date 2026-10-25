@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_PROJECTS,
+  MAX_PROJECT_SETTINGS_SNAPSHOT_CHARS,
   addProject,
   encodeSessionDirName,
   findProject,
@@ -9,6 +10,7 @@ import {
   removeProject,
   reorderProject,
   sanitizeProjectRecord,
+  sanitizeProjectSettingsSnapshots,
   sanitizeProjects,
   updateProject,
   type ProjectRecord,
@@ -58,17 +60,39 @@ describe("sanitizeProjects", () => {
     });
   });
 
-  it("keeps a per-project default only when it is a non-empty bounded string", () => {
+  it("keeps the project settings toggle only when true", () => {
+    expect(sanitizeProjectRecord({ path: "C:/a", useProjectSettings: true })).toMatchObject({
+      useProjectSettings: true,
+    });
+    expect(
+      sanitizeProjectRecord({ path: "C:/a", useProjectSettings: "yes" })?.useProjectSettings,
+    ).toBeUndefined();
+  });
+
+  it("drops the retired app-state default fields", () => {
     expect(
       sanitizeProjectRecord({
         path: "C:/a",
         defaultModel: "anthropic/claude-sonnet-4",
-        defaultThinking: 5,
+        defaultThinking: "high",
       }),
-    ).toMatchObject({ defaultModel: "anthropic/claude-sonnet-4" });
-    expect(
-      sanitizeProjectRecord({ path: "C:/a", defaultModel: "x".repeat(500) })?.defaultModel,
-    ).toBeUndefined();
+    ).toEqual({ path: "C:/a", name: "a", addedAt: 0, lastOpenedAt: 0 });
+  });
+
+  it("sanitizes project settings snapshots", () => {
+    const good = JSON.stringify({ enabledModels: ["fake/fake-1"] });
+    const snapshots = sanitizeProjectSettingsSnapshots({
+      "C:/a": { json: good, savedAt: 1 },
+      "C:/bad-json": { json: "{", savedAt: 1 },
+      "C:/array": { json: "[]", savedAt: 1 },
+      "C:/negative-time": { json: good, savedAt: -1 },
+      "C:/too-large": {
+        json: JSON.stringify({ value: "x".repeat(MAX_PROJECT_SETTINGS_SNAPSHOT_CHARS) }),
+        savedAt: 1,
+      },
+    });
+
+    expect(snapshots).toEqual({ "C:/a": { json: good, savedAt: 1 } });
   });
 
   it("enforces the project cap", () => {
@@ -125,32 +149,22 @@ describe("removeProject / reorderProject", () => {
 });
 
 describe("updateProject", () => {
-  it("sets, keeps and clears per-project defaults", () => {
-    const withDefault = updateProject([record("C:/a")], "C:/a", {
-      defaultModel: "anthropic/claude-sonnet-4",
-      defaultThinking: "high",
-    });
-    expect(withDefault[0]).toMatchObject({
-      defaultModel: "anthropic/claude-sonnet-4",
-      defaultThinking: "high",
-    });
+  it("turns the project settings toggle on and off", () => {
+    const on = updateProject([record("C:/a")], "C:/a", { useProjectSettings: true });
+    expect(on[0]?.useProjectSettings).toBe(true);
 
-    const unchanged = updateProject(withDefault, "C:/a", { defaultModel: undefined });
-    expect(unchanged[0]?.defaultModel).toBe("anthropic/claude-sonnet-4");
+    const unchanged = updateProject(on, "C:/a", { useProjectSettings: undefined });
+    expect(unchanged[0]?.useProjectSettings).toBe(true);
 
-    const cleared = updateProject(withDefault, "C:/a", {
-      defaultModel: null,
-      defaultThinking: null,
-    });
-    expect(cleared[0]?.defaultModel).toBeUndefined();
-    expect(cleared[0]?.defaultThinking).toBeUndefined();
+    const off = updateProject(on, "C:/a", { useProjectSettings: false });
+    expect(off[0]?.useProjectSettings).toBeUndefined();
   });
 
   it("does not touch other projects", () => {
     const list = [record("C:/a"), record("C:/b")];
-    const next = updateProject(list, "C:/b", { defaultThinking: "low" });
-    expect(next[0]?.defaultThinking).toBeUndefined();
-    expect(next[1]?.defaultThinking).toBe("low");
+    const next = updateProject(list, "C:/b", { useProjectSettings: true });
+    expect(next[0]?.useProjectSettings).toBeUndefined();
+    expect(next[1]?.useProjectSettings).toBe(true);
   });
 });
 

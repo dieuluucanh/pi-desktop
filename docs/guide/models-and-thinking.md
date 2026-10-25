@@ -46,12 +46,22 @@ star controls all of them:
 - **no stars** — no scope is configured, so every available model is usable and
   cycling covers all of them (the dialog says so);
 - **changing it** writes `enabledModels` immediately and applies it to every open
-  session. When a project defines its own scope in `.pi/settings.json`, the edit
-  follows that project scope; otherwise it writes the global setting.
+  session. If the project’s **Use project settings** switch is on, the edit goes
+  to `<project>/.pi/settings.json`; otherwise it goes to the shared global
+  settings. The picker says which target is active.
 
 The dialog still lists every available model. Selecting one outside the scope is
-allowed (Pi appends it to the live scope), so a star click never makes a model
-unreachable. Editing the same list in Settings is equivalent.
+allowed (it is added to a non-empty scope), so a star click never makes a model
+unreachable. A persisted pattern that matches no currently available model stays
+in settings and applies again when the model returns.
+
+Desktop re-reads the shared file when the picker opens, the window regains
+focus, Settings is reloaded, or a session starts. A running terminal Pi needs a
+restart to update its live `ctx.scopedModels`; `/reload` alone only refreshes its
+settings cache.
+
+Editing the same global list in Settings is equivalent. Project scope is edited
+from the project panel (the Settings switch and **Edit JSON…**).
 
 `/scoped-models` opens the same picker (Pi’s terminal command name); the star
 remains the only persisted scope state.

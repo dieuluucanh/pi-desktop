@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { SettingsScope } from "../../../shared/settings-schema";
 import {
+  getSettingsValue,
   groupSettingsFields,
   settingsChangesFromDefaults,
   settingsDefaultsDocument,
@@ -9,7 +10,7 @@ import {
 } from "../../../shared/settings-schema";
 import {
   describeSettingsValue,
-  settingsValueProvenance,
+  settingsGlobalValueProvenance,
   splitAdvancedFields,
 } from "../../../shared/settings-view";
 import type { ThemeSetting, ViewMode } from "../../../shared/prefs";
@@ -182,8 +183,7 @@ export function SettingsView() {
 
       {!project ? (
         <p className="banner banner--info text-xs">
-          No project is open, so project-scope settings are not shown. Global settings still apply
-          everywhere.
+          Settings are shared globally. Project overrides are managed from the project panel.
         </p>
       ) : null}
 
@@ -305,9 +305,8 @@ export function SettingsView() {
                 key={field.key}
                 field={field}
                 scopes={scopes}
-                provenance={settingsValueProvenance(field, scopes, defaults)}
-                projectPath={project?.path ?? null}
-                projectTrusted={settingsProjectTrusted}
+                provenance={settingsGlobalValueProvenance(field, scopes, defaults)}
+                projectOverride={getSettingsValue(scopes.project, field.key) !== undefined}
                 busy={settingsBusy}
                 onSave={(key, value, scope) => setSetting(key, value, scope)}
                 onReset={(key, scope) => resetSetting(key, scope)}
@@ -345,13 +344,12 @@ export function SettingsView() {
           <div className="flex flex-col gap-3 px-4 pb-4">
             <div className="flex items-center justify-between gap-2">
               <div className="flex gap-1" role="group" aria-label="Raw settings scope">
-                {(["global", "project"] as const).map((scope) => (
+                {(["global"] as const).map((scope) => (
                   <Button
                     key={scope}
                     size="sm"
                     variant={scope === rawScope ? "secondary" : "ghost"}
                     aria-pressed={scope === rawScope}
-                    disabled={scope === "project" && !project}
                     onClick={() => selectRawScope(scope)}
                   >
                     {scope === "global" ? "Global" : "Project"}

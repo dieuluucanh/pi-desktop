@@ -53,8 +53,12 @@ describe("parseProjectMutation", () => {
       path: null,
     });
     expect(
-      parseProjectMutation({ action: "update", path: A, patch: { defaultModel: "x/y" } }),
-    ).toEqual({ action: "update", path: A, patch: { defaultModel: "x/y" } });
+      parseProjectMutation({
+        action: "update",
+        path: A,
+        patch: { useProjectSettings: true },
+      }),
+    ).toEqual({ action: "update", path: A, patch: { useProjectSettings: true } });
   });
 
   it("rejects unknown actions, missing paths and malformed fields", () => {
@@ -62,8 +66,12 @@ describe("parseProjectMutation", () => {
     expect(() => parseProjectMutation({ action: "add" })).toThrow(/path is required/);
     expect(() => parseProjectMutation({ action: "reorder", path: A })).toThrow(/toIndex/);
     expect(() =>
-      parseProjectMutation({ action: "update", path: A, patch: { defaultModel: 5 } }),
-    ).toThrow(/string or null/);
+      parseProjectMutation({
+        action: "update",
+        path: A,
+        patch: { useProjectSettings: "yes" },
+      }),
+    ).toThrow(/boolean/);
     expect(() => parseProjectMutation({ action: "activate", path: 7 })).toThrow(/path is required/);
   });
 });
@@ -142,27 +150,23 @@ describe("createProjectsService", () => {
     );
   });
 
-  it("sets and clears per-project defaults", async () => {
+  it("sets and clears the project settings toggle", async () => {
     const backing = store({ projects: [record(A)] });
     const service = createProjectsService({ store: backing });
 
     const set = await service.mutate({
       action: "update",
       path: A,
-      patch: { defaultModel: "anthropic/claude-sonnet-4", defaultThinking: "high" },
+      patch: { useProjectSettings: true },
     });
-    expect(set.projects[0]).toMatchObject({
-      defaultModel: "anthropic/claude-sonnet-4",
-      defaultThinking: "high",
-    });
+    expect(set.projects[0]?.useProjectSettings).toBe(true);
 
     const cleared = await service.mutate({
       action: "update",
       path: A,
-      patch: { defaultModel: null },
+      patch: { useProjectSettings: false },
     });
-    expect(cleared.projects[0]?.defaultModel).toBeUndefined();
-    expect(cleared.projects[0]?.defaultThinking).toBe("high");
+    expect(cleared.projects[0]?.useProjectSettings).toBeUndefined();
 
     await expect(service.mutate({ action: "update", path: "C:/nope", patch: {} })).rejects.toThrow(
       /unknown project/,

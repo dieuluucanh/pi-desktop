@@ -14,6 +14,7 @@
 
 import { mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { CONFIG_DIR_NAME, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type {
   DefaultProjectTrust,
@@ -21,7 +22,11 @@ import type {
   PackageSource,
   TuiMode,
 } from "@earendil-works/pi-coding-agent";
-import { deleteSettingsValue, setSettingsValue } from "../../shared/settings-schema";
+import {
+  deleteSettingsValue,
+  getSettingsValue,
+  setSettingsValue,
+} from "../../shared/settings-schema";
 import type { SettingsScope } from "../../shared/settings-schema";
 import {
   SettingsError,
@@ -209,6 +214,38 @@ export function createSdkSettingsPort(options: SdkSettingsOptions): SettingsPort
   const pathFor = (cwd: string | null, scope: SettingsScope): string =>
     scope === "global" ? globalPath : projectPath(cwd ?? options.cwd);
 
+  /**
+   * Re-reads a manager from disk and re-applies the runtime-only npm override.
+   * `SettingsManager.reload()` drops `applyOverrides`, so every reload path must
+   * use this helper or package operations lose the bundled runtime.
+   */
+  const reloadManager = async (manager: SettingsManager): Promise<void> => {
+    await manager.reload();
+    if (options.npmCommand && options.npmCommand.length > 0) {
+      manager.applyOverrides({ npmCommand: [...options.npmCommand] });
+    }
+  };
+
+  /**
+   * Reads the target file back and checks the keys that a caller promised to
+   * persist. A named setter that silently no-ops (sticky load error, read-only
+   * volume) therefore becomes a visible `write_failed` instead of a star that
+   * only exists in memory. Normalising setters are not compared unless the key
+   * is the scope-critical `enabledModels`.
+   */
+  const verifyWritten = async (
+    manager: SettingsManager,
+    path: string,
+    values: Record<string, unknown>,
+  ): Promise<void> => {
+    const document = parseSettingsFile(await options.io.read(path), path);
+    for (const [key, value] of Object.entries(values)) {
+      if (isDeepStrictEqual(getSettingsValue(document, key), value)) continue;
+      await reloadManager(manager).catch(() => undefined);
+      throw new SettingsError(`the settings write did not persist (${key})`, "write_failed");
+    }
+  };
+
   const backupOnce = async (path: string): Promise<void> => {
     if (!options.backupDir || backedUp.has(path)) return;
     backedUp.add(path);
@@ -228,6 +265,7 @@ export function createSdkSettingsPort(options: SdkSettingsOptions): SettingsPort
     cwd: string | null,
     scope: SettingsScope,
     mutate: (document: Record<string, unknown>) => Record<string, unknown>,
+    expectation?: { key: string; expected: unknown },
   ): Promise<void> => {
     const manager = managerFor(cwd);
     if (scope === "project" && !manager.isProjectTrusted()) {
@@ -239,13 +277,19 @@ export function createSdkSettingsPort(options: SdkSettingsOptions): SettingsPort
     const path = pathFor(cwd, scope);
     const previous = await options.io.read(path);
     const document = parseSettingsFile(previous, path);
+    if (
+      expectation &&
+      !isDeepStrictEqual(getSettingsValue(document, expectation.key), expectation.expected)
+    ) {
+      throw new SettingsError("settings changed on disk; reload and retry", "conflict");
+    }
     const next = mutate(document);
     // Clear stale diagnostics so the check below only sees this write's outcome.
     manager.drainErrors();
     await backupOnce(path);
     await options.io.write(path, serializeSettingsFile(next));
     try {
-      await manager.reload();
+      await reloadManager(manager);
       const failures = manager
         .drainErrors()
         .map(toSettingsErrorInfo)
@@ -259,7 +303,7 @@ export function createSdkSettingsPort(options: SdkSettingsOptions): SettingsPort
     } catch (error) {
       if (previous === null) await options.io.delete(path);
       else await options.io.write(path, previous);
-      await manager.reload().catch(() => undefined);
+      await reloadManager(manager).catch(() => undefined);
       throw error;
     }
   };
@@ -292,6 +336,7 @@ export function createSdkSettingsPort(options: SdkSettingsOptions): SettingsPort
     async write(cwd, key, value, scope): Promise<void> {
       const manager = managerFor(cwd);
       const path = pathFor(cwd, scope);
+      await reloadManager(manager);
       // A malformed file is surfaced, never overwritten — including by a named
       // setter, which would otherwise have the SDK rewrite it clean.
       parseSettingsFile(await options.io.read(path), path);
@@ -308,6 +353,9 @@ export function createSdkSettingsPort(options: SdkSettingsOptions): SettingsPort
         await backupOnce(path);
         named(manager, value);
         await manager.flush();
+        if (key === "enabledModels") {
+          await verifyWritten(manager, path, { [key]: value });
+        }
         return;
       }
       await editDocument(cwd, scope, (document) =>
@@ -315,6 +363,62 @@ export function createSdkSettingsPort(options: SdkSettingsOptions): SettingsPort
           ? deleteSettingsValue(document, key)
           : setSettingsValue(document, key, value),
       );
+      await verifyWritten(manager, path, { [key]: value });
+    },
+
+    async compareAndWrite(cwd, key, expected, value, scope): Promise<void> {
+      const manager = managerFor(cwd);
+      const path = pathFor(cwd, scope);
+      await reloadManager(manager);
+      const current = parseSettingsFile(await options.io.read(path), path);
+      if (!isDeepStrictEqual(getSettingsValue(current, key), expected)) {
+        throw new SettingsError("settings changed on disk; reload and retry", "conflict");
+      }
+      const named = scope === "global" ? GLOBAL_SETTERS[key] : PROJECT_SETTERS[key];
+      if (named && hasMethod(manager, "flush")) {
+        if (scope === "project" && !manager.isProjectTrusted()) {
+          throw new SettingsError(
+            "the project is not trusted; refusing to write project settings",
+            "untrusted",
+          );
+        }
+        await backupOnce(path);
+        named(manager, value);
+        await manager.flush();
+        await verifyWritten(manager, path, { [key]: value });
+        return;
+      }
+      await editDocument(
+        cwd,
+        scope,
+        (document) =>
+          value === undefined
+            ? deleteSettingsValue(document, key)
+            : setSettingsValue(document, key, value),
+        { key, expected },
+      );
+      await verifyWritten(manager, path, { [key]: value });
+    },
+
+    async writeMany(cwd, scope, values): Promise<void> {
+      if (Object.keys(values).length === 0) return;
+      const manager = managerFor(cwd);
+      const path = pathFor(cwd, scope);
+      await reloadManager(manager);
+      // One document edit is atomic and preserves every unrelated key. The
+      // defaults written here do not need SDK-derived fields, and a single edit
+      // cannot leave a half-updated provider/model pair.
+      await editDocument(cwd, scope, (document) => {
+        let next = document;
+        for (const [key, value] of Object.entries(values)) {
+          next =
+            value === undefined
+              ? deleteSettingsValue(next, key)
+              : setSettingsValue(next, key, value);
+        }
+        return next;
+      });
+      await verifyWritten(manager, path, values);
     },
 
     async writeScope(cwd, scope, document): Promise<void> {
@@ -330,7 +434,7 @@ export function createSdkSettingsPort(options: SdkSettingsOptions): SettingsPort
     },
 
     async reload(cwd): Promise<void> {
-      await managerFor(cwd).reload();
+      await reloadManager(managerFor(cwd));
     },
   };
 }

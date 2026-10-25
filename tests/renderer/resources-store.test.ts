@@ -192,6 +192,11 @@ describe("resources store", () => {
   });
 
   it("re-enables a project resource through the project scope", async () => {
+    useAppStore.setState({
+      projects: [
+        { path: PROJECT, name: "app", addedAt: 1, lastOpenedAt: 1, useProjectSettings: true },
+      ],
+    });
     const request = stubRequest(async (method) => {
       if (method === "resources.list") return resourcesSnapshot();
       if (method === "settings.get")

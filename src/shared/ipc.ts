@@ -12,6 +12,8 @@ import type {
   CreateProjectInput,
   ProjectActionInput,
   ProjectMutation,
+  ProjectSettingsToggleInput,
+  ProjectSettingsToggleResult,
   ProjectsSnapshot,
 } from "./projects";
 import type {
@@ -92,6 +94,8 @@ export const IPC = {
   projectsCreate: "projects:create",
   projectsClone: "projects:clone",
   projectsAction: "projects:action",
+  /** Enables/disables project-scoped settings for one project. */
+  projectsSetSettings: "projects:set-settings",
 
   /** Office wizard (plan step 1 UI, step 19 card). */
   officeGet: "office:get",
@@ -332,6 +336,8 @@ export interface ProjectsBridge {
   create(input: CreateProjectInput): Promise<ProjectOpResponse>;
   clone(input: CloneProjectInput): Promise<ProjectOpResponse>;
   action(input: ProjectActionInput): Promise<boolean>;
+  /** Snapshot/empty or restore the project's `.pi/settings.json`. */
+  setSettings(input: ProjectSettingsToggleInput): Promise<ProjectSettingsToggleResult>;
 }
 
 /** Web tabs (plan step 21) — the renderer's handle on an isolated `WebContentsView`. */

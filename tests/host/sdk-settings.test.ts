@@ -1,8 +1,10 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createNodeSettingsFileIo } from "../../src/host/file-io";
+import { createSettingsHandlers } from "../../src/host/settings";
 import {
   createSdkSettingsPort,
   parseSettingsFile,
@@ -107,6 +109,89 @@ describe("createSdkSettingsPort", () => {
     expect(await readJson(globalPath())).not.toHaveProperty("enabledModels");
   });
 
+  it("reads a silent named-setter no-op back and reports write_failed", async () => {
+    const fakeManager = {
+      reload: vi.fn(async () => undefined),
+      flush: vi.fn(async () => undefined),
+      drainErrors: vi.fn(() => []),
+      isProjectTrusted: () => true,
+      setEnabledModels: vi.fn(),
+      applyOverrides: vi.fn(),
+    };
+    const port = makePort({ cwd: projectDir, manager: fakeManager as never });
+
+    await expect(port.write(null, "enabledModels", ["fake/fake-2"], "global")).rejects.toThrow(
+      /did not persist/i,
+    );
+    expect(fakeManager.setEnabledModels).toHaveBeenCalledWith(["fake/fake-2"]);
+    expect(existsSync(globalPath())).toBe(false);
+  });
+
+  it("refuses compare-and-write when the file changed elsewhere", async () => {
+    const port = makePort();
+    await port.write(null, "enabledModels", ["fake/fake-1"], "global");
+    await writeFile(globalPath(), JSON.stringify({ enabledModels: ["fake/fake-2"] }), "utf8");
+
+    await expect(
+      port.compareAndWrite(null, "enabledModels", ["fake/fake-1"], ["fake/fake-3"], "global"),
+    ).rejects.toThrow(/changed on disk/i);
+    expect(await readJson(globalPath())).toMatchObject({ enabledModels: ["fake/fake-2"] });
+  });
+
+  it("applies compare-and-write when the expected value matches", async () => {
+    const port = makePort();
+    await port.write(null, "enabledModels", ["fake/fake-1"], "global");
+
+    await port.compareAndWrite(null, "enabledModels", ["fake/fake-1"], ["fake/fake-2"], "global");
+    expect(await readJson(globalPath())).toMatchObject({ enabledModels: ["fake/fake-2"] });
+  });
+
+  it("writes several defaults in one document edit", async () => {
+    const port = makePort();
+    await port.writeMany(null, "global", {
+      defaultProvider: "fake",
+      defaultModel: "fake-2",
+      defaultThinkingLevel: "high",
+    });
+
+    expect(await readJson(globalPath())).toMatchObject({
+      defaultProvider: "fake",
+      defaultModel: "fake-2",
+      defaultThinkingLevel: "high",
+    });
+  });
+
+  it("writes project defaults through the document editor", async () => {
+    const port = makePort();
+    await port.writeMany(projectDir, "project", {
+      defaultProvider: "fake",
+      defaultModel: "fake-2",
+    });
+
+    expect(await readJson(projectPath())).toMatchObject({
+      defaultProvider: "fake",
+      defaultModel: "fake-2",
+    });
+  });
+
+  it("re-applies the runtime npm override after a reload", async () => {
+    const fakeManager = {
+      reload: vi.fn(async () => undefined),
+      applyOverrides: vi.fn(),
+    };
+    const port = makePort({
+      cwd: projectDir,
+      manager: fakeManager as never,
+      npmCommand: ["node", "npm-cli.js"],
+    });
+
+    await port.reload(null);
+    expect(fakeManager.reload).toHaveBeenCalled();
+    expect(fakeManager.applyOverrides).toHaveBeenCalledWith({
+      npmCommand: ["node", "npm-cli.js"],
+    });
+  });
+
   it("writes a project model scope through the document editor", async () => {
     const port = makePort();
     await port.write(projectDir, "enabledModels", ["fake/fake-2"], "project");
@@ -152,6 +237,18 @@ describe("createSdkSettingsPort", () => {
     const port = makePort();
     await port.writeScope(null, "global", { theme: "light", unknownKey: 1 });
     expect(await readJson(globalPath())).toEqual({ theme: "light", unknownKey: 1 });
+  });
+
+  it("settings.get reloads an external edit before reporting it", async () => {
+    const port = makePort();
+    await port.write(null, "theme", "dark", "global");
+    await writeFile(globalPath(), JSON.stringify({ theme: "light" }), "utf8");
+
+    const handlers = createSettingsHandlers({ resolvePort: () => port }).handlers();
+    const result = (await handlers["settings.get"]?.({}, {} as never)) as {
+      settings: { global: Record<string, unknown> };
+    };
+    expect(result.settings.global.theme).toBe("light");
   });
 
   it("parses and serialises settings files", () => {

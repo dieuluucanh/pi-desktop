@@ -35,6 +35,7 @@ describe("createSettingsHandlers", () => {
     expect(result.files.global.mtimeMs).toBeGreaterThan(0);
     expect(result.projectTrusted).toBe(true);
     expect(result.errors).toHaveLength(1);
+    expect(port.reload).toHaveBeenCalledWith(null);
   });
 
   it("writes a validated value and returns the refreshed snapshot", async () => {
@@ -68,6 +69,18 @@ describe("createSettingsHandlers", () => {
       {} as never,
     );
     expect(port.write).toHaveBeenCalledWith("C:/work/app", "theme", "light", "project");
+  });
+
+  it("reloads the requested cwd before reporting a snapshot", async () => {
+    const port = createFakeSettings();
+    await handlersFor(port)["settings.get"]?.({ cwd: "C:/work/app" }, {} as never);
+    expect(port.reload).toHaveBeenCalledWith("C:/work/app");
+
+    port.scopes.global.theme = "light";
+    const result = (await handlersFor(port)["settings.get"]?.({}, {} as never)) as {
+      settings: { global: Record<string, unknown> };
+    };
+    expect(result.settings.global.theme).toBe("light");
   });
 
   it("refuses unknown keys, global-only project writes and invalid values", async () => {

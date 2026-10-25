@@ -1,4 +1,5 @@
 import type { HostMethod } from "../shared/host-protocol";
+import { isDeepStrictEqual } from "node:util";
 import {
   KEYBINDING_DEFINITIONS,
   resolveKeybindings as resolveEffectiveKeybindings,
@@ -6,10 +7,14 @@ import {
 import {
   SCOPE_PATTERN_MAX_LENGTH,
   effectiveScopePatterns,
+  hasExactScopeRef,
   normalizeScopePatterns,
+  scopeKeys,
   scopeWriteTarget,
 } from "../shared/model-scope";
+import type { ScopeDiagnosticInfo, ScopeSnapshot } from "../shared/model-scope";
 import type { ExtensionRuntimeErrorSummary } from "../shared/resources";
+import type { SettingsScope } from "../shared/settings-schema";
 import {
   eventToFrame,
   sessionSnapshot,
@@ -23,7 +28,7 @@ import {
   type TrustStoreLike,
 } from "./project-trust";
 import { createCommandHandlers, type CommandRunner } from "./commands";
-import { createSettingsHandlers, type SettingsPort } from "./settings";
+import { createSettingsHandlers, SettingsError, type SettingsPort } from "./settings";
 import { createShortcutHandlers, ShortcutError, type ShortcutRunner } from "./shortcuts";
 import { createThemeHandlers, type ThemePort } from "./themes";
 import {
@@ -202,15 +207,13 @@ export interface SettingsLike {
   getProjectSettings?(): PiPayload;
   /** The effective `enabledModels` after Pi's project-over-global merge. */
   getEnabledModels?(): string[] | undefined;
+  reload?(): Promise<void>;
   flush?(): Promise<void>;
   drainErrors?(): unknown[];
 }
 
-/** One scope diagnostic, in the shape the host already uses for setup warnings. */
-export interface ModelScopeDiagnosticInfo {
-  type: "warning";
-  message: string;
-}
+/** One scope diagnostic, shared with the renderer's model-scope snapshot. */
+export type ModelScopeDiagnosticInfo = ScopeDiagnosticInfo;
 
 export interface ModelScopeResolution {
   scopedModels: readonly unknown[];
@@ -218,12 +221,13 @@ export interface ModelScopeResolution {
 }
 
 export interface ModelScopeToggleInput {
-  liveScoped: readonly unknown[];
   patterns: readonly string[] | undefined;
   runtime: unknown;
   provider: string;
   id: string;
   enabled: boolean;
+  /** The project settings toggle's target; absent means derive from the file. */
+  scope?: SettingsScope;
 }
 
 export interface ModelScopeToggleResult extends ModelScopeResolution {
@@ -248,6 +252,8 @@ export interface SessionRuntimeRequest {
   npmCommand?: readonly string[] | null;
   /** Safe mode (plan step 22): load no third-party extensions/skills/prompts/themes. */
   safeMode?: boolean;
+  /** Whether the project is trusted, so its `.pi/settings.json` may be read. */
+  projectTrusted?: boolean;
 }
 
 export interface SessionCoreDeps {
@@ -314,7 +320,7 @@ export interface SessionCoreDeps {
    * built over this session's own manager, so `settings.set` here is visible to
    * the session without a second manager.
    */
-  createSettingsPort?(manager: SettingsLike | null): SettingsPort;
+  createSettingsPort?(manager: SettingsLike | null, cwd: string): SettingsPort;
   /**
    * The model-scope adapter. Session creation resolves the scope in
    * `src/host/sdk/index.ts`; this port is for the live edits
@@ -428,11 +434,14 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
    */
   let settingsPort: SettingsPort | null = null;
   let settingsPortManager: SettingsLike | null = null;
+  let settingsPortCwd: string | null = null;
+  let scopeFingerprint: string | null = null;
   const resolveSettingsPort = (): SettingsPort | null => {
     if (!deps.createSettingsPort) return null;
-    if (!settingsPort || settingsPortManager !== settingsManager) {
+    if (!settingsPort || settingsPortManager !== settingsManager || settingsPortCwd !== cwd) {
       settingsPortManager = settingsManager;
-      settingsPort = deps.createSettingsPort(settingsManager);
+      settingsPortCwd = cwd;
+      settingsPort = deps.createSettingsPort(settingsManager, cwd);
     }
     return settingsPort;
   };
@@ -452,11 +461,68 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     );
 
   /**
-   * Writes the scope to the document that currently defines it. A failure
-   * throws before the live session is touched, so a refused write can never
-   * leave `settings.json` and the session scope disagreeing.
+   * Reloads settings and resolves the persisted scope into the live session.
+   * Called after extensions' `session_start` (they may register models), on
+   * `model.available` (opening the picker), and by `model.scope.apply` (focus,
+   * Settings reload, another host's write). It never throws for a resolver
+   * failure: a failed resolve keeps the previous live scope.
    */
-  const persistModelScope = async (patterns: string[] | undefined): Promise<void> => {
+  const reconcileModelScope = async (options: {
+    reload: boolean;
+  }): Promise<ScopeSnapshot | null> => {
+    const current = session;
+    if (!current) return null;
+    if (options.reload) {
+      try {
+        const port = resolveSettingsPort();
+        if (port) await port.reload(cwd);
+        else await settingsManager?.reload?.();
+      } catch {
+        // Keep the cached settings: a stale scope beats a dead dialog.
+      }
+    }
+
+    const scopes = readSettingsScopes(settingsManager);
+    const enabledModels = normalizeScopePatterns(
+      settingsManager?.getEnabledModels?.() ?? effectiveScopePatterns(scopes),
+    );
+    const source = scopeWriteTarget(scopes);
+    let scoped = current.scopedModels ?? [];
+    let diagnostics: ScopeDiagnosticInfo[] = [];
+
+    if (deps.modelScope) {
+      const resolution = await deps.modelScope.resolve(enabledModels, current.modelRuntime);
+      diagnostics = [...resolution.diagnostics];
+      if (!diagnostics.some((diagnostic) => diagnostic.code === "resolve-failed")) {
+        scoped = resolution.scopedModels;
+        current.setScopedModels?.(enabledModels.length === 0 ? [] : scoped);
+      }
+    }
+
+    const snapshot: ScopeSnapshot = { enabledModels, scoped, source, diagnostics };
+    const fingerprint = JSON.stringify({
+      enabledModels,
+      source,
+      scoped: scopeKeys(scoped),
+      diagnostics,
+    });
+    if (fingerprint !== scopeFingerprint) {
+      scopeFingerprint = fingerprint;
+      deps.emit("model_scope_changed", snapshot, current.sessionId ?? undefined);
+    }
+    return snapshot;
+  };
+
+  /**
+   * Writes the scope to the chosen document. A failure throws before the live
+   * session is touched, so a refused write can never leave `settings.json` and
+   * the session scope disagreeing. The caller owns the target/expected pair.
+   */
+  const persistModelScope = async (
+    patterns: string[] | undefined,
+    expected: unknown,
+    target: SettingsScope,
+  ): Promise<void> => {
     const port = resolveSettingsPort();
     if (!port) {
       throw new SessionCoreError(
@@ -464,8 +530,38 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         "unsupported",
       );
     }
-    const target = scopeWriteTarget(readSettingsScopes(settingsManager));
-    await port.write(cwd, "enabledModels", patterns, target);
+    await port.compareAndWrite(cwd, "enabledModels", expected, patterns, target);
+  };
+
+  /**
+   * Adds one picked model to a non-empty persisted scope, using the same CAS
+   * contract as the star. Empty scope means "every model is allowed", so it is
+   * left empty (Pi's `_addPersistedDefaultToNonEmptyScope` does the same).
+   */
+  const appendScopeRef = async (target: SettingsScope, ref: string): Promise<void> => {
+    const port = resolveSettingsPort();
+    if (!port) {
+      throw new SessionCoreError(
+        "settings are not available; the model was not added to the scope",
+        "unsupported",
+      );
+    }
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await port.reload(cwd);
+      const patterns = effectiveModelScope();
+      if (patterns.length === 0 || hasExactScopeRef(patterns, ref)) return;
+      const scopes = readSettingsScopes(settingsManager);
+      const expected = asRecord(scopes[target]).enabledModels;
+      try {
+        await port.compareAndWrite(cwd, "enabledModels", expected, [...patterns, ref], target);
+        return;
+      } catch (error) {
+        if (error instanceof SettingsError && error.code === "conflict" && attempt === 0) {
+          continue;
+        }
+        throw error;
+      }
+    }
   };
 
   const requireModelScope = (current: HostSession): ModelScopePort => {
@@ -477,6 +573,12 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     }
     return deps.modelScope;
   };
+
+  const scopeConflict = (): SessionCoreError =>
+    new SessionCoreError(
+      "the model scope changed on disk again; reopen the picker and retry",
+      "conflict",
+    );
 
   /** Events after which the app should refresh its state snapshot. */
   const STATE_EVENTS = new Set([
@@ -550,6 +652,8 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     attach(runtime.session);
     settingsManager = runtime.services?.settingsManager ?? settingsManager;
     await deps.bindSession?.(runtime.session, runtime);
+    scopeFingerprint = null;
+    await reconcileModelScope({ reload: true });
     deps.emit("session_replaced", snapshot(), runtime.session.sessionId ?? undefined);
     emitState();
   };
@@ -617,6 +721,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       agentDir: deps.agentDir,
       sessionManager: options.sessionManager,
       npmCommand: deps.npmCommand,
+      projectTrusted: trust.status(cwd).trusted,
       ...(deps.safeMode ? { safeMode: true } : {}),
     });
     runtime = created.runtime;
@@ -630,6 +735,8 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       created.session.setThinkingLevel?.(options.thinking, { persist: false });
     }
     await deps.bindSession?.(created.session, created.runtime);
+    scopeFingerprint = null;
+    await reconcileModelScope({ reload: true });
 
     deps.emit("session_started", snapshot(), created.session.sessionId ?? undefined);
     emitState();
@@ -1101,16 +1208,20 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       return snapshot();
     },
 
-    "model.available": () => {
+    "model.available": async () => {
       const current = ensure();
+      const scopeState = await reconcileModelScope({ reload: true });
       // Parity with Pi's RPC `get_available_models`, which reads the runtime
       // snapshot; the scoped set is the fallback for a session without one.
       const catalog = current.modelRuntime?.getAvailableSnapshot?.() ?? [];
-      const scoped = current.scopedModels ?? [];
+      const scoped = scopeState?.scoped ?? current.scopedModels ?? [];
       const models = catalog.length > 0 ? catalog : scoped;
       return {
         models,
         scoped,
+        enabledModels: scopeState?.enabledModels ?? effectiveModelScope(),
+        source: scopeState?.source ?? scopeWriteTarget(readSettingsScopes(settingsManager)),
+        diagnostics: scopeState?.diagnostics ?? [],
         auth: providerAuthStatus(current, models),
         thinkingLevels: snapshot().thinkingLevels,
         current: snapshot().model,
@@ -1146,32 +1257,27 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     },
 
     // Re-reads `enabledModels` from the settings file and applies it to this
-    // session. Used after another host writes the scope (the Settings view) and
-    // by every other open tab after a star toggle.
+    // session. Used after another host writes the scope (the Settings view), on
+    // focus, and by every other open tab after a star toggle.
     "model.scope.apply": async () => {
       const current = ensure();
-      const scope = requireModelScope(current);
-      const settings = resolveSettingsPort();
-      if (settings) {
-        try {
-          await settings.reload(cwd);
-        } catch {
-          // Keep the cached settings: a stale scope beats a dead dialog.
-        }
+      requireModelScope(current);
+      const state = await reconcileModelScope({ reload: true });
+      if (!state) {
+        throw new SessionCoreError("no session is open; call session.create first", "no_session");
       }
-      const patterns = effectiveModelScope();
-      const resolution = await scope.resolve(patterns, current.modelRuntime);
-      current.setScopedModels?.(resolution.scopedModels);
       emitState();
       return {
-        enabledModels: patterns,
-        scoped: resolution.scopedModels,
-        diagnostics: resolution.diagnostics,
+        enabledModels: state.enabledModels,
+        scoped: state.scoped,
+        source: state.source,
+        diagnostics: state.diagnostics,
       };
     },
 
-    // One star toggle: rewrite the pattern list from the live scope, persist it,
-    // then apply the resolved models to this session.
+    // One star toggle: reload, resolve, rewrite from the persisted base, then
+    // compare-and-write the chosen document. A concurrent terminal edit makes
+    // the CAS (or the pre-write re-read) retry once instead of losing a model.
     "model.scope.toggle": async (params) => {
       const current = ensure();
       const scope = requireModelScope(current);
@@ -1185,25 +1291,68 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       if (ref.length > SCOPE_PATTERN_MAX_LENGTH) {
         throw new SessionCoreError("the model reference is too long", "bad_request");
       }
-      const result = await scope.toggle({
-        liveScoped: current.scopedModels ?? [],
-        patterns: effectiveModelScope(),
-        runtime: current.modelRuntime,
-        provider,
-        id,
-        enabled: input.enabled === true,
-      });
-      await persistModelScope(result.patterns);
-      // "No scope" must always mean an empty live scope, even if an adapter
-      // one day returns an empty pattern list with stale models attached.
-      const scopedModels = result.patterns === undefined ? [] : result.scopedModels;
-      current.setScopedModels?.(scopedModels);
-      emitState();
-      return {
-        enabledModels: result.patterns ?? [],
-        scoped: scopedModels,
-        diagnostics: result.diagnostics,
-      };
+      const explicit =
+        input.scope === "project" || input.scope === "global" ? input.scope : undefined;
+      const requested = input.enabled === true;
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const port = resolveSettingsPort();
+          if (!port) {
+            throw new SessionCoreError(
+              "settings are not available; the model scope was not changed",
+              "unsupported",
+            );
+          }
+          await port.reload(cwd);
+          const scopes = readSettingsScopes(settingsManager);
+          const patterns = effectiveModelScope();
+          const target = explicit ?? scopeWriteTarget(scopes);
+          const expected = asRecord(scopes[target]).enabledModels;
+
+          const result = await scope.toggle({
+            patterns,
+            runtime: current.modelRuntime,
+            provider,
+            id,
+            enabled: requested,
+          });
+
+          // The resolver can take a moment. Re-read before writing: a terminal
+          // edit during that window must be merged by a retry, not overwritten.
+          await port.reload(cwd);
+          const fresh = readSettingsScopes(settingsManager);
+          const freshTarget = explicit ?? scopeWriteTarget(fresh);
+          const freshExpected = asRecord(fresh[freshTarget]).enabledModels;
+          if (freshTarget !== target || !isDeepStrictEqual(freshExpected, expected)) {
+            if (attempt === 0) continue;
+            throw scopeConflict();
+          }
+
+          await persistModelScope(result.patterns, expected, target);
+          const state = await reconcileModelScope({ reload: true });
+          const snapshot = state ?? {
+            enabledModels: result.patterns ?? [],
+            scoped: result.patterns === undefined ? [] : result.scopedModels,
+            source: target,
+            diagnostics: result.diagnostics,
+          };
+          emitState();
+          return {
+            enabledModels: snapshot.enabledModels,
+            scoped: snapshot.scoped,
+            scope: target,
+            diagnostics: snapshot.diagnostics,
+          };
+        } catch (error) {
+          if (error instanceof SettingsError && error.code === "conflict") {
+            if (attempt === 0) continue;
+            throw scopeConflict();
+          }
+          throw error;
+        }
+      }
+      throw scopeConflict();
     },
 
     "model.set": async (params) => {
@@ -1213,7 +1362,52 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         throw new SessionCoreError("model.set requires a model object", "bad_request");
       if (!current.setModel)
         throw new SessionCoreError("model changes are not supported", "unsupported");
-      await current.setModel(input.model, { persist: input.persist === true });
+
+      const persist = input.persist === true;
+      const scope = input.scope === "project" || input.scope === "global" ? input.scope : undefined;
+      if (persist && scope) {
+        const model = asRecord(input.model);
+        const provider =
+          typeof model.provider === "string"
+            ? model.provider
+            : typeof model.providerId === "string"
+              ? model.providerId
+              : "";
+        const id =
+          typeof model.id === "string"
+            ? model.id
+            : typeof model.modelId === "string"
+              ? model.modelId
+              : "";
+        if (provider.length === 0 || id.length === 0) {
+          throw new SessionCoreError(
+            "model.set requires a provider and id to persist the selection",
+            "bad_request",
+          );
+        }
+        const port = resolveSettingsPort();
+        if (!port) {
+          throw new SessionCoreError(
+            "settings are not available; the model was not persisted",
+            "unsupported",
+          );
+        }
+
+        // Apply first so an auth/catalog failure never changes settings. The
+        // SDK's own persist path writes global; this path writes our target.
+        await current.setModel(input.model, { persist: false });
+        await appendScopeRef(scope, `${provider}/${id}`);
+        await port.writeMany(cwd, scope, {
+          defaultProvider: provider,
+          defaultModel: id,
+        });
+        await reconcileModelScope({ reload: true });
+        emitState();
+        return snapshot();
+      }
+
+      await current.setModel(input.model, { persist });
+      if (persist) await reconcileModelScope({ reload: true });
       emitState();
       return snapshot();
     },
@@ -1223,10 +1417,25 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       current: snapshot().thinkingLevel,
     }),
 
-    "thinking.set": (params) => {
+    "thinking.set": async (params) => {
       const current = ensure();
-      const level = requireString(asRecord(params).level, "level");
-      current.setThinkingLevel?.(level, { persist: asRecord(params).persist === true });
+      const input = asRecord(params);
+      const level = requireString(input.level, "level");
+      const persist = input.persist === true;
+      const scope = input.scope === "project" || input.scope === "global" ? input.scope : undefined;
+      if (persist && scope) {
+        const port = resolveSettingsPort();
+        if (!port) {
+          throw new SessionCoreError(
+            "settings are not available; the thinking level was not persisted",
+            "unsupported",
+          );
+        }
+        current.setThinkingLevel?.(level, { persist: false });
+        await port.writeMany(cwd, scope, { defaultThinkingLevel: level });
+      } else {
+        current.setThinkingLevel?.(level, { persist });
+      }
       emitState();
       return snapshot();
     },

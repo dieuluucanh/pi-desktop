@@ -95,7 +95,7 @@ describe("ProjectsSection", () => {
   it("renders a project's workspace facts and its sessions", () => {
     installBridge({ projects: [record(PATH)], activeProject: PATH });
     useAppStore.setState({
-      projects: [record(PATH, { defaultModel: "anthropic/claude-sonnet-4" })],
+      projects: [record(PATH, { useProjectSettings: true })],
       project: { path: PATH, name: "pi-desktop" },
       projectInspections: { [PATH]: inspection() },
       tabs: [tab("running")],
@@ -108,7 +108,6 @@ describe("ProjectsSection", () => {
     expect(screen.getByText("settings.json")).toBeInTheDocument();
     expect(screen.getByText("AGENTS.md")).toBeInTheDocument();
     expect(screen.getByText(/sessions\\--C--work-pi-desktop--/)).toBeInTheDocument();
-    expect(screen.getByText("anthropic/claude-sonnet-4")).toBeInTheDocument();
     expect(screen.getByText("Fix the sidebar")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /new session here/i })).toBeInTheDocument();
   });

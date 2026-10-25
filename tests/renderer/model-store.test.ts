@@ -119,7 +119,7 @@ describe("model scope", () => {
     expect(request).toHaveBeenCalledWith({
       tabId: "tab-1",
       method: "model.scope.toggle",
-      params: { provider: "openai", id: "gpt-5", enabled: true },
+      params: { provider: "openai", id: "gpt-5", enabled: true, scope: "global" },
     });
     expect(request).toHaveBeenCalledWith({ tabId: "tab-2", method: "model.scope.apply" });
     const state = useAppStore.getState();
@@ -352,6 +352,7 @@ describe("setModel", () => {
     expect(call?.[0]?.params).toEqual({
       model: { id: "gpt-5", provider: "openai", name: "GPT-5" },
       persist: true,
+      scope: "global",
     });
     expect(useAppStore.getState().picker).toBeNull();
   });
@@ -422,7 +423,7 @@ describe("setThinking", () => {
     expect(request.mock.calls[0]?.[0]).toEqual({
       tabId: "tab-1",
       method: "thinking.set",
-      params: { level: "high", persist: false },
+      params: { level: "high", persist: false, scope: "global" },
     });
     expect(useAppStore.getState().picker).toBeNull();
   });
@@ -454,7 +455,7 @@ describe("built-in command arguments", () => {
 
     expect(outcome).toEqual({ handled: true, sent: true });
     const call = request.mock.calls.find((entry) => entry[0]?.method === "thinking.set");
-    expect(call?.[0]?.params).toEqual({ level: "high", persist: false });
+    expect(call?.[0]?.params).toEqual({ level: "high", persist: false, scope: "global" });
   });
 
   it("/thinking unknown reports the available levels", async () => {

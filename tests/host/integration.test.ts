@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createSessionCore, type SessionCore } from "../../src/host/session-core";
@@ -8,11 +8,14 @@ import {
   SessionManager,
   createSdkCommandRunner,
   createSdkExtensionBinder,
+  createSdkModelScope,
   createSdkSessionRuntime,
+  createSdkSettingsPort,
   createSdkTuiSurface,
   hasTrustRequiringProjectResources,
   observeSdkModelChanges,
 } from "../../src/host/sdk";
+import { createNodeSettingsFileIo } from "../../src/host/file-io";
 import type { HostMethod } from "../../src/shared/host-protocol";
 import { createFakeProvider, type FakeProvider } from "./fixtures/fake-provider";
 import { createFixtureProfile, type FixtureProfile } from "./fixtures/fixture-profile";
@@ -94,6 +97,14 @@ async function startHarness(
     emit: (event, payload) => emitted.push({ event, payload }),
     trustStore: new ProjectTrustStore(profile.dir),
     requiresTrust: (cwd) => hasTrustRequiringProjectResources(cwd),
+    createSettingsPort: (manager, sessionCwd) =>
+      createSdkSettingsPort({
+        agentDir: profile.dir,
+        cwd: sessionCwd,
+        io: createNodeSettingsFileIo(),
+        ...(manager ? { manager: manager as never } : {}),
+      }),
+    modelScope: createSdkModelScope(),
     newSessionManager: (cwd, sessionDir) =>
       SessionManager.create(cwd, sessionDir ?? profile.sessionsDir) as never,
     openSessionManager: (sessionFile, cwd, sessionDir) =>
@@ -104,6 +115,7 @@ async function startHarness(
         cwd: request.cwd,
         agentDir: profile.dir,
         sessionManager: request.sessionManager as never,
+        ...(request.projectTrusted === undefined ? {} : { projectTrusted: request.projectTrusted }),
       });
       return { runtime: created.runtime, session: created.session };
     },
@@ -460,6 +472,71 @@ describe("host integration: model scope", () => {
 
     const listed = (await harness.call("model.list")) as { scoped?: unknown[] };
     expect(listed.scoped).toEqual([]);
+  });
+
+  it("reloads an external enabledModels edit when the picker opens", async () => {
+    const harness = await startHarness({
+      modelIds: ["fake-2"],
+      enabledModels: ["fake/fake-1"],
+    });
+    await harness.call("session.create");
+
+    const current = JSON.parse(readFileSync(harness.profile.settingsPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    writeFileSync(
+      harness.profile.settingsPath,
+      `${JSON.stringify({ ...current, enabledModels: ["fake/fake-2"] }, null, 2)}\n`,
+    );
+
+    const available = (await harness.call("model.available")) as {
+      enabledModels?: string[];
+      source?: string;
+      scoped?: Array<{ model?: { id?: string } }>;
+    };
+    expect(available.enabledModels).toEqual(["fake/fake-2"]);
+    expect(available.source).toBe("global");
+    expect(available.scoped?.map((entry) => entry.model?.id)).toEqual(["fake-2"]);
+  });
+
+  it("scopes a model an extension registers on session_start", async () => {
+    const harness = await startHarness({
+      extensions: true,
+      modelIds: ["fake-2"],
+      enabledModels: ["live/fake-live"],
+    });
+    harness.profile.writeExtension(
+      "live.js",
+      `export default function (pi) {
+  pi.on("session_start", async () => {
+    pi.registerProvider("live", {
+      baseUrl: ${JSON.stringify(harness.provider.baseUrl)},
+      apiKey: "fake-key",
+      api: "openai-completions",
+      models: [{
+        id: "fake-live",
+        name: "Fake Live",
+        input: ["text"],
+        contextWindow: 200000,
+        maxTokens: 8192,
+      }],
+    });
+  });
+}
+`,
+    );
+
+    await harness.call("session.create");
+
+    const available = (await harness.call("model.available")) as {
+      enabledModels?: string[];
+      scoped?: Array<{ model?: { provider?: string; id?: string } }>;
+    };
+    expect(available.enabledModels).toEqual(["live/fake-live"]);
+    expect(available.scoped?.map((entry) => `${entry.model?.provider}/${entry.model?.id}`)).toEqual(
+      ["live/fake-live"],
+    );
   });
 });
 

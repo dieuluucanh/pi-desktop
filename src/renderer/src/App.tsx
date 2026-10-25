@@ -154,6 +154,7 @@ export function App() {
     const resync = (): void => {
       if (document.visibilityState === "hidden") return;
       void useAppStore.getState().resyncSessions();
+      void useAppStore.getState().syncModelScopesFromDisk();
     };
     window.addEventListener("focus", resync);
     document.addEventListener("visibilitychange", resync);

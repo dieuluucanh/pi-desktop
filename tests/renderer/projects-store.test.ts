@@ -113,18 +113,18 @@ describe("project list", () => {
     expect(useAppStore.getState().project).toBeNull();
   });
 
-  it("stores per-project defaults through a mutation", async () => {
+  it("stores the project settings toggle through a mutation", async () => {
     installBridge({ projects: [record(PATH)], activeProject: PATH });
     await useAppStore.getState().loadProjects();
     const { bridge } = installBridge({ projects: [record(PATH)], activeProject: PATH });
     const mutate = vi.spyOn(bridge.projects, "mutate");
 
-    await useAppStore.getState().updateProjectConfig(PATH, { defaultThinking: "high" });
+    await useAppStore.getState().updateProjectConfig(PATH, { useProjectSettings: true });
 
     expect(mutate).toHaveBeenCalledWith({
       action: "update",
       path: PATH,
-      patch: { defaultThinking: "high" },
+      patch: { useProjectSettings: true },
     });
   });
 });
@@ -156,12 +156,10 @@ describe("project inspection", () => {
   });
 });
 
-describe("session creation with project defaults", () => {
-  it("passes per-project model and thinking into the create request", async () => {
+describe("session creation with project settings", () => {
+  it("does not send retired app-state defaults into the create request", async () => {
     installBridge({
-      projects: [
-        record(PATH, { defaultModel: "anthropic/claude-sonnet-4", defaultThinking: "high" }),
-      ],
+      projects: [record(PATH, { useProjectSettings: true })],
       activeProject: PATH,
     });
     await useAppStore.getState().loadProjects();
@@ -171,11 +169,7 @@ describe("session creation with project defaults", () => {
 
     await useAppStore.getState().createSessionTab();
 
-    expect(create).toHaveBeenCalledWith({
-      cwd: PATH,
-      model: "anthropic/claude-sonnet-4",
-      thinking: "high",
-    });
+    expect(create).toHaveBeenCalledWith({ cwd: PATH });
   });
 
   it("passes the session trust grant to a second tab", async () => {

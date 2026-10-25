@@ -24,8 +24,8 @@ export interface SettingsFieldEditorProps {
   field: SettingsField;
   scopes: SettingsScopes;
   provenance: SettingsValueProvenance;
-  projectPath: string | null;
-  projectTrusted: boolean;
+  /** The active project defines its own value for this key. */
+  projectOverride?: boolean;
   busy: boolean;
   onSave: (key: string, value: unknown, scope: SettingsScope) => Promise<boolean>;
   onReset: (key: string, scope: SettingsScope) => Promise<void>;
@@ -48,16 +48,15 @@ const SOURCE_TONE: Record<SettingsValueProvenance["source"], "accent" | "ok" | "
 export function SettingsFieldEditor({
   field,
   provenance,
-  projectPath,
-  projectTrusted,
+  projectOverride = false,
   busy,
   onSave,
   onReset,
 }: SettingsFieldEditorProps) {
-  const writableScopes: SettingsScope[] =
-    field.scope === "both" && projectPath ? ["global", "project"] : ["global"];
-  const [scope, setScope] = useState<SettingsScope>("global");
-  const activeScope = writableScopes.includes(scope) ? scope : "global";
+  // Settings is global-only. The active project's toggle decides project
+  // writes from the project panel/session; this view must never silently write
+  // a project document.
+  const activeScope: SettingsScope = "global";
   const effective = provenance.effective;
   const serialized = useMemo(() => JSON.stringify(effective ?? null), [effective]);
   const [draft, setDraft] = useState(() => formatSettingsDraft(field, effective));
@@ -99,35 +98,14 @@ export function SettingsFieldEditor({
           <div className="flex items-center gap-2">
             <span className="text-sm">{field.label}</span>
             <Badge tone={SOURCE_TONE[provenance.source]}>{SOURCE_LABEL[provenance.source]}</Badge>
+            {projectOverride ? <Badge tone="accent">project override</Badge> : null}
             {field.scope === "global" ? <Badge>global only</Badge> : null}
             {field.advanced === true ? <Badge>advanced</Badge> : null}
           </div>
           <p className="mt-0.5 text-xs text-ink-muted">{field.description}</p>
           <p className="mt-0.5 font-mono text-[10px] text-ink-faint">{field.key}</p>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {writableScopes.length > 1 ? (
-            <div className="flex gap-1" role="group" aria-label={`${field.label} scope`}>
-              {writableScopes.map((option) => (
-                <Button
-                  key={option}
-                  size="sm"
-                  variant={option === activeScope ? "secondary" : "ghost"}
-                  aria-pressed={option === activeScope}
-                  disabled={option === "project" && !projectTrusted}
-                  title={
-                    option === "project" && !projectTrusted
-                      ? "Trust this project before writing project settings"
-                      : undefined
-                  }
-                  onClick={() => setScope(option)}
-                >
-                  {option === "global" ? "Global" : "Project"}
-                </Button>
-              ))}
-            </div>
-          ) : null}
-        </div>
+        <div className="flex shrink-0 items-center gap-2" />
       </div>
 
       <div className="flex items-start gap-2">

@@ -30,9 +30,12 @@ The sidebar shows, per project:
 - the session directory Pi will use.
 
 Actions: reveal in the file manager, open an external terminal, copy the path,
-and set the project’s default model and thinking level. A project default is
-applied by the host when a **new** session is created — never on resume — and a
-default the model catalog does not offer is ignored rather than invented.
+and **Use project settings** (a per-project switch), plus **Edit JSON…** for the
+advanced project document. The switch defaults to **off** (shared global
+settings). Turning it on makes model, scope, thinking, theme, package and
+extension writes in this project target `.pi/settings.json`; turning it off
+saves the project document to app state, empties it, and the project uses global
+settings. While off, a non-empty project file is reported in the project panel.
 
 ## Trust
 
@@ -50,13 +53,14 @@ answer you chose, so you never have to retype a prompt.
 
 ## Where state lives
 
-| What                                                        | Where                             |
-| ----------------------------------------------------------- | --------------------------------- |
-| Project config and overrides                                | `<project>/.pi/`                  |
-| Per-project session files                                   | the profile’s `sessions/` tree    |
-| Per-project default model/thinking                          | `app-state.json` (app preference) |
-| Global default model/thinking (what picking a model writes) | the Pi profile’s `settings.json`  |
-| Project extensions/packages                                 | `<project>/.pi/npm`, `.pi/…`      |
+| What                                                 | Where                            |
+| ---------------------------------------------------- | -------------------------------- |
+| Project config and overrides                         | `<project>/.pi/`                 |
+| Per-project session files                            | the profile’s `sessions/` tree   |
+| Project-scope defaults/scope (when the toggle is on) | `<project>/.pi/settings.json`    |
+| Global defaults/scope (toggle off)                   | the Pi profile’s `settings.json` |
+| Project extensions/packages                          | `<project>/.pi/npm`, `.pi/…`     |
+| Saved project document while the toggle is off       | `app-state.json` (snapshot)      |
 
 ## Related
 

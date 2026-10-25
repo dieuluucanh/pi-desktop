@@ -14,9 +14,10 @@ import {
 } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Switch } from "../ui/switch";
 import { useAppStore } from "../state/app-store";
 import { openProjectAction } from "../menu-actions";
-import { modelKeyOf } from "../session/model-catalog";
+import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
 import type {
   PiProjectResources,
   ProjectRecord,
@@ -106,6 +107,7 @@ function ProjectGroup({
   // The active project expands by default, but an explicit toggle wins (no
   // effect-driven setState, which would cascade renders).
   const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const expanded = expandedOverride ?? active;
   const inspection = useAppStore((state) => state.projectInspections[project.path]);
   const inspectionError = useAppStore((state) => state.projectInspectionErrors[project.path]);
@@ -114,6 +116,9 @@ function ProjectGroup({
   const inspectProject = useAppStore((state) => state.inspectProject);
   const removeProject = useAppStore((state) => state.removeProject);
   const reorderProject = useAppStore((state) => state.reorderProject);
+  const setProjectSettingsEnabled = useAppStore((state) => state.setProjectSettingsEnabled);
+  const settingsBusy = useAppStore((state) => state.projectSettingsBusy[project.path] === true);
+  const trustReady = inspection?.trust?.trusted === true;
 
   useEffect(() => {
     if (expanded && !inspection && !inspectionError) void inspectProject(project.path);
@@ -205,21 +210,43 @@ function ProjectGroup({
             </span>
           </Row>
 
-          <Row label="Defaults">
+          <Row label="Settings">
             <span className="flex flex-wrap items-center gap-1">
-              <Badge tone={project.defaultModel ? "accent" : "neutral"}>
-                {project.defaultModel ?? "no model default"}
+              <Switch
+                checked={project.useProjectSettings === true}
+                disabled={settingsBusy || !trustReady}
+                aria-label={`Use project settings for ${project.name}`}
+                title={
+                  trustReady
+                    ? "Off: shared global settings. On: this project's .pi/settings.json."
+                    : "Trust this project before using project settings"
+                }
+                onCheckedChange={(enabled) => void setProjectSettingsEnabled(project.path, enabled)}
+              />
+              <Badge tone={project.useProjectSettings ? "accent" : "neutral"}>
+                {project.useProjectSettings ? "project" : "global"}
               </Badge>
-              <Badge tone={project.defaultThinking ? "accent" : "neutral"}>
-                {project.defaultThinking
-                  ? `thinking ${project.defaultThinking}`
-                  : "no thinking default"}
-              </Badge>
+              {project.useProjectSettings ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!trustReady}
+                  onClick={() => setSettingsOpen(true)}
+                >
+                  Edit JSON…
+                </Button>
+              ) : null}
+              {settingsBusy ? <span className="text-ink-faint">saving…</span> : null}
             </span>
           </Row>
 
+          <ProjectSettingsDialog
+            open={settingsOpen}
+            project={project}
+            onClose={() => setSettingsOpen(false)}
+          />
+
           <div className="flex flex-wrap items-center gap-1">
-            <DefaultButtons path={project.path} />
             <IconButton
               label="Reveal in file manager"
               onClick={() => void useAppStore.getState().projectAction(project.path, "reveal")}
@@ -352,43 +379,6 @@ function ResourceChips({ resources }: { resources?: Partial<PiProjectResources> 
 }
 
 /** Sets a project default from the active session, or clears it. */
-function DefaultButtons({ path }: { path: string }) {
-  const activeTabId = useAppStore((state) => state.activeTabId);
-  const state = useAppStore((store) =>
-    activeTabId ? store.sessionStates[activeTabId] : undefined,
-  );
-  const updateProjectConfig = useAppStore((store) => store.updateProjectConfig);
-
-  const record = (state ?? {}) as {
-    model?: unknown;
-    thinkingLevel?: unknown;
-  };
-  const model = modelKeyOf(record.model);
-  const thinking = typeof record.thinkingLevel === "string" ? record.thinkingLevel : null;
-
-  if (!activeTabId) return null;
-  return (
-    <>
-      {model ? (
-        <IconButton
-          label={`Use ${model} as this project's default model`}
-          onClick={() => void updateProjectConfig(path, { defaultModel: model })}
-        >
-          <Badge tone="neutral">use model</Badge>
-        </IconButton>
-      ) : null}
-      {thinking ? (
-        <IconButton
-          label={`Use ${thinking} as this project's default thinking level`}
-          onClick={() => void updateProjectConfig(path, { defaultThinking: thinking })}
-        >
-          <Badge tone="neutral">use thinking</Badge>
-        </IconButton>
-      ) : null}
-    </>
-  );
-}
-
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-2">

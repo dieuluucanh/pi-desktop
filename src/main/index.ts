@@ -38,6 +38,8 @@ import { installAppMenu } from "./menu";
 import { createCommandRunner } from "./office/exec";
 import { createProjectOps } from "./project-ops";
 import { createProjectsService } from "./projects-service";
+import { createProjectSettingsService } from "./project-settings-service";
+import { createTrustFile } from "./trust-file";
 import { createIntegrationsService } from "./integrations-service";
 import {
   createSessionService,
@@ -178,6 +180,17 @@ let updateCheckTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** The remembered project list (plan step 10): `app-state.json` is its only writer. */
 const projectsService = createProjectsService({ store: appState });
+
+/** The per-project settings toggle: snapshots/empties `.pi/settings.json`. */
+const projectTrustFile = createTrustFile({
+  fs: createNodeFsPort(),
+  agentDir: paths.profileDir,
+});
+const projectSettingsService = createProjectSettingsService({
+  fs: createNodeFsPort(),
+  store: appState,
+  isProjectTrusted: (projectPath) => projectTrustFile.isProjectTrusted(projectPath),
+});
 
 /** The app's integration record (plan step 19): consented installs, setup timestamps. */
 const integrationsService = createIntegrationsService({ store: appState });
@@ -598,6 +611,16 @@ if (!app.requestSingleInstanceLock()) {
     // telemetry flag is correct for the first session (plan step 23).
     telemetryEnabled = (await appState.read()).prefs.telemetryEnabled;
 
+    // One-time default-off pass: snapshot/empty any existing project settings
+    // document before the first session can read it. A failure is logged and
+    // retried on the next launch; the renderer shows the project warning.
+    const migration = await projectSettingsService.migrate();
+    if (!migration.migrated) {
+      console.warn(
+        `[pi-desktop] project settings migration: ${migration.errors.join("; ") || "incomplete"}`,
+      );
+    }
+
     // Updates (plan step 26): only an installed build has a feed, and only the
     // Electron adapter can answer whether `electron-updater` loaded at all.
     const updateSupported = app.isPackaged;
@@ -685,6 +708,7 @@ if (!app.requestSingleInstanceLock()) {
           };
         },
         action: (input: ProjectActionInput) => projectOps.action(input.path, input.action),
+        setSettings: (input) => projectSettingsService.setEnabled(input),
       },
       officeSetup,
       integrations: {

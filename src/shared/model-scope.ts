@@ -10,9 +10,9 @@
  * Everything here is pure and SDK-free: the host resolves patterns with the SDK
  * (`src/host/sdk/model-scope.ts`), the renderer renders keys, and both sides
  * share the same bounds and parsing. In particular the **toggle rewrite** is
- * here so it can be tested without a session: it materialises the live scope
- * (what the user actually sees) plus the patterns the resolver could not match,
- * so editing the star never silently drops a model.
+ * here so it can be tested without a session: it materialises the resolved
+ * persisted scope plus the patterns the resolver could not match, so editing the
+ * star never silently drops a model or a terminal edit.
  */
 
 /** Bounds shared with Pi's settings guards (`enabledModels` is a string list). */
@@ -54,6 +54,32 @@ export interface ScopeRef {
 export interface ScopeScopes {
   global?: unknown;
   project?: unknown;
+}
+
+/** Which document a scope value comes from, or should be written to. */
+export type ScopeSource = "global" | "project";
+
+/**
+ * One scope warning, in the shape the host and renderer can share. `no-match`
+ * and `invalid-thinking-level` come from Pi's resolver; `resolve-failed` means
+ * the whole resolution failed and the previous live scope must be kept.
+ */
+export interface ScopeDiagnosticInfo {
+  type: "warning";
+  message: string;
+  code?: "no-match" | "invalid-thinking-level" | "resolve-failed";
+  pattern?: string;
+}
+
+/** The persisted scope state a host reports and the renderer renders. */
+export interface ScopeSnapshot {
+  /** The normalized persisted patterns (`enabledModels`). */
+  enabledModels: string[];
+  /** The models those patterns resolve to in this session. */
+  scoped: readonly unknown[];
+  /** Where the effective patterns come from in the settings files. */
+  source: ScopeSource;
+  diagnostics: ScopeDiagnosticInfo[];
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -107,11 +133,13 @@ export function effectiveScopePatterns(scopes: ScopeScopes): string[] {
 
 /**
  * Which document a scope edit must write. Pi's own `/scoped-models` writes
- * global, but the app exposes a project scope in Settings; when a project has
- * the key, writing global would be silently masked by the project document, so
- * the edit follows the effective value instead.
+ * global, but the app can pass an explicit target from the project settings
+ * toggle. Without one, the edit follows the effective value: a project that has
+ * the key wins, otherwise global. The explicit target avoids silently writing a
+ * value the project document would mask.
  */
-export function scopeWriteTarget(scopes: ScopeScopes): "global" | "project" {
+export function scopeWriteTarget(scopes: ScopeScopes, explicit?: ScopeSource): ScopeSource {
+  if (explicit === "global" || explicit === "project") return explicit;
   return hasOwn(asRecord(scopes.project), "enabledModels") ? "project" : "global";
 }
 
@@ -132,6 +160,42 @@ export function scopeKeys(scoped: readonly unknown[]): string[] {
     keys.push(key);
   }
   return keys;
+}
+
+/**
+ * The `provider/id` keys the UI should treat as starred: the resolved models
+ * first, then exact persisted patterns that the resolver could not match (for
+ * example an offline provider). Globs/bare ids contribute only through
+ * resolution. Comparison is case-insensitive because Pi matches patterns that
+ * way and a settings file may preserve different casing.
+ */
+export function scopeStarKeys(
+  patterns: readonly string[] | unknown,
+  scoped: readonly unknown[],
+): string[] {
+  const keys = scopeKeys(scoped);
+  const seen = new Set(keys.map((key) => key.toLowerCase()));
+  for (const pattern of normalizeScopePatterns(patterns)) {
+    const parsed = parseScopePattern(pattern);
+    if (!parsed.ref) continue;
+    const lower = parsed.ref.toLowerCase();
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    keys.push(parsed.ref);
+  }
+  return keys;
+}
+
+/**
+ * Whether `patterns` contains the exact bare `provider/id` (case-insensitive).
+ * A `:thinking`-qualified pattern does not count, mirroring Pi's own
+ * `_addPersistedDefaultToNonEmptyScope` check; the scope writer appends the bare
+ * ref so the SDK does not also write it to the wrong document.
+ */
+export function hasExactScopeRef(patterns: readonly string[] | unknown, ref: string): boolean {
+  const wanted = ref.trim().toLowerCase();
+  if (wanted.length === 0) return false;
+  return normalizeScopePatterns(patterns).some((pattern) => pattern.toLowerCase() === wanted);
 }
 
 /**
@@ -200,8 +264,8 @@ export function toggleScopeKey(keys: readonly string[], key: string, enabled: bo
 }
 
 export interface NextScopeInput {
-  /** The live session scope (`session.scopedModels`). */
-  liveScoped: readonly unknown[];
+  /** The resolved **persisted** scope (the current file's patterns). */
+  baseScoped: readonly unknown[];
   /** Persisted patterns the resolver matched to nothing; kept verbatim. */
   preserved: readonly string[];
   provider: string;
@@ -210,8 +274,8 @@ export interface NextScopeInput {
 }
 
 /**
- * The toggle rewrite: live scope + one key change + the patterns that currently
- * match nothing.
+ * The toggle rewrite: resolved persisted scope + one key change + the patterns
+ * that currently match nothing.
  *
  * - Resolved patterns (exact refs and matching globs) are materialised into
  *   explicit `provider/id[:level]` entries, so un-starring a model a glob used
@@ -223,10 +287,10 @@ export interface NextScopeInput {
  */
 export function nextScopePatterns(input: NextScopeInput): string[] | undefined {
   const ref = scopeKeyOf(input.provider, input.id);
-  const liveKeys = scopeKeys(input.liveScoped);
-  const nextKeys = toggleScopeKey(liveKeys, ref, input.enabled);
+  const baseKeys = scopeKeys(input.baseScoped);
+  const nextKeys = toggleScopeKey(baseKeys, ref, input.enabled);
   const materialised = new Map(
-    materialiseScopePatterns(input.liveScoped).map((entry) => [entry.ref, entry.pattern]),
+    materialiseScopePatterns(input.baseScoped).map((entry) => [entry.ref, entry.pattern]),
   );
 
   const patterns: string[] = [];

@@ -76,6 +76,23 @@ export interface SettingsPort {
   isProjectTrusted(cwd: string | null): boolean;
   /** Sets or deletes one key in one scope. Throws `SettingsError` on invalid input. */
   write(cwd: string | null, key: string, value: unknown, scope: SettingsScope): Promise<void>;
+  /**
+   * Sets/deletes one key only when the current raw value equals `expected`.
+   * A concurrent external edit throws `SettingsError` with code `conflict`.
+   */
+  compareAndWrite(
+    cwd: string | null,
+    key: string,
+    expected: unknown,
+    value: unknown,
+    scope: SettingsScope,
+  ): Promise<void>;
+  /** Writes several top-level keys in one scope transaction. */
+  writeMany(
+    cwd: string | null,
+    scope: SettingsScope,
+    values: Record<string, unknown>,
+  ): Promise<void>;
   /** Replaces a whole scope document (the raw JSON editor). */
   writeScope(
     cwd: string | null,
@@ -167,6 +184,10 @@ export function createSettingsHandlers(options: SettingsHandlerOptions): {
 
   const snapshot = async (cwd: string | null): Promise<SettingsSnapshot> => {
     const current = port();
+    // Re-read both files first: a long-lived host must report terminal Pi's
+    // edits, not its own startup cache (the project-settings toggle relies on
+    // this too). A malformed file is still surfaced through drainErrors.
+    await current.reload(cwd);
     const [settings, files] = await Promise.all([current.read(cwd), current.files(cwd)]);
     return {
       settings,

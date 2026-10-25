@@ -42,6 +42,10 @@ export interface ModelPickerProps {
   initialQuery?: string;
   /** `provider/id` keys of the live model scope (Pi's `enabledModels`). */
   scoped: readonly string[];
+  /** Persisted scope patterns (for the no-scope note). */
+  patterns?: readonly string[];
+  /** Where model/scope/thinking writes go for this tab. */
+  scopeTarget?: "global" | "project";
   /** The model key whose scope write is in flight, if any. */
   scopeBusyKey?: string | null;
   error?: string | null;
@@ -59,6 +63,8 @@ export function ModelPicker({
   currentKey = null,
   initialQuery = "",
   scoped,
+  patterns = [],
+  scopeTarget = "global",
   scopeBusyKey = null,
   error = null,
   onPick,
@@ -74,6 +80,8 @@ export function ModelPicker({
 
   const matched = filterModels(entries, query);
   const { scoped: scopedEntries, others } = withScopedFirst(matched, scoped);
+  const scopedSet = new Set(scoped.map((key) => key.toLowerCase()));
+  const hasScope = patterns.length > 0;
   const groups = groupByProvider(others, auth);
   const signedOutProviders = [...new Set(entries.map((entry) => entry.provider))].filter(
     (provider) => !toAuthBadge(auth[provider]).configured,
@@ -81,7 +89,7 @@ export function ModelPicker({
 
   function renderEntry(entry: ModelCatalogEntry) {
     const active = entry.key === currentKey;
-    const isScoped = scoped.includes(entry.key);
+    const isScoped = scopedSet.has(entry.key.toLowerCase());
     return (
       <div key={entry.key} className="flex items-center gap-1">
         <button
@@ -127,6 +135,11 @@ export function ModelPicker({
           /profile and /role pickers. Picking a model saves it as the default, so the next session
           starts on it.
         </DialogDescription>
+        <p className="mt-1 px-4 text-[11px] text-ink-faint" data-testid="model-scope-target">
+          {scopeTarget === "project"
+            ? "Project settings — model, scope and thinking writes go to this project's .pi/settings.json."
+            : "Global settings — model, scope and thinking writes go to the shared profile."}
+        </p>
         {error ? (
           <p role="alert" data-testid="model-picker-error" className="mt-2 text-xs text-danger">
             {error}
@@ -157,8 +170,9 @@ export function ModelPicker({
 
           {scoped.length === 0 ? (
             <p className="px-2 pb-2 text-[11px] text-ink-faint" data-testid="no-scope-note">
-              No scope — every model is available to Ctrl+Alt cycling and the /profile, /role
-              pickers. Star a model to narrow the set.
+              {hasScope
+                ? "Your scope matches no available models right now."
+                : "No scope — every model is available to Ctrl+Alt cycling and the /profile, /role pickers. Star a model to narrow the set."}
             </p>
           ) : null}
 

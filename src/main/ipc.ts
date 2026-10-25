@@ -7,6 +7,8 @@ import type {
   CreateProjectInput,
   ProjectActionInput,
   ProjectMutation,
+  ProjectSettingsToggleInput,
+  ProjectSettingsToggleResult,
   ProjectsSnapshot,
 } from "../shared/projects";
 import {
@@ -104,6 +106,7 @@ export interface IpcDependencies {
     create(input: CreateProjectInput): Promise<ProjectOpResponse>;
     clone(input: CloneProjectInput): Promise<ProjectOpResponse>;
     action(input: ProjectActionInput): Promise<boolean>;
+    setSettings(input: ProjectSettingsToggleInput): Promise<ProjectSettingsToggleResult>;
   };
   officeSetup: OfficeSetupService;
   /** The app's integration record (plan step 19). */
@@ -178,6 +181,17 @@ function requireRealTabId(deps: IpcDependencies, value: unknown): string {
   const id = requireTabId(deps, value);
   if (isControlTabId(id)) throw new Error("web: the control host is not a tab");
   return id;
+}
+
+/** Validates the project-panel settings toggle input. */
+function parseProjectSettingsToggle(value: unknown): ProjectSettingsToggleInput {
+  const record = asRecord(value);
+  const path = typeof record.path === "string" ? record.path.trim() : "";
+  if (path.length === 0) throw new Error("projects: path is required");
+  if (typeof record.enabled !== "boolean") {
+    throw new Error("projects: enabled must be a boolean");
+  }
+  return { path, enabled: record.enabled };
 }
 
 /** Validates the `web:open` input: a permitted URL, an optional folder and link. */
@@ -294,6 +308,9 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   );
   ipcMain.handle(IPC.projectsAction, (_event, input: unknown) =>
     deps.projects.action(parseProjectActionInput(input)),
+  );
+  ipcMain.handle(IPC.projectsSetSettings, (_event, input: unknown) =>
+    deps.projects.setSettings(parseProjectSettingsToggle(input)),
   );
 
   ipcMain.handle(IPC.officeGet, () => deps.officeSetup.getView());

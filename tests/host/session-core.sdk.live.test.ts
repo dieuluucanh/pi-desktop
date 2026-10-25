@@ -60,6 +60,7 @@ function buildCore(): SessionCore {
         cwd: request.cwd,
         agentDir: request.agentDir,
         sessionManager: request.sessionManager as never,
+        ...(request.projectTrusted === undefined ? {} : { projectTrusted: request.projectTrusted }),
       });
       return { runtime: created.runtime, session: created.session };
     },

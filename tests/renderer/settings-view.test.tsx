@@ -93,20 +93,12 @@ describe("SettingsView", () => {
     );
   });
 
-  it("writes to the project scope when that scope is selected", async () => {
-    const request = stubRequest();
+  it("does not offer a per-field project scope", async () => {
+    stubRequest();
     render(<SettingsView />);
     const field = await screen.findByTestId("setting-compaction.enabled");
-    await userEvent.click(within(field).getByRole("button", { name: "Project" }));
-    await userEvent.click(within(field).getByRole("switch"));
-
-    await waitFor(() =>
-      expect(request).toHaveBeenCalledWith({
-        tabId: "control",
-        method: "settings.set",
-        params: { cwd: PROJECT, key: "compaction.enabled", value: false, scope: "project" },
-      }),
-    );
+    expect(within(field).queryByRole("button", { name: "Project" })).toBeNull();
+    expect(within(field).queryByRole("button", { name: "Global" })).toBeNull();
   });
 
   it("applies a raw JSON document", async () => {
@@ -163,6 +155,6 @@ describe("SettingsView", () => {
 
     const field = await screen.findByTestId("setting-compaction.enabled");
     expect(within(field).queryByRole("button", { name: "Project" })).toBeNull();
-    expect(screen.getByText(/No project is open/i)).toBeInTheDocument();
+    expect(screen.getByText(/Settings are shared globally/i)).toBeInTheDocument();
   });
 });

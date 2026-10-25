@@ -138,10 +138,10 @@ function createCore(options: {
     requiresTrust: (cwd) => hasTrustRequiringProjectResources(cwd),
     // Settings writes use the session's own manager for the session cwd, so a
     // change is visible to this session without a second manager (plan step 12).
-    createSettingsPort: (manager) =>
+    createSettingsPort: (manager, sessionCwd) =>
       createSdkSettingsPort({
         agentDir: options.agentDir,
-        cwd: options.cwd,
+        cwd: sessionCwd,
         io: settingsIo,
         ...(options.backupDir ? { backupDir: options.backupDir } : {}),
         ...(manager ? { manager: manager as never } : {}),
@@ -191,6 +191,7 @@ function createCore(options: {
         agentDir: request.agentDir,
         sessionManager: request.sessionManager as never,
         ...(request.npmCommand ? { npmCommand: request.npmCommand } : {}),
+        ...(request.projectTrusted === undefined ? {} : { projectTrusted: request.projectTrusted }),
       };
       const created = await createSdkSessionRuntime(runtimeRequest);
       return { runtime: created.runtime, session: created.session };

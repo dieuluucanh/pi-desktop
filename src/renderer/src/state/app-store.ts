@@ -22,7 +22,7 @@ import {
   type ProviderLoginEvent,
   type ProviderSummary,
 } from "../../../shared/providers";
-import { scopeKeys } from "../../../shared/model-scope";
+import { normalizeScopePatterns, scopeKeys, scopeStarKeys } from "../../../shared/model-scope";
 import type { CustomProviderInput, CustomProviderSummary } from "../../../shared/custom-providers";
 import {
   findSettingsField,
@@ -232,6 +232,7 @@ export const SESSION_ENSURE_THROTTLE_MS = 2_000;
 /** Minimum gap between window-focus/visibility reconciliations. */
 const SESSION_RESYNC_THROTTLE_MS = 1_000;
 let lastSessionResyncAt = 0;
+let lastScopeSyncAt = 0;
 export const EDITOR_TEXT_DELAY_MS = 250;
 
 export const APP_VIEWS: readonly AppView[] = [
@@ -274,6 +275,8 @@ export interface AppStateShape {
   /** Host inspection per project path (git branch, `.pi/`, trust, session dir). */
   projectInspections: Record<string, ProjectInspection>;
   projectInspectionErrors: Record<string, string>;
+  /** Projects whose settings toggle is being written. */
+  projectSettingsBusy: Record<string, boolean>;
   /** The trust prompt currently on screen, if any. */
   trustPrompt: TrustPrompt | null;
   trustBusy: boolean;
@@ -373,6 +376,8 @@ export interface AppStateShape {
   updateProjectConfig: (path: string, patch: ProjectConfigPatch) => Promise<void>;
   /** Inspects a project folder through the control host (plan step 10). */
   inspectProject: (path: string) => Promise<ProjectInspection | null>;
+  /** Enables/disables project-scoped settings and reloads the affected hosts. */
+  setProjectSettingsEnabled: (path: string, enabled: boolean) => Promise<boolean>;
   createBlankProject: (input: CreateProjectInput) => Promise<boolean>;
   cloneProject: (input: CloneProjectInput) => Promise<boolean>;
   /** Opens the user's home folder as a project and starts a session there. */
@@ -471,6 +476,10 @@ export interface AppStateShape {
   thinkingLevels: Record<string, string[]>;
   /** `provider/id` keys of the live session scope (Pi's `enabledModels`). */
   modelScope: Record<string, string[]>;
+  /** Persisted patterns behind each tab's stars. */
+  modelScopePatterns: Record<string, string[]>;
+  /** The project toggle's write target for each tab. */
+  modelScopeTarget: Record<string, "global" | "project">;
   /** The model key a star toggle is currently writing, per tab. */
   modelScopeBusy: Record<string, string | null>;
   picker: PickerKind | null;
@@ -478,6 +487,11 @@ export interface AppStateShape {
   /** Initial search text for the model picker (`/model <query>`). */
   pickerSearch: string;
   loadModels: (tabId: string) => Promise<void>;
+  /** Applies a host/model-scope snapshot to one tab. */
+  setModelScopeSnapshot: (
+    tabId: string,
+    payload: { enabledModels?: unknown; scoped?: unknown },
+  ) => void;
   setModel: (
     tabId: string,
     entry: ModelCatalogEntry,
@@ -494,6 +508,8 @@ export interface AppStateShape {
   toggleModelScope: (tabId: string, provider: string, id: string) => Promise<void>;
   /** Re-reads `enabledModels` into each open session (no write). */
   applyModelScopeToTabs: (exceptTabId?: string) => Promise<void>;
+  /** Pulls enabledModels from disk into every live tab (focus/reload). */
+  syncModelScopesFromDisk: () => Promise<void>;
   setViewMode: (mode: ViewMode) => void;
   openPicker: (picker: PickerKind, options?: { search?: string }) => void;
   closePicker: () => void;
@@ -550,8 +566,7 @@ export interface AppStateShape {
   ) => Promise<boolean>;
   flushSettings: () => Promise<void>;
   /** Re-reads both scopes from disk and clears the external-edit flag. */
-  reloadSettings: () => Promise<void>;
-  /** Compares the files' mtimes with the loaded snapshot; true when they differ. */
+  reloadSettings: () => Promise<void>; /** Compares the files' mtimes with the loaded snapshot; true when they differ. */
   checkExternalSettingsEdit: () => Promise<boolean>;
   /** Writes the documented default (or deletes the key when it has none). */
   resetSetting: (key: string, scope: SettingsScope) => Promise<void>;
@@ -1071,6 +1086,24 @@ function resourcesCwd(state: AppStateShape, target: string): string | null {
   return tab?.cwd ?? state.project?.path ?? null;
 }
 
+/** The write target for a tab's model/scope/thinking settings. */
+export function settingsTargetForTab(
+  state: Pick<AppStateShape, "tabs" | "projects">,
+  tabId: string,
+): SettingsScope {
+  const tab = state.tabs.find((entry) => entry.id === tabId);
+  return settingsTargetForProject(state, tab?.cwd ?? null);
+}
+
+/** The write target for a project path. Default is the shared global file. */
+export function settingsTargetForProject(
+  state: Pick<AppStateShape, "projects">,
+  path: string | null | undefined,
+): SettingsScope {
+  const project = findProject(state.projects, path ?? null);
+  return project?.useProjectSettings === true ? "project" : "global";
+}
+
 /**
  * The project context packages are listed/installed for: the active project, or
  * the active session tab's folder when the project list is not loaded.
@@ -1087,6 +1120,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   projectsLoaded: false,
   projectInspections: {},
   projectInspectionErrors: {},
+  projectSettingsBusy: {},
   trustPrompt: null,
   trustBusy: false,
   sessionTrust: [],
@@ -1125,6 +1159,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   providerAuth: {},
   thinkingLevels: {},
   modelScope: {},
+  modelScopePatterns: {},
+  modelScopeTarget: {},
   modelScopeBusy: {},
   picker: null,
   pickerError: null,
@@ -1301,6 +1337,66 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       get().applyProjects(await api.projects.mutate({ action: "update", path, patch }));
     } catch (error) {
       get().noteFailure(error);
+    }
+  },
+
+  setProjectSettingsEnabled: async (path, enabled) => {
+    const api = bridge();
+    if (!api?.projects || !api.sessions) {
+      set({ hint: "The preload bridge is unavailable." });
+      return false;
+    }
+    if (get().projectSettingsBusy[path]) return false;
+    set({ projectSettingsBusy: { ...get().projectSettingsBusy, [path]: true } });
+    try {
+      const result = await api.projects.setSettings({ path, enabled });
+      get().applyProjects(result);
+      await get().inspectProject(path);
+      await get().loadSettings({ refresh: true });
+      await get().applyModelScopeToTabs();
+      if (get().resourcesLoaded) await get().loadResources({ refresh: true });
+      if (get().packagesLoaded) await get().loadPackages({ refresh: true });
+
+      // The whole project document changed: reload any live tab rooted there so
+      // non-scope settings (theme, extensions, tools) also take effect.
+      const targets = get().tabs.filter(
+        (tab) =>
+          tab.cwd === path &&
+          tab.kind !== "web" &&
+          (tab.status === "idle" || tab.status === "running"),
+      );
+      await Promise.all(
+        targets.map(async (tab) => {
+          try {
+            await api.sessions.request({ tabId: tab.id, method: "session.reload" });
+          } catch {
+            return undefined;
+          }
+          await Promise.all([get().loadExtensionUi(tab.id), get().loadTuiSurface(tab.id)]);
+          get().invalidateCommands(tab.id);
+          return undefined;
+        }),
+      );
+      if (targets.length > 0) await get().loadShortcuts({ refresh: true });
+
+      const message = !enabled
+        ? result.saved
+          ? "Project settings saved and disabled; using global settings."
+          : "Using global settings for this project."
+        : result.restored
+          ? "Project settings restored."
+          : result.keptCurrent
+            ? "Project settings enabled; the current project file was kept."
+            : "Project settings enabled.";
+      toast.success(message);
+      return true;
+    } catch (error) {
+      get().noteFailure(error);
+      return false;
+    } finally {
+      const busy = { ...get().projectSettingsBusy };
+      delete busy[path];
+      set({ projectSettingsBusy: busy });
     }
   },
 
@@ -1559,8 +1655,20 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // Extension UI events are not transcript content: dialogs, notifications,
     // status/widget snapshots and theme switches are applied here (plan step 16).
     for (const entry of envelope.events) get().handleExtensionUiEvent(envelope.tabId, entry);
+    const modelScopeChange = envelope.events
+      .filter((entry) => entry.event === "model_scope_changed")
+      .at(-1);
+    if (modelScopeChange) {
+      get().setModelScopeSnapshot(
+        envelope.tabId,
+        (modelScopeChange.payload ?? {}) as { enabledModels?: unknown; scoped?: unknown },
+      );
+    }
     const rest = envelope.events.filter(
-      (entry) => entry.event !== "project_trust" && !EXTENSION_UI_EVENTS.has(entry.event),
+      (entry) =>
+        entry.event !== "project_trust" &&
+        entry.event !== "model_scope_changed" &&
+        !EXTENSION_UI_EVENTS.has(entry.event),
     );
     if (rest.length === 0) return;
     // Extension output can carry a review URL too (a tool result, not only a
@@ -1916,6 +2024,21 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     set({ view: "connections", hint: null, connectionsFocus: focus ?? null }),
   clearConnectionsFocus: () => set({ connectionsFocus: null }),
 
+  setModelScopeSnapshot: (tabId, payload) => {
+    const scoped = Array.isArray(payload.scoped) ? payload.scoped : [];
+    const patterns = Array.isArray(payload.enabledModels)
+      ? normalizeScopePatterns(payload.enabledModels)
+      : scopeKeys(scoped);
+    set({
+      modelScope: { ...get().modelScope, [tabId]: scopeStarKeys(patterns, scoped) },
+      modelScopePatterns: { ...get().modelScopePatterns, [tabId]: patterns },
+      modelScopeTarget: {
+        ...get().modelScopeTarget,
+        [tabId]: settingsTargetForTab(get(), tabId),
+      },
+    });
+  },
+
   loadModels: async (tabId) => {
     const api = bridge();
     if (!api?.sessions) return;
@@ -1924,6 +2047,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         | {
             models?: unknown[];
             scoped?: unknown[];
+            enabledModels?: unknown;
             auth?: Record<string, unknown>;
             thinkingLevels?: unknown[];
           }
@@ -1933,16 +2057,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
           ...get().modelCatalog,
           [tabId]: toCatalog(Array.isArray(response?.models) ? response.models : []),
         },
-        modelScope: {
-          ...get().modelScope,
-          [tabId]: scopeKeys(Array.isArray(response?.scoped) ? response.scoped : []),
-        },
         providerAuth: { ...get().providerAuth, [tabId]: response?.auth ?? {} },
         thinkingLevels: {
           ...get().thinkingLevels,
           [tabId]: thinkingLevelsOf({ thinkingLevels: response?.thinkingLevels }),
         },
       });
+      get().setModelScopeSnapshot(tabId, response ?? {});
     } catch (error) {
       get().noteFailure(error);
     }
@@ -1955,7 +2076,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       const response = await api.sessions.request({
         tabId,
         method: "model.set",
-        params: { model: entry.raw, persist: options.persist === true },
+        params: {
+          model: entry.raw,
+          persist: options.persist === true,
+          scope: settingsTargetForTab(get(), tabId),
+        },
       });
       // Defence in depth (plan step 4): the host also emits a `state` event,
       // but the response alone must move the UI — otherwise a missed or
@@ -1983,7 +2108,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       await api.sessions.request({
         tabId,
         method: "thinking.set",
-        params: { level, persist: options.persist === true },
+        params: {
+          level,
+          persist: options.persist === true,
+          scope: settingsTargetForTab(get(), tabId),
+        },
       });
       set({ picker: null });
     } catch (error) {
@@ -2051,14 +2180,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       const response = (await api.sessions.request({
         tabId,
         method: "model.scope.toggle",
-        params: { provider, id, enabled },
-      })) as { scoped?: unknown[] } | undefined;
-      set({
-        modelScope: {
-          ...get().modelScope,
-          [tabId]: scopeKeys(Array.isArray(response?.scoped) ? response.scoped : []),
-        },
-      });
+        params: { provider, id, enabled, scope: settingsTargetForTab(get(), tabId) },
+      })) as { scoped?: unknown[]; enabledModels?: unknown } | undefined;
+      get().setModelScopeSnapshot(tabId, response ?? {});
       await get().loadSettings({ refresh: true });
       await get().applyModelScopeToTabs(tabId);
     } catch (error) {
@@ -2091,13 +2215,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
           const response = (await api.sessions.request({
             tabId: tab.id,
             method: "model.scope.apply",
-          })) as { scoped?: unknown[] } | undefined;
-          set({
-            modelScope: {
-              ...get().modelScope,
-              [tab.id]: scopeKeys(Array.isArray(response?.scoped) ? response.scoped : []),
-            },
-          });
+          })) as { scoped?: unknown[]; enabledModels?: unknown } | undefined;
+          get().setModelScopeSnapshot(tab.id, response ?? {});
         } catch (error) {
           // A starting/crashed tab has no live session; it converges on its
           // next session or /reload, so one dead tab must not fail the star.
@@ -2107,6 +2226,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         return undefined;
       }),
     );
+  },
+
+  syncModelScopesFromDisk: async () => {
+    const now = Date.now();
+    if (now - lastScopeSyncAt < 2_000) return;
+    lastScopeSyncAt = now;
+    await get().applyModelScopeToTabs();
   },
 
   setViewMode: (mode) => {
@@ -2875,6 +3001,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   reloadSettings: async () => {
     set({ settingsExternalEdit: false });
     await get().loadSettings({ refresh: true });
+    await get().applyModelScopeToTabs();
   },
 
   checkExternalSettingsEdit: async () => {
@@ -2887,10 +3014,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         method: "settings.get",
         params: { cwd: get().project?.path ?? null },
       })) as SettingsSnapshot;
-      const external =
-        snapshot.files.global.mtimeMs !== before.global ||
-        snapshot.files.project.mtimeMs !== before.project;
-      if (external) set({ settingsExternalEdit: true });
+      const external = snapshot.files.global.mtimeMs !== before.global;
+      if (external) {
+        set({ settingsExternalEdit: true });
+        void get().applyModelScopeToTabs();
+      }
       return external;
     } catch {
       return false;
@@ -2969,6 +3097,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
     const key = resource.settingsKey;
     const scope = settingsScopeForResource(resource.scope);
+    if (
+      scope === "project" &&
+      settingsTargetForProject(get(), get().project?.path ?? null) !== "project"
+    ) {
+      set({
+        resourcesError:
+          "Enable project settings for this project before toggling a project resource.",
+      });
+      return false;
+    }
     const document = scope === "project" ? settings.project : settings.global;
     const currentValue = getSettingsValue(document, key);
     const entries = Array.isArray(currentValue)
@@ -3029,10 +3167,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   setActiveTheme: async (name) => {
     if (!get().settings) await get().loadSettings();
     const settings = get().settings;
-    const scope =
-      settings?.project && typeof settings.project === "object" && "theme" in settings.project
-        ? "project"
-        : "global";
+    void settings;
+    const scope = settingsTargetForProject(get(), get().project?.path ?? null);
     const ok = await get().setSetting("theme", name, scope as SettingsScope);
     if (ok) {
       const themes = {
@@ -3625,6 +3761,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   requestPackageInstall: (source, scope, cwd, options) => {
+    if (
+      scope === "project" &&
+      settingsTargetForProject(get(), cwd ?? packageCwd(get())) !== "project"
+    ) {
+      set({
+        packagesError:
+          "Enable project settings in the project panel before installing a project package.",
+      });
+      return;
+    }
     let normalized: string;
     try {
       normalized = normalizePackageSource(source);
@@ -3755,11 +3901,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
     const input: CreateTabInput = { cwd: project.path };
     if (kind && kind !== "session") input.kind = kind;
-    // Per-project defaults (plan step 10) travel with the create so the host can
-    // apply them before the first state snapshot.
-    const record = findProject(get().projects, project.path);
-    if (record?.defaultModel) input.model = record.defaultModel;
-    if (record?.defaultThinking) input.thinking = record.defaultThinking;
+    // Project defaults now live in the project's `.pi/settings.json` when its
+    // settings toggle is on; the session manager reads them at creation.
     // A project answered “Trust once” this run is passed the session-only grant so
     // a second tab never re-prompts.
     if (get().sessionTrust.includes(project.path)) input.trust = "session";
@@ -3915,9 +4058,6 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!tab || !api?.sessions) return;
     const input: CreateTabInput = { cwd: tab.cwd };
-    const record = findProject(get().projects, tab.cwd);
-    if (record?.defaultModel) input.model = record.defaultModel;
-    if (record?.defaultThinking) input.thinking = record.defaultThinking;
     if (get().sessionTrust.includes(tab.cwd)) input.trust = "session";
     try {
       get().applyTabs(await api.sessions.create(input));

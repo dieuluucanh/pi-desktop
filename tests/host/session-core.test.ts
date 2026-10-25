@@ -478,7 +478,11 @@ describe("session core emits via the injected emitter", () => {
 });
 
 describe("session core safe mode (plan step 22)", () => {
-  function runtimeWith(requests: SessionRuntimeRequest[], safeMode: boolean | undefined) {
+  function runtimeWith(
+    requests: SessionRuntimeRequest[],
+    safeMode: boolean | undefined,
+    deps: Partial<SessionCoreDeps> = {},
+  ) {
     const session = fakeSession().session;
     const runtime: RuntimeLike = {
       get session() {
@@ -489,6 +493,7 @@ describe("session core safe mode (plan step 22)", () => {
       },
     };
     const harnessed = harness({
+      ...deps,
       ...(safeMode === undefined ? {} : { safeMode }),
       createRuntime: async (request) => {
         requests.push(request);
@@ -510,5 +515,18 @@ describe("session core safe mode (plan step 22)", () => {
     const { call } = runtimeWith(requests, undefined);
     await call("session.create");
     expect(requests[0]).not.toHaveProperty("safeMode");
+  });
+
+  it("forwards the project trust decision to the runtime factory", async () => {
+    const requests: SessionRuntimeRequest[] = [];
+    const { call } = runtimeWith(requests, undefined, {
+      requiresTrust: () => true,
+      trustStore: {
+        get: () => false,
+        set: () => undefined,
+      },
+    });
+    await call("session.create");
+    expect(requests[0]?.projectTrusted).toBe(false);
   });
 });

@@ -30,18 +30,22 @@ invalid value shows an inline error and never corrupts the file.
 
 ## Global vs project scope
 
-Every key is editable in either scope. Project scope is disabled while a project
-is untrusted. Project values win with Pi’s nested-merge semantics, so a project
-can override one nested key without replacing the whole object. A **save to
-project** action promotes the current value.
+**Settings edits global settings only.** The per-field Global/Project switch is
+gone. Select a project in the sidebar to enable its **Settings** switch when you
+want project-scoped values; the project panel also hosts the advanced
+`.pi/settings.json` editor. Project values win with Pi’s nested-merge semantics;
+a row shows a **project override** badge when the active project defines the key.
 
-Use the per-field scope switch to move a value between scopes.
+Turning a project’s Settings switch off snapshots its whole `.pi/settings.json`
+to app state, replaces it with `{}`, and makes the project use global settings.
+Turning it on restores the snapshot when the file is still empty; if the file was
+changed while off, the current file is kept and the app reports it.
 
 ## Raw JSON, diff and reset
 
-- **Raw JSON** opens a dialog with a scope tab (global/project), formats the
-  document, and lets you copy it out or paste an import. The paste is validated
-  against the schema before it is written.
+- **Raw JSON** opens a dialog for the **global** document, formats it, and lets
+  you copy it out or paste an import. The paste is validated against the schema
+  before it is written. Project JSON is edited from the project panel.
 - **Diff vs defaults** shows exactly what differs from Pi’s defaults.
 - **Reset** clears a single field or a whole scope.
 

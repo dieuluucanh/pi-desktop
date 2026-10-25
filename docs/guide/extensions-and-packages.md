@@ -33,8 +33,11 @@ The **Packages** section installs, updates, removes and pins Pi packages.
 
 - Sources: `npm:pkg[@version]`, a bare name (normalised to `npm:`), `git:…`, a
   GitHub URL, or an absolute/relative path.
-- **Scope**: user (profile) or project (`<project>/.pi/npm`). A project-scope
-  request without a project is refused rather than installed somewhere else.
+- **Scope**: user (profile, the default) or project (`<project>/.pi/npm`). A
+  project-scope request without a project is refused rather than installed
+  somewhere else. The default is user/global, matching terminal Pi. Project
+  scope is available only while the project’s **Use project settings** switch is
+  on; otherwise enable it in the project panel first.
 - **Pin / unpin** reinstall the exact installed version, or the latest. Git and
   path sources have no pin action.
 - **Update** one package or **Update all**; npm’s output tail is shown, and a

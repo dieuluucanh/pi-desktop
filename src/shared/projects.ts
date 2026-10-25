@@ -20,20 +20,30 @@ export interface ProjectRecord {
   addedAt: number;
   /** When it was last opened, for recency ordering. */
   lastOpenedAt: number;
-  /** Per-project default model key (`provider/id`) for new sessions. */
-  defaultModel?: string;
-  /** Per-project default thinking level for new sessions. */
-  defaultThinking?: string;
+  /**
+   * Whether app writes target this project's `.pi/settings.json` instead of the
+   * shared global settings. Defaults to false (global). The app snapshots and
+   * empties the project document when this is switched off.
+   */
+  useProjectSettings?: boolean;
 }
+
+/** One saved project settings document, kept while the toggle is off. */
+export interface ProjectSettingsSnapshot {
+  /** Serialized JSON object from `<project>/.pi/settings.json`. */
+  json: string;
+  /** When the snapshot was taken (`Date.now()`). */
+  savedAt: number;
+}
+
+/** Bounds the snapshot kept in app state; a larger file must be trimmed first. */
+export const MAX_PROJECT_SETTINGS_SNAPSHOT_CHARS = 512_000;
 
 /** How many projects are remembered; the sidebar is a working set, not a disk index. */
 export const MAX_PROJECTS = 30;
 
 /** Longest accepted project path. */
 export const MAX_PROJECT_PATH = 4096;
-
-/** Longest accepted default model/thinking value. */
-export const MAX_PROJECT_SETTING_LENGTH = 200;
 
 /** The last path segment of a project directory, used as its display name. */
 export function projectNameOf(target: string): string {
@@ -78,11 +88,52 @@ export function sanitizeProjectRecord(value: unknown): ProjectRecord | null {
     addedAt: sanitizeTime(source.addedAt, 0),
     lastOpenedAt: sanitizeTime(source.lastOpenedAt, 0),
   };
-  const defaultModel = sanitizeText(source.defaultModel, MAX_PROJECT_SETTING_LENGTH);
-  if (defaultModel) record.defaultModel = defaultModel;
-  const defaultThinking = sanitizeText(source.defaultThinking, MAX_PROJECT_SETTING_LENGTH);
-  if (defaultThinking) record.defaultThinking = defaultThinking;
+  const useProjectSettings = source.useProjectSettings === true;
+  if (useProjectSettings) record.useProjectSettings = true;
   return record;
+}
+
+/**
+ * Keeps the per-project settings snapshots small and well-formed. A snapshot is
+ * the serialized object from `.pi/settings.json`; malformed JSON is dropped here
+ * (the toggle service reports it when it actually tries to read the file).
+ */
+export function sanitizeProjectSettingsSnapshots(
+  value: unknown,
+): Record<string, ProjectSettingsSnapshot> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const snapshots: Record<string, ProjectSettingsSnapshot> = {};
+  let count = 0;
+  for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    if (count >= MAX_PROJECTS) break;
+    const path = normalizeProjectPath(rawKey);
+    if (path.length === 0 || path.length > MAX_PROJECT_PATH) continue;
+    const record =
+      rawValue && typeof rawValue === "object" && !Array.isArray(rawValue)
+        ? (rawValue as Record<string, unknown>)
+        : null;
+    const json = typeof record?.json === "string" ? record.json : null;
+    const savedAt = record?.savedAt;
+    if (
+      json === null ||
+      json.length === 0 ||
+      json.length > MAX_PROJECT_SETTINGS_SNAPSHOT_CHARS ||
+      typeof savedAt !== "number" ||
+      !Number.isFinite(savedAt) ||
+      savedAt < 0
+    ) {
+      continue;
+    }
+    try {
+      const parsed: unknown = JSON.parse(json);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+    } catch {
+      continue;
+    }
+    snapshots[path] = { json, savedAt };
+    count += 1;
+  }
+  return snapshots;
 }
 
 /** Sanitizes a persisted project list, dropping duplicates and unusable entries. */
@@ -142,20 +193,9 @@ export function reorderProject(
   return next;
 }
 
-/** Updates a project's remembered defaults. `null` clears a value. */
+/** Updates a project's settings-scope toggle. */
 export interface ProjectConfigPatch {
-  defaultModel?: string | null;
-  defaultThinking?: string | null;
-}
-
-/** Resolves one config value: undefined keeps the current value, null clears it. */
-function resolveSetting(
-  current: string | undefined,
-  patch: string | null | undefined,
-): string | undefined {
-  if (patch === undefined) return current;
-  if (patch === null) return undefined;
-  return sanitizeText(patch, MAX_PROJECT_SETTING_LENGTH);
+  useProjectSettings?: boolean;
 }
 
 export function updateProject(
@@ -166,15 +206,16 @@ export function updateProject(
   const normalized = normalizeProjectPath(path);
   return list.map((project) => {
     if (project.path !== normalized) return project;
-    const defaultModel = resolveSetting(project.defaultModel, patch.defaultModel);
-    const defaultThinking = resolveSetting(project.defaultThinking, patch.defaultThinking);
+    const useProjectSettings =
+      patch.useProjectSettings === undefined
+        ? project.useProjectSettings === true
+        : patch.useProjectSettings === true;
     return {
       path: project.path,
       name: project.name,
       addedAt: project.addedAt,
       lastOpenedAt: project.lastOpenedAt,
-      ...(defaultModel ? { defaultModel } : {}),
-      ...(defaultThinking ? { defaultThinking } : {}),
+      ...(useProjectSettings ? { useProjectSettings: true } : {}),
     };
   });
 }
@@ -316,4 +357,22 @@ export interface ProjectOpResult {
 export interface ProjectsSnapshot {
   projects: ProjectRecord[];
   activeProject: string | null;
+}
+
+/** Input for the project-panel "Use project settings" toggle. */
+export interface ProjectSettingsToggleInput {
+  path: string;
+  enabled: boolean;
+}
+
+/** What the toggle did, plus the refreshed project list. */
+export interface ProjectSettingsToggleResult extends ProjectsSnapshot {
+  enabled: boolean;
+  /** A non-empty project document was saved before being emptied. */
+  saved: boolean;
+  /** A saved snapshot was restored on enable. */
+  restored: boolean;
+  /** On enable, the current file was non-empty and was kept instead. */
+  keptCurrent: boolean;
+  settingsPath: string;
 }

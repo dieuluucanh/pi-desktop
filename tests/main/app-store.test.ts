@@ -56,6 +56,21 @@ describe("normalizeAppState", () => {
     ]);
   });
 
+  it("sanitizes project settings snapshots and keeps the migration marker", () => {
+    const good = JSON.stringify({ enabledModels: ["fake/fake-1"] });
+    const state = normalizeAppState({
+      projectSettingsSnapshots: {
+        "C:/a": { json: good, savedAt: 1 },
+        "C:/bad": { json: "{", savedAt: 1 },
+        "C:/negative": { json: good, savedAt: -1 },
+      },
+      projectSettingsMigrated: true,
+    });
+
+    expect(state.projectSettingsSnapshots).toEqual({ "C:/a": { json: good, savedAt: 1 } });
+    expect(state.projectSettingsMigrated).toBe(true);
+  });
+
   it("keeps well-formed tabs and the active tab id (plan step 3)", () => {
     const state = normalizeAppState({
       tabs: [

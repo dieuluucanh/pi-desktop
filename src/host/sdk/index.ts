@@ -56,6 +56,8 @@ export type SessionRuntimeFactory = (options: {
   npmCommand?: readonly string[] | null;
   /** Safe mode (plan step 22): disable every resource-loader collection. */
   safeMode?: boolean;
+  /** Whether the project is trusted, so its `.pi/settings.json` may be read. */
+  projectTrusted?: boolean;
 }) => Promise<{
   runtime: AgentSessionRuntime;
   session: AgentSession;
@@ -69,7 +71,10 @@ export type SessionRuntimeFactory = (options: {
  */
 export const createSdkSessionRuntime: SessionRuntimeFactory = async (options) => {
   const settingsManager =
-    options.settingsManager ?? SettingsManager.create(options.cwd, options.agentDir);
+    options.settingsManager ??
+    SettingsManager.create(options.cwd, options.agentDir, {
+      projectTrusted: options.projectTrusted ?? true,
+    });
   if (options.npmCommand && options.npmCommand.length > 0) {
     // Runtime-only override: never written to the shared settings.json.
     settingsManager.applyOverrides({ npmCommand: [...options.npmCommand] });

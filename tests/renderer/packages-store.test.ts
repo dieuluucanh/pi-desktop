@@ -143,6 +143,11 @@ describe("the consent dialog", () => {
 
   it("sends the exact source it displayed and then refreshes", async () => {
     const request = stubRequest(defaultImpl);
+    useAppStore.setState({
+      projects: [
+        { path: PROJECT, name: "app", addedAt: 1, lastOpenedAt: 1, useProjectSettings: true },
+      ],
+    });
     useAppStore.getState().requestPackageInstall("npm:@dieulc/workflow", "project");
     const ok = await useAppStore.getState().confirmPackageConsent();
 

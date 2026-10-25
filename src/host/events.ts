@@ -219,4 +219,7 @@ export const FORWARDED_SESSION_EVENTS: readonly string[] = [
   "compaction_end",
   "entry_appended",
   "session_info_changed",
+  // The host re-resolved the persisted scope (after extensions start, on picker
+  // open, or after another host wrote it). This is a state frame, not transcript.
+  "model_scope_changed",
 ] as const;

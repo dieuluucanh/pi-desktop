@@ -55,20 +55,15 @@ function requireString(value: unknown, label: string, max = MAX_PROJECT_PATH): s
 }
 
 /** A nullable config value: `undefined` keeps it, `null` clears it, a string sets it. */
-function optionalSetting(value: unknown, label: string): string | null | undefined {
-  if (value === undefined) return undefined;
-  if (value === null) return null;
-  if (typeof value === "string") return value;
-  throw new Error(`projects: ${label} must be a string or null`);
-}
-
 function parseConfigPatch(value: unknown): ProjectConfigPatch {
   const record = asRecord(value);
   const patch: ProjectConfigPatch = {};
-  const model = optionalSetting(record.defaultModel, "defaultModel");
-  if (model !== undefined) patch.defaultModel = model;
-  const thinking = optionalSetting(record.defaultThinking, "defaultThinking");
-  if (thinking !== undefined) patch.defaultThinking = thinking;
+  if (record.useProjectSettings !== undefined) {
+    if (typeof record.useProjectSettings !== "boolean") {
+      throw new Error("projects: useProjectSettings must be a boolean");
+    }
+    patch.useProjectSettings = record.useProjectSettings;
+  }
   return patch;
 }
 

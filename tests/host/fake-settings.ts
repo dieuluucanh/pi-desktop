@@ -1,6 +1,16 @@
 import { vi } from "vitest";
-import { deleteSettingsValue, setSettingsValue } from "../../src/shared/settings-schema";
-import type { SettingsErrorInfo, SettingsPort, SettingsScopes } from "../../src/host/settings";
+import { isDeepStrictEqual } from "node:util";
+import {
+  deleteSettingsValue,
+  getSettingsValue,
+  setSettingsValue,
+} from "../../src/shared/settings-schema";
+import {
+  SettingsError,
+  type SettingsErrorInfo,
+  type SettingsPort,
+  type SettingsScopes,
+} from "../../src/host/settings";
 
 /**
  * An in-memory `SettingsPort` for tests (plan step 12).
@@ -65,6 +75,39 @@ export function createFakeSettings(options: FakeSettingsOptions = {}): FakeSetti
           value === undefined
             ? deleteSettingsValue(scopes[scope], key)
             : setSettingsValue(scopes[scope], key, value);
+      },
+    ),
+
+    compareAndWrite: vi.fn(
+      async (
+        _cwd: string | null,
+        key: string,
+        expected: unknown,
+        value: unknown,
+        scope: "global" | "project",
+      ) => {
+        refuseUntrusted(scope);
+        if (!isDeepStrictEqual(getSettingsValue(scopes[scope], key), expected)) {
+          throw new SettingsError("settings changed on disk; reload and retry", "conflict");
+        }
+        scopes[scope] =
+          value === undefined
+            ? deleteSettingsValue(scopes[scope], key)
+            : setSettingsValue(scopes[scope], key, value);
+      },
+    ),
+
+    writeMany: vi.fn(
+      async (_cwd: string | null, scope: "global" | "project", values: Record<string, unknown>) => {
+        refuseUntrusted(scope);
+        let next = scopes[scope];
+        for (const [key, value] of Object.entries(values)) {
+          next =
+            value === undefined
+              ? deleteSettingsValue(next, key)
+              : setSettingsValue(next, key, value);
+        }
+        scopes[scope] = next;
       },
     ),
 

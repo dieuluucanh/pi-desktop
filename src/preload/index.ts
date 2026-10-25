@@ -25,6 +25,8 @@ import type {
   CreateProjectInput,
   ProjectActionInput,
   ProjectMutation,
+  ProjectSettingsToggleInput,
+  ProjectSettingsToggleResult,
   ProjectsSnapshot,
 } from "../shared/projects";
 import type {
@@ -133,6 +135,8 @@ const projects: ProjectsBridge = {
     ipcRenderer.invoke(IPC.projectsClone, input) as Promise<ProjectOpResponse>,
   action: (input: ProjectActionInput) =>
     ipcRenderer.invoke(IPC.projectsAction, input) as Promise<boolean>,
+  setSettings: (input: ProjectSettingsToggleInput) =>
+    ipcRenderer.invoke(IPC.projectsSetSettings, input) as Promise<ProjectSettingsToggleResult>,
 };
 
 const web: WebBridge = {

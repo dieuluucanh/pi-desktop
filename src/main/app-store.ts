@@ -10,7 +10,12 @@ import {
   sanitizeIntegrationsState,
   type IntegrationsState,
 } from "../shared/integrations";
-import { sanitizeProjects, type ProjectRecord } from "../shared/projects";
+import {
+  sanitizeProjects,
+  sanitizeProjectSettingsSnapshots,
+  type ProjectRecord,
+  type ProjectSettingsSnapshot,
+} from "../shared/projects";
 import { sanitizeTabs, type TabRecord } from "../shared/session-ipc";
 
 /**
@@ -30,6 +35,10 @@ export interface AppState {
   activeProject: string | null;
   /** Remembered projects, most recent first (plan step 10). */
   projects: ProjectRecord[];
+  /** Project settings documents saved while a project's toggle is off. */
+  projectSettingsSnapshots: Record<string, ProjectSettingsSnapshot>;
+  /** One-time default-off migration marker (see project-settings-service). */
+  projectSettingsMigrated: boolean;
   /** Window chrome and session-view preferences (plan step 1). */
   prefs: UiPrefs;
   /** Session/web/office tabs, restored on launch (plan step 3). */
@@ -49,6 +58,8 @@ export function defaultAppState(): AppState {
     version: APP_STATE_VERSION,
     activeProject: null,
     projects: [],
+    projectSettingsSnapshots: {},
+    projectSettingsMigrated: false,
     prefs: { ...DEFAULT_PREFS },
     tabs: [],
     activeTabId: null,
@@ -86,6 +97,8 @@ export function normalizeAppState(doc: SettingsDocument): AppState {
     // `recentProjects` was the pre-step-10 schema (bare paths); the sanitizer
     // already accepts those strings, so an existing app-state.json migrates.
     projects: sanitizeProjects(doc.projects ?? doc.recentProjects),
+    projectSettingsSnapshots: sanitizeProjectSettingsSnapshots(doc.projectSettingsSnapshots),
+    projectSettingsMigrated: doc.projectSettingsMigrated === true,
     prefs: sanitizePrefs(doc.prefs),
     tabs: sanitizeTabs(doc.tabs),
     activeTabId: typeof doc.activeTabId === "string" ? doc.activeTabId : null,

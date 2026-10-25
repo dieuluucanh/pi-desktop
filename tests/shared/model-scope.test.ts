@@ -3,6 +3,7 @@ import {
   SCOPE_PATTERN_LIMIT,
   SCOPE_PATTERN_MAX_LENGTH,
   effectiveScopePatterns,
+  hasExactScopeRef,
   isScopeThinkingLevel,
   materialiseScopePatterns,
   nextScopePatterns,
@@ -10,6 +11,7 @@ import {
   parseScopePattern,
   scopeKeyOf,
   scopeKeys,
+  scopeStarKeys,
   scopeWriteTarget,
   toggleScopeKey,
 } from "../../src/shared/model-scope";
@@ -99,6 +101,47 @@ describe("model scope helpers", () => {
 
     it("treats a malformed project key as present (so the edit repairs it there)", () => {
       expect(scopeWriteTarget({ project: { enabledModels: "not-a-list" } })).toBe("project");
+    });
+
+    it("honours an explicit target from the project settings toggle", () => {
+      expect(scopeWriteTarget({ project: { enabledModels: ["a/b"] } }, "global")).toBe("global");
+      expect(scopeWriteTarget({ global: { enabledModels: ["a/b"] } }, "project")).toBe("project");
+    });
+  });
+
+  describe("scopeStarKeys", () => {
+    it("keeps resolved models first and adds exact persisted refs", () => {
+      expect(
+        scopeStarKeys(["openai/gpt-5", "offline/gone"], [scoped("anthropic", "claude")]),
+      ).toEqual(["anthropic/claude", "openai/gpt-5", "offline/gone"]);
+    });
+
+    it("dedupes case-insensitively and ignores globs/bare ids", () => {
+      expect(
+        scopeStarKeys(
+          ["OpenAI/GPT-5", "openai/*", "gpt-5", "openai/gpt-5:high"],
+          [scoped("openai", "gpt-5")],
+        ),
+      ).toEqual(["openai/gpt-5"]);
+    });
+
+    it("returns an empty list for an empty scope", () => {
+      expect(scopeStarKeys([], [])).toEqual([]);
+      expect(scopeStarKeys(undefined, [])).toEqual([]);
+    });
+  });
+
+  describe("hasExactScopeRef", () => {
+    it("matches a bare ref case-insensitively", () => {
+      expect(hasExactScopeRef(["OpenAI/GPT-5"], "openai/gpt-5")).toBe(true);
+      expect(hasExactScopeRef(["openai/gpt-5"], "openai/gpt-5")).toBe(true);
+    });
+
+    it("does not treat a thinking suffix or a glob as the bare ref", () => {
+      expect(hasExactScopeRef(["openai/gpt-5:high"], "openai/gpt-5")).toBe(false);
+      expect(hasExactScopeRef(["openai/*"], "openai/gpt-5")).toBe(false);
+      expect(hasExactScopeRef([], "openai/gpt-5")).toBe(false);
+      expect(hasExactScopeRef(["openai/gpt-5"], "  ")).toBe(false);
     });
   });
 
@@ -211,7 +254,7 @@ describe("model scope helpers", () => {
     it("disabling one model materialises the rest of the live scope", () => {
       expect(
         nextScopePatterns({
-          liveScoped: [scoped("a", "one", "high"), scoped("b", "two")],
+          baseScoped: [scoped("a", "one", "high"), scoped("b", "two")],
           preserved: [],
           provider: "a",
           id: "one",
@@ -223,7 +266,7 @@ describe("model scope helpers", () => {
     it("enabling a new model appends it and keeps pinned levels of existing entries", () => {
       expect(
         nextScopePatterns({
-          liveScoped: [scoped("a", "one", "high")],
+          baseScoped: [scoped("a", "one", "high")],
           preserved: [],
           provider: "c",
           id: "three",
@@ -235,7 +278,7 @@ describe("model scope helpers", () => {
     it("keeps patterns that matched nothing", () => {
       expect(
         nextScopePatterns({
-          liveScoped: [scoped("a", "one")],
+          baseScoped: [scoped("a", "one")],
           preserved: ["offline/*", "gone/model"],
           provider: "a",
           id: "one",
@@ -247,7 +290,7 @@ describe("model scope helpers", () => {
     it("removing the last model with nothing preserved means 'no scope'", () => {
       expect(
         nextScopePatterns({
-          liveScoped: [scoped("a", "one")],
+          baseScoped: [scoped("a", "one")],
           preserved: [],
           provider: "a",
           id: "one",
@@ -259,7 +302,7 @@ describe("model scope helpers", () => {
     it("keeps a preserved pattern even when the last live model is removed", () => {
       expect(
         nextScopePatterns({
-          liveScoped: [scoped("a", "one")],
+          baseScoped: [scoped("a", "one")],
           preserved: ["offline/*"],
           provider: "a",
           id: "one",
@@ -271,7 +314,7 @@ describe("model scope helpers", () => {
     it("does not duplicate a preserved pattern that is already explicit", () => {
       expect(
         nextScopePatterns({
-          liveScoped: [scoped("a", "one")],
+          baseScoped: [scoped("a", "one")],
           preserved: ["a/one"],
           provider: "b",
           id: "two",
@@ -283,7 +326,7 @@ describe("model scope helpers", () => {
     it("stars every model as an explicit list rather than collapsing to no scope", () => {
       expect(
         nextScopePatterns({
-          liveScoped: [scoped("a", "one")],
+          baseScoped: [scoped("a", "one")],
           preserved: [],
           provider: "b",
           id: "two",
@@ -295,7 +338,7 @@ describe("model scope helpers", () => {
     it("a disabled key that was never in scope is a re-normalisation", () => {
       expect(
         nextScopePatterns({
-          liveScoped: [scoped("a", "one")],
+          baseScoped: [scoped("a", "one")],
           preserved: [],
           provider: "b",
           id: "two",

@@ -221,6 +221,22 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
       create: async () => ({ ok: false, path: null, error: "not configured", ...projectsState }),
       clone: async () => ({ ok: false, path: null, error: "not configured", ...projectsState }),
       action: async () => true,
+      setSettings: async (input) => {
+        const project = projectsState.projects.find((entry) => entry.path === input.path);
+        if (project) {
+          if (input.enabled) project.useProjectSettings = true;
+          else delete project.useProjectSettings;
+        }
+        return {
+          projects: [...projectsState.projects],
+          activeProject: projectsState.activeProject,
+          enabled: input.enabled,
+          saved: false,
+          restored: false,
+          keptCurrent: false,
+          settingsPath: `${input.path}/.pi/settings.json`,
+        };
+      },
     },
     office: {
       get: async () => view,
