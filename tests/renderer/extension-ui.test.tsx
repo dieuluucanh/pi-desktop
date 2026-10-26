@@ -1,8 +1,9 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
-import { ExtensionDialog } from "../../src/renderer/src/extension-ui/ExtensionDialog";
+import type { ExtensionDialogRequest } from "../../src/shared/extension-ui";
+import { ExtensionDialogDock } from "../../src/renderer/src/extension-ui/ExtensionDialog";
 import { NotificationCenter } from "../../src/renderer/src/extension-ui/NotificationCenter";
 import { WidgetStrip } from "../../src/renderer/src/extension-ui/WidgetStrip";
 import { WorkingRow } from "../../src/renderer/src/extension-ui/WorkingRow";
@@ -60,25 +61,29 @@ beforeEach(() => {
 });
 
 describe("ExtensionDialog", () => {
+  function dialogFixture(overrides: Partial<ExtensionDialogRequest>): ExtensionDialogRequest {
+    return {
+      id: "ui-1",
+      method: "select",
+      title: "Pick a target",
+      options: [],
+      message: "",
+      placeholder: null,
+      prefill: null,
+      timeout: null,
+      tabId: TAB,
+      at: Date.now(),
+      ...overrides,
+    };
+  }
+
+  function renderDialog(overrides: Partial<ExtensionDialogRequest>) {
+    return render(<ExtensionDialogDock dialog={dialogFixture(overrides)} maxHeight={480} />);
+  }
+
   it("renders a select and answers with the chosen option", async () => {
     const request = stubRequest();
-    useAppStore.setState({
-      extensionDialogs: [
-        {
-          id: "ui-1",
-          method: "select",
-          title: "Pick a target",
-          options: ["Sheet1", "Sheet2"],
-          message: "",
-          placeholder: null,
-          prefill: null,
-          timeout: null,
-          tabId: TAB,
-          at: Date.now(),
-        },
-      ],
-    });
-    render(<ExtensionDialog />);
+    renderDialog({ id: "ui-1", options: ["Sheet1", "Sheet2"] });
     await userEvent.click(screen.getByRole("option", { name: "Sheet2" }));
     expect(request).toHaveBeenCalledWith({
       tabId: TAB,
@@ -87,27 +92,18 @@ describe("ExtensionDialog", () => {
     });
   });
 
+  it("renders inline, with no modal portal or dim backdrop", () => {
+    renderDialog({ title: "Pick a target", options: ["Sheet1"] });
+    expect(screen.getByRole("dialog", { name: "Pick a target" })).toBeInTheDocument();
+    expect(document.querySelector(".bg-black\\/55")).toBeNull();
+    expect(document.querySelector("[data-radix-portal]")).toBeNull();
+  });
+
   it("marks the selected option and moves it with the arrow keys", async () => {
     // Pi's select list marks the selected row and moves it with the arrow
     // keys, so the answer is visible before it is given (plan step 4).
     const request = stubRequest();
-    useAppStore.setState({
-      extensionDialogs: [
-        {
-          id: "ui-3",
-          method: "select",
-          title: "Pick a target",
-          options: ["Sheet1", "Sheet2", "Sheet3"],
-          message: "",
-          placeholder: null,
-          prefill: null,
-          timeout: null,
-          tabId: TAB,
-          at: Date.now(),
-        },
-      ],
-    });
-    render(<ExtensionDialog />);
+    renderDialog({ id: "ui-3", options: ["Sheet1", "Sheet2", "Sheet3"] });
 
     const options = screen.getAllByRole("option");
     expect(options[0]).toHaveAttribute("aria-selected", "true");
@@ -131,23 +127,12 @@ describe("ExtensionDialog", () => {
 
   it("cancels a confirm on Escape", async () => {
     const request = stubRequest();
-    useAppStore.setState({
-      extensionDialogs: [
-        {
-          id: "ui-2",
-          method: "confirm",
-          title: "Delete?",
-          options: [],
-          message: "This cannot be undone.",
-          placeholder: null,
-          prefill: null,
-          timeout: null,
-          tabId: TAB,
-          at: Date.now(),
-        },
-      ],
+    renderDialog({
+      id: "ui-2",
+      method: "confirm",
+      title: "Delete?",
+      message: "This cannot be undone.",
     });
-    render(<ExtensionDialog />);
     expect(screen.getByText("This cannot be undone.")).toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
     expect(request).toHaveBeenCalledWith({
@@ -159,23 +144,7 @@ describe("ExtensionDialog", () => {
 
   it("submits an input value", async () => {
     const request = stubRequest();
-    useAppStore.setState({
-      extensionDialogs: [
-        {
-          id: "ui-3",
-          method: "input",
-          title: "Name",
-          options: [],
-          message: "",
-          placeholder: "e.g. report",
-          prefill: null,
-          timeout: null,
-          tabId: TAB,
-          at: Date.now(),
-        },
-      ],
-    });
-    render(<ExtensionDialog />);
+    renderDialog({ id: "ui-3", method: "input", title: "Name", placeholder: "e.g. report" });
     await userEvent.type(screen.getByRole("textbox", { name: "Name" }), "report");
     await userEvent.click(screen.getByRole("button", { name: "Submit" }));
     expect(request).toHaveBeenCalledWith({
@@ -185,27 +154,44 @@ describe("ExtensionDialog", () => {
     });
   });
 
-  it("cancels when the extension's timeout expires", () => {
+  it("submits the multi-line editor on Enter and keeps Shift+Enter for a newline", () => {
+    const request = stubRequest();
+    renderDialog({ id: "ui-editor", method: "editor", title: "Notes", prefill: "first" });
+    const editor = screen.getByRole("textbox", { name: "Notes" });
+
+    fireEvent.keyDown(editor, { key: "Enter", shiftKey: true });
+    expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ method: "oi.respond" }));
+
+    fireEvent.change(editor, { target: { value: "first\nsecond" } });
+    fireEvent.keyDown(editor, { key: "Enter" });
+    expect(request).toHaveBeenCalledWith({
+      tabId: TAB,
+      method: "oi.respond",
+      params: { id: "ui-editor", value: "first\nsecond" },
+    });
+  });
+
+  it("keeps a tall dialog scrollable inside the session column", () => {
+    renderDialog({ options: Array.from({ length: 40 }, (_, index) => `option ${index}`) });
+    const dialog = screen.getByRole("dialog", { name: "Pick a target" });
+    expect(dialog).toHaveStyle({ maxHeight: "480px" });
+    expect(dialog.querySelector(".overflow-y-auto")).toBeTruthy();
+  });
+
+  it("enforces the extension's timeout in the store, even off-screen", () => {
     vi.useFakeTimers();
     try {
       const request = stubRequest();
-      useAppStore.setState({
-        extensionDialogs: [
-          {
+      act(() => {
+        useAppStore.getState().handleExtensionUiEvent(TAB, {
+          event: "oi.request",
+          payload: {
             id: "ui-4",
             method: "select",
-            title: "Pick",
-            options: ["a", "b"],
-            message: "",
-            placeholder: null,
-            prefill: null,
-            timeout: 1000,
-            tabId: TAB,
-            at: Date.now(),
+            params: { title: "Pick", options: ["a", "b"], timeout: 1000 },
           },
-        ],
+        });
       });
-      render(<ExtensionDialog />);
       act(() => {
         vi.advanceTimersByTime(1100);
       });
@@ -281,6 +267,26 @@ describe("WorkingRow", () => {
       <WorkingRow working={{ message: null, visible: null, frames: [], intervalMs: null }} />,
     );
     expect(screen.queryByTestId("extension-working-row")).toBeNull();
+  });
+
+  it("shows elapsed time and the Esc hint for a running session (plan step 8)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:10Z"));
+    render(
+      <WorkingRow
+        working={{ message: null, visible: null, frames: null, intervalMs: null }}
+        startedAt={Date.now() - 65_000}
+        showCancelHint
+      />,
+    );
+    expect(screen.getByText("1:05")).toBeInTheDocument();
+    expect(screen.getByText("Esc to cancel")).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(screen.getByText("1:07")).toBeInTheDocument();
+    vi.useRealTimers();
   });
 });
 
@@ -405,7 +411,7 @@ describe("Transcript extension props", () => {
     expect(screen.getByText("file contents")).toBeInTheDocument();
   });
 
-  it("keeps a tool card collapsed by default", () => {
+  it("shows a short preview while keeping the full card collapsed", () => {
     render(
       <ToolCard
         tool={{
@@ -419,6 +425,7 @@ describe("Transcript extension props", () => {
         }}
       />,
     );
-    expect(screen.queryByText("hidden output")).toBeNull();
+    expect(screen.getByText("hidden output")).toBeInTheDocument();
+    expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "false");
   });
 });

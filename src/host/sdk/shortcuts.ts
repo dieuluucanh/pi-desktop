@@ -33,9 +33,18 @@ function toSummary(key: string, shortcut: ExtensionShortcut): RunnerShortcut {
 }
 
 export function createSdkShortcutRunner(runner: SdkExtensionRunner): ShortcutRunner {
+  /**
+   * The bindings the last `getShortcuts` call resolved. The renderer lists
+   * shortcuts (with the user's effective bindings) and then invokes the chord it
+   * matched, so the invocation must resolve against the *same* table — an empty
+   * map here would silently miss a remapped shortcut (session-parity step 23).
+   */
+  let lastResolved: Record<string, unknown> = {};
+
   const entries = (
     resolved: Record<string, unknown>,
   ): Array<{ key: string; shortcut: ExtensionShortcut }> => {
+    lastResolved = resolved;
     const listed: Array<{ key: string; shortcut: ExtensionShortcut }> = [];
     for (const [key, shortcut] of runner.getShortcuts(
       resolved as Record<string, string | readonly string[]>,
@@ -56,8 +65,9 @@ export function createSdkShortcutRunner(runner: SdkExtensionRunner): ShortcutRun
     createContext: () => runner.createContext(),
     invokeShortcut: async (key, context) => {
       // The renderer sends back a key from `shortcuts.list`, so an exact match
-      // is the honest lookup — no fuzzy remapping of the user's intent.
-      const found = entries({}).find((entry) => entry.key === key);
+      // is the honest lookup — no fuzzy remapping of the user's intent. Resolve
+      // against the bindings that produced that list, not an empty table.
+      const found = entries(lastResolved).find((entry) => entry.key === key);
       if (!found) throw new Error(`no extension shortcut is bound to "${key}"`);
       await found.shortcut.handler(context as ExtensionContext);
     },

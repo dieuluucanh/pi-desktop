@@ -12,6 +12,13 @@
  * activation). Input is bytes, not chords, because Pi's components match raw
  * terminal sequences with pi-tui's `matchesKey`.
  *
+ * The slots are `custom` (a `ctx.ui.custom()` component), `footer` and `header`.
+ * There is deliberately no `editor` slot: the desktop always keeps its native
+ * composer, and an extension-installed TUI editor is recorded on the UI port for
+ * `getEditorComponent()` coordination but never mounted (see
+ * `src/host/sdk/extension-ui.ts`). A stale host's `editor` field is ignored by
+ * the sanitizer.
+ *
  * No SDK import: this file is consumed by the node and web TypeScript projects.
  */
 
@@ -19,7 +26,7 @@
 export const TUI_STATE_EVENT = "tui.state";
 
 /** Where a rendered component lives on the surface. */
-export const TUI_SLOTS = ["custom", "editor", "footer", "header"] as const;
+export const TUI_SLOTS = ["custom", "footer", "header"] as const;
 export type TuiSlot = (typeof TUI_SLOTS)[number];
 
 export function isTuiSlot(value: unknown): value is TuiSlot {
@@ -62,9 +69,12 @@ export interface TuiSurfaceSnapshot {
   /** The slot currently owning the keyboard. */
   focus: TuiSlot | null;
   custom: TuiFrame | null;
-  editor: TuiFrame | null;
   footer: TuiFrame | null;
   header: TuiFrame | null;
+  /** Component-factory widgets above the editor/dock (plan 2026-10-26, step 5). */
+  widgetsAbove: TuiFrame[];
+  /** Component-factory widgets below the editor/dock. */
+  widgetsBelow: TuiFrame[];
 }
 
 export const EMPTY_TUI_SURFACE: TuiSurfaceSnapshot = {
@@ -73,14 +83,16 @@ export const EMPTY_TUI_SURFACE: TuiSurfaceSnapshot = {
   bounds: null,
   focus: null,
   custom: null,
-  editor: null,
   footer: null,
   header: null,
+  widgetsAbove: [],
+  widgetsBelow: [],
 };
 
 /** Bounds for one frame (defensive caps; the host is trusted but the wire is not). */
 const MAX_FRAME_LINES = 1000;
 const MAX_LINE_CHARS = 4000;
+const MAX_WIDGET_FRAMES = 16;
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -137,10 +149,21 @@ export function sanitizeTuiSurfaceSnapshot(value: unknown): TuiSurfaceSnapshot {
     bounds: sanitizeTuiBounds(record.bounds),
     focus: isTuiSlot(focus) ? focus : null,
     custom: sanitizeTuiFrame(record.custom),
-    editor: sanitizeTuiFrame(record.editor),
     footer: sanitizeTuiFrame(record.footer),
     header: sanitizeTuiFrame(record.header),
+    widgetsAbove: sanitizeWidgetFrames(record.widgetsAbove),
+    widgetsBelow: sanitizeWidgetFrames(record.widgetsBelow),
   };
+}
+
+function sanitizeWidgetFrames(value: unknown): TuiFrame[] {
+  if (!Array.isArray(value)) return [];
+  const frames: TuiFrame[] = [];
+  for (const entry of value.slice(0, MAX_WIDGET_FRAMES)) {
+    const frame = sanitizeTuiFrame(entry);
+    if (frame) frames.push(frame);
+  }
+  return frames;
 }
 
 /** `tui.resize` params: the renderer's measured surface grid. */

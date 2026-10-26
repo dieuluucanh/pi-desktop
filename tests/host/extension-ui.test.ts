@@ -203,6 +203,51 @@ describe("extension UI port state", () => {
     port.setStatus("k", "v");
     expect(port.handlers()["oi.state"]!(undefined, {} as never)).toEqual(port.snapshot());
   });
+
+  it("resets session-scoped registrations but keeps app-owned state", () => {
+    const { port, states } = portHarness();
+    const factory = (() => ({ render: () => [] })) as never;
+    port.setStatus("k", "v");
+    port.setWidget("w", ["line"]);
+    port.setWorkingMessage("working");
+    port.setWorkingVisible(true);
+    port.setWorkingIndicator({ frames: ["."], intervalMs: 50 });
+    port.setHiddenThinkingLabel("…");
+    port.setTitle("title");
+    port.setToolsExpanded(true);
+    port.setFooter(factory);
+    port.setHeader(factory);
+    port.setEditorComponent(factory);
+    port.onTerminalInput(() => undefined);
+    port.addAutocompleteProvider(factory);
+    port.setEditorText("draft");
+
+    const before = states().length;
+    port.resetSessionUi();
+
+    expect(port.snapshot()).toMatchObject({
+      statuses: {},
+      widgets: [],
+      working: { message: null, visible: null, frames: null, intervalMs: null },
+      hiddenThinkingLabel: null,
+      title: null,
+      toolsExpanded: true,
+      autocompleteProviders: 0,
+    });
+    expect(port.getFooter()).toBeUndefined();
+    expect(port.getHeader()).toBeUndefined();
+    expect(port.getEditorComponent()).toBeUndefined();
+    expect(port.terminalInputHandlers()).toHaveLength(0);
+    expect(port.providerCount()).toBe(0);
+    // The renderer owns the draft mirror; a rebind must not erase it.
+    expect(port.getEditorText()).toBe("draft");
+    expect(states()).toHaveLength(before + 1);
+
+    // Idempotent: a second reset pushes the same empty state and changes nothing.
+    port.resetSessionUi();
+    expect(states()).toHaveLength(before + 2);
+    expect(port.getToolsExpanded()).toBe(true);
+  });
 });
 
 describe("extension UI port dialogs", () => {

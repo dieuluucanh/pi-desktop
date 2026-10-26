@@ -68,6 +68,8 @@ export interface TranscriptMessage {
   customPayload?: unknown;
   model?: string;
   stopReason?: string;
+  /** The SDK's error text for `stopReason: "error"` / "aborted". */
+  errorMessage?: string;
 }
 
 export interface TranscriptToolRun {
@@ -83,6 +85,8 @@ export interface TranscriptToolRun {
   result?: unknown;
   isError: boolean;
   done: boolean;
+  /** The run ended without a `tool_execution_end` (abort/settle). */
+  cancelled?: boolean;
   /** Bumped on every update, so a render request is keyed on the content. */
   version: number;
 }
@@ -105,6 +109,11 @@ export interface TranscriptQueue {
   followUp: string[];
 }
 
+export type TranscriptRunStatus =
+  | { kind: "compacting" }
+  | { kind: "retrying"; attempt: number; maxAttempts: number; until: number }
+  | { kind: "summarizing"; attempt: number; maxAttempts: number; until: number };
+
 export interface TranscriptState {
   items: TranscriptItem[];
   /** Item index by message id, for O(1) `message_end` replacement. */
@@ -117,6 +126,13 @@ export interface TranscriptState {
    */
   openMessageId: string | null;
   queue: TranscriptQueue;
+  /** Transient retry/compaction/summary status above the composer. */
+  runStatus: TranscriptRunStatus | null;
+  /**
+   * When the current turn started (`agent_start`), so the working row can show
+   * elapsed time. Cleared when the turn settles; never persisted.
+   */
+  runStartedAt: number | null;
   /** Latest provider usage reported by `message_update`. */
   usage: unknown;
   lastSeq: number;
@@ -131,6 +147,8 @@ export function createTranscriptState(): TranscriptState {
     toolIndex: {},
     openMessageId: null,
     queue: { steering: [], followUp: [] },
+    runStatus: null,
+    runStartedAt: null,
     usage: null,
     lastSeq: 0,
     hydrated: false,
@@ -209,6 +227,38 @@ export function isHiddenCustomMessage(message: unknown): boolean {
   return record.display === false;
 }
 
+/** True for the SDK's tool-result message pair; it is a card, not a chat row. */
+export function isToolResultMessage(message: unknown): boolean {
+  return asString(asRecord(message).role) === "toolResult";
+}
+
+/** Messages that must never become a transcript row (tool results pair to cards). */
+export function isHiddenSdkMessage(message: unknown): boolean {
+  const role = asString(asRecord(message).role);
+  return role === "system" || role === "toolResult" || isHiddenCustomMessage(message);
+}
+
+/** The card patch carried by a `toolResult` message. */
+export function toolResultPatch(message: unknown): {
+  toolCallId: string;
+  toolName: string;
+  resultText: string;
+  result: unknown;
+  isError: boolean;
+} | null {
+  const record = asRecord(message);
+  const toolCallId = asString(record.toolCallId);
+  if (toolCallId.length === 0) return null;
+  const content = record.content;
+  return {
+    toolCallId,
+    toolName: asString(record.toolName) || "tool",
+    resultText: textOfPartial({ content }),
+    result: { content, details: record.details },
+    isError: record.isError === true,
+  };
+}
+
 /**
  * A bare `custom` entry is transcript content only when the host found a
  * registered entry renderer for it (`entryRenderable`, plan step 2). Pi's
@@ -234,9 +284,18 @@ export function messageFromSdk(message: unknown, id: string = nextId("msg")): Tr
         ? "custom"
         : role === "bashExecution"
           ? "bashExecution"
-          : "assistant";
+          : role === "compactionSummary"
+            ? "compaction"
+            : role === "branchSummary"
+              ? "branchSummary"
+              : "assistant";
   const isCustom = mappedRole === "custom";
-  const text = role === "bashExecution" ? asString(record.output) : record.content;
+  const text =
+    role === "bashExecution"
+      ? asString(record.output)
+      : role === "compactionSummary" || role === "branchSummary"
+        ? asString(record.summary)
+        : record.content;
   return {
     id,
     role: mappedRole,
@@ -249,6 +308,7 @@ export function messageFromSdk(message: unknown, id: string = nextId("msg")): Tr
     ...(isCustom ? { customKind: "message" as const, customPayload: message } : {}),
     ...(typeof record.model === "string" ? { model: record.model } : {}),
     ...(typeof record.stopReason === "string" ? { stopReason: record.stopReason } : {}),
+    ...(typeof record.errorMessage === "string" ? { errorMessage: record.errorMessage } : {}),
   };
 }
 
@@ -318,6 +378,45 @@ function upsertTool(
     tool: { ...current.tool, ...patch, version: current.tool.version + 1 },
   };
   return withItems(state, items);
+}
+
+/** Appends streamed `!` output to the bash message identified by the frame id. */
+function applyBashDelta(state: TranscriptState, payload: Record<string, unknown>): TranscriptState {
+  const id = asString(payload.id);
+  const delta = asString(payload.delta);
+  if (id.length === 0 || delta.length === 0) return state;
+  const index = state.messageIndex[id];
+  if (index === undefined) return state;
+  const item = state.items[index];
+  if (!item || item.kind !== "message" || item.message.role !== "bashExecution") return state;
+  const blocks = [...item.message.blocks];
+  const first = blocks[0];
+  blocks[0] =
+    first?.kind === "text"
+      ? { kind: "text", text: first.text + delta }
+      : { kind: "text", text: delta };
+  const items = [...state.items];
+  items[index] = { kind: "message", id: item.id, message: { ...item.message, blocks } };
+  return { ...state, items };
+}
+
+/** Marks every still-running tool card as cancelled. */
+function sweepUnfinishedTools(state: TranscriptState): TranscriptState {
+  let changed = false;
+  const items = state.items.map((item) => {
+    if (item.kind !== "tool" || item.tool.done) return item;
+    changed = true;
+    return {
+      ...item,
+      tool: {
+        ...item.tool,
+        done: true,
+        cancelled: true,
+        version: item.tool.version + 1,
+      },
+    };
+  });
+  return changed ? { ...state, items } : state;
 }
 
 /** The assistant message currently being streamed, if any. */
@@ -456,6 +555,35 @@ function finishMessage(state: TranscriptState, message: unknown): TranscriptStat
   return { ...state, items, openMessageId: null };
 }
 
+/**
+ * Closes a `!` command by its own id (plan step 7). Unlike `finishMessage` it
+ * never touches `openMessageId`: a bash run can finish while an assistant
+ * message is still streaming, and clearing the open id there would leave the
+ * assistant's `message_end` unresolved.
+ */
+function finishBashMessage(state: TranscriptState, message: unknown): TranscriptState {
+  const id = asString(asRecord(message).id);
+  const index = id.length > 0 ? state.messageIndex[id] : undefined;
+  if (index === undefined) {
+    const fallback = id || nextId("bash");
+    return appendItem(state, {
+      kind: "message",
+      id: fallback,
+      message: messageFromSdk(message, fallback),
+    });
+  }
+  const item = state.items[index];
+  if (item?.kind !== "message") return state;
+  const authoritative = messageFromSdk(message, item.id);
+  const items = [...state.items];
+  items[index] = {
+    kind: "message",
+    id: item.id,
+    message: { ...item.message, ...authoritative, streaming: false },
+  };
+  return { ...state, items };
+}
+
 function appendNotice(
   state: TranscriptState,
   event: string,
@@ -474,10 +602,6 @@ const NOTICE_SEVERITY: Record<string, TranscriptNotice["severity"]> = {
   session_started: "info",
   session_replaced: "info",
   session_recovered: "info",
-  session_info_changed: "info",
-  agent_start: "info",
-  agent_end: "info",
-  agent_settled: "info",
   compaction_start: "info",
   "session.crashed": "warning",
   "session.timeout": "warning",
@@ -519,6 +643,31 @@ const REVIEW_NOTICE_TEXT: Record<ReviewDecision, string> = {
   dismissed: "Plan review dismissed",
 };
 
+/**
+ * The line terminal Pi adds after partial content for a stopped assistant turn
+ * (`assistant-message.js:129-155`). Pure so live and hydrated messages share it.
+ */
+export function stopReasonNote(
+  message: Pick<TranscriptMessage, "role" | "stopReason" | "errorMessage">,
+): { text: string; severity: "error" | "warning" } | null {
+  if (message.role !== "assistant") return null;
+  switch (message.stopReason) {
+    case "aborted": {
+      const text =
+        message.errorMessage && message.errorMessage !== "Request was aborted"
+          ? message.errorMessage
+          : "Operation aborted";
+      return { text, severity: "error" };
+    }
+    case "error":
+      return { text: `Error: ${message.errorMessage || "Unknown error"}`, severity: "error" };
+    case "length":
+      return { text: "Response was truncated before completion.", severity: "warning" };
+    default:
+      return null;
+  }
+}
+
 /** Folds one ordered batch of host events into the transcript. */
 export function reduceSessionEvents(
   state: TranscriptState,
@@ -531,7 +680,8 @@ export function reduceSessionEvents(
     switch (entry.event) {
       case "message_start": {
         // A `display: false` custom message is context, not transcript content.
-        if (isHiddenCustomMessage(payload.message)) break;
+        // Tool results and system messages are likewise never chat rows.
+        if (isHiddenSdkMessage(payload.message)) break;
         const raw = asRecord(payload.message);
         const id = asString(raw.id) || nextId("msg");
         next = appendItem(next, {
@@ -542,6 +692,10 @@ export function reduceSessionEvents(
             streaming: raw.role === "assistant",
           },
         });
+        // A `!` command may sit beside a streaming assistant message: it is
+        // opened and closed by its own id, so the next `message_end` of the
+        // assistant still resolves to the assistant (plan step 7).
+        if (raw.role === "bashExecution") break;
         next = { ...next, openMessageId: id };
         break;
       }
@@ -555,7 +709,46 @@ export function reduceSessionEvents(
         break;
 
       case "message_end":
+        // The SDK emits toolResult as a message pair after
+        // `tool_execution_end`; the card is authoritative. Patch it only when
+        // no execution event produced one, and never let it close the open
+        // assistant message.
+        if (isToolResultMessage(payload.message)) {
+          const patch = toolResultPatch(payload.message);
+          if (patch) {
+            next = upsertTool(next, patch.toolCallId, {
+              toolName: patch.toolName,
+              resultText: patch.resultText,
+              result: patch.result,
+              isError: patch.isError,
+              done: true,
+            });
+          }
+          break;
+        }
+        if (isHiddenSdkMessage(payload.message)) break;
+        if (asString(asRecord(payload.message).role) === "bashExecution") {
+          next = finishBashMessage(next, payload.message);
+          break;
+        }
         next = finishMessage(next, payload.message);
+        if (asString(asRecord(payload.message).stopReason) === "aborted") {
+          next = sweepUnfinishedTools(next);
+        }
+        break;
+
+      case "agent_start":
+        next = { ...next, runStartedAt: Date.now() };
+        break;
+
+      case "agent_end":
+        // A settled run with a tool that never produced `tool_execution_end`
+        // must not keep showing a spinner. Mark it cancelled; the card says so.
+        next = { ...sweepUnfinishedTools(next), runStartedAt: null };
+        break;
+
+      case "agent_settled":
+        next = { ...next, runStartedAt: null };
         break;
 
       case "tool_execution_start":
@@ -599,6 +792,10 @@ export function reduceSessionEvents(
         break;
       }
 
+      case "bash_execution_update":
+        next = applyBashDelta(next, payload);
+        break;
+
       case "queue_update":
         next = {
           ...next,
@@ -609,7 +806,44 @@ export function reduceSessionEvents(
         };
         break;
 
+      case "compaction_start":
+        next = { ...next, runStatus: { kind: "compacting" } };
+        break;
+
+      case "auto_retry_start":
+        next = {
+          ...next,
+          runStatus: {
+            kind: "retrying",
+            attempt: Number(payload.attempt ?? 0),
+            maxAttempts: Number(payload.maxAttempts ?? 0),
+            until: Date.now() + Number(payload.delayMs ?? 0),
+          },
+        };
+        break;
+
+      case "auto_retry_end":
+        next = { ...next, runStatus: null };
+        break;
+
+      case "summarization_retry_scheduled":
+        next = {
+          ...next,
+          runStatus: {
+            kind: "summarizing",
+            attempt: Number(payload.attempt ?? 0),
+            maxAttempts: Number(payload.maxAttempts ?? 0),
+            until: Date.now() + Number(payload.delayMs ?? 0),
+          },
+        };
+        break;
+
+      case "summarization_retry_finished":
+        next = { ...next, runStatus: null };
+        break;
+
       case "compaction_end": {
+        next = { ...next, runStatus: null };
         const result = asRecord(payload.result);
         if (payload.aborted === true) {
           next = appendNotice(next, "compaction_end", "warning", "Compaction was cancelled");
@@ -718,6 +952,25 @@ export function textOfPartial(result: unknown): string {
     .join("");
 }
 
+/** Image blocks of a tool result/partial payload, for the card's native body. */
+export function imagesOfPartial(result: unknown): Array<{ mimeType: string; data: string }> {
+  const content = asRecord(result).content;
+  if (!Array.isArray(content)) return [];
+  const images: Array<{ mimeType: string; data: string }> = [];
+  for (const raw of content) {
+    const block = asRecord(raw);
+    if (block.type !== "image") continue;
+    const source = asRecord(block.source);
+    const data = asString(block.data ?? source.data);
+    if (data.length === 0) continue;
+    images.push({
+      mimeType: asString(block.mimeType ?? source.mediaType ?? "image/png"),
+      data,
+    });
+  }
+  return images;
+}
+
 /**
  * Seeds the transcript from `messages.get` (resume/open). History is appended
  * before any live events, and `messageIndex` is rebuilt so `message_end` still
@@ -727,14 +980,45 @@ export function hydrateMessages(
   state: TranscriptState,
   messages: readonly unknown[],
 ): TranscriptState {
-  let next: TranscriptState = { ...state, hydrated: true };
+  let next: TranscriptState = { ...state, hydrated: true, runStartedAt: null };
+  const pendingCalls = new Map<string, { name: string; args: unknown }>();
   for (const message of messages) {
     // Reload must hide the same items the live stream hid; otherwise the
     // workflow extension's context-only messages reappear as bubbles.
     if (isHiddenCustomMessage(message)) continue;
     const record = asRecord(message);
+    const role = asString(record.role);
+    if (role === "system") continue;
+    if (role === "toolResult") {
+      const patch = toolResultPatch(message);
+      if (patch) {
+        const pending = pendingCalls.get(patch.toolCallId);
+        next = upsertTool(next, patch.toolCallId, {
+          ...(pending ? { args: pending.args } : {}),
+          toolName: pending?.name ?? patch.toolName,
+          resultText: patch.resultText,
+          result: patch.result,
+          isError: patch.isError,
+          done: true,
+        });
+        pendingCalls.delete(patch.toolCallId);
+      }
+      continue;
+    }
     const id = asString(record.id) || nextId("history");
     next = appendItem(next, { kind: "message", id, message: messageFromSdk(message, id) });
+    if (role === "assistant") {
+      for (const block of blocksFromContent(record.content)) {
+        if (block.kind !== "toolCall" || block.id.length === 0) continue;
+        let args: unknown;
+        try {
+          args = block.arguments.length > 0 ? JSON.parse(block.arguments) : undefined;
+        } catch {
+          args = block.arguments;
+        }
+        pendingCalls.set(block.id, { name: block.name, args });
+      }
+    }
   }
   return next;
 }

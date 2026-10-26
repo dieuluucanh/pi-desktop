@@ -1,12 +1,15 @@
 import { useMemo, useState } from "react";
 import { FolderOpen, Pencil, Play, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { Button } from "../ui/button";
+import { cn } from "../ui/cn";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { useAppStore } from "../state/app-store";
 import {
-  filterSessions,
   groupSessionsByProject,
+  listSessions,
   sessionDisplayTitle,
+  type SessionScope,
+  type SessionSort,
   type SessionSummary,
 } from "../../../shared/session-browser";
 
@@ -39,11 +42,37 @@ export function SessionBrowserDialog() {
   const create = useAppStore((state) => state.createSessionTab);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  // Scope/sort/toggles mirror terminal Pi's session selector (plan step 16).
+  const [scope, setScope] = useState<SessionScope>("all");
+  const [sort, setSort] = useState<SessionSort>("recent");
+  const [namedOnly, setNamedOnly] = useState(false);
+  const [showPath, setShowPath] = useState(false);
+  const activeCwd = useAppStore((state) => state.project?.path ?? null);
+  const tabs = useAppStore((state) => state.tabs);
 
-  const groups = useMemo(
-    () => groupSessionsByProject(filterSessions(sessions, query)),
-    [sessions, query],
+  const listing = useMemo(
+    () =>
+      listSessions(sessions, {
+        query,
+        scope,
+        cwd: activeCwd,
+        sort,
+        namedOnly,
+      }),
+    [sessions, query, scope, activeCwd, sort, namedOnly],
   );
+  const groups = useMemo(() => groupSessionsByProject(listing.sessions), [listing.sessions]);
+
+  /** Tabs that point at this file; deleting it closes them (the store does it). */
+  const openTabsFor = (sessionPath: string): string[] =>
+    tabs
+      .filter((tab) => tab.kind !== "web" && tab.sessionFile === sessionPath)
+      .map((tab) => tab.title);
+
+  const nextSort = (): void =>
+    setSort((current) =>
+      current === "recent" ? "threaded" : current === "threaded" ? "relevance" : "recent",
+    );
 
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? undefined : close())}>
@@ -91,14 +120,80 @@ export function SessionBrowserDialog() {
           </Button>
         </div>
 
+        <div className="flex flex-wrap items-center gap-1 px-4 pb-2 text-[11px]">
+          <div
+            className="flex rounded-sm border border-line p-0.5"
+            role="tablist"
+            aria-label="Scope"
+          >
+            {(["all", "current"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                role="tab"
+                aria-selected={scope === value}
+                className={cn(
+                  "rounded-xs px-2 py-0.5",
+                  scope === value ? "bg-accent/15 text-accent" : "text-ink-muted hover:text-ink",
+                )}
+                onClick={() => setScope(value)}
+              >
+                {value === "all" ? "All sessions" : "This project"}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="rounded-sm border border-line px-2 py-0.5 text-ink-muted hover:text-ink"
+            title="Cycle the sort order"
+            onClick={nextSort}
+            data-testid="session-sort"
+          >
+            sort: {sort}
+          </button>
+          <button
+            type="button"
+            aria-pressed={namedOnly}
+            className={cn(
+              "rounded-sm border border-line px-2 py-0.5",
+              namedOnly ? "bg-accent/15 text-accent" : "text-ink-muted hover:text-ink",
+            )}
+            onClick={() => setNamedOnly((value) => !value)}
+          >
+            named only
+          </button>
+          <button
+            type="button"
+            aria-pressed={showPath}
+            className={cn(
+              "rounded-sm border border-line px-2 py-0.5",
+              showPath ? "bg-accent/15 text-accent" : "text-ink-muted hover:text-ink",
+            )}
+            onClick={() => setShowPath((value) => !value)}
+          >
+            show path
+          </button>
+          <span className="ml-auto text-ink-faint">
+            <span className="font-mono">re:</span> regex ·{" "}
+            <span className="font-mono">"phrase"</span> · words = all must match
+          </span>
+        </div>
+
         <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4" data-testid="session-list">
           {error ? <div className="banner banner--error mb-2">{error}</div> : null}
+          {listing.error ? (
+            <div className="banner banner--error mb-2" role="alert">
+              Invalid regular expression: {listing.error}
+            </div>
+          ) : null}
           {!loaded ? <p className="py-6 text-center text-xs text-ink-muted">Loading…</p> : null}
-          {loaded && groups.length === 0 ? (
+          {loaded && (groups.length === 0 || listing.error) && !listing.error ? (
             <p className="py-6 text-center text-xs text-ink-muted">
               {query.length > 0
                 ? "No session matches that search."
-                : "No sessions yet — start one with Ctrl+N."}
+                : scope === "current"
+                  ? "No sessions in this project yet."
+                  : "No sessions yet — start one with Ctrl+N."}
             </p>
           ) : null}
 
@@ -141,6 +236,8 @@ export function SessionBrowserDialog() {
                       setRenamingPath(null);
                       void rename(session, name);
                     }}
+                    showPath={showPath}
+                    openTabs={openTabsFor(session.path)}
                     onResume={() => void resume(session)}
                     onAskDelete={() => setPendingDelete(session.path)}
                     onCancelDelete={() => setPendingDelete(null)}
@@ -161,6 +258,8 @@ export function SessionBrowserDialog() {
 
 function SessionRow({
   session,
+  showPath,
+  openTabs,
   renaming,
   pendingDelete,
   onStartRename,
@@ -172,6 +271,10 @@ function SessionRow({
   onDelete,
 }: {
   session: SessionSummary;
+  /** Show the full JSONL path under the row title instead of just the id. */
+  showPath: boolean;
+  /** Titles of open tabs that deleting this file will close. */
+  openTabs: readonly string[];
   renaming: boolean;
   pendingDelete: boolean;
   onStartRename: () => void;
@@ -213,13 +316,23 @@ function SessionRow({
         <div className="flex gap-2 text-[10px] text-ink-faint">
           <span>{new Date(session.modified).toLocaleString()}</span>
           <span>{session.messageCount} messages</span>
-          <span className="truncate font-mono">{session.id}</span>
+          {showPath ? (
+            <span className="truncate font-mono" title={session.path}>
+              {session.path}
+            </span>
+          ) : (
+            <span className="truncate font-mono">{session.id}</span>
+          )}
         </div>
       </div>
 
       {pendingDelete ? (
         <span className="flex items-center gap-1">
-          <span className="text-[10px] text-danger">Move to trash?</span>
+          <span className="text-[10px] text-danger" title={openTabs.join(", ")}>
+            {openTabs.length > 0
+              ? `Move to trash? Closes ${openTabs.length === 1 ? `"${openTabs[0]}"` : `${openTabs.length} open tabs`}.`
+              : "Move to trash?"}
+          </span>
           <Button size="sm" variant="ghost" onClick={onCancelDelete}>
             Cancel
           </Button>

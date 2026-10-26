@@ -1,18 +1,26 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { diffLines } from "diff";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
 import { Markdown } from "./Markdown";
+import { HighlightText } from "./Highlight";
+import { FindPatternContext } from "./find-context";
+import { TranscriptFindBar } from "./TranscriptFindBar";
+import { findInTranscript, stepMatchIndex } from "./transcript-search";
 import { ExtensionBlock } from "./ExtensionBlock";
 import { OfficeToolCard } from "./OfficeToolCard";
 import { isOfficeTool, officeToolSummary } from "./office-tool-card";
 import { useMarkdownTransform } from "./useMarkdownTransform";
 import { useAppStore } from "../state/app-store";
+import { matchesBinding } from "../shortcuts/dom-keys";
+import { resolveDesktopKeymap } from "../../../shared/desktop-keymap";
 import { isBlobRef } from "../../../shared/host-protocol";
 import type { OfficeDocumentPane } from "../../../shared/office-documents";
 import {
+  imagesOfPartial,
+  stopReasonNote,
   textOfPartial,
   type TranscriptBlock,
   type TranscriptItem,
@@ -82,7 +90,7 @@ export function ThinkingBlock({ text, label }: { text: string; label?: string })
     <details className="my-2 rounded-sm border border-line bg-sunken/60 px-3 py-2">
       <summary className="cursor-pointer text-xs text-ink-muted">{label ?? "Thinking"}</summary>
       <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-mono text-xs text-ink-muted">
-        {text}
+        <HighlightText text={text} />
       </pre>
     </details>
   );
@@ -158,6 +166,7 @@ export function ToolCard({
   };
   const officePanes = useAppStore((state) => state.officeDocuments?.panes ?? EMPTY_PANES);
   const diff = diffPropsFor(tool);
+  const resultImages = imagesOfPartial(tool.result ?? tool.partialResult);
 
   // A large tool result arrives as a BlobRef *in place* (host plan step 24): the
   // card keeps its identity and fetches the body only when it is opened.
@@ -186,6 +195,10 @@ export function ToolCard({
     ? (spilledText ?? (blob?.status === "error" ? `[unavailable: ${blob.error}]` : ""))
     : (tool.resultText ?? tool.partial ?? "");
   const summary = officeToolSummary(tool, officePanes) ?? toolSummary(tool);
+  const previewSource = (tool.resultText ?? tool.partial ?? "").trim();
+  const previewLines = previewSource.length > 0 ? previewSource.split("\n") : [];
+  const preview = previewLines.slice(0, 10).join("\n");
+  const moreLines = Math.max(0, previewLines.length - 10);
 
   // What a tool without an extension renderer shows: the app's native diff or
   // output card, which is also Pi's fallback when a renderer throws.
@@ -198,9 +211,17 @@ export function ToolCard({
         </p>
       ) : output ? (
         <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap font-mono text-xs text-ink-muted">
-          {output}
+          <HighlightText text={output} />
         </pre>
       ) : null}
+      {resultImages.map((image, index) => (
+        <img
+          key={`tool-image-${index}`}
+          alt="tool result"
+          className="mt-2 max-h-64 rounded-sm border border-line"
+          src={`data:${image.mimeType};base64,${image.data}`}
+        />
+      ))}
       {!diff && !output && !loadingSpilled ? (
         <p className="text-xs text-ink-faint">No output captured yet.</p>
       ) : null}
@@ -238,6 +259,7 @@ export function ToolCard({
 
   return (
     <div
+      data-testid="tool-card"
       className={cn(
         "rounded-sm border bg-raised/60",
         tool.isError ? "border-danger/60" : "border-line",
@@ -256,17 +278,35 @@ export function ToolCard({
           aria-hidden
           className={cn(
             "font-mono leading-none",
-            tool.isError ? "text-danger" : tool.done ? "text-ok" : "text-accent",
+            tool.cancelled
+              ? "text-ink-faint"
+              : tool.isError
+                ? "text-danger"
+                : tool.done
+                  ? "text-ok"
+                  : "text-accent",
           )}
         >
-          {tool.isError ? "✗" : tool.done ? "✓" : "●"}
+          {tool.cancelled ? "⊘" : tool.isError ? "✗" : tool.done ? "✓" : "●"}
         </span>
         <span className="font-medium text-ink">{tool.toolName}</span>
         {summary ? <span className="truncate text-ink-muted">{summary}</span> : null}
         <span className="ml-auto text-ink-faint">
-          {tool.done ? (open ? "▾" : "▸") : "running…"}
+          {tool.cancelled ? "cancelled" : tool.done ? (open ? "▾" : "▸") : "running…"}
         </span>
       </button>
+      {!open && !diff && preview ? (
+        <div className="border-t border-line px-3 py-2">
+          <pre className="max-h-40 overflow-hidden whitespace-pre-wrap font-mono text-[11px] text-ink-muted">
+            <HighlightText text={preview} />
+          </pre>
+          {moreLines > 0 ? (
+            <p className="mt-1 text-[11px] text-ink-faint">
+              {moreLines} more line{moreLines === 1 ? "" : "s"} — expand
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       {open ? <div className="border-t border-line px-3 py-2">{body}</div> : null}
     </div>
   );
@@ -287,10 +327,10 @@ function NoticeView({
     <div className="flex items-start gap-3 rounded-sm border border-line bg-surface px-3 py-2 text-xs">
       <Badge tone={tone}>{notice.severity}</Badge>
       <div className="flex-1">
-        <div>{notice.text}</div>
+        <div>{<HighlightText text={notice.text} />}</div>
         {notice.detail ? (
           <pre className="mt-1 whitespace-pre-wrap font-mono text-[11px] text-ink-faint">
-            {notice.detail}
+            <HighlightText text={notice.detail} />
           </pre>
         ) : null}
       </div>
@@ -333,27 +373,35 @@ function MessageActions({ text }: { text: string }) {
   );
 }
 
+function MessageTextBlock({
+  tabId,
+  text,
+  role,
+  streaming,
+}: {
+  tabId?: string;
+  text: string;
+  role: "user" | "assistant";
+  streaming: boolean;
+}) {
+  const transformed = useMarkdownTransform(tabId, text, role, streaming, true);
+  return <Markdown streaming={streaming}>{transformed}</Markdown>;
+}
+
 function MessageView({
   message,
   tabId,
   thinkingLabel,
   toolsExpanded,
+  toolCardIds,
 }: {
   message: TranscriptMessage;
   tabId?: string;
   thinkingLabel?: string | null;
   toolsExpanded?: boolean;
+  toolCardIds?: ReadonlySet<string>;
 }) {
   const text = textOf(message.blocks);
-  // Pi applies registered markdown transformers to user and assistant text only.
-  const transformable = message.role === "user" || message.role === "assistant";
-  const transformed = useMarkdownTransform(
-    tabId,
-    text,
-    message.role === "user" ? "user" : "assistant",
-    message.streaming,
-    transformable,
-  );
 
   if (message.role === "compaction" || message.role === "branchSummary") {
     return (
@@ -399,42 +447,85 @@ function MessageView({
   if (message.role === "bashExecution") {
     return (
       <pre className="overflow-x-auto rounded-sm border border-line bg-sunken p-2 font-mono text-xs">
-        {text}
+        <HighlightText text={text} />
       </pre>
     );
   }
 
-  const thinking = message.blocks.filter(
-    (block): block is { kind: "thinking"; text: string } => block.kind === "thinking",
-  );
+  const orderedBlocks: TranscriptBlock[] = [];
+  for (const block of message.blocks) {
+    const last = orderedBlocks[orderedBlocks.length - 1];
+    if (block.kind === "thinking" && last?.kind === "thinking") {
+      orderedBlocks[orderedBlocks.length - 1] = {
+        kind: "thinking",
+        text: `${last.text}\n\n${block.text}`,
+      };
+    } else {
+      orderedBlocks.push(block);
+    }
+  }
   const hasText = message.blocks.some((block) => block.kind === "text" && block.text.length > 0);
-  const images = message.blocks.filter((block) => block.kind === "image");
-  const calls = message.blocks.filter((block) => block.kind === "toolCall");
+  const stopNote = stopReasonNote(message);
 
   const body = (
     <>
-      {thinking.map((block, index) => (
-        <ThinkingBlock
-          key={`thinking-${index}`}
-          text={block.text}
-          {...(thinkingLabel ? { label: thinkingLabel } : {})}
-        />
-      ))}
-      {hasText ? <Markdown>{transformed}</Markdown> : null}
-      {images.map((block, index) => (
-        <img
-          key={`image-${index}`}
-          alt="attachment"
-          className="my-2 max-h-64 rounded-sm border border-line"
-          src={`data:${block.mimeType};base64,${block.data}`}
-        />
-      ))}
-      {calls.map((call, index) => (
-        <div key={`call-${index}`} className="my-1 text-xs text-ink-muted">
-          <Badge tone="accent">{call.name || "tool"}</Badge>{" "}
-          <span className="font-mono">{call.arguments}</span>
-        </div>
-      ))}
+      {orderedBlocks.map((block, index) => {
+        if (block.kind === "thinking") {
+          return (
+            <ThinkingBlock
+              key={`block-${index}`}
+              text={block.text}
+              {...(thinkingLabel ? { label: thinkingLabel } : {})}
+            />
+          );
+        }
+        if (block.kind === "text") {
+          if (block.text.length === 0) return null;
+          return (
+            <MessageTextBlock
+              key={`block-${index}`}
+              {...(tabId ? { tabId } : {})}
+              text={block.text}
+              role={message.role === "user" ? "user" : "assistant"}
+              streaming={message.streaming}
+            />
+          );
+        }
+        if (block.kind === "image") {
+          return (
+            <img
+              key={`block-${index}`}
+              alt="attachment"
+              className="my-2 max-h-64 rounded-sm border border-line"
+              src={`data:${block.mimeType};base64,${block.data}`}
+            />
+          );
+        }
+        // The tool card is authoritative; only show the inline fallback when
+        // no run card exists (history or an interrupted/custom tool).
+        if (toolCardIds?.has(block.id)) return null;
+        return (
+          <div
+            key={`block-${index}`}
+            data-testid="inline-tool-call"
+            className="my-1 text-xs text-ink-muted"
+          >
+            <Badge tone="accent">{block.name || "tool"}</Badge>{" "}
+            <span className="font-mono">{block.arguments}</span>
+          </div>
+        );
+      })}
+      {stopNote ? (
+        <p
+          role="status"
+          className={cn(
+            "mt-2 text-xs",
+            stopNote.severity === "error" ? "text-danger" : "text-warn",
+          )}
+        >
+          {stopNote.text}
+        </p>
+      ) : null}
       {message.streaming ? <span className="ml-0.5 animate-pulse text-accent">▍</span> : null}
       {!message.streaming && hasText ? <MessageActions text={text} /> : null}
     </>
@@ -464,6 +555,7 @@ function TranscriptItemView({
   running,
   thinkingLabel,
   toolsExpanded,
+  toolCardIds,
   onToggleToolsExpanded,
 }: {
   item: TranscriptItem;
@@ -472,6 +564,7 @@ function TranscriptItemView({
   running?: boolean;
   thinkingLabel?: string | null;
   toolsExpanded?: boolean;
+  toolCardIds?: ReadonlySet<string>;
   onToggleToolsExpanded?: () => void;
 }) {
   if (item.kind === "message")
@@ -481,6 +574,7 @@ function TranscriptItemView({
         {...(tabId ? { tabId } : {})}
         thinkingLabel={thinkingLabel ?? null}
         {...(toolsExpanded === undefined ? {} : { toolsExpanded })}
+        {...(toolCardIds ? { toolCardIds } : {})}
       />
     );
   if (item.kind === "tool")
@@ -556,6 +650,7 @@ export function Transcript({
   thinkingLabel,
   toolsExpanded,
   onToggleToolsExpanded,
+  followPaused = false,
 }: {
   items: readonly TranscriptItem[];
   /** The session tab, so tool/message renderers can run in its host (step 18). */
@@ -569,9 +664,23 @@ export function Transcript({
   toolsExpanded?: boolean | null;
   /** Flips the app's expand-all state (`app.tools.expand`). */
   onToggleToolsExpanded?: () => void;
+  /**
+   * Suspends auto-follow while an overlay owns the user's attention (a picker or
+   * dialog). Streaming continues; the viewport just stops chasing it.
+   */
+  followPaused?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  // The ref is the source of truth for the scroll effect (no re-render lag);
+  // the state only drives the "jump to latest" pill.
   const stickToBottom = useRef(true);
+  const [atBottom, setAtBottom] = useState(true);
+  const [hasNews, setHasNews] = useState(false);
+  const toolCardIds = useMemo(
+    () => new Set(items.flatMap((item) => (item.kind === "tool" ? [item.tool.toolCallId] : []))),
+    [items],
+  );
 
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -580,84 +689,280 @@ export function Transcript({
     overscan: 8,
   });
 
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    const node = scrollRef.current;
+    if (!node) return;
+    if (typeof node.scrollTo === "function") {
+      node.scrollTo({ top: node.scrollHeight, behavior });
+    } else {
+      node.scrollTop = node.scrollHeight;
+    }
+    stickToBottom.current = true;
+    setAtBottom(true);
+    setHasNews(false);
+  }, []);
+
+  /**
+   * A size signature of the last item's streamed text. Streaming deltas grow the
+   * content without adding an item, so the old item-count effect never fired
+   * (plan step 10); this covers the no-`ResizeObserver` path (jsdom, old hosts)
+   * deterministically.
+   */
+  const streamSize = useMemo(() => {
+    const last = items[items.length - 1];
+    if (!last) return 0;
+    if (last.kind === "message") {
+      return last.message.blocks.reduce(
+        (total, block) =>
+          total + (block.kind === "text" || block.kind === "thinking" ? block.text.length : 0),
+        0,
+      );
+    }
+    if (last.kind === "tool") {
+      return (last.tool.partial?.length ?? 0) + (last.tool.resultText?.length ?? 0);
+    }
+    return last.notice.text.length;
+  }, [items]);
+
   const lastLength = useRef(items.length);
   useEffect(() => {
     if (items.length === lastLength.current) return;
     lastLength.current = items.length;
-    if (stickToBottom.current && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (stickToBottom.current && !followPaused) scrollToBottom();
+  }, [items.length, followPaused, scrollToBottom]);
+
+  // Follow streamed growth while pinned. Scrolling up detaches; the pill is the
+  // only way back (terminal's fullscreen view behaves the same).
+  useEffect(() => {
+    if (!stickToBottom.current) {
+      // New content arrived while the user is reading above: offer the pill.
+      setHasNews(true);
+      return;
     }
-  }, [items.length]);
+    if (followPaused) return;
+    scrollToBottom();
+  }, [streamSize, followPaused, scrollToBottom]);
+
+  // Layout growth (an image decoding, a Mermaid block settling) does not change
+  // text length, so observe the content box where the platform supports it.
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content) return;
+    if (typeof ResizeObserver === "undefined") return;
+    let frame: number | null = null;
+    const observer = new ResizeObserver(() => {
+      if (!stickToBottom.current) {
+        setHasNews(true);
+        return;
+      }
+      if (followPaused || frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        scrollToBottom();
+      });
+    });
+    observer.observe(content);
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [followPaused, scrollToBottom]);
+
+  // `Ctrl+End` is terminal Pi's jump-to-bottom; it must never steal the chord
+  // from a native editor (where it means "end of document").
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!event.ctrlKey || event.key !== "End") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.("input, textarea, [contenteditable='true']")) return;
+      event.preventDefault();
+      scrollToBottom("smooth");
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [scrollToBottom]);
+
+  // ---- Transcript find (plan step 11) ----
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findRegex, setFindRegex] = useState(false);
+  const [findQuerySettled, setFindQuerySettled] = useState("");
+  const [activeMatch, setActiveMatch] = useState(-1);
+
+  // A per-keystroke search over a long transcript stalls typing; 150 ms still
+  // feels immediate (plan step 11's debounce).
+  useEffect(() => {
+    if (!findOpen) return;
+    const timer = setTimeout(() => setFindQuerySettled(findQuery), 150);
+    return () => clearTimeout(timer);
+  }, [findQuery, findOpen]);
+
+  const find = useMemo(
+    () => findInTranscript(items, findQuerySettled, { useRegex: findRegex }),
+    [items, findQuerySettled, findRegex],
+  );
+
+  useEffect(() => {
+    setActiveMatch(find.matches.length > 0 ? 0 : -1);
+  }, [find.matches.length, find.pattern]);
+
+  // `Ctrl+F` opens find (terminal's `tui.altScreen.search`), resolved from the
+  // desktop keymap so a remap in Settings is honoured (plan steps 22-23). A
+  // dialog keeps the chord so an extension surface can own it.
+  const findOverride = useAppStore((state) => state.prefs.desktopKeybindings?.["transcript.find"]);
+  const findKeys = useMemo(
+    () => resolveDesktopKeymap({ "transcript.find": findOverride })["transcript.find"],
+    [findOverride],
+  );
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (findKeys.length === 0) return;
+      if (!matchesBinding(event, findKeys)) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.('[role="dialog"]')) return;
+      event.preventDefault();
+      setFindOpen(true);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [findKeys]);
+
+  const activeItemId =
+    activeMatch >= 0 ? (find.matches[activeMatch]?.itemId ?? undefined) : undefined;
+  useEffect(() => {
+    if (!activeItemId) return;
+    const index = items.findIndex((item) => item.id === activeItemId);
+    if (index < 0) return;
+    // Virtualized rows have no DOM node when off screen, so the virtualizer owns
+    // the jump; the plain list scrolls the rendered row into view.
+    if (items.length > VIRTUALIZE_THRESHOLD) {
+      virtualizer.scrollToIndex(index, { align: "center" });
+      return;
+    }
+    const node = scrollRef.current?.querySelector(`[data-row-index="${index}"]`);
+    node?.scrollIntoView?.({ block: "center" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the match only
+  }, [activeItemId]);
+
+  const stepFind = (direction: 1 | -1): void => {
+    const next = stepMatchIndex(activeMatch, find.matches.length, direction);
+    if (next >= 0) setActiveMatch(next);
+  };
+
+  const closeFind = (): void => {
+    setFindOpen(false);
+    setFindQuery("");
+    setFindQuerySettled("");
+    setActiveMatch(-1);
+  };
+
+  const findBar = findOpen ? (
+    <TranscriptFindBar
+      query={findQuery}
+      onQueryChange={setFindQuery}
+      regex={findRegex}
+      onToggleRegex={() => setFindRegex((value) => !value)}
+      count={find.matches.length}
+      activeIndex={activeMatch}
+      error={find.error}
+      onNext={() => stepFind(1)}
+      onPrev={() => stepFind(-1)}
+      onClose={closeFind}
+    />
+  ) : null;
 
   if (items.length === 0 && empty) {
     return <TranscriptEmptyState {...empty} />;
   }
 
   const trackScroll = (element: HTMLDivElement): void => {
-    stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+    const bottom = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+    stickToBottom.current = bottom;
+    setAtBottom(bottom);
+    if (bottom) setHasNews(false);
   };
+
+  const pill =
+    !atBottom && items.length > 0 ? (
+      <button
+        type="button"
+        data-testid="jump-to-latest"
+        className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-line bg-surface px-3 py-1 text-xs shadow-sm hover:bg-raised"
+        onClick={() => scrollToBottom("smooth")}
+      >
+        {hasNews ? "New messages · jump to latest" : "Jump to latest"}
+      </button>
+    ) : null;
+
+  const row = (item: TranscriptItem) => (
+    <TranscriptItemView
+      item={item}
+      {...(tabId ? { tabId } : {})}
+      {...(onAbort ? { onAbort } : {})}
+      {...(running === undefined ? {} : { running })}
+      {...(thinkingLabel ? { thinkingLabel } : {})}
+      {...(toolsExpanded === null || toolsExpanded === undefined ? {} : { toolsExpanded })}
+      {...(toolCardIds.size > 0 ? { toolCardIds } : {})}
+      {...(onToggleToolsExpanded ? { onToggleToolsExpanded } : {})}
+    />
+  );
 
   if (items.length <= VIRTUALIZE_THRESHOLD) {
     return (
-      <div
-        ref={scrollRef}
-        className="h-full overflow-y-auto px-4 py-3"
-        onScroll={(event) => trackScroll(event.currentTarget)}
-        data-testid="transcript"
-      >
-        {items.map((item) => (
-          <TranscriptRow key={item.id}>
-            <TranscriptItemView
-              item={item}
-              {...(tabId ? { tabId } : {})}
-              {...(onAbort ? { onAbort } : {})}
-              {...(running === undefined ? {} : { running })}
-              {...(thinkingLabel ? { thinkingLabel } : {})}
-              {...(toolsExpanded === null || toolsExpanded === undefined ? {} : { toolsExpanded })}
-              {...(onToggleToolsExpanded ? { onToggleToolsExpanded } : {})}
-            />
-          </TranscriptRow>
-        ))}
-      </div>
+      <FindPatternContext.Provider value={findOpen ? find.pattern : null}>
+        <div className="relative h-full">
+          {findBar}
+          <div
+            ref={scrollRef}
+            className="h-full overflow-y-auto px-4 py-3"
+            onScroll={(event) => trackScroll(event.currentTarget)}
+            data-testid="transcript"
+          >
+            <div ref={contentRef}>
+              {items.map((item, index) => (
+                <div key={item.id} data-row-index={index} data-item-id={item.id}>
+                  <TranscriptRow>{row(item)}</TranscriptRow>
+                </div>
+              ))}
+            </div>
+          </div>
+          {pill}
+        </div>
+      </FindPatternContext.Provider>
     );
   }
 
   return (
-    <div
-      ref={scrollRef}
-      className="h-full overflow-y-auto px-4 py-3"
-      onScroll={(event) => trackScroll(event.currentTarget)}
-      data-testid="transcript"
-    >
-      <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
-        {virtualizer.getVirtualItems().map((row) => {
-          const item = items[row.index];
-          if (!item) return null;
-          return (
-            <div
-              key={item.id}
-              ref={virtualizer.measureElement}
-              data-index={row.index}
-              className="absolute left-0 top-0 w-full"
-              style={{ transform: `translateY(${row.start}px)` }}
-            >
-              <TranscriptRow>
-                <TranscriptItemView
-                  item={item}
-                  {...(tabId ? { tabId } : {})}
-                  {...(onAbort ? { onAbort } : {})}
-                  {...(running === undefined ? {} : { running })}
-                  {...(thinkingLabel ? { thinkingLabel } : {})}
-                  {...(toolsExpanded === null || toolsExpanded === undefined
-                    ? {}
-                    : { toolsExpanded })}
-                  {...(onToggleToolsExpanded ? { onToggleToolsExpanded } : {})}
-                />
-              </TranscriptRow>
-            </div>
-          );
-        })}
+    <FindPatternContext.Provider value={findOpen ? find.pattern : null}>
+      <div className="relative h-full">
+        {findBar}
+        <div
+          ref={scrollRef}
+          className="h-full overflow-y-auto px-4 py-3"
+          onScroll={(event) => trackScroll(event.currentTarget)}
+          data-testid="transcript"
+        >
+          <div ref={contentRef} className="relative" style={{ height: virtualizer.getTotalSize() }}>
+            {virtualizer.getVirtualItems().map((virtualRow) => {
+              const item = items[virtualRow.index];
+              if (!item) return null;
+              return (
+                <div
+                  key={item.id}
+                  ref={virtualizer.measureElement}
+                  data-index={virtualRow.index}
+                  data-item-id={item.id}
+                  className="absolute left-0 top-0 w-full"
+                  style={{ transform: `translateY(${virtualRow.start}px)` }}
+                >
+                  <TranscriptRow>{row(item)}</TranscriptRow>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        {pill}
       </div>
-    </div>
+    </FindPatternContext.Provider>
   );
 }

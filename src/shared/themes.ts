@@ -55,32 +55,32 @@ export type ThemeSwatchKey = (typeof THEME_SWATCH_KEYS)[number];
 
 /**
  * Built-in swatches, resolved from the SDK's own theme JSON (`vars` + `export`
- * sections) at `@earendil-works/pi-coding-agent@0.85.1`. `tests/shared/themes`
+ * sections) at `@earendil-works/pi-coding-agent@1.4.0`. `tests/shared/themes`
  * re-resolves the SDK files and asserts equality, so an upstream palette change
  * turns into a failing test instead of a stale preview.
  */
 export const BUILTIN_THEME_SWATCHES: Record<string, Record<ThemeSwatchKey, string>> = {
   dark: {
-    accent: "#8abeb7",
-    text: "#d4d4d4",
-    muted: "#808080",
-    dim: "#666666",
-    success: "#b5bd68",
-    error: "#cc6666",
-    warning: "#ffff00",
-    canvas: "#18181e",
-    surface: "#1e1e24",
+    accent: "#a798d7",
+    text: "#dee0e1",
+    muted: "#9da5a9",
+    dim: "#7e888e",
+    success: "#68b78d",
+    error: "#ea7f81",
+    warning: "#cd9a22",
+    canvas: "#21252c",
+    surface: "#282c34",
   },
   light: {
-    accent: "#5a8080",
-    text: "#1f2328",
-    muted: "#6c6c6c",
-    dim: "#767676",
-    success: "#588458",
-    error: "#aa5555",
-    warning: "#9a7326",
-    canvas: "#f8f8f8",
-    surface: "#ffffff",
+    accent: "#7459b4",
+    text: "#3b3f41",
+    muted: "#677176",
+    dim: "#879095",
+    success: "#337e58",
+    error: "#c8253d",
+    warning: "#8f6802",
+    canvas: "#efeeee",
+    surface: "#f7f6f6",
   },
 };
 
@@ -170,6 +170,7 @@ export function parseThemeDocument(text: string): ParsedThemeDocument {
     throw new ThemeDocumentError('theme file must declare a non-empty "name"');
   }
   const colors = asRecord(document.colors);
+  const exported = asRecord(document.export);
   const missing = REQUIRED_THEME_COLORS.filter((key) => colors[key] === undefined);
   if (missing.length > 0) {
     throw new ThemeDocumentError(`theme "${name}" is missing colors: ${missing.join(", ")}`);
@@ -191,6 +192,16 @@ export function parseThemeDocument(text: string): ParsedThemeDocument {
   const colorEntries: Record<string, ThemeColorValue> = {};
   for (const [key, value] of Object.entries(colors)) {
     if (typeof value === "string" || typeof value === "number") colorEntries[key] = value;
+  }
+  // Pi 1.4 moved the chrome-only colours (`pageBg`, `cardBg`, `infoBg`) into an
+  // `export` object. Merge them so the preview resolver sees them.
+  for (const [key, value] of Object.entries(exported)) {
+    if (
+      colorEntries[key] === undefined &&
+      (typeof value === "string" || typeof value === "number")
+    ) {
+      colorEntries[key] = value;
+    }
   }
   return { name: name.trim(), vars, colors: colorEntries };
 }
@@ -275,12 +286,24 @@ export function themeVariantFromText(textHex: string | null): "dark" | "light" {
  * Resolves the app swatch map from a parsed document: named colours go through
  * `vars`, `canvas`/`surface` fall back to the text-luminance variant defaults.
  */
+export type ThemeColorResolver = (
+  value: ThemeColorValue,
+  vars: Record<string, string>,
+) => string | null;
+
+/**
+ * Resolves the app swatch map from a parsed document: named colours go through
+ * `vars`, `canvas`/`surface` fall back to the text-luminance variant defaults.
+ * The optional resolver lets the host handle Pi's `okhsl(...)`/`oklch(...)`
+ * values without pulling the SDK into the renderer.
+ */
 export function resolveThemeSwatches(
   document: ParsedThemeDocument,
+  resolveColor: ThemeColorResolver = resolveThemeColor,
 ): Record<ThemeSwatchKey, string> {
   const pick = (key: string): string | null => {
     const value = document.colors[key];
-    return value === undefined ? null : resolveThemeColor(value, document.vars);
+    return value === undefined ? null : resolveColor(value, document.vars);
   };
   const text = pick("text");
   const variant = themeVariantFromText(text);

@@ -18,6 +18,12 @@ export interface AppMenuDeps {
   isMac: boolean;
   onCommand: (command: MenuCommand) => void;
   onOpenExternal: (url: string) => void;
+  /**
+   * Accelerators resolved from the desktop keymap (session-parity plan step 23).
+   * A `null` removes the accelerator for that command; a missing key keeps the
+   * default. The menu is rebuilt when the prefs change.
+   */
+  accelerators?: Partial<Record<MenuCommand, string | null>>;
 }
 
 export const DOCS_URL = "https://github.com/earendil-works/pi";
@@ -73,15 +79,20 @@ const HELP_ITEMS: readonly ItemSpec[] = [
 function toItems(
   specs: readonly ItemSpec[],
   onCommand: (command: MenuCommand) => void,
+  accelerators: Partial<Record<MenuCommand, string | null>> = {},
 ): MenuItemConstructorOptions[] {
-  return specs.map((spec) => ({
-    id: spec.command,
-    label: spec.label,
-    ...(spec.accelerator ? { accelerator: spec.accelerator } : {}),
-    click: () => {
-      onCommand(spec.command);
-    },
-  }));
+  return specs.map((spec) => {
+    const override = accelerators[spec.command];
+    const accelerator = override === null ? undefined : (override ?? spec.accelerator);
+    return {
+      id: spec.command,
+      label: spec.label,
+      ...(accelerator ? { accelerator } : {}),
+      click: () => {
+        onCommand(spec.command);
+      },
+    };
+  });
 }
 
 /**
@@ -89,7 +100,7 @@ function toItems(
  * contract the renderer's keyboard handling mirrors.
  */
 export function menuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
-  const { appName, isMac, onCommand, onOpenExternal } = deps;
+  const { appName, isMac, onCommand, onOpenExternal, accelerators = {} } = deps;
 
   const template: MenuItemConstructorOptions[] = [];
 
@@ -113,7 +124,7 @@ export function menuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
   template.push({
     label: "File",
     submenu: [
-      ...toItems(FILE_ITEMS, onCommand),
+      ...toItems(FILE_ITEMS, onCommand, accelerators),
       { type: "separator" },
       isMac ? { role: "close" } : { role: "quit" },
     ],
@@ -135,9 +146,9 @@ export function menuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
   template.push({
     label: "View",
     submenu: [
-      ...toItems(VIEW_ITEMS, onCommand),
+      ...toItems(VIEW_ITEMS, onCommand, accelerators),
       { type: "separator" },
-      ...toItems(SESSION_ITEMS, onCommand),
+      ...toItems(SESSION_ITEMS, onCommand, accelerators),
       { type: "separator" },
       { role: "reload" },
       { role: "toggleDevTools" },

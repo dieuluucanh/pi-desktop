@@ -149,6 +149,30 @@ describe("extension dialogs", () => {
 });
 
 describe("notifications, theme and shutdown", () => {
+  it("purges a closed tab's queued dialogs and their timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const request = stubRequest(async () => ({ ok: true }));
+      useAppStore.getState().handleExtensionUiEvent(TAB, {
+        event: "oi.request",
+        payload: {
+          id: "ui-close",
+          method: "select",
+          params: { title: "Pick", options: ["a"], timeout: 1000 },
+        },
+      });
+      expect(useAppStore.getState().extensionDialogs).toHaveLength(1);
+
+      await useAppStore.getState().closeTab(TAB);
+      expect(useAppStore.getState().extensionDialogs).toHaveLength(0);
+
+      vi.advanceTimersByTime(1100);
+      expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ method: "oi.respond" }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("appends notifications to the history", () => {
     useAppStore.getState().handleExtensionUiEvent(TAB, {
       event: "oi.notify",

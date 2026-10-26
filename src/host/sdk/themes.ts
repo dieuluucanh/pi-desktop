@@ -15,7 +15,8 @@
 
 import { join } from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import { parseThemeDocument } from "../../shared/themes";
+import { colorToRgb, parseColor } from "@earendil-works/pi-tui";
+import { parseThemeDocument, type ThemeColorResolver } from "../../shared/themes";
 import type { ModelsFileIo } from "../custom-providers";
 import type { FileListingIo } from "../file-listing";
 import type { LoadedTheme, ThemePort } from "../themes";
@@ -43,6 +44,28 @@ function asRecord(value: unknown): Record<string, unknown> {
     ? (value as Record<string, unknown>)
     : {};
 }
+
+/**
+ * Resolves Pi 1.4 theme values (`#rgb`, palette index, `okhsl(...)`, `oklch(...)`)
+ * to a lowercase hex swatch. The renderer never imports pi-tui; the host does
+ * this once when it builds the theme catalogue.
+ */
+export const resolveSdkThemeColor: ThemeColorResolver = (value, vars) => {
+  const candidate =
+    typeof value === "number"
+      ? value
+      : (() => {
+          const raw = value.trim();
+          const viaVars = vars[raw];
+          return typeof viaVars === "string" && viaVars.trim().length > 0 ? viaVars.trim() : raw;
+        })();
+  try {
+    const { r, g, b } = colorToRgb(parseColor(candidate));
+    return `#${[r, g, b].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+  } catch {
+    return null;
+  }
+};
 
 function stem(path: string): string {
   const base = path.replace(/\\/g, "/").split("/").pop() ?? path;
@@ -75,6 +98,7 @@ export function createSdkThemePort(options: SdkThemePortOptions): ThemePort {
   const readFile = (path: string): Promise<string | null> => options.io.read(path);
 
   return {
+    resolveColor: resolveSdkThemeColor,
     async listLoaded(): Promise<LoadedTheme[]> {
       const found = new Map<string, LoadedTheme>();
       // Pi's own loader first: name, path and scope straight from the source.

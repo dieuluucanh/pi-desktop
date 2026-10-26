@@ -21,10 +21,16 @@ skills, themes and settings are managed through a UI, using the **same
 
 - **Projects and sessions** — open a folder, manage recents and trust, and run
   parallel sessions in tabs, each in its own Pi host process.
-- **Chat** — streaming text, thinking, tool cards with diffs, steering and
-  follow-up while streaming, `Esc` to stop, compaction, usage and cost.
+- **Chat** — streaming text that follows the cursor while pinned (scroll up for
+  "Jump to latest"), thinking, one card per tool call with previews, diffs and
+  result images, steering/follow-up with pending rows (`Alt+Up` restores them),
+  `Esc` to stop, retry/compaction status with cancel, `!`/`!!` shell commands,
+  transcript find (`Ctrl+F`), paste markers, `Ctrl+G` expanded editor, Mermaid
+  and LaTeX, usage and cost.
 - **Context and commands** — `/` commands (app, extension, prompt, skill), `@`
-  files, image paste/drop, `#` Office document mentions.
+  files, image paste/drop, `#` Office document mentions, plus `/session`,
+  `/copy`, `/import`, `/export jsonl`, `/share`, `/bug`, `/changelog`,
+  `/hotkeys` and `/quit`.
 - **Providers and models** — OAuth subscriptions, write-only API keys, custom
   gateways, model/thinking pickers, the model scope (shared with Ctrl+Alt cycling
   and extension pickers) and per-project defaults.
@@ -34,6 +40,9 @@ skills, themes and settings are managed through a UI, using the **same
   surface for `ctx.ui.custom()`).
 - **Settings** — every key in Pi’s `docs/settings.md`, global and per project,
   with a raw JSON editor, diff, backups and external-edit detection.
+- **Keybindings** — Pi’s `keybindings.json` (including extension shortcuts) plus
+  a desktop-only registry with click-to-capture chords, menu accelerators and
+  scope-aware conflict warnings.
 - **Optional web tabs** — Plannotator and other localhost UIs open in isolated
   in-app tabs.
 - **Recovery and safety** — safe mode, crash recovery, a redacted diagnostics

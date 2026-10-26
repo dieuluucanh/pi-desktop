@@ -192,6 +192,7 @@ describe("session browser", () => {
       messageCount: 0,
       firstMessage: "",
       allMessagesText: "",
+      parentSessionPath: null,
     };
     const ok = await useAppStore.getState().deleteSession(session);
 

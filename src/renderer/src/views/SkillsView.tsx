@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useAppStore } from "../state/app-store";
 import { KeybindingsSection } from "../keybindings/KeybindingsSection";
+import { DesktopKeymapSection } from "../keybindings/DesktopKeymapSection";
 import { ThemesSection } from "../themes/ThemesSection";
 import { SkillsSection } from "../skills/SkillsSection";
 import { Badge } from "../ui/badge";
@@ -46,6 +47,7 @@ export function SkillsView() {
       <SkillsSection />
       <ThemesSection />
       <KeybindingsSection />
+      <DesktopKeymapSection />
 
       <section className="card flex flex-col gap-2" data-testid="extension-shortcuts">
         <div>

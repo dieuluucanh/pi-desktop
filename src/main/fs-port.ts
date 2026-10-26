@@ -14,6 +14,8 @@ export type ExistingPathKind = "file" | "directory";
 export interface FsPort {
   readTextFile(target: string): Promise<string | null>;
   writeTextFile(target: string, contents: string): Promise<void>;
+  /** Binary write (bug-report zips); the text port cannot carry arbitrary bytes. */
+  writeBinaryFile(target: string, contents: Uint8Array): Promise<void>;
   copyFile(from: string, to: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
   /** Removes a file or directory. Returns true when something was removed. */
@@ -36,6 +38,10 @@ export function createNodeFsPort(): FsPort {
     async writeTextFile(target, contents) {
       await mkdir(path.dirname(target), { recursive: true });
       await writeFile(target, contents, "utf8");
+    },
+    async writeBinaryFile(target, contents) {
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, contents);
     },
     async copyFile(from, to) {
       await mkdir(path.dirname(to), { recursive: true });
@@ -79,6 +85,8 @@ export function createNodeFsPort(): FsPort {
 
 export interface MemoryFsPort extends FsPort {
   files: Map<string, string>;
+  /** Binary files kept separate so `readTextFile` never invents text for a zip. */
+  binary: Map<string, Uint8Array>;
   dirs: Set<string>;
 }
 
@@ -103,6 +111,7 @@ export function createMemoryFsPort(initial?: {
   dirs?: readonly string[];
 }): MemoryFsPort {
   const files = new Map<string, string>();
+  const binary = new Map<string, Uint8Array>();
   const dirs = new Set<string>();
 
   const ensureDir = (target: string): void => {
@@ -118,12 +127,17 @@ export function createMemoryFsPort(initial?: {
 
   return {
     files,
+    binary,
     dirs,
     async readTextFile(target) {
       return files.get(key(target)) ?? null;
     },
     async writeTextFile(target, contents) {
       files.set(key(target), contents);
+      ensureDir(path.dirname(target));
+    },
+    async writeBinaryFile(target, contents) {
+      binary.set(key(target), contents);
       ensureDir(path.dirname(target));
     },
     async copyFile(from, to) {

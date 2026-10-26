@@ -2,90 +2,104 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { useAppStore } from "../state/app-store";
 import type { ExtensionDialogRequest } from "../../../shared/extension-ui";
 
 /**
- * Extension dialogs (plan step 16).
+ * Extension dialogs (plan step 16; inline dock 2026-10-26).
  *
- * One extension call (`ctx.ui.select/confirm/input/editor`) blocks until the app
- * answers, so this renders the oldest queued dialog for the active tab and
- * answers it through `oi.respond`. Keyboard-first: Escape cancels, Enter submits,
- * the first option is focused, and an extension-provided `timeout` shows a live
- * countdown that cancels when it reaches zero.
+ * In terminal Pi `ctx.ui.select/confirm/input/editor` are **non-overlay**
+ * extension dialogs: they replace the editor dock, so the chat stays visible
+ * and scrollable. The desktop used to render them as a Radix modal with a dim
+ * backdrop; this dock is the Pi-shaped version. It replaces the composer in the
+ * session column and owns the keyboard until the extension is answered.
+ *
+ * Esc cancels, Enter submits (Shift+Enter is a newline in the multi-line
+ * editor), the first option/control is focused, and an extension-provided
+ * `timeout` shows a live countdown. The timeout itself is enforced by the store
+ * (`answerExtensionDialog`), so it still fires while its tab is in the
+ * background.
  */
-export function ExtensionDialog() {
-  const dialog = useAppStore((state) => state.extensionDialogs[0] ?? null);
-  const answer = useAppStore((state) => state.answerExtensionDialog);
 
-  const cancel = (request: ExtensionDialogRequest): void => {
-    void answer(request, { cancelled: true });
+export interface ExtensionDialogDockProps {
+  dialog: ExtensionDialogRequest;
+  /** The session viewport's height in pixels. */
+  maxHeight: number;
+  /** Bumped when the session view reclaims the keyboard for this dock. */
+  focusToken?: number;
+}
+
+export function ExtensionDialogDock({
+  dialog,
+  maxHeight,
+  focusToken = 0,
+}: ExtensionDialogDockProps) {
+  const answer = useAppStore((state) => state.answerExtensionDialog);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const titleId = `extension-dialog-title-${dialog.id}`;
+
+  const cancel = (): void => {
+    void answer(dialog, { cancelled: true });
   };
 
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    if (root.contains(document.activeElement)) return;
+    const target = root.querySelector<HTMLElement>("[data-autofocus]");
+    (target ?? root).focus();
+  }, [dialog.id, focusToken]);
+
   return (
-    <Dialog
-      open={dialog !== null}
-      onOpenChange={(open) => {
-        if (!open && dialog) cancel(dialog);
+    <div
+      ref={rootRef}
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby={titleId}
+      tabIndex={-1}
+      data-extension-dialog={dialog.id}
+      className="flex min-h-0 shrink flex-col overflow-hidden border-t border-accent bg-surface text-ink outline-none"
+      style={{ maxHeight }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && !event.defaultPrevented) {
+          event.preventDefault();
+          cancel();
+        }
       }}
     >
-      {dialog ? (
-        <DialogContent aria-label={`Extension dialog: ${dialog.title}`}>
-          <DialogTitle>{dialog.title || "Extension"}</DialogTitle>
-          {dialog.method === "confirm" && dialog.message ? (
-            <DialogDescription>{dialog.message}</DialogDescription>
-          ) : null}
-          {dialog.timeout ? (
-            <DialogCountdown
-              key={`countdown-${dialog.id}`}
-              dialog={dialog}
-              onExpire={() => cancel(dialog)}
-            />
-          ) : null}
-          <DialogBody
-            key={`body-${dialog.id}`}
-            dialog={dialog}
-            onAnswer={answer}
-            onCancel={() => cancel(dialog)}
-          />
-        </DialogContent>
+      <div className="flex shrink-0 items-start gap-2 px-4 pt-3">
+        <h2 id={titleId} className="min-w-0 flex-1 text-sm font-semibold">
+          {dialog.title || "Extension"}
+        </h2>
+        {dialog.timeout ? <DialogCountdown key={`countdown-${dialog.id}`} dialog={dialog} /> : null}
+      </div>
+      {dialog.method === "confirm" && dialog.message ? (
+        <p className="px-4 pb-2 text-xs text-ink-muted">{dialog.message}</p>
       ) : null}
-    </Dialog>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <DialogBody key={`body-${dialog.id}`} dialog={dialog} onAnswer={answer} onCancel={cancel} />
+      </div>
+    </div>
   );
 }
 
-function DialogCountdown({
-  dialog,
-  onExpire,
-}: {
-  dialog: ExtensionDialogRequest;
-  onExpire: () => void;
-}) {
+function DialogCountdown({ dialog }: { dialog: ExtensionDialogRequest }) {
   const deadline = useMemo(() => dialog.at + (dialog.timeout ?? 0), [dialog.at, dialog.timeout]);
   const [remaining, setRemaining] = useState(() => Math.max(0, deadline - Date.now()));
-  const expired = useRef(false);
 
   useEffect(() => {
-    expired.current = false;
-    const timer = setInterval(() => {
-      const next = Math.max(0, deadline - Date.now());
-      setRemaining(next);
-      if (next === 0 && !expired.current) {
-        expired.current = true;
-        clearInterval(timer);
-        onExpire();
-      }
-    }, 250);
+    const tick = (): void => {
+      setRemaining(Math.max(0, deadline - Date.now()));
+    };
+    tick();
+    const timer = setInterval(tick, 250);
     return () => clearInterval(timer);
-  }, [deadline, onExpire]);
+  }, [deadline]);
 
   return (
-    <div className="px-4 pb-2">
-      <Badge tone={remaining <= 5000 ? "warn" : "neutral"}>
-        auto-dismiss in {Math.ceil(remaining / 1000)}s
-      </Badge>
-    </div>
+    <Badge tone={remaining <= 5000 ? "warn" : "neutral"}>
+      auto-dismiss in {Math.ceil(remaining / 1000)}s
+    </Badge>
   );
 }
 
@@ -119,7 +133,7 @@ function DialogBody({
         <Button type="button" variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit" variant="primary" autoFocus>
+        <Button type="submit" variant="primary" autoFocus data-autofocus="">
           Confirm
         </Button>
       </form>
@@ -139,8 +153,18 @@ function DialogBody({
         <textarea
           aria-label={dialog.title || "Extension input"}
           autoFocus
+          data-autofocus=""
           value={text}
           onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            // Pi's ExtensionEditorComponent submits on Enter and inserts a
+            // newline on Shift+Enter, like the main editor.
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              onAnswer(dialog, { value: text });
+            }
+          }}
           rows={10}
           className="w-full resize-y rounded-sm border border-line bg-raised px-2 py-1 font-mono text-xs text-ink outline-none"
         />
@@ -148,12 +172,18 @@ function DialogBody({
         <input
           aria-label={dialog.title || "Extension input"}
           autoFocus
+          data-autofocus=""
           value={text}
           placeholder={dialog.placeholder ?? ""}
           onChange={(event) => setText(event.target.value)}
           className="w-full rounded-sm border border-line bg-raised px-2 py-1 text-sm text-ink outline-none"
         />
       )}
+      {multiline ? (
+        <div className="text-[11px] text-ink-faint">
+          Enter submits · Shift+Enter newline · Esc cancels
+        </div>
+      ) : null}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="ghost" onClick={onCancel}>
           Cancel
@@ -167,14 +197,9 @@ function DialogBody({
 }
 
 /**
- * The select dialog (plan step 4).
- *
- * Pi's own select list marks the selected row with a `→ ` prefix in the accent
+ * The select list marks the selected row with a `→ ` prefix in the accent
  * colour and moves the selection with the arrow keys, so the answer is always
- * visible before it is given. The app follows that model: the list is a
- * listbox, the selected row is marked, `↑`/`↓` move the selection (wrapping),
- * `Enter` answers with the selected option and `Esc` cancels (the dialog
- * handles that). A click still answers immediately.
+ * visible before it is given. A click still answers immediately.
  */
 function SelectOptions({
   dialog,
@@ -239,6 +264,7 @@ function SelectOptions({
             role="option"
             aria-selected={isSelected}
             autoFocus={index === 0}
+            data-autofocus={index === 0 ? "" : undefined}
             ref={(node: HTMLButtonElement | null) => {
               rows.current[index] = node;
             }}

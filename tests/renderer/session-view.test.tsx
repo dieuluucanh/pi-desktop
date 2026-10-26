@@ -40,6 +40,7 @@ function resetStore(): void {
     sessionStates: {},
     extensionUi: {},
     tuiSurfaces: {},
+    picker: null,
   });
 }
 
@@ -182,5 +183,295 @@ describe("idle session wake (2026-10-24 plan)", () => {
 
     fireEvent.focus(box);
     expect(activate).not.toHaveBeenCalled();
+  });
+});
+
+/** A DOMRect-shaped value for the layout stubs (jsdom has no layout). */
+function rect(width: number, height: number): DOMRect {
+  return {
+    x: 0,
+    y: 0,
+    width,
+    height,
+    top: 0,
+    left: 0,
+    right: width,
+    bottom: height,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
+/**
+ * Give the session column and its monospace probe a real box. Every other
+ * element keeps jsdom's zero rect, matching the production fallback.
+ */
+function stubViewportLayout(width = 1200, height = 600, cell = { width: 8, height: 16 }): void {
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    if (this instanceof HTMLElement && this.matches("[data-tui-cell-probe]")) {
+      return rect(cell.width, cell.height);
+    }
+    if (this instanceof HTMLElement && this.matches("[data-tui-viewport]")) {
+      return rect(width, height);
+    }
+    return rect(0, 0);
+  });
+}
+
+function resizeCalls(request: { mock: { calls: unknown[][] } }): Array<{ params?: unknown }> {
+  return request.mock.calls
+    .map((call) => call[0] as { method?: string; params?: unknown })
+    .filter((input) => input.method === "tui.resize");
+}
+
+function surfaceFrame(lines: number) {
+  return {
+    active: true,
+    overlay: false,
+    bounds: null,
+    focus: "custom" as const,
+    custom: {
+      seq: 1,
+      width: 150,
+      height: lines,
+      lines: Array.from({ length: lines }, (_, index) => `row ${index}`),
+      cursor: null,
+    },
+    footer: null,
+    header: null,
+    widgetsAbove: [],
+    widgetsBelow: [],
+  };
+}
+
+describe("TUI viewport grid (2026-10-26 plan, step 1)", () => {
+  it("reports the session column, not the surface frame", () => {
+    const handles = installBridge();
+    const request = vi.spyOn(handles.bridge.sessions, "request");
+    stubViewportLayout();
+
+    render(<SessionView />);
+
+    const calls = resizeCalls(request);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.params).toEqual({ rows: 37, cols: 150 });
+  });
+
+  it("does not re-measure when an extension frame changes height", () => {
+    const handles = installBridge();
+    const request = vi.spyOn(handles.bridge.sessions, "request");
+    stubViewportLayout();
+    render(<SessionView />);
+
+    act(() => {
+      useAppStore.setState({ tuiSurfaces: { [TAB]: surfaceFrame(32) } });
+    });
+
+    // The old implementation reported the 32-line frame back as terminal rows,
+    // which is what collapsed the questionnaire.
+    expect(resizeCalls(request)).toHaveLength(1);
+  });
+
+  it("re-reports the same grid after a status change (a fresh host)", () => {
+    const handles = installBridge();
+    const request = vi.spyOn(handles.bridge.sessions, "request");
+    stubViewportLayout();
+    render(<SessionView />);
+    expect(resizeCalls(request)).toHaveLength(1);
+
+    act(() => {
+      useAppStore.setState({
+        tabs: useAppStore
+          .getState()
+          .tabs.map((tab) => (tab.id === TAB ? { ...tab, status: "running" as const } : tab)),
+      });
+    });
+
+    const calls = resizeCalls(request);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.params).toEqual({ rows: 37, cols: 150 });
+  });
+
+  it("keeps the 80x24 fallback when jsdom has no layout", () => {
+    const handles = installBridge();
+    const request = vi.spyOn(handles.bridge.sessions, "request");
+    render(<SessionView />);
+
+    expect(resizeCalls(request)[0]?.params).toEqual({ rows: 24, cols: 80 });
+  });
+});
+
+function overlaySurfaceFrame(
+  bounds: { row: number; col: number; width: number; height: number },
+  lines = 12,
+) {
+  return {
+    ...surfaceFrame(lines),
+    overlay: true,
+    bounds,
+    custom: {
+      seq: 1,
+      width: bounds.width,
+      height: lines,
+      lines: Array.from({ length: lines }, (_, index) => `option ${index}`),
+      cursor: null,
+    },
+  };
+}
+
+describe("TUI surface presentation (2026-10-26 plan, step 2)", () => {
+  it("docks the questionnaire's bottom sheet inside the session column", () => {
+    useAppStore.setState({
+      tuiSurfaces: {
+        [TAB]: overlaySurfaceFrame({ row: 12, col: 0, width: 80, height: 12 }),
+      },
+    });
+
+    render(<SessionView />);
+
+    const surface = document.querySelector('[data-tui-surface="dock"]');
+    expect(surface).toBeTruthy();
+    expect(surface?.closest("[data-tui-viewport]")).toBeTruthy();
+    // No page-level wrapper and no dim backdrop: the transcript stays usable.
+    expect(document.querySelector("[data-tui-overlay]")).toBeNull();
+    expect(document.querySelector(".bg-black\\/40")).toBeNull();
+    // The dock replaces the composer, exactly as Pi's editor dock does.
+    expect(screen.queryByLabelText("Prompt")).toBeNull();
+    expect(document.querySelector("[data-tui-viewport]")).toBeTruthy();
+  });
+
+  it("floats a non-bottom overlay inside the column and keeps the composer", () => {
+    useAppStore.setState({
+      tuiSurfaces: {
+        [TAB]: overlaySurfaceFrame({ row: 7, col: 20, width: 40, height: 6 }),
+      },
+    });
+
+    render(<SessionView />);
+
+    const overlay = document.querySelector('[data-tui-surface="overlay"]');
+    expect(overlay).toBeTruthy();
+    expect(overlay?.closest("[data-tui-viewport]")).toBeTruthy();
+    expect(document.querySelector(".bg-black\\/40")).toBeNull();
+    expect(screen.getByLabelText("Prompt")).toBeInTheDocument();
+  });
+
+  it("gives the keyboard back to a docked surface when the transcript is clicked", () => {
+    useAppStore.setState({
+      tuiSurfaces: {
+        [TAB]: overlaySurfaceFrame({ row: 12, col: 0, width: 80, height: 12 }),
+      },
+    });
+    render(<SessionView />);
+    const surface = document.querySelector('[data-tui-surface="dock"]') as HTMLElement;
+    surface.blur();
+    expect(surface).not.toHaveFocus();
+
+    fireEvent.click(screen.getByText("This session is ready"));
+
+    expect(surface).toHaveFocus();
+    expect(screen.queryByLabelText("Prompt")).toBeNull();
+  });
+
+  it("makes the composer inert while a floating overlay owns the keyboard", () => {
+    useAppStore.setState({
+      tuiSurfaces: {
+        [TAB]: overlaySurfaceFrame({ row: 7, col: 20, width: 40, height: 6 }),
+      },
+    });
+    render(<SessionView />);
+
+    const prompt = screen.getByLabelText("Prompt");
+    const wrapper = prompt.closest(".contents");
+    expect(wrapper).toHaveAttribute("inert");
+
+    const overlay = document.querySelector('[data-tui-surface="overlay"]') as HTMLElement;
+    overlay.blur();
+    fireEvent.click(screen.getByText("This session is ready"));
+    expect(overlay).toHaveFocus();
+  });
+
+  it("renders an extension dialog in the composer region, not as a modal", () => {
+    useAppStore.setState({
+      extensionDialogs: [
+        {
+          id: "ui-1",
+          method: "select",
+          title: "Pick a target",
+          options: ["Sheet1", "Sheet2"],
+          message: "",
+          placeholder: null,
+          prefill: null,
+          timeout: null,
+          tabId: TAB,
+          at: Date.now(),
+        },
+      ],
+    });
+
+    render(<SessionView />);
+
+    const dialog = screen.getByRole("dialog", { name: "Pick a target" });
+    expect(dialog.closest("[data-tui-viewport]")).toBeTruthy();
+    expect(document.querySelector(".bg-black\\/55")).toBeNull();
+    expect(screen.queryByLabelText("Prompt")).toBeNull();
+
+    // Another tab's dialog is not shown here; the owning tab is activated when
+    // it arrives (the store does that on `oi.request`).
+    act(() => {
+      useAppStore.setState({
+        extensionDialogs: [
+          {
+            id: "ui-2",
+            method: "select",
+            title: "Elsewhere",
+            options: ["a"],
+            message: "",
+            placeholder: null,
+            prefill: null,
+            timeout: null,
+            tabId: "tab-2",
+            at: Date.now(),
+          },
+        ],
+      });
+    });
+    expect(screen.queryByRole("dialog", { name: "Elsewhere" })).toBeNull();
+    expect(screen.getByLabelText("Prompt")).toBeInTheDocument();
+  });
+
+  it("renders TUI header slots full-bleed so cols-wide frames do not clip", () => {
+    useAppStore.setState({
+      tuiSurfaces: {
+        [TAB]: {
+          ...surfaceFrame(1),
+          header: { seq: 2, width: 80, height: 1, lines: ["HEADER"], cursor: null },
+        },
+      },
+    });
+
+    render(<SessionView />);
+
+    const slot = document.querySelector("[data-tui-slot]");
+    expect(slot?.textContent).toContain("HEADER");
+    expect(slot?.className).not.toContain("px-3");
+  });
+
+  it("renders component widgets above and below the editor dock", () => {
+    useAppStore.setState({
+      tuiSurfaces: {
+        [TAB]: {
+          ...surfaceFrame(1),
+          widgetsAbove: [{ seq: 3, width: 80, height: 1, lines: ["ABOVE"], cursor: null }],
+          widgetsBelow: [{ seq: 4, width: 80, height: 1, lines: ["BELOW"], cursor: null }],
+        },
+      },
+    });
+
+    render(<SessionView />);
+
+    expect(screen.getByText("ABOVE")).toBeInTheDocument();
+    expect(screen.getByText("BELOW")).toBeInTheDocument();
+    expect(document.querySelector('[data-tui-widgets="aboveEditor"]')).toBeTruthy();
+    expect(document.querySelector('[data-tui-widgets="belowEditor"]')).toBeTruthy();
   });
 });

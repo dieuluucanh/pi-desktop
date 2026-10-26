@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
@@ -18,6 +18,12 @@ export interface LaunchOptions {
   settings?: Record<string, unknown>;
   /** Written to `<profile>/models.json` before launch (custom providers). */
   models?: Record<string, unknown>;
+  /**
+   * Written to `<profile>/extensions/<name>` before launch. Global/profile
+   * extensions auto-load without a trust prompt, so this is how a test seeds a
+   * fixture extension (e.g. one that calls `ctx.ui.setEditorComponent`).
+   */
+  extensions?: Record<string, string>;
   /** Extra Electron arguments. */
   args?: readonly string[];
   /**
@@ -160,6 +166,13 @@ function seedProfile(profileDir: string, options: LaunchOptions): void {
       `${JSON.stringify(options.models, null, 2)}\n`,
       "utf8",
     );
+  }
+  if (options.extensions) {
+    const extensionsDir = join(profileDir, "extensions");
+    mkdirSync(extensionsDir, { recursive: true });
+    for (const [name, source] of Object.entries(options.extensions)) {
+      writeFileSync(join(extensionsDir, name), source, "utf8");
+    }
   }
 }
 

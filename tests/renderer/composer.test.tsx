@@ -12,9 +12,16 @@ import type { CompletionProvider } from "../../src/renderer/src/completion/types
  */
 
 function renderComposer(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
-  const onSend = vi.fn(async (_text: string, _images: ImageAttachment[]) => true);
+  const onSend = vi.fn(
+    async (
+      _text: string,
+      _images: ImageAttachment[],
+      _options?: { preferredSource?: unknown; followUp?: boolean },
+    ) => true,
+  );
   const onStop = vi.fn();
   const onClearQueue = vi.fn();
+  const onRestoreQueue = vi.fn();
   const onSendModeChange = vi.fn();
   const onDraftChange = vi.fn();
   const props: Parameters<typeof Composer>[0] = {
@@ -27,12 +34,21 @@ function renderComposer(overrides: Partial<Parameters<typeof Composer>[0]> = {})
     onSend,
     onStop,
     onClearQueue,
+    onRestoreQueue,
     onSendModeChange,
     onHistoryStep: () => null,
     ...overrides,
   };
   const rendered = render(<Composer {...props} />);
-  return { onSend, onStop, onClearQueue, onSendModeChange, onDraftChange, ...rendered };
+  return {
+    onSend,
+    onStop,
+    onClearQueue,
+    onRestoreQueue,
+    onSendModeChange,
+    onDraftChange,
+    ...rendered,
+  };
 }
 
 describe("sending", () => {
@@ -109,19 +125,40 @@ describe("streaming delivery", () => {
 });
 
 describe("queue and attachments", () => {
-  it("shows the queue and clears it", async () => {
+  it("shows pending rows with their delivery kind and full text", async () => {
     const user = userEvent.setup();
-    const { onClearQueue } = renderComposer({
+    const { onClearQueue, onRestoreQueue } = renderComposer({
       running: true,
-      queue: { steering: ["stop and test"], followUp: ["then commit"] },
+      queue: {
+        steering: ["stop and test the parser"],
+        followUp: ["then commit with a long message that would not fit a chip"],
+      },
     });
 
-    const chips = screen.getByTestId("queue-chips");
-    expect(chips.textContent).toContain("stop and test");
-    expect(chips.textContent).toContain("then commit");
+    const pending = screen.getByTestId("pending-queue");
+    expect(pending.textContent).toContain("Steering");
+    expect(pending.textContent).toContain("Follow-up");
+    expect(pending.textContent).toContain("stop and test the parser");
+    expect(pending.textContent).toContain(
+      "then commit with a long message that would not fit a chip",
+    );
+
+    await user.click(screen.getByRole("button", { name: /restore all/i }));
+    expect(onRestoreQueue).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole("button", { name: /clear queue/i }));
     expect(onClearQueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores the whole queue on Alt+Up", async () => {
+    const user = userEvent.setup();
+    const { onRestoreQueue } = renderComposer({
+      running: true,
+      queue: { steering: ["one"], followUp: [] },
+    });
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("{Alt>}{ArrowUp}{/Alt}");
+    expect(onRestoreQueue).toHaveBeenCalledTimes(1);
   });
 
   it("turns a pasted image into an attachment sent with the prompt", async () => {
@@ -169,6 +206,67 @@ describe("history", () => {
     await user.click(screen.getByLabelText("Prompt"));
     await user.keyboard("{ArrowUp}");
     expect(onDraftChange).toHaveBeenCalledWith("earlier prompt");
+  });
+
+  it("leaves a multi-line draft's caret movement native inside the buffer", async () => {
+    const user = userEvent.setup();
+    const onDraftChange = vi.fn();
+    renderComposer({ draft: "first line\nsecond line", onDraftChange });
+    const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(box);
+    // Caret on the second line: Up must move the caret, not recall history.
+    box.setSelectionRange(box.value.length, box.value.length);
+    fireEvent.keyDown(box, { key: "ArrowUp" });
+    expect(onDraftChange).not.toHaveBeenCalled();
+  });
+
+  it("walks forward only at the last line", async () => {
+    const user = userEvent.setup();
+    const onDraftChange = vi.fn();
+    renderComposer({
+      draft: "first line\nsecond line",
+      onDraftChange,
+      onHistoryStep: (direction: 1 | -1) => (direction === 1 ? "newer prompt" : null),
+    });
+    const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(box);
+    // Middle of the first line: Down stays native.
+    box.setSelectionRange(2, 2);
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(onDraftChange).not.toHaveBeenCalled();
+    // Last line: Down walks history.
+    box.setSelectionRange(box.value.length, box.value.length);
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(onDraftChange).toHaveBeenCalledWith("newer prompt");
+  });
+});
+
+describe("follow-up chords (plan step 9)", () => {
+  it("Alt+Enter queues a follow-up while a run is streaming", async () => {
+    const user = userEvent.setup();
+    const { onSend } = renderComposer({ running: true, draft: "then commit" });
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("{Alt>}{Enter}{/Alt}");
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend.mock.calls[0]?.[2]).toMatchObject({ followUp: true });
+  });
+
+  it("Ctrl+Q queues a follow-up too", async () => {
+    const user = userEvent.setup();
+    const { onSend } = renderComposer({ running: true, draft: "then commit" });
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("{Control>}q{/Control}");
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend.mock.calls[0]?.[2]).toMatchObject({ followUp: true });
+  });
+
+  it("acts like Enter when nothing is streaming (terminal Pi's fallback)", async () => {
+    const user = userEvent.setup();
+    const { onSend } = renderComposer({ running: false, draft: "just send" });
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("{Alt>}{Enter}{/Alt}");
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend.mock.calls[0]?.[2]?.followUp).toBeUndefined();
   });
 });
 
@@ -344,6 +442,7 @@ describe("extension shortcut dispatch (Tab)", () => {
           onSend={async () => true}
           onStop={() => undefined}
           onClearQueue={() => undefined}
+          onRestoreQueue={() => undefined}
           onSendModeChange={() => undefined}
           onHistoryStep={() => null}
           extensionShortcuts={[{ key: "tab" }]}
@@ -413,6 +512,7 @@ describe("sleeping session (2026-10-24 plan)", () => {
         onSend={async () => true}
         onStop={() => undefined}
         onClearQueue={() => undefined}
+        onRestoreQueue={() => undefined}
         onSendModeChange={() => undefined}
         onHistoryStep={() => null}
         focusToken={1}
@@ -453,6 +553,7 @@ describe("caret readout", () => {
         onSend={async () => true}
         onStop={() => undefined}
         onClearQueue={() => undefined}
+        onRestoreQueue={() => undefined}
         onSendModeChange={() => undefined}
         onHistoryStep={() => null}
       />

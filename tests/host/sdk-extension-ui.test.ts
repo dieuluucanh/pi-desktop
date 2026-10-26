@@ -16,7 +16,9 @@ import {
 import {
   EXTENSION_UI_THEME_EVENT,
   SESSION_SHUTDOWN_REQUEST_EVENT,
+  type ExtensionUiSnapshot,
 } from "../../src/shared/extension-ui";
+import { createSdkTuiSurface } from "../../src/host/sdk/tui-surface";
 
 /**
  * The SDK side of the extension-UI host (plan step 16).
@@ -126,15 +128,62 @@ describe("createSdkExtensionUiContext", () => {
     expect(context.theme).toBeInstanceOf(Theme);
   });
 
-  it("ignores a component widget factory and keeps string widgets", () => {
+  it("routes a component widget through the TUI surface with one owner per key", () => {
+    const { port } = portHarness();
+    const surfacePort = createSdkTuiSurface({
+      emit: () => undefined,
+      terminalInput: () => [],
+      defaultRows: 12,
+      defaultCols: 40,
+    });
+    const context = createSdkExtensionUiContext(
+      port,
+      createSdkThemeAccess({ session: fakeSession() }),
+      { port: surfacePort, keybindings: {} as never, footerData: {} as never },
+    );
+
+    context.setWidget("factory", (tui) => {
+      expect(tui.terminal.columns).toBe(40);
+      return { render: () => ["component"], invalidate: () => undefined };
+    });
+    context.setWidget("lines", ["a"]);
+    expect(port.snapshot().widgets.map((widget) => widget.key)).toEqual(["lines"]);
+    expect(surfacePort.snapshot().widgetsAbove[0]?.lines).toEqual(["component"]);
+
+    context.setWidget("factory", ["array"]);
+    expect(surfacePort.snapshot().widgetsAbove).toEqual([]);
+    expect(port.snapshot().widgets.find((widget) => widget.key === "factory")?.lines).toEqual([
+      "array",
+    ]);
+
+    context.setWidget("factory", undefined);
+    expect(port.snapshot().widgets.find((widget) => widget.key === "factory")).toBeUndefined();
+    expect(surfacePort.snapshot().widgetsAbove).toEqual([]);
+  });
+
+  it("ignores a component widget without a surface and survives a throwing factory", () => {
     const { port } = portHarness();
     const context = createSdkExtensionUiContext(
       port,
       createSdkThemeAccess({ session: fakeSession() }),
     );
-    context.setWidget("factory", (() => ({ render: () => [] })) as never);
-    context.setWidget("lines", ["a"]);
-    expect(port.snapshot().widgets.map((widget) => widget.key)).toEqual(["lines"]);
+    expect(() =>
+      context.setWidget("factory", (() => ({ render: () => [] })) as never),
+    ).not.toThrow();
+    expect(port.snapshot().widgets).toEqual([]);
+
+    const surfacePort = createSdkTuiSurface({ emit: () => undefined, terminalInput: () => [] });
+    const withSurface = createSdkExtensionUiContext(
+      port,
+      createSdkThemeAccess({ session: fakeSession() }),
+      { port: surfacePort, keybindings: {} as never, footerData: {} as never },
+    );
+    expect(() =>
+      withSurface.setWidget("bad", () => {
+        throw new Error("boom");
+      }),
+    ).not.toThrow();
+    expect(surfacePort.snapshot().widgetsAbove).toEqual([]);
   });
 
   it("emits the theme event when an extension switches theme", () => {
@@ -177,6 +226,45 @@ describe("createSdkCommandContextActions", () => {
 });
 
 describe("createSdkExtensionBinder", () => {
+  it("clears the port and the TUI surface before every bind", async () => {
+    const { port } = portHarness();
+    const surface = createSdkTuiSurface({ emit: () => undefined, terminalInput: () => [] });
+    const observed: Array<{ snapshot: ExtensionUiSnapshot; editor: unknown }> = [];
+    const factory = (() => ({ render: () => [] })) as never;
+    const bindExtensions = vi.fn(async (bindings: unknown) => {
+      const { uiContext } = bindings as {
+        uiContext: {
+          setStatus(key: string, text: string | undefined): void;
+          setEditorComponent(factory: unknown): void;
+        };
+      };
+      observed.push({ snapshot: port.snapshot(), editor: port.getEditorComponent() });
+      uiContext.setStatus("probe", "on");
+      uiContext.setEditorComponent(factory);
+    });
+    const session = fakeSession({ bindExtensions });
+    const binder = createSdkExtensionBinder({
+      port,
+      emit: () => undefined,
+      tuiSurface: surface,
+      readKeybindings: async () => ({}),
+    });
+
+    await binder(session, {} as AgentSessionRuntime);
+    expect(observed[0]?.snapshot.statuses).toEqual({});
+    expect(observed[0]?.editor).toBeUndefined();
+    expect(port.snapshot().statuses).toEqual({ probe: "on" });
+    expect(surface.snapshot().active).toBe(false);
+
+    await binder(session, {} as AgentSessionRuntime);
+    // The second bind starts from an empty port: no stale status, no stale
+    // editor factory for the extension's `getEditorComponent()` guard.
+    expect(observed[1]?.snapshot.statuses).toEqual({});
+    expect(observed[1]?.editor).toBeUndefined();
+    expect(port.snapshot().statuses).toEqual({ probe: "on" });
+    expect(surface.snapshot().active).toBe(false);
+  });
+
   it("binds a tui-mode UI context and forwards errors and shutdown", async () => {
     const { port, emitted } = portHarness();
     const bindExtensions = vi.fn(async (_bindings: unknown) => undefined);

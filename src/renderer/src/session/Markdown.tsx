@@ -1,8 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 import { cn } from "../ui/cn";
 import { normalizeLanguage } from "./code-language";
+import { useFindPattern } from "./find-context";
+import { rehypeFindHighlight } from "./transcript-search";
+import { MermaidBlock } from "./MermaidBlock";
 
 /**
  * Markdown and code rendering (plan step 5).
@@ -97,11 +103,29 @@ export function CodeBlock({ code, language }: { code: string; language?: string 
   );
 }
 
-export function Markdown({ children, className }: { children: string; className?: string }) {
+export function Markdown({
+  children,
+  className,
+  streaming = false,
+}: {
+  children: string;
+  className?: string;
+  /** True while the message streams; `markdown.mermaid: final` waits for it. */
+  streaming?: boolean;
+}) {
+  // The transcript's find bar publishes its pattern through a context, so every
+  // markdown surface (message text, summaries, extension output) highlights the
+  // same query without threading a prop through each row (plan step 11).
+  const findPattern = useFindPattern();
+  const rehypePlugins = useMemo(
+    () => (findPattern ? [rehypeFindHighlight(findPattern)] : []),
+    [findPattern],
+  );
   return (
     <div className={cn("pi-markdown text-sm leading-relaxed", className)}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[...rehypePlugins, rehypeKatex]}
         components={{
           a: ({ href, children: label }) => (
             <a
@@ -119,6 +143,11 @@ export function Markdown({ children, className }: { children: string; className?
           code: ({ className: codeClass, children: code }) => {
             const text = String(code ?? "").replace(/\n$/, "");
             const language = /language-([\w+#-]+)/.exec(codeClass ?? "")?.[1];
+            // A mermaid fence is a diagram, not source (plan step 19); the
+            // component falls back to this same code block when it cannot draw.
+            if (language?.toLowerCase() === "mermaid") {
+              return <MermaidBlock code={text} streaming={streaming} />;
+            }
             return <CodeBlock code={text} {...(language ? { language } : {})} />;
           },
           pre: ({ children: content }) => <>{content}</>,

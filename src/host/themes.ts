@@ -20,6 +20,7 @@ import {
   themeVariantFromText,
   type ThemeScope,
   type ThemeSummary,
+  type ThemeColorResolver,
 } from "../shared/themes";
 import type { HostHandler } from "./service";
 
@@ -53,6 +54,8 @@ export interface ThemePort {
   getActive(): Promise<string | undefined> | string | undefined;
   /** Raw text of a theme file, or null when it cannot be read. */
   readFile(path: string): Promise<string | null> | string | null;
+  /** Resolves a theme colour (Pi 1.4 uses `okhsl`/`oklch` values). */
+  resolveColor?: ThemeColorResolver;
   /**
    * Imports a validated document: writes `<themesDir>/<filename>` and returns
    * the written path. The handler validates first, so the port writes blind.
@@ -75,6 +78,7 @@ function fileSummary(
   loaded: LoadedTheme,
   active: string,
   readFile: ThemePort["readFile"],
+  resolveColor?: ThemeColorResolver,
 ): Promise<ThemeSummary> | ThemeSummary {
   const resolve = (text: string | null): ThemeSummary => {
     if (!text) {
@@ -89,7 +93,7 @@ function fileSummary(
     }
     try {
       const parsed = parseThemeDocument(text);
-      const swatches = resolveThemeSwatches(parsed);
+      const swatches = resolveThemeSwatches(parsed, resolveColor);
       const textHex = swatches.text ?? null;
       return {
         name: parsed.name,
@@ -127,7 +131,7 @@ export async function listThemes(
   for (const entry of loaded) {
     if (seen.has(entry.name)) continue;
     seen.add(entry.name);
-    themes.push(await fileSummary(entry, active, port.readFile));
+    themes.push(await fileSummary(entry, active, port.readFile, port.resolveColor));
   }
   return { active, themes };
 }

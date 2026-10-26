@@ -1,11 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { SessionEventEntry } from "../../src/shared/session-ipc";
+import { event, fixtures, fullTurn } from "./fixtures/session-events";
 import {
   blocksFromContent,
   createTranscriptState,
   hydrateMessages,
   messageFromSdk,
   reduceSessionEvents,
+  stopReasonNote,
   textOfPartial,
   type TranscriptItem,
 } from "../../src/renderer/src/session/session-events";
@@ -631,5 +633,299 @@ describe("content conversion", () => {
     expect(textOfPartial({ content: [{ type: "text", text: "a" }, { type: "image" }] })).toBe("a");
     expect(textOfPartial("raw")).toBe("raw");
     expect(textOfPartial(null)).toBe("");
+  });
+});
+
+describe("turn plumbing and stop reasons", () => {
+  it("does not append rows for agent, turn or session-info events", () => {
+    const silent = ["agent_start", "agent_end", "agent_settled", "session_info_changed"];
+    const state = reduceSessionEvents(
+      createTranscriptState(),
+      silent.map((name) => event(name)),
+    );
+    expect(state.items).toHaveLength(0);
+  });
+
+  it("renders a complete turn without synthetic notices", () => {
+    const state = reduceSessionEvents(createTranscriptState(), fullTurn());
+    expect(state.items.filter((item) => item.kind === "notice")).toHaveLength(0);
+  });
+
+  it("describes aborted, error and length stops once", () => {
+    expect(stopReasonNote({ role: "assistant", stopReason: "aborted" })).toEqual({
+      text: "Operation aborted",
+      severity: "error",
+    });
+    expect(
+      stopReasonNote({ role: "assistant", stopReason: "aborted", errorMessage: "stopped by user" }),
+    ).toEqual({ text: "stopped by user", severity: "error" });
+    expect(
+      stopReasonNote({ role: "assistant", stopReason: "error", errorMessage: "boom" }),
+    ).toEqual({ text: "Error: boom", severity: "error" });
+    expect(stopReasonNote({ role: "assistant", stopReason: "length" })).toEqual({
+      text: "Response was truncated before completion.",
+      severity: "warning",
+    });
+    expect(stopReasonNote({ role: "assistant", stopReason: "end" })).toBeNull();
+    expect(stopReasonNote({ role: "user", stopReason: "aborted" })).toBeNull();
+  });
+
+  it("keeps the SDK error text for hydration", () => {
+    const message = messageFromSdk({
+      role: "assistant",
+      content: [{ type: "text", text: "partial" }],
+      stopReason: "error",
+      errorMessage: "provider failed",
+    });
+    expect(message.stopReason).toBe("error");
+    expect(message.errorMessage).toBe("provider failed");
+    expect(stopReasonNote(message)).toEqual({ text: "Error: provider failed", severity: "error" });
+  });
+});
+
+describe("tool-result messages", () => {
+  it("never renders a live toolResult as an assistant bubble or closes the open message", () => {
+    let state = reduceSessionEvents(createTranscriptState(), [
+      fixtures.messageStart({ role: "assistant" }, "assistant-1"),
+      fixtures.messageUpdate({ type: "text_start", contentIndex: 0 }),
+      fixtures.messageUpdate({ type: "text_delta", contentIndex: 0, delta: "Reading" }),
+      fixtures.toolStart("call-1", "read", { path: "note.txt" }),
+      fixtures.toolEnd("call-1", "read", { content: [{ type: "text", text: "GIZMO" }] }),
+      ...fixtures.toolResult("call-1", "read", [{ type: "text", text: "GIZMO" }]),
+    ]);
+
+    const messages = state.items.filter((item) => item.kind === "message");
+    expect(messages).toHaveLength(1);
+    expect(state.openMessageId).toBe("assistant-1");
+    const tools = state.items.filter((item) => item.kind === "tool");
+    expect(tools).toHaveLength(1);
+    expect(tools[0]?.kind === "tool" ? tools[0].tool.resultText : null).toBe("GIZMO");
+    expect(
+      messages.some(
+        (item) =>
+          item.kind === "message" &&
+          item.message.blocks.some((block) => block.kind === "text" && block.text === "GIZMO"),
+      ),
+    ).toBe(false);
+
+    // The authoritative assistant end still closes it.
+    state = reduceSessionEvents(state, [
+      fixtures.messageEnd(
+        { role: "assistant", content: [{ type: "text", text: "Reading" }], stopReason: "end" },
+        "assistant-1",
+      ),
+    ]);
+    expect(state.openMessageId).toBeNull();
+  });
+
+  it("pairs assistant tool calls with results during hydration", () => {
+    const state = hydrateMessages(createTranscriptState(), [
+      { role: "user", content: [{ type: "text", text: "Read note.txt" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Reading" },
+          { type: "toolCall", id: "call-1", name: "read", arguments: { path: "note.txt" } },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "read",
+        content: [{ type: "text", text: "GIZMO\n" }],
+        isError: false,
+      },
+      { role: "compactionSummary", summary: "Earlier context" },
+      { role: "branchSummary", summary: "Abandoned branch" },
+      { role: "bashExecution", output: "total 0" },
+      { role: "system", content: "hidden" },
+    ]);
+
+    const messages = state.items.filter((item) => item.kind === "message");
+    const tools = state.items.filter((item) => item.kind === "tool");
+    expect(tools).toHaveLength(1);
+    const tool = tools[0]?.kind === "tool" ? tools[0].tool : null;
+    expect(tool).toMatchObject({
+      toolCallId: "call-1",
+      toolName: "read",
+      args: { path: "note.txt" },
+      resultText: "GIZMO\n",
+      done: true,
+    });
+    expect(messages.map((item) => (item.kind === "message" ? item.message.role : null))).toEqual([
+      "user",
+      "assistant",
+      "compaction",
+      "branchSummary",
+      "bashExecution",
+    ]);
+    expect(
+      messages.some(
+        (item) =>
+          item.kind === "message" &&
+          item.message.role === "assistant" &&
+          item.message.blocks.some((block) => block.kind === "text" && block.text === "GIZMO\n"),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("aborted tool runs", () => {
+  it("marks a running tool cancelled when the agent settles", () => {
+    let state = reduceSessionEvents(createTranscriptState(), [
+      fixtures.toolStart("call-1", "read", { path: "note.txt" }),
+      fixtures.toolUpdate("call-1", { content: [{ type: "text", text: "half" }] }),
+      fixtures.agentEnd(),
+    ]);
+    const tool = state.items.find((item) => item.kind === "tool");
+    expect(tool?.kind === "tool" ? tool.tool : null).toMatchObject({
+      done: true,
+      cancelled: true,
+    });
+
+    state = reduceSessionEvents(state, [fixtures.agentEnd()]);
+    expect(state.items.filter((item) => item.kind === "tool")).toHaveLength(1);
+  });
+});
+
+describe("run status (plan step 8)", () => {
+  it("tracks compaction, retry and summarization deadlines", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    let state = reduceSessionEvents(createTranscriptState(), [fixtures.compactionStart()]);
+    expect(state.runStatus).toEqual({ kind: "compacting" });
+    state = reduceSessionEvents(state, [fixtures.retryStart(2, 5, 3_000)]);
+    expect(state.runStatus).toMatchObject({
+      kind: "retrying",
+      attempt: 2,
+      maxAttempts: 5,
+      until: Date.now() + 3_000,
+    });
+    state = reduceSessionEvents(state, [fixtures.retryEnd()]);
+    expect(state.runStatus).toBeNull();
+    state = reduceSessionEvents(state, [fixtures.summarizationRetry(1, 2, 1_500)]);
+    expect(state.runStatus).toMatchObject({ kind: "summarizing", attempt: 1, maxAttempts: 2 });
+    state = reduceSessionEvents(state, [fixtures.compactionEnd()]);
+    expect(state.runStatus).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it("records when the turn started so the working row can show elapsed time", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    let state = reduceSessionEvents(createTranscriptState(), [fixtures.agentStart()]);
+    expect(state.runStartedAt).toBe(Date.now());
+    state = reduceSessionEvents(state, [fixtures.agentEnd()]);
+    expect(state.runStartedAt).toBeNull();
+    state = reduceSessionEvents(state, [fixtures.agentStart()]);
+    state = reduceSessionEvents(state, [fixtures.agentSettled()]);
+    expect(state.runStartedAt).toBeNull();
+    vi.useRealTimers();
+  });
+});
+
+describe("bash execution", () => {
+  it("streams output into one bashExecution row and finalizes it", () => {
+    const id = "bash-1";
+    let state = reduceSessionEvents(createTranscriptState(), [
+      fixtures.messageStart(
+        {
+          role: "bashExecution",
+          command: "pwd",
+          output: "",
+          cancelled: false,
+          truncated: false,
+          timestamp: 1,
+        },
+        id,
+      ),
+      fixtures.bashUpdate(id, "/work"),
+      fixtures.bashUpdate(id, "\n"),
+    ]);
+    const item = state.items[0];
+    expect(item?.kind === "message" ? item.message.role : null).toBe("bashExecution");
+    expect(item?.kind === "message" ? item.message.blocks : []).toEqual([
+      { kind: "text", text: "/work\n" },
+    ]);
+    state = reduceSessionEvents(state, [
+      fixtures.messageEnd(
+        {
+          role: "bashExecution",
+          command: "pwd",
+          output: "/work\n",
+          exitCode: 0,
+          cancelled: false,
+          truncated: false,
+          timestamp: 1,
+        },
+        id,
+      ),
+    ]);
+    expect(state.items).toHaveLength(1);
+    expect(state.items[0]?.kind === "message" ? state.items[0].message.blocks : []).toEqual([
+      { kind: "text", text: "/work\n" },
+    ]);
+  });
+
+  it("does not steal the open assistant message when a `!` command starts", () => {
+    let state = reduceSessionEvents(createTranscriptState(), [
+      fixtures.messageStart({ role: "assistant" }, "assistant-1"),
+      fixtures.messageUpdate({ type: "text_start", contentIndex: 0 }),
+      fixtures.messageUpdate({ type: "text_delta", contentIndex: 0, delta: "Working" }),
+      fixtures.messageStart(
+        {
+          role: "bashExecution",
+          command: "pwd",
+          output: "",
+          cancelled: false,
+          truncated: false,
+          timestamp: 1,
+        },
+        "bash-1",
+      ),
+    ]);
+    expect(state.openMessageId).toBe("assistant-1");
+    state = reduceSessionEvents(state, [
+      fixtures.bashUpdate("bash-1", "/work"),
+      fixtures.messageEnd(
+        {
+          role: "bashExecution",
+          command: "pwd",
+          output: "/work",
+          exitCode: 0,
+          cancelled: false,
+          truncated: false,
+          timestamp: 1,
+        },
+        "bash-1",
+      ),
+    ]);
+    // The bash end must not clear the assistant's open id either: the next
+    // delta/end still belongs to the assistant message.
+    expect(state.openMessageId).toBe("assistant-1");
+    state = reduceSessionEvents(state, [
+      fixtures.messageUpdate({ type: "text_delta", contentIndex: 0, delta: " still" }),
+      fixtures.messageEnd(
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Working still" }],
+          stopReason: "end",
+        },
+        "assistant-1",
+      ),
+    ]);
+    const assistant = state.items.find(
+      (item) => item.kind === "message" && item.message.role === "assistant",
+    );
+    const bash = state.items.find(
+      (item) => item.kind === "message" && item.message.role === "bashExecution",
+    );
+    expect(assistant?.kind === "message" ? assistant.message.blocks : []).toEqual([
+      { kind: "text", text: "Working still" },
+    ]);
+    expect(bash?.kind === "message" ? bash.message.blocks : []).toEqual([
+      { kind: "text", text: "/work" },
+    ]);
+    expect(state.openMessageId).toBeNull();
   });
 });

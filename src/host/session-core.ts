@@ -74,10 +74,23 @@ export type PiPayload = object;
 export interface HostSession extends SessionStateLike {
   subscribe?(listener: (event: { type: string; [key: string]: unknown }) => void): () => void;
   prompt(text: string, options?: unknown): Promise<void>;
-  steer?(text: string): Promise<void>;
-  followUp?(text: string): Promise<void>;
+  steer?(text: string): Promise<unknown>;
+  followUp?(text: string): Promise<unknown>;
   abort?(): Promise<void>;
   clearQueue?(): ClearedQueue;
+  executeBash?(
+    command: string,
+    onChunk?: (chunk: string) => void,
+    options?: { excludeFromContext?: boolean; id?: string; operations?: unknown },
+  ): Promise<BashResultLike>;
+  /** Records a result an extension already produced (`user_bash` replacement). */
+  recordBashResult?(
+    command: string,
+    result: BashResultLike,
+    options?: { excludeFromContext?: boolean },
+  ): void;
+  abortBash?(): void;
+  isBashRunning?: boolean;
   setModel?(model: unknown, options?: unknown): Promise<void>;
   cycleModel?(direction?: "forward" | "backward", options?: unknown): Promise<unknown>;
   setThinkingLevel?(level: string, options?: unknown): void;
@@ -87,6 +100,8 @@ export interface HostSession extends SessionStateLike {
   setAutoCompactionEnabled?(enabled: boolean): void;
   setAutoRetryEnabled?(enabled: boolean): void;
   abortRetry?(): void;
+  abortCompaction?(): void;
+  abortBranchSummary?(): void;
   setSteeringMode?(mode: string): void;
   setFollowUpMode?(mode: string): void;
   getLastAssistantText?(): string | undefined;
@@ -162,6 +177,8 @@ export interface HostSession extends SessionStateLike {
   ): Promise<{ editorText?: string; cancelled: boolean }>;
   /** Exports the session to a standalone HTML file; returns the written path. */
   exportToHtml?(outputPath?: string, options?: { themeName?: string }): Promise<string>;
+  /** Pi's own JSONL export (plan step 14); synchronous and path-returning. */
+  exportToJsonl?(outputPath?: string): string;
 }
 
 export interface SessionManagerLike {
@@ -190,6 +207,32 @@ export interface RuntimeHandleLike {
   readonly services: { settingsManager?: SettingsLike; cwd?: string } | undefined;
 }
 
+/** Pi's `BashResult`, structurally: `executeBash` resolves to exactly this. */
+export interface BashResultLike {
+  output: string;
+  exitCode?: number;
+  cancelled?: boolean;
+  truncated?: boolean;
+  fullOutputPath?: string;
+}
+
+/**
+ * Pi's `user_bash` hook (plan step 7): an extension may supply `operations` for
+ * the real executor or replace the execution with its own `result`. The port
+ * lives in `src/host/sdk/bash.ts`; the core only sees this narrow shape.
+ */
+export interface BashRunOutcome {
+  operations?: unknown;
+  result?: BashResultLike;
+}
+
+export interface BashPort {
+  run(
+    command: string,
+    options: { excludeFromContext: boolean; cwd: string },
+  ): Promise<BashRunOutcome>;
+}
+
 export interface RuntimeLike {
   get session(): HostSession;
   get services(): { settingsManager?: SettingsLike; cwd?: string };
@@ -197,6 +240,8 @@ export interface RuntimeLike {
   switchSession?(path: string, options?: unknown): Promise<{ cancelled: boolean }>;
   clone?(options?: unknown): Promise<{ cancelled: boolean }>;
   fork?(entryId: string, options?: unknown): Promise<{ cancelled: boolean; selectedText?: string }>;
+  /** JSONL import (plan step 14): replaces the live session from a file. */
+  importFromJsonl?(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }>;
   setRebindSession?(rebind?: () => Promise<void>): void;
   dispose?(): Promise<void>;
 }
@@ -351,6 +396,18 @@ export interface SessionCoreDeps {
    * testable with a fictitious runner.
    */
   wrapCommandRunner?(runner: unknown): CommandRunner | null;
+  /**
+   * Wraps the session's live `extensionRunner` in the SDK `user_bash` adapter
+   * (plan step 7). Null means the runner has no hook and the host runs the
+   * command itself, exactly as terminal Pi falls back when no extension
+   * intercepts.
+   */
+  createBashPort?(session: HostSession): BashPort | null;
+  /**
+   * Pi's packaged changelog for `/changelog` (plan step 15). The SDK exports the
+   * path, not the text, so the composition root reads it through the file port.
+   */
+  readChangelog?(): Promise<{ path: string; text: string | null }>;
   emit(event: string, payload?: unknown, sessionId?: string): void;
   now?: () => number;
 }
@@ -586,7 +643,13 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     "agent_end",
     "agent_settled",
     "queue_update",
+    "compaction_start",
     "compaction_end",
+    "auto_retry_start",
+    "auto_retry_end",
+    "summarization_retry_scheduled",
+    "summarization_retry_attempt_start",
+    "summarization_retry_finished",
     "message_end",
     "session_info_changed",
     // `setThinkingLevel` emits this on the session's own bus. It is the only
@@ -672,6 +735,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         idle: true,
         compacting: false,
         retrying: false,
+        bashRunning: false,
         messageCount: 0,
         pendingMessages: 0,
         steering: [],
@@ -1074,8 +1138,22 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     },
 
     "session.clone": async () => {
+      ensure();
+      // Terminal's RPC implements `/clone` as a fork at the leaf when the runtime
+      // offers no `clone()` (`rpc-mode.js:490-499`), which is the case for the
+      // SDK version this app runs. Same session semantics: a new file whose
+      // parent is this one, positioned at the current leaf.
       if (!runtime?.clone) {
-        throw new SessionCoreError("cloning is not supported by this runtime", "unsupported");
+        if (!runtime?.fork) {
+          throw new SessionCoreError("cloning is not supported by this runtime", "unsupported");
+        }
+        const leafId = manager?.getLeafId?.();
+        if (!leafId) {
+          throw new SessionCoreError("this session has no entry to clone from", "no_leaf");
+        }
+        const forked = await runtime.fork(leafId, { position: "at" });
+        await rebind();
+        return { ...snapshot(), cancelled: forked.cancelled };
       }
       const result = await runtime.clone();
       await rebind();
@@ -1092,6 +1170,57 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         typeof outputPath === "string" && outputPath.length > 0 ? outputPath : undefined,
       );
       return { path };
+    },
+
+    "session.exportJsonl": (params) => {
+      const current = ensure();
+      if (!current.exportToJsonl) {
+        throw new SessionCoreError("exporting JSONL is not supported", "unsupported");
+      }
+      const outputPath = asRecord(params).outputPath;
+      const path = current.exportToJsonl(
+        typeof outputPath === "string" && outputPath.length > 0 ? outputPath : undefined,
+      );
+      return { path };
+    },
+
+    "session.importJsonl": async (params) => {
+      ensure();
+      const input = asRecord(params);
+      const path = requireString(input.path ?? input.file, "path");
+      if (!runtime?.importFromJsonl) {
+        throw new SessionCoreError("importing a session is not supported", "unsupported");
+      }
+      const cwdOverride =
+        typeof input.cwd === "string" && input.cwd.length > 0 ? input.cwd : undefined;
+      try {
+        const result = await runtime.importFromJsonl(path, cwdOverride);
+        await rebind();
+        return { ...snapshot(), cancelled: result.cancelled };
+      } catch (error) {
+        // Pi's two documented import failures need actionable text: the renderer
+        // shows this message verbatim in the import dialog / hint.
+        const message = error instanceof Error ? error.message : String(error);
+        const name = error instanceof Error ? error.name : "";
+        if (name === "SessionImportFileNotFoundError" || /ENOENT|not found/i.test(message)) {
+          throw new SessionCoreError(`The session file was not found: ${path}`, "not_found");
+        }
+        if (name === "MissingSessionCwdError" || /cwd/i.test(message)) {
+          throw new SessionCoreError(
+            `The imported session's working folder no longer exists. Open it or import with a cwd override.`,
+            "missing_cwd",
+          );
+        }
+        throw new SessionCoreError(`Importing ${path} failed: ${message}`, "import_failed");
+      }
+    },
+
+    "session.changelog": async () => {
+      ensure();
+      if (!deps.readChangelog) {
+        throw new SessionCoreError("the changelog is not available", "unsupported");
+      }
+      return deps.readChangelog();
     },
 
     "session.navigateTree": async (params) => {
@@ -1189,6 +1318,18 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       return { aborted: true };
     },
 
+    "session.abortCompaction": () => {
+      ensure().abortCompaction?.();
+      emitState();
+      return { aborted: true };
+    },
+
+    "session.abortBranchSummary": () => {
+      ensure().abortBranchSummary?.();
+      emitState();
+      return { aborted: true };
+    },
+
     "model.cycle": async (params) => {
       const input = asRecord(params);
       const current = ensure();
@@ -1246,10 +1387,91 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     "settings.set":
       settingsSetHandler ??
       (() => notImplemented("settings.set", "the settings port is not configured")),
-    "bash.run": () =>
-      notImplemented("bash.run", "direct bash runs land with the composer (step 6)"),
-    "bash.abort": () =>
-      notImplemented("bash.abort", "direct bash runs land with the composer (step 6)"),
+    "bash.run": async (params) => {
+      const input = asRecord(params);
+      const command = requireString(input.command, "command").trim();
+      if (command.length === 0) {
+        throw new SessionCoreError("command must not be empty", "bad_request");
+      }
+      const current = ensure();
+      if (!current.executeBash) {
+        throw new SessionCoreError("running bash is not supported", "unsupported");
+      }
+      // Terminal Pi refuses a second command while one runs (`interactive-mode`
+      // checks `session.isBashRunning`); the run is not queued, so a double
+      // submit must say so instead of racing two shells.
+      if (current.isBashRunning === true) {
+        throw new SessionCoreError("a bash command is already running", "busy");
+      }
+      const excludeFromContext = input.excludeFromContext === true;
+      const id = `bash-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const sessionId = current.sessionId ?? undefined;
+      const runCwd = runtime?.services?.cwd ?? cwd;
+
+      // Pi's `user_bash` hook runs *before* execution: an extension may replace
+      // the executor or the result (plan step 7, D7). A thrown hook means the
+      // extension already reported the error; terminal Pi does not fall back.
+      let outcome: BashRunOutcome = {};
+      const port = deps.createBashPort?.(current) ?? null;
+      if (port) {
+        try {
+          outcome = await port.run(command, { excludeFromContext, cwd: runCwd });
+        } catch {
+          return { cancelled: true, intercepted: true };
+        }
+      }
+
+      const message = {
+        id,
+        role: "bashExecution",
+        command,
+        output: "",
+        cancelled: false,
+        truncated: false,
+        timestamp: Date.now(),
+        ...(excludeFromContext ? { excludeFromContext: true } : {}),
+      };
+      deps.emit("message_start", { message }, sessionId);
+      try {
+        const result: BashResultLike =
+          outcome.result ??
+          (await current.executeBash(command, undefined, {
+            excludeFromContext,
+            id,
+            ...(outcome.operations === undefined ? {} : { operations: outcome.operations }),
+          }));
+        // An intercepted result never reached the session: record it so the
+        // turn's context and the resumed transcript both contain the command.
+        if (outcome.result) {
+          current.recordBashResult?.(command, result, { excludeFromContext });
+        }
+        deps.emit(
+          "message_end",
+          {
+            message: {
+              ...message,
+              output: result.output,
+              exitCode: result.exitCode,
+              cancelled: result.cancelled === true,
+              truncated: result.truncated === true,
+              ...(result.fullOutputPath ? { fullOutputPath: result.fullOutputPath } : {}),
+            },
+          },
+          sessionId,
+        );
+        emitState();
+        return { result };
+      } catch (error) {
+        deps.emit("message_end", { message: { ...message, cancelled: true } }, sessionId);
+        emitState();
+        throw error;
+      }
+    },
+    "bash.abort": () => {
+      ensure().abortBash?.();
+      emitState();
+      return { aborted: true };
+    },
 
     "model.list": () => {
       const current = ensure();

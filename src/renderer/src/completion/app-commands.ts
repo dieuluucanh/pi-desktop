@@ -50,7 +50,23 @@ export type AppCommandAction =
   /** Opens the fork-from-message dialog for this session (plan step 11). */
   | { kind: "fork" }
   /** Exports this session to HTML and reveals it (plan step 11). */
-  | { kind: "export" };
+  | { kind: "export" }
+  /** Imports a session JSONL, replacing this one (plan step 14). */
+  | { kind: "import" }
+  /** Shows Pi's packaged changelog (plan step 15). */
+  | { kind: "changelog" }
+  /** Opens the shortcuts help (plan step 15). */
+  | { kind: "hotkeys" }
+  /** Closes this session tab (plan step 15). */
+  | { kind: "quit" }
+  /** Uploads the session as a secret gist (plan step 18). */
+  | { kind: "share" }
+  /** Builds a local bug-report zip (plan step 18). */
+  | { kind: "bug" }
+  /** Copies the last assistant answer (`/copy`, plan step 12). */
+  | { kind: "copyLast" }
+  /** Shows this session's file, id, tokens and cost (`/session`, plan step 12). */
+  | { kind: "sessionInfo" };
 
 export interface AppCommand {
   /** Without the leading slash. */
@@ -58,7 +74,7 @@ export interface AppCommand {
   description: string;
   argumentHint?: string;
   /** Which app-owned argument completer (and submit behaviour) this command uses. */
-  argumentKind?: "model" | "thinking" | "provider";
+  argumentKind?: "model" | "thinking" | "provider" | "exportFormat";
   action: AppCommandAction;
 }
 
@@ -143,8 +159,26 @@ export const APP_COMMANDS: readonly AppCommand[] = [
   },
   {
     name: "export",
-    description: "Export this session to HTML",
+    description: "Export this session (HTML by default, or JSONL)",
+    argumentHint: "[html|jsonl]",
+    argumentKind: "exportFormat",
     action: { kind: "export" },
+  },
+  {
+    name: "import",
+    description: "Replace this session with one from a JSONL file",
+    argumentHint: "[path]",
+    action: { kind: "import" },
+  },
+  {
+    name: "copy",
+    description: "Copy the last assistant answer",
+    action: { kind: "copyLast" },
+  },
+  {
+    name: "session",
+    description: "Show this session's file, tokens and cost",
+    action: { kind: "sessionInfo" },
   },
   {
     name: "model",
@@ -169,6 +203,32 @@ export const APP_COMMANDS: readonly AppCommand[] = [
     name: "trust",
     description: "Review project trust",
     action: { kind: "trust" },
+  },
+  {
+    name: "changelog",
+    description: "Show the Pi coding agent changelog",
+    action: { kind: "changelog" },
+  },
+  {
+    name: "hotkeys",
+    description: "Show every keyboard shortcut",
+    action: { kind: "hotkeys" },
+  },
+  {
+    name: "quit",
+    description: "Close this session tab",
+    action: { kind: "quit" },
+  },
+  {
+    name: "share",
+    description: "Share this session as a secret gist",
+    action: { kind: "share" },
+  },
+  {
+    name: "bug",
+    description: "Create a bug-report zip for this session",
+    argumentHint: "[what happened]",
+    action: { kind: "bug" },
   },
 ];
 

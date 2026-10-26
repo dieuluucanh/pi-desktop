@@ -23,7 +23,7 @@ export interface KeybindingDefinition {
 
 /**
  * The documented keybinding table, extracted from
- * `@earendil-works/pi-coding-agent@0.85.1` `dist/core/keybindings.d.ts`
+ * `@earendil-works/pi-coding-agent@1.4.0` `dist/core/keybindings.d.ts`
  * (`KEYBINDINGS`). `tests/shared/keybindings.test.ts` asserts the id set still
  * matches the SDK, so an upstream rename or addition turns into a failing test
  * instead of a silently unvalidated key.

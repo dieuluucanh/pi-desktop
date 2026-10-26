@@ -1,5 +1,5 @@
 import { fireEvent, render } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ShortcutDispatcher } from "../../src/renderer/src/shortcuts/ShortcutDispatcher";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
@@ -77,5 +77,50 @@ describe("ShortcutDispatcher app.tools.expand", () => {
     render(<ShortcutDispatcher />);
     fireEvent.keyDown(window, { key: "o", ctrlKey: true });
     expect(useAppStore.getState().toolsExpanded[TAB]).toBeUndefined();
+  });
+});
+
+describe("ShortcutDispatcher app.message.copy (plan step 12)", () => {
+  it("copies the last answer on Ctrl+X outside an editor", () => {
+    const copy = vi.fn(async () => true);
+    useAppStore.setState({ copyLastAssistant: copy });
+    render(<ShortcutDispatcher />);
+    fireEvent.keyDown(document.body, { key: "x", ctrlKey: true });
+    expect(copy).toHaveBeenCalledWith(TAB);
+  });
+
+  it("leaves Ctrl+X to the browser inside an editable target", () => {
+    render(<ShortcutDispatcher />);
+    const textarea = document.createElement("textarea");
+    document.body.appendChild(textarea);
+    const event = new KeyboardEvent("keydown", {
+      key: "x",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    textarea.dispatchEvent(event);
+    // The dispatcher must not preventDefault the native cut.
+    expect(event.defaultPrevented).toBe(false);
+    textarea.remove();
+  });
+
+  it("follows a keybindings.json remap of app.message.copy", () => {
+    const copy = vi.fn(async () => true);
+    useAppStore.setState({
+      copyLastAssistant: copy,
+      keybindings: keybindings({ "app.message.copy": ["ctrl+shift+c"] }),
+    });
+    render(<ShortcutDispatcher />);
+    const remapped = new KeyboardEvent("keydown", {
+      key: "C",
+      ctrlKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    document.body.dispatchEvent(remapped);
+    expect(remapped.defaultPrevented).toBe(true);
+    expect(copy).toHaveBeenCalledWith(TAB);
   });
 });

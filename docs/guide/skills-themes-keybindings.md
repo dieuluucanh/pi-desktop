@@ -46,6 +46,32 @@ The effective bindings are installed into the host, so extension components
 render the right `keyHint()` strings and extension shortcuts fire with the
 remapped key.
 
+## Desktop shortcuts
+
+The app owns a small set of actions that Pi does not (tabs, the command palette,
+the session browser, Settings, updates, find in transcript). They live in
+**Skills, themes & keys → Desktop shortcuts** as `UiPrefs.desktopKeybindings`, a
+separate map from `keybindings.json`:
+
+- **Change** starts capturing: press the chord (Backspace removes the last one,
+  Escape cancels). `Cmd`/`Meta` is not part of Pi's key grammar and is rejected.
+- A chord chip can be clicked to remove it; **Reset** restores that row's
+  defaults and drops the override.
+- Only rows that differ from the defaults are stored. A row whose chords match
+  the defaults again disappears from the map.
+- The menu's accelerators come from this registry, so remapping "New session"
+  also moves the File menu item. Menu accelerators are restricted to
+  menu/global actions — an accelerator fires before the renderer and would
+  swallow a composer key.
+- A real collision (another desktop action, a Pi binding, or a live extension
+  shortcut) is flagged per scope. Pi's own cross-modal duplicates stay
+  informational, exactly as in the `keybindings.json` editor.
+
+Pi actions (`app.message.copy`, `app.editor.external`, `app.tools.expand`,
+`app.message.followUp`, …) are **not** duplicated there: remap them in
+`keybindings.json` and the desktop dispatcher follows, because it resolves them
+from `keybindings.effective`.
+
 ## Shortcuts help
 
 `Ctrl/Cmd+/` opens the shortcuts dialog, grouped into desktop commands, Pi

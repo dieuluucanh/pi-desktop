@@ -61,8 +61,32 @@ describe("tui surface sanitizers", () => {
     expect(sanitizeTuiInput({ data: "" })).toBeNull();
   });
 
-  it("knows its slots", () => {
+  it("knows its slots and has no editor slot", () => {
     expect(isTuiSlot("custom")).toBe(true);
+    expect(isTuiSlot("editor")).toBe(false);
     expect(isTuiSlot("nope")).toBe(false);
+  });
+
+  it("ignores an old host's editor frame", () => {
+    const snapshot = sanitizeTuiSurfaceSnapshot({
+      active: true,
+      focus: "editor",
+      editor: { seq: 1, width: 10, height: 1, lines: ["EXTENSION EDITOR"], cursor: null },
+    });
+    expect(snapshot.focus).toBeNull();
+    expect("editor" in snapshot).toBe(false);
+    expect(snapshot.active).toBe(true);
+  });
+
+  it("sanitizes component-widget frames and bounds their count", () => {
+    const frame = (seq: number) => ({ seq, width: 20, height: 1, lines: ["widget"] });
+    const snapshot = sanitizeTuiSurfaceSnapshot({
+      active: true,
+      widgetsAbove: [frame(1), { broken: true }, frame(2)],
+      widgetsBelow: Array.from({ length: 20 }, (_, index) => frame(index + 10)),
+    });
+    expect(snapshot.widgetsAbove.map((entry) => entry.lines)).toEqual([["widget"], ["widget"]]);
+    expect(snapshot.widgetsBelow).toHaveLength(16);
+    expect(sanitizeTuiSurfaceSnapshot({}).widgetsBelow).toEqual([]);
   });
 });

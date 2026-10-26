@@ -14,17 +14,28 @@
 import type { ProviderSummary } from "../../../shared/providers";
 import { findAppCommand } from "./app-commands";
 import { fuzzyFilter } from "./fuzzy";
-import type { ModelCatalogEntry } from "../session/model-catalog";
 import type { CompletionItem } from "./types";
 
+/**
+ * The model fields a completion reads. Declared structurally so this module
+ * (checked by the node project, which also runs `tests/completion/**`) does not
+ * import the renderer's `model-catalog` module.
+ */
+export interface AppModelChoice {
+  key: string;
+  id: string;
+  provider: string;
+  label: string;
+}
+
 export interface AppArgumentSources {
-  models: readonly ModelCatalogEntry[];
+  models: readonly AppModelChoice[];
   thinkingLevels: readonly string[];
   providers: readonly ProviderSummary[];
 }
 
 export function completeModelArgument(
-  models: readonly ModelCatalogEntry[],
+  models: readonly AppModelChoice[],
   prefix: string,
 ): CompletionItem[] {
   return fuzzyFilter(models, prefix, (entry) => `${entry.provider}/${entry.id} ${entry.label}`).map(
@@ -65,6 +76,23 @@ export function completeLoginArgument(
   );
 }
 
+/** `/export [html|jsonl]` — the two formats the app can write (plan step 14). */
+export function completeExportFormatArgument(prefix: string): CompletionItem[] {
+  const formats = [
+    { value: "html", description: "Standalone HTML page" },
+    { value: "jsonl", description: "Pi session JSONL, re-importable" },
+  ];
+  return fuzzyFilter(formats, prefix, (format) => `${format.value} ${format.description}`).map(
+    (format) => ({
+      value: format.value,
+      label: format.value,
+      description: format.description,
+      source: "app",
+      appendSpace: false,
+    }),
+  );
+}
+
 /**
  * Dispatches by the command's `argumentKind`. Unknown commands and commands
  * without an argument kind return null, so the menu stays closed.
@@ -76,11 +104,11 @@ export function appArgumentItems(
 ): CompletionItem[] | null {
   const kind = findAppCommand(name)?.argumentKind;
   if (!kind) return null;
-  const items =
-    kind === "model"
-      ? completeModelArgument(sources.models, prefix)
-      : kind === "thinking"
-        ? completeThinkingArgument(sources.thinkingLevels, prefix)
-        : completeLoginArgument(sources.providers, prefix);
+  const items = ((): CompletionItem[] => {
+    if (kind === "model") return completeModelArgument(sources.models, prefix);
+    if (kind === "thinking") return completeThinkingArgument(sources.thinkingLevels, prefix);
+    if (kind === "exportFormat") return completeExportFormatArgument(prefix);
+    return completeLoginArgument(sources.providers, prefix);
+  })();
   return items.length > 0 ? items : null;
 }

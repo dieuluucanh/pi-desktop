@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { matchesKey } from "@earendil-works/pi-tui";
-import { bracketedPaste, domKeyToTerminalData } from "../../src/shared/terminal-keys";
+import {
+  bracketedPaste,
+  domKeyToTerminalData,
+  domWheelToTerminalData,
+} from "../../src/shared/terminal-keys";
 
 /**
  * DOM keys → terminal bytes (plan step 17).
@@ -57,5 +61,22 @@ describe("domKeyToTerminalData", () => {
     expect(data.startsWith("\x1b[200~")).toBe(true);
     expect(data.endsWith("\x1b[201~")).toBe(true);
     expect(data).toContain("hi\nthere");
+  });
+});
+
+describe("domWheelToTerminalData", () => {
+  it("encodes a plain wheel as the SGR sequence a TUI component parses", () => {
+    expect(domWheelToTerminalData({ deltaY: -120, col: 0, row: 0 })).toBe("\x1b[<64;1;1M");
+    expect(domWheelToTerminalData({ deltaY: 120, col: 9, row: 4 })).toBe("\x1b[<65;10;5M");
+  });
+
+  it("ignores horizontal, Ctrl (zoom) and Meta wheels", () => {
+    expect(domWheelToTerminalData({ deltaY: 0, deltaX: 40, col: 1, row: 1 })).toBeNull();
+    expect(domWheelToTerminalData({ deltaY: 120, ctrlKey: true, col: 1, row: 1 })).toBeNull();
+    expect(domWheelToTerminalData({ deltaY: 120, metaKey: true, col: 1, row: 1 })).toBeNull();
+  });
+
+  it("clamps negative pointer cells to the first row/column", () => {
+    expect(domWheelToTerminalData({ deltaY: 1, col: -5, row: -5 })).toBe("\x1b[<65;1;1M");
   });
 });

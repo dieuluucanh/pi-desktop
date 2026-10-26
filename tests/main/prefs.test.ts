@@ -21,6 +21,7 @@ describe("sanitizePrefs", () => {
     const result = sanitizePrefs({ theme: "light", somethingElse: true });
     expect(Object.keys(result).sort()).toEqual(
       [
+        "desktopKeybindings",
         "drafts",
         "onboardingCompletedAt",
         "privacyAcknowledged",

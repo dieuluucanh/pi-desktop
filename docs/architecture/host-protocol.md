@@ -93,16 +93,16 @@ drives the real bundle when `out/host/index.mjs` has been built.
 | Group             | Methods                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Where                                                                                                                             |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | transport         | `host.hello` (reports `role`), `host.ping`, `host.shutdown`, `host.blobs.read`, `host.metrics` (own RSS/heap/uptime)                                                                                                                                                                                                                                                                                                                                                                                                                            | `src/host/service.ts`                                                                                                             |
-| sessions          | `session.create`, `session.open`, `session.resume`, `session.list`, `session.new`, `session.switch`, `session.clone`, `session.fork`, `session.forkMessages`, `session.rename`, `session.reload`, `session.lastAssistantText`, `session.exportHtml`, `session.navigateTree`, `session.setLabel`                                                                                                                                                                                                                                                 | `src/host/session-core.ts`                                                                                                        |
+| sessions          | `session.create`, `session.open`, `session.resume`, `session.list`, `session.new`, `session.switch`, `session.clone`, `session.fork`, `session.forkMessages`, `session.rename`, `session.reload`, `session.lastAssistantText`, `session.exportHtml`, `session.exportJsonl`, `session.importJsonl`, `session.changelog`, `session.navigateTree`, `session.setLabel`                                                                                                                                                                              | `src/host/session-core.ts`                                                                                                        |
 | conversation      | `prompt` (images + `streamingBehavior`), `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `src/host/session-core.ts`                                                                                                        |
 | state             | `state.get`, `messages.get`, `entries.get` (`since` cursor), `tree.get`, `stats.get` (`contextUsage`, `tokens`, queue modes), `compact`, `tools.list`, `tools.setActive`, `commands.list`, `commands.complete` (a live command's `getArgumentCompletions`), `commands.run` (direct handler execution), `files.list` (workspace listing for `@` completion, rooted at the session's own cwd)                                                                                                                                                     | `src/host/session-core.ts`                                                                                                        |
 | models & thinking | `model.list`, `model.available`, `model.set`, `model.cycle`, `thinking.levels`, `thinking.set`, `thinking.cycle`                                                                                                                                                                                                                                                                                                                                                                                                                                | `src/host/session-core.ts`                                                                                                        |
-| session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `src/host/session-core.ts`                                                                                                        |
+| session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`, `session.abortCompaction`, `session.abortBranchSummary`                                                                                                                                                                                                                                                                                                                                                                                               | `src/host/session-core.ts`                                                                                                        |
 | settings          | `settings.get`, `settings.set`, `settings.raw` (read **or** write a whole scope), `settings.flush`; every response carries **both** scopes, the two file paths + mtimes, `drainErrors` and the project-trust flag. Writes are schema-validated: a named `SettingsManager` setter when Pi has one, otherwise an atomic whole-document edit, always with a backup before the first write                                                                                                                                                          | `src/host/settings.ts` + `src/host/sdk/settings.ts`, in both cores                                                                |
 | control host      | `settings.*`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `packages.*`, `project.inspect`, `project.trust`, `resources.list` (loads a project's resources with no session), `themes.*`, `keybindings.*`                                                                                                                                                                                                                          | `src/host/control-core.ts`                                                                                                        |
 | extensions hub    | `resources.list` (both cores): extensions/skills/prompts/themes with source, scope, origin, contributed tools/commands/shortcuts/flags, loader diagnostics and live `extension_error` history                                                                                                                                                                                                                                                                                                                                                   | `src/host/resources.ts` (+ `src/host/sdk/resources.ts`)                                                                           |
 | extension UI      | `oi.respond` + `oi.request` events; `oi.state` (the pushed snapshot, also readable on demand), `oi.editorText` (composer mirror), `completion.suggest`/`completion.apply` (host-run extension autocomplete providers). The full `ExtensionUIContext` is bound to every session via `bindSession`                                                                                                                                                                                                                                                | `src/host/extension-ui.ts` + `src/host/sdk/extension-ui.ts` (session host only)                                                   |
-| TUI surface       | `tui.state` (pull the whole surface snapshot), `tui.resize` (the renderer's measured rows/cols), `tui.input` (raw terminal bytes). The host emulates `TUI` for `ctx.ui.custom()`, resolves overlay geometry and renders `footer`/`header`/`editor`/`custom` to ANSI frames; the renderer converts them to HTML and forwards DOM keys                                                                                                                                                                                                            | `src/host/tui-surface.ts` + `src/host/sdk/tui-surface.ts`, `src/renderer/src/tui/*` (session host only)                           |
+| TUI surface       | `tui.state` (pull the whole surface snapshot), `tui.resize` (the **session column's** measured rows/cols), `tui.input` (raw terminal bytes). The host emulates `TUI` for `ctx.ui.custom()`, resolves overlay geometry and renders `custom`/`header`/`footer`/`widgetsAbove`/`widgetsBelow` to ANSI frames; the renderer converts them to HTML, docks a bottom sheet, floats any other overlay, and forwards DOM keys/wheel                                                                                                                      | `src/host/tui-surface.ts` + `src/host/sdk/tui-surface.ts`, `src/renderer/src/tui/*` (session host only)                           |
 | extension renders | `render.request` (run a registered `renderCall`/`renderResult`/message/entry renderer for one item and return ANSI lines), `render.markdown` (apply the registered `MarkdownTransformer`s to user/assistant text); `render.invalidate` is an event the host pushes when a renderer calls `context.invalidate()`                                                                                                                                                                                                                                 | `src/host/extension-renderers.ts` + the `bindSession` adapter (session host only)                                                 |
 | skills & themes   | `themes.list` (both cores: built-ins + loader themes + conventional dirs + `themes` settings paths, with resolved swatches and the active theme), `themes.import` (validates name/filename/content before writing `<agentDir>/themes/<name>.json`); `keybindings.get/set/reset` (both cores: `<agentDir>/keybindings.json` validated against the documented table, conflicts reported); `shortcuts.list/invoke` (**session host only**: `ExtensionRunner.getShortcuts` with the effective bindings, handler runs with the runner's own context) | `src/host/themes.ts` + `src/host/sdk/themes.ts`, `src/host/keybindings.ts`, `src/host/shortcuts.ts` + `src/host/sdk/shortcuts.ts` |
 
@@ -110,8 +110,14 @@ drives the real bundle when `out/host/index.mjs` has been built.
 
 | Methods                     | Step |
 | --------------------------- | ---- |
-| `bash.run`, `bash.abort`    | 6    |
 | `files.read`, `files.write` | 20   |
+
+`bash.run` / `bash.abort` are **implemented** (2026-10-26 session-parity step 7):
+`bash.run` emits Pi's `message_start`, runs `executeBash` behind the `user_bash`
+extension hook (forwarding `operations` or a full replacement result), streams
+`bash_execution_update` chunks under the synthetic id and finishes with
+`message_end`. `bash.abort` calls `abortBash`. A second command while one runs is
+refused with `busy`.
 
 ### Packages (plan step 14)
 
@@ -180,11 +186,14 @@ binds it to each session (`bindSession` in `src/host/index.ts`, now wired).
   `Theme` through the well-known global symbol (the SDK exports `initTheme` and
   `Theme` but not the `theme` proxy); `setTheme` also persists the `theme`
   setting and emits `oi.theme` so the app chrome follows.
-- **TUI surface** (plan step 17): `custom`, `setFooter`, `setHeader`,
-  `setEditorComponent` and `onTerminalInput` render through the emulated TUI
-  (see “Extension TUI surface” below). Without a surface (a control host, or a
-  test that does not build one) `custom()` returns `undefined` exactly as RPC
-  mode does, so an extension degrades instead of hanging.
+- **TUI surface** (plan step 17): `custom`, `setFooter`, `setHeader` and
+  `onTerminalInput` render through the emulated TUI (see “Extension TUI surface”
+  below). `setEditorComponent` is **recorded but never mounted** — the native
+  composer is always the editor (a TUI editor has no submit/autocomplete/action
+  bridge here). Every session bind resets the port’s session-scoped
+  registrations before the new `session_start`. Without a surface (a control
+  host, or a test that does not build one) `custom()` returns `undefined`
+  exactly as RPC mode does, so an extension degrades instead of hanging.
 
 Errors an extension throws while handling an event arrive as `extension_error`
 and render as a transcript notice; an extension asking to shut down emits
@@ -214,17 +223,29 @@ app emulates the TUI instead:
   every change (like `oi.state`); `tui.state`/`tui.resize`/`tui.input` are the
   renderer's pull/resize/key methods. `custom` is a single slot; a visible
   overlay takes it and reports `overlay: true` plus the resolved `bounds`.
+  `widgetsAbove`/`widgetsBelow` carry component-factory widgets (at most 16 each
+  after the sanitizer).
+- **Grid**: `tui.resize` is the **session column's** measured grid — the
+  transcript, status rows, composer/dock and footer — not the TUI surface's own
+  box. That keeps `terminal.rows` stable while a row-aware extension component
+  (the Workflow questionnaire) renders.
 - **Renderer** (`src/renderer/src/tui/TuiSurface.tsx`, `AnsiBlock.tsx`): parses
   SGR/OSC-8 into styled spans (no `dangerouslySetInnerHTML`), pads each line to
   the host's cell width, draws the cursor, scrolls a tall frame with wheel +
-  PageUp/PageDown, and turns DOM keys into terminal bytes with
-  `src/shared/terminal-keys.ts` (pinned against pi-tui's `matchesKey`). A paste
-  is framed as a bracketed paste, which is what Pi's `Input`/`Editor` expect.
-- **Layout**: a non-overlay `custom`/`editor` component replaces the composer
-  region; `header`/`footer` render above/below it; an overlay floats over the
-  session view at the host-resolved rectangle. `src/shared/ansi.ts` mirrors
-  pi-tui's `visibleWidth` (pinned by a corpus test) so wide characters and emoji
-  stay aligned.
+  PageUp/PageDown, forwards a wheel that fits as an SGR wheel sequence, and turns
+  DOM keys into terminal bytes with `src/shared/terminal-keys.ts` (pinned against
+  pi-tui's `matchesKey`). A paste is framed as a bracketed paste, which is what
+  Pi's `Input`/`Editor` expect.
+- **Layout**: a non-overlay `custom` component and a bottom-anchored full-width
+  overlay (the questionnaire) render as an in-flow dock in the composer region;
+  `header`/`footer` and component widgets render around it. Any other overlay
+  floats inside the session column at the host-resolved rectangle, with no dim
+  backdrop; the transcript stays visible and scrollable. `src/shared/ansi.ts`
+  mirrors pi-tui's `visibleWidth` (pinned by a corpus test) so wide characters
+  and emoji stay aligned.
+- **Dialogs**: `ctx.ui.select/confirm/input/editor` are inline docks, not
+  page-level modals. The renderer store owns their `opts.timeout` so a
+  background tab's dialog still expires.
 
 ### Extension renderers (plan step 18)
 
@@ -322,10 +343,11 @@ refuses project writes exactly as Pi does.
 | `session.new` / `session.switch` / `session.clone` / `session.fork`   | `new_session` / `switch_session` / `clone` / `fork`               |
 | `session.forkMessages` / `session.lastAssistantText`                  | `get_fork_messages` / `get_last_assistant_text`                   |
 | `session.rename`                                                      | `set_session_name`                                                |
-| `session.exportHtml`                                                  | `export_html`                                                     |
+| `session.exportHtml` / `session.exportJsonl` / `session.importJsonl`  | `export_html` / (`/export jsonl`, `importFromJsonl`)              |
+| `session.changelog`                                                   | **no RPC equivalent** (the TUI prints its own changelog)          |
 | `session.queueMode` (steering / follow-up)                            | `set_steering_mode` / `set_follow_up_mode`                        |
 | `session.autoCompaction` / `session.autoRetry` / `session.abortRetry` | `set_auto_compaction` / `set_auto_retry` / `abort_retry`          |
-| `bash.run` / `bash.abort` (declared)                                  | `bash` / `abort_bash`                                             |
+| `bash.run` / `bash.abort`                                             | `bash` / `abort_bash`                                             |
 | `oi.request` / `oi.respond`                                           | the `extension_ui_request` / `extension_ui_response` sub-protocol |
 
 Host methods with **no** RPC equivalent (the app needs them, RPC does not):

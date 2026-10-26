@@ -183,3 +183,80 @@ describe("settings store", () => {
     expect(useAppStore.getState().effectiveSetting("theme")).toBe("dark");
   });
 });
+
+describe("queue delivery modes (plan step 9)", () => {
+  function sessionTab(id: string, kind: "session" | "web" = "session") {
+    return {
+      id,
+      kind,
+      cwd: PROJECT,
+      title: id,
+      sessionFile: null,
+      status: "running" as const,
+      createdAt: 0,
+      lastActiveAt: 0,
+      model: "test-model",
+    };
+  }
+
+  it("fans a steering/follow-up mode change out to every open Pi tab", async () => {
+    const request = stubRequest((method) =>
+      Promise.resolve(
+        method === "settings.set"
+          ? snapshot({
+              settings: {
+                global: { steeringMode: "all", followUpMode: "all" },
+                project: {},
+              },
+            })
+          : snapshot(),
+      ),
+    );
+    useAppStore.setState({
+      tabs: [sessionTab("tab-1"), sessionTab("tab-2"), sessionTab("web-1", "web")],
+    });
+
+    await useAppStore.getState().setSetting("steeringMode", "all", "global");
+
+    expect(request).toHaveBeenCalledWith({
+      tabId: "tab-2",
+      method: "session.queueMode",
+      params: { kind: "steering", mode: "all" },
+    });
+    expect(request).toHaveBeenCalledWith({
+      tabId: "tab-2",
+      method: "session.queueMode",
+      params: { kind: "followUp", mode: "all" },
+    });
+    expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ tabId: "web-1" }));
+  });
+
+  it("reads the project scope first and tolerates a dead tab", async () => {
+    const request = stubRequest((method) => {
+      if (method === "settings.set") {
+        return Promise.resolve(
+          snapshot({
+            settings: { global: { steeringMode: "all" }, project: { followUpMode: "all" } },
+          }),
+        );
+      }
+      return Promise.resolve(snapshot());
+    });
+    useAppStore.setState({ tabs: [sessionTab("tab-1"), sessionTab("tab-2")] });
+    request.mockImplementation(async (input: { tabId?: string; method: string }) => {
+      if (input.method === "session.queueMode" && input.tabId === "tab-2") {
+        throw new Error("host gone");
+      }
+      if (input.method === "settings.set") {
+        return snapshot({
+          settings: { global: { steeringMode: "all" }, project: { followUpMode: "all" } },
+        });
+      }
+      return snapshot();
+    });
+
+    await expect(useAppStore.getState().setSetting("followUpMode", "all", "project")).resolves.toBe(
+      true,
+    );
+  });
+});

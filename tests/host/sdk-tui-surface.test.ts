@@ -96,6 +96,37 @@ describe("sdkEditorTheme", () => {
   });
 });
 
+describe("ctx.ui.setEditorComponent", () => {
+  it("records the factory without constructing or mounting the editor", async () => {
+    const { context, surfacePort, snapshots } = harness();
+    let created = 0;
+    const factory = (() => {
+      created += 1;
+      return {
+        render: () => ["EXTENSION EDITOR"],
+        handleInput: () => undefined,
+        invalidate: () => undefined,
+        dispose: () => undefined,
+      };
+    }) as never;
+
+    context.setEditorComponent(factory);
+    await tick();
+    expect(created).toBe(0);
+    expect(context.getEditorComponent()).toBe(factory);
+
+    // An unrelated render must not mount it either: the native composer stays.
+    surfacePort.setSize(24, 80);
+    await tick();
+    const snapshot = snapshots().at(-1);
+    expect(snapshot?.active ?? false).toBe(false);
+    expect(snapshot?.custom ?? null).toBeNull();
+
+    context.setEditorComponent(undefined);
+    expect(context.getEditorComponent()).toBeUndefined();
+  });
+});
+
 describe("ctx.ui.custom end-to-end", () => {
   it("renders a real SelectList and completes by keyboard", async () => {
     const { context, surfacePort, snapshots } = harness();

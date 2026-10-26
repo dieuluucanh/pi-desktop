@@ -174,6 +174,39 @@ const bridge: PiDesktopBridge = {
   getAppInfo: () => ipcRenderer.invoke(IPC.appInfo) as Promise<AppInfo>,
   openExternal: (url: string) => ipcRenderer.invoke(IPC.openExternal, url) as Promise<boolean>,
   pickDirectory: () => ipcRenderer.invoke(IPC.appPickDirectory) as Promise<string | null>,
+  pickFile: (options?: { title?: string; extensions?: string[] }) =>
+    ipcRenderer.invoke(IPC.appPickFile, options) as Promise<string | null>,
+  share: {
+    session: (sessionFile: string) =>
+      ipcRenderer.invoke(IPC.shareSession, sessionFile) as Promise<{
+        ok: boolean;
+        gistUrl?: string;
+        viewerUrl?: string;
+        file?: string;
+        error?: string;
+        detail?: string;
+      }>,
+    bugReport: (input: {
+      sessionFile?: string | null;
+      includeTranscript: boolean;
+      hint?: string | null;
+      versions: Record<string, string | null | undefined>;
+      diagnostics?: unknown;
+    }) =>
+      ipcRenderer.invoke(IPC.shareBugReport, input) as Promise<{
+        ok: boolean;
+        path?: string;
+        bytes?: number;
+        error?: string;
+      }>,
+    editor: (draft: string, setting?: string | null) =>
+      ipcRenderer.invoke(IPC.editorOpen, draft, setting) as Promise<{
+        ok: boolean;
+        text?: string;
+        error?: string;
+        source?: string | null;
+      }>,
+  },
   revealPath: (path: string) => ipcRenderer.invoke(IPC.appRevealPath, path) as Promise<boolean>,
   setTitle: (title: string) => ipcRenderer.invoke(IPC.appSetTitle, title) as Promise<boolean>,
   relaunch: () => ipcRenderer.invoke(IPC.appRelaunch) as Promise<boolean>,

@@ -8,10 +8,33 @@ import type { ExtensionWorkingState } from "../../../shared/extension-ui";
  * this strip above the composer. Custom `frames` animate at `intervalMs`; with no
  * frames the app's default pulsing marker is used. An empty `frames` array hides
  * the indicator, exactly as Pi documents.
+ *
+ * 2026-10-26 session-parity plan step 8: the row also renders for a running
+ * session with no extension state at all (an extension must not be required for
+ * a working indicator), and shows elapsed time plus the Esc-to-cancel hint.
  */
-export function WorkingRow({ working }: { working: ExtensionWorkingState }) {
+
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return minutes > 0 ? `${minutes}:${String(seconds).padStart(2, "0")}` : `${seconds}s`;
+}
+
+export function WorkingRow({
+  working,
+  startedAt = null,
+  showCancelHint = false,
+}: {
+  working: ExtensionWorkingState;
+  /** Epoch ms when the turn started; renders elapsed time when present. */
+  startedAt?: number | null;
+  /** Renders the desktop's Esc-to-cancel hint (plan step 8). */
+  showCancelHint?: boolean;
+}) {
   const frames = working.frames;
   const [frame, setFrame] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     if (!frames || frames.length <= 1) return;
@@ -21,10 +44,17 @@ export function WorkingRow({ working }: { working: ExtensionWorkingState }) {
     return () => clearInterval(interval);
   }, [frames, working.intervalMs]);
 
+  useEffect(() => {
+    if (startedAt === null) return;
+    const timer = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, [startedAt]);
+
   if (working.visible === false) return null;
   if (frames && frames.length === 0) return null;
 
   const marker = frames && frames.length > 0 ? (frames[frame % frames.length] ?? "") : "●";
+  const elapsed = startedAt === null ? null : formatElapsed(now - startedAt);
 
   return (
     <div
@@ -35,6 +65,8 @@ export function WorkingRow({ working }: { working: ExtensionWorkingState }) {
         {marker}
       </span>
       <span>{working.message ?? "Working…"}</span>
+      {elapsed === null ? null : <span className="text-ink-subtle">{elapsed}</span>}
+      {showCancelHint ? <span className="text-ink-subtle">Esc to cancel</span> : null}
     </div>
   );
 }

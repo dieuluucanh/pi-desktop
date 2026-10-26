@@ -31,6 +31,7 @@ function summary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     messageCount: 3,
     firstMessage: "Fix host protocol",
     allMessagesText: "Fix host protocol",
+    parentSessionPath: null,
     ...overrides,
   };
 }
@@ -214,6 +215,9 @@ describe("SessionTreeDialog", () => {
     render(<SessionTreeDialog />);
     await userEvent.click(screen.getByRole("button", { name: /Go/ }));
 
+    // Terminal Pi asks about the abandoned branch first (plan step 17).
+    await userEvent.click(screen.getByRole("button", { name: "No summary" }));
+
     await waitFor(() =>
       expect(request).toHaveBeenCalledWith({
         tabId: "tab-1",
@@ -284,5 +288,173 @@ describe("ForkDialog", () => {
 
     render(<ForkDialog />);
     expect(screen.getByText(/no earlier message/i)).toBeInTheDocument();
+  });
+});
+
+describe("SessionTreeDialog parity (plan step 17)", () => {
+  const tree = [
+    {
+      entry: { id: "e1", type: "message", message: { role: "user", content: "hello" } },
+      children: [
+        {
+          entry: {
+            id: "e2",
+            type: "message",
+            message: {
+              role: "assistant",
+              content: [{ type: "toolCall", name: "read", arguments: { path: "gizmo.txt" } }],
+            },
+          },
+          children: [
+            {
+              entry: { id: "e3", type: "message", message: { role: "user", content: "next" } },
+              children: [],
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  beforeEach(() => {
+    installBridge();
+    useAppStore.setState({
+      sessionTreeOpen: true,
+      sessionTreeTabId: "tab-1",
+      sessionTree: tree,
+      sessionTreeLeafId: "e3",
+      sessionTreeBusy: false,
+      sessionTreeError: null,
+      settings: { global: {}, project: {} },
+      tabs: [tab()],
+    });
+  });
+
+  it("searches the tree by tool name and arguments", async () => {
+    render(<SessionTreeDialog />);
+    expect(screen.getAllByTestId("tree-row")).toHaveLength(3);
+    await userEvent.type(screen.getByLabelText("Search this session tree"), "gizmo.txt");
+    expect(screen.getAllByTestId("tree-row")).toHaveLength(1);
+  });
+
+  it("folds a branch and hides its descendants", async () => {
+    render(<SessionTreeDialog />);
+    await userEvent.click(screen.getAllByRole("button", { name: "Fold this branch" })[0]!);
+    expect(screen.getAllByTestId("tree-row").length).toBeLessThan(3);
+    await userEvent.click(screen.getAllByRole("button", { name: "Unfold this branch" })[0]!);
+    expect(screen.getAllByTestId("tree-row")).toHaveLength(3);
+  });
+
+  it("persists the filter through settings.set", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async () => ({
+      settings: { global: { treeFilterMode: "all" }, project: {} },
+      errors: [],
+      files: {
+        global: { path: "/p/settings.json", exists: true, mtimeMs: 1 },
+        project: { path: "/w/.pi/settings.json", exists: false, mtimeMs: 0 },
+      },
+      projectTrusted: true,
+    }));
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+    useAppStore.setState({ project: { path: WORK, name: "pi" } });
+
+    render(<SessionTreeDialog />);
+    await userEvent.click(screen.getByTestId("tree-filter"));
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tabId: "control",
+          method: "settings.set",
+          params: expect.objectContaining({ key: "treeFilterMode", value: "no-tools" }),
+        }),
+      ),
+    );
+  });
+
+  it("asks about the abandoned branch and passes a custom prompt", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async (input: { method: string }) => {
+      if (input.method === "messages.get") return { messages: [] };
+      if (input.method === "tree.get") return { tree: [], leafId: "e1" };
+      return { cancelled: false };
+    });
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+
+    render(<SessionTreeDialog />);
+    await userEvent.click(screen.getAllByRole("button", { name: /Go/ })[0]!);
+    expect(screen.getByTestId("tree-summary-prompt")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Custom prompt…" }));
+    await userEvent.type(
+      screen.getByLabelText("Branch summary instructions"),
+      "just the decisions",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Summarize with prompt" }));
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: "tab-1",
+        method: "session.navigateTree",
+        params: {
+          targetId: "e1",
+          summarize: true,
+          customInstructions: "just the decisions",
+          replaceInstructions: true,
+        },
+      }),
+    );
+  });
+
+  it("summarizes without custom instructions when asked", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async (input: { method: string }) => {
+      if (input.method === "messages.get") return { messages: [] };
+      if (input.method === "tree.get") return { tree: [], leafId: "e1" };
+      return { cancelled: false };
+    });
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+
+    render(<SessionTreeDialog />);
+    await userEvent.click(screen.getAllByRole("button", { name: /Go/ })[0]!);
+    await userEvent.click(screen.getByRole("button", { name: "Summarize" }));
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: "tab-1",
+        method: "session.navigateTree",
+        params: { targetId: "e1", summarize: true },
+      }),
+    );
+  });
+
+  it("cancels an in-flight summary", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async () => ({ aborted: true }));
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+    useAppStore.setState({ sessionTreeBusy: true });
+
+    render(<SessionTreeDialog />);
+    expect(screen.getByTestId("tree-summary-busy")).toHaveTextContent(/Summarizing branch/);
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: "tab-1",
+        method: "session.abortBranchSummary",
+      }),
+    );
+  });
+
+  it("treats navigating to the current leaf as a no-op", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async () => ({}));
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+    useAppStore.setState({ sessionTreeLeafId: "e3", hint: null });
+
+    await useAppStore.getState().navigateTree("tab-1", "e3");
+
+    expect(request).not.toHaveBeenCalled();
+    expect(useAppStore.getState().hint).toBe("Already at this point.");
   });
 });

@@ -7,7 +7,7 @@
  * insists on both.
  */
 
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +17,14 @@ import { resolveAppRuntime } from "../../src/main/runtime/environment";
 import { HOST_PROTOCOL_VERSION } from "../../src/shared/host-protocol";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
+const expectedPiVersion = (
+  JSON.parse(
+    readFileSync(
+      join(repoRoot, "node_modules/@earendil-works/pi-coding-agent/package.json"),
+      "utf8",
+    ),
+  ) as { version: string }
+).version;
 const resolution = resolveAppRuntime({
   isPackaged: false,
   resourcesPath: join(repoRoot, "resources"),
@@ -52,6 +60,7 @@ describe.skipIf(!buildReady)("live host process", () => {
 
     expect(info.protocolVersion).toBe(HOST_PROTOCOL_VERSION);
     expect(info.nodeVersion).toMatch(/^v24\./);
+    expect(info.piVersion).toBe(expectedPiVersion);
     expect(info.sessionId).toBe("live-1");
     expect(host.port).toBe(38618);
 

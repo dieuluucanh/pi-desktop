@@ -41,6 +41,8 @@ import {
   ProjectTrustStore,
   SessionManager,
   createSdkCustomProviderStore,
+  createSdkBashPort,
+  readSdkChangelog,
   createSdkCommandRunner,
   createSdkExtensionBinder,
   createSdkKeybindingPort,
@@ -58,6 +60,7 @@ import {
   listAllSessions,
   observeSdkModelChanges,
   renameStoredSession,
+  VERSION,
 } from "./sdk";
 
 /**
@@ -176,6 +179,11 @@ function createCore(options: {
     // Extension commands: direct execution and argument completion through
     // the live runner (2026-10-24 command parity plan).
     wrapCommandRunner: (runner) => createSdkCommandRunner(runner as never),
+    // `!`/`!!` runs go through Pi's `user_bash` hook first (plan step 7), so an
+    // extension can supply operations or replace the execution.
+    createBashPort: (session) => createSdkBashPort(session.extensionRunner),
+    // `/changelog` reads Pi's packaged CHANGELOG.md through the file port.
+    readChangelog: () => readSdkChangelog((path) => settingsIo.read(path)),
     // Extension-driven model/thinking selections (`/profile`, role switches)
     // are announced only on the extension runner; refresh the snapshot from
     // that broadcast so the header/footer follow the live session.
@@ -459,7 +467,7 @@ export function runService(
         cwd,
         bridgePort: bridgePort === null ? null : Number(bridgePort),
         nodeVersion: process.version,
-        piVersion: null,
+        piVersion: VERSION,
         role,
         startedAt: Date.now(),
         buildId: env[HOST_BUILD_ENV]?.trim() || null,

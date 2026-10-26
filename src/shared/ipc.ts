@@ -47,6 +47,14 @@ export const IPC = {
   openExternal: "app:open-external",
   /** Renderer → main: native folder picker; resolves to null when cancelled. */
   appPickDirectory: "app:pick-directory",
+  /** Renderer → main: native file picker (session JSONL import). */
+  appPickFile: "app:pick-file",
+  /** Renderer → main: upload a session file as a secret gist (`/share`). */
+  shareSession: "share:session",
+  /** Renderer → main: build a local bug-report zip (`/bug`). */
+  shareBugReport: "share:bug-report",
+  /** Renderer → main: open the draft in the configured OS editor and wait. */
+  editorOpen: "editor:open",
   /** Renderer → main: reveal a path in the OS file manager. */
   appRevealPath: "app:reveal-path",
   /** Renderer → main: set the window title (app chrome owns it, not the menu). */
@@ -362,6 +370,40 @@ export interface WebBridge {
   onNavigationRequest(listener: (request: WebNavigationRequest) => void): () => void;
 }
 
+/** `/share` and `/bug` (2026-10-26 session-parity plan step 18). */
+export interface ShareBridge {
+  /** Uploads the session JSONL as a **secret** gist and returns the viewer URL. */
+  session(sessionFile: string): Promise<{
+    ok: boolean;
+    gistUrl?: string;
+    viewerUrl?: string;
+    file?: string;
+    error?: string;
+    detail?: string;
+  }>;
+  /** Builds a local bug-report zip; the path is revealed by the caller. */
+  bugReport(input: {
+    sessionFile?: string | null;
+    includeTranscript: boolean;
+    hint?: string | null;
+    versions: Record<string, string | null | undefined>;
+    diagnostics?: unknown;
+  }): Promise<{ ok: boolean; path?: string; bytes?: number; error?: string }>;
+  /**
+   * Opens the draft in the configured OS editor and resolves when it exits.
+   * `ok: false` with `error: "no_editor"` means "use the in-app editor".
+   */
+  editor(
+    draft: string,
+    setting?: string | null,
+  ): Promise<{
+    ok: boolean;
+    text?: string;
+    error?: string;
+    source?: string | null;
+  }>;
+}
+
 /** The complete API exposed to the renderer as `window.pi`. */
 export interface DiagnosticsSaveResult {
   ok: boolean;
@@ -406,6 +448,8 @@ export interface PiDesktopBridge {
   openExternal(url: string): Promise<boolean>;
   /** Native folder picker; resolves to null when the user cancels. */
   pickDirectory(): Promise<string | null>;
+  /** Native file picker for a session JSONL import; null when cancelled. */
+  pickFile(options?: { title?: string; extensions?: string[] }): Promise<string | null>;
   revealPath(path: string): Promise<boolean>;
   setTitle(title: string): Promise<boolean>;
   /** Relaunches the app; used after a profile-mode change (plan step 26). */
@@ -414,6 +458,7 @@ export interface PiDesktopBridge {
   onMenuCommand(listener: (command: MenuCommand) => void): () => void;
   prefs: PrefsBridge;
   sessions: SessionsBridge;
+  share: ShareBridge;
   projects: ProjectsBridge;
   office: OfficeBridge;
   integrations: IntegrationsBridge;

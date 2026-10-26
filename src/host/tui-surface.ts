@@ -158,6 +158,8 @@ export interface TuiSurfaceOptions {
   defaultCols?: number;
 }
 
+export type SurfaceWidgetPlacement = "aboveEditor" | "belowEditor";
+
 export interface TuiSurfacePort {
   /**
    * Runs a `ctx.ui.custom()` factory. The port supplies the emulated TUI and a
@@ -173,7 +175,15 @@ export interface TuiSurfacePort {
   ): Promise<T>;
   setFooter(invoke: ((tui: SurfaceTui) => SurfaceComponent) | undefined): void;
   setHeader(invoke: ((tui: SurfaceTui) => SurfaceComponent) | undefined): void;
-  setEditorComponent(invoke: ((tui: SurfaceTui) => SurfaceComponent) | undefined): void;
+  /**
+   * A component-factory widget (Pi's `ctx.ui.setWidget(key, factory)`), rendered
+   * above or below the editor/dock. `undefined` removes it from both placements.
+   */
+  setWidget(
+    key: string,
+    factory: ((tui: SurfaceTui) => SurfaceComponent) | undefined,
+    placement: SurfaceWidgetPlacement,
+  ): void;
   /** Renderer-reported grid; overlays re-resolve and `visible()` re-evaluates. */
   setSize(rows: number, cols: number): void;
   /** Raw terminal bytes from the renderer. */
@@ -328,10 +338,11 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
 
   let headerComponent: SurfaceComponent | null = null;
   let footerComponent: SurfaceComponent | null = null;
-  let editorComponent: SurfaceComponent | null = null;
   let customComponent: SurfaceComponent | null = null;
   let focusedComponent: SurfaceComponent | null = null;
   const overlays: OverlayEntry[] = [];
+  const widgetsAbove = new Map<string, SurfaceComponent>();
+  const widgetsBelow = new Map<string, SurfaceComponent>();
   let focusCounter = 0;
   let showHardwareCursor = false;
   let clearOnShrink = false;
@@ -406,6 +417,12 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
   };
 
   const buildSnapshot = (): TuiSurfaceSnapshot => {
+    const widgetFrames = (widgets: Map<string, SurfaceComponent>): TuiFrame[] =>
+      [...widgets.values()]
+        .map((component) => makeFrame(component, cols))
+        .filter((frame): frame is TuiFrame => frame !== null);
+    const widgetsAboveFrames = widgetFrames(widgetsAbove);
+    const widgetsBelowFrames = widgetFrames(widgetsBelow);
     const topOverlay = visibleOverlays().at(-1);
     if (topOverlay) {
       const { width, maxHeight } = resolveOverlayLayout(topOverlay.options, 0, cols, rows);
@@ -431,33 +448,34 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
           lines: clipped,
           cursor,
         },
-        editor: makeFrame(editorComponent, cols),
         footer: makeFrame(footerComponent, cols),
         header: makeFrame(headerComponent, cols),
+        widgetsAbove: widgetsAboveFrames,
+        widgetsBelow: widgetsBelowFrames,
       };
     }
     for (const entry of overlays) entry.bounds = undefined;
     const custom = makeFrame(customComponent, cols);
-    const editor = makeFrame(editorComponent, cols);
     const footer = makeFrame(footerComponent, cols);
     const header = makeFrame(headerComponent, cols);
     const focus: TuiSlot | null =
-      focusedComponent === null
-        ? null
-        : focusedComponent === customComponent
-          ? "custom"
-          : focusedComponent === editorComponent
-            ? "editor"
-            : null;
+      focusedComponent === null ? null : focusedComponent === customComponent ? "custom" : null;
     return {
-      active: Boolean(custom || editor || footer || header),
+      active: Boolean(
+        custom ||
+        footer ||
+        header ||
+        widgetsAboveFrames.length > 0 ||
+        widgetsBelowFrames.length > 0,
+      ),
       overlay: false,
       bounds: null,
       focus,
       custom,
-      editor,
       footer,
       header,
+      widgetsAbove: widgetsAboveFrames,
+      widgetsBelow: widgetsBelowFrames,
     };
   };
 
@@ -514,7 +532,7 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
       setProgress: () => undefined,
     },
     get children(): SurfaceComponent[] {
-      return [headerComponent, customComponent, editorComponent, footerComponent].filter(
+      return [headerComponent, customComponent, footerComponent].filter(
         (component): component is SurfaceComponent => component !== null,
       );
     },
@@ -527,14 +545,11 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
       flush();
     },
     invalidate: () => {
-      for (const component of [
-        headerComponent,
-        footerComponent,
-        editorComponent,
-        customComponent,
-      ]) {
+      for (const component of [headerComponent, footerComponent, customComponent]) {
         component?.invalidate?.();
       }
+      for (const component of widgetsAbove.values()) component.invalidate?.();
+      for (const component of widgetsBelow.values()) component.invalidate?.();
       for (const entry of overlays) entry.component.invalidate?.();
       scheduleRender();
     },
@@ -631,12 +646,14 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
   const clearSlots = (): void => {
     disposeComponent(headerComponent);
     disposeComponent(footerComponent);
-    disposeComponent(editorComponent);
     disposeComponent(customComponent);
     headerComponent = null;
     footerComponent = null;
-    editorComponent = null;
     customComponent = null;
+    for (const component of widgetsAbove.values()) disposeComponent(component);
+    for (const component of widgetsBelow.values()) disposeComponent(component);
+    widgetsAbove.clear();
+    widgetsBelow.clear();
     for (const entry of overlays) disposeComponent(entry.component);
     overlays.length = 0;
     setComponentFocus(null);
@@ -714,12 +731,20 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
       headerComponent = invoke ? safeCreate(invoke, tui) : null;
       scheduleRender();
     },
-    setEditorComponent(invoke) {
-      const previous = focusedComponent === editorComponent ? focusedComponent : null;
-      disposeComponent(editorComponent);
-      editorComponent = invoke ? safeCreate(invoke, tui) : null;
-      if (editorComponent) setComponentFocus(editorComponent);
-      else if (previous) setComponentFocus(null);
+
+    setWidget(key, factory, placement) {
+      for (const widgets of [widgetsAbove, widgetsBelow]) {
+        const existing = widgets.get(key);
+        if (!existing) continue;
+        disposeComponent(existing);
+        widgets.delete(key);
+      }
+      if (factory) {
+        const component = safeCreate(factory, tui);
+        if (component) {
+          (placement === "belowEditor" ? widgetsBelow : widgetsAbove).set(key, component);
+        }
+      }
       scheduleRender();
     },
 

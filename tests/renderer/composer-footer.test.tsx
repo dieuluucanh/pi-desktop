@@ -201,3 +201,34 @@ describe("composer footer mode chip (2026-10-19)", () => {
     expect(screen.getByTestId("extension-status-workflow")).toBeInTheDocument();
   });
 });
+
+describe("footer detail (plan step 12)", () => {
+  it("puts per-direction tokens, provider and auto markers in the tooltip", () => {
+    render(
+      <ComposerFooter
+        facts={{
+          context: CONTEXT,
+          cost: 0.01,
+          usage: { input: 100, output: 20, cacheRead: 5, cacheWrite: 1 },
+          provider: "anthropic",
+          auto: { compaction: true, retry: false },
+        }}
+      />,
+    );
+    const context = screen.getByText(/42% of/);
+    const title = context.parentElement?.getAttribute("title") ?? "";
+    expect(title).toContain("in 100");
+    expect(title).toContain("out 20");
+    expect(title).toContain("cache r 5 / w 1");
+    expect(title).toContain("provider anthropic");
+    expect(title).toContain("auto-compaction");
+    expect(screen.getByTestId("composer-auto-marker")).toHaveTextContent("auto");
+  });
+
+  it("omits the auto marker when neither feature is on", () => {
+    render(
+      <ComposerFooter facts={{ context: CONTEXT, auto: { compaction: false, retry: false } }} />,
+    );
+    expect(screen.queryByTestId("composer-auto-marker")).toBeNull();
+  });
+});

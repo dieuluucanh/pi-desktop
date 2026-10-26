@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { colorToRgb, parseColor } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -28,8 +29,23 @@ function sdkTheme(name: "dark" | "light"): {
       ),
       "utf8",
     ),
-  ) as { vars: Record<string, string>; colors: Record<string, string | number> };
-  return { vars: document.vars, colors: document.colors };
+  ) as {
+    vars: Record<string, string>;
+    colors: Record<string, string | number>;
+    export?: Record<string, string | number>;
+  };
+  // Pi 1.4 moved pageBg/cardBg into `export`; the host parser merges it.
+  return { vars: document.vars, colors: { ...document.colors, ...(document.export ?? {}) } };
+}
+
+function sdkColor(value: string | number, vars: Record<string, string>): string | null {
+  const raw = typeof value === "number" ? value : (vars[value] ?? value);
+  try {
+    const { r, g, b } = colorToRgb(parseColor(raw));
+    return `#${[r, g, b].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+  } catch {
+    return null;
+  }
 }
 
 describe("built-in swatches", () => {
@@ -37,7 +53,7 @@ describe("built-in swatches", () => {
     "matches the SDK's %s theme (drift fails the test)",
     (name) => {
       const sdk = sdkTheme(name);
-      const resolved = resolveThemeSwatches({ name, vars: sdk.vars, colors: sdk.colors });
+      const resolved = resolveThemeSwatches({ name, vars: sdk.vars, colors: sdk.colors }, sdkColor);
       expect(resolved).toEqual(BUILTIN_THEME_SWATCHES[name]);
     },
   );
@@ -110,8 +126,8 @@ describe("themeCssVariables", () => {
       "dark",
     );
     expect(variables["data-theme"]).toBe("dark");
-    expect(variables["--color-accent"]).toBe("#8abeb7");
-    expect(variables["--color-canvas"]).toBe("#18181e");
+    expect(variables["--color-accent"]).toBe("#a798d7");
+    expect(variables["--color-canvas"]).toBe("#21252c");
   });
 });
 

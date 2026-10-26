@@ -1,78 +1,34 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
+import { useEffect, useRef, type ReactElement } from "react";
 
-import { bracketedPaste, domKeyToTerminalData } from "../../../shared/terminal-keys";
+import {
+  bracketedPaste,
+  domKeyToTerminalData,
+  domWheelToTerminalData,
+} from "../../../shared/terminal-keys";
 import type { TuiFrame, TuiSurfaceSnapshot } from "../../../shared/tui-surface";
 import { useAppStore } from "../state/app-store";
 import { AnsiBlock } from "./AnsiBlock";
+import { overlayPixelRect, type CellSize, type TuiGrid } from "./tui-geometry";
 
 /**
- * The extension TUI surface (plan step 17).
+ * The extension TUI surface (plan step 17; grid contract amended 2026-10-26).
  *
  * `ctx.ui.custom()` renders ANSI frames in the host; this displays them in a
  * monospace grid, forwards DOM keys as terminal bytes (so Pi's components see
- * the input they expect), frames a paste, reports the measured grid so overlays
- * re-resolve, and scrolls a frame taller than its viewport.
+ * the input they expect), frames a paste and scrolls a frame taller than its
+ * viewport.
  *
- * `TuiSurface` owns the keyboard when a `custom` (non-overlay) or `editor`
- * component is mounted, replacing the composer; `TuiOverlay` floats over the
- * session view; `TuiSlotFrame` renders the read-only header/footer slots.
+ * The grid and the cell size belong to the session viewport, not to this
+ * component (2026-10-26 plan, step 1): `SessionView` measures the session
+ * column and passes `cell` in. Measuring the surface's own frame used to feed
+ * `terminal.rows` back into the extension and collapsed row-aware components
+ * (the workflow questionnaire) to a single row.
+ *
+ * `TuiSurface` owns the keyboard when a non-overlay `custom` component is
+ * mounted, replacing the composer; `TuiOverlay` floats over the session view;
+ * `TuiSlotFrame` renders the read-only header/footer slots. A custom editor is
+ * never mounted: the native composer is always the editor.
  */
-
-const FALLBACK_CELL = { width: 8, height: 16 };
-const DEFAULT_GRID = { rows: 24, cols: 80 };
-
-interface CellSize {
-  width: number;
-  height: number;
-}
-
-/**
- * Measures the monospace cell from a hidden probe. jsdom reports a zero-size
- * rect, so tests keep the fallback; the real app measures the live font.
- */
-function useCellSize(containerRef: React.RefObject<HTMLElement | null>): CellSize {
-  const [cell, setCell] = useState<CellSize>(FALLBACK_CELL);
-  useLayoutEffect(() => {
-    const probe = containerRef.current?.querySelector<HTMLElement>("[data-tui-cell-probe]");
-    if (!probe) return;
-    const rect = probe.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) setCell({ width: rect.width, height: rect.height });
-  }, [containerRef]);
-  return cell;
-}
-
-/** The grid the host should render for, reported on every change. */
-function useGrid(
-  containerRef: React.RefObject<HTMLElement | null>,
-  cell: CellSize,
-  report: (rows: number, cols: number) => void,
-): { rows: number; cols: number } {
-  const [grid, setGrid] = useState(DEFAULT_GRID);
-  useLayoutEffect(() => {
-    const node = containerRef.current;
-    if (!node) return;
-    const measure = (): void => {
-      const rect = node.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      const rows = Math.max(1, Math.floor(rect.height / cell.height));
-      const cols = Math.max(1, Math.floor(rect.width / cell.width));
-      setGrid((previous) =>
-        previous.rows === rows && previous.cols === cols ? previous : { rows, cols },
-      );
-    };
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [containerRef, cell.width, cell.height]);
-
-  useEffect(() => {
-    report(grid.rows, grid.cols);
-  }, [report, grid.rows, grid.cols]);
-
-  return grid;
-}
 
 interface SurfaceInputHandlers {
   onKeyDown: (event: React.KeyboardEvent) => void;
@@ -80,10 +36,11 @@ interface SurfaceInputHandlers {
   onWheel: (event: React.WheelEvent) => void;
 }
 
-/** Keys become terminal bytes; PageUp/PageDown scroll locally when overflowing. */
+/** Keys become terminal bytes; a plain wheel goes to the extension unless the fallback scroller overflows. */
 function useSurfaceInput(
   onInput: (data: string) => void,
   scrollRef: React.RefObject<HTMLDivElement | null>,
+  cell: CellSize,
 ): SurfaceInputHandlers {
   const onKeyDown = (event: React.KeyboardEvent): void => {
     if (event.nativeEvent.isComposing) return;
@@ -119,7 +76,25 @@ function useSurfaceInput(
     if (node && node.scrollHeight > node.clientHeight + 1) {
       node.scrollTop += event.deltaY;
       event.preventDefault();
+      return;
     }
+    // The frame fits its viewport: the wheel belongs to the extension (Pi's
+    // terminal components read raw SGR wheel sequences). The local scroller is
+    // only the fallback for a frame taller than the viewport.
+    const rect = node?.getBoundingClientRect();
+    const col = rect ? Math.floor((event.clientX - rect.left) / cell.width) : 0;
+    const row = rect ? Math.floor((event.clientY - rect.top) / cell.height) : 0;
+    const data = domWheelToTerminalData({
+      deltaY: event.deltaY,
+      deltaX: event.deltaX,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      col,
+      row,
+    });
+    if (data === null) return;
+    event.preventDefault();
+    onInput(data);
   };
 
   return { onKeyDown, onPaste, onWheel };
@@ -142,8 +117,8 @@ function Cursor({ frame, cell }: { frame: TuiFrame; cell: CellSize }): ReactElem
   );
 }
 
-/** Hidden probe used to measure one monospace cell. */
-function CellProbe(): ReactElement {
+/** Hidden probe the session viewport measures to size one monospace cell. */
+export function TuiCellProbe(): ReactElement {
   return (
     <span
       data-tui-cell-probe=""
@@ -172,89 +147,104 @@ export function TuiSlotFrame({ frame, className }: TuiSlotFrameProps): ReactElem
 export interface TuiSurfaceProps {
   tabId: string;
   snapshot: TuiSurfaceSnapshot;
+  /** The session viewport's monospace cell (measured by `SessionView`). */
+  cell: CellSize;
+  /** The session viewport's grid; sizes a docked sheet and clamps a float. */
+  grid: TuiGrid;
+  /**
+   * `dock` renders in flow in the composer region (a non-overlay `custom`
+   * panel, or a bottom-anchored full-width overlay such as the workflow
+   * questionnaire). `float` positions the overlay over the session column with
+   * no dim backdrop.
+   */
+  variant: "dock" | "float";
+  /** Bumped when the session view reclaims the keyboard for this surface. */
+  focusToken?: number;
 }
 
 /**
- * The keyboard-owning surface. Renders a panel in the composer's place for a
- * non-overlay `custom`/`editor` component, or a modal overlay when the host
- * resolved an overlay rectangle.
+ * The keyboard-owning surface. The dock replaces the composer region; the float
+ * is an absolute child of the session column. Neither is a page-level modal.
  */
-export function TuiSurface({ tabId, snapshot }: TuiSurfaceProps): ReactElement | null {
+export function TuiSurface({
+  tabId,
+  snapshot,
+  cell,
+  grid,
+  variant,
+  focusToken = 0,
+}: TuiSurfaceProps): ReactElement | null {
   const sendTuiInput = useAppStore((state) => state.sendTuiInput);
-  const resizeTuiSurface = useAppStore((state) => state.resizeTuiSurface);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const cell = useCellSize(containerRef);
-  const report = (rows: number, cols: number): void => resizeTuiSurface(tabId, rows, cols);
-  useGrid(containerRef, cell, report);
-  const input = useSurfaceInput((data) => sendTuiInput(tabId, data), scrollRef);
+  const input = useSurfaceInput((data) => sendTuiInput(tabId, data), scrollRef, cell);
 
-  const frame = snapshot.custom ?? snapshot.editor;
-  const isOverlay = snapshot.overlay && snapshot.bounds !== null && snapshot.custom !== null;
+  const frame = snapshot.custom;
   useEffect(() => {
     if (frame) containerRef.current?.focus();
-  }, [frame]);
+  }, [frame, focusToken]);
 
   if (!frame) return null;
 
   const body = (
-    <>
-      <CellProbe />
-      <div ref={scrollRef} className="max-h-72 overflow-auto px-2 pb-2" onWheel={input.onWheel}>
-        <div className="relative inline-block">
-          <AnsiBlock frame={frame} className="font-mono text-xs leading-tight" selection />
-          <Cursor frame={frame} cell={cell} />
-        </div>
+    <div
+      ref={scrollRef}
+      className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+      onWheel={input.onWheel}
+    >
+      <div className="relative inline-block">
+        <AnsiBlock frame={frame} className="font-mono text-xs leading-tight" selection />
+        <Cursor frame={frame} cell={cell} />
       </div>
-    </>
+    </div>
   );
 
-  if (isOverlay) {
+  if (variant === "float") {
     const bounds = snapshot.bounds;
+    const column = { width: grid.cols * cell.width, height: grid.rows * cell.height };
+    const rect = bounds
+      ? overlayPixelRect(bounds, cell, column)
+      : { top: 0, left: 0, width: column.width, height: frame.height * cell.height };
     return (
-      <div className="absolute inset-0 z-40" data-tui-overlay="">
-        <div className="absolute inset-0 bg-black/40" />
-        <div
-          ref={containerRef}
-          tabIndex={0}
-          autoFocus
-          data-tui-surface="overlay"
-          aria-label="Extension dialog"
-          // The overlay owns the keyboard while it is up, so it wears the
-          // accent border (plan step 2).
-          className="absolute overflow-hidden rounded-sm border border-accent bg-surface shadow-lg outline-none"
-          style={{
-            top: (bounds?.row ?? 0) * cell.height,
-            left: (bounds?.col ?? 0) * cell.width,
-            width: (bounds?.width ?? 40) * cell.width,
-          }}
-          onKeyDown={input.onKeyDown}
-          onPaste={input.onPaste}
-        >
-          {body}
-        </div>
+      <div
+        ref={containerRef}
+        tabIndex={0}
+        autoFocus
+        data-tui-overlay=""
+        data-tui-surface="overlay"
+        aria-label="Extension dialog"
+        className="absolute z-20 flex flex-col overflow-hidden border border-line bg-surface outline-none"
+        style={rect}
+        onKeyDown={input.onKeyDown}
+        onPaste={input.onPaste}
+      >
+        {body}
       </div>
     );
   }
 
+  // The dock is a real flex child of the session column: it never floats, the
+  // transcript shrinks above it, and a component taller than the column scrolls
+  // inside it instead of covering the transcript.
+  const dockMaxHeight = grid.rows * cell.height;
   return (
     <div
       ref={containerRef}
       tabIndex={0}
       autoFocus
-      data-tui-surface="panel"
-      aria-label="Extension input"
-      // While the panel is up it *is* the editor: the composer is gone and the
-      // keys go to the extension. The caption says that in words and the
-      // accent border says it at a glance (plan step 2).
-      className="mx-3 my-2 max-h-80 overflow-hidden rounded-sm border border-accent bg-sunken outline-none"
+      data-tui-surface="dock"
+      aria-label={snapshot.overlay ? "Extension dialog" : "Extension input"}
+      className="relative flex min-h-0 shrink flex-col overflow-hidden border-t border-line bg-surface outline-none"
+      style={{ maxHeight: dockMaxHeight }}
       onKeyDown={input.onKeyDown}
       onPaste={input.onPaste}
     >
-      <div className="flex items-center gap-2 border-b border-line px-2 py-1 text-[11px] text-ink-faint">
-        <span className="font-medium text-ink-muted">Extension UI</span>
-        <span>keys are forwarded to the extension</span>
-      </div>
+      {snapshot.overlay ? null : (
+        <div className="flex shrink-0 items-center gap-2 border-b border-line px-2 py-1 text-[11px] text-ink-faint">
+          <span className="font-medium text-ink-muted">Extension UI</span>
+          <span>keys are forwarded to the extension</span>
+        </div>
+      )}
       {body}
     </div>
   );

@@ -155,6 +155,7 @@ import { appCommandNames, resolveCommandInput } from "../completion/dispatch";
 import type { HostCommandEntry } from "../completion/command-source";
 import type { FileListSnapshot } from "../completion/file-source";
 import { appArgumentItems } from "../completion/app-arguments";
+import { collapsePastes, expandPasteMarkers, pasteMarkerText } from "../session/paste-markers";
 import type { CompletionItem, CompletionSource } from "../completion/types";
 import {
   isUnsupportedCommandComplete,
@@ -222,6 +223,31 @@ const appliedEditorSeq = new Map<string, number>();
 
 /** Per-tab debounce for the `oi.editorText` mirror, so typing is not one frame per key. */
 const editorTextTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/**
+ * Extension dialog timeouts. The extension's `opts.timeout` must fire even when
+ * its tab is in the background (the inline dock unmounts then), so the store
+ * owns the timer instead of the component's countdown.
+ */
+const extensionDialogTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearExtensionDialogTimer(id: string): void {
+  const timer = extensionDialogTimers.get(id);
+  if (timer !== undefined) clearTimeout(timer);
+  extensionDialogTimers.delete(id);
+}
+
+/** Drop every queued dialog whose tab is no longer open. */
+function purgeClosedTabDialogs(openTabs: ReadonlySet<string>): void {
+  for (const dialog of useAppStore.getState().extensionDialogs) {
+    if (!openTabs.has(dialog.tabId)) clearExtensionDialogTimer(dialog.id);
+  }
+  useAppStore.setState({
+    extensionDialogs: useAppStore
+      .getState()
+      .extensionDialogs.filter((dialog) => openTabs.has(dialog.tabId)),
+  });
+}
 
 /** In-flight ensures, so focus + click + first keystroke share one activation. */
 const sessionEnsuring = new Map<string, Promise<boolean>>();
@@ -328,9 +354,71 @@ export interface AppStateShape {
   sessionTree: unknown;
   sessionTreeLeafId: string | null;
   sessionTreeError: string | null;
+  /**
+   * Pasted bodies behind the composer's `[paste #N …]` markers (plan step 20).
+   * Renderer memory only: never persisted, so a 2 MB paste cannot reach
+   * `app-state.json` (D15).
+   */
+  pasteBodies: Record<string, Record<number, string>>;
+  pasteCounter: number;
+  /** Registers a large paste and returns the marker to insert. */
+  registerPaste: (tabId: string, text: string) => string;
+  /** Replaces every known marker with its body (used before sending). */
+  expandPastes: (tabId: string, text: string) => string;
+
+  /** Expanded editor (plan step 21): a large in-app textarea for the draft. */
+  expandedEditorOpen: boolean;
+  expandedEditorError: string | null;
+  expandedEditorBusy: boolean;
+  openExpandedEditor: (tabId: string) => void;
+  closeExpandedEditor: () => void;
+  /** Writes the edited text back into the composer draft. */
+  saveExpandedEditor: (tabId: string, text: string) => void;
+  /** Opens the configured OS editor and waits for it (best effort). */
+  openExternalEditor: (tabId: string) => Promise<void>;
+
+  /** `/share` and `/bug` (plan step 18). */
+  shareOpen: boolean;
+  shareMode: "share" | "bug";
+  shareStatus: "idle" | "running" | "done" | "error";
+  shareResult: {
+    gistUrl?: string;
+    viewerUrl?: string;
+    file?: string;
+    path?: string;
+    bytes?: number;
+  } | null;
+  shareError: string | null;
+  shareErrorCode: string | null;
+  shareIncludeTranscript: boolean;
+  shareHint: string | null;
+  openShare: (tabId: string) => Promise<void>;
+  openBugReport: (tabId: string, hint?: string) => Promise<void>;
+  setShareIncludeTranscript: (include: boolean) => void;
+  runBugReport: () => Promise<void>;
+  closeShare: () => void;
+
+  /** `/changelog` (plan step 15): Pi's packaged changelog text. */
+  changelogOpen: boolean;
+  changelogPath: string | null;
+  changelogText: string | null;
+  changelogError: string | null;
+  openChangelog: () => Promise<void>;
+  closeChangelog: () => void;
+
   /** The fork dialog's candidates (Pi's `get_fork_messages`). */
   forkOpen: boolean;
   forkCandidates: Array<{ entryId: string; text: string }>;
+
+  /** `/session` (plan step 12): the live `stats.get` payload for one tab. */
+  sessionInfoOpen: boolean;
+  sessionInfoTabId: string | null;
+  sessionInfoData: SessionInfoView | null;
+  sessionInfoError: string | null;
+  openSessionInfo: (tabId: string) => Promise<void>;
+  closeSessionInfo: () => void;
+  /** `/copy` and `Ctrl+X`: the last assistant answer, without touching the composer. */
+  copyLastAssistant: (tabId: string) => Promise<boolean>;
 
   setView: (view: AppView) => void;
   /**
@@ -438,6 +526,8 @@ export interface AppStateShape {
   /** `clearQueue` then `abort`, restoring the queued text into the draft. */
   stopRun: (tabId: string) => Promise<void>;
   clearQueue: (tabId: string) => Promise<void>;
+  abortRetry: (tabId: string) => Promise<void>;
+  abortCompaction: (tabId: string) => Promise<void>;
   historyStep: (tabId: string, direction: 1 | -1) => string | null;
 
   /** Completion engine (plan step 7). */
@@ -508,6 +598,10 @@ export interface AppStateShape {
   toggleModelScope: (tabId: string, provider: string, id: string) => Promise<void>;
   /** Re-reads `enabledModels` into each open session (no write). */
   applyModelScopeToTabs: (exceptTabId?: string) => Promise<void>;
+  /** Pushes the persisted queue modes into every open Pi tab (plan step 9). */
+  applyQueueModeToTabs: (exceptTabId?: string) => Promise<void>;
+  /** `clearQueue` and put every queued message back in the draft (Alt+Up). */
+  restoreQueue: (tabId: string) => Promise<void>;
   /** Pulls enabledModels from disk into every live tab (focus/reload). */
   syncModelScopesFromDisk: () => Promise<void>;
   setViewMode: (mode: ViewMode) => void;
@@ -863,8 +957,17 @@ export interface AppStateShape {
   navigateTree: (
     tabId: string,
     targetId: string,
-    options?: { summarize?: boolean; label?: string },
+    options?: {
+      summarize?: boolean;
+      label?: string;
+      customInstructions?: string;
+      replaceInstructions?: boolean;
+    },
   ) => Promise<void>;
+  /** Cancels an in-flight branch summary (plan step 17). */
+  abortBranchSummary: (tabId: string) => Promise<void>;
+  /** True while `navigateTree` is summarizing; the row offers Cancel. */
+  sessionTreeBusy: boolean;
   setEntryLabel: (tabId: string, targetId: string, label: string | null) => Promise<void>;
   /** The fork dialog: Pi's user messages, then fork at the chosen entry. */
   openFork: (tabId: string) => Promise<void>;
@@ -872,6 +975,42 @@ export interface AppStateShape {
   forkFrom: (tabId: string, entryId: string) => Promise<void>;
   /** Export the session to HTML and reveal the written file. */
   exportSessionHtml: (tabId: string) => Promise<void>;
+  /** JSONL export (`/export jsonl`, plan step 14). */
+  exportSessionJsonl: (tabId: string) => Promise<void>;
+  /** A pending `/import`: the path is confirmed before the session is replaced. */
+  importPrompt: { tabId: string; path: string } | null;
+  /** Picks a JSONL file (or uses `path`) and asks for confirmation. */
+  requestImport: (tabId: string, path?: string) => Promise<void>;
+  confirmImport: () => Promise<void>;
+  cancelImport: () => void;
+}
+
+/** Why a tab's `/session` dialog is empty or failed. */
+export interface SessionInfoView {
+  tabId: string;
+  sessionId: string | null;
+  sessionFile: string | null;
+  sessionName: string | null;
+  cwd: string;
+  model: { id?: string; provider?: string; name?: string } | null;
+  thinkingLevel: string | null;
+  messageCount: number;
+  toolCount: number;
+  streaming: boolean;
+  pendingMessages: number;
+  contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } | null;
+  tokens: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    total: number;
+    cost: number;
+  } | null;
+  steeringMode: string | null;
+  followUpMode: string | null;
+  autoCompaction: boolean;
+  autoRetry: boolean;
 }
 
 /** How long a `files.list` result is reused before it is fetched again. */
@@ -1148,8 +1287,31 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   sessionTree: null,
   sessionTreeLeafId: null,
   sessionTreeError: null,
+  sessionTreeBusy: false,
   forkOpen: false,
   forkCandidates: [],
+  importPrompt: null,
+  pasteBodies: {},
+  pasteCounter: 1,
+  expandedEditorOpen: false,
+  expandedEditorError: null,
+  expandedEditorBusy: false,
+  shareOpen: false,
+  shareMode: "share",
+  shareStatus: "idle",
+  shareResult: null,
+  shareError: null,
+  shareErrorCode: null,
+  shareIncludeTranscript: false,
+  shareHint: null,
+  changelogOpen: false,
+  changelogPath: null,
+  changelogText: null,
+  changelogError: null,
+  sessionInfoOpen: false,
+  sessionInfoTabId: null,
+  sessionInfoData: null,
+  sessionInfoError: null,
   sendModes: {},
   draftHistory: {},
   historyIndex: {},
@@ -1628,6 +1790,26 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       get().clearStaleHost(envelope.tabId);
       get().invalidateCommands(envelope.tabId);
     }
+    // An extension (or `/clone`, `/new`, `/import`) can replace the session
+    // behind this tab. When the session id actually changed, the old transcript
+    // belongs to a different conversation: reset it and hydrate the new one
+    // (plan step 13). A same-id rebind keeps its rows and just says so.
+    const replaced = envelope.events.filter((entry) => entry.event === "session_replaced").at(-1);
+    let replacedReset = false;
+    if (replaced) {
+      const next = (replaced.payload ?? {}) as { sessionId?: string | null };
+      const nextId = typeof next.sessionId === "string" ? next.sessionId : null;
+      const previous = (
+        get().sessionStates[envelope.tabId] as { sessionId?: string | null } | undefined
+      )?.sessionId;
+      const previousId = typeof previous === "string" ? previous : null;
+      if (nextId !== null && nextId !== previousId) {
+        get().resetTranscript(envelope.tabId);
+        get().invalidateCommands(envelope.tabId);
+        void get().hydrateTranscript(envelope.tabId);
+        replacedReset = true;
+      }
+    }
     // A trust refusal is a project-level question, not transcript content: raise
     // the prompt and keep it out of the message list (plan step 10).
     const trustEntry = envelope.events.find((entry) => entry.event === "project_trust");
@@ -1668,6 +1850,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       (entry) =>
         entry.event !== "project_trust" &&
         entry.event !== "model_scope_changed" &&
+        // A replaced session's notice would land on the fresh transcript before
+        // hydration and read as if something went wrong; the rows themselves
+        // are the announcement (plan step 13).
+        !(replacedReset && entry.event === "session_replaced") &&
         !EXTENSION_UI_EVENTS.has(entry.event),
     );
     if (rest.length === 0) return;
@@ -1815,6 +2001,17 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       const dialog = parseExtensionDialogRequest(entry.payload, tabId);
       if (!dialog) return;
       set({ extensionDialogs: [...get().extensionDialogs, dialog] });
+      // The extension's own timeout is enforced here, not in the dock: a
+      // background tab's dock is not mounted, but the extension must still be
+      // unblocked when the countdown expires.
+      clearExtensionDialogTimer(dialog.id);
+      if (dialog.timeout !== null && dialog.timeout > 0) {
+        const timer = setTimeout(() => {
+          extensionDialogTimers.delete(dialog.id);
+          void get().answerExtensionDialog(dialog, { cancelled: true });
+        }, dialog.timeout);
+        extensionDialogTimers.set(dialog.id, timer);
+      }
       // A dialog belongs to its tab, so bring that tab forward rather than
       // letting the extension block behind a background tab (plan risk R5).
       if (get().activeTabId !== tabId) void get().activateTab(tabId);
@@ -1847,6 +2044,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   answerExtensionDialog: async (dialog, answer) => {
+    clearExtensionDialogTimer(dialog.id);
     const api = bridge();
     set({ extensionDialogs: get().extensionDialogs.filter((entry) => entry.id !== dialog.id) });
     if (!api?.sessions) return;
@@ -2011,7 +2209,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       tabId,
       setTimeout(() => {
         editorTextTimers.delete(tabId);
-        get().reportEditorText(tabId, useAppStore.getState().prefs.drafts[tabId] ?? "");
+        // The host's `getEditorText()` must see the body, not the marker
+        // (plan step 20, D15: the textarea is the display).
+        const draft = useAppStore.getState().prefs.drafts[tabId] ?? "";
+        get().reportEditorText(tabId, get().expandPastes(tabId, draft));
       }, EDITOR_TEXT_DELAY_MS),
     );
   },
@@ -2228,6 +2429,72 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     );
   },
 
+  /**
+   * Pushes `steeringMode` / `followUpMode` into the live agents (plan step 9).
+   *
+   * A Settings write goes through the control host, so the open sessions keep
+   * the modes they were constructed with until reload. Terminal Pi applies both
+   * live (`setSteeringMode`/`setFollowUpMode`); the fan-out mirrors
+   * `applyModelScopeToTabs`, skipping web tabs and tolerating a dead one.
+   */
+  applyQueueModeToTabs: async (exceptTabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    const settings = get().settings;
+    const read = (key: "steeringMode" | "followUpMode"): string | null => {
+      const value = settings?.project?.[key] ?? settings?.global?.[key];
+      return typeof value === "string" ? value : null;
+    };
+    const steering = read("steeringMode");
+    const followUp = read("followUpMode");
+    if (!steering && !followUp) return;
+    const targets = get().tabs.filter((tab) => tab.id !== exceptTabId && tab.kind !== "web");
+    await Promise.all(
+      targets.map(async (tab) => {
+        try {
+          if (steering) {
+            await api.sessions.request({
+              tabId: tab.id,
+              method: "session.queueMode",
+              params: { kind: "steering", mode: steering },
+            });
+          }
+          if (followUp) {
+            await api.sessions.request({
+              tabId: tab.id,
+              method: "session.queueMode",
+              params: { kind: "followUp", mode: followUp },
+            });
+          }
+        } catch {
+          // A starting/crashed tab converges on its next session or /reload.
+        }
+        return undefined;
+      }),
+    );
+  },
+
+  restoreQueue: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      const result = (await api.sessions.request({ tabId, method: "clearQueue" })) as {
+        cleared?: { steering?: string[]; followUp?: string[] };
+      };
+      // Terminal Pi restores steering first, then follow-ups, each on its own
+      // line, so the order the user queued them survives.
+      const restored = [
+        ...(result?.cleared?.steering ?? []),
+        ...(result?.cleared?.followUp ?? []),
+      ].join("\n\n");
+      if (restored.length === 0) return;
+      const current = get().prefs.drafts[tabId] ?? "";
+      get().setDraft(tabId, current.length > 0 ? `${restored}\n\n${current}` : restored);
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
   syncModelScopesFromDisk: async () => {
     const now = Date.now();
     if (now - lastScopeSyncAt < 2_000) return;
@@ -2255,7 +2522,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // renderer still showed idle, and a streamed send needs a delivery mode.
     const running = get().tabs.find((entry) => entry.id === tabId)?.status === "running";
     const mode = running ? (options.mode ?? get().sendModes[tabId] ?? "steer") : undefined;
-    const params: Record<string, unknown> = { text: trimmed };
+    // A `[paste #N …]` marker is display sugar: the model must receive the body
+    // (plan step 20).
+    const params: Record<string, unknown> = { text: get().expandPastes(tabId, trimmed) };
     if (options.images && options.images.length > 0) params.images = options.images;
     if (mode) params.streamingBehavior = mode;
     try {
@@ -2274,7 +2543,41 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
    * sent, so an unknown command becomes a hint instead of a literal prompt.
    */
   sendPrompt: async (tabId, text, options = {}) => {
-    if (text.trim().startsWith("/")) {
+    const trimmedInput = text.trim();
+    if (trimmedInput.startsWith("!")) {
+      const excludeFromContext = trimmedInput.startsWith("!!");
+      const command = trimmedInput.slice(excludeFromContext ? 2 : 1).trim();
+      if (command.length === 0) return false;
+      const api = bridge();
+      if (!api?.sessions) return false;
+      const tab = get().tabs.find((entry) => entry.id === tabId);
+      if (!tab) return false;
+      // Terminal Pi refuses a second command while one runs. Refusing here too
+      // keeps the text in the composer instead of bouncing it off the host.
+      const state = get().sessionStates[tabId] as { bashRunning?: boolean } | undefined;
+      if (state?.bashRunning === true) {
+        set({ hint: "A shell command is already running — press Esc to cancel it first." });
+        return false;
+      }
+      if (tab.status !== "running") {
+        const ready = await get().ensureSession(tabId, { force: true });
+        if (!ready) return false;
+      }
+      try {
+        await api.sessions.request({
+          tabId,
+          method: "bash.run",
+          params: { command, excludeFromContext },
+        });
+        get().setDraft(tabId, "");
+        rememberDraft(tabId, trimmedInput);
+        return true;
+      } catch (error) {
+        get().noteFailure(error);
+        return false;
+      }
+    }
+    if (trimmedInput.startsWith("/")) {
       const outcome = await get().runCommandInput(tabId, text, options);
       // `handled` covers an executed command, a view switch and an unknown name:
       // in every one of those cases the text was consumed, not sent as prose.
@@ -2587,7 +2890,46 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return { handled: true, sent: false };
     }
     if (action.kind === "export") {
-      await get().exportSessionHtml(tabId);
+      const format = argument.trim().toLowerCase();
+      if (format.length === 0 || format === "html") {
+        await get().exportSessionHtml(tabId);
+      } else if (format === "jsonl") {
+        await get().exportSessionJsonl(tabId);
+      } else {
+        set({ hint: `Unknown export format "${format}". Use /export html or /export jsonl.` });
+      }
+      return { handled: true, sent: false };
+    }
+    if (action.kind === "import") {
+      await get().requestImport(tabId, argument.length > 0 ? argument : undefined);
+      return { handled: true, sent: false };
+    }
+    if (action.kind === "changelog") {
+      await get().openChangelog();
+      return { handled: true, sent: false };
+    }
+    if (action.kind === "hotkeys") {
+      set({ shortcutsHelpOpen: true });
+      return { handled: true, sent: false };
+    }
+    if (action.kind === "quit") {
+      await get().closeTab(tabId);
+      return { handled: true, sent: false };
+    }
+    if (action.kind === "share") {
+      await get().openShare(tabId);
+      return { handled: true, sent: false };
+    }
+    if (action.kind === "bug") {
+      await get().openBugReport(tabId, argument);
+      return { handled: true, sent: false };
+    }
+    if (action.kind === "copyLast") {
+      await get().copyLastAssistant(tabId);
+      return { handled: true, sent: false };
+    }
+    if (action.kind === "sessionInfo") {
+      await get().openSessionInfo(tabId);
       return { handled: true, sent: false };
     }
     if (action.requiresArgument && argument.length === 0) {
@@ -2625,6 +2967,23 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.sessions) return;
     try {
+      // Esc while a `!` command runs cancels the command, not the agent turn.
+      const state = get().sessionStates[tabId] as
+        { bashRunning?: boolean; retrying?: boolean; compacting?: boolean } | undefined;
+      if (state?.bashRunning === true) {
+        await api.sessions.request({ tabId, method: "bash.abort" });
+        return;
+      }
+      // A retry/compaction is a run of its own: cancel it rather than aborting a
+      // turn that has not started yet (terminal Pi's Esc does the same).
+      if (state?.retrying === true) {
+        await api.sessions.request({ tabId, method: "session.abortRetry" });
+        return;
+      }
+      if (state?.compacting === true) {
+        await api.sessions.request({ tabId, method: "session.abortCompaction" });
+        return;
+      }
       // The RPC recipe: take the queue back first, abort, then hand the queued
       // text to the editor so a cancelled run never loses what the user typed.
       const result = (await api.sessions.request({ tabId, method: "clearQueue" })) as {
@@ -2646,6 +3005,26 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (!api?.sessions) return;
     try {
       await api.sessions.request({ tabId, method: "clearQueue" });
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  abortRetry: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      await api.sessions.request({ tabId, method: "session.abortRetry" });
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  abortCompaction: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      await api.sessions.request({ tabId, method: "session.abortCompaction" });
     } catch (error) {
       get().noteFailure(error);
     }
@@ -2953,6 +3332,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // extension pickers would disagree with the file.
       if (key === "enabledModels") {
         await get().applyModelScopeToTabs();
+      }
+      // Queue delivery modes are copied into the agent at construction; a
+      // settings edit must reach the live sessions without a reload.
+      if (key === "steeringMode" || key === "followUpMode") {
+        await get().applyQueueModeToTabs();
       }
       return true;
     } catch (error) {
@@ -4006,6 +4390,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     } catch (error) {
       get().noteFailure(error);
     }
+    if (!get().tabs.some((tab) => tab.id === tabId)) {
+      purgeClosedTabDialogs(new Set(get().tabs.map((tab) => tab.id)));
+    }
   },
 
   closeActiveTab: async () => {
@@ -4030,6 +4417,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     } catch (error) {
       get().noteFailure(error);
     }
+    purgeClosedTabDialogs(new Set(get().tabs.map((tab) => tab.id)));
   },
 
   moveTab: async (tabId, toIndex) => {
@@ -4238,10 +4626,18 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   navigateTree: async (tabId, targetId, options = {}) => {
     const api = bridge();
     if (!api?.sessions) return;
+    // Terminal Pi treats navigating to the current leaf as a no-op (plan step 17).
+    if (get().sessionTreeLeafId === targetId) {
+      set({ hint: "Already at this point." });
+      return;
+    }
+    set({ sessionTreeBusy: true });
     try {
       const params: Record<string, unknown> = { targetId };
       if (options.summarize) params.summarize = true;
       if (options.label) params.label = options.label;
+      if (options.customInstructions) params.customInstructions = options.customInstructions;
+      if (options.replaceInstructions) params.replaceInstructions = true;
       const result = (await api.sessions.request({
         tabId,
         method: "session.navigateTree",
@@ -4256,6 +4652,19 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       await get().hydrateTranscript(tabId);
       await get().loadSessionTree(tabId);
       set({ sessionTreeOpen: false, hint: null });
+    } catch (error) {
+      get().noteFailure(error);
+    } finally {
+      set({ sessionTreeBusy: false });
+    }
+  },
+
+  abortBranchSummary: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      await api.sessions.request({ tabId, method: "session.abortBranchSummary" });
+      set({ hint: "Branch summary cancelled." });
     } catch (error) {
       get().noteFailure(error);
     }
@@ -4298,6 +4707,80 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   closeFork: () => set({ forkOpen: false, forkCandidates: [] }),
 
+  openSessionInfo: async (tabId) => {
+    const api = bridge();
+    set({
+      sessionInfoOpen: true,
+      sessionInfoTabId: tabId,
+      sessionInfoData: null,
+      sessionInfoError: null,
+    });
+    if (!api?.sessions) {
+      set({ sessionInfoError: "The preload bridge is unavailable." });
+      return;
+    }
+    try {
+      const stats = (await api.sessions.request({ tabId, method: "stats.get" })) as Record<
+        string,
+        unknown
+      >;
+      const tab = get().tabs.find((entry) => entry.id === tabId);
+      const state = get().sessionStates[tabId] as
+        | { sessionId?: string | null; sessionFile?: string | null; sessionName?: string | null }
+        | undefined;
+      const tokens = (stats.tokens ?? null) as SessionInfoView["tokens"];
+      set({
+        sessionInfoData: {
+          tabId,
+          sessionId: state?.sessionId ?? null,
+          sessionFile: state?.sessionFile ?? null,
+          sessionName: state?.sessionName ?? null,
+          cwd: tab?.cwd ?? "",
+          model: (stats.model ?? null) as SessionInfoView["model"],
+          thinkingLevel: typeof stats.thinkingLevel === "string" ? stats.thinkingLevel : null,
+          messageCount: typeof stats.messageCount === "number" ? stats.messageCount : 0,
+          toolCount: typeof stats.toolCount === "number" ? stats.toolCount : 0,
+          streaming: stats.streaming === true,
+          pendingMessages: typeof stats.pendingMessages === "number" ? stats.pendingMessages : 0,
+          contextUsage: (stats.contextUsage ?? null) as SessionInfoView["contextUsage"],
+          tokens,
+          steeringMode: typeof stats.steeringMode === "string" ? stats.steeringMode : null,
+          followUpMode: typeof stats.followUpMode === "string" ? stats.followUpMode : null,
+          autoCompaction: stats.autoCompaction === true,
+          autoRetry: stats.autoRetry === true,
+        },
+        sessionInfoError: null,
+      });
+    } catch (error) {
+      set({ sessionInfoError: errorMessage(error) });
+    }
+  },
+
+  closeSessionInfo: () =>
+    set({ sessionInfoOpen: false, sessionInfoTabId: null, sessionInfoData: null }),
+
+  copyLastAssistant: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return false;
+    try {
+      const result = (await api.sessions.request({
+        tabId,
+        method: "session.lastAssistantText",
+      })) as { text?: string | null } | undefined;
+      const text = typeof result?.text === "string" ? result.text : "";
+      if (text.trim().length === 0) {
+        set({ hint: "There is no assistant message to copy yet." });
+        return false;
+      }
+      await navigator.clipboard.writeText(text);
+      set({ hint: "Copied the last answer." });
+      return true;
+    } catch (error) {
+      get().noteFailure(error);
+      return false;
+    }
+  },
+
   forkFrom: async (tabId, entryId) => {
     const api = bridge();
     if (!api?.sessions) return;
@@ -4330,6 +4813,245 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       get().noteFailure(error);
     }
   },
+
+  exportSessionJsonl: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      const result = (await api.sessions.request({
+        tabId,
+        method: "session.exportJsonl",
+      })) as { path?: unknown } | undefined;
+      const path = typeof result?.path === "string" ? result.path : null;
+      if (!path) {
+        set({ hint: "The session was exported but the file path was not reported." });
+        return;
+      }
+      await api.revealPath(path);
+      set({ hint: `Exported to ${path}` });
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  requestImport: async (tabId, path) => {
+    let target = path?.trim() ?? "";
+    if (target.length === 0) {
+      const picked = await bridge()?.pickFile({
+        title: "Import a session",
+        extensions: ["jsonl"],
+      });
+      if (!picked) return;
+      target = picked;
+    }
+    // Replacing the open conversation is destructive; ask first (plan step 14).
+    set({ importPrompt: { tabId, path: target } });
+  },
+
+  cancelImport: () => set({ importPrompt: null }),
+
+  confirmImport: async () => {
+    const prompt = get().importPrompt;
+    if (!prompt) return;
+    const api = bridge();
+    set({ importPrompt: null });
+    if (!api?.sessions) return;
+    try {
+      await api.sessions.request({
+        tabId: prompt.tabId,
+        method: "session.importJsonl",
+        params: { path: prompt.path },
+      });
+      get().resetTranscript(prompt.tabId);
+      get().invalidateCommands(prompt.tabId);
+      await get().hydrateTranscript(prompt.tabId);
+      set({ hint: `Imported ${prompt.path}` });
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  openExpandedEditor: (tabId) => {
+    const draft = get().prefs.drafts[tabId] ?? "";
+    set({ expandedEditorOpen: true, expandedEditorError: null, expandedEditorBusy: false });
+    void draft;
+  },
+
+  closeExpandedEditor: () =>
+    set({ expandedEditorOpen: false, expandedEditorError: null, expandedEditorBusy: false }),
+
+  saveExpandedEditor: (tabId, text) => {
+    // A pasted document edited in the dialog is collapsed again on the way back,
+    // so the composer never holds a multi-MB buffer (plan step 20's rule).
+    const collapsed = collapsePastes(text, (body) => get().registerPaste(tabId, body));
+    get().setDraft(tabId, collapsed);
+    set({ expandedEditorOpen: false, expandedEditorError: null, expandedEditorBusy: false });
+  },
+
+  openExternalEditor: async (tabId) => {
+    const api = bridge();
+    const setting = get().effectiveSetting("externalEditor");
+    if (!api?.share) {
+      get().openExpandedEditor(tabId);
+      return;
+    }
+    const draft = get().expandPastes(tabId, get().prefs.drafts[tabId] ?? "");
+    set({ expandedEditorBusy: true, expandedEditorError: null });
+    try {
+      const result = await api.share.editor(draft, typeof setting === "string" ? setting : null);
+      if (result.ok && typeof result.text === "string") {
+        get().saveExpandedEditor(tabId, result.text);
+        return;
+      }
+      // No OS editor configured (or it failed): keep the in-app editor as the
+      // guaranteed path and say what happened. `openExpandedEditor` resets the
+      // error slot, so it must run before the error is written.
+      get().openExpandedEditor(tabId);
+      set({ expandedEditorBusy: false, expandedEditorError: result.error ?? "The editor failed." });
+    } catch (error) {
+      get().openExpandedEditor(tabId);
+      set({ expandedEditorBusy: false, expandedEditorError: errorMessage(error) });
+    }
+  },
+
+  registerPaste: (tabId, text) => {
+    const id = get().pasteCounter;
+    const marker = pasteMarkerText(id, text);
+    set({
+      pasteCounter: id + 1,
+      pasteBodies: {
+        ...get().pasteBodies,
+        [tabId]: { ...(get().pasteBodies[tabId] ?? {}), [id]: text },
+      },
+    });
+    return marker;
+  },
+
+  expandPastes: (tabId, text) => {
+    const bodies = get().pasteBodies[tabId] ?? {};
+    const map = new Map(Object.entries(bodies).map(([key, value]) => [Number(key), value]));
+    return map.size === 0 ? text : expandPasteMarkers(text, map);
+  },
+
+  openShare: async (tabId) => {
+    const api = bridge();
+    const sessionFile = get().tabs.find((tab) => tab.id === tabId)?.sessionFile ?? null;
+    set({
+      shareOpen: true,
+      shareMode: "share",
+      shareStatus: "running",
+      shareResult: null,
+      shareError: null,
+      shareErrorCode: null,
+      shareHint: null,
+    });
+    if (!api?.share || !sessionFile) {
+      set({
+        shareStatus: "error",
+        shareError: sessionFile
+          ? "The preload bridge is unavailable."
+          : "This session has no file on disk yet — send a prompt first.",
+      });
+      return;
+    }
+    try {
+      const result = await api.share.session(sessionFile);
+      if (result.ok) {
+        set({ shareStatus: "done", shareResult: result });
+      } else {
+        set({
+          shareStatus: "error",
+          shareError: result.detail ?? result.error ?? "Sharing failed.",
+          shareErrorCode: result.error ?? null,
+        });
+      }
+    } catch (error) {
+      set({ shareStatus: "error", shareError: errorMessage(error) });
+    }
+  },
+
+  openBugReport: async (tabId, hint) => {
+    set({
+      shareOpen: true,
+      shareMode: "bug",
+      shareStatus: "idle",
+      shareResult: null,
+      shareError: null,
+      shareErrorCode: null,
+      shareHint: hint?.trim() ? hint.trim() : null,
+    });
+    void tabId;
+  },
+
+  setShareIncludeTranscript: (include) => set({ shareIncludeTranscript: include }),
+
+  runBugReport: async () => {
+    const api = bridge();
+    const state = get();
+    const tabId = state.activeTabId;
+    const sessionFile = tabId
+      ? (state.tabs.find((tab) => tab.id === tabId)?.sessionFile ?? null)
+      : null;
+    set({ shareStatus: "running", shareError: null, shareErrorCode: null });
+    if (!api?.share) {
+      set({ shareStatus: "error", shareError: "The preload bridge is unavailable." });
+      return;
+    }
+    try {
+      const result = await api.share.bugReport({
+        sessionFile,
+        includeTranscript: state.shareIncludeTranscript,
+        hint: state.shareHint,
+        versions: {
+          app: state.info?.version ?? null,
+          electron: state.info?.electron ?? null,
+          node: state.info?.node ?? null,
+          chrome: state.info?.chrome ?? null,
+          platform: state.info?.platform ?? null,
+        },
+        diagnostics: state.info ?? null,
+      });
+      if (result.ok && result.path) {
+        set({ shareStatus: "done", shareResult: { path: result.path, bytes: result.bytes } });
+        await api.revealPath(result.path);
+      } else {
+        set({
+          shareStatus: "error",
+          shareError: result.error ?? "The bug report could not be created.",
+        });
+      }
+    } catch (error) {
+      set({ shareStatus: "error", shareError: errorMessage(error) });
+    }
+  },
+
+  closeShare: () => set({ shareOpen: false }),
+
+  openChangelog: async () => {
+    const api = bridge();
+    set({ changelogOpen: true, changelogError: null, changelogText: null });
+    if (!api?.sessions) {
+      set({ changelogError: "The preload bridge is unavailable." });
+      return;
+    }
+    // Any open session host can answer; the changelog is package-level, not
+    // session content. Fall back to the control host when no session is open.
+    const tabId = get().activeTabId ?? CONTROL_TAB_ID;
+    try {
+      const result = (await api.sessions.request({
+        tabId,
+        method: "session.changelog",
+      })) as { path?: unknown; text?: unknown } | undefined;
+      set({
+        changelogPath: typeof result?.path === "string" ? result.path : null,
+        changelogText: typeof result?.text === "string" ? result.text : null,
+      });
+    } catch (error) {
+      set({ changelogError: errorMessage(error) });
+    }
+  },
+
+  closeChangelog: () => set({ changelogOpen: false }),
 
   resetTranscript: (tabId) => {
     set({

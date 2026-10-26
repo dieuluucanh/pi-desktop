@@ -130,6 +130,35 @@ export function domKeyToTerminalData(input: TerminalKeyInput): string | null {
   return null;
 }
 
+export interface TerminalWheelInput {
+  deltaY: number;
+  deltaX?: number;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  /** Zero-based terminal cell under the pointer. */
+  col: number;
+  /** Zero-based terminal cell under the pointer. */
+  row: number;
+}
+
+/**
+ * A DOM wheel event as the SGR mouse wheel sequence a TUI component parses.
+ *
+ * Pi's terminal components that scroll by wheel (the workflow questionnaire is
+ * the case in the wild) read raw `\x1b[<64;x;yM` / `65` sequences. A browser
+ * wheel has no terminal cell, so the caller supplies the pointer's cell inside
+ * the surface. Horizontal, Ctrl (zoom) and Meta wheels return null: those belong
+ * to the browser/OS, not to the extension.
+ */
+export function domWheelToTerminalData(input: TerminalWheelInput): string | null {
+  if (input.ctrlKey || input.metaKey) return null;
+  if (!Number.isFinite(input.deltaY) || input.deltaY === 0) return null;
+  const button = input.deltaY < 0 ? 64 : 65;
+  const col = Math.max(0, Math.floor(input.col)) + 1;
+  const row = Math.max(0, Math.floor(input.row)) + 1;
+  return `${ESC}[<${button};${col};${row}M`;
+}
+
 function namedKeyOf(key: string): string | null {
   switch (key) {
     case " ":

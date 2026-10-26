@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  filterSessionTreeRows,
   filterSessions,
   flattenSessionTree,
+  listSessions,
+  parseSessionQuery,
   groupSessionsByProject,
   matchesSessionQuery,
   MAX_SESSION_SUMMARIES,
@@ -9,7 +12,9 @@ import {
   sanitizeSessionList,
   sanitizeSessionSummary,
   sessionDisplayTitle,
+  sessionTreeHasChildren,
   sortSessionsByRecency,
+  visibleSessionTreeRows,
 } from "../../src/shared/session-browser";
 
 /**
@@ -244,5 +249,207 @@ describe("flattenSessionTree", () => {
     expect(rows.map((row) => row.id)).toEqual(["ok"]);
     expect(flattenSessionTree(undefined, null)).toEqual([]);
     expect(flattenSessionTree({}, null)).toEqual([]);
+  });
+});
+
+describe("session browser parity (plan step 16)", () => {
+  function session(overrides: Record<string, unknown>): ReturnType<typeof sanitizeSessionSummary> {
+    return sanitizeSessionSummary(
+      rawSession({
+        path: `C:/work/sessions/${String(overrides.id ?? "s1")}.jsonl`,
+        ...overrides,
+      }),
+    );
+  }
+
+  it("keeps the parent session path so fork chains survive sanitizing", () => {
+    const child = sanitizeSessionSummary(
+      rawSession({ parentSessionPath: "C:/work/sessions/parent.jsonl" }),
+    );
+    expect(child?.parentSessionPath).toBe("C:/work/sessions/parent.jsonl");
+    expect(sanitizeSessionSummary(rawSession())?.parentSessionPath).toBeNull();
+  });
+
+  it("parses phrases, plain words and regexes", () => {
+    const phrase = parseSessionQuery('"host protocol" flaky');
+    expect(phrase.phrase).toBe("host protocol");
+    expect(phrase.terms).toEqual(["flaky"]);
+
+    const words = parseSessionQuery("  fix   HOST  ");
+    expect(words.terms).toEqual(["fix", "host"]);
+    expect(words.phrase).toBeNull();
+
+    const regex = parseSessionQuery("re:host");
+    expect(regex.regex?.test("host")).toBe(true);
+
+    // An unbalanced quote is not a phrase: it degrades to plain tokens.
+    const unbalanced = parseSessionQuery('"host protocol');
+    expect(unbalanced.phrase).toBeNull();
+    expect(unbalanced.terms).toContain('"host');
+  });
+
+  it("reports an invalid regex instead of returning no rows", () => {
+    const listing = listSessions([session({ id: "a" })!], { query: "re:(" });
+    expect(listing.sessions).toEqual([]);
+    expect(listing.error).toMatch(/group|parenth|unterminated/i);
+  });
+
+  it("scopes to the current project", () => {
+    const rows = [session({ id: "a", cwd: "C:/work" })!, session({ id: "b", cwd: "C:/other" })!];
+    expect(listSessions(rows, { scope: "current", cwd: "C:/work" }).sessions).toHaveLength(1);
+    expect(listSessions(rows, { scope: "all" }).sessions).toHaveLength(2);
+    expect(listSessions(rows, { scope: "current", cwd: null }).sessions).toHaveLength(0);
+  });
+
+  it("filters to named sessions only", () => {
+    const rows = [
+      session({ id: "a", name: "Named" })!,
+      session({ id: "b", name: null, firstMessage: "unnamed" })!,
+    ];
+    expect(listSessions(rows, { namedOnly: true }).sessions.map((row) => row.id)).toEqual(["a"]);
+  });
+
+  it("orders a fork chain together and parents first", () => {
+    const parent = session({
+      id: "parent",
+      created: "2026-09-01T10:00:00.000Z",
+      modified: "2026-09-05T10:00:00.000Z",
+    })!;
+    const child = session({
+      id: "child",
+      created: "2026-09-02T10:00:00.000Z",
+      modified: "2026-09-02T10:00:00.000Z",
+      parentSessionPath: parent.path,
+    })!;
+    const unrelated = session({
+      id: "other",
+      created: "2026-09-03T10:00:00.000Z",
+      modified: "2026-09-03T10:00:00.000Z",
+    })!;
+    const threaded = listSessions([child, unrelated, parent], { sort: "threaded" }).sessions;
+    expect(threaded.map((row) => row.id)).toEqual(["parent", "child", "other"]);
+  });
+
+  it("orders by relevance, then recency", () => {
+    const strong = session({ id: "strong", name: "gizmo gizmo" })!;
+    const weak = session({ id: "weak", firstMessage: "gizmo" })!;
+    const rows = listSessions([weak, strong], { query: "gizmo", sort: "relevance" }).sessions;
+    expect(rows.map((row) => row.id)).toEqual(["strong", "weak"]);
+  });
+
+  it("and-matches every plain word", () => {
+    const row = session({ id: "a", firstMessage: "the host protocol is flaky" })!;
+    expect(matchesSessionQuery(row, "host flaky")).toBe(true);
+    expect(matchesSessionQuery(row, "host missing")).toBe(false);
+  });
+
+  it("stays fast over the 2k-session cap", () => {
+    const rows = Array.from({ length: MAX_SESSION_SUMMARIES }, (_, index) =>
+      session({ id: `s${index}`, allMessagesText: `session ${index} host` })!,
+    );
+    const started = performance.now();
+    const listing = listSessions(rows, { query: "re:host", sort: "recent" });
+    expect(listing.sessions).toHaveLength(MAX_SESSION_SUMMARIES);
+    expect(performance.now() - started).toBeLessThan(1_500);
+  });
+});
+
+describe("session tree view (plan step 17)", () => {
+  const rows = flattenSessionTree(
+    [
+      {
+        entry: { id: "u1", type: "message", message: { role: "user", content: "first" } },
+        children: [
+          {
+            entry: {
+              id: "a1",
+              type: "message",
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "text", text: "reading" },
+                  { type: "toolCall", name: "read", arguments: { path: "a.txt" } },
+                ],
+              },
+            },
+            children: [
+              {
+                entry: {
+                  id: "b1",
+                  type: "message",
+                  message: { role: "bashExecution", command: "ls", output: "a.txt" },
+                },
+                children: [],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        entry: { id: "c1", type: "message", message: { role: "user", content: "second" } },
+        children: [],
+      },
+    ],
+    "c1",
+  );
+
+  it("records each row's parent so a subtree can be folded", () => {
+    expect(rows.map((row) => [row.id, row.parentId])).toEqual([
+      ["u1", null],
+      ["a1", "u1"],
+      ["b1", "a1"],
+      ["c1", null],
+    ]);
+  });
+
+  it("includes tool names, args and bash output in the searchable text", () => {
+    const assistant = rows.find((row) => row.id === "a1");
+    expect(assistant?.text).toMatch(/read/);
+    expect(assistant?.text).toMatch(/a\.txt/);
+    const bash = rows.find((row) => row.id === "b1");
+    expect(bash?.text).toMatch(/ls/);
+  });
+
+  it("applies each filter", () => {
+    // default: the bash row is not the leaf, so it is hidden.
+    expect(filterSessionTreeRows(rows, "default").map((row) => row.id)).toEqual(["u1", "a1", "c1"]);
+    expect(filterSessionTreeRows(rows, "no-tools").map((row) => row.id)).toEqual([
+      "u1",
+      "a1",
+      "c1",
+    ]);
+    expect(filterSessionTreeRows(rows, "user-only").map((row) => row.id)).toEqual(["u1", "c1"]);
+    expect(filterSessionTreeRows(rows, "all").map((row) => row.id)).toEqual([
+      "u1",
+      "a1",
+      "b1",
+      "c1",
+    ]);
+  });
+
+  it("keeps a labeled row even when it is the only match under labeled-only", () => {
+    const labeled = rows.map((row) => (row.id === "b1" ? { ...row, label: "note" } : row));
+    expect(filterSessionTreeRows(labeled, "labeled-only").map((row) => row.id)).toEqual(["b1"]);
+  });
+
+  it("hides the descendants of a folded entry", () => {
+    const visible = visibleSessionTreeRows(rows, {
+      filter: "all",
+      folded: new Set(["a1"]),
+    });
+    expect(visible.map((row) => row.id)).toEqual(["u1", "a1", "c1"]);
+    const foldedRoot = visibleSessionTreeRows(rows, {
+      filter: "all",
+      folded: new Set(["u1"]),
+    });
+    expect(foldedRoot.map((row) => row.id)).toEqual(["u1", "c1"]);
+  });
+
+  it("searches rows and reports whether a row has children", () => {
+    expect(
+      visibleSessionTreeRows(rows, { filter: "all", query: "ls" }).map((row) => row.id),
+    ).toEqual(["b1"]);
+    expect(sessionTreeHasChildren(rows, "u1")).toBe(true);
+    expect(sessionTreeHasChildren(rows, "c1")).toBe(false);
   });
 });

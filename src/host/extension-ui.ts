@@ -164,8 +164,9 @@ export interface ExtensionWidgetOptions {
 
 /**
  * An opaque TUI component factory (`setFooter`/`setHeader`/`setEditorComponent`).
- * Step 17 renders it; step 16 only stores it, so the type stays structural and
- * carries no SDK import.
+ * The desktop renders footers/headers; an editor factory is only recorded for
+ * `getEditorComponent()` coordination and is never mounted (the native composer
+ * is always the editor), so the type stays structural and carries no SDK import.
  */
 export type ExtensionTuiFactory = (...args: never[]) => object;
 
@@ -215,7 +216,8 @@ export interface ExtensionUiPort {
   setEditorText(text: string): void;
   getEditorText(): string;
 
-  // Step 17 surfaces: registered now, rendered by the TUI host.
+  // Step 17 surfaces. `custom`/footer/header render through the TUI host; the
+  // editor registration is recorded but never mounted (note on the factory type).
   onTerminalInput(handler: ExtensionTerminalInputHandler): () => void;
   terminalInputHandlers(): readonly ExtensionTerminalInputHandler[];
   custom(): Promise<undefined>;
@@ -235,6 +237,14 @@ export interface ExtensionUiPort {
 
   // Lifecycle.
   snapshot(): ExtensionUiSnapshot;
+  /**
+   * Clears every registration an extension made for this session (statuses,
+   * widgets, working state, hidden-thinking label, title, footer/header/editor
+   * factories, terminal-input handlers and autocomplete providers) and pushes
+   * one empty state. App-owned state (`toolsExpanded`) and the renderer-owned
+   * composer text mirror survive; a rebind replaces the session's extensions.
+   */
+  resetSessionUi(): void;
   handlers(): Partial<Record<HostMethod, HostHandler>>;
   dispose(reason: string): void;
 }
@@ -450,6 +460,22 @@ export function createExtensionUiPort(options: ExtensionUiPortOptions): Extensio
 
     emitTheme(name) {
       options.emit(EXTENSION_UI_THEME_EVENT, { name });
+    },
+
+    resetSessionUi() {
+      statuses.clear();
+      widgets.clear();
+      working = { message: null, visible: null, frames: null, intervalMs: null };
+      hiddenThinkingLabel = null;
+      title = null;
+      footerFactory = undefined;
+      headerFactory = undefined;
+      editorComponentFactory = undefined;
+      terminalInput.clear();
+      providers.length = 0;
+      // `toolsExpanded` is app-owned (Ctrl+O) and `editorText` is the renderer's
+      // draft mirror; neither belongs to the outgoing extension session.
+      pushState();
     },
 
     snapshot,

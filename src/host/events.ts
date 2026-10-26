@@ -42,6 +42,7 @@ export interface SessionSnapshot {
   idle: boolean;
   compacting: boolean;
   retrying: boolean;
+  bashRunning: boolean;
   messageCount: number;
   pendingMessages: number;
   steering: string[];
@@ -76,6 +77,8 @@ export interface SessionStateLike {
   getAllTools?: () => readonly unknown[];
   getAvailableThinkingLevels?: () => string[];
   autoCompactionEnabled?: boolean;
+  /** Plan step 7: direct `!` bash execution state. */
+  isBashRunning?: boolean;
   /** Plan step 4: usage, queue modes and retry state. */
   getContextUsage?: () => ContextUsageLike | undefined;
   getSessionStats?: () => SessionStatsLike | undefined;
@@ -167,6 +170,7 @@ export function sessionSnapshot(session: SessionStateLike, cwd: string): Session
     idle: session.isIdle ?? !session.isStreaming,
     compacting: session.isCompacting === true,
     retrying: session.isRetrying === true,
+    bashRunning: session.isBashRunning === true,
     messageCount: safe(() => session.messages?.length ?? 0, 0),
     pendingMessages: session.pendingMessageCount ?? 0,
     steering: [...safe(() => session.getSteeringMessages?.() ?? [], [])],

@@ -69,7 +69,7 @@ describe("settings schema", () => {
   });
 
   it("keeps global-only keys global", () => {
-    for (const key of ["httpProxy", "defaultProjectTrust", "trackingId"]) {
+    for (const key of ["httpProxy", "defaultProjectTrust", "cacheWarming"]) {
       expect(findSettingsField(key)?.scope, key).toBe("global");
     }
     expect(findSettingsField("compaction.reserveTokens")?.scope).toBe("both");

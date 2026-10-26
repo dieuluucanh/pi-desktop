@@ -41,6 +41,17 @@ export interface ComposerFooterFacts {
   context?: ContextUsageView | null;
   /** Session cost total, from `session.stats`. */
   cost?: number | null;
+  /** Per-direction token usage, from the session snapshot (`plan step 12`). */
+  usage?: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+  } | null;
+  /** Auto-compaction / auto-retry markers (`plan step 12`). */
+  auto?: { compaction: boolean; retry: boolean } | null;
+  /** Provider (or a virtual-model route) behind the selected model. */
+  provider?: string | null;
   /**
    * The decoded workflow mode (2026-10-19). Rendered as a labelled chip so the
    * active mode is readable as text in every mode, including `Default`, and
@@ -74,6 +85,29 @@ export function compactPath(path: string): string {
   const parent = parts[parts.length - 2];
   if (!parent) return last;
   return `…${separator}${parent}${separator}${last}`;
+}
+
+/**
+ * The footer's tooltip detail (plan step 12): per-direction tokens are too
+ * noisy for the row but exactly what `/session`'s terminal counterpart prints.
+ */
+export function usageDetailText(facts: ComposerFooterFacts): string | null {
+  const parts: string[] = [];
+  const usage = facts.usage;
+  if (usage) {
+    parts.push(
+      `in ${formatTokens(usage.input)} · out ${formatTokens(usage.output)} · cache r ${formatTokens(usage.cacheRead)} / w ${formatTokens(usage.cacheWrite)}`,
+    );
+  }
+  if (facts.provider) parts.push(`provider ${facts.provider}`);
+  if (facts.auto) {
+    const on = [
+      facts.auto.compaction ? "auto-compaction" : null,
+      facts.auto.retry ? "auto-retry" : null,
+    ].filter((value): value is string => value !== null);
+    if (on.length > 0) parts.push(on.join(" · "));
+  }
+  return parts.length > 0 ? parts.join("\n") : null;
 }
 
 /** `42% of 200k · 12.3k tokens · $0.0400` — the compact right-hand side. */
@@ -125,6 +159,10 @@ export function ComposerFooter({ facts, statuses, className }: ComposerFooterPro
   const factsText = sessionFactsText(facts);
   const contextText = contextFooterText(facts.context, facts.cost);
   const modeText = modeChipText(facts);
+  const detail = usageDetailText(facts);
+  const contextTitle = [contextRingLabel(facts.context ?? null, facts.cost), detail]
+    .filter((value): value is string => Boolean(value))
+    .join("\n");
   const entries = Object.entries(statuses ?? {}).sort(([a], [b]) => a.localeCompare(b));
   if (!factsText && !contextText && !modeText && entries.length === 0) return null;
 
@@ -155,11 +193,17 @@ export function ComposerFooter({ facts, statuses, className }: ComposerFooterPro
             </span>
           ) : null}
           {contextText ? (
-            <span
-              className="ml-auto shrink-0"
-              title={contextRingLabel(facts.context ?? null, facts.cost)}
-            >
-              {contextText}
+            <span className="ml-auto flex shrink-0 items-center gap-1.5" title={contextTitle}>
+              {facts.auto?.compaction || facts.auto?.retry ? (
+                <span
+                  data-testid="composer-auto-marker"
+                  className="rounded-xs border border-line px-1 text-ink-faint"
+                  title={detail ?? undefined}
+                >
+                  auto
+                </span>
+              ) : null}
+              <span>{contextText}</span>
             </span>
           ) : null}
         </div>

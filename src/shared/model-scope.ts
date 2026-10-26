@@ -60,14 +60,15 @@ export interface ScopeScopes {
 export type ScopeSource = "global" | "project";
 
 /**
- * One scope warning, in the shape the host and renderer can share. `no-match`
- * and `invalid-thinking-level` come from Pi's resolver; `resolve-failed` means
- * the whole resolution failed and the previous live scope must be kept.
+ * One scope warning, in the shape the host and renderer can share. `no-match`,
+ * `invalid-thinking-level` and `ambiguous` come from Pi's resolver;
+ * `resolve-failed` means the whole resolution failed and the previous live
+ * scope must be kept.
  */
 export interface ScopeDiagnosticInfo {
   type: "warning";
   message: string;
-  code?: "no-match" | "invalid-thinking-level" | "resolve-failed";
+  code?: "no-match" | "invalid-thinking-level" | "ambiguous" | "resolve-failed";
   pattern?: string;
 }
 

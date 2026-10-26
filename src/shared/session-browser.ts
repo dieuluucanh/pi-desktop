@@ -27,6 +27,8 @@ export interface SessionSummary {
   messageCount: number;
   firstMessage: string;
   allMessagesText: string;
+  /** The session this one was forked/cloned from, when Pi recorded it. */
+  parentSessionPath: string | null;
 }
 
 /** How many session rows the browser keeps; the list is a working set, not an index. */
@@ -72,6 +74,10 @@ export function sanitizeSessionSummary(value: unknown): SessionSummary | null {
         : 0,
     firstMessage: clampText(record.firstMessage),
     allMessagesText: clampText(record.allMessagesText),
+    parentSessionPath:
+      typeof record.parentSessionPath === "string" && record.parentSessionPath.length > 0
+        ? record.parentSessionPath
+        : null,
   };
 }
 
@@ -110,11 +116,59 @@ function shortId(id: string): string {
   return id.length > 8 ? id.slice(0, 8) : id;
 }
 
-/** Case-insensitive substring search across the fields a user can recognise. */
-export function matchesSessionQuery(session: SessionSummary, query: string): boolean {
-  const needle = query.trim().toLowerCase();
-  if (needle.length === 0) return true;
-  const haystack = [
+/**
+ * A parsed browser query (plan step 16). Terminal Pi's session selector accepts
+ * a regex (`re:`), exact phrases (`"two words"`) and plain whitespace tokens
+ * that all have to match. A bad regex is an error the bar shows; an unbalanced
+ * quote degrades to plain tokens rather than empty results.
+ */
+export interface SessionQuery {
+  /** Lowercase literal terms; every one must appear somewhere. */
+  terms: string[];
+  /** An exact phrase (quoted), matched case-insensitively. */
+  phrase: string | null;
+  /** A compiled `re:` pattern, or null. */
+  regex: RegExp | null;
+  /** The regex engine's message when `re:` is invalid. */
+  error: string | null;
+}
+
+export function parseSessionQuery(query: string): SessionQuery {
+  const raw = query.trim();
+  if (raw.length === 0) return { terms: [], phrase: null, regex: null, error: null };
+
+  const regexMatch = /^re:(.*)$/s.exec(raw);
+  if (regexMatch) {
+    const body = regexMatch[1] ?? "";
+    try {
+      return { terms: [], phrase: null, regex: new RegExp(body, "i"), error: null };
+    } catch (error) {
+      return {
+        terms: [],
+        phrase: null,
+        regex: null,
+        error: error instanceof Error ? error.message : "Invalid regular expression",
+      };
+    }
+  }
+
+  // A balanced quoted phrase wins; tokens outside it still have to match.
+  const phraseMatch = /"([^"]*)"/.exec(raw);
+  const remainder = phraseMatch ? raw.replace(phraseMatch[0], " ") : raw;
+  const terms = remainder
+    .split(/\s+/)
+    .filter((term) => term.length > 0)
+    .map((term) => term.toLowerCase());
+  return {
+    terms,
+    phrase: phraseMatch?.[1] && phraseMatch[1].length > 0 ? phraseMatch[1].toLowerCase() : null,
+    regex: null,
+    error: null,
+  };
+}
+
+function sessionHaystack(session: SessionSummary): string {
+  return [
     session.name ?? "",
     session.firstMessage,
     session.allMessagesText,
@@ -123,7 +177,122 @@ export function matchesSessionQuery(session: SessionSummary, query: string): boo
   ]
     .join("\n")
     .toLowerCase();
-  return haystack.includes(needle);
+}
+
+/** Tests one parsed query against a session (all parts must match). */
+export function matchesParsedQuery(session: SessionSummary, parsed: SessionQuery): boolean {
+  if (parsed.error) return false;
+  const haystack = sessionHaystack(session);
+  if (parsed.regex) {
+    // A fresh scanner each call: `.test` on a global/sticky regex keeps state.
+    const scanner = new RegExp(parsed.regex.source, parsed.regex.flags.replace(/[gy]/g, ""));
+    return scanner.test(haystack);
+  }
+  if (parsed.phrase && !haystack.includes(parsed.phrase)) return false;
+  return parsed.terms.every((term) => haystack.includes(term));
+}
+
+/** Case-insensitive search across the fields a user can recognise. */
+export function matchesSessionQuery(session: SessionSummary, query: string): boolean {
+  return matchesParsedQuery(session, parseSessionQuery(query));
+}
+
+/** What search + ordering score a session got, so `relevance` can order by it. */
+function relevanceScore(session: SessionSummary, parsed: SessionQuery): number {
+  const name = (session.name ?? "").toLowerCase();
+  const first = session.firstMessage.toLowerCase();
+  const all = session.allMessagesText.toLowerCase();
+  let score = 0;
+  for (const term of parsed.terms) {
+    if (name.includes(term)) score += 5;
+    if (first.includes(term)) score += 3;
+    if (all.includes(term)) score += 1;
+  }
+  if (parsed.phrase) {
+    if (name.includes(parsed.phrase)) score += 6;
+    if (first.includes(parsed.phrase)) score += 4;
+  }
+  if (parsed.regex && name.includes(parsed.regex.source.toLowerCase())) score += 2;
+  return score;
+}
+
+export type SessionScope = "all" | "current";
+export type SessionSort = "recent" | "threaded" | "relevance";
+
+/** The browser's filter controls (terminal Pi's selector has the same set). */
+export interface SessionListOptions {
+  query?: string;
+  scope?: SessionScope;
+  /** The `current` scope's project directory. */
+  cwd?: string | null;
+  sort?: SessionSort;
+  /** Only sessions with an explicit name. */
+  namedOnly?: boolean;
+}
+
+/** The root of a session's fork chain within the listing, for `threaded`. */
+function threadRoot(session: SessionSummary, byPath: Map<string, SessionSummary>): string {
+  let current = session;
+  const seen = new Set<string>([current.path]);
+  while (current.parentSessionPath) {
+    const parent = byPath.get(current.parentSessionPath);
+    if (!parent || seen.has(parent.path)) break;
+    seen.add(parent.path);
+    current = parent;
+  }
+  return current.path;
+}
+
+/**
+ * Threaded order (plan step 16): a fork chain stays together, the newest thread
+ * first, and inside a thread the parent precedes its children (by `created`).
+ */
+export function sortSessionsThreaded(sessions: readonly SessionSummary[]): SessionSummary[] {
+  const byPath = new Map(sessions.map((session) => [session.path, session]));
+  const threads = new Map<string, SessionSummary[]>();
+  for (const session of sessions) {
+    const root = threadRoot(session, byPath);
+    const list = threads.get(root) ?? [];
+    list.push(session);
+    threads.set(root, list);
+  }
+  const ordered = [...threads.entries()].sort(([, left], [, right]) => {
+    const leftLatest = Math.max(...left.map((session) => session.modified));
+    const rightLatest = Math.max(...right.map((session) => session.modified));
+    return rightLatest - leftLatest;
+  });
+  return ordered.flatMap(([, thread]) =>
+    [...thread].sort((left, right) => left.created - right.created),
+  );
+}
+
+/** The full browser pipeline: filter (scope/query/named) then order. */
+export function listSessions(
+  sessions: readonly SessionSummary[],
+  options: SessionListOptions = {},
+): { sessions: SessionSummary[]; error: string | null } {
+  const parsed = parseSessionQuery(options.query ?? "");
+  if (parsed.error) return { sessions: [], error: parsed.error };
+  const scope = options.scope ?? "all";
+  const cwd = options.cwd ?? null;
+  const filtered = sessions.filter((session) => {
+    if (scope === "current" && (cwd === null || session.cwd !== cwd)) return false;
+    if (options.namedOnly === true && !session.name) return false;
+    return matchesParsedQuery(session, parsed);
+  });
+  const sort = options.sort ?? "recent";
+  if (sort === "threaded") return { sessions: sortSessionsThreaded(filtered), error: null };
+  if (sort === "relevance") {
+    return {
+      sessions: [...filtered].sort(
+        (left, right) =>
+          relevanceScore(right, parsed) - relevanceScore(left, parsed) ||
+          right.modified - left.modified,
+      ),
+      error: null,
+    };
+  }
+  return { sessions: sortSessionsByRecency(filtered), error: null };
 }
 
 /** Search + recency ordering, the browser's default pipeline. */
@@ -131,7 +300,7 @@ export function filterSessions(
   sessions: readonly SessionSummary[],
   query: string,
 ): SessionSummary[] {
-  return sortSessionsByRecency(sessions.filter((session) => matchesSessionQuery(session, query)));
+  return listSessions(sessions, { query }).sessions;
 }
 
 /** One project's sessions, newest first. */
@@ -197,6 +366,8 @@ export interface SessionTreeRow {
   text: string;
   /** The resolved display label, when the entry carries one. */
   label: string | null;
+  /** The entry's tree parent, so the view can fold a subtree (plan step 17). */
+  parentId: string | null;
   timestamp: number;
   /** The entry the session's leaf currently points at. */
   leaf: boolean;
@@ -209,17 +380,27 @@ function entryText(entry: Record<string, unknown>): string {
     const content = message.content;
     if (typeof content === "string") return content.replace(/\s+/g, " ").trim();
     if (Array.isArray(content)) {
-      const text = content
-        .map((block) => {
-          const record = asRecord(block);
-          return record.type === "text" ? String(record.text ?? "") : "";
-        })
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
-      return text;
+      // Tool calls are part of what the row is about: Pi's tree search matches a
+      // tool name and its arguments too (plan step 17).
+      const parts: string[] = [];
+      for (const block of content) {
+        const record = asRecord(block);
+        if (record.type === "text") parts.push(String(record.text ?? ""));
+        else if (record.type === "toolCall") {
+          parts.push(`${String(record.name ?? "")} ${stringOrText(record.arguments)}`);
+        }
+      }
+      return parts.join(" ").replace(/\s+/g, " ").trim();
     }
     return "";
+  }
+  if (role === "bashExecution") {
+    return `$ ${String(message.command ?? "")} ${stringOrText(message.output)}`
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  if (role === "custom" || role === "custom_message") {
+    return stringOrText(message.content);
   }
   switch (entry.type) {
     case "model_change":
@@ -253,6 +434,15 @@ function stringOrText(value: unknown): string {
       .replace(/\s+/g, " ")
       .trim();
   }
+  // A tool call's arguments arrive as an object; search should still find the
+  // path/pattern the row is about.
+  if (value && typeof value === "object") {
+    try {
+      return JSON.stringify(value).replace(/\s+/g, " ").trim();
+    } catch {
+      return "";
+    }
+  }
   return "";
 }
 
@@ -266,7 +456,7 @@ function stringOrText(value: unknown): string {
  */
 export function flattenSessionTree(tree: unknown, leafId: string | null): SessionTreeRow[] {
   const rows: SessionTreeRow[] = [];
-  const walk = (nodes: unknown, depth: number): void => {
+  const walk = (nodes: unknown, depth: number, parentId: string | null): void => {
     if (!Array.isArray(nodes) || depth > 64) return;
     for (const raw of nodes) {
       const node = asRecord(raw);
@@ -283,13 +473,115 @@ export function flattenSessionTree(tree: unknown, leafId: string | null): Sessio
               : null,
           text: entryText(entry).slice(0, 200),
           label: typeof node.label === "string" && node.label.length > 0 ? node.label : null,
+          parentId,
           timestamp: toEpoch(entry.timestamp),
           leaf: id === leafId,
         });
       }
-      walk(node.children, depth + 1);
+      walk(node.children, depth + 1, id ?? parentId);
     }
   };
-  walk(tree, 0);
+  walk(tree, 0, null);
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Session tree view (plan step 17)
+// ---------------------------------------------------------------------------
+
+/** Terminal Pi's tree filters (`tree-filter.js`). */
+export type SessionTreeFilter = "default" | "no-tools" | "user-only" | "labeled-only" | "all";
+
+export const SESSION_TREE_FILTERS: readonly SessionTreeFilter[] = [
+  "default",
+  "no-tools",
+  "user-only",
+  "labeled-only",
+  "all",
+];
+
+/** True when a row type is a tool-ish entry the `default` filter hides. */
+function isToolRow(row: SessionTreeRow): boolean {
+  return row.type === "tool" || row.role === "toolResult" || row.role === "bashExecution";
+}
+
+/** Applies one of Pi's tree filters. */
+export function filterSessionTreeRows(
+  rows: readonly SessionTreeRow[],
+  filter: SessionTreeFilter,
+): SessionTreeRow[] {
+  switch (filter) {
+    case "all":
+      return [...rows];
+    case "user-only":
+      return rows.filter((row) => row.role === "user");
+    case "labeled-only":
+      return rows.filter((row) => row.label !== null);
+    case "no-tools":
+      return rows.filter((row) => !isToolRow(row) || row.leaf);
+    default:
+      // `default` keeps the conversation shape: no assistant tool-only rows and
+      // no bare bash rows, unless the row is the leaf or carries an error.
+      return rows.filter((row) => !isToolRow(row) || row.leaf || /error|cancel/i.test(row.text));
+  }
+}
+
+/** Case-insensitive search over the label and the row's visible text. */
+export function sessionTreeRowMatches(row: SessionTreeRow, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (needle.length === 0) return true;
+  return `${row.label ?? ""}
+${row.text}
+${row.type}
+${row.role ?? ""}`
+    .toLowerCase()
+    .includes(needle);
+}
+
+/**
+ * The rows the tree actually draws: filtered, searched, and with the descendants
+ * of every folded entry removed. Folding is by id, so a filtered-out parent can
+ * still hide its children (they are hidden with it).
+ */
+export function visibleSessionTreeRows(
+  rows: readonly SessionTreeRow[],
+  options: {
+    filter?: SessionTreeFilter;
+    query?: string;
+    folded?: ReadonlySet<string>;
+  } = {},
+): SessionTreeRow[] {
+  const filtered = filterSessionTreeRows(rows, options.filter ?? "default");
+  const query = options.query ?? "";
+  const folded = options.folded ?? new Set<string>();
+  // A row is hidden when any ancestor (by id) is folded, even if that ancestor
+  // was filtered out: the subtree belongs to it.
+  const foldedAncestors = new Set<string>();
+  const visible: SessionTreeRow[] = [];
+  const allById = new Map(rows.map((row) => [row.id, row]));
+  const isHiddenByFold = (row: SessionTreeRow): boolean => {
+    let parentId = row.parentId;
+    const seen = new Set<string>();
+    while (parentId) {
+      if (seen.has(parentId)) break;
+      seen.add(parentId);
+      if (folded.has(parentId) || foldedAncestors.has(parentId)) return true;
+      parentId = allById.get(parentId)?.parentId ?? null;
+    }
+    return false;
+  };
+  for (const row of filtered) {
+    if (isHiddenByFold(row)) {
+      foldedAncestors.add(row.id);
+      continue;
+    }
+    if (query.length > 0 && !sessionTreeRowMatches(row, query)) continue;
+    visible.push(row);
+  }
+  return visible;
+}
+
+/** The ids of a row's visible children, for the fold caret's state. */
+export function sessionTreeHasChildren(rows: readonly SessionTreeRow[], id: string): boolean {
+  return rows.some((row) => row.parentId === id);
 }

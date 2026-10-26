@@ -153,6 +153,16 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
     getAppInfo: async () => info,
     openExternal: async () => true,
     pickDirectory: async () => null,
+    pickFile: async () => null,
+    share: {
+      session: async () => ({
+        ok: true,
+        gistUrl: "https://gist.github.com/abc",
+        viewerUrl: "https://pi.dev/session/#abc",
+      }),
+      bugReport: async () => ({ ok: true, path: "/tmp/report.zip", bytes: 10 }),
+      editor: async () => ({ ok: false, error: "No external editor is configured." }),
+    },
     revealPath: async () => true,
     setTitle: async () => true,
     relaunch: async () => true,

@@ -88,6 +88,14 @@ export interface IpcDependencies {
   openExternal: (url: unknown) => Promise<boolean>;
   /** Native folder picker; returns null when the user cancels. */
   pickDirectory: () => Promise<string | null>;
+  /** Native file picker (JSONL import); null when the user cancels. */
+  pickFile: (options?: { title?: string; extensions?: string[] }) => Promise<string | null>;
+  /** `/share`: upload a session JSONL as a secret gist. */
+  shareSession: (sessionFile: unknown) => Promise<unknown>;
+  /** `/bug`: build the local zip. */
+  shareBugReport: (input: unknown) => Promise<unknown>;
+  /** Open the draft in the OS editor (plan step 21). */
+  openEditor: (draft: unknown, setting: unknown) => Promise<unknown>;
   /** Reveals a path in the OS file manager; returns false for invalid input. */
   revealPath: (target: unknown) => boolean;
   /** Sets the window title (bounded, sanitized here). */
@@ -252,6 +260,20 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.appInfo, () => deps.appInfo());
   ipcMain.handle(IPC.openExternal, (_event, url: unknown) => deps.openExternal(url));
   ipcMain.handle(IPC.appPickDirectory, () => deps.pickDirectory());
+  ipcMain.handle(IPC.appPickFile, (_event, options: unknown) =>
+    deps.pickFile(
+      options && typeof options === "object"
+        ? (options as { title?: string; extensions?: string[] })
+        : undefined,
+    ),
+  );
+  ipcMain.handle(IPC.shareSession, (_event, sessionFile: unknown) =>
+    deps.shareSession(sessionFile),
+  );
+  ipcMain.handle(IPC.shareBugReport, (_event, input: unknown) => deps.shareBugReport(input));
+  ipcMain.handle(IPC.editorOpen, (_event, draft: unknown, setting: unknown) =>
+    deps.openEditor(draft, setting),
+  );
   ipcMain.handle(IPC.appRevealPath, (_event, target: unknown) => deps.revealPath(target));
   ipcMain.handle(IPC.appSetTitle, (_event, title: unknown) => deps.setTitle(title));
   ipcMain.handle(IPC.appRelaunch, () => deps.relaunch());

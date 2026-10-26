@@ -88,6 +88,7 @@ function renderComposer(
         onSend={onSend}
         onStop={onStop}
         onClearQueue={() => undefined}
+        onRestoreQueue={() => undefined}
         onSendModeChange={() => undefined}
         onHistoryStep={() => null}
         completion={{

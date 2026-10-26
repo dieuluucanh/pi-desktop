@@ -113,6 +113,11 @@ export const SETTINGS_GROUPS = [
     description: "Which built-in tools are enabled at startup.",
   },
   {
+    id: "codemode",
+    label: "Codemode",
+    description: "How the codemode tool exposes tools to scripts.",
+  },
+  {
     id: "sessions",
     label: "Sessions",
     description: "Where session files are stored.",
@@ -196,6 +201,16 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     scope: "both",
   },
   {
+    key: "cacheWarming",
+    group: "model-thinking",
+    label: "Cache warming",
+    description: "Keep eligible provider prompt caches warm during or between runs.",
+    type: "enum",
+    options: ["off", "streaming", "idle"],
+    default: "streaming",
+    scope: "global",
+  },
+  {
     key: "thinkingBudgets",
     group: "model-thinking",
     label: "Thinking budgets",
@@ -268,15 +283,6 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     type: "boolean",
     default: false,
     scope: "both",
-  },
-  {
-    key: "trackingId",
-    group: "ui-display",
-    label: "Tracking id",
-    description: "Analytics identifier, generated when analytics is enabled.",
-    type: "string",
-    scope: "global",
-    advanced: true,
   },
   {
     key: "doubleEscapeAction",
@@ -379,6 +385,15 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     default: true,
     scope: "both",
   },
+  {
+    key: "fullscreenWheelScrollLines",
+    group: "ui-display",
+    label: "Wheel scroll lines",
+    description: 'Lines per wheel event in fullscreen mode: "auto" or 1-100.',
+    type: "json",
+    default: "auto",
+    scope: "both",
+  },
 
   // ---- Network ----------------------------------------------------------
   {
@@ -429,6 +444,15 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     default: 20000,
     scope: "both",
   },
+  {
+    key: "compaction.modelOverrides",
+    group: "compaction",
+    label: "Per-model overrides",
+    description: "Per-model compaction token settings keyed by provider/modelId.",
+    type: "json",
+    scope: "both",
+    advanced: true,
+  },
 
   // ---- Branch Summary ---------------------------------------------------
   {
@@ -476,6 +500,15 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     description: "Base delay for exponential backoff.",
     type: "number",
     default: 2000,
+    scope: "both",
+  },
+  {
+    key: "retry.maxAgentDelayMs",
+    group: "retry",
+    label: "Max agent delay (ms)",
+    description: "Maximum agent-level retry delay.",
+    type: "number",
+    default: 60000,
     scope: "both",
   },
   {
@@ -587,6 +620,15 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     scope: "both",
   },
   {
+    key: "terminal.showTerminalProgress",
+    group: "terminal-images",
+    label: "Terminal progress",
+    description: "Show OSC 9;4 progress in the terminal tab.",
+    type: "boolean",
+    default: false,
+    scope: "both",
+  },
+  {
     key: "terminal.hyperlinks",
     group: "terminal-images",
     label: "OSC 8 hyperlinks",
@@ -671,6 +713,25 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     type: "string-list",
     scope: "both",
   },
+  {
+    key: "codemode.mode",
+    group: "codemode",
+    label: "Codemode mode",
+    description: '"on" annotates declared tools; "only" hides them behind codemode.',
+    type: "enum",
+    options: ["on", "only"],
+    default: "on",
+    scope: "both",
+  },
+  {
+    key: "codemode.inlineBudget",
+    group: "codemode",
+    label: "Inline budget (tokens)",
+    description: "Estimated tokens codemode may spend on tool declarations.",
+    type: "number",
+    default: 3000,
+    scope: "both",
+  },
 
   // ---- Sessions ---------------------------------------------------------
   {
@@ -679,6 +740,16 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     label: "Session directory",
     description: "Where session files are stored; accepts absolute, relative and ~ paths.",
     type: "string",
+    scope: "both",
+  },
+  {
+    key: "sessionShareDestination",
+    group: "sessions",
+    label: "Share destination",
+    description: "Where /share sends a session: auto, gist or radius.",
+    type: "enum",
+    options: ["auto", "gist", "radius"],
+    default: "auto",
     scope: "both",
   },
 

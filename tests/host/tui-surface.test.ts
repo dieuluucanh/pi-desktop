@@ -203,17 +203,17 @@ describe("tui surface overlays", () => {
 });
 
 describe("tui surface slots", () => {
-  it("renders footer, header and editor components", async () => {
+  it("renders header and footer components without taking the composer", async () => {
     const { port, frames } = harness();
     port.setHeader(() => component(() => ["HEAD"]));
     port.setFooter(() => component(() => ["FOOT"]));
-    port.setEditorComponent(() => component(() => ["EDIT"]));
     await tick();
     const snapshot = frames().at(-1);
     expect(snapshot?.header?.lines).toEqual(["HEAD"]);
     expect(snapshot?.footer?.lines).toEqual(["FOOT"]);
-    expect(snapshot?.editor?.lines).toEqual(["EDIT"]);
-    expect(snapshot?.focus).toBe("editor");
+    expect(snapshot?.focus).toBeNull();
+    // The wire has no editor slot at all: the native composer is the editor.
+    expect(snapshot && "editor" in snapshot).toBe(false);
   });
 
   it("invalidates every component on request", async () => {
@@ -223,6 +223,65 @@ describe("tui surface slots", () => {
     await tick();
     port.invalidate();
     expect(invalidate).toHaveBeenCalled();
+  });
+});
+
+describe("tui surface widgets (2026-10-26 plan, step 5)", () => {
+  it("renders, replaces and disposes a component widget above the editor", async () => {
+    const { port, frames } = harness();
+    port.setSize(20, 40);
+    const firstDispose = vi.fn();
+    port.setWidget("w", () => ({ render: () => ["first"], dispose: firstDispose }), "aboveEditor");
+    await tick();
+    expect(frames().at(-1)?.widgetsAbove[0]?.lines).toEqual(["first"]);
+
+    const secondDispose = vi.fn();
+    port.setWidget(
+      "w",
+      () => ({ render: () => ["second"], dispose: secondDispose }),
+      "aboveEditor",
+    );
+    await tick();
+    expect(firstDispose).toHaveBeenCalledTimes(1);
+    expect(frames().at(-1)?.widgetsAbove[0]?.lines).toEqual(["second"]);
+
+    port.setWidget("w", undefined, "aboveEditor");
+    await tick();
+    expect(secondDispose).toHaveBeenCalledTimes(1);
+    expect(frames().at(-1)?.widgetsAbove).toEqual([]);
+  });
+
+  it("places widgets above or below and invalidates them", async () => {
+    const { port, frames } = harness();
+    const invalidate = vi.fn();
+    port.setWidget("below", () => ({ render: () => ["below"], invalidate }), "belowEditor");
+    port.setWidget("above", () => ({ render: () => ["above"] }), "aboveEditor");
+    await tick();
+    expect(frames().at(-1)?.widgetsBelow[0]?.lines).toEqual(["below"]);
+    expect(frames().at(-1)?.widgetsAbove[0]?.lines).toEqual(["above"]);
+
+    port.invalidate();
+    expect(invalidate).toHaveBeenCalled();
+  });
+
+  it("clears widgets on reset and ignores a throwing factory", async () => {
+    const { port, frames } = harness();
+    const dispose = vi.fn();
+    port.setWidget("w", () => ({ render: () => ["w"], dispose }), "aboveEditor");
+    port.setWidget(
+      "bad",
+      () => {
+        throw new Error("boom");
+      },
+      "aboveEditor",
+    );
+    await tick();
+    expect(frames().at(-1)?.widgetsAbove).toHaveLength(1);
+
+    port.reset();
+    await tick();
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(frames().at(-1)?.widgetsAbove).toEqual([]);
   });
 });
 
@@ -247,6 +306,47 @@ describe("tui surface handlers", () => {
     await tick();
     port.dispose("test");
     await expect(pending).resolves.toBeUndefined();
+  });
+});
+
+describe("tui surface viewport contract (2026-10-26 plan, step 1)", () => {
+  it("keeps terminal rows independent of the component's rendered height", async () => {
+    const { port, frames } = harness();
+    port.setSize(60, 150);
+    const pending = port.custom<string>((tui) =>
+      component(() =>
+        Array.from({ length: Math.max(1, tui.terminal.rows) }, (_, index) => `row ${index}`),
+      ),
+    );
+    await tick();
+    expect(frames().at(-1)?.custom?.height).toBe(60);
+
+    // A second render must see the same terminal, not the first frame's height.
+    port.setSize(60, 150);
+    await tick();
+    expect(frames().at(-1)?.custom?.height).toBe(60);
+    void pending;
+  });
+
+  it("resolves the questionnaire's bottom sheet against the full viewport", async () => {
+    const { port, frames } = harness();
+    port.setSize(60, 150);
+    const pending = port.custom<string>(
+      (tui) => {
+        const rows = Math.max(1, Math.floor(tui.terminal.rows));
+        const maxRows = Math.max(1, Math.min(32, Math.floor(rows * 0.8) - 1));
+        return component(() => Array.from({ length: maxRows }, (_, index) => `q${index}`));
+      },
+      {
+        overlay: true,
+        overlayOptions: { anchor: "bottom-center", width: "100%", maxHeight: "80%", margin: 0 },
+      },
+    );
+    await tick();
+    const snapshot = frames().at(-1);
+    expect(snapshot?.custom?.lines).toHaveLength(32);
+    expect(snapshot?.bounds).toMatchObject({ row: 28, col: 0, width: 150, height: 32 });
+    void pending;
   });
 });
 

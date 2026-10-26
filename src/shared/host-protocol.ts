@@ -136,6 +136,9 @@ export const HOST_METHODS = [
   "session.delete",
   "session.rename",
   "session.exportHtml",
+  "session.exportJsonl",
+  "session.importJsonl",
+  "session.changelog",
   "session.reload",
   // conversation
   "prompt",
@@ -228,6 +231,8 @@ export const HOST_METHODS = [
   "session.autoCompaction", // set_auto_compaction
   "session.autoRetry", // set_auto_retry
   "session.abortRetry", // abort_retry
+  "session.abortCompaction", // abort_compaction
+  "session.abortBranchSummary", // abort_branch_summary
   "model.available", // get_available_models
   "bash.run", // bash
   "bash.abort", // abort_bash

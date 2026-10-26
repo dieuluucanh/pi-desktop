@@ -29,8 +29,24 @@ terminal Pi binds its footer to the editor. Extension statuses
 (`ctx.ui.setStatus`) render in that footer's dim second line — for example the
 Office bridge's `office: Excel attached (bridge :38617)` — not in the status bar.
 The footer is rendered as a **sibling of the editor branch**, not inside
-`<Composer>`, so its facts and mode chip survive when an extension installs its
-own editor component and `<TuiSurface>` replaces the composer.
+`<Composer>`, so its facts and mode chip survive when an extension shows a
+non-overlay `ctx.ui.custom()` UI and `<TuiSurface>` replaces the composer. An
+extension's `ctx.ui.setEditorComponent()` is recorded but never mounted: the
+native composer is always the editor (2026-10-26 plan).
+
+**Extension interactions live in the session column (2026-10-26).**
+`ctx.ui.select/confirm/input/editor` render as an inline `ExtensionDialogDock`
+in the composer region, not as a Radix modal: the transcript stays visible and
+scrollable, Esc/Enter stay with the dock, and the store enforces the
+extension's timeout even when its tab is in the background. A bottom-anchored,
+full-width `ctx.ui.custom({overlay:true})` component (the Workflow
+questionnaire) is an in-flow **dock** that replaces the composer; any other
+overlay floats inside the column with no dim backdrop. While either owns the
+keyboard, clicking the transcript re-focuses it and a floating overlay makes the
+composer `inert`. Component-factory widgets (`ctx.ui.setWidget(key, factory)`)
+render as read-only TUI frames above/below the editor dock, next to the
+existing string-array widget strip. The TUI grid is measured from this column,
+never from the surface's own rendered frame (`src/renderer/src/tui/use-tui-viewport.ts`).
 
 **The workflow mode is shown as text, not just colour.** The composer's textarea
 border reflects the Workflow extension's mode (`Plan` → warn, `Build` → accent),

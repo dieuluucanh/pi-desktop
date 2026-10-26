@@ -18,6 +18,7 @@ interface TestSession {
   setAutoCompactionEnabled: Mock<(enabled: boolean) => void>;
   setAutoRetryEnabled: Mock<(enabled: boolean) => void>;
   abortRetry: Mock<() => void>;
+  abortCompaction: Mock<() => void>;
   setSteeringMode: Mock<(mode: string) => void>;
   setFollowUpMode: Mock<(mode: string) => void>;
   navigateTree: Mock<(targetId: string, options?: unknown) => Promise<unknown>>;
@@ -61,6 +62,7 @@ function fakeSession(overrides: Record<string, unknown> = {}): TestSession {
     setAutoCompactionEnabled: vi.fn(),
     setAutoRetryEnabled: vi.fn(),
     abortRetry: vi.fn(),
+    abortCompaction: vi.fn(),
     cycleModel: vi.fn(async () => undefined),
     cycleThinkingLevel: vi.fn(() => "high"),
     setModel: vi.fn(async () => undefined),
@@ -129,7 +131,14 @@ function harness(overrides: Record<string, unknown> = {}) {
   // `keybindingPort` and `wrapShortcutRunner` are host deps, not session
   // fields: pull them out before building the fake session (2026-10-20
   // startup-tab-cycle plan).
-  const { keybindingPort, wrapShortcutRunner, wrapCommandRunner, ...sessionOverrides } = overrides;
+  const {
+    keybindingPort,
+    wrapShortcutRunner,
+    wrapCommandRunner,
+    createBashPort,
+    readChangelog,
+    ...sessionOverrides
+  } = overrides;
   const session = fakeSession(sessionOverrides);
   const manager = fakeManager();
   const emitted: Array<{ event: string; payload?: unknown }> = [];
@@ -163,6 +172,8 @@ function harness(overrides: Record<string, unknown> = {}) {
     ...(keybindingPort == null ? {} : { keybindingPort: keybindingPort as never }),
     ...(wrapShortcutRunner == null ? {} : { wrapShortcutRunner: wrapShortcutRunner as never }),
     ...(wrapCommandRunner == null ? {} : { wrapCommandRunner: wrapCommandRunner as never }),
+    ...(createBashPort == null ? {} : { createBashPort: createBashPort as never }),
+    ...(readChangelog == null ? {} : { readChangelog: readChangelog as never }),
   });
 
   const handlers = core.handlers();
@@ -602,6 +613,13 @@ describe("queue modes and retry", () => {
     expect(session.abortRetry).toHaveBeenCalledTimes(1);
     await expect(call("session.autoRetry", { enabled: "yes" })).rejects.toThrow(/boolean/);
   });
+
+  it("aborts a running compaction", async () => {
+    const { call, session, emitted } = await started();
+    await expect(call("session.abortCompaction")).resolves.toMatchObject({ aborted: true });
+    expect(session.abortCompaction).toHaveBeenCalledTimes(1);
+    expect(emitted.some((entry) => entry.event === "state")).toBe(true);
+  });
 });
 
 describe("prompt semantics", () => {
@@ -645,14 +663,225 @@ describe("settings", () => {
 });
 
 describe("methods that are deliberately unwired", () => {
-  it("answers not_implemented with the owning step, never an empty object", async () => {
+  it("no longer contains bash; it is implemented", async () => {
     const { call } = await started();
-    const cases: Array<[HostMethod, RegExp]> = [
-      ["bash.run", /step 6/],
-      ["bash.abort", /step 6/],
-    ];
-    for (const [method, expected] of cases) {
-      await expect(call(method), method).rejects.toThrow(expected);
-    }
+    await expect(call("bash.run", { command: "" })).rejects.toThrow(/command/i);
+    await expect(call("bash.abort")).resolves.toMatchObject({ aborted: true });
+  });
+});
+
+describe("bash mode (plan step 7)", () => {
+  async function bashHarness(options: {
+    run?: Mock<(command: string, ...rest: unknown[]) => Promise<unknown>>;
+    port?: (session: unknown) => unknown;
+    isBashRunning?: boolean;
+    recordBashResult?: Mock<(command: string, result: unknown, opts?: unknown) => void>;
+  }) {
+    const executeBash = (options.run ??
+      vi.fn(async () => ({ output: "/work/app\n", exitCode: 0, 0: true }))) as Mock<
+      (command: string, ...rest: unknown[]) => Promise<unknown>
+    >;
+    const recordBashResult = options.recordBashResult ?? vi.fn();
+    return {
+      executeBash,
+      recordBashResult,
+      ...(await started({
+        executeBash,
+        recordBashResult,
+        isBashRunning: options.isBashRunning ?? false,
+        ...(options.port ? { createBashPort: options.port } : {}),
+      })),
+    };
+  }
+
+  it("emits message_start before executeBash, then the final message_end", async () => {
+    const order: string[] = [];
+    const run = vi.fn(async () => {
+      order.push("execute");
+      return { output: "/work/app\n", exitCode: 0, cancelled: false, truncated: false };
+    });
+    const { call, emitted } = await bashHarness({ run: run as never });
+    const result = (await call("bash.run", {
+      command: "pwd",
+      excludeFromContext: false,
+    })) as { result: { output: string } };
+    order.push("resolved");
+    expect(order).toEqual(["execute", "resolved"]);
+    expect(result.result.output).toBe("/work/app\n");
+    const start = emitted.findIndex((entry) => entry.event === "message_start");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const messageEnd = emitted.filter((entry) => entry.event === "message_end").at(-1);
+    expect(messageEnd?.payload).toMatchObject({
+      message: { role: "bashExecution", command: "pwd", output: "/work/app\n", exitCode: 0 },
+    });
+    expect(emitted.find((entry) => entry.event === "message_start")?.payload).toMatchObject({
+      message: { role: "bashExecution", command: "pwd", output: "" },
+    });
+  });
+
+  it("passes excludeFromContext and a stable id to executeBash for `!!`", async () => {
+    const { call, executeBash, emitted } = await bashHarness({});
+    await call("bash.run", { command: "pwd", excludeFromContext: true });
+    const options = executeBash.mock.calls[0]?.[2] as
+      { excludeFromContext?: boolean; id?: string } | undefined;
+    expect(options?.excludeFromContext).toBe(true);
+    const startId = (
+      emitted.find((entry) => entry.event === "message_start")?.payload as {
+        message: { id: string; excludeFromContext?: boolean };
+      }
+    ).message;
+    expect(startId.excludeFromContext).toBe(true);
+    expect(options?.id).toBe(startId.id);
+  });
+
+  it("runs Pi's user_bash hook first and forwards its operations", async () => {
+    const operations = { exec: vi.fn() };
+    const port = vi.fn(async () => ({ operations }));
+    const { call, executeBash } = await bashHarness({ port: () => ({ run: port }) });
+    await call("bash.run", { command: "ls" });
+    expect(port).toHaveBeenCalledWith("ls", { excludeFromContext: false, cwd: "/work/app" });
+    expect(executeBash.mock.calls[0]?.[2]).toMatchObject({ operations });
+  });
+
+  it("uses an intercepted result, records it, and never calls executeBash", async () => {
+    const intercepted = {
+      output: "from sandbox\n",
+      exitCode: 0,
+      cancelled: false,
+      truncated: false,
+    };
+    const port = vi.fn(async () => ({ result: intercepted }));
+    const { call, executeBash, recordBashResult, emitted } = await bashHarness({
+      port: () => ({ run: port }),
+    });
+    const result = (await call("bash.run", { command: "pwd", excludeFromContext: true })) as {
+      result: typeof intercepted;
+    };
+    expect(executeBash).not.toHaveBeenCalled();
+    expect(result.result).toEqual(intercepted);
+    expect(recordBashResult).toHaveBeenCalledWith("pwd", intercepted, { excludeFromContext: true });
+    expect(emitted.filter((entry) => entry.event === "message_end").at(-1)?.payload).toMatchObject({
+      message: { output: "from sandbox\n" },
+    });
+  });
+
+  it("stops when an extension hook throws, exactly like terminal Pi", async () => {
+    const port = vi.fn(async () => {
+      throw new Error("extension refused");
+    });
+    const { call, executeBash } = await bashHarness({ port: () => ({ run: port }) });
+    await expect(call("bash.run", { command: "ls" })).resolves.toMatchObject({
+      intercepted: true,
+    });
+    expect(executeBash).not.toHaveBeenCalled();
+  });
+
+  it("refuses a second command while one is running", async () => {
+    const { call } = await bashHarness({ isBashRunning: true });
+    await expect(call("bash.run", { command: "pwd" })).rejects.toThrow(/already running/i);
+  });
+
+  it("reports bashRunning from the live session", async () => {
+    const { call } = await bashHarness({ isBashRunning: true });
+    expect((await call("state.get")) as { bashRunning: boolean }).toMatchObject({
+      bashRunning: true,
+    });
+  });
+});
+
+describe("session.clone fallback (plan step 13)", () => {
+  it("clones at the current leaf through `fork` when the runtime has no clone", async () => {
+    const context = await started();
+    // The SDK runtime this app runs has fork but no clone.
+    delete (context.runtime as { clone?: unknown }).clone;
+    const result = (await context.call("session.clone")) as { sessionId: string | null };
+    expect(context.runtime.fork).toHaveBeenCalledWith("e4", { position: "at" });
+    expect(result.sessionId).toBe("s1");
+  });
+
+  it("uses runtime.clone when it exists", async () => {
+    const context = await started();
+    await context.call("session.clone");
+    expect(context.runtime.clone).toHaveBeenCalledTimes(1);
+    expect(context.runtime.fork).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the session has no leaf to clone from", async () => {
+    const context = await started();
+    delete (context.runtime as { clone?: unknown }).clone;
+    const manager = context.manager as { getLeafId: () => string | undefined };
+    manager.getLeafId = () => undefined;
+    await expect(context.call("session.clone")).rejects.toThrow(/no entry to clone/i);
+  });
+});
+
+describe("JSONL export and import (plan step 14)", () => {
+  it("exports JSONL through Pi's own writer and reports the path", async () => {
+    const context = await started({
+      exportToJsonl: vi.fn((outputPath?: string) => outputPath ?? "/profile/sessions/s1.jsonl"),
+    });
+    await expect(context.call("session.exportJsonl")).resolves.toEqual({
+      path: "/profile/sessions/s1.jsonl",
+    });
+    await expect(
+      context.call("session.exportJsonl", { outputPath: "/tmp/copy.jsonl" }),
+    ).resolves.toEqual({ path: "/tmp/copy.jsonl" });
+  });
+
+  it("imports JSONL, rebinds and returns the fresh snapshot", async () => {
+    const context = await started();
+    const importFromJsonl = vi.fn(async () => ({ cancelled: false }));
+    (context.runtime as { importFromJsonl?: unknown }).importFromJsonl = importFromJsonl;
+    const result = (await context.call("session.importJsonl", {
+      path: "/tmp/import.jsonl",
+    })) as { sessionId: string | null };
+    expect(importFromJsonl).toHaveBeenCalledWith("/tmp/import.jsonl", undefined);
+    expect(result.sessionId).toBe("s1");
+  });
+
+  it("maps a missing file and a missing cwd to actionable errors", async () => {
+    const context = await started();
+    (context.runtime as { importFromJsonl?: unknown }).importFromJsonl = async () => {
+      const error = new Error("ENOENT: no such file");
+      error.name = "SessionImportFileNotFoundError";
+      throw error;
+    };
+    await expect(context.call("session.importJsonl", { path: "/tmp/none.jsonl" })).rejects.toThrow(
+      /was not found/i,
+    );
+
+    (context.runtime as { importFromJsonl?: unknown }).importFromJsonl = async () => {
+      const error = new Error("no cwd");
+      error.name = "MissingSessionCwdError";
+      throw error;
+    };
+    await expect(context.call("session.importJsonl", { path: "/tmp/x.jsonl" })).rejects.toThrow(
+      /working folder/i,
+    );
+  });
+
+  it("requires a path", async () => {
+    const context = await started();
+    await expect(context.call("session.importJsonl", {})).rejects.toThrow(/path/i);
+  });
+});
+
+describe("changelog (plan step 15)", () => {
+  it("returns the packaged changelog through the injected reader", async () => {
+    const readChangelog = vi.fn(async () => ({
+      path: "/pkg/CHANGELOG.md",
+      text: "## 1.4.0\n- things",
+    }));
+    const { call } = await started({ readChangelog });
+    await expect(call("session.changelog")).resolves.toEqual({
+      path: "/pkg/CHANGELOG.md",
+      text: "## 1.4.0\n- things",
+    });
+    expect(readChangelog).toHaveBeenCalledTimes(1);
+  });
+
+  it("says plainly when the host has no reader", async () => {
+    const { call } = await started();
+    await expect(call("session.changelog")).rejects.toThrow(/not available/i);
   });
 });

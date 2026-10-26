@@ -17,6 +17,7 @@ import {
 } from "../../src/host/sdk";
 import { createNodeSettingsFileIo } from "../../src/host/file-io";
 import type { HostMethod } from "../../src/shared/host-protocol";
+import type { TuiSurfaceSnapshot } from "../../src/shared/tui-surface";
 import { createFakeProvider, type FakeProvider } from "./fixtures/fake-provider";
 import { createFixtureProfile, type FixtureProfile } from "./fixtures/fixture-profile";
 
@@ -200,12 +201,20 @@ describe("host integration: prompts", () => {
     await harness.call("session.create");
     await harness.call("prompt", {
       text: "What is this?",
-      images: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+      // A valid 1x1 transparent PNG; Pi 1.4 validates and resizes images.
+      images: [
+        {
+          type: "image",
+          data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+          mimeType: "image/png",
+        },
+      ],
     });
 
     const body = JSON.stringify(harness.provider.requests[0]?.body);
-    // The SDK serializes the image as a data URL in the user message.
-    expect(body).toContain("data:image/png;base64,aGVsbG8=");
+    // The SDK serializes the image as a data URL in the user message. The
+    // resizer may re-encode it, so assert the shape rather than the bytes.
+    expect(body).toContain("data:image/png;base64,");
   });
 });
 
@@ -329,6 +338,53 @@ describe("host integration: extension UI round-trip", () => {
     expect(harness.provider.requests).toHaveLength(0);
     const notify = harness.payloads("oi.notify").at(-1) as { message: string };
     expect(notify.message).toBe("confirmed by user");
+  });
+
+  it("records an extension's custom editor without mounting it, before and after a reload", async () => {
+    const harness = await startHarness({ extensions: true });
+    harness.profile.writeExtension(
+      "editor.js",
+      `export default function (pi) {
+  pi.on("session_start", async (_event, ctx) => {
+    ctx.ui.setStatus("editor-probe", "on");
+    ctx.ui.setEditorComponent(() => ({
+      render: () => ["EXTENSION EDITOR"],
+      handleInput: () => {},
+      invalidate: () => {},
+      dispose: () => {},
+    }));
+  });
+}
+`,
+    );
+
+    await harness.call("session.create");
+    await waitFor(() => harness.payloads("tui.state").length > 0);
+    const frames = harness.payloads("tui.state") as TuiSurfaceSnapshot[];
+    expect(frames.some((frame) => JSON.stringify(frame).includes("EXTENSION EDITOR"))).toBe(false);
+    expect(frames.at(-1)?.active).toBe(false);
+    expect(frames.at(-1) && "editor" in frames.at(-1)!).toBe(false);
+    const statuses = harness.payloads("oi.state") as Array<{
+      statuses?: Record<string, string>;
+    }>;
+    expect(statuses.at(-1)?.statuses).toMatchObject({ "editor-probe": "on" });
+
+    const frameCount = harness.payloads("tui.state").length;
+    const stateCount = harness.payloads("oi.state").length;
+    await harness.call("session.reload");
+    await waitFor(() => harness.payloads("tui.state").length > frameCount);
+    await waitFor(() => harness.payloads("oi.state").length > stateCount);
+
+    const after = harness.payloads("tui.state") as TuiSurfaceSnapshot[];
+    expect(after.some((frame) => JSON.stringify(frame).includes("EXTENSION EDITOR"))).toBe(false);
+    expect(after.at(-1)?.active).toBe(false);
+    expect(after.at(-1) && "editor" in after.at(-1)!).toBe(false);
+    const afterStatuses = harness.payloads("oi.state") as Array<{
+      statuses?: Record<string, string>;
+    }>;
+    // The reset cleared the old registration; the re-emitted session_start set
+    // it again for the new session.
+    expect(afterStatuses.at(-1)?.statuses).toMatchObject({ "editor-probe": "on" });
   });
 });
 

@@ -10,7 +10,6 @@ import { TabStrip } from "./layout/TabStrip";
 import { TitleBar } from "./layout/TitleBar";
 import { handleMenuCommand } from "./menu-actions";
 import { useAppStore, type AppView } from "./state/app-store";
-import { ExtensionDialog } from "./extension-ui/ExtensionDialog";
 import { OnboardingWizard } from "./onboarding/OnboardingWizard";
 import { ShortcutDispatcher } from "./shortcuts/ShortcutDispatcher";
 import { ShortcutsHelp } from "./shortcuts/ShortcutsHelp";
@@ -18,6 +17,11 @@ import { Toaster } from "./ui/toaster";
 import { ForkDialog } from "./sessions/ForkDialog";
 import { SessionBrowserDialog } from "./sessions/SessionBrowser";
 import { SessionTreeDialog } from "./sessions/SessionTree";
+import { SessionInfoDialog } from "./sessions/SessionInfoDialog";
+import { ImportSessionDialog } from "./sessions/ImportSessionDialog";
+import { ChangelogDialog } from "./sessions/ChangelogDialog";
+import { ShareDialog } from "./sessions/ShareDialog";
+import { ExpandedEditorDialog } from "./sessions/ExpandedEditorDialog";
 import { ConnectionsView } from "./views/ConnectionsView";
 import { DiagnosticsView } from "./views/DiagnosticsView";
 import { ExtensionsView } from "./views/ExtensionsView";
@@ -259,8 +263,12 @@ export function App() {
       <CommandPalette />
       <SessionBrowserDialog />
       <SessionTreeDialog />
+      <SessionInfoDialog />
+      <ImportSessionDialog />
+      <ChangelogDialog />
+      <ShareDialog />
+      <ExpandedEditorDialog />
       <ForkDialog />
-      <ExtensionDialog />
       <ProviderLoginDialog />
       <PackageConsentDialog />
       <PrivacyDialog />

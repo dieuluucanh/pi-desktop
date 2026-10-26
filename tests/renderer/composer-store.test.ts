@@ -113,6 +113,71 @@ describe("sendPrompt", () => {
   });
 });
 
+describe("bash mode", () => {
+  it("routes `!command` to bash.run and never to prompt", async () => {
+    const request = stubRequest(async () => ({ result: { output: "/work/app" } }));
+    await expect(useAppStore.getState().sendPrompt("tab-1", "!pwd")).resolves.toBe(true);
+    const bashCalls = request.mock.calls.filter(([input]) => input.method === "bash.run");
+    expect(bashCalls).toHaveLength(1);
+    expect(request.mock.calls.some(([input]) => input.method === "prompt")).toBe(false);
+    expect(bashCalls[0]?.[0]).toEqual({
+      tabId: "tab-1",
+      method: "bash.run",
+      params: { command: "pwd", excludeFromContext: false },
+    });
+    expect(useAppStore.getState().draftHistory["tab-1"]).toEqual(["!pwd"]);
+  });
+
+  it("sets excludeFromContext for `!!command`", async () => {
+    const request = stubRequest(async () => ({ result: { output: "" } }));
+    await useAppStore.getState().sendPrompt("tab-1", "!!pwd");
+    expect(request).toHaveBeenCalledWith({
+      tabId: "tab-1",
+      method: "bash.run",
+      params: { command: "pwd", excludeFromContext: true },
+    });
+  });
+
+  it("ignores a bare `!` (nothing to run)", async () => {
+    const request = stubRequest(async () => ({}));
+    await expect(useAppStore.getState().sendPrompt("tab-1", "!   ")).resolves.toBe(false);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("refuses a second command while one runs and keeps the text", async () => {
+    const request = stubRequest(async () => ({}));
+    useAppStore.setState({ sessionStates: { "tab-1": { bashRunning: true } as never } });
+    await expect(useAppStore.getState().sendPrompt("tab-1", "!ls")).resolves.toBe(false);
+    expect(request).not.toHaveBeenCalled();
+    expect(useAppStore.getState().hint).toMatch(/already running/i);
+  });
+
+  it("Esc during bash aborts the command first, not the agent turn", async () => {
+    const request = stubRequest(async () => ({ aborted: true }));
+    useAppStore.setState({
+      tabs: [tab("running")],
+      sessionStates: { "tab-1": { bashRunning: true } as never },
+    });
+    await useAppStore.getState().stopRun("tab-1");
+    expect(request.mock.calls.map((call) => call[0]?.method)).toEqual(["bash.abort"]);
+  });
+
+  it("Esc during a retry or compaction cancels that run instead of the turn", async () => {
+    const request = stubRequest(async () => ({ aborted: true }));
+    useAppStore.setState({
+      tabs: [tab("running")],
+      sessionStates: { "tab-1": { retrying: true } as never },
+    });
+    await useAppStore.getState().stopRun("tab-1");
+    expect(request.mock.calls.map((call) => call[0]?.method)).toEqual(["session.abortRetry"]);
+
+    request.mockClear();
+    useAppStore.setState({ sessionStates: { "tab-1": { compacting: true } as never } });
+    await useAppStore.getState().stopRun("tab-1");
+    expect(request.mock.calls.map((call) => call[0]?.method)).toEqual(["session.abortCompaction"]);
+  });
+});
+
 describe("stopRun", () => {
   it("clears the queue, aborts, and hands the queued text back to the editor", async () => {
     const request = stubRequest(async (input) => {
@@ -137,6 +202,25 @@ describe("stopRun", () => {
     await useAppStore.getState().stopRun("tab-1");
 
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("my own draft");
+  });
+
+  it("restores the queue without aborting the run (Alt+Up, plan step 9)", async () => {
+    const request = stubRequest(async (input) => {
+      if (input.method === "clearQueue") {
+        return { cleared: { steering: ["steer text"], followUp: ["follow text"] } };
+      }
+      return {};
+    });
+    useAppStore.setState({ tabs: [tab("running")] });
+    useAppStore.getState().setDraft("tab-1", "still typing");
+
+    await useAppStore.getState().restoreQueue("tab-1");
+
+    expect(request.mock.calls.map((call) => call[0]?.method)).toEqual(["clearQueue"]);
+    // Steering first, then follow-ups, then the user's own draft.
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe(
+      "steer text\n\nfollow text\n\nstill typing",
+    );
   });
 });
 
@@ -170,5 +254,77 @@ describe("history", () => {
     expect(useAppStore.getState().historyStep("tab-1", -1)).toBe("older");
     expect(useAppStore.getState().historyStep("tab-1", 1)).toBe("newest");
     expect(useAppStore.getState().historyStep("tab-1", 1)).toBeNull();
+  });
+});
+
+describe("copy last assistant (plan step 12)", () => {
+  it("copies the last assistant text from the host", async () => {
+    stubRequest(async (input) =>
+      input.method === "session.lastAssistantText" ? { text: "the final answer" } : {},
+    );
+    const writeText = vi.fn(async () => undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    await expect(useAppStore.getState().copyLastAssistant("tab-1")).resolves.toBe(true);
+    expect(writeText).toHaveBeenCalledWith("the final answer");
+    expect(useAppStore.getState().hint).toMatch(/copied/i);
+  });
+
+  it("explains when there is nothing to copy yet", async () => {
+    stubRequest(async () => ({ text: null }));
+    const writeText = vi.fn(async () => undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    await expect(useAppStore.getState().copyLastAssistant("tab-1")).resolves.toBe(false);
+    expect(writeText).not.toHaveBeenCalled();
+    expect(useAppStore.getState().hint).toMatch(/no assistant message/i);
+  });
+});
+
+describe("session info (plan step 12)", () => {
+  it("maps the live stats payload into the dialog view", async () => {
+    stubRequest(async () => ({
+      messageCount: 12,
+      toolCount: 3,
+      model: { id: "test-model", provider: "test" },
+      thinkingLevel: "high",
+      streaming: true,
+      pendingMessages: 1,
+      contextUsage: { tokens: 1200, contextWindow: 200_000, percent: 60 },
+      tokens: { input: 100, output: 20, cacheRead: 5, cacheWrite: 1, total: 126, cost: 0.03 },
+      steeringMode: "all",
+      followUpMode: "one-at-a-time",
+      autoCompaction: true,
+      autoRetry: false,
+    }));
+    useAppStore.setState({
+      tabs: [tab("running")],
+      sessionStates: {
+        "tab-1": {
+          sessionId: "s1",
+          sessionFile: "/profile/s1.jsonl",
+          sessionName: "Fix the bug",
+        } as never,
+      },
+    });
+
+    await useAppStore.getState().openSessionInfo("tab-1");
+
+    const data = useAppStore.getState().sessionInfoData;
+    expect(data).toMatchObject({
+      sessionId: "s1",
+      sessionFile: "/profile/s1.jsonl",
+      sessionName: "Fix the bug",
+      cwd: "/work/app",
+      messageCount: 12,
+      toolCount: 3,
+      streaming: true,
+      steeringMode: "all",
+      autoCompaction: true,
+      tokens: { input: 100, output: 20, cacheRead: 5, cacheWrite: 1, total: 126, cost: 0.03 },
+    });
+    expect(useAppStore.getState().sessionInfoOpen).toBe(true);
+    useAppStore.getState().closeSessionInfo();
+    expect(useAppStore.getState().sessionInfoOpen).toBe(false);
   });
 });

@@ -8,6 +8,7 @@
  */
 
 import { DEFAULT_PROFILE_MODE, sanitizeProfileMode, type ProfileMode } from "./profile";
+import { sanitizeDesktopKeybindings, type DesktopKeybindings } from "./desktop-keymap";
 
 export const PREF_KEYS = [
   "theme",
@@ -19,6 +20,7 @@ export const PREF_KEYS = [
   "privacyAcknowledged",
   "profileMode",
   "onboardingCompletedAt",
+  "desktopKeybindings",
 ] as const;
 
 export type PrefKey = (typeof PREF_KEYS)[number];
@@ -60,6 +62,12 @@ export interface UiPrefs {
    * it is set the onboarding wizard is offered; see `src/shared/onboarding.ts`.
    */
   onboardingCompletedAt: number | null;
+  /**
+   * Desktop-only action overrides (2026-10-26 session-parity plan step 22).
+   * Pi's `app.*` actions stay in `keybindings.json`; this map never holds a
+   * second copy of one (D14).
+   */
+  desktopKeybindings: DesktopKeybindings;
 }
 
 /** Longest draft kept per tab, and how many tabs may hold one. */
@@ -80,6 +88,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   privacyAcknowledged: false,
   profileMode: DEFAULT_PROFILE_MODE,
   onboardingCompletedAt: null,
+  desktopKeybindings: {},
 };
 
 const THEMES: readonly ThemeSetting[] = ["dark", "light", "system"];
@@ -135,6 +144,7 @@ export function sanitizePrefs(input: unknown): UiPrefs {
       source.onboardingCompletedAt > 0
         ? Math.floor(source.onboardingCompletedAt)
         : null,
+    desktopKeybindings: sanitizeDesktopKeybindings(source.desktopKeybindings),
   };
 }
 

@@ -21,6 +21,7 @@ import type {
 import type { CreateTabInput, SessionTabsEnvelope } from "../shared/session-ipc";
 import { CONTROL_TAB_ID } from "../shared/session-ipc";
 import { HOST_METHODS } from "../shared/host-protocol";
+import { menuAcceleratorsFor, resolveDesktopKeymap } from "../shared/desktop-keymap";
 import { APP_COPYRIGHT, APP_NAME, APP_USER_MODEL_ID, resolveBranding } from "./branding";
 import { createAppStore } from "./app-store";
 import { createNodeFsPort } from "./fs-port";
@@ -36,6 +37,8 @@ import {
 } from "./ipc";
 import { installAppMenu } from "./menu";
 import { createCommandRunner } from "./office/exec";
+import { buildBugReport, messagesFromJsonl, shareSession, summarizeForBugReport } from "./share";
+import { openInExternalEditor } from "./editor";
 import { createProjectOps } from "./project-ops";
 import { createProjectsService } from "./projects-service";
 import { createProjectSettingsService } from "./project-settings-service";
@@ -423,6 +426,26 @@ async function pickProjectDirectory(): Promise<string | null> {
   return result.canceled || !first ? null : first;
 }
 
+/**
+ * The session-JSONL picker (`/import`, plan step 14). Mirrors the folder picker:
+ * the renderer supplies only a label and an extension list, never a path.
+ */
+async function pickSessionFile(options?: {
+  title?: string;
+  extensions?: string[];
+}): Promise<string | null> {
+  const extensions = (
+    options?.extensions && options.extensions.length > 0 ? options.extensions : ["jsonl"]
+  ).map((extension) => extension.replace(/^\./, ""));
+  const result = await dialog.showOpenDialog({
+    title: options?.title ?? "Import a session",
+    properties: ["openFile"],
+    filters: [{ name: "Pi session", extensions }],
+  });
+  const first = result.filePaths[0];
+  return result.canceled || !first ? null : first;
+}
+
 /** The renderer owns the window title; this bounds and applies it. */
 function setWindowTitle(title: unknown): boolean {
   const clean = sanitizeTitle(title);
@@ -650,19 +673,89 @@ if (!app.requestSingleInstanceLock()) {
 
     // The application menu is the app's command surface; its items never touch
     // windows directly — they forward a MenuCommand to the renderer.
-    await installAppMenu({
-      appName: APP_NAME,
-      isMac: process.platform === "darwin",
-      onCommand: (command) => broadcastToWindows(IPC.appMenuCommand, command),
-      onOpenExternal: (url) => {
-        void openExternal(url);
-      },
-    });
+    // Menu accelerators come from the desktop keymap (session-parity plan step
+    // 23), so remapping a desktop action moves the menu item too.
+    const installMenu = async (): Promise<void> => {
+      const { prefs } = await appState.read();
+      await installAppMenu({
+        appName: APP_NAME,
+        isMac: process.platform === "darwin",
+        onCommand: (command) => broadcastToWindows(IPC.appMenuCommand, command),
+        onOpenExternal: (url) => {
+          void openExternal(url);
+        },
+        accelerators: menuAcceleratorsFor(resolveDesktopKeymap(prefs.desktopKeybindings)),
+      });
+    };
+    await installMenu();
 
     registerIpcHandlers({
       appInfo: currentAppInfo,
       openExternal,
       pickDirectory: pickProjectDirectory,
+      pickFile: pickSessionFile,
+      // `/share`: copy the session JSONL (redacted) into the app's scratch area
+      // and upload it as a secret gist (plan step 18).
+      shareSession: (sessionFile: unknown) => {
+        if (typeof sessionFile !== "string" || sessionFile.length === 0) {
+          return Promise.resolve({ ok: false, error: "no_file" });
+        }
+        return shareSession(
+          {
+            fs: createNodeFsPort(),
+            runner: createCommandRunner(),
+            scratchDir: join(paths.userData, "share"),
+            env: process.env,
+          },
+          sessionFile,
+        );
+      },
+      // Ctrl+G's OS-editor path (plan step 21): spawned without a shell and
+      // awaited, so a GUI editor that exits immediately still reports honestly.
+      openEditor: (draft: unknown, setting: unknown) =>
+        openInExternalEditor(
+          {
+            fs: createNodeFsPort(),
+            runner: createCommandRunner(),
+            scratchDir: join(paths.userData, "editor"),
+            setting: typeof setting === "string" ? setting : null,
+            env: process.env,
+          },
+          typeof draft === "string" ? draft : "",
+        ),
+      // `/bug`: a local zip; nothing is uploaded from the app (Radius upload is
+      // documented as not wired in this build).
+      shareBugReport: async (input: unknown) => {
+        const request = (input ?? {}) as {
+          sessionFile?: string | null;
+          includeTranscript?: boolean;
+          hint?: string | null;
+          versions?: Record<string, string | null | undefined>;
+          diagnostics?: unknown;
+        };
+        const fs = createNodeFsPort();
+        const transcript =
+          request.includeTranscript === true &&
+          typeof request.sessionFile === "string" &&
+          request.sessionFile.length > 0
+            ? await fs.readTextFile(request.sessionFile)
+            : null;
+        return buildBugReport(
+          {
+            fs,
+            runner: createCommandRunner(),
+            scratchDir: join(paths.userData, "share"),
+            env: process.env,
+          },
+          {
+            versions: request.versions ?? {},
+            diagnostics: request.diagnostics ?? null,
+            transcript,
+            hint: request.hint ?? null,
+            summary: summarizeForBugReport(messagesFromJsonl(transcript ?? "")),
+          },
+        );
+      },
       revealPath: revealPathWithShell,
       setTitle: setWindowTitle,
       relaunch: () => {
@@ -680,6 +773,11 @@ if (!app.requestSingleInstanceLock()) {
           // A telemetry change applies to hosts spawned from now on; a running
           // session keeps its environment until it restarts.
           telemetryEnabled = prefs.telemetryEnabled;
+          // A desktop-keymap edit rebuilds the menu so its accelerators match
+          // the new chords (plan step 23).
+          if (patch && typeof patch === "object" && "desktopKeybindings" in patch) {
+            void installMenu();
+          }
           return prefs;
         },
       },

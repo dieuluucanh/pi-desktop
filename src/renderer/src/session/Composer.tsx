@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Paperclip, Send, Square, X } from "lucide-react";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
 import { fileToAttachment, isImageFile, type ImageAttachment } from "./image-attachment";
+import { lostPasteIds, shouldCollapsePaste } from "./paste-markers";
+import { useAppStore } from "../state/app-store";
 import {
   parseWorkflowStatus,
   statusLineText,
@@ -59,10 +60,12 @@ export interface ComposerProps {
   onSend: (
     text: string,
     images: ImageAttachment[],
-    options?: { preferredSource?: CompletionSource },
+    options?: { preferredSource?: CompletionSource; followUp?: boolean },
   ) => Promise<boolean>;
   onStop: () => void;
   onClearQueue: () => void;
+  /** `clearQueue` and put the queued text back in the draft (Alt+Up, plan step 9). */
+  onRestoreQueue: () => void;
   /** The `workflow` extension status, decoded into a composer border colour. */
   workflowStatus?: string | null;
   /**
@@ -102,7 +105,8 @@ export interface ComposerCompletion {
 const COMPLETION_DEBOUNCE_MS = 60;
 
 /**
- * Enter sends; Shift+Enter (and Alt+Enter) insert a newline.
+ * Enter sends; Shift+Enter inserts a newline. Alt+Enter is Pi's follow-up chord
+ * (Ctrl+Q is the alternate) and is not a newline any more (plan step 9, D8).
  *
  * The IME guard uses `isComposing` only: the app ships one Chromium (Electron),
  * which sets it for every composition, so the legacy `keyCode === 229` fallback
@@ -118,22 +122,57 @@ export function isSendKey(event: {
   return event.key === "Enter" && !event.shiftKey && !event.altKey;
 }
 
-function QueueChips({ queue, onClear }: { queue: TranscriptQueue; onClear: () => void }) {
+function PendingQueue({
+  queue,
+  onRestore,
+  onClear,
+}: {
+  queue: TranscriptQueue;
+  onRestore: () => void;
+  onClear: () => void;
+}) {
+  const rows = [
+    ...queue.steering.map((text, index) => ({ kind: "Steering" as const, text, index })),
+    ...queue.followUp.map((text, index) => ({ kind: "Follow-up" as const, text, index })),
+  ];
   return (
-    <div className="mb-2 flex flex-wrap items-center gap-1.5" data-testid="queue-chips">
-      {queue.steering.map((text, index) => (
-        <Badge key={`steer-${index}`} tone="accent" title={text}>
-          steer · {text.slice(0, 40)}
-        </Badge>
+    <div
+      className="mb-2 flex flex-col gap-1 rounded-sm border border-line bg-raised/60 px-2 py-1.5"
+      data-testid="pending-queue"
+    >
+      {rows.map((row) => (
+        <div
+          key={`${row.kind}-${row.index}`}
+          className="flex min-w-0 items-baseline gap-2 text-[11px]"
+        >
+          <span
+            className={cn(
+              "shrink-0 rounded-xs px-1 font-medium",
+              row.kind === "Steering" ? "bg-accent/15 text-accent" : "bg-raised text-ink-muted",
+            )}
+          >
+            {row.kind}
+          </span>
+          {/* Full text, bounded to two lines so a long message cannot push the
+              composer off screen; the title carries the whole thing. */}
+          <span className="line-clamp-2 min-w-0 flex-1 whitespace-pre-wrap" title={row.text}>
+            {row.text}
+          </span>
+        </div>
       ))}
-      {queue.followUp.map((text, index) => (
-        <Badge key={`follow-${index}`} tone="neutral" title={text}>
-          follow-up · {text.slice(0, 40)}
-        </Badge>
-      ))}
-      <button type="button" className="text-[11px] text-ink-faint hover:text-ink" onClick={onClear}>
-        clear queue
-      </button>
+      <div className="flex items-center gap-3 pt-0.5 text-[11px]">
+        <button
+          type="button"
+          className="text-ink-muted hover:text-ink"
+          onClick={onRestore}
+          title="Alt+Up"
+        >
+          restore all
+        </button>
+        <button type="button" className="text-ink-faint hover:text-ink" onClick={onClear}>
+          clear queue
+        </button>
+      </div>
     </div>
   );
 }
@@ -172,6 +211,7 @@ function AttachmentChips({
 }
 
 export function Composer({
+  tabId,
   running,
   enabled = true,
   sleeping = false,
@@ -188,6 +228,7 @@ export function Composer({
   onSend,
   onStop,
   onClearQueue,
+  onRestoreQueue,
   onSendModeChange,
   onHistoryStep,
   completion,
@@ -211,6 +252,15 @@ export function Composer({
   const completionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const queued = [...queue.steering, ...queue.followUp];
+  const bashMode = draft.trimStart().startsWith("!");
+  const registerPaste = useAppStore((state) => state.registerPaste);
+  const pasteBodies = useAppStore((state) => state.pasteBodies[tabId]);
+  // A marker restored from a previous launch has no body: say so, because the
+  // alternative is silently sending the marker as prose (plan step 20).
+  const lostMarkers = lostPasteIds(
+    draft,
+    new Set(Object.keys(pasteBodies ?? {}).map((key) => Number(key))),
+  );
 
   // The workflow extension reports its mode only through `ctx.ui.setStatus`, so
   // the composer decodes that text into a border colour and a badge label.
@@ -350,13 +400,14 @@ export function Composer({
    * remote apply is awaited, and sending the old text would lose the fill.
    */
   const submitText = useCallback(
-    async (text: string, source?: CompletionSource): Promise<boolean> => {
+    async (text: string, source?: CompletionSource, followUp?: boolean): Promise<boolean> => {
       if (!enabled || busy) return false;
       if (text.trim().length === 0 && attachments.length === 0) return false;
       setBusy(true);
       try {
         const sent = await onSend(text, attachments, {
           ...(source ? { preferredSource: source } : {}),
+          ...(followUp ? { followUp: true } : {}),
         });
         if (sent) {
           setAttachments([]);
@@ -421,7 +472,15 @@ export function Composer({
         </span>
       ) : null}
 
-      {queued.length > 0 ? <QueueChips queue={queue} onClear={onClearQueue} /> : null}
+      {lostMarkers.length > 0 ? (
+        <p className="mb-1 text-[11px] text-warn" data-testid="paste-content-lost">
+          Paste content for {lostMarkers.map((id) => `#${id}`).join(", ")} is no longer in memory
+          (the app restarted). Paste it again before sending.
+        </p>
+      ) : null}
+      {queued.length > 0 ? (
+        <PendingQueue queue={queue} onRestore={onRestoreQueue} onClear={onClearQueue} />
+      ) : null}
       {attachments.length > 0 ? (
         <AttachmentChips
           attachments={attachments}
@@ -447,13 +506,15 @@ export function Composer({
           rows={2}
           value={draft}
           placeholder={
-            sleeping && enabled
-              ? "This session is asleep — type or press Tab to wake it…"
-              : enabled
-                ? running
-                  ? `Type to steer the run (${sendMode === "steer" ? "steer" : "follow-up"})…`
-                  : "Ask Pi to change something…  / commands · @ files · # documents"
-                : "This session is not running — start it above to send a prompt."
+            bashMode
+              ? "Shell command — ! keeps context, !! excludes it…"
+              : sleeping && enabled
+                ? "This session is asleep — type or press Tab to wake it…"
+                : enabled
+                  ? running
+                    ? `Type to steer the run (${sendMode === "steer" ? "steer" : "follow-up"})…`
+                    : "Ask Pi to change something…  / commands · @ files · # documents"
+                  : "This session is not running — start it above to send a prompt."
           }
           disabled={!enabled}
           className={cn(
@@ -470,7 +531,7 @@ export function Composer({
             // tinted with it, so the cursor is never lost in a dark buffer
             // (plan step 1).
             "caret-accent selection:bg-accent/25",
-            workflowBorderClass(workflowMode),
+            bashMode ? "border-warn" : workflowBorderClass(workflowMode),
           )}
           onChange={(event) => {
             syncCaret(event.target);
@@ -495,12 +556,54 @@ export function Composer({
             syncCaret(event.currentTarget);
           }}
           onPaste={(event) => {
+            // Image/file paste keeps the attachment path; only text collapses.
             const files = [...(event.clipboardData?.files ?? [])];
-            if (files.length > 0) void addFiles(files);
+            if (files.length > 0) {
+              void addFiles(files);
+              return;
+            }
+            const text = event.clipboardData?.getData("text/plain") ?? "";
+            if (!shouldCollapsePaste(text)) return;
+            event.preventDefault();
+            const marker = registerPaste(tabId, text);
+            const node = event.currentTarget;
+            const start = node.selectionStart ?? node.value.length;
+            const end = node.selectionEnd ?? start;
+            const next = `${node.value.slice(0, start)}${marker}${node.value.slice(end)}`;
+            onDraftChange(next);
+            const caret = start + marker.length;
+            queueMicrotask(() => {
+              node.setSelectionRange(caret, caret);
+              caretRef.current = caret;
+              setCaret(caretPosition(next, caret));
+            });
           }}
           onKeyDown={(event) => {
             // IME guard first: Enter during composition belongs to the input method.
             if (event.nativeEvent.isComposing) return;
+
+            // Backspace deletes a whole `[paste #N …]` token, never half of it.
+            if (event.key === "Backspace") {
+              const node = event.currentTarget;
+              const start = node.selectionStart ?? 0;
+              const end = node.selectionEnd ?? start;
+              if (start === end) {
+                const before = node.value.slice(0, start);
+                const marker = /\[paste #\d+ [^\]]*\]$/.exec(before);
+                if (marker && marker[0].length > 0) {
+                  const markerStart = start - marker[0].length;
+                  event.preventDefault();
+                  const next = `${node.value.slice(0, markerStart)}${node.value.slice(start)}`;
+                  onDraftChange(next);
+                  queueMicrotask(() => {
+                    node.setSelectionRange(markerStart, markerStart);
+                    caretRef.current = markerStart;
+                    setCaret(caretPosition(next, markerStart));
+                  });
+                  return;
+                }
+              }
+            }
 
             const menu = suggestions;
             const menuOpen = Boolean(menu && menu.items.length > 0);
@@ -593,7 +696,37 @@ export function Composer({
               onStop();
               return;
             }
-            if (event.key === "ArrowUp" && event.currentTarget.value.trim().length === 0) {
+            // Pi's dequeue chord (alt+up): take every queued message back into
+            // the editor (plan step 9).
+            if (event.key === "ArrowUp" && event.altKey) {
+              event.preventDefault();
+              onRestoreQueue();
+              return;
+            }
+            // Pi's follow-up chords (alt+enter and ctrl+q, both defaults on
+            // every platform): queue the text when a run is streaming, and act
+            // like Enter when it is not (plan step 9, D8).
+            if ((event.key === "Enter" && event.altKey) || (event.key === "q" && event.ctrlKey)) {
+              event.preventDefault();
+              void (async () => {
+                const text = draft.trim();
+                if (running && text.length > 0) {
+                  await submitText(draft, pickedSource, true);
+                } else {
+                  await submit();
+                }
+              })();
+              return;
+            }
+            // History walks only at the buffer's edges, so the arrow keys keep
+            // their native caret movement inside a multi-line draft. The line is
+            // read from the live selection rather than React state: a keydown
+            // follows a caret move in the same frame, before the state commits.
+            const value = event.currentTarget.value;
+            const offset = event.currentTarget.selectionStart ?? 0;
+            const caretLine = value.slice(0, offset).split("\n").length;
+            const lineCount = value.split("\n").length;
+            if (event.key === "ArrowUp" && caretLine <= 1) {
               const previous = onHistoryStep(-1);
               if (previous !== null) {
                 event.preventDefault();
@@ -601,7 +734,7 @@ export function Composer({
               }
               return;
             }
-            if (event.key === "ArrowDown") {
+            if (event.key === "ArrowDown" && caretLine >= lineCount) {
               const next = onHistoryStep(1);
               if (next !== null) {
                 event.preventDefault();

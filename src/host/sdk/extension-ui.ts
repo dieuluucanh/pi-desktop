@@ -7,9 +7,14 @@
  * `@earendil-works/*` import inside `src/host/sdk/*` (AGENTS.md rule 4).
  *
  * The TUI rendering surface (`custom`, `setFooter`, `setHeader`,
- * `setEditorComponent`, `onTerminalInput`) is registered here but rendered by
- * the step-17 host; until then `custom()` returns `undefined`, exactly as Pi's
- * RPC mode does, so an extension that needs it degrades instead of hanging.
+ * `onTerminalInput`) is rendered by the step-17 host. `setEditorComponent` is
+ * recorded on the UI port so `getEditorComponent()` stays meaningful for
+ * extension-to-extension coordination, but it is deliberately **never mounted**:
+ * the desktop always uses its native composer. Pi's interactive mode wires
+ * `onSubmit`/`onChange`/autocomplete/action handlers when it installs a custom
+ * editor, and the emulated TUI has no equivalent bridge — a mounted editor would
+ * accept keystrokes but discard Enter and hide the app's completion. Pi's RPC
+ * mode makes the same choice (it ignores custom editors).
  */
 
 import {
@@ -33,7 +38,7 @@ import {
 import type { ExtensionTerminalInputHandler, ExtensionUiPort } from "../extension-ui";
 import type { ExtensionRendererPort } from "../extension-renderers";
 import type { TuiSurfacePort } from "../tui-surface";
-import { createSdkFooterData, createSdkTuiKeybindings, sdkEditorTheme } from "./tui-surface";
+import { createSdkFooterData, createSdkTuiKeybindings } from "./tui-surface";
 
 /**
  * Pi installs the active theme on this well-known global symbol
@@ -235,8 +240,28 @@ export function createSdkExtensionUiContext(
     setWorkingIndicator: (indicator) => port.setWorkingIndicator(indicator),
     setHiddenThinkingLabel: (label) => port.setHiddenThinkingLabel(label),
     setWidget(key, content, widgetOptions) {
-      // A component factory cannot cross the frame boundary; step 17 renders it.
-      if (typeof content === "function") return;
+      const placement = widgetOptions?.placement === "belowEditor" ? "belowEditor" : "aboveEditor";
+      if (typeof content === "function") {
+        // A component factory renders through the TUI surface; the string form
+        // for this key must not linger in `oi.state` (one owner per key).
+        port.setWidget(key, undefined, widgetOptions);
+        surface?.port.setWidget(
+          key,
+          (tui) => {
+            try {
+              return content(tui as never, themeAccess.current() as never) as never;
+            } catch {
+              // A throwing widget factory must never take the session down; it
+              // simply renders nothing, like a throwing footer/header.
+              return undefined as never;
+            }
+          },
+          placement,
+        );
+        return;
+      }
+      // An array/undefined owns the key: remove any component widget first.
+      surface?.port.setWidget(key, undefined, placement);
       port.setWidget(key, content, widgetOptions);
     },
     setFooter: (factory) => {
@@ -280,17 +305,10 @@ export function createSdkExtensionUiContext(
       port.addAutocompleteProvider(factory as unknown as ExtensionCompletionProviderFactory);
     },
     setEditorComponent: (factory) => {
+      // Record for `getEditorComponent()`/extension coordination, but never
+      // construct or mount the component: the desktop keeps its native composer
+      // (see the module comment for why).
       port.setEditorComponent(factory);
-      surface?.port.setEditorComponent(
-        factory
-          ? (tui) =>
-              factory(
-                tui as never,
-                sdkEditorTheme(themeAccess.current()),
-                surface.keybindings as never,
-              ) as never
-          : undefined,
-      );
     },
     getEditorComponent: () =>
       port.getEditorComponent() as Parameters<ExtensionUIContext["setEditorComponent"]>[0],
@@ -352,6 +370,13 @@ export function createSdkExtensionBinder(
   options: SdkExtensionBinderOptions,
 ): (session: AgentSession, runtime: AgentSessionRuntime) => Promise<void> {
   return async (session, runtime) => {
+    // A rebind replaces the session's extensions: every registration from the
+    // previous session (statuses, widgets, working state, title, footer/header/
+    // editor factories, terminal-input handlers and autocomplete providers) must
+    // be cleared before the new `session_start` runs. Otherwise a stale
+    // `getEditorComponent()` makes an extension skip re-installing, and old
+    // terminal/autocomplete closures keep firing in the new session.
+    options.port.resetSessionUi();
     const settings = session.settingsManager;
     const themeAccess = createSdkThemeAccess({
       session,
@@ -369,7 +394,8 @@ export function createSdkExtensionBinder(
     let surface: SdkUiSurface | null = null;
     if (options.tuiSurface) {
       // A rebind replaces the session's extensions, so the previous surface
-      // (footer/editor/custom) must not leak into the new one.
+      // (footer/custom) must not leak into the new one. The port's editor
+      // registration is cleared above and is never mounted anyway.
       options.tuiSurface.reset();
       const user = options.readKeybindings ? await options.readKeybindings().catch(() => ({})) : {};
       surface = {

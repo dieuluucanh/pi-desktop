@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Composer } from "../session/Composer";
 import { ComposerFooter } from "../session/ComposerFooter";
 import { parseWorkflowStatus } from "../../../shared/workflow-mode";
@@ -16,9 +16,14 @@ import { Separator } from "../ui/separator";
 import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
 import { WidgetStrip } from "../extension-ui/WidgetStrip";
+import { ExtensionDialogDock } from "../extension-ui/ExtensionDialog";
 import { DocumentsPanel } from "../office/DocumentsPanel";
 import { WorkingRow } from "../extension-ui/WorkingRow";
-import { TuiSlotFrame, TuiSurface } from "../tui/TuiSurface";
+import { RunStatusRow } from "../session/RunStatusRow";
+import { TuiCellProbe, TuiSlotFrame, TuiSurface } from "../tui/TuiSurface";
+import { TuiWidgetStrip } from "../tui/TuiWidgetStrip";
+import { isDockedOverlay } from "../tui/tui-geometry";
+import { useTuiViewport } from "../tui/use-tui-viewport";
 import { WebTabView } from "../web/WebTabView";
 import { createCommandProvider } from "../completion/command-source";
 import { createDocumentProvider } from "../completion/document-source";
@@ -134,6 +139,7 @@ export function SessionView() {
   const sendPrompt = useAppStore((state) => state.sendPrompt);
   const stopRun = useAppStore((state) => state.stopRun);
   const clearQueue = useAppStore((state) => state.clearQueue);
+  const restoreQueue = useAppStore((state) => state.restoreQueue);
   const setDraft = useAppStore((state) => state.setDraft);
   const setSendMode = useAppStore((state) => state.setSendMode);
   const historyStep = useAppStore((state) => state.historyStep);
@@ -175,10 +181,12 @@ export function SessionView() {
   const extensionUi = useAppStore((state) =>
     activeTabId ? state.extensionUi[activeTabId] : undefined,
   );
+  const extensionDialogs = useAppStore((state) => state.extensionDialogs);
   const toolsExpandedState = useAppStore((state) =>
     activeTabId ? state.toolsExpanded[activeTabId] : undefined,
   );
   const toggleToolsExpanded = useAppStore((state) => state.toggleToolsExpanded);
+  const resizeTuiSurface = useAppStore((state) => state.resizeTuiSurface);
   // The git branch shown in the composer footer comes from the project
   // inspection the sidebar already triggers, so no new fetch is needed.
   const gitBranch = useAppStore((state) =>
@@ -199,6 +207,8 @@ export function SessionView() {
   const webTabStates = useAppStore((state) => state.webTabStates);
   const [editingName, setEditingName] = useState(false);
   const [composerFocusToken, setComposerFocusToken] = useState(0);
+  const [surfaceFocusToken, setSurfaceFocusToken] = useState(0);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
 
   /**
    * The completion stack for this tab (plan step 7): commands from the host's
@@ -263,6 +273,21 @@ export function SessionView() {
 
   const active = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeId = active?.id ?? null;
+  // An extension dialog is per-tab and wins over the composer and a docked TUI
+  // overlay: it is the newest interaction the extension is blocked on.
+  const dialog = extensionDialogs.find((entry) => entry.tabId === active?.id) ?? null;
+
+  // The emulated terminal grid belongs to this session column, not to the TUI
+  // surface (2026-10-26 plan, step 1). Reporting the surface's own frame made
+  // `terminal.rows` depend on the component's output, which collapsed the
+  // workflow questionnaire to a single row. The hook also re-reports when the
+  // tab status changes so a freshly spawned host receives the real grid.
+  const viewport = useTuiViewport({
+    ref: viewportRef,
+    tabId: activeId ?? "",
+    revision: active?.status ?? null,
+    report: resizeTuiSurface,
+  });
 
   // Hooks run before the early return: `messages.get` seeds the transcript of the
   // tab being shown (once per tab; live batches append after that). A web tab has
@@ -303,11 +328,19 @@ export function SessionView() {
   const modelLabel = modelKeyOf(activeState?.model) ?? active.model;
   const needsRestart =
     active.status === "stopped" || active.status === "crashed" || active.status === "failed";
-  // A non-overlay `custom`/`editor` component owns the composer region; an
-  // overlay floats over the whole view (plan step 17).
-  const tuiOwnsEditor = Boolean(
-    tuiSurface && (tuiSurface.editor || (tuiSurface.custom && !tuiSurface.overlay)),
+  // A non-overlay `custom` component owns the composer region. A bottom-anchored
+  // full-width overlay (the workflow questionnaire) is a bottom sheet, so it is
+  // docked in flow as well: the transcript shrinks and stays scrollable instead
+  // of being covered by a popup. Any other overlay floats inside this column.
+  const dockedOverlay = Boolean(
+    tuiSurface?.custom && tuiSurface.overlay && isDockedOverlay(tuiSurface.bounds, viewport),
   );
+  const tuiOwnsComposer = Boolean(tuiSurface?.custom && (!tuiSurface.overlay || dockedOverlay));
+  const floatingOverlay = Boolean(tuiSurface?.custom && tuiSurface.overlay && !dockedOverlay);
+  // A docked/float surface owns the keyboard while it is up. Clicking the
+  // transcript must give the keys back to it, never to the hidden (or inert)
+  // composer — otherwise Tab/arrow keys silently stop reaching the extension.
+  const surfaceOwnsKeyboard = tuiOwnsComposer || floatingOverlay || dialog !== null;
 
   // The view mode is a semantic override (plan step 18): Verbose expands every
   // tool card, Summary collapses them, Normal uses the Ctrl+O state (or each
@@ -446,9 +479,15 @@ export function SessionView() {
       ) : null}
 
       <div className="flex min-h-0 flex-1">
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div
+          ref={viewportRef}
+          data-tui-viewport=""
+          className="relative flex min-h-0 min-w-0 flex-1 flex-col"
+        >
+          <TuiCellProbe />
           <div
             className="min-h-0 flex-1"
+            style={{ minHeight: viewport.cell.height }}
             onPointerDown={() => {
               // A ready tab is already awake; a stopped/stale one is repaired
               // here. Crashed/failed stay on the explicit Restart path.
@@ -457,6 +496,10 @@ export function SessionView() {
               }
             }}
             onClick={(event) => {
+              if (surfaceOwnsKeyboard) {
+                setSurfaceFocusToken((token) => token + 1);
+                return;
+              }
               const target = event.target as HTMLElement;
               // Focus only the empty background/empty state: clicking a message
               // row must keep click-to-select and double-click word selection.
@@ -480,25 +523,65 @@ export function SessionView() {
               thinkingLabel={extensionUi?.hiddenThinkingLabel ?? null}
               toolsExpanded={effectiveToolsExpanded}
               onToggleToolsExpanded={() => toggleToolsExpanded(active.id)}
+              followPaused={picker !== null}
             />
           </div>
 
-          {active.status === "running" && extensionUi ? (
-            <WorkingRow working={extensionUi.working} />
+          {transcript?.runStatus ? (
+            <RunStatusRow
+              status={transcript.runStatus}
+              onCancel={() => {
+                const store = useAppStore.getState();
+                if (transcript.runStatus?.kind === "compacting") {
+                  void store.abortCompaction(active.id);
+                } else {
+                  void store.abortRetry(active.id);
+                }
+              }}
+            />
+          ) : null}
+
+          {active.status === "running" ? (
+            <WorkingRow
+              working={
+                extensionUi?.working ?? {
+                  message: null,
+                  visible: null,
+                  frames: null,
+                  intervalMs: null,
+                }
+              }
+              startedAt={transcript?.runStartedAt ?? null}
+              showCancelHint
+            />
           ) : null}
           {tuiSurface?.header ? (
             <TuiSlotFrame
               frame={tuiSurface.header}
-              className="shrink-0 border-t border-line px-3 py-1"
+              className="shrink-0 border-t border-line py-1"
             />
           ) : null}
 
-          {tuiOwnsEditor && tuiSurface ? (
-            <TuiSurface tabId={active.id} snapshot={tuiSurface} />
-          ) : (
-            <>
-              <WidgetStrip tabId={active.id} placement="aboveEditor" />
+          <WidgetStrip tabId={active.id} placement="aboveEditor" />
+          <TuiWidgetStrip frames={tuiSurface?.widgetsAbove ?? []} placement="aboveEditor" />
 
+          {dialog ? (
+            <ExtensionDialogDock
+              dialog={dialog}
+              maxHeight={viewport.rows * viewport.cell.height}
+              focusToken={surfaceFocusToken}
+            />
+          ) : tuiOwnsComposer && tuiSurface ? (
+            <TuiSurface
+              tabId={active.id}
+              snapshot={tuiSurface}
+              cell={viewport.cell}
+              grid={{ rows: viewport.rows, cols: viewport.cols }}
+              variant="dock"
+              focusToken={surfaceFocusToken}
+            />
+          ) : (
+            <div className="contents" inert={floatingOverlay || undefined}>
               <Composer
                 tabId={active.id}
                 running={active.status === "running"}
@@ -515,7 +598,7 @@ export function SessionView() {
                 onRequestShortcuts={() => void loadShortcuts()}
                 onDraftChange={(text) => setDraft(active.id, text)}
                 onSend={async (text, images, options) => {
-                  const mode = sendModes[active.id] ?? "steer";
+                  const mode = options?.followUp ? "followUp" : (sendModes[active.id] ?? "steer");
                   return sendPrompt(active.id, text, {
                     ...(active.status === "running" ? { mode } : {}),
                     ...(options?.preferredSource
@@ -535,24 +618,26 @@ export function SessionView() {
                 completion={completion}
                 onStop={() => void stopRun(active.id)}
                 onClearQueue={() => void clearQueue(active.id)}
+                onRestoreQueue={() => void restoreQueue(active.id)}
                 onSendModeChange={(mode) => setSendMode(active.id, mode)}
                 onHistoryStep={(direction) => historyStep(active.id, direction)}
               />
-
-              <WidgetStrip tabId={active.id} placement="belowEditor" />
-            </>
+            </div>
           )}
+
+          <TuiWidgetStrip frames={tuiSurface?.widgetsBelow ?? []} placement="belowEditor" />
+          <WidgetStrip tabId={active.id} placement="belowEditor" />
 
           {tuiSurface?.footer ? (
             <TuiSlotFrame
               frame={tuiSurface.footer}
-              className="shrink-0 border-t border-line px-3 py-1"
+              className="shrink-0 border-t border-line py-1"
             />
           ) : null}
 
           {/* The session footer renders *outside* the editor branch above, so the
-              mode chip and extension statuses survive when an extension installs
-              its own editor (`tuiOwnsEditor`) and replaces `<Composer>`. */}
+              mode chip and extension statuses survive when an extension shows a
+              non-overlay `custom` UI (`tuiOwnsComposer`) and replaces `<Composer>`. */}
           <ComposerFooter
             className="shrink-0 px-3 pb-1"
             facts={{
@@ -562,16 +647,46 @@ export function SessionView() {
               thinking: thinkingLevel,
               context: contextUsage,
               cost,
+              usage:
+                activeState &&
+                typeof (activeState.tokens as { input?: unknown })?.input === "number"
+                  ? {
+                      input: Number((activeState.tokens as { input?: unknown }).input ?? 0),
+                      output: Number((activeState.tokens as { output?: unknown }).output ?? 0),
+                      cacheRead: Number(
+                        (activeState.tokens as { cacheRead?: unknown }).cacheRead ?? 0,
+                      ),
+                      cacheWrite: Number(
+                        (activeState.tokens as { cacheWrite?: unknown }).cacheWrite ?? 0,
+                      ),
+                    }
+                  : null,
+              auto: {
+                compaction: (activeState as { autoCompaction?: unknown })?.autoCompaction === true,
+                retry: (activeState as { autoRetry?: unknown })?.autoRetry === true,
+              },
+              provider:
+                typeof (activeState?.model as { provider?: unknown })?.provider === "string"
+                  ? ((activeState?.model as { provider?: string }).provider ?? null)
+                  : null,
               workflow: parseWorkflowStatus(extensionUi?.statuses?.workflow ?? null),
             }}
             statuses={extensionUi?.statuses}
           />
+
+          {floatingOverlay && tuiSurface ? (
+            <TuiSurface
+              tabId={active.id}
+              snapshot={tuiSurface}
+              cell={viewport.cell}
+              grid={{ rows: viewport.rows, cols: viewport.cols }}
+              variant="float"
+              focusToken={surfaceFocusToken}
+            />
+          ) : null}
         </div>
         <DocumentsPanel />
       </div>
-      {tuiSurface?.overlay && tuiSurface.custom ? (
-        <TuiSurface tabId={active.id} snapshot={tuiSurface} />
-      ) : null}
 
       <ModelPicker
         key={`${active.id}:${picker === "model" ? `open:${pickerSearch}` : "closed"}`}
