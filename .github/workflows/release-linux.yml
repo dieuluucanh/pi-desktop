@@ -17,7 +17,7 @@ name: release-linux
 #
 # Creating the release as a draft is deliberate: the plan's step-27 acceptance
 # matrix (clean install, first session) has not been run for Linux, so nothing
-# here publishes a live update feed for it. `docs/releases/v0.1.0.md` is the
+# here publishes a live update feed for it. `docs/releases/v0.2.0.md` is the
 # honest state and stays that way until the matrix passes.
 
 on:

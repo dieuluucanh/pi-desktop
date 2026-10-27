@@ -25,7 +25,8 @@ const packageJson = JSON.parse(read("package.json")) as {
   version: string;
   repository?: { url?: string };
 };
-const releaseNotes = read("docs/releases/v0.1.0.md");
+const releaseNotesPath = `docs/releases/v${packageJson.version}.md`;
+const releaseNotes = read(releaseNotesPath);
 const backlog = read("docs/product/backlog.md");
 const traceability = read("docs/product/traceability.md");
 const extensionUi = read("docs/architecture/extension-ui.md");
@@ -35,8 +36,8 @@ const readme = read("README.md");
 
 describe("release guard (plan step 27)", () => {
   it("pins one version across the package, the release notes and the docs", () => {
-    expect(packageJson.version).toBe("0.1.0");
-    expect(exists(`docs/releases/v${packageJson.version}.md`), "release notes exist").toBe(true);
+    expect(packageJson.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(exists(releaseNotesPath), "release notes exist").toBe(true);
     for (const doc of [readme, docsIndex, releaseNotes]) {
       expect(doc).toContain(`v${packageJson.version}`);
     }
@@ -61,7 +62,7 @@ describe("release guard (plan step 27)", () => {
 
   it("documents the limitations in troubleshooting and links the backlog", () => {
     expect(troubleshooting).toMatch(/Known limitations/);
-    expect(troubleshooting).toContain("releases/v0.1.0.md");
+    expect(troubleshooting).toContain(`releases/v${packageJson.version}.md`);
     expect(troubleshooting).toContain("product/backlog.md");
   });
 

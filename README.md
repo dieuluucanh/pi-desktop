@@ -7,10 +7,11 @@ installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
 `~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
-> **Status:** v0.1.0 release candidate (the core-first plan's steps 1–27). The
-> Windows installer is the primary artefact; macOS and Linux are beta, and builds
-> are unsigned. Known limitations and the deferred backlog are recorded in
-> [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md) and
+> **Status:** v0.2.0 development build (the core-first plan's steps 1–29 plus the
+> session-parity work). The Windows installer is the primary artefact; macOS and
+> Linux are beta, and builds are unsigned. Known limitations and the deferred
+> backlog are recorded in
+> [docs/releases/v0.2.0.md](docs/releases/v0.2.0.md) and
 > [docs/product/backlog.md](docs/product/backlog.md).
 >
 > **Pi for Office is an optional integration.** It installs from Extensions →
@@ -109,7 +110,7 @@ docs/                product/parity + backlog, the user guide, releases and the 
   host protocol + RPC mapping, extension UI host + TUI surface, Office
   integration, runtime, pinned versions).
 - **Parity** — [docs/product/parity.md](docs/product/parity.md).
-- **Release notes** — [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md)
+- **Release notes** — [docs/releases/v0.2.0.md](docs/releases/v0.2.0.md)
   (install table, known limitations, verification status).
 - **Backlog** — [docs/product/backlog.md](docs/product/backlog.md).
 - **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md) and

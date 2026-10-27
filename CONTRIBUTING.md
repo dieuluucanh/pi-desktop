@@ -84,7 +84,7 @@ Releases are cut from `main`. `npm run package:win|mac|linux` fetches the
 runtime, builds, verifies it and produces the installers under `release/`.
 Windows NSIS + portable is the primary artefact; macOS and Linux are beta.
 `electron-builder.yml` publishes to GitHub Releases, which is also the
-`electron-updater` feed. Artefacts are unsigned in v0.1.0; signing is backlog.
+`electron-updater` feed. Artefacts are unsigned in v0.2.0; signing is backlog.
 
 Each platform's `package:*` script fetches every runtime that platform ships
 (`package:linux` gets x64 **and** arm64, `package:mac` gets both macOS arches),

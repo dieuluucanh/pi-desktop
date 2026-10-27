@@ -38,15 +38,15 @@ then works like any other extension. See
 [parity.md](../product/parity.md#mcp).
 
 **Is there an in-app terminal?**
-Not in v0.1.0 (it is explicit post-MVP backlog). The app ships a `pi` PATH shim
+Not in v0.2.0 (it is explicit post-MVP backlog). The app ships a `pi` PATH shim
 and can open an external terminal in a project folder.
 
 **Can I open several projects at once?**
 Yes — tabs are per session and sessions belong to projects; the sidebar groups
-them. There is one window in v0.1.0 (multi-window is backlog).
+them. There is one window in v0.2.0 (multi-window is backlog).
 
 **Why does Windows/macOS warn when I install it?**
-The v0.1.0 artefacts are unsigned. Windows SmartScreen: “More info → Run anyway”;
+The v0.2.0 artefacts are unsigned. Windows SmartScreen: “More info → Run anyway”;
 macOS: right-click → Open. Signing is tracked in the backlog.
 
 **Does the app send telemetry?**
@@ -66,7 +66,7 @@ Installed builds check GitHub Releases after launch and show an update banner;
 app updates its own code, the package manager updates extensions.
 
 **Is it translated?**
-Not yet (i18n is backlog). The UI is English in v0.1.0.
+Not yet (i18n is backlog). The UI is English in v0.2.0.
 
 **Where do I report a bug?**
 Attach a Diagnostics support bundle (it is redacted) and the version from

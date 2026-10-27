@@ -171,10 +171,10 @@ Diagnostics → Save         redacted support bundle (no credentials)
 The bundle runs `redactSecrets` over the whole document, so it is safe to attach
 to an issue.
 
-## Known limitations in v0.1.0
+## Known limitations in v0.2.0
 
 Every known limitation is recorded with the release notes:
-[`docs/releases/v0.1.0.md`](../releases/v0.1.0.md). The short version:
+[`docs/releases/v0.2.0.md`](../releases/v0.2.0.md). The short version:
 
 - **Unsigned builds** — SmartScreen/Gatekeeper warn on first launch; signing is
   deferred ([backlog](../product/backlog.md)).
@@ -197,5 +197,5 @@ useful issue.
 ## Related
 
 - [FAQ](faq.md) · [Getting started](getting-started.md)
-- [Release notes v0.1.0](../releases/v0.1.0.md) · [Backlog](../product/backlog.md)
+- [Release notes v0.2.0](../releases/v0.2.0.md) · [Backlog](../product/backlog.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)

@@ -9,8 +9,10 @@
 
 ## Releases
 
-- [`releases/v0.1.0.md`](releases/v0.1.0.md) — v0.1.0 release notes, install table, the
-  known-limitations list and the verification status.
+- [`releases/v0.2.0.md`](releases/v0.2.0.md) — v0.2.0 release notes (Pi 1.4.0 session
+  parity), install table, the known-limitations list and the verification status.
+- [`releases/v0.1.0.md`](releases/v0.1.0.md) — the v0.1.0 release notes, kept as the
+  historical first release.
 
 ## User guide
 
