@@ -1168,7 +1168,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           }
           if (method === "prompt") {
             throw new SessionServiceError(
-              "The session host restarted before it received your prompt. Your draft is intact — press Enter to try again.",
+              "The session host restarted before it received your prompt. Your text was put back in the composer — press Enter to try again.",
               "session_lost",
             );
           }

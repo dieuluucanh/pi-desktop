@@ -158,3 +158,23 @@ describe("SettingsView", () => {
     expect(screen.getByText(/Settings are shared globally/i)).toBeInTheDocument();
   });
 });
+
+describe("app preferences: expanded command prompts", () => {
+  it("is off by default and writes the switch value", async () => {
+    stubRequest();
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    const row = await screen.findByTestId("expanded-command-prompts");
+    const toggle = within(row).getByRole("switch", { name: "Show expanded command prompts" });
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByText("collapsed (default)")).toBeInTheDocument();
+
+    await user.click(toggle);
+    await waitFor(() => expect(useAppStore.getState().prefs.showExpandedPrompts).toBe(true));
+    expect(screen.getByText("show by default")).toBeInTheDocument();
+
+    await user.click(toggle);
+    await waitFor(() => expect(useAppStore.getState().prefs.showExpandedPrompts).toBe(false));
+  });
+});

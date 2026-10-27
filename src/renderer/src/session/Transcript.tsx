@@ -394,12 +394,17 @@ function MessageView({
   thinkingLabel,
   toolsExpanded,
   toolCardIds,
+  promptExpanded,
+  onTogglePrompt,
 }: {
   message: TranscriptMessage;
   tabId?: string;
   thinkingLabel?: string | null;
   toolsExpanded?: boolean;
   toolCardIds?: ReadonlySet<string>;
+  /** The command-prompt body is visible (only meaningful with promptOrigin). */
+  promptExpanded?: boolean;
+  onTogglePrompt?: () => void;
 }) {
   const text = textOf(message.blocks);
 
@@ -466,9 +471,45 @@ function MessageView({
   }
   const hasText = message.blocks.some((block) => block.kind === "text" && block.text.length > 0);
   const stopNote = stopReasonNote(message);
+  const commandOrigin =
+    message.role === "user" && message.promptOrigin ? message.promptOrigin : undefined;
+  const isCommandPrompt = commandOrigin !== undefined;
+  const promptVisible = !isCommandPrompt || promptExpanded === true;
+  const promptLines = text.length === 0 ? 0 : text.split("\n").length;
+  const copyText = isCommandPrompt && !promptVisible ? commandOrigin : text;
+
+  const commandHeader = isCommandPrompt ? (
+    <div className="mb-1 flex min-w-0 items-center gap-2 text-[11px]" data-testid="command-prompt">
+      <Badge tone="accent">command</Badge>
+      <span
+        className="min-w-0 truncate font-mono text-ink-muted"
+        title={commandOrigin}
+        data-testid="command-origin"
+      >
+        {commandOrigin}
+      </span>
+      {onTogglePrompt ? (
+        <button
+          type="button"
+          className="shrink-0 text-ink-muted hover:text-ink"
+          aria-expanded={promptVisible}
+          onClick={onTogglePrompt}
+          data-testid="command-prompt-toggle"
+        >
+          {promptVisible ? "Hide prompt" : "Show prompt"}
+        </button>
+      ) : null}
+    </div>
+  ) : null;
 
   const body = (
     <>
+      {commandHeader}
+      {!promptVisible ? (
+        <p className="text-xs text-ink-faint" data-testid="command-prompt-hidden">
+          Expanded prompt hidden · {promptLines} {promptLines === 1 ? "line" : "lines"}
+        </p>
+      ) : null}
       {orderedBlocks.map((block, index) => {
         if (block.kind === "thinking") {
           return (
@@ -481,6 +522,10 @@ function MessageView({
         }
         if (block.kind === "text") {
           if (block.text.length === 0) return null;
+          // The body of a command prompt is the expanded instruction, not what
+          // the user typed; hide it until the row (or the setting/Ctrl+O) says
+          // otherwise (2026-10-26 composer plan).
+          if (isCommandPrompt && !promptVisible) return null;
           return (
             <MessageTextBlock
               key={`block-${index}`}
@@ -527,7 +572,7 @@ function MessageView({
         </p>
       ) : null}
       {message.streaming ? <span className="ml-0.5 animate-pulse text-accent">▍</span> : null}
-      {!message.streaming && hasText ? <MessageActions text={text} /> : null}
+      {!message.streaming && hasText ? <MessageActions text={copyText} /> : null}
     </>
   );
 
@@ -557,6 +602,8 @@ function TranscriptItemView({
   toolsExpanded,
   toolCardIds,
   onToggleToolsExpanded,
+  promptExpanded,
+  onTogglePrompt,
 }: {
   item: TranscriptItem;
   tabId?: string;
@@ -566,6 +613,8 @@ function TranscriptItemView({
   toolsExpanded?: boolean;
   toolCardIds?: ReadonlySet<string>;
   onToggleToolsExpanded?: () => void;
+  promptExpanded?: boolean;
+  onTogglePrompt?: () => void;
 }) {
   if (item.kind === "message")
     return (
@@ -575,6 +624,8 @@ function TranscriptItemView({
         thinkingLabel={thinkingLabel ?? null}
         {...(toolsExpanded === undefined ? {} : { toolsExpanded })}
         {...(toolCardIds ? { toolCardIds } : {})}
+        {...(promptExpanded === undefined ? {} : { promptExpanded })}
+        {...(onTogglePrompt ? { onTogglePrompt } : {})}
       />
     );
   if (item.kind === "tool")
@@ -681,6 +732,24 @@ export function Transcript({
     () => new Set(items.flatMap((item) => (item.kind === "tool" ? [item.tool.toolCallId] : []))),
     [items],
   );
+
+  // Command prompts (2026-10-26 composer plan): Summary/Ctrl+O/Verbose are the
+  // global override, the App preference is the neutral default, and a per-row
+  // toggle wins until the global state changes.
+  const showExpandedPrompts = useAppStore((state) => state.prefs.showExpandedPrompts);
+  const defaultPromptExpanded = toolsExpanded ?? showExpandedPrompts;
+  const [promptOverrides, setPromptOverrides] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    setPromptOverrides({});
+  }, [toolsExpanded, showExpandedPrompts]);
+  const collapsedPromptIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of items) {
+      if (item.kind !== "message" || !item.message.promptOrigin) continue;
+      if (!(promptOverrides[item.id] ?? defaultPromptExpanded)) ids.add(item.id);
+    }
+    return ids;
+  }, [items, defaultPromptExpanded, promptOverrides]);
 
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -798,8 +867,12 @@ export function Transcript({
   }, [findQuery, findOpen]);
 
   const find = useMemo(
-    () => findInTranscript(items, findQuerySettled, { useRegex: findRegex }),
-    [items, findQuerySettled, findRegex],
+    () =>
+      findInTranscript(items, findQuerySettled, {
+        useRegex: findRegex,
+        collapsedPromptIds,
+      }),
+    [items, findQuerySettled, findRegex, collapsedPromptIds],
   );
 
   useEffect(() => {
@@ -894,18 +967,31 @@ export function Transcript({
       </button>
     ) : null;
 
-  const row = (item: TranscriptItem) => (
-    <TranscriptItemView
-      item={item}
-      {...(tabId ? { tabId } : {})}
-      {...(onAbort ? { onAbort } : {})}
-      {...(running === undefined ? {} : { running })}
-      {...(thinkingLabel ? { thinkingLabel } : {})}
-      {...(toolsExpanded === null || toolsExpanded === undefined ? {} : { toolsExpanded })}
-      {...(toolCardIds.size > 0 ? { toolCardIds } : {})}
-      {...(onToggleToolsExpanded ? { onToggleToolsExpanded } : {})}
-    />
-  );
+  const row = (item: TranscriptItem) => {
+    const isCommandPrompt = item.kind === "message" && Boolean(item.message.promptOrigin);
+    return (
+      <TranscriptItemView
+        item={item}
+        {...(tabId ? { tabId } : {})}
+        {...(onAbort ? { onAbort } : {})}
+        {...(running === undefined ? {} : { running })}
+        {...(thinkingLabel ? { thinkingLabel } : {})}
+        {...(toolsExpanded === null || toolsExpanded === undefined ? {} : { toolsExpanded })}
+        {...(toolCardIds.size > 0 ? { toolCardIds } : {})}
+        {...(onToggleToolsExpanded ? { onToggleToolsExpanded } : {})}
+        {...(isCommandPrompt ? { promptExpanded: !collapsedPromptIds.has(item.id) } : {})}
+        {...(isCommandPrompt
+          ? {
+              onTogglePrompt: () =>
+                setPromptOverrides((current) => ({
+                  ...current,
+                  [item.id]: !(current[item.id] ?? defaultPromptExpanded),
+                })),
+            }
+          : {})}
+      />
+    );
+  };
 
   if (items.length <= VIRTUALIZE_THRESHOLD) {
     return (

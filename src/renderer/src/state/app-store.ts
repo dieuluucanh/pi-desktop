@@ -145,12 +145,15 @@ import {
   type PackageSummary,
 } from "../../../shared/packages";
 import {
+  applyPromptOrigins,
   createTranscriptState,
   hydrateMessages,
   reduceSessionEvents,
   textOfPartial,
+  transcriptTextOf,
   type TranscriptState,
 } from "../session/session-events";
+import { rememberPromptOrigin } from "../../../shared/prompt-origin";
 import { appCommandNames, resolveCommandInput } from "../completion/dispatch";
 import type { HostCommandEntry } from "../completion/command-source";
 import type { FileListSnapshot } from "../completion/file-source";
@@ -515,13 +518,18 @@ export interface AppStateShape {
   sendPrompt: (
     tabId: string,
     text: string,
-    options?: { mode?: SendMode; images?: PromptImage[]; preferredSource?: CompletionSource },
+    options?: {
+      mode?: SendMode;
+      images?: PromptImage[];
+      preferredSource?: CompletionSource;
+      promptOrigin?: string;
+    },
   ) => Promise<boolean>;
   /** Sends without command routing (used by the dispatch table itself). */
   sendPromptNow: (
     tabId: string,
     text: string,
-    options?: { mode?: SendMode; images?: PromptImage[] },
+    options?: { mode?: SendMode; images?: PromptImage[]; promptOrigin?: string },
   ) => Promise<boolean>;
   /** `clearQueue` then `abort`, restoring the queued text into the draft. */
   stopRun: (tabId: string) => Promise<void>;
@@ -1210,6 +1218,28 @@ function rememberDraft(tabId: string, text: string): void {
 }
 
 /**
+ * Every send that clears the composer bumps its tab's sequence. A late refusal
+ * restores the text only when no newer send has started, so an old rejection
+ * can never clobber a draft the user typed afterwards (2026-10-26 composer plan).
+ */
+const draftSendSequences = new Map<string, number>();
+
+function beginDraftSend(tabId: string): number {
+  const sequence = (draftSendSequences.get(tabId) ?? 0) + 1;
+  draftSendSequences.set(tabId, sequence);
+  return sequence;
+}
+
+/** Puts a refused send back above anything typed since it was cleared. */
+function restoreDraftAfterRefusal(tabId: string, previous: string, sequence: number): void {
+  if (previous.length === 0 || draftSendSequences.get(tabId) !== sequence) return;
+  const store = useAppStore.getState();
+  const current = store.prefs.drafts[tabId] ?? "";
+  if (current === previous) return;
+  store.setDraft(tabId, current.length > 0 ? `${previous}\n\n${current}` : previous);
+}
+
+/**
  * Which host answers the Extensions hub (plan step 13): the active session tab
  * when one exists (live, with `extension_error` history), otherwise the app-wide
  * control host, which loads resources on demand.
@@ -1739,6 +1769,19 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       const prefs = await api.prefs.get();
       set({ prefs, prefsLoaded: true });
+      // Preferences can arrive after a transcript was already hydrated (tabs and
+      // history load independently). Re-annotate it, so a reopened command
+      // prompt is collapsed without fetching history again.
+      if (Object.keys(prefs.promptOrigins).length > 0) {
+        set((state) => ({
+          transcripts: Object.fromEntries(
+            Object.entries(state.transcripts).map(([tabId, transcript]) => [
+              tabId,
+              applyPromptOrigins(transcript, prefs.promptOrigins),
+            ]),
+          ),
+        }));
+      }
     } catch {
       set({ prefsLoaded: true });
     }
@@ -1866,6 +1909,24 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       if (loopback) get().openLoopbackUrl(loopback, envelope.tabId);
     }
     const current = get().transcripts[envelope.tabId] ?? createTranscriptState();
+    // Persist command-prompt origins so reopening the session keeps the
+    // collapsed row. The live transcript already carries the host tag; the map
+    // is only for hydration after an app restart (2026-10-26 composer plan).
+    let promptOrigins = get().prefs.promptOrigins;
+    let originsChanged = false;
+    for (const entry of rest) {
+      if (entry.event !== "message_start") continue;
+      const payload = (entry.payload ?? {}) as { promptOrigin?: unknown; message?: unknown };
+      if (typeof payload.promptOrigin !== "string" || payload.promptOrigin.length === 0) continue;
+      if ((payload.message as { role?: unknown } | undefined)?.role !== "user") continue;
+      promptOrigins = rememberPromptOrigin(
+        promptOrigins,
+        transcriptTextOf(payload.message),
+        payload.promptOrigin,
+      );
+      originsChanged = true;
+    }
+    if (originsChanged) get().setPrefs({ promptOrigins });
     set({
       transcripts: {
         ...get().transcripts,
@@ -1905,7 +1966,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       set({
         transcripts: {
           ...get().transcripts,
-          [tabId]: hydrateMessages(base, result.messages ?? []),
+          [tabId]: hydrateMessages(base, result.messages ?? [], get().prefs.promptOrigins),
         },
       });
     } catch {
@@ -2512,11 +2573,21 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const trimmed = text.trim();
     const tab = get().tabs.find((entry) => entry.id === tabId);
     if (!api?.sessions || !tab || trimmed.length === 0) return false;
+    // Terminal Pi's editor clears in `submitValue` before dispatching. Do the
+    // same before any await: a slow wake or a long run must never leave the text
+    // in the composer. A refusal restores it above anything typed since.
+    const previous = get().prefs.drafts[tabId] ?? "";
+    const sequence = beginDraftSend(tabId);
+    get().setDraft(tabId, "");
+    rememberDraft(tabId, trimmed);
     // A stale idle/stopped tab is verified and repaired before the prompt; the
     // main-side request path is a second safety net, not the first interaction.
     if (tab.status !== "running") {
       const ready = await get().ensureSession(tabId, { force: true });
-      if (!ready) return false;
+      if (!ready) {
+        restoreDraftAfterRefusal(tabId, previous, sequence);
+        return false;
+      }
     }
     // Re-read after the ensure: the host may already be streaming while the
     // renderer still showed idle, and a streamed send needs a delivery mode.
@@ -2524,15 +2595,21 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const mode = running ? (options.mode ?? get().sendModes[tabId] ?? "steer") : undefined;
     // A `[paste #N …]` marker is display sugar: the model must receive the body
     // (plan step 20).
-    const params: Record<string, unknown> = { text: get().expandPastes(tabId, trimmed) };
+    const params: Record<string, unknown> = {
+      text: get().expandPastes(tabId, trimmed),
+      // The host resolves this request at the SDK preflight, so the composer is
+      // free again immediately (2026-10-26 composer plan).
+      ack: "preflight",
+    };
     if (options.images && options.images.length > 0) params.images = options.images;
     if (mode) params.streamingBehavior = mode;
+    const origin = options.promptOrigin?.trim();
+    if (origin) params.promptOrigin = origin;
     try {
       await api.sessions.request({ tabId, method: "prompt", params });
-      get().setDraft(tabId, "");
-      rememberDraft(tabId, trimmed);
       return true;
     } catch (error) {
+      restoreDraftAfterRefusal(tabId, previous, sequence);
       get().noteFailure(error);
       return false;
     }
@@ -2559,20 +2636,29 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         set({ hint: "A shell command is already running — press Esc to cancel it first." });
         return false;
       }
+      // Clear before any await (terminal's editor clears in submitValue): a
+      // long command must not hold the text (or the composer's send lock)
+      // until the shell exits.
+      const previous = get().prefs.drafts[tabId] ?? "";
+      const sequence = beginDraftSend(tabId);
+      get().setDraft(tabId, "");
+      rememberDraft(tabId, trimmedInput);
       if (tab.status !== "running") {
         const ready = await get().ensureSession(tabId, { force: true });
-        if (!ready) return false;
+        if (!ready) {
+          restoreDraftAfterRefusal(tabId, previous, sequence);
+          return false;
+        }
       }
       try {
         await api.sessions.request({
           tabId,
           method: "bash.run",
-          params: { command, excludeFromContext },
+          params: { command, excludeFromContext, ack: "started" },
         });
-        get().setDraft(tabId, "");
-        rememberDraft(tabId, trimmedInput);
         return true;
       } catch (error) {
+        restoreDraftAfterRefusal(tabId, previous, sequence);
         get().noteFailure(error);
         return false;
       }
@@ -2698,7 +2784,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (resolution.kind === "host") {
       const { name, argument, command } = resolution;
       if (command.source !== "extension") {
-        const sent = await get().sendPromptNow(tabId, text, options);
+        const sent = await get().sendPromptNow(tabId, text, {
+          ...options,
+          promptOrigin: text.trim(),
+        });
         return { handled: true, sent };
       }
 
@@ -2713,7 +2802,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         const response = await api.sessions.request({
           tabId,
           method: "commands.run",
-          params: { name, args: argument },
+          params: { name, args: argument, ack: "started" },
         });
         state = parseCommandRunResult(response).ran ? "ran" : "missing";
       } catch {
@@ -2736,7 +2825,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
             const response = await api.sessions.request({
               tabId,
               method: "commands.run",
-              params: { name: retry.name, args: retry.argument },
+              params: { name: retry.name, args: retry.argument, ack: "started" },
             });
             if (parseCommandRunResult(response).ran) {
               get().setDraft(tabId, "");
@@ -2765,7 +2854,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // Direct execution is unavailable (an older host): keep the legacy prompt
       // path, with the caller's mode/images forwarded so it still works while
       // streaming.
-      const sent = await get().sendPromptNow(tabId, text, options);
+      const sent = await get().sendPromptNow(tabId, text, {
+        ...options,
+        promptOrigin: text.trim(),
+      });
       return { handled: true, sent };
     }
 

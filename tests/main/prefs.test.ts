@@ -9,6 +9,7 @@ import {
   sanitizeDrafts,
   sanitizePrefs,
 } from "../../src/shared/prefs";
+import { hashPromptText } from "../../src/shared/prompt-origin";
 
 describe("sanitizePrefs", () => {
   it("returns defaults for non-objects", () => {
@@ -26,6 +27,8 @@ describe("sanitizePrefs", () => {
         "onboardingCompletedAt",
         "privacyAcknowledged",
         "profileMode",
+        "promptOrigins",
+        "showExpandedPrompts",
         "sidebarCollapsed",
         "sidebarWidth",
         "telemetryEnabled",
@@ -55,6 +58,21 @@ describe("sanitizePrefs", () => {
       telemetryEnabled: true,
       privacyAcknowledged: true,
     });
+  });
+
+  it("defaults expanded command prompts off and sanitizes their origin map", () => {
+    // The plan's default: a fresh or older app-state.json must not reveal
+    // command system prompts by omission.
+    expect(sanitizePrefs({}).showExpandedPrompts).toBe(false);
+    expect(sanitizePrefs({ showExpandedPrompts: "yes" }).showExpandedPrompts).toBe(false);
+    expect(sanitizePrefs({ showExpandedPrompts: true }).showExpandedPrompts).toBe(true);
+
+    expect(sanitizePrefs({}).promptOrigins).toEqual({});
+    const key = hashPromptText("expanded command body");
+    const result = sanitizePrefs({
+      promptOrigins: { [key]: " /commit -a ", notAHash: "/x", [hashPromptText("bad")]: 7 },
+    });
+    expect(result.promptOrigins).toEqual({ [key]: "/commit -a" });
   });
 
   it("falls back per field when a value is invalid", () => {

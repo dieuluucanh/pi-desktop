@@ -28,6 +28,7 @@ import {
   type TrustStoreLike,
 } from "./project-trust";
 import { createCommandHandlers, type CommandRunner } from "./commands";
+import { createPromptOriginTracker } from "./prompt-origin";
 import { createSettingsHandlers, SettingsError, type SettingsPort } from "./settings";
 import { createShortcutHandlers, ShortcutError, type ShortcutRunner } from "./shortcuts";
 import { createThemeHandlers, type ThemePort } from "./themes";
@@ -454,6 +455,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   let unsubscribeErrors: (() => void) | null = null;
   let unsubscribeModelChanges: (() => void) | null = null;
   let settingsManager: SettingsLike | null = null;
+  // Pairs each accepted prompt/command with the user message it produces, so
+  // the renderer can name the command instead of showing its expanded body.
+  const promptOrigins = createPromptOriginTracker();
 
   /**
    * Bounded `extension_error` history for the Extensions hub (plan step 13). Pi
@@ -688,10 +692,28 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     return { ...event, entryRenderable: renderable };
   };
 
+  /**
+   * Adds the raw command that produced this user message (2026-10-26
+   * composer/command-prompt plan). The tracker consumes exactly one dispatch per
+   * user message; a plain prompt matches its own text and is consumed without a
+   * tag. Never mutates the SDK event.
+   */
+  const withPromptOrigin = (event: {
+    type: string;
+    [key: string]: unknown;
+  }): { type: string; [key: string]: unknown } => {
+    if (event.type !== "message_start") return event;
+    const message = asRecord(event.message);
+    if (message.role !== "user") return event;
+    const origin = promptOrigins.consumeUserMessage(textOf(message.content));
+    return origin === null ? event : { ...event, promptOrigin: origin };
+  };
+
   const attach = (next: HostSession): void => {
     unsubscribe?.();
     unsubscribeErrors?.();
     unsubscribeModelChanges?.();
+    promptOrigins.reset();
     session = next;
     unsubscribeErrors = next.extensionRunner?.onError?.(recordRuntimeError) ?? null;
     // A broken observer must not prevent the session from opening; the state
@@ -702,9 +724,10 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       unsubscribeModelChanges = null;
     }
     const listener = (event: { type: string; [key: string]: unknown }): void => {
-      const enriched = withEntryRenderability(next, event);
+      const enriched = withPromptOrigin(withEntryRenderability(next, event));
       const frame = eventToFrame(enriched);
       deps.emit(frame.event, frame.payload, next.sessionId ?? undefined);
+      if (event.type === "agent_settled") promptOrigins.settle();
       if (STATE_EVENTS.has(event.type)) emitState();
     };
     unsubscribe = next.subscribe ? next.subscribe(listener) : null;
@@ -910,12 +933,83 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
           "bad_request",
         );
       }
-      const options = {
+      // `promptOrigin` is display metadata for a command prompt; it never reaches
+      // the SDK message. `ack` is the renderer's opt-in to Pi's preflight
+      // disposition (`agent-session.js:1676-1693`), so the composer does not wait
+      // for the whole run before it clears.
+      const rawOrigin = input.promptOrigin;
+      if (
+        rawOrigin !== undefined &&
+        (typeof rawOrigin !== "string" ||
+          rawOrigin.trim().length === 0 ||
+          rawOrigin.trim().length > 400)
+      ) {
+        throw new SessionCoreError(
+          "promptOrigin must be a non-empty string of at most 400 characters",
+          "bad_request",
+        );
+      }
+      if (input.ack !== undefined && input.ack !== "preflight") {
+        throw new SessionCoreError('ack must be "preflight" when provided', "bad_request");
+      }
+      // A new prompt while idle supersedes any dispatch that never produced a
+      // user message (a notify-only command); queued follow-ups are streaming
+      // and are therefore never dropped here.
+      if (current.isStreaming !== true) promptOrigins.dropStale();
+      const pending = promptOrigins.rememberPrompt(
+        typeof rawOrigin === "string" ? rawOrigin : null,
+        text,
+      );
+      const options: Record<string, unknown> = {
         ...(input.images ? { images: input.images } : {}),
         ...(behavior ? { streamingBehavior: behavior } : {}),
       };
-      await current.prompt(text, Object.keys(options).length > 0 ? options : undefined);
-      return snapshot();
+      if (input.ack === "preflight") {
+        return await new Promise<unknown>((resolve, reject) => {
+          let settled = false;
+          const finish = (disposition: string): void => {
+            if (settled) return;
+            settled = true;
+            resolve({ ...snapshot(), disposition });
+          };
+          options.preflightResult = (disposition: string) => finish(disposition);
+          let run: Promise<void>;
+          try {
+            run = current.prompt(text, options);
+          } catch (error) {
+            promptOrigins.forget(pending);
+            reject(error);
+            return;
+          }
+          run.then(
+            () => {
+              // Fake sessions and older SDKs settle here without the hook.
+              if (!settled) finish("started");
+            },
+            (error: unknown) => {
+              if (!settled) {
+                promptOrigins.forget(pending);
+                reject(error);
+                return;
+              }
+              // Already acknowledged: a later run failure is a notice, not a
+              // rejection of a request the renderer has resolved.
+              deps.emit(
+                "session_error",
+                { message: error instanceof Error ? error.message : String(error) },
+                current.sessionId ?? undefined,
+              );
+            },
+          );
+        });
+      }
+      try {
+        await current.prompt(text, Object.keys(options).length > 0 ? options : undefined);
+        return snapshot();
+      } catch (error) {
+        promptOrigins.forget(pending);
+        throw error;
+      }
     },
 
     steer: async (params) => {
@@ -1070,6 +1164,10 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         return deps.wrapCommandRunner?.(runner) ?? null;
       },
       emit: deps.emit,
+      onRun: (name, args) => {
+        if (session?.isStreaming !== true) promptOrigins.dropStale();
+        promptOrigins.rememberCommand(`/${name}${args.length > 0 ? ` ${args}` : ""}`);
+      },
     }).handlers(),
 
     "files.list": async (params) => {
@@ -1393,8 +1491,12 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       if (command.length === 0) {
         throw new SessionCoreError("command must not be empty", "bad_request");
       }
+      if (input.ack !== undefined && input.ack !== "started") {
+        throw new SessionCoreError('ack must be "started" when provided', "bad_request");
+      }
       const current = ensure();
-      if (!current.executeBash) {
+      const executeBash = current.executeBash;
+      if (!executeBash) {
         throw new SessionCoreError("running bash is not supported", "unsupported");
       }
       // Terminal Pi refuses a second command while one runs (`interactive-mode`
@@ -1431,15 +1533,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         timestamp: Date.now(),
         ...(excludeFromContext ? { excludeFromContext: true } : {}),
       };
-      deps.emit("message_start", { message }, sessionId);
-      try {
-        const result: BashResultLike =
-          outcome.result ??
-          (await current.executeBash(command, undefined, {
-            excludeFromContext,
-            id,
-            ...(outcome.operations === undefined ? {} : { operations: outcome.operations }),
-          }));
+      const finish = (result: BashResultLike): { result: BashResultLike } => {
         // An intercepted result never reached the session: record it so the
         // turn's context and the resumed transcript both contain the command.
         if (outcome.result) {
@@ -1461,6 +1555,54 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         );
         emitState();
         return { result };
+      };
+      const failAfterAck = (error: unknown): void => {
+        deps.emit("message_end", { message: { ...message, cancelled: true } }, sessionId);
+        deps.emit(
+          "session_error",
+          { message: error instanceof Error ? error.message : String(error) },
+          sessionId,
+        );
+        emitState();
+      };
+
+      deps.emit("message_start", { message }, sessionId);
+
+      if (input.ack === "started") {
+        // The renderer clears the composer on submit; a long shell command must
+        // not hold the host request (and its 30 s timeout) open. The final
+        // `message_end`/state still arrive as events.
+        if (outcome.result) {
+          finish(outcome.result);
+          return { started: true, id };
+        }
+        let execution: Promise<BashResultLike>;
+        try {
+          execution = executeBash(command, undefined, {
+            excludeFromContext,
+            id,
+            ...(outcome.operations === undefined ? {} : { operations: outcome.operations }),
+          });
+        } catch (error) {
+          failAfterAck(error);
+          return { started: true, id };
+        }
+        void execution.then(finish, failAfterAck);
+        // `executeBash` runs synchronously up to its first await, so the state
+        // frame already reports `bashRunning` and Esc can target the shell.
+        emitState();
+        return { started: true, id };
+      }
+
+      try {
+        const result: BashResultLike =
+          outcome.result ??
+          (await executeBash(command, undefined, {
+            excludeFromContext,
+            id,
+            ...(outcome.operations === undefined ? {} : { operations: outcome.operations }),
+          }));
+        return finish(result);
       } catch (error) {
         deps.emit("message_end", { message: { ...message, cancelled: true } }, sessionId);
         emitState();
@@ -1696,6 +1838,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     session: () => session,
     cwd: () => cwd,
     dispose: async () => {
+      promptOrigins.reset();
       unsubscribe?.();
       unsubscribe = null;
       unsubscribeErrors?.();

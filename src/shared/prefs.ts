@@ -9,6 +9,7 @@
 
 import { DEFAULT_PROFILE_MODE, sanitizeProfileMode, type ProfileMode } from "./profile";
 import { sanitizeDesktopKeybindings, type DesktopKeybindings } from "./desktop-keymap";
+import { sanitizePromptOrigins } from "./prompt-origin";
 
 export const PREF_KEYS = [
   "theme",
@@ -21,6 +22,8 @@ export const PREF_KEYS = [
   "profileMode",
   "onboardingCompletedAt",
   "desktopKeybindings",
+  "showExpandedPrompts",
+  "promptOrigins",
 ] as const;
 
 export type PrefKey = (typeof PREF_KEYS)[number];
@@ -68,6 +71,22 @@ export interface UiPrefs {
    * second copy of one (D14).
    */
   desktopKeybindings: DesktopKeybindings;
+  /**
+   * Whether the transcript shows the expanded body of a command prompt — a
+   * prompt template, a `/skill:*` command, or a user message injected by an
+   * extension command such as `/commit` — by default (2026-10-26
+   * composer/command-prompt plan). Off: the row names the command the user sent
+   * and hides the generated instruction; Ctrl+O or the row's Show button still
+   * reveals it. Plain prompts the user typed are never affected.
+   */
+  showExpandedPrompts: boolean;
+  /**
+   * `hash(message text) -> raw command` for command-originated messages, so a
+   * collapsed command row survives an app restart or a session reopen. Only the
+   * command is stored, never the expanded prompt body; the map is bounded by
+   * `MAX_PROMPT_ORIGINS` (see `src/shared/prompt-origin.ts`).
+   */
+  promptOrigins: Record<string, string>;
 }
 
 /** Longest draft kept per tab, and how many tabs may hold one. */
@@ -89,6 +108,8 @@ export const DEFAULT_PREFS: UiPrefs = {
   profileMode: DEFAULT_PROFILE_MODE,
   onboardingCompletedAt: null,
   desktopKeybindings: {},
+  showExpandedPrompts: false,
+  promptOrigins: {},
 };
 
 const THEMES: readonly ThemeSetting[] = ["dark", "light", "system"];
@@ -145,6 +166,11 @@ export function sanitizePrefs(input: unknown): UiPrefs {
         ? Math.floor(source.onboardingCompletedAt)
         : null,
     desktopKeybindings: sanitizeDesktopKeybindings(source.desktopKeybindings),
+    // Missing means off: a fresh app-state.json must not reveal command
+    // prompts by omission (the plan's default).
+    showExpandedPrompts:
+      typeof source.showExpandedPrompts === "boolean" ? source.showExpandedPrompts : false,
+    promptOrigins: sanitizePromptOrigins(source.promptOrigins),
   };
 }
 

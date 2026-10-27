@@ -228,6 +228,21 @@ export function SettingsView() {
             onChange={(viewMode) => setPrefs({ viewMode })}
           />
         </Row>
+        <Row
+          label="Expanded command prompts"
+          hint="Commands such as /commit send a long instruction to the model. Off: the transcript names the command you sent and hides the instruction; Ctrl+O or the row's Show button reveals it."
+        >
+          <div className="flex items-center gap-2" data-testid="expanded-command-prompts">
+            <Switch
+              checked={prefs.showExpandedPrompts}
+              onCheckedChange={(showExpandedPrompts) => setPrefs({ showExpandedPrompts })}
+              aria-label="Show expanded command prompts"
+            />
+            <span className="text-xs text-ink-faint">
+              {prefs.showExpandedPrompts ? "show by default" : "collapsed (default)"}
+            </span>
+          </div>
+        </Row>
         <Row label="Sidebar" hint="Width is stored per app.">
           <div className="flex items-center gap-2">
             <Button size="sm" onClick={toggleSidebar}>

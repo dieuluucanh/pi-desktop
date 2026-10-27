@@ -911,7 +911,7 @@ describe("requests", () => {
     };
 
     await expect(service.request("tab-1", "prompt", { text: "hello" })).rejects.toThrow(
-      /draft is intact/,
+      /put back in the composer/,
     );
     expect(host.requests.map((request) => request.method)).toContain("session.resume");
     expect(host.requests.filter((request) => request.method === "prompt")).toHaveLength(0);

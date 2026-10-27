@@ -92,7 +92,7 @@ describe("runCommandInput", () => {
 
     expect(outcome).toEqual({ handled: true, sent: true });
     const run = request.mock.calls.find((call) => call[0]?.method === "commands.run");
-    expect(run?.[0]?.params).toEqual({ name: "deploy", args: "now" });
+    expect(run?.[0]?.params).toEqual({ name: "deploy", args: "now", ack: "started" });
     expect(request.mock.calls.some((call) => call[0]?.method === "prompt")).toBe(false);
     expect(useAppStore.getState().draftHistory["tab-1"]).toEqual(["/deploy now"]);
   });
@@ -109,6 +109,8 @@ describe("runCommandInput", () => {
     expect(prompt?.[0]?.params).toMatchObject({
       text: "/review the diff",
       streamingBehavior: "followUp",
+      ack: "preflight",
+      promptOrigin: "/review the diff",
     });
     expect(request.mock.calls.some((call) => call[0]?.method === "commands.run")).toBe(false);
   });
@@ -124,6 +126,12 @@ describe("runCommandInput", () => {
 
     expect(outcome).toEqual({ handled: true, sent: true });
     expect(request.mock.calls.some((call) => call[0]?.method === "prompt")).toBe(true);
+    const prompt = request.mock.calls.find((call) => call[0]?.method === "prompt");
+    // The fallback still carries the raw command for the transcript label.
+    expect(prompt?.[0]?.params).toMatchObject({
+      ack: "preflight",
+      promptOrigin: "/deploy now",
+    });
   });
 
   it("refreshes once and hints when the command is no longer live", async () => {

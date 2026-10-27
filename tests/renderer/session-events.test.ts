@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionEventEntry } from "../../src/shared/session-ipc";
+import { hashPromptText } from "../../src/shared/prompt-origin";
 import { event, fixtures, fullTurn } from "./fixtures/session-events";
 import {
+  applyPromptOrigins,
   blocksFromContent,
   createTranscriptState,
   hydrateMessages,
@@ -927,5 +929,90 @@ describe("bash execution", () => {
       { kind: "text", text: "/work" },
     ]);
     expect(state.openMessageId).toBeNull();
+  });
+});
+
+describe("command prompt origins (2026-10-26 composer plan)", () => {
+  it("carries the host promptOrigin onto the user message", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      {
+        event: "message_start",
+        payload: {
+          message: { role: "user", content: [{ type: "text", text: "expanded body" }] },
+          promptOrigin: "/commit -a",
+        },
+      },
+    ]);
+    const item = items(state)[0];
+    if (item?.kind !== "message") throw new Error("expected a message item");
+    expect(item.message.promptOrigin).toBe("/commit -a");
+    expect(item.message.blocks).toEqual([{ kind: "text", text: "expanded body" }]);
+  });
+
+  it("keeps the origin through message_end", () => {
+    let state = reduceSessionEvents(createTranscriptState(), [
+      {
+        event: "message_start",
+        payload: {
+          message: { role: "user", content: [{ type: "text", text: "body" }] },
+          promptOrigin: "/commit",
+        },
+      },
+    ]);
+    state = reduceSessionEvents(state, [
+      { event: "message_end", payload: { message: { role: "user", content: "body" } } },
+    ]);
+    const item = items(state)[0];
+    if (item?.kind !== "message") throw new Error("expected a message item");
+    expect(item.message.promptOrigin).toBe("/commit");
+  });
+
+  it("applies persisted origins when hydrating", () => {
+    const body = "expanded body text";
+    const state = hydrateMessages(
+      createTranscriptState(),
+      [{ id: "h1", role: "user", content: [{ type: "text", text: body }] }],
+      { [hashPromptText(body)]: "/commit" },
+    );
+    const item = items(state)[0];
+    if (item?.kind !== "message") throw new Error("expected a message item");
+    expect(item.message.promptOrigin).toBe("/commit");
+  });
+
+  it("annotates a transcript hydrated before the origins arrived, idempotently", () => {
+    const body = "expanded body text";
+    const state = hydrateMessages(createTranscriptState(), [
+      { id: "h1", role: "user", content: body },
+    ]);
+    const origins = { [hashPromptText(body)]: "/review x" };
+    const annotated = applyPromptOrigins(state, origins);
+    const item = items(annotated)[0];
+    if (item?.kind !== "message") throw new Error("expected a message item");
+    expect(item.message.promptOrigin).toBe("/review x");
+    expect(applyPromptOrigins(annotated, origins)).toBe(annotated);
+  });
+
+  it("does not tag non-user messages or a different text", () => {
+    const state = hydrateMessages(
+      createTranscriptState(),
+      [
+        { id: "h1", role: "assistant", content: "hello" },
+        { id: "h2", role: "user", content: "plain" },
+      ],
+      { [hashPromptText("hello")]: "/assistant-command", [hashPromptText("other")]: "/x" },
+    );
+    for (const item of items(state)) {
+      if (item.kind !== "message") throw new Error("expected a message item");
+      expect(item.message.promptOrigin).toBeUndefined();
+    }
+  });
+
+  it("renders a session_error event as an error notice", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "session_error", payload: { message: "provider vanished" } },
+    ]);
+    const item = items(state)[0];
+    if (item?.kind !== "notice") throw new Error("expected a notice item");
+    expect(item.notice).toMatchObject({ severity: "error", text: "provider vanished" });
   });
 });

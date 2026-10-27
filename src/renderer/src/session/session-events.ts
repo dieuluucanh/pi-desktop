@@ -1,4 +1,5 @@
 import type { SessionEventEntry } from "../../../shared/session-ipc";
+import { hashPromptText } from "../../../shared/prompt-origin";
 import { parseReviewDecision, type ReviewDecision } from "../../../shared/web-tabs";
 
 /**
@@ -70,6 +71,12 @@ export interface TranscriptMessage {
   stopReason?: string;
   /** The SDK's error text for `stopReason: "error"` / "aborted". */
   errorMessage?: string;
+  /**
+   * The raw command that produced this user message (`/commit -a`, `/review x`),
+   * when the host tagged it (2026-10-26 composer/command-prompt plan). Present
+   * means the body is the expanded instruction, not text the user typed.
+   */
+  promptOrigin?: string;
 }
 
 export interface TranscriptToolRun {
@@ -309,6 +316,9 @@ export function messageFromSdk(message: unknown, id: string = nextId("msg")): Tr
     ...(typeof record.model === "string" ? { model: record.model } : {}),
     ...(typeof record.stopReason === "string" ? { stopReason: record.stopReason } : {}),
     ...(typeof record.errorMessage === "string" ? { errorMessage: record.errorMessage } : {}),
+    ...(typeof record.promptOrigin === "string" && record.promptOrigin.length > 0
+      ? { promptOrigin: record.promptOrigin }
+      : {}),
   };
 }
 
@@ -684,12 +694,14 @@ export function reduceSessionEvents(
         if (isHiddenSdkMessage(payload.message)) break;
         const raw = asRecord(payload.message);
         const id = asString(raw.id) || nextId("msg");
+        const promptOrigin = asString(payload.promptOrigin);
         next = appendItem(next, {
           kind: "message",
           id,
           message: {
             ...messageFromSdk(payload.message, id),
             streaming: raw.role === "assistant",
+            ...(promptOrigin.length > 0 ? { promptOrigin } : {}),
           },
         });
         // A `!` command may sit beside a streaming assistant message: it is
@@ -912,6 +924,19 @@ export function reduceSessionEvents(
         break;
       }
 
+      case "session_error": {
+        // A request already acknowledged at preflight failed later (host
+        // 2026-10-26 composer plan); it has no request channel to reject.
+        const message = asString(payload.message);
+        next = appendNotice(
+          next,
+          "session_error",
+          "error",
+          message.length > 0 ? message : "The session request failed",
+        );
+        break;
+      }
+
       default: {
         const severity = NOTICE_SEVERITY[entry.event];
         if (severity) {
@@ -979,6 +1004,7 @@ export function imagesOfPartial(result: unknown): Array<{ mimeType: string; data
 export function hydrateMessages(
   state: TranscriptState,
   messages: readonly unknown[],
+  promptOrigins: Readonly<Record<string, string>> = {},
 ): TranscriptState {
   let next: TranscriptState = { ...state, hydrated: true, runStartedAt: null };
   const pendingCalls = new Map<string, { name: string; args: unknown }>();
@@ -1020,5 +1046,44 @@ export function hydrateMessages(
       }
     }
   }
-  return next;
+  return applyPromptOrigins(next, promptOrigins);
+}
+
+/** Text blocks of a built transcript message, joined as the display does. */
+function transcriptMessageText(message: TranscriptMessage): string {
+  return message.blocks
+    .filter((block): block is TranscriptTextBlock => block.kind === "text")
+    .map((block) => block.text)
+    .join("\n");
+}
+
+/** The raw text used for the origin hash, live or hydrated. */
+export function transcriptTextOf(message: unknown): string {
+  const record = asRecord(message);
+  return blocksFromContent(record.content)
+    .filter((block): block is TranscriptTextBlock => block.kind === "text")
+    .map((block) => block.text)
+    .join("\n");
+}
+
+/**
+ * Adds the persisted command origins to a transcript hydrated before the app
+ * preferences arrived (prefs load asynchronously). Additive and idempotent.
+ */
+export function applyPromptOrigins(
+  state: TranscriptState,
+  promptOrigins: Readonly<Record<string, string>>,
+): TranscriptState {
+  if (Object.keys(promptOrigins).length === 0) return state;
+  let changed = false;
+  const items = state.items.map((item) => {
+    if (item.kind !== "message" || item.message.promptOrigin || item.message.role !== "user") {
+      return item;
+    }
+    const origin = promptOrigins[hashPromptText(transcriptMessageText(item.message))];
+    if (!origin) return item;
+    changed = true;
+    return { ...item, message: { ...item.message, promptOrigin: origin } };
+  });
+  return changed ? { ...state, items } : state;
 }

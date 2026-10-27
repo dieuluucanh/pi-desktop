@@ -228,4 +228,70 @@ describe("createCommandHandlers", () => {
       },
     ]);
   });
+
+  it("acks an opted-in command at start and reports a later handler error", async () => {
+    let release!: () => void;
+    const run = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const handler = vi.fn(async () => {
+      await run;
+      throw new Error("late failure");
+    });
+    const emitted: Array<{ event: string; payload: unknown }> = [];
+    const { handlers } = createCommandHandlers({
+      resolveRunner: () => fakeRunner({ slow: { handler } }),
+      emit: (event, payload) => emitted.push({ event, payload }),
+    });
+
+    await expect(
+      call(handlers(), "commands.run", { name: "slow", args: "-a", ack: "started" }),
+    ).resolves.toEqual({ ran: true });
+    expect(handler).toHaveBeenCalledWith("-a", expect.anything());
+    expect(emitted).toEqual([]);
+
+    release();
+    await vi.waitFor(() => {
+      expect(emitted).toEqual([
+        {
+          event: "extension_error",
+          payload: { extensionPath: "command:slow", event: "command", error: "late failure" },
+        },
+      ]);
+    });
+  });
+
+  it("registers onRun before the handler", async () => {
+    const order: string[] = [];
+    const { handlers } = createCommandHandlers({
+      resolveRunner: () =>
+        fakeRunner({ commit: { handler: async () => void order.push("handler") } }),
+      emit: () => undefined,
+      onRun: (name, args) => {
+        order.push(`onRun:${name}:${args}`);
+      },
+    });
+
+    await call(handlers(), "commands.run", { name: "commit", args: "-a", ack: "started" });
+    expect(order[0]).toBe("onRun:commit:-a");
+    await vi.waitFor(() => {
+      expect(order).toEqual(["onRun:commit:-a", "handler"]);
+    });
+  });
+
+  it("keeps the non-ack path awaited and validates the ack value", async () => {
+    const handler = vi.fn(async () => undefined);
+    const { handlers } = createCommandHandlers({
+      resolveRunner: () => fakeRunner({ deploy: { handler } }),
+      emit: () => undefined,
+    });
+
+    await expect(
+      call(handlers(), "commands.run", { name: "deploy", ack: "later" }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    await expect(
+      call(handlers(), "commands.run", { name: "missing", ack: "started" }),
+    ).resolves.toEqual({ ran: false });
+    expect(handler).not.toHaveBeenCalled();
+  });
 });

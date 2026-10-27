@@ -641,6 +641,226 @@ describe("prompt semantics", () => {
       /streamingBehavior must be/i,
     );
   });
+
+  it("validates the display-only promptOrigin and the ack mode", async () => {
+    const { call, session } = await started();
+    await expect(call("prompt", { text: "hi", promptOrigin: 42 })).rejects.toThrow(
+      /promptOrigin must be/i,
+    );
+    await expect(call("prompt", { text: "hi", promptOrigin: "   " })).rejects.toThrow(
+      /promptOrigin must be/i,
+    );
+    await expect(
+      call("prompt", { text: "hi", promptOrigin: `/${"x".repeat(400)}` }),
+    ).rejects.toThrow(/promptOrigin must be/i);
+    await expect(call("prompt", { text: "hi", ack: "later" })).rejects.toThrow(
+      /ack must be "preflight"/i,
+    );
+    expect(session.prompt).not.toHaveBeenCalled();
+  });
+});
+
+describe("prompt ack + prompt origins (2026-10-26 composer plan)", () => {
+  type Listener = (event: { type: string; [key: string]: unknown }) => void;
+
+  async function listening(overrides: Record<string, unknown> = {}) {
+    let listener: Listener | null = null;
+    const context = await started({
+      subscribe: (next: Listener) => {
+        listener = next;
+        return () => undefined;
+      },
+      ...overrides,
+    });
+    if (!listener) throw new Error("the session listener was not attached");
+    return { ...context, listener: listener as Listener };
+  }
+
+  function messageStart(
+    context: { emitted: Array<{ event: string; payload?: unknown }>; listener: Listener },
+    text: string,
+    role: "user" | "assistant" = "user",
+  ): Record<string, unknown> | undefined {
+    context.emitted.length = 0;
+    const message = { role, content: [{ type: "text", text }] };
+    context.listener({ type: "message_start", message });
+    const frame = context.emitted.find((entry) => entry.event === "message_start");
+    return frame?.payload as Record<string, unknown> | undefined;
+  }
+
+  it("resolves at preflight only when the renderer opts in", async () => {
+    let release!: () => void;
+    const run = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const prompt = vi.fn(async (_text: string, options?: unknown) => {
+      (options as { preflightResult?: (disposition: string) => void }).preflightResult?.("started");
+      await run;
+    });
+    const { call } = await started({ prompt });
+
+    const ack = await call("prompt", { text: "hello", ack: "preflight" });
+    expect(ack).toMatchObject({ disposition: "started", sessionId: "s1" });
+    expect(prompt.mock.calls[0]?.[1]).toMatchObject({ preflightResult: expect.any(Function) });
+    release();
+  });
+
+  it("still resolves after the run in the default mode", async () => {
+    let release!: () => void;
+    const run = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const prompt = vi.fn(async (_text: string, options?: unknown) => {
+      void options;
+      await run;
+    });
+    const { call } = await started({ prompt });
+
+    let resolved = false;
+    const pending = call("prompt", { text: "hello" }).then((value) => {
+      resolved = true;
+      return value;
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+    release();
+    await expect(pending).resolves.toMatchObject({ sessionId: "s1" });
+    expect(prompt.mock.calls[0]?.[1]).toBeUndefined();
+  });
+
+  it("tags a template expansion with the raw command and keeps the message untouched", async () => {
+    const context = await listening({
+      prompt: vi.fn(async (_text: string, options?: unknown) => {
+        (options as { preflightResult?: (d: string) => void }).preflightResult?.("started");
+      }),
+    });
+    await context.call("prompt", {
+      text: "/review app.ts",
+      promptOrigin: "/review app.ts",
+      ack: "preflight",
+    });
+
+    const payload = messageStart(context, "Please review app.ts in detail.");
+    expect(payload).toMatchObject({ promptOrigin: "/review app.ts" });
+    expect((payload as { message: Record<string, unknown> }).message).not.toHaveProperty(
+      "promptOrigin",
+    );
+  });
+
+  it("does not tag a plain prompt, even when the SDK appends image hints", async () => {
+    const context = await listening({
+      prompt: vi.fn(async () => undefined),
+    });
+    await context.call("prompt", { text: "hello", ack: "preflight" });
+    expect(messageStart(context, "hello")).not.toHaveProperty("promptOrigin");
+
+    await context.call("prompt", { text: "look", ack: "preflight" });
+    expect(messageStart(context, "look\n\n[image attached]")).not.toHaveProperty("promptOrigin");
+  });
+
+  it("emits session_error when an acked run fails later", async () => {
+    const { call, emitted } = await listening({
+      prompt: vi.fn(async (_text: string, options?: unknown) => {
+        (options as { preflightResult?: (d: string) => void }).preflightResult?.("started");
+        throw new Error("provider vanished");
+      }),
+    });
+    await call("prompt", { text: "hello", ack: "preflight" });
+    await vi.waitFor(() => {
+      expect(emitted.some((entry) => entry.event === "session_error")).toBe(true);
+    });
+    expect(emitted.find((entry) => entry.event === "session_error")?.payload).toMatchObject({
+      message: "provider vanished",
+    });
+  });
+
+  it("clears pending origins when the agent settles", async () => {
+    const context = await listening({
+      prompt: vi.fn(async () => undefined),
+    });
+    await context.call("prompt", {
+      text: "/commit",
+      promptOrigin: "/commit",
+      ack: "preflight",
+    });
+    context.listener({ type: "agent_settled" });
+    expect(messageStart(context, "The user ran /commit and wants a message.")).not.toHaveProperty(
+      "promptOrigin",
+    );
+  });
+
+  it("registers an extension command's origin before its handler runs", async () => {
+    const handler = vi.fn(async () => undefined);
+    const runner = {
+      getCommand: (name: string) => (name === "commit" ? { handler } : undefined),
+      createCommandContext: () => ({}),
+      emitError: vi.fn(),
+    };
+    const context = await listening({ wrapCommandRunner: () => runner });
+
+    await expect(
+      context.call("commands.run", { name: "commit", args: "-a", ack: "started" }),
+    ).resolves.toEqual({ ran: true });
+    expect(
+      messageStart(context, "The user ran /commit -a and wants a commit message."),
+    ).toMatchObject({ promptOrigin: "/commit -a" });
+  });
+
+  it("acks a bash command at start and emits the final message later", async () => {
+    let release!: (result: unknown) => void;
+    const executeBash = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const context = await started({ executeBash });
+
+    await expect(
+      context.call("bash.run", { command: "pwd", ack: "started" }),
+    ).resolves.toMatchObject({ started: true });
+    expect(executeBash).toHaveBeenCalledTimes(1);
+    expect(context.emitted.some((entry) => entry.event === "message_start")).toBe(true);
+    expect(context.emitted.some((entry) => entry.event === "message_end")).toBe(false);
+
+    release({ output: "/work/app\n", exitCode: 0, cancelled: false, truncated: false });
+    await vi.waitFor(() => {
+      expect(
+        context.emitted.filter((entry) => entry.event === "message_end").at(-1)?.payload,
+      ).toMatchObject({
+        message: { role: "bashExecution", command: "pwd", output: "/work/app\n", exitCode: 0 },
+      });
+    });
+  });
+
+  it("reports a bash failure after the ack as a session_error notice", async () => {
+    const executeBash = vi.fn(async () => {
+      throw new Error("shell exploded");
+    });
+    const context = await started({ executeBash });
+
+    await expect(
+      context.call("bash.run", { command: "pwd", ack: "started" }),
+    ).resolves.toMatchObject({ started: true });
+    await vi.waitFor(() => {
+      expect(context.emitted.some((entry) => entry.event === "session_error")).toBe(true);
+    });
+    expect(context.emitted.find((entry) => entry.event === "session_error")?.payload).toMatchObject(
+      {
+        message: "shell exploded",
+      },
+    );
+    expect(
+      context.emitted.filter((entry) => entry.event === "message_end").at(-1)?.payload,
+    ).toMatchObject({ message: { cancelled: true } });
+  });
+
+  it("validates the bash ack mode", async () => {
+    const { call } = await started();
+    await expect(call("bash.run", { command: "pwd", ack: "later" })).rejects.toThrow(
+      /ack must be "started"/i,
+    );
+  });
 });
 
 describe("settings", () => {

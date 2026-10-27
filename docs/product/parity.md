@@ -31,21 +31,23 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 
 ## Session interaction (2026-10-26 session-parity plan)
 
-| Capability                                 | Terminal Pi                             | Pi Desktop                                                                                            |
-| ------------------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Turn plumbing in the transcript            | silent (`agent_*` never renders)        | ✅ step 3 (no synthetic rows; aborted/error/length turns explain themselves once)                     |
-| Tool calls and results                     | one row per call, results pair to it    | ✅ steps 4–6 (one card, no assistant bubble for `toolResult`, images, abort sweep, previews)          |
-| Bash `!` / `!!`                            | host-executed, streams, Esc cancels     | ✅ step 7 (`executeBash` + Pi's `user_bash` hook, `!!` excluded from context, second command refused) |
-| Retry / compaction status                  | countdown + cancel                      | ✅ step 8 (status row, elapsed time on the working row, `session.abortCompaction`)                    |
-| Streaming follow                           | pinned viewport + "Jump to latest"      | ✅ step 10 (content-size follow, jump pill, `Ctrl+End`)                                               |
-| Transcript search                          | `Ctrl+F` / `Ctrl+Shift+F`               | ✅ step 11 (item-model matcher, inline marks, next/prev, remappable chord)                            |
-| `/copy`, `/session`                        | copies the last answer, prints stats    | ✅ step 12 (`/copy`, `Ctrl+X` outside an editor, `/session` dialog, footer token detail)              |
-| `/import`, `/export jsonl`                 | JSONL round trip                        | ✅ step 14 (OS picker, confirmation, reset + hydrate)                                                 |
-| `/changelog`, `/hotkeys`, `/help`, `/quit` | yes                                     | ✅ step 15                                                                                            |
-| `/share`, `/bug`                           | secret gist or Radius; bug zip          | ✅ step 18 (secret gist via `gh`, local redacted bug zip; Radius upload not wired and documented)     |
-| Mermaid / LaTeX                            | setting-driven mermaid, math everywhere | ✅ step 19 (`markdown.mermaid` off/final/streaming; KaTeX)                                            |
-| Large paste                                | collapses to one token                  | ✅ step 20 (marker + renderer-memory body, expanded on send, content-lost hint after a restart)       |
-| Desktop-only shortcuts                     | n/a                                     | ✅ steps 22–24 (registry + capture UI + menu accelerators; Pi actions stay in `keybindings.json`)     |
+| Capability                                 | Terminal Pi                                  | Pi Desktop                                                                                            |
+| ------------------------------------------ | -------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Turn plumbing in the transcript            | silent (`agent_*` never renders)             | ✅ step 3 (no synthetic rows; aborted/error/length turns explain themselves once)                     |
+| Tool calls and results                     | one row per call, results pair to it         | ✅ steps 4–6 (one card, no assistant bubble for `toolResult`, images, abort sweep, previews)          |
+| Bash `!` / `!!`                            | host-executed, streams, Esc cancels          | ✅ step 7 (`executeBash` + Pi's `user_bash` hook, `!!` excluded from context, second command refused) |
+| Composer after Enter                       | editor clears immediately                    | ✅ 2026-10-26 (clears before the host ack; a refusal restores above newer text)                       |
+| A command's expanded instruction           | skill blocks collapse; injected prompts full | ✅ 2026-10-26 (host-tagged `[command]` row collapsed by default; setting/Ctrl+O/row reveals)          |
+| Retry / compaction status                  | countdown + cancel                           | ✅ step 8 (status row, elapsed time on the working row, `session.abortCompaction`)                    |
+| Streaming follow                           | pinned viewport + "Jump to latest"           | ✅ step 10 (content-size follow, jump pill, `Ctrl+End`)                                               |
+| Transcript search                          | `Ctrl+F` / `Ctrl+Shift+F`                    | ✅ step 11 (item-model matcher, inline marks, next/prev, remappable chord)                            |
+| `/copy`, `/session`                        | copies the last answer, prints stats         | ✅ step 12 (`/copy`, `Ctrl+X` outside an editor, `/session` dialog, footer token detail)              |
+| `/import`, `/export jsonl`                 | JSONL round trip                             | ✅ step 14 (OS picker, confirmation, reset + hydrate)                                                 |
+| `/changelog`, `/hotkeys`, `/help`, `/quit` | yes                                          | ✅ step 15                                                                                            |
+| `/share`, `/bug`                           | secret gist or Radius; bug zip               | ✅ step 18 (secret gist via `gh`, local redacted bug zip; Radius upload not wired and documented)     |
+| Mermaid / LaTeX                            | setting-driven mermaid, math everywhere      | ✅ step 19 (`markdown.mermaid` off/final/streaming; KaTeX)                                            |
+| Large paste                                | collapses to one token                       | ✅ step 20 (marker + renderer-memory body, expanded on send, content-lost hint after a restart)       |
+| Desktop-only shortcuts                     | n/a                                          | ✅ steps 22–24 (registry + capture UI + menu accelerators; Pi actions stay in `keybindings.json`)     |
 
 ## Models, providers, settings
 

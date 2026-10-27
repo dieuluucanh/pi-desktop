@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DRAFT_PERSIST_DELAY_MS, useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
+import { hashPromptText } from "../../src/shared/prompt-origin";
 import type { TabRecord } from "../../src/shared/session-ipc";
 import { installBridge } from "./fixtures";
 
@@ -58,7 +59,7 @@ describe("sendPrompt", () => {
     expect(request).toHaveBeenCalledWith({
       tabId: "tab-1",
       method: "prompt",
-      params: { text: "please fix it" },
+      params: { text: "please fix it", ack: "preflight" },
     });
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("");
     expect(useAppStore.getState().draftHistory["tab-1"]).toEqual(["please fix it"]);
@@ -72,7 +73,7 @@ describe("sendPrompt", () => {
     expect(request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: "prompt",
-        params: { text: "one more thing", streamingBehavior: "steer" },
+        params: { text: "one more thing", streamingBehavior: "steer", ack: "preflight" },
       }),
     );
   });
@@ -111,6 +112,72 @@ describe("sendPrompt", () => {
     await expect(useAppStore.getState().sendPrompt("tab-1", "hi")).resolves.toBe(false);
     expect(useAppStore.getState().hint).toMatch(/already streaming/);
   });
+
+  it("clears the draft before the host acknowledges the send", async () => {
+    let release!: (value: unknown) => void;
+    stubRequest(async (input) => {
+      if (input.method === "prompt") {
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      }
+      return {};
+    });
+    useAppStore.getState().setDraft("tab-1", "please fix it");
+
+    const pending = useAppStore.getState().sendPrompt("tab-1", "please fix it");
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("");
+
+    await vi.waitFor(() => expect(typeof release).toBe("function"));
+    release({});
+    await expect(pending).resolves.toBe(true);
+  });
+
+  it("restores a refused send above a newer draft", async () => {
+    let reject!: (error: Error) => void;
+    stubRequest(async (input) => {
+      if (input.method === "prompt") {
+        return new Promise((_resolve, fail) => {
+          reject = fail;
+        });
+      }
+      return {};
+    });
+    useAppStore.getState().setDraft("tab-1", "please fix it");
+
+    const pending = useAppStore.getState().sendPrompt("tab-1", "please fix it");
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("");
+    useAppStore.getState().setDraft("tab-1", "a newer thought");
+
+    await vi.waitFor(() => expect(typeof reject).toBe("function"));
+    reject(new Error("host is down"));
+
+    await expect(pending).resolves.toBe(false);
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("please fix it\n\na newer thought");
+  });
+
+  it("sends the raw command as promptOrigin only for prompt/skill commands", async () => {
+    const request = stubRequest(async () => ({}));
+    useAppStore.setState({
+      completionCommands: { "tab-1": [{ name: "review", source: "prompt" }] },
+    });
+
+    await useAppStore.getState().sendPrompt("tab-1", "/review the diff");
+    const template = request.mock.calls.find(([input]) => input.method === "prompt");
+    expect(template?.[0]?.params).toMatchObject({
+      text: "/review the diff",
+      ack: "preflight",
+      promptOrigin: "/review the diff",
+    });
+
+    request.mockClear();
+    // `ensureSession` applies the fixture's empty tab list; restore the tab so
+    // the second send exercises a plain prompt rather than "no tab".
+    useAppStore.setState({ tabs: [tab("idle")] });
+    await useAppStore.getState().sendPrompt("tab-1", "plain text");
+    const plain = request.mock.calls.find(([input]) => input.method === "prompt");
+    expect(plain?.[0]?.params).not.toHaveProperty("promptOrigin");
+  });
 });
 
 describe("bash mode", () => {
@@ -123,7 +190,7 @@ describe("bash mode", () => {
     expect(bashCalls[0]?.[0]).toEqual({
       tabId: "tab-1",
       method: "bash.run",
-      params: { command: "pwd", excludeFromContext: false },
+      params: { command: "pwd", excludeFromContext: false, ack: "started" },
     });
     expect(useAppStore.getState().draftHistory["tab-1"]).toEqual(["!pwd"]);
   });
@@ -134,8 +201,28 @@ describe("bash mode", () => {
     expect(request).toHaveBeenCalledWith({
       tabId: "tab-1",
       method: "bash.run",
-      params: { command: "pwd", excludeFromContext: true },
+      params: { command: "pwd", excludeFromContext: true, ack: "started" },
     });
+  });
+
+  it("clears the draft before a long bash command finishes", async () => {
+    let release!: (value: unknown) => void;
+    stubRequest(async (input) => {
+      if (input.method === "bash.run") {
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      }
+      return {};
+    });
+    useAppStore.getState().setDraft("tab-1", "!sleep 5");
+
+    const pending = useAppStore.getState().sendPrompt("tab-1", "!sleep 5");
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("");
+
+    await vi.waitFor(() => expect(typeof release).toBe("function"));
+    release({});
+    await expect(pending).resolves.toBe(true);
   });
 
   it("ignores a bare `!` (nothing to run)", async () => {
@@ -326,5 +413,28 @@ describe("session info (plan step 12)", () => {
     expect(useAppStore.getState().sessionInfoOpen).toBe(true);
     useAppStore.getState().closeSessionInfo();
     expect(useAppStore.getState().sessionInfoOpen).toBe(false);
+  });
+});
+
+describe("prompt origin persistence", () => {
+  it("records a command origin from a live message_start", () => {
+    const body = "expanded commit body";
+    useAppStore.getState().applySessionEvents({
+      tabId: "tab-1",
+      seq: 1,
+      events: [
+        {
+          event: "message_start",
+          payload: {
+            message: { role: "user", content: [{ type: "text", text: body }] },
+            promptOrigin: "/commit -a",
+          },
+        },
+      ],
+    });
+
+    expect(useAppStore.getState().prefs.promptOrigins).toEqual({
+      [hashPromptText(body)]: "/commit -a",
+    });
   });
 });

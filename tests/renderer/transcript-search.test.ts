@@ -135,3 +135,26 @@ describe("stepMatchIndex", () => {
     expect(stepMatchIndex(0, 0, 1)).toBe(-1);
   });
 });
+
+describe("collapsed command prompts (2026-10-26 composer plan)", () => {
+  it("searches the origin but not the hidden expanded body", () => {
+    const items = reduceSessionEvents(createTranscriptState(), [
+      {
+        event: "message_start",
+        payload: {
+          message: { role: "user", content: [{ type: "text", text: "secret expanded body" }] },
+          promptOrigin: "/commit -a",
+        },
+      },
+    ]).items;
+    const collapsed = new Set(items.map((item) => item.id));
+
+    expect(findInTranscript(items, "secret").matches).toHaveLength(1);
+    expect(
+      findInTranscript(items, "secret", { collapsedPromptIds: collapsed }).matches,
+    ).toHaveLength(0);
+    expect(
+      findInTranscript(items, "/commit", { collapsedPromptIds: collapsed }).matches,
+    ).toHaveLength(1);
+  });
+});

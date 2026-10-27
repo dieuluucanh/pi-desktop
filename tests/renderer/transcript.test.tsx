@@ -11,6 +11,7 @@ import {
 } from "../../src/renderer/src/session/session-events";
 import { installBridge } from "./fixtures";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
+import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { TRANSCRIPT_10K_ITEMS } from "../../src/shared/performance";
 
 /**
@@ -485,5 +486,73 @@ describe("extension renderers", () => {
     render(<Transcript items={items} tabId={RENDER_TAB} />);
 
     expect(screen.queryByText(/PLAN MODE ACTIVE/)).not.toBeInTheDocument();
+  });
+});
+
+describe("command prompt rows (2026-10-26 composer plan)", () => {
+  const commandItems = (): TranscriptItem[] =>
+    reduceSessionEvents(createTranscriptState(), [
+      {
+        event: "message_start",
+        payload: {
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "expanded instruction body" }],
+          },
+          promptOrigin: "/commit -a",
+        },
+      },
+    ]).items;
+
+  beforeEach(() => {
+    useAppStore.setState({ prefs: { ...DEFAULT_PREFS } });
+  });
+
+  it("shows the command chip and hides the expanded body by default", () => {
+    render(<Transcript items={commandItems()} />);
+
+    expect(screen.getByTestId("command-origin")).toHaveTextContent("/commit -a");
+    expect(screen.getByTestId("command-prompt-hidden")).toBeInTheDocument();
+    expect(screen.queryByText("expanded instruction body")).not.toBeInTheDocument();
+  });
+
+  it("reveals the body from the row toggle and hides it again", async () => {
+    const user = userEvent.setup();
+    render(<Transcript items={commandItems()} />);
+
+    await user.click(screen.getByTestId("command-prompt-toggle"));
+    expect(screen.getByText("expanded instruction body")).toBeInTheDocument();
+    expect(screen.queryByTestId("command-prompt-hidden")).not.toBeInTheDocument();
+    expect(screen.getByTestId("command-prompt-toggle")).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(screen.getByTestId("command-prompt-toggle"));
+    expect(screen.queryByText("expanded instruction body")).not.toBeInTheDocument();
+  });
+
+  it("follows the global toolsExpanded state and the App preference", () => {
+    const collapsed = render(<Transcript items={commandItems()} toolsExpanded={false} />);
+    expect(collapsed.queryByText("expanded instruction body")).not.toBeInTheDocument();
+    collapsed.unmount();
+
+    const expanded = render(<Transcript items={commandItems()} toolsExpanded={true} />);
+    expect(expanded.getByText("expanded instruction body")).toBeInTheDocument();
+    expanded.unmount();
+
+    useAppStore.setState({ prefs: { ...DEFAULT_PREFS, showExpandedPrompts: true } });
+    render(<Transcript items={commandItems()} />);
+    expect(screen.getByText("expanded instruction body")).toBeInTheDocument();
+  });
+
+  it("leaves a plain user message unchanged", () => {
+    const plain = reduceSessionEvents(createTranscriptState(), [
+      {
+        event: "message_start",
+        payload: { message: { role: "user", content: "plain typed prompt" } },
+      },
+    ]).items;
+    render(<Transcript items={plain} />);
+
+    expect(screen.getByText("plain typed prompt")).toBeInTheDocument();
+    expect(screen.queryByTestId("command-prompt")).not.toBeInTheDocument();
   });
 });

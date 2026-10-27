@@ -123,23 +123,34 @@ export async function runCommand(
     await command.handler(args, runner.createCommandContext());
     return { ran: true };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const report: CommandRunError = {
-      extensionPath: `command:${name}`,
-      event: "command",
-      error: message,
-    };
-    try {
-      runner.emitError?.(report);
-    } catch {
-      // A broken error listener must not turn a handled command into a rejection.
-    }
-    try {
-      onError?.(report);
-    } catch {
-      // Same: the command already ran, so reporting must stay best-effort.
-    }
-    return { ran: true, error: message };
+    const report = toCommandError(name, error);
+    reportCommandError(runner, report, onError);
+    return { ran: true, error: report.error };
+  }
+}
+
+function toCommandError(name: string, error: unknown): CommandRunError {
+  return {
+    extensionPath: `command:${name}`,
+    event: "command",
+    error: error instanceof Error ? error.message : String(error),
+  };
+}
+
+function reportCommandError(
+  runner: CommandRunner,
+  report: CommandRunError,
+  onError?: (error: CommandRunError) => void,
+): void {
+  try {
+    runner.emitError?.(report);
+  } catch {
+    // A broken error listener must not turn a handled command into a rejection.
+  }
+  try {
+    onError?.(report);
+  } catch {
+    // Same: the command already ran, so reporting must stay best-effort.
   }
 }
 
@@ -148,6 +159,11 @@ export interface CommandHandlerOptions {
   resolveRunner(): CommandRunner | null;
   /** The core's event sink, used to surface a handler error in the transcript. */
   emit(event: string, payload?: unknown): void;
+  /**
+   * Called before an acked (`ack: "started"`) handler can inject its user
+   * message, so the host can remember the command origin.
+   */
+  onRun?(name: string, args: string): void;
 }
 
 export function createCommandHandlers(options: CommandHandlerOptions): {
@@ -184,10 +200,35 @@ export function createCommandHandlers(options: CommandHandlerOptions): {
         if (record.args !== undefined && typeof record.args !== "string") {
           throw new CommandError("commands.run requires a string args value");
         }
+        if (record.ack !== undefined && record.ack !== "started") {
+          throw new CommandError('ack must be "started" when provided');
+        }
         const args = typeof record.args === "string" ? record.args : "";
-        return runCommand(runner, name, args, (error) => {
+        const onError = (error: CommandRunError): void => {
           options.emit("extension_error", error);
-        });
+        };
+        if (record.ack === "started") {
+          // The renderer's composer must clear as soon as the command exists; a
+          // command such as `/commit` keeps the handler alive for the whole
+          // injected turn, so awaiting it here would block the request (and the
+          // 30 s host timeout). Errors still reach the transcript through the
+          // existing `extension_error` channel.
+          const command = runner.getCommand(name);
+          if (!command) return { ran: false };
+          try {
+            options.onRun?.(name, args);
+          } catch {
+            // Tracker bookkeeping must never block a command the renderer can
+            // run; the transcript label is cosmetic.
+          }
+          void Promise.resolve()
+            .then(() => command.handler(args, runner.createCommandContext()))
+            .catch((error: unknown) => {
+              reportCommandError(runner, toCommandError(name, error), onError);
+            });
+          return { ran: true };
+        }
+        return runCommand(runner, name, args, onError);
       },
     }),
   };

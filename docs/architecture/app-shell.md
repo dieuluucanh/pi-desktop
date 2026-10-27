@@ -108,7 +108,11 @@ renderer's Tailwind scan root, so `styles.css` also declares them with
 - `prefs` is the only persisted part, written through `prefs.*` IPC into
   `userData/app-state.json` by the main process (`src/main/app-store.ts`), which
   validates the patch against a closed key set (`src/shared/prefs.ts`). Projects
-  and tabs become persistent in steps 10 and 11.
+  and tabs become persistent in steps 10 and 11. The closed set also carries the
+  transcript's display-only command-prompt state: `showExpandedPrompts`
+  (default off) and the bounded `promptOrigins`
+  `hash(message text) -> raw command` map used to keep collapsed command rows
+  after a restart; neither holds the expanded prompt body.
 - **Extensions hub (plan step 13).** `ExtensionsView` lists Pi's loaded
   extensions/skills/prompts/themes through the host's `resources.list` (a live
   session host when one is active, otherwise the control host, which loads a

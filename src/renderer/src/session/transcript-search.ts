@@ -94,8 +94,16 @@ function asText(value: unknown): string {
 }
 
 /** Everything a row shows, in reading order, that find should search. */
-export function searchableTextOf(item: TranscriptItem): string {
+export function searchableTextOf(
+  item: TranscriptItem,
+  collapsedPromptIds?: ReadonlySet<string>,
+): string {
   if (item.kind === "message") {
+    // A collapsed command prompt shows only its origin chip; searching the
+    // hidden instruction would scroll to a row with no visible match.
+    if (collapsedPromptIds?.has(item.id) && item.message.promptOrigin) {
+      return [item.message.customType ?? "", item.message.promptOrigin].join("\n");
+    }
     const chunks: string[] = [item.message.customType ?? ""];
     for (const block of item.message.blocks) {
       if (block.kind === "text" || block.kind === "thinking") chunks.push(block.text);
@@ -127,14 +135,18 @@ function excerptAround(haystack: string, index: number, length: number): string 
 export function findInTranscript(
   items: readonly TranscriptItem[],
   query: string,
-  options: { useRegex?: boolean; limit?: number } = {},
+  options: {
+    useRegex?: boolean;
+    limit?: number;
+    collapsedPromptIds?: ReadonlySet<string>;
+  } = {},
 ): FindResult {
   const { pattern, error } = compileFindPattern(query, options.useRegex === true);
   if (!pattern) return { matches: [], pattern: null, error };
   const limit = options.limit ?? DEFAULT_LIMIT;
   const matches: FindMatch[] = [];
   for (const item of items) {
-    const haystack = searchableTextOf(item);
+    const haystack = searchableTextOf(item, options.collapsedPromptIds);
     if (haystack.length === 0) continue;
     const scanner = new RegExp(
       pattern.source,
