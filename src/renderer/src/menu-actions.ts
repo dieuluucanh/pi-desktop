@@ -123,6 +123,16 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "toggle-sidebar":
       store.toggleSidebar();
       return;
+    case "toggle-rail":
+      store.toggleRail();
+      return;
+    case "view-source-control":
+      // Opens the rail on the Git section without disturbing the others.
+      store.openRailSection("git");
+      return;
+    case "view-checkpoints":
+      store.openRailSection("checkpoints");
+      return;
     case "view-settings":
       store.setView("settings");
       return;

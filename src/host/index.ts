@@ -1,6 +1,7 @@
+import { statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   BACKUP_DIR_ENV,
   BLOB_DIR_ENV,
@@ -114,6 +115,32 @@ function flagValue(args: readonly string[], flag: string): string | null {
  * Builds the session core with the real SDK adapters. Split out so the service
  * loop stays readable and the SDK import stays inside `src/host/sdk`.
  */
+/**
+ * The bundled checkpoint extension's path (git-checkpoint plan step 24).
+ *
+ * `vite.host.config.ts` emits it as a *sibling* of the host bundle
+ * (`out/host/pi-checkpoints.mjs`), because a runtime extension loader needs a
+ * real file — asar is unpacked but not readable through `import()`. Resolution
+ * is lazy and failure-tolerant: a dev tree that has not rebuilt, or a host run
+ * outside a bundle, simply has no extension.
+ */
+export function resolveCheckpointExtensionPath(
+  hostModuleUrl: string,
+  exists: (target: string) => boolean,
+): string | null {
+  const target = fileURLToPath(new URL("./pi-checkpoints.mjs", hostModuleUrl));
+  return exists(target) ? target : null;
+}
+
+/** Node's `existsSync`, injected so the resolver is testable without a bundle. */
+function extensionFileExists(target: string): boolean {
+  try {
+    return statSync(target).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function createCore(options: {
   cwd: string;
   agentDir: string;
@@ -121,6 +148,7 @@ function createCore(options: {
   npmCommand?: readonly string[] | null;
   backupDir?: string;
   safeMode?: boolean;
+  checkpointsExtensionPath?: string | null;
   bindSession?: (session: never, runtime: never) => Promise<void>;
 }): SessionCore {
   const trustStore = new ProjectTrustStore(options.agentDir);
@@ -135,6 +163,9 @@ function createCore(options: {
     agentDir: options.agentDir,
     ...(options.npmCommand ? { npmCommand: options.npmCommand } : {}),
     ...(options.safeMode ? { safeMode: true } : {}),
+    ...(options.checkpointsExtensionPath
+      ? { checkpointsExtensionPath: options.checkpointsExtensionPath }
+      : {}),
     ...(options.bindSession ? { bindSession: options.bindSession as never } : {}),
     emit: options.emit,
     trustStore,
@@ -403,6 +434,12 @@ export function runService(
           })
         : null;
 
+    // Resolved before the core is built: safe mode ignores it entirely, and the
+    // capability reported on `host.hello` is exactly "the extension was found".
+    const checkpointExtensionPath = safeMode
+      ? null
+      : resolveCheckpointExtensionPath(import.meta.url, extensionFileExists);
+
     const core =
       providerPort && customProviderStore
         ? createControlHostCore({
@@ -419,6 +456,10 @@ export function runService(
             agentDir,
             ...(backupDir ? { backupDir } : {}),
             ...(safeMode ? { safeMode: true } : {}),
+            // Safe mode never even resolves the path: the loader-options helper
+            // would ignore it, and reporting the capability as true would be a
+            // lie the rail then acts on.
+            ...(safeMode ? {} : { checkpointsExtensionPath: checkpointExtensionPath }),
             ...(npmCommand ? { npmCommand } : {}),
             ...(bindSession ? { bindSession } : {}),
             emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
@@ -471,6 +512,9 @@ export function runService(
         role,
         startedAt: Date.now(),
         buildId: env[HOST_BUILD_ENV]?.trim() || null,
+        // A stale host never reaches this line at all, so "false" here means
+        // exactly what the rail reads it as (R9).
+        capabilities: { checkpointsExtension: checkpointExtensionPath !== null },
       },
       onShutdown: () => {
         service.stop();

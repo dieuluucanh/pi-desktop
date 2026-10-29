@@ -1,0 +1,225 @@
+# Source control and folder checkpoints
+
+**Plan:** `2026-10-27-git-source-control-and-checkpoints`. Two features share one
+right rail and two pure engines; this document is the architecture reference for
+both. The user-facing guide is [`../guide/git-and-checkpoints.md`](../guide/git-and-checkpoints.md).
+
+## The two engines
+
+| Module               | Job                                                                                                       | Depends on                                                     |
+| -------------------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `src/git/**`         | Read a repository (`repo`, `status`, `diff`) and run one validated action from a closed union (`service`) | an injected `GitRunner`; nothing else                          |
+| `src/checkpoints/**` | Snapshot an arbitrary folder into a **shadow** repository, list/restore/prune it                          | an injected `GitRunner`, a `CheckpointFs`, a `CheckpointTrash` |
+
+Neither imports `electron` (`tests/architecture/no-electron-in-core.test.ts` adds
+both to `CORE_DIRS`), neither reads `node:fs` directly (the Node adapters live in
+`src/git/runner.ts` and `src/checkpoints/fs.ts`), and neither is allowed to throw
+across the IPC boundary: a failure is a **value** with a code and a fix sentence.
+
+Two services sit above them in main and are equally Electron-free, because
+everything platform-shaped arrives as a port:
+
+| Service                          | Ports it needs                                                           |
+| -------------------------------- | ------------------------------------------------------------------------ |
+| `src/main/git-service.ts`        | `isFocused()` — polling stops when the window is hidden                  |
+| `src/main/checkpoint-service.ts` | `attachedPanes()`, `tabs()`, `safeMode()`, `fingerprint()`, `onChange()` |
+
+`src/main/index.ts` is the only place those ports are implemented
+(`BrowserWindow.isFocused`, the live Office registry, the tab table,
+`window-all-closed` teardown).
+
+## Never touch the project's `.git`
+
+A checkpoint is a commit in a **bare repository under the Pi profile**:
+
+```text
+<profileDir>/checkpoints/<basename>-<8 hex>/     a bare git repo
+<profileDir>/checkpoints/config.json             the projected settings
+```
+
+Every invocation is `git --git-dir=<shadow> --work-tree=<project> …`, so:
+
+- a folder **with no repository at all** can be checkpointed (an Office folder, a
+  pile of images) — there is no `.gitignore` to read and nothing to initialise;
+- a folder **with** a repository is never written to by this feature: no index, no
+  ref, no `info/exclude`, no hook.
+
+`info/exclude` in the shadow repo carries the defaults — `~$*` (Office lock
+files), `.~lock.*#`, `node_modules/`, `dist/`, `.DS_Store`, `*.tmp` — plus the
+user's extra patterns from Settings. A non-git folder has no ignore file, so
+without these a Word lock file would create a new "change" every snapshot.
+
+### The work-tree sidecar
+
+The shadow repo holds a `pi-work-tree` file naming the folder it snapshots. A
+profile copied to another machine, or a folder renamed, would otherwise let a
+restore check one project's commits out over another's files. `ensure()` refuses
+to snapshot or restore when the sidecar disagrees with the folder, and the rail
+states that reason (`work_tree_mismatch`) rather than showing an empty timeline.
+
+## The private-index recipe
+
+Two sessions in the same project snapshot the same shadow repo. A shared
+`.git/index` would race, and a lock-and-wait would serialise the whole app, so a
+snapshot never uses `git commit`:
+
+```text
+GIT_INDEX_FILE=<shadow>/pi-index-<token>
+  read-tree <parent>                        (seed the index from the last commit)
+  add -A --pathspec-from-file=- --pathspec-file-nul < <bounded scan>
+  write-tree                                → tree sha
+  commit-tree <tree> [-p <parent>] -m <metadata>
+  update-ref refs/heads/main <new> <old>    (compare-and-swap)
+```
+
+`--pathspec-file-nul` keeps a path with a space, a quote or a newline intact;
+the scan is bounded, so a 200k-file folder degrades instead of hanging.
+
+**On CAS loss, the retry rebuilds.** Replaying `update-ref` with the same old
+value cannot succeed, and a commit built against the stale parent would drop the
+winner's tree. The retry re-reads the ref and re-commits the _same_ tree against
+the new parent.
+
+"Nothing changed" is decided by comparing the new tree with the parent's, never
+from a commit exit code — a no-op commit is worse than no commit, because it
+makes the timeline lie about how many snapshots exist.
+
+## `git log` is the manifest
+
+Each commit's message is a one-line JSON header:
+
+```json
+{
+  "v": 1,
+  "id": "<tree sha>",
+  "kind": "run|manual|pre-op|pre-restore",
+  "label": "…",
+  "entryId": "…",
+  "sessionId": "…",
+  "files": 12,
+  "skipped": 0,
+  "note": null
+}
+```
+
+That is what makes two writers safe: the host-side extension (run snapshots) and
+main (manual, pre-op, pre-restore) append to the same log and both read it the
+same way. `decodeCommitMetadata` returns `null` for anything that is not our
+header, so a foreign commit, or a future format, is **skipped** rather than
+crashing the timeline.
+
+## Restore is never destructive
+
+Restoring overwrites the working tree. Zed's issue #28676 is the cautionary
+tale — a checkpoint restore with no undo of the undo. Three rules prevent it:
+
+1. **A `pre-restore` snapshot is taken first**, and a restore whose safety
+   snapshot fails is **aborted**. The rail receives that ref and turns it into a
+   one-click **Undo restore**.
+2. **A preview is mandatory.** The dialog groups _Will change_ / _Will be
+   removed_ / _Untouched but open in Office_ before anything is written.
+3. **Removing added files is opt-in.** Off by default, and when it is on, the
+   files go to the OS trash (`shell.trashItem` through the injected port), never
+   a bare delete.
+
+`removeAdded` and `checkout-index` report **per-file** failures — a `.docx` held
+open by Word cannot be written — and the restore continues, naming what it could
+not do.
+
+## Prune, and the suffix invariant
+
+Three limits, oldest first: `maxPerSession` (default 100), `retentionDays`
+(30) and `maxBytesPerProject` (2 GB). The newest checkpoint is never dropped,
+even when it alone exceeds the budget.
+
+`planPrune` orders candidates by `createdAt` **and then by log position**.
+`createdAt` comes from git's `%ct`, which has one-second resolution, and a burst
+of runs easily lands two snapshots in the same second — sorting on the timestamp
+alone would then be free to drop the newest one. The log position is the real
+chronology, so the store passes it.
+
+Because the retained set is always a **suffix** of the log, dropping the oldest
+commits needs nothing but moving the branch tip to the newest retained commit
+(compare-and-swap, retried once on loss). Reachability then ends at that tip, and
+`git gc --prune=now` reclaims the bytes. There is no `git replace` and no history
+rewriting.
+
+## Capture triggers
+
+| Trigger       | Who                                             | When                                                                                                                      |
+| ------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `run`         | the checkpoint extension, inside the agent loop | once per run, at its first `turn_start` — before the model edits anything                                                 |
+| `manual`      | the rail's _Snapshot now_                       | on click                                                                                                                  |
+| `pre-op`      | the git engine's `preOpSnapshot` port           | immediately before a discard or a branch switch; a failure aborts the action                                              |
+| `pre-restore` | the checkpoint service                          | immediately before a restore, or a `/rewind`                                                                              |
+| idle scan     | `src/main/checkpoint-service.ts`                | while an Office pane is attached, the session is idle, the folder's fingerprint changed, and `scanIntervalMs` has elapsed |
+
+The idle scan exists because a tool hook cannot see Word save a document. Its
+fingerprint is a bounded `stat` walk (count, max mtime, total bytes), not a
+content hash: noticing the change must cost milliseconds on a 40 MB `.docx`.
+
+## The host-side extension
+
+`src/extensions/pi-checkpoints.ts` is a normal Pi extension with two load paths:
+
+- **automatic** — `additionalExtensionPaths` on the host's resource loader;
+- **manual** — `pi install path:<repo>/dist/pi-checkpoints`.
+
+### Safe mode does not disable `additionalExtensionPaths`
+
+This is the one non-obvious rule in the whole feature. The SDK builds its
+extension list as
+
+```js
+// node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js
+extensionPaths = this.noExtensions
+  ? cliEnabledExtensions
+  : this.mergePaths(cliEnabledExtensions, enabledExtensions);
+```
+
+and `cliEnabledExtensions` **is** the `additionalExtensionPaths` list. Merging our
+path into the safe-mode object would therefore keep loading it and quietly break
+the "zero third-party code" promise. `checkpointExtensionLoaderOptions` in
+`src/host/safe-mode.ts` makes the two branches mutually exclusive, and
+`tests/host/safe-mode.test.ts` asserts both **as values**.
+
+The host reports `capabilities.checkpointsExtension` on `host.hello`; a stale host
+answers nothing, which the rail reads as "run snapshots are unavailable" (never as
+silence).
+
+### Structural types, not an SDK import
+
+The extension imports **neither** `@earendil-works/*` nor `electron`. It declares
+the narrow `CheckpointExtensionApi` it uses, the same way
+`src/renderer/src/completion/types.ts` and `src/shared/model-scope.ts` mirror
+theirs. AGENTS rule 4 is the first reason; the second is that
+`dist/pi-checkpoints/index.mjs` has to load with **no `node_modules` beside it**,
+and a real SDK import would make that impossible. A test greps the import
+specifiers to keep it true.
+
+## Configuration: one writer
+
+`prefs.checkpoints` (validated in `userData/app-state.json`) is the source.
+Main **projects** it to `<profileDir>/checkpoints/config.json` on every change
+(`projectConfigFromPrefs`), and the extension only ever reads that file — at each
+snapshot, so a toggle applies without a host restart. Two writable copies would
+drift; this is why there is no second store.
+
+A malformed config file is **reported and kept** (AGENTS rule 5). Main falls back
+to the defaults for that read; the next explicit prefs change replaces it.
+
+## Trust boundaries
+
+- **Folders.** The IPC layer resolves a renderer-supplied path against the open
+  tab cwds plus the remembered projects (`requireProjectPath`). `..` paths,
+  unknown folders and Windows spelling differences are all covered by
+  `tests/main/ipc.test.ts`.
+- **Actions.** `parseGitAction` and `parseCheckpointAction` are closed unions. A
+  ref must be a full 40-hex sha, so `--hard` cannot be smuggled through.
+- **Credentials.** git's own. `GIT_TERMINAL_PROMPT=0` means a missing credential
+  fails fast with git's message and a copy-paste hint instead of hanging the UI.
+  No secret enters the app.
+- **Diagnostics.** The bundle names repositories and checkpoint folders, and
+  **redacts an identity email** — the rail shows `Name <email>`, the bundle shows
+  `Name <***@***>`. Every other redaction pattern in `redactSecrets` is key- or
+  prefix-shaped and would never match a bare address.

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, clipboard, dialog, nativeImage, powerMonitor, shell } from "electron";
@@ -54,6 +54,19 @@ import { createElectronWebViewHost } from "./web-view-host";
 import { isDeletableSessionPath } from "./session-ops";
 import { createOfficeSetupService } from "./office/setup-service";
 import { createOfficeDocumentsService } from "./office/documents-service";
+import { createGitPushService } from "./git-service";
+import { createCheckpointService } from "./checkpoint-service";
+import { createCheckpointStore } from "../checkpoints/store";
+import {
+  createNodeCheckpointConfigFs,
+  createNodeCheckpointFs,
+  createNodeFingerprint,
+} from "../checkpoints/fs";
+import { projectConfigFromPrefs, readConfig } from "../checkpoints/config";
+import { DEFAULT_CHECKPOINT_CONFIG, checkpointsRoot } from "../shared/checkpoints";
+import { createNodeGitRunner } from "../git/runner";
+import { createGitService } from "../git/service";
+import { requireProjectPath } from "../shared/git";
 import { createDiagnosticsService } from "./diagnostics-service";
 import { createElectronUpdatePort } from "./electron-updater";
 import { createUpdateService, type UpdateService } from "./updater";
@@ -67,7 +80,9 @@ import {
   type AppPaths,
   type AppRoots,
 } from "./paths";
-import { isOfflineEnv, classifyFailure } from "../shared/diagnostics";
+import { isOfflineEnv, classifyFailure, type DiagnosticsGitInfo } from "../shared/diagnostics";
+import type { CheckpointState } from "../shared/checkpoints";
+import type { GitSnapshot } from "../shared/git";
 import { createStartupMetrics } from "../shared/performance";
 import type { DiagnosticsSaveResult } from "../shared/ipc";
 import { resolveAppRuntime, type RuntimeResolution } from "./runtime";
@@ -556,11 +571,195 @@ const officeDocuments = createOfficeDocumentsService({
 });
 
 /**
+ * Folder checkpoints (git-checkpoint plan step 20).
+ *
+ * Declared before the git engine so its `preOpSnapshot` port can be wired at
+ * construction: a discard or a branch switch snapshots the folder *first*, and a
+ * snapshot that cannot be taken aborts the action instead of being skipped (D11).
+ *
+ * The store is the shadow-repo engine; this service decides *when* to snapshot.
+ * Every platform-shaped fact is a port right here, which is what keeps
+ * `checkpoint-service.ts` in `CORE_FILES`:
+ *
+ *  - `attachedPanes` is the live Office registry — the idle scan only runs while
+ *    a document is open, because a tool hook cannot see Word save a file (D15).
+ *  - `tabs` is the session table, so the scan never snapshots a folder while the
+ *    agent is mid-edit.
+ *  - `trash` is `shell.trashItem`, so a `removeAdded` restore stays recoverable.
+ */
+/**
+ * What the rail last saw, for Diagnostics (git-checkpoint plan step 28).
+ *
+ * Bounded: the map holds the same handful of folders `MAX_GIT_SNAPSHOTS` bounds in
+ * the renderer, and a stale entry is overwritten rather than accumulated.
+ */
+const lastGitSnapshots = new Map<string, GitSnapshot>();
+let lastCheckpointState: CheckpointState | null = null;
+let gitVersion: string | null = null;
+const checkpointRootDir = checkpointsRoot(paths.profileDir);
+
+const checkpointFs = createNodeCheckpointFs();
+const checkpointStore = createCheckpointStore({
+  runner: createNodeGitRunner(),
+  fs: checkpointFs,
+  profileDir: paths.profileDir,
+  trash: {
+    trash: async (target) => {
+      try {
+        await shell.trashItem(target);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  },
+});
+
+/**
+ * Projects the checkpoint preferences to `<profile>/checkpoints/config.json`
+ * (D19: **one writer**). Prefs stay the app-owned source; the host-side
+ * extension can only read this file, so nothing else may write it.
+ */
+async function projectCheckpointConfig(prefsValue: unknown): Promise<void> {
+  try {
+    await projectConfigFromPrefs(
+      {
+        fs: createNodeCheckpointConfigFs(),
+        profileDir: paths.profileDir,
+        token: () => String(process.pid),
+      },
+      prefsValue,
+    );
+  } catch (error) {
+    // A projection failure must not fail the prefs write the user asked for; it
+    // is logged (and visible in Diagnostics) and retried on the next change.
+    console.warn(
+      `[pi-desktop] checkpoint config projection failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+const checkpointService = createCheckpointService({
+  store: checkpointStore,
+  // The projected file is the one source of truth (D19), so a Settings change
+  // applies to the next capture without restarting main.
+  config: async () => {
+    try {
+      return (await readConfig({ fs: checkpointFs, profileDir: paths.profileDir })).config;
+    } catch {
+      // A malformed file is reported and kept (step 19); the rail falls back to
+      // the defaults for this read rather than refusing to open at all.
+      return DEFAULT_CHECKPOINT_CONFIG;
+    }
+  },
+  attachedPanes: () => officeDocuments.get().panes,
+  tabs: () => sessions?.tabs() ?? [],
+  runSnapshots: () => !safeMode,
+  onChange: (state) => {
+    lastCheckpointState = state;
+    broadcastToWindows(IPC.checkpointsPushed, state);
+  },
+  safeMode: () => safeMode,
+  fingerprint: createNodeFingerprint({ exclude: DEFAULT_CHECKPOINT_CONFIG.exclude }),
+});
+
+/**
+ * Source control (git-checkpoint plan step 8).
+ *
+ * `gitEngine` answers git's questions; `gitPush` decides when to ask and pushes
+ * a changed snapshot to the rail. The two ports that need the OS live here, in
+ * main, because the engine itself must stay Electron- and fs-free:
+ * `shell.trashItem` makes an untracked discard recoverable, and a plain `stat`
+ * is the folder probe the availability reasons need.
+ */
+const gitEngine = createGitService({
+  runner: createNodeGitRunner(),
+  pathKind: async (target) => {
+    try {
+      const info = await stat(target);
+      if (info.isDirectory()) return "directory";
+      if (info.isFile()) return "file";
+      return null;
+    } catch {
+      return null;
+    }
+  },
+  trash: {
+    trash: async (target) => {
+      try {
+        // The OS trash, never a bare delete: a discard must stay recoverable.
+        await shell.trashItem(target);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  },
+  // D11: a destructive action snapshots first. A throw aborts the action — a
+  // safety snapshot that cannot be taken must not be silently skipped.
+  preOpSnapshot: (projectPath, note) => checkpointService.snapshotBefore(projectPath, note),
+});
+
+const gitPush = createGitPushService({
+  git: gitEngine,
+  // One emission point for both consumers: the renderer's rail and the
+  // Diagnostics registry (step 28), so the bundle reports what the rail saw.
+  emit: (snapshot) => {
+    lastGitSnapshots.set(snapshot.projectPath, snapshot);
+    broadcastToWindows(IPC.gitPushed, snapshot);
+  },
+  isFocused: () => mainWindow?.isFocused() ?? true,
+});
+
+/**
+ * The folders a renderer may point git at: every open tab's cwd plus the
+ * remembered projects. Rebuilt per request (a cheap set) so opening a project
+ * makes it addressable without a restart, and closed so a renderer cannot name a
+ * folder the user never opened.
+ */
+async function resolveGitProjectPath(value: unknown): Promise<string> {
+  const known = new Set<string>();
+  for (const tab of sessions?.tabs() ?? []) {
+    if (tab.cwd) known.add(tab.cwd);
+  }
+  const state = await appState.read();
+  if (state.activeProject) known.add(state.activeProject);
+  for (const project of state.projects) known.add(project.path);
+  return requireProjectPath([...known], value);
+}
+
+/**
  * The app-wide diagnostics service (plan step 22). It reads what already exists —
  * hosts and their logs, incidents, extension errors, the Office probe — and
  * renders the redacted support bundle. `save` lives here because it is the one
  * step that needs Electron's dialog.
  */
+
+/** One repository, flattened for the support bundle. */
+function diagnosticRepo(snapshot: GitSnapshot): DiagnosticsGitInfo["repos"][number] {
+  return {
+    root: snapshot.repo?.root ?? snapshot.projectPath,
+    branch: snapshot.repo?.branch ?? null,
+    dirty: (snapshot.totalChanged ?? 0) > 0,
+    lastStatusMs: null,
+    // The sentence the rail already showed; `redactSecrets` strips an address
+    // out of it before the bundle is written.
+    lastError: snapshot.error?.message ?? null,
+  };
+}
+
+/** `git --version`'s first line, once, in the background. */
+async function probeGitVersion(): Promise<void> {
+  const result = await createNodeGitRunner().run(process.cwd(), ["--version"], {
+    timeoutMs: 5_000,
+  });
+  // Only the first line matters (`git version 2.x`); the runner returns raw stdout.
+  const line = result.stdout.trim().split("\n")[0]?.trim();
+  gitVersion = result.code === 0 && line ? line : null;
+}
+
 const diagnostics = createDiagnosticsService({
   appInfo: currentAppInfo,
   sessions: sessions
@@ -585,6 +784,16 @@ const diagnostics = createDiagnosticsService({
   officeBundle: async () => officeSetup.diagnostics(),
   startup: () => startup.report(),
   env: process.env,
+  // Source control and folder checkpoints (git-checkpoint plan step 28). Both
+  // read small registries maintained below, so the bundle reports what the *rail*
+  // saw rather than the outcome of a second, differently-timed probe.
+  git: () => ({ version: gitVersion, repos: [...lastGitSnapshots.values()].map(diagnosticRepo) }),
+  checkpoints: () => ({
+    root: checkpointRootDir,
+    enabled: lastCheckpointState?.enabled ?? true,
+    projects: [],
+    runSnapshots: lastCheckpointState?.runSnapshots ?? false,
+  }),
 });
 
 /** Asks where to save, then writes the already-redacted bundle. */
@@ -778,6 +987,13 @@ if (!app.requestSingleInstanceLock()) {
           if (patch && typeof patch === "object" && "desktopKeybindings" in patch) {
             void installMenu();
           }
+          // D19: prefs are the source, `<profile>/checkpoints/config.json` is the
+          // projection the host-side extension can read. Only a patch that
+          // actually touches checkpoints rewrites it, so dragging the rail's
+          // width does not re-serialize the file on every mouse move.
+          if (patch && typeof patch === "object" && "checkpoints" in patch) {
+            await projectCheckpointConfig(prefs.checkpoints);
+          }
           return prefs;
         },
       },
@@ -852,6 +1068,24 @@ if (!app.requestSingleInstanceLock()) {
         get: () => officeDocuments.get(),
         refresh: () => officeDocuments.refresh(),
       },
+      git: {
+        resolveProjectPath: resolveGitProjectPath,
+        snapshot: (projectPath) => gitPush.snapshot(projectPath),
+        refresh: (projectPath) => gitPush.refresh(projectPath),
+        watch: (projectPath, enabled) => gitPush.watch(projectPath, enabled),
+        action: (projectPath, action) => gitPush.action(projectPath, action),
+        diff: (projectPath, request) => gitPush.diff(projectPath, request),
+        log: (projectPath, request) => gitPush.log(projectPath, request),
+        headMessage: (projectPath) => gitPush.headMessage(projectPath),
+        branches: (projectPath) => gitPush.branches(projectPath),
+      },
+      checkpoints: {
+        // The same folder allowlist the git rail uses: one rule, one place.
+        resolveProjectPath: resolveGitProjectPath,
+        get: (projectPath) => checkpointService.get(projectPath),
+        refresh: (projectPath) => checkpointService.refresh(projectPath),
+        action: (projectPath, action) => checkpointService.action(projectPath, action),
+      },
       web: {
         open: async (input) => {
           // Opening the same page twice reuses the tab: a repeated notification
@@ -911,6 +1145,20 @@ if (!app.requestSingleInstanceLock()) {
     // bridge that a terminal Pi session owns, so it runs whenever the app does.
     // Safe mode starts with zero third-party code, so the poll stays off there.
     if (!safeMode) officeDocuments.start();
+    // Git polling is not third-party code, so it runs in safe mode too; it only
+    // costs anything while the rail's Git section is open.
+    gitPush.start();
+    // The idle scan (D15) only snapshots a folder that has an attached Office
+    // pane and an open session, and only every `scanIntervalMs`; the ticker is
+    // unref'd so it can never hold the app open.
+    checkpointService.start();
+    // `git --version`, once, for Diagnostics. A missing git is a normal state
+    // (R1), not an error, so the probe is fire-and-forget.
+    void probeGitVersion();
+    // Project the current checkpoint preferences once at startup, so a profile
+    // that has never opened Settings still has a readable `config.json` for the
+    // host-side extension (D19: main is the only writer).
+    await projectCheckpointConfig((await appState.read()).prefs.checkpoints);
 
     // A suspended machine can lose a child process or miss status pushes. Make
     // the tab table truthful on return; the renderer's focus resync wakes the
@@ -953,6 +1201,8 @@ if (!app.requestSingleInstanceLock()) {
       if (updateCheckTimer) clearTimeout(updateCheckTimer);
       updateService?.dispose();
       officeDocuments.dispose();
+      gitPush.dispose();
+      checkpointService.dispose();
       webTabs.dispose();
       await (sessions ? sessions.dispose() : hosts?.stopAll());
     },

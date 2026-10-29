@@ -56,6 +56,18 @@ export interface HostServiceInfo {
    * started by an older main process that did not pass one.
    */
   buildId?: string | null;
+  /**
+   * Which optional host features this build carries (git-checkpoint plan step
+   * 24). A stale host answers `false`, and the rail says run snapshots are
+   * unavailable instead of waiting for one that will never arrive (R9).
+   */
+  capabilities?: HostCapabilities;
+}
+
+/** The optional features a host can report on `host.hello`. */
+export interface HostCapabilities {
+  /** The checkpoint extension was loaded (never true in safe mode). */
+  checkpointsExtension: boolean;
 }
 
 export interface HostServiceOptions {
@@ -239,6 +251,7 @@ export function createHostService(options: HostServiceOptions): HostService {
     env: { blobDir: blobDir || process.env[BLOB_DIR_ENV] || null },
     startedAt: options.info.startedAt,
     buildId: options.info.buildId ?? null,
+    capabilities: options.info.capabilities ?? { checkpointsExtension: false },
   });
 
   handlers["host.blobs.read"] = async (

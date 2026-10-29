@@ -31,6 +31,13 @@ import {
   settingsDefaultsDocument,
   type SettingsValue,
 } from "../../../shared/settings-schema";
+import {
+  sanitizeCheckpointState,
+  type CheckpointAction,
+  type CheckpointActionResult,
+  type CheckpointPreviewState,
+  type CheckpointState,
+} from "../../../shared/checkpoints";
 import type {
   SettingsErrorInfo,
   SettingsFileStatus,
@@ -175,6 +182,17 @@ import {
 import { classifyFailure, isOfflineError } from "../../../shared/diagnostics";
 import type { DiagnosticsSnapshot } from "../../../shared/diagnostics";
 import { sanitizeUpdateState, type UpdateState } from "../../../shared/updates";
+import { clampRailWidth, type RailSectionId } from "../../../shared/rail";
+import {
+  isMutatingGitAction,
+  sanitizeGitSnapshot,
+  type GitAction,
+  type GitActionResult,
+  type GitCommitEntry,
+  type GitDiff,
+  type GitDiffRequest,
+  type GitSnapshot,
+} from "../../../shared/git";
 import {
   firstOnboardingStep,
   nextOnboardingStep,
@@ -286,6 +304,20 @@ export interface TrustPrompt {
   tabId: string | null;
   status: ProjectTrustStatus;
 }
+
+/** One folder's commit-log page (git-checkpoint plan step 9). */
+export interface GitLogPage {
+  entries: GitCommitEntry[];
+  loading: boolean;
+  /** True when the last page filled the window, so "Load more" is useful. */
+  hasMore: boolean;
+}
+
+/** Most project folders whose snapshot the store keeps. */
+export const MAX_GIT_SNAPSHOTS = 5;
+/** One commit-log page (mirrors the main-process default). */
+export const GIT_LOG_PAGE_SIZE = 30;
+const EMPTY_GIT_LOG_PAGE: GitLogPage = { entries: [], loading: false, hasMore: false };
 
 export interface BlobState {
   status: "loading" | "ready" | "error";
@@ -749,17 +781,149 @@ export interface AppStateShape {
   loadBlob: (tabId: string, ref: BlobRef) => Promise<void>;
   loadDiagnostics: () => Promise<void>;
   /** Whether the right-rail Documents panel is open. */
-  documentsPanelOpen: boolean;
+  /**
+   * The right rail (git-checkpoint plan step 10). Its open/width/section state
+   * lives in `prefs.rail` so it survives a relaunch, unlike the old ephemeral
+   * Documents toggle.
+   */
+  toggleRail: () => void;
+  setRailOpen: (open: boolean) => void;
+  /** Collapses or expands one section, leaving the others alone. */
+  toggleRailSection: (id: RailSectionId) => void;
+  /** Persists a clamped rail width (the resize handle commits on release). */
+  setRailWidth: (width: number) => void;
+  /**
+   * Opens the rail on one section (View → Source Control / Checkpoints, the
+   * palette). Keeps the other sections' state untouched.
+   */
+  openRailSection: (id: RailSectionId) => void;
   loadOfficeDocuments: () => Promise<void>;
   applyOfficeDocuments: (view: OfficeDocumentsView) => void;
   refreshOfficeDocuments: () => Promise<void>;
-  toggleDocumentsPanel: () => void;
   /**
    * Starts or appends a `[office:<host> "<name>" id=…]`-tagged prompt in the
    * active session's composer draft (plan step 20). Returns the tab it targeted,
    * or null when no session is open.
    */
   chatAboutDocument: (pane: OfficeDocumentPane) => string | null;
+
+  /**
+   * Source control (git-checkpoint plan step 9).
+   *
+   * Keyed by project folder rather than by tab, because two tabs can share one
+   * folder and a project with no tab open still has a rail. The map is bounded
+   * (`MAX_GIT_SNAPSHOTS`) so a long app session cannot grow it without limit.
+   */
+  git: Record<string, GitSnapshot>;
+  /** A failed git operation worth showing in the rail (cleared on success). */
+  gitError: string | null;
+  /** The folder whose snapshot main is polling, or null when none is. */
+  gitWatched: string | null;
+  /** The diff open in the viewer, with the request that produced it. */
+  /** The diff open in the viewer, with the folder and request behind it. */
+  gitDiff: { projectPath: string; request: GitDiffRequest; diff: GitDiff } | null;
+  gitDiffLoading: boolean;
+  /** The commit log per folder, with its paging state. */
+  gitLog: Record<string, GitLogPage>;
+  /** Reads a folder's snapshot (main memoises it). */
+  loadGit: (projectPath: string) => Promise<void>;
+  /** Applies a snapshot pushed from main, or returned by a request. */
+  applyGitSnapshot: (snapshot: unknown) => void;
+  /** Re-reads now, bypassing main's memo. */
+  refreshGit: (projectPath: string) => Promise<void>;
+  /**
+   * Watches one folder and stops watching the previous one, so a tab switch or a
+   * closed rail costs nothing. `null` stops watching.
+   */
+  watchGit: (projectPath: string | null) => Promise<void>;
+  /** Runs an action, then refreshes the snapshot and reports a failure inline. */
+  runGitAction: (projectPath: string, action: GitAction) => Promise<GitActionResult>;
+  /** Opens the diff viewer for one side, loading it into the store. */
+  openGitDiff: (projectPath: string, request: GitDiffRequest) => Promise<void>;
+  closeGitDiff: () => void;
+  /** Loads (or appends to) a folder's commit log. */
+  loadGitLog: (projectPath: string, options?: { more?: boolean }) => Promise<void>;
+  /**
+   * HEAD's complete commit message, for the amend box. Resolves null when there
+   * is no commit yet; the box then leaves the message empty rather than
+   * inventing one.
+   */
+  loadHeadCommitMessage: (projectPath: string) => Promise<string | null>;
+  /** Dismisses the rail's error line. */
+  clearGitError: () => void;
+
+  /**
+   * One consent per session for mutating git writes (plan D13). Staging,
+   * committing, discarding, branching and stashing all run through
+   * {@link performGitAction}, which asks once and then remembers.
+   */
+  gitConsentGranted: boolean;
+  /** The write waiting for that consent, or null when nothing is pending. */
+  gitConsentPrompt: { projectPath: string; action: GitAction } | null;
+  /**
+   * Runs an action, asking for consent first when it mutates the repository.
+   * Resolves null when the action was gated and is waiting for that consent.
+   */
+  performGitAction: (projectPath: string, action: GitAction) => Promise<GitActionResult | null>;
+  /** Grants the session's consent and runs the waiting write. */
+  confirmGitConsent: () => Promise<void>;
+  cancelGitConsent: () => void;
+  /** Local branch names per folder, for the checkout menu. */
+  gitBranches: Record<string, string[]>;
+  loadGitBranches: (projectPath: string) => Promise<void>;
+
+  /**
+   * Folder checkpoints (git-checkpoint plan step 21).
+   *
+   * Keyed by project folder, like `git`, and bounded the same way: only the
+   * recent few folders are ever on screen. The `undoRestore` ref is kept
+   * separately because it belongs to a *toast*, not to a timeline row — the
+   * pre-restore snapshot is real, but offering to restore it from the list
+   * would be confusing.
+   */
+  checkpoints: Record<string, CheckpointState>;
+  /** A failed checkpoint action worth showing in the section. */
+  checkpointsError: string | null;
+  /** Hydrates the section on mount (and after a relaunch, before any push). */
+  loadCheckpoints: (projectPath: string) => Promise<void>;
+  /** Applies a pushed state, or one returned by a request. */
+  applyCheckpointState: (state: unknown) => void;
+  /** Re-reads the timeline now. */
+  refreshCheckpoints: (projectPath: string) => Promise<void>;
+  /** Takes a manual snapshot. */
+  createCheckpoint: (projectPath: string, label?: string) => Promise<CheckpointActionResult>;
+  /** What a restore would change, for the confirm dialog. */
+  previewCheckpoint: (projectPath: string, ref: string) => Promise<CheckpointPreviewState | null>;
+  /**
+   * Restores one checkpoint. Main always snapshots `pre-restore` first, and the
+   * returned ref becomes {@link checkpointsUndoRef} so the toast can offer Undo.
+   */
+  restoreCheckpoint: (
+    projectPath: string,
+    ref: string,
+    options?: { removeAdded?: boolean },
+  ) => Promise<CheckpointActionResult>;
+  /** Restores the pre-restore snapshot from the last restore (the Undo action). */
+  undoRestoreCheckpoint: (projectPath: string) => Promise<CheckpointActionResult>;
+  /** Drops checkpoints past the configured limits. */
+  pruneCheckpoints: (projectPath: string) => Promise<CheckpointActionResult>;
+  /**
+   * The pre-restore ref the last successful restore produced, per folder. Kept
+   * outside the timeline so "Undo restore" survives a refresh.
+   */
+  checkpointsUndoRef: Record<string, string>;
+  /** Dismisses the section's error line. */
+  clearCheckpointsError: () => void;
+  /**
+   * The one path every checkpoint action takes: sends it, refreshes the
+   * timeline, and surfaces a failure without throwing (the section renders the
+   * message). Public because the rail calls it for actions with no dedicated
+   * wrapper, and because a test can assert the single dispatch point.
+   */
+  runCheckpointAction: (
+    projectPath: string,
+    action: CheckpointAction,
+  ) => Promise<CheckpointActionResult>;
 
   /** Web tabs (plan step 21): the live state of each isolated page view. */
   webTabStates: Record<string, WebTabState>;
@@ -1397,7 +1561,18 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   diagnosticsError: null,
   update: null,
   blobs: {},
-  documentsPanelOpen: false,
+  git: {},
+  gitError: null,
+  gitWatched: null,
+  gitDiff: null,
+  gitDiffLoading: false,
+  gitLog: {},
+  gitConsentGranted: false,
+  gitConsentPrompt: null,
+  gitBranches: {},
+  checkpoints: {},
+  checkpointsError: null,
+  checkpointsUndoRef: {},
   webTabStates: {},
   webNavigationPrompt: null,
   webUrlDialogOpen: false,
@@ -4086,12 +4261,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (get().officeDocumentsLoaded) return;
     try {
       const view = await api.office.documents();
-      set({
-        officeDocuments: view,
-        officeDocumentsLoaded: true,
-        // A bridge that already has panes attached opens the rail on first load.
-        documentsPanelOpen: get().documentsPanelOpen || view.panes.length > 0,
-      });
+      set({ officeDocuments: view, officeDocumentsLoaded: true });
+      // A bridge that already has panes attached opens the rail on first load
+      // (today's behaviour, now expressed through the persisted rail state).
+      if (view.panes.length > 0 && !get().prefs.rail.open) get().setRailOpen(true);
     } catch {
       // The panel is an enhancement: an unreadable registry must never block
       // the session, so the store keeps its empty view.
@@ -4100,11 +4273,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   applyOfficeDocuments: (view) => {
-    set({
-      officeDocuments: view,
-      officeDocumentsLoaded: true,
-      documentsPanelOpen: get().documentsPanelOpen || view.panes.length > 0,
-    });
+    set({ officeDocuments: view, officeDocumentsLoaded: true });
+    if (view.panes.length > 0 && !get().prefs.rail.open) get().setRailOpen(true);
   },
 
   refreshOfficeDocuments: async () => {
@@ -4118,7 +4288,350 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  toggleDocumentsPanel: () => set({ documentsPanelOpen: !get().documentsPanelOpen }),
+  // ---- Right rail (git-checkpoint plan step 10) ----
+
+  toggleRail: () => get().setRailOpen(!get().prefs.rail.open),
+
+  setRailOpen: (open) => {
+    if (get().prefs.rail.open === open) return;
+    get().setPrefs({ rail: { ...get().prefs.rail, open } });
+  },
+
+  toggleRailSection: (id) => {
+    const rail = get().prefs.rail;
+    get().setPrefs({
+      rail: { ...rail, sections: { ...rail.sections, [id]: !rail.sections[id] } },
+    });
+  },
+
+  setRailWidth: (width) => {
+    const rail = get().prefs.rail;
+    const clamped = clampRailWidth(width);
+    if (clamped === rail.width) return;
+    get().setPrefs({ rail: { ...rail, width: clamped } });
+  },
+
+  openRailSection: (id) => {
+    const rail = get().prefs.rail;
+    if (rail.open && rail.sections[id]) return;
+    get().setPrefs({
+      rail: { ...rail, open: true, sections: { ...rail.sections, [id]: true } },
+    });
+  },
+
+  // ---- Source control (git-checkpoint plan step 9) ----
+
+  loadGit: async (projectPath) => {
+    const api = bridge()?.git;
+    if (!api) return;
+    try {
+      get().applyGitSnapshot(await api.snapshot(projectPath));
+    } catch (error) {
+      // The rail is an enhancement: an unreadable registry must never block the
+      // session, so the failure is classified and shown, not thrown.
+      get().noteFailure(error);
+    }
+  },
+
+  applyGitSnapshot: (snapshot) => {
+    const parsed = sanitizeGitSnapshot(snapshot);
+    if (parsed.projectPath.length === 0) return;
+    const next: Record<string, GitSnapshot> = { ...get().git, [parsed.projectPath]: parsed };
+    // Bound the map: a long app session visits many folders, and only the recent
+    // few are ever on screen.
+    for (const stale of Object.keys(next).slice(
+      0,
+      Math.max(0, Object.keys(next).length - MAX_GIT_SNAPSHOTS),
+    )) {
+      delete next[stale];
+    }
+    set({
+      git: next,
+      gitError: parsed.error
+        ? parsed.error.fix
+          ? `${parsed.error.message} ${parsed.error.fix}`
+          : parsed.error.message
+        : get().gitError,
+    });
+  },
+
+  refreshGit: async (projectPath) => {
+    const api = bridge()?.git;
+    if (!api) return;
+    try {
+      get().applyGitSnapshot(await api.refresh(projectPath));
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  watchGit: async (projectPath) => {
+    const api = bridge()?.git;
+    if (!api) return;
+    const previous = get().gitWatched;
+    if (previous === projectPath) return;
+    // Record the new target first: a failure while stopping the old one must not
+    // leave the store believing it is still watching the previous folder.
+    set({ gitWatched: projectPath });
+    try {
+      if (previous) await api.watch(previous, false);
+      if (projectPath) await api.watch(projectPath, true);
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  runGitAction: async (projectPath, action) => {
+    const api = bridge()?.git;
+    if (!api) {
+      return {
+        ok: false,
+        error: {
+          code: "not_a_repo",
+          message: "The preload bridge is unavailable in this window.",
+          recoverable: false,
+        },
+      };
+    }
+    try {
+      const result = await api.action(projectPath, action);
+      if (result.ok) {
+        set({ gitError: null });
+        // main pushes a refreshed snapshot for a *watched* folder; an explicit
+        // read keeps an unwatched one (a background project) honest too.
+        await get().refreshGit(projectPath);
+      } else if (result.error) {
+        set({
+          gitError: result.error.fix
+            ? `${result.error.message} ${result.error.fix}`
+            : result.error.message,
+        });
+      }
+      return result;
+    } catch (error) {
+      get().noteFailure(error);
+      return {
+        ok: false,
+        error: {
+          code: "unknown",
+          message: error instanceof Error ? error.message : String(error),
+          recoverable: true,
+        },
+      };
+    }
+  },
+
+  openGitDiff: async (projectPath, request) => {
+    const api = bridge()?.git;
+    if (!api) return;
+    set({ gitDiffLoading: true, gitError: null });
+    try {
+      const diff = await api.diff(projectPath, request);
+      set({ gitDiff: { projectPath, request, diff }, gitDiffLoading: false });
+    } catch (error) {
+      set({ gitDiffLoading: false });
+      get().noteFailure(error);
+    }
+  },
+
+  closeGitDiff: () => set({ gitDiff: null, gitDiffLoading: false }),
+
+  loadGitLog: async (projectPath, options = {}) => {
+    const api = bridge()?.git;
+    if (!api) return;
+    const page = get().gitLog[projectPath] ?? EMPTY_GIT_LOG_PAGE;
+    const more = options.more === true && page.entries.length > 0;
+    set({ gitLog: { ...get().gitLog, [projectPath]: { ...page, loading: true } } });
+    try {
+      const entries = await api.log(projectPath, {
+        limit: GIT_LOG_PAGE_SIZE,
+        ...(more ? { skip: page.entries.length } : {}),
+      });
+      set({
+        gitLog: {
+          ...get().gitLog,
+          [projectPath]: {
+            entries: more ? [...page.entries, ...entries] : entries,
+            loading: false,
+            hasMore: entries.length >= GIT_LOG_PAGE_SIZE,
+          },
+        },
+      });
+    } catch (error) {
+      set({ gitLog: { ...get().gitLog, [projectPath]: { ...page, loading: false } } });
+      get().noteFailure(error);
+    }
+  },
+
+  clearGitError: () => set({ gitError: null }),
+
+  performGitAction: async (projectPath, action) => {
+    // Reads never reach this method, so gating here means exactly "writes".
+    if (isMutatingGitAction(action.kind) && !get().gitConsentGranted) {
+      set({ gitConsentPrompt: { projectPath, action } });
+      // Null (not a failure): the caller must not treat this as a refusal and
+      // must not carry on as if the write had happened.
+      return null;
+    }
+    return get().runGitAction(projectPath, action);
+  },
+
+  confirmGitConsent: async () => {
+    const prompt = get().gitConsentPrompt;
+    // Grant first: the write itself must not be able to leave the app asking
+    // the same question again.
+    set({ gitConsentGranted: true, gitConsentPrompt: null });
+    if (prompt) await get().runGitAction(prompt.projectPath, prompt.action);
+  },
+
+  cancelGitConsent: () => set({ gitConsentPrompt: null }),
+
+  loadGitBranches: async (projectPath) => {
+    const api = bridge()?.git;
+    if (!api) return;
+    try {
+      const branches = await api.branches(projectPath);
+      set({ gitBranches: { ...get().gitBranches, [projectPath]: branches } });
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  loadHeadCommitMessage: async (projectPath) => {
+    const api = bridge()?.git;
+    if (!api) return null;
+    try {
+      return await api.headMessage(projectPath);
+    } catch (error) {
+      get().noteFailure(error);
+      return null;
+    }
+  },
+
+  // ---- Folder checkpoints (git-checkpoint plan step 21) ----
+
+  loadCheckpoints: async (projectPath) => {
+    const api = bridge()?.checkpoints;
+    if (!api) return;
+    try {
+      get().applyCheckpointState(await api.get(projectPath));
+    } catch (error) {
+      // The section is an enhancement: an unreadable store must not block the
+      // session, so the failure is classified and shown, never thrown.
+      get().noteFailure(error);
+    }
+  },
+
+  applyCheckpointState: (state) => {
+    const parsed = sanitizeCheckpointState(state);
+    if (parsed.projectPath.length === 0) return;
+    const next: Record<string, CheckpointState> = {
+      ...get().checkpoints,
+      [parsed.projectPath]: parsed,
+    };
+    for (const stale of Object.keys(next).slice(
+      0,
+      Math.max(0, Object.keys(next).length - MAX_GIT_SNAPSHOTS),
+    )) {
+      delete next[stale];
+    }
+    set({ checkpoints: next });
+  },
+
+  refreshCheckpoints: async (projectPath) => {
+    const api = bridge()?.checkpoints;
+    if (!api) return;
+    try {
+      get().applyCheckpointState(await api.refresh(projectPath));
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  createCheckpoint: async (projectPath, label) => {
+    return get().runCheckpointAction(
+      projectPath,
+      label && label.trim().length > 0
+        ? { kind: "create", label: label.trim() }
+        : { kind: "create" },
+    );
+  },
+
+  previewCheckpoint: async (projectPath, ref) => {
+    const api = bridge()?.checkpoints;
+    if (!api) return null;
+    try {
+      const result = await api.action(projectPath, {
+        kind: "preview",
+        ref,
+      });
+      if (!result.ok || !result.preview) {
+        set({ checkpointsError: result.error ?? "The preview could not be read." });
+        return null;
+      }
+      set({ checkpointsError: null });
+      return result.preview;
+    } catch (error) {
+      get().noteFailure(error);
+      return null;
+    }
+  },
+
+  restoreCheckpoint: async (projectPath, ref, options = {}) => {
+    const result = await get().runCheckpointAction(projectPath, {
+      kind: "restore",
+      ref,
+      ...(options.removeAdded === true ? { removeAdded: true } : {}),
+    });
+    if (result.ok && result.undoRef) {
+      set({
+        checkpointsUndoRef: { ...get().checkpointsUndoRef, [projectPath]: result.undoRef },
+      });
+    }
+    return result;
+  },
+
+  undoRestoreCheckpoint: async (projectPath) => {
+    const ref = get().checkpointsUndoRef[projectPath];
+    if (!ref) return { ok: false, error: "There is no restore to undo." };
+    const result = await get().runCheckpointAction(projectPath, {
+      kind: "restore",
+      ref,
+    });
+    if (result.ok) {
+      const next = { ...get().checkpointsUndoRef };
+      // The undo is itself one level only: a second Undo would restore the
+      // snapshot the undo just took, which is not what the label promises.
+      delete next[projectPath];
+      set({ checkpointsUndoRef: next });
+    }
+    return result;
+  },
+
+  pruneCheckpoints: async (projectPath) => {
+    return get().runCheckpointAction(projectPath, { kind: "prune" });
+  },
+
+  clearCheckpointsError: () => set({ checkpointsError: null }),
+
+  runCheckpointAction: async (projectPath, action) => {
+    const api = bridge()?.checkpoints;
+    if (!api) {
+      return { ok: false, error: "The preload bridge is unavailable in this window." };
+    }
+    try {
+      const result = await api.action(projectPath, action);
+      // Every action can change the timeline (a snapshot adds a row, a restore
+      // rewrites the tree), so one refresh after it keeps the section honest
+      // even when main's push is coalesced.
+      await get().refreshCheckpoints(projectPath);
+      set({ checkpointsError: result.ok ? null : (result.error ?? "The action failed.") });
+      return result;
+    } catch (error) {
+      get().noteFailure(error);
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  },
 
   // ---- Web tabs (plan step 21) ----
 

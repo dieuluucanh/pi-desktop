@@ -35,3 +35,44 @@ export function safeModeResourceLoaderOptions(
 /** The reason every package mutation is refused while safe mode is on. */
 export const SAFE_MODE_PACKAGE_REFUSAL =
   "Safe mode is on: package changes are disabled. Restart without --safe-mode to install or remove packages.";
+
+/**
+ * The resource-loader options for the app's own checkpoint extension
+ * (git-checkpoint plan step 24).
+ *
+ * **Safe mode does not disable `additionalExtensionPaths`.** The SDK builds its
+ * list as
+ *
+ * ```js
+ * // node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js
+ * extensionPaths = this.noExtensions
+ *   ? cliEnabledExtensions
+ *   : this.mergePaths(cliEnabledExtensions, enabledExtensions);
+ * ```
+ *
+ * where `cliEnabledExtensions` *is* `additionalExtensionPaths`. Merging our path
+ * into {@link SAFE_MODE_RESOURCE_LOADER_OPTIONS} would therefore keep loading it
+ * in safe mode and quietly break the "zero third-party code" promise this module
+ * exists to keep. The two branches are mutually exclusive on purpose, and this
+ * function is the only place that decision is made.
+ */
+export function checkpointExtensionLoaderOptions(options: {
+  safeMode: boolean | undefined;
+  extensionPath: string | null | undefined;
+}): { noExtensions?: true } & { additionalExtensionPaths?: string[] } {
+  if (options.safeMode) return { ...SAFE_MODE_RESOURCE_LOADER_OPTIONS };
+  if (!options.extensionPath) return {};
+  return { additionalExtensionPaths: [options.extensionPath] };
+}
+
+/** True when the checkpoint extension would be loaded under these options. */
+export function checkpointExtensionEnabled(options: {
+  safeMode: boolean | undefined;
+  extensionPath: string | null | undefined;
+}): boolean {
+  return (
+    !options.safeMode &&
+    typeof options.extensionPath === "string" &&
+    options.extensionPath.length > 0
+  );
+}

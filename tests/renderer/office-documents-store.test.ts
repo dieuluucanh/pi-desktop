@@ -45,13 +45,12 @@ const excelPane = parseOfficeDocumentPane({
 function resetStore() {
   installBridge();
   useAppStore.setState({
-    prefs: { ...DEFAULT_PREFS, drafts: {} },
+    prefs: { ...DEFAULT_PREFS, drafts: {}, rail: { ...DEFAULT_PREFS.rail, open: false } },
     project: { path: PROJECT, name: "app" },
     tabs: [tab()],
     activeTabId: "tab-1",
     officeDocuments: null,
     officeDocumentsLoaded: false,
-    documentsPanelOpen: false,
     hint: null,
     view: "session",
   });
@@ -68,14 +67,14 @@ describe("office documents store", () => {
     const state = useAppStore.getState();
     expect(state.officeDocuments?.panes).toHaveLength(1);
     expect(state.officeDocumentsLoaded).toBe(true);
-    expect(state.documentsPanelOpen).toBe(true);
+    expect(state.prefs.rail.open).toBe(true);
   });
 
   it("keeps the rail closed for an available bridge with no panes", () => {
     useAppStore
       .getState()
       .applyOfficeDocuments(documentsViewFixture({ available: true, status: "ok", panes: [] }));
-    expect(useAppStore.getState().documentsPanelOpen).toBe(false);
+    expect(useAppStore.getState().prefs.rail.open).toBe(false);
   });
 
   it("loads the registry once and refreshes on demand", async () => {
@@ -97,11 +96,11 @@ describe("office documents store", () => {
     expect(useAppStore.getState().officeDocuments?.status).toBe("unreachable");
   });
 
-  it("toggles the panel", () => {
-    useAppStore.getState().toggleDocumentsPanel();
-    expect(useAppStore.getState().documentsPanelOpen).toBe(true);
-    useAppStore.getState().toggleDocumentsPanel();
-    expect(useAppStore.getState().documentsPanelOpen).toBe(false);
+  it("toggles the rail", () => {
+    useAppStore.getState().toggleRail();
+    expect(useAppStore.getState().prefs.rail.open).toBe(true);
+    useAppStore.getState().toggleRail();
+    expect(useAppStore.getState().prefs.rail.open).toBe(false);
   });
 
   it("prepends the document tag to the active draft, keeping the user's text", () => {

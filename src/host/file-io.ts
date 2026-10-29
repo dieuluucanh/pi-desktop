@@ -1,16 +1,17 @@
 /**
  * Node adapters for the workspace file listing (plan step 7).
  *
- * This is the only place that touches `node:fs`/`node:child_process` for file
- * completion; `file-listing.ts` stays pure and testable against a fake tree, and
- * the session core only sees the `FileListingIo` port.
+ * This is the only place that touches `node:fs` for file completion;
+ * `file-listing.ts` stays pure and testable against a fake tree, and the session
+ * core only sees the `FileListingIo` port. The `git` spawn itself lives in
+ * `src/git/runner.ts`, because the source-control rail needs the same adapter.
  */
 
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readdir, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 
+import { createNodeGitRunner } from "../git/runner";
 import type { ModelsFileIo } from "./custom-providers";
 import type { DirectoryEntry, FileListingIo } from "./file-listing";
 import type { ProjectIo } from "./project-inspect";
@@ -107,46 +108,25 @@ export function createNodeSettingsFileIo(): SettingsFileIo {
   };
 }
 
-/** Runs `git` in `root` and resolves stdout, or null when it fails/does not exist. */
-function runGitCommand(
+/**
+ * Runs `git` in `root` and resolves stdout, or null when it fails/does not exist.
+ *
+ * The spawn itself lives in `src/git/runner.ts` (the app has one git adapter, so
+ * the completion listing, the project header and the source-control rail cannot
+ * drift apart on flags, timeouts or "what counts as no git").
+ */
+async function runGitCommand(
   root: string,
   args: readonly string[],
   timeoutMs: number,
 ): Promise<string | null> {
-  return new Promise<string | null>((resolve) => {
-    let settled = false;
-    const finish = (value: string | null) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-    };
-    let child;
-    try {
-      child = spawn("git", [...args], { cwd: root, windowsHide: true });
-    } catch {
-      finish(null);
-      return;
-    }
-    const timer = setTimeout(() => {
-      child.kill();
-      finish(null);
-    }, timeoutMs);
-    let stdout = "";
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-    child.on("error", () => {
-      clearTimeout(timer);
-      finish(null);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      // A non-zero exit means "not a repository" or "no git".
-      finish(code === 0 ? stdout : null);
-    });
-  });
+  const result = await sharedGitRunner.run(root, args, { timeoutMs });
+  if (result.missing || result.code !== 0) return null;
+  return result.stdout;
 }
+
+/** One shared adapter: the spawn has no per-call state worth duplicating. */
+const sharedGitRunner = createNodeGitRunner();
 
 export function createNodeFileListingIo(gitTimeoutMs = 4000): FileListingIo {
   return {

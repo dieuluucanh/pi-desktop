@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DocumentsPanel } from "../../src/renderer/src/office/DocumentsPanel";
+import { DocumentsSection } from "../../src/renderer/src/rail/DocumentsSection";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { parseOfficeDocumentPane } from "../../src/shared/office-documents";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
@@ -9,9 +9,13 @@ import type { TabRecord } from "../../src/shared/session-ipc";
 import { documentsViewFixture, installBridge } from "./fixtures";
 
 /**
- * The Documents panel (plan step 20): visible only when the bridge answers
- * `/health`, one row per attached pane, and the actions that turn a document
- * into a targeted prompt.
+ * The Documents section (plan step 20, moved onto the rail by the 2026-10-27
+ * plan): visible only when the bridge answers `/health`, one row per attached
+ * pane, and the actions that turn a document into a targeted prompt.
+ *
+ * The column itself — its `<aside>`, width, toggle and close button — belongs to
+ * `RightRail` and is asserted in `right-rail.test.tsx`. This suite covers the
+ * *body*: the rows, the empty state, the actions and the host footer.
  */
 
 function tab(overrides: Partial<TabRecord> = {}): TabRecord {
@@ -56,13 +60,12 @@ const wordPane = parseOfficeDocumentPane({
 function resetStore() {
   installBridge();
   useAppStore.setState({
-    prefs: { ...DEFAULT_PREFS, drafts: {} },
+    prefs: { ...DEFAULT_PREFS, drafts: {}, rail: { ...DEFAULT_PREFS.rail, open: true } },
     project: { path: "C:/work/app", name: "app" },
     tabs: [tab()],
     activeTabId: "tab-1",
     officeDocuments: null,
     officeDocumentsLoaded: false,
-    documentsPanelOpen: true,
     hint: null,
     view: "session",
   });
@@ -72,17 +75,8 @@ beforeEach(resetStore);
 
 describe("documents panel", () => {
   it("renders nothing until the bridge answers /health", () => {
-    render(<DocumentsPanel />);
-    expect(screen.queryByTestId("documents-panel")).not.toBeInTheDocument();
-  });
-
-  it("renders nothing while the rail is closed", () => {
-    useAppStore.setState({
-      officeDocuments: documentsViewFixture({ available: true, status: "ok", panes: [excelPane] }),
-      documentsPanelOpen: false,
-    });
-    render(<DocumentsPanel />);
-    expect(screen.queryByTestId("documents-panel")).not.toBeInTheDocument();
+    render(<DocumentsSection />);
+    expect(screen.queryByTestId("documents-section")).not.toBeInTheDocument();
   });
 
   it("lists each pane with its host, id, windows and advertised ops", () => {
@@ -93,9 +87,9 @@ describe("documents panel", () => {
         panes: [excelPane, wordPane],
       }),
     });
-    render(<DocumentsPanel />);
+    render(<DocumentsSection />);
 
-    expect(screen.getByTestId("documents-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("documents-section")).toBeInTheDocument();
     expect(screen.getByText("Book1.xlsx")).toBeInTheDocument();
     expect(screen.getByText("Report.docx")).toBeInTheDocument();
     expect(screen.getByText("Excel")).toBeInTheDocument();
@@ -110,7 +104,7 @@ describe("documents panel", () => {
     useAppStore.setState({
       officeDocuments: documentsViewFixture({ available: true, status: "ok", panes: [] }),
     });
-    render(<DocumentsPanel />);
+    render(<DocumentsSection />);
 
     expect(screen.getByTestId("documents-empty")).toHaveTextContent(
       /open the pi for office add-in/i,
@@ -122,7 +116,7 @@ describe("documents panel", () => {
     useAppStore.setState({
       officeDocuments: documentsViewFixture({ available: true, status: "ok", panes: [excelPane] }),
     });
-    render(<DocumentsPanel />);
+    render(<DocumentsSection />);
 
     await userEvent.click(screen.getByRole("button", { name: /chat about book1\.xlsx/i }));
 
@@ -135,7 +129,7 @@ describe("documents panel", () => {
     useAppStore.setState({
       officeDocuments: documentsViewFixture({ available: true, status: "ok", panes: [excelPane] }),
     });
-    render(<DocumentsPanel />);
+    render(<DocumentsSection />);
 
     await userEvent.click(screen.getByRole("button", { name: /insert document mention/i }));
 
@@ -154,7 +148,7 @@ describe("documents panel", () => {
     useAppStore.setState({
       officeDocuments: documentsViewFixture({ available: true, status: "ok", panes: [excelPane] }),
     });
-    render(<DocumentsPanel />);
+    render(<DocumentsSection />);
 
     await userEvent.click(screen.getByRole("button", { name: /promote to office host/i }));
 
@@ -166,23 +160,12 @@ describe("documents panel", () => {
       tabs: [tab(), tab({ id: "tab-office", kind: "office", title: "Office" })],
       officeDocuments: documentsViewFixture({ available: true, status: "ok", panes: [excelPane] }),
     });
-    render(<DocumentsPanel />);
+    render(<DocumentsSection />);
 
     expect(screen.getByText(/port 38617/)).toBeInTheDocument();
     expect(screen.getByText("Office")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /promote to office host/i }),
     ).not.toBeInTheDocument();
-  });
-
-  it("closes the rail from its own header", async () => {
-    useAppStore.setState({
-      officeDocuments: documentsViewFixture({ available: true, status: "ok", panes: [excelPane] }),
-    });
-    render(<DocumentsPanel />);
-
-    await userEvent.click(screen.getByRole("button", { name: /close documents panel/i }));
-
-    expect(useAppStore.getState().documentsPanelOpen).toBe(false);
   });
 });

@@ -13,8 +13,12 @@ gitignored, so keep it in sync locally.
 src/main/        Electron main process (windows, app menu, IPC router, supervisor, office wiring)
 src/main/office/ UI-free Office setup backend (detect, registry, manifest, sideload, verify, wizard)
 src/main/packages/ Pi-compatible package plumbing for pre-host bootstrap
+src/git/         the git engine (runner, repo, status, diff, service) — pure Node
+src/checkpoints/ the shadow-repo checkpoint engine, its fs adapter and config — pure Node
+src/extensions/  the app's own Pi extension (run snapshots + /rewind) — pure Node, no SDK import
 src/preload/     the only place that touches contextBridge/ipcRenderer
-src/renderer/src/layout/   app chrome: title bar, sidebar, tab strip, status bar, palette
+src/renderer/src/layout/   app chrome: title bar, sidebar, tab strip, status bar, palette, RightRail
+src/renderer/src/rail/     the right rail's five section bodies and their dialogs
 src/renderer/src/views/    one module per full-page view (welcome, session, settings, …)
 src/renderer/src/ui/       owned primitives on Radix (button, dialog, scroll area, …)
 src/renderer/src/state/    renderer view state (zustand); never talks to a Pi host directly
@@ -27,9 +31,12 @@ tests/           vitest: node project (tests/**) + jsdom renderer project (tests
 
 ## Hard rules
 
-1. **`src/main/office/**`, `src/main/packages/**` and `src/host/**` never import
-   `electron`.** They are pure Node so they stay unit-testable and can run in
-   the host process. Enforced by `tests/architecture/no-electron-in-core.test.ts`.
+1. **`src/main/office/**`, `src/main/packages/**`, `src/host/**`, `src/git/**`,
+   `src/checkpoints/**` and `src/extensions/**` never import `electron`** — and
+   neither do `src/main/git-service.ts` / `src/main/checkpoint-service.ts`. They
+   are pure Node so they stay unit-testable and can run in the host process; the
+   Electron facts (`trashItem`, window focus, the Office pane registry) arrive as
+   injected ports. Enforced by `tests/architecture/no-electron-in-core.test.ts`.
 2. **All filesystem/platform access goes through an injected port** (`FsPort`,
    `CommandRunner`, `FetchLike`, `openPath`, `now`, `sleep`). No `node:fs` calls
    directly in modules that need tests.
@@ -38,11 +45,24 @@ tests/           vitest: node project (tests/**) + jsdom renderer project (tests
    (`SettingsManager`, `ModelRuntime`, `SessionManager`) or, pre-host, through
    the atomic helpers in `src/main/packages/settings.ts`.
 4. **SDK contact stays inside `src/host/sdk/*`** so a pi upgrade touches one
-   directory.
+   directory. `src/extensions/**` mirrors the few SDK members it uses as a
+   structural interface instead of importing them — that is what lets
+   `dist/pi-checkpoints/` load with no `node_modules` beside it.
 5. **User data is never overwritten on parse failure.** Malformed JSON throws
    (`SettingsParseError`) and is surfaced, not repaired silently.
 6. **Every new module ships with unit tests in the same step**, using the
    in-memory ports where possible.
+7. **Checkpoint writes never touch the project's `.git`.** Every checkpoint
+   invocation is `git --git-dir=<profile>/checkpoints/<key> --work-tree=<project>`,
+   and the shadow repo's `info/exclude` carries the default ignores. See
+   `docs/architecture/source-control.md`.
+8. **The checkpoint config has one writer.** `prefs.checkpoints` is the source;
+   main projects it to `<profile>/checkpoints/config.json`, and the host-side
+   extension only reads it. Never add a second writable copy.
+9. **Safe mode must hard-disable the checkpoint extension.** `noExtensions` does
+   _not_ gate `additionalExtensionPaths` — use
+   `checkpointExtensionLoaderOptions` in `src/host/safe-mode.ts`, which is the one
+   place the decision is made.
 
 ## Style
 

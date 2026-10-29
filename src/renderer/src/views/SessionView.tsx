@@ -17,7 +17,12 @@ import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
 import { WidgetStrip } from "../extension-ui/WidgetStrip";
 import { ExtensionDialogDock } from "../extension-ui/ExtensionDialog";
-import { DocumentsPanel } from "../office/DocumentsPanel";
+import { ChangesSection } from "../rail/ChangesSection";
+import { CheckpointsSection } from "../rail/CheckpointsSection";
+import { DocumentsSection } from "../rail/DocumentsSection";
+import { GitSection } from "../rail/GitSection";
+import { HistorySection } from "../rail/HistorySection";
+import { RightRail } from "../rail/RightRail";
 import { WorkingRow } from "../extension-ui/WorkingRow";
 import { RunStatusRow } from "../session/RunStatusRow";
 import { TuiCellProbe, TuiSlotFrame, TuiSurface } from "../tui/TuiSurface";
@@ -203,7 +208,34 @@ export function SessionView() {
     activeTabId ? state.tuiSurfaces[activeTabId] : undefined,
   );
   const officeDocuments = useAppStore((state) => state.officeDocuments);
-  const toggleDocumentsPanel = useAppStore((state) => state.toggleDocumentsPanel);
+  const toggleRail = useAppStore((state) => state.toggleRail);
+  const railOpen = useAppStore((state) => state.prefs.rail.open);
+  const watchGit = useAppStore((state) => state.watchGit);
+  const loadGit = useAppStore((state) => state.loadGit);
+  const gitSnapshot = useAppStore((state) =>
+    activeTabId
+      ? state.git[state.tabs.find((tab) => tab.id === activeTabId)?.cwd ?? ""]
+      : undefined,
+  );
+  // The entry ids the open transcript knows (git-checkpoint plan step 25): a
+  // checkpoint's `entryId` is matched against this set to say whether it belongs
+  // to a turn of *this* conversation or to one before a fork.
+  const activeEntryIds = useAppStore((state) =>
+    activeTabId ? state.transcripts[activeTabId]?.entryIds : undefined,
+  );
+  // The checkpoint timeline for this tab's folder: the section header counts it,
+  // and the section body renders it. Selected as one value so a push from main
+  // re-renders this view once, not per row.
+  const checkpoints = useAppStore((state) => {
+    const cwd = activeTabId ? (state.tabs.find((tab) => tab.id === activeTabId)?.cwd ?? "") : "";
+    return cwd ? state.checkpoints[cwd] : undefined;
+  });
+  // Only the count drives the section header, so the selector returns a number
+  // rather than the page object (which would re-render on every appended row).
+  const gitLogCount = useAppStore((state) => {
+    const cwd = activeTabId ? (state.tabs.find((tab) => tab.id === activeTabId)?.cwd ?? "") : "";
+    return cwd ? state.gitLog[cwd]?.entries.length : undefined;
+  });
   const webTabStates = useAppStore((state) => state.webTabStates);
   const [editingName, setEditingName] = useState(false);
   const [composerFocusToken, setComposerFocusToken] = useState(0);
@@ -310,6 +342,19 @@ export function SessionView() {
   useEffect(() => {
     if (activeId && active?.kind === "session") void loadShortcuts();
   }, [activeId, active?.kind, active?.status, loadShortcuts]);
+
+  // The rail's git watch follows the panel, not the tab: a closed panel costs
+  // nothing, and a tab switch re-points the poll at the new folder (plan step 8).
+  const railCwd = active?.kind === "web" ? null : (active?.cwd ?? null);
+  useEffect(() => {
+    void watchGit(railOpen ? railCwd : null);
+  }, [railOpen, railCwd, watchGit]);
+
+  // Seed the snapshot when the panel opens, so the first paint is not empty
+  // while the first poll is still a tick away.
+  useEffect(() => {
+    if (railOpen && railCwd) void loadGit(railCwd);
+  }, [railOpen, railCwd, loadGit]);
 
   if (!active) return <WelcomeView />;
   if (active.kind === "web") return <WebTabView tab={active} />;
@@ -433,11 +478,11 @@ export function SessionView() {
             <Button
               size="sm"
               variant="ghost"
-              aria-label="Documents"
-              title="Attached Office documents"
-              onClick={toggleDocumentsPanel}
+              aria-label="Panel"
+              title="Git, changes, checkpoints and attached documents"
+              onClick={toggleRail}
             >
-              Documents
+              Panel
               {officeDocuments.panes.length > 0 ? ` (${officeDocuments.panes.length})` : ""}
             </Button>
           ) : null}
@@ -685,7 +730,38 @@ export function SessionView() {
             />
           ) : null}
         </div>
-        <DocumentsPanel />
+        <RightRail
+          sections={[
+            {
+              id: "git" as const,
+              content: <GitSection projectPath={active.cwd} />,
+            },
+            {
+              id: "changes" as const,
+              count: (gitSnapshot?.staged.length ?? 0) + (gitSnapshot?.changed.length ?? 0),
+              content: <ChangesSection projectPath={active.cwd} />,
+            },
+            {
+              id: "history" as const,
+              count: gitLogCount,
+              content: <HistorySection projectPath={active.cwd} />,
+            },
+            {
+              id: "checkpoints" as const,
+              count: checkpoints?.checkpoints.length ?? 0,
+              content: <CheckpointsSection projectPath={active.cwd} entryIds={activeEntryIds} />,
+            },
+            ...(officeDocuments?.available
+              ? [
+                  {
+                    id: "documents" as const,
+                    count: officeDocuments.panes.length,
+                    content: <DocumentsSection />,
+                  },
+                ]
+              : []),
+          ]}
+        />
       </div>
 
       <ModelPicker

@@ -15,6 +15,8 @@ import {
   type SessionsBridge,
   type UpdatesBridge,
   type WebBridge,
+  type GitBridge,
+  type CheckpointsBridge,
   type WebTabOpenInput,
   type WindowState,
 } from "../shared/ipc";
@@ -48,6 +50,20 @@ import type {
   WebTabBounds,
   WebTabState,
 } from "../shared/web-tabs";
+import type {
+  GitAction,
+  GitActionResult,
+  GitCommitEntry,
+  GitDiff,
+  GitDiffRequest,
+  GitLogRequest,
+  GitSnapshot,
+} from "../shared/git";
+import type {
+  CheckpointAction,
+  CheckpointActionResult,
+  CheckpointState,
+} from "../shared/checkpoints";
 
 /**
  * The preload is the only place that touches `ipcRenderer`. It exposes a fixed,
@@ -170,6 +186,52 @@ const updates: UpdatesBridge = {
     subscribe<UpdateState>(IPC.updatesState, listener),
 };
 
+/**
+ * Source control (git-checkpoint plan step 7). The renderer never sees an argv:
+ * it names a project folder and one action from the closed union, and main does
+ * the rest.
+ */
+const git: GitBridge = {
+  snapshot: (projectPath: string) =>
+    ipcRenderer.invoke(IPC.gitSnapshot, projectPath) as Promise<GitSnapshot>,
+  refresh: (projectPath: string) =>
+    ipcRenderer.invoke(IPC.gitRefresh, projectPath) as Promise<GitSnapshot>,
+  watch: (projectPath: string, enabled: boolean) =>
+    ipcRenderer.invoke(IPC.gitWatch, projectPath, enabled) as Promise<boolean>,
+  action: (projectPath: string, action: GitAction) =>
+    ipcRenderer.invoke(IPC.gitAction, projectPath, action) as Promise<GitActionResult>,
+  diff: (projectPath: string, request: GitDiffRequest) =>
+    ipcRenderer.invoke(IPC.gitDiff, projectPath, request) as Promise<GitDiff>,
+  log: (projectPath: string, request?: GitLogRequest) =>
+    ipcRenderer.invoke(IPC.gitLog, projectPath, request) as Promise<GitCommitEntry[]>,
+  headMessage: (projectPath: string) =>
+    ipcRenderer.invoke(IPC.gitHeadMessage, projectPath) as Promise<string | null>,
+  branches: (projectPath: string) =>
+    ipcRenderer.invoke(IPC.gitBranches, projectPath) as Promise<string[]>,
+  onSnapshot: (listener: (snapshot: GitSnapshot) => void) =>
+    subscribe<GitSnapshot>(IPC.gitPushed, listener),
+};
+
+/**
+ * Folder checkpoints (git-checkpoint plan step 21). One hydration pair plus a
+ * push, mirroring the git bridge: the renderer names a folder it has open and an
+ * action from the closed union, and main does the rest.
+ */
+const checkpoints: CheckpointsBridge = {
+  get: (projectPath: string) =>
+    ipcRenderer.invoke(IPC.checkpointsGet, projectPath) as Promise<CheckpointState>,
+  refresh: (projectPath: string) =>
+    ipcRenderer.invoke(IPC.checkpointsRefresh, projectPath) as Promise<CheckpointState>,
+  action: (projectPath: string, action: CheckpointAction) =>
+    ipcRenderer.invoke(
+      IPC.checkpointsAction,
+      projectPath,
+      action,
+    ) as Promise<CheckpointActionResult>,
+  onState: (listener: (state: CheckpointState) => void) =>
+    subscribe<CheckpointState>(IPC.checkpointsPushed, listener),
+};
+
 const bridge: PiDesktopBridge = {
   getAppInfo: () => ipcRenderer.invoke(IPC.appInfo) as Promise<AppInfo>,
   openExternal: (url: string) => ipcRenderer.invoke(IPC.openExternal, url) as Promise<boolean>,
@@ -222,6 +284,8 @@ const bridge: PiDesktopBridge = {
   web,
   diagnostics,
   updates,
+  git,
+  checkpoints,
 };
 
 contextBridge.exposeInMainWorld("pi", bridge);

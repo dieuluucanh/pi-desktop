@@ -32,7 +32,7 @@ owns the bridge port. **Reset add-in** restores the previous sideload state.
 
 ## Using it
 
-With a pane connected, the Documents panel appears as a right rail in the session
+With a pane connected, the Documents section appears in the session's right rail
 view. From a row you can:
 
 - **Chat about this document** — prepends a `[office:<host> "<name>" id=<id>]`

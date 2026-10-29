@@ -10,6 +10,8 @@ import {
   sanitizePrefs,
 } from "../../src/shared/prefs";
 import { hashPromptText } from "../../src/shared/prompt-origin";
+import { MIN_SCAN_INTERVAL_MS } from "../../src/shared/checkpoints";
+import { DEFAULT_RAIL_WIDTH, MAX_RAIL_WIDTH, MIN_RAIL_WIDTH } from "../../src/shared/rail";
 
 describe("sanitizePrefs", () => {
   it("returns defaults for non-objects", () => {
@@ -22,12 +24,14 @@ describe("sanitizePrefs", () => {
     const result = sanitizePrefs({ theme: "light", somethingElse: true });
     expect(Object.keys(result).sort()).toEqual(
       [
+        "checkpoints",
         "desktopKeybindings",
         "drafts",
         "onboardingCompletedAt",
         "privacyAcknowledged",
         "profileMode",
         "promptOrigins",
+        "rail",
         "showExpandedPrompts",
         "sidebarCollapsed",
         "sidebarWidth",
@@ -152,5 +156,75 @@ describe("drafts (plan step 6)", () => {
     const prefs = sanitizePrefs({ theme: "light", drafts: { "tab-1": "a draft" } });
     expect(prefs.drafts).toEqual({ "tab-1": "a draft" });
     expect(sanitizePrefs({}).drafts).toEqual({});
+  });
+});
+
+/**
+ * The rail and checkpoint preference keys (git-checkpoint plan steps 10/19/27).
+ *
+ * Both are persisted shapes with a sanitizer, and both are written by the
+ * Settings cards and the rail's drag handle. The clamps matter: a hand-edited
+ * `app-state.json` must not be able to set a 1 ms scan interval or a 5000 px
+ * rail.
+ */
+describe("rail and checkpoint preferences", () => {
+  it("clamps the rail width to the supported range", () => {
+    expect(sanitizePrefs({ rail: { width: 10 } }).rail.width).toBe(MIN_RAIL_WIDTH);
+    expect(sanitizePrefs({ rail: { width: 99_999 } }).rail.width).toBe(MAX_RAIL_WIDTH);
+    expect(sanitizePrefs({ rail: { width: Number.NaN } }).rail.width).toBe(DEFAULT_RAIL_WIDTH);
+  });
+
+  it("drops an unknown rail section id and keeps the known ones", () => {
+    const rail = sanitizePrefs({
+      rail: { sections: { git: false, madeUp: true, documents: false } },
+    }).rail;
+    expect(rail.sections.git).toBe(false);
+    expect(rail.sections.documents).toBe(false);
+    expect(rail.sections).not.toHaveProperty("madeUp");
+  });
+
+  it("merges one rail section without wiping the rest", () => {
+    const current = sanitizePrefs({ rail: { open: true, width: 400 } });
+    const next = mergePrefs(current, { rail: { sections: { history: false } } });
+    expect(next.rail.width).toBe(400);
+    expect(next.rail.open).toBe(true);
+    expect(next.rail.sections.history).toBe(false);
+    // The default `true` survives for every section the patch did not name.
+    expect(next.rail.sections.changes).toBe(true);
+  });
+
+  it("clamps every checkpoint number the sanitizer owns", () => {
+    const config = sanitizePrefs({
+      checkpoints: {
+        maxPerSession: 0,
+        retentionDays: 0,
+        scanIntervalMs: 1,
+        maxFileBytes: 1,
+        maxBytesPerProject: 1,
+      },
+    }).checkpoints;
+    expect(config.maxPerSession).toBe(1);
+    expect(config.retentionDays).toBe(1);
+    expect(config.scanIntervalMs).toBe(MIN_SCAN_INTERVAL_MS);
+    expect(config.maxFileBytes).toBe(1024 * 1024);
+    expect(config.maxBytesPerProject).toBe(64 * 1024 * 1024);
+  });
+
+  it("keeps checkpoints enabled for an app-state.json written before the key existed", () => {
+    // A missing key must not silently opt the user out (D14: on by default).
+    expect(sanitizePrefs({ theme: "light" }).checkpoints.enabled).toBe(true);
+  });
+
+  it("preserves the other checkpoint values when only one is patched", () => {
+    const current = sanitizePrefs({
+      checkpoints: { retentionDays: 90, maxPerSession: 250, exclude: ["*.iso"] },
+    });
+    const next = mergePrefs(current, { checkpoints: { enabled: false } });
+    expect(next.checkpoints).toMatchObject({
+      enabled: false,
+      retentionDays: 90,
+      maxPerSession: 250,
+      exclude: ["*.iso"],
+    });
   });
 });

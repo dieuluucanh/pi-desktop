@@ -19,7 +19,7 @@ import {
   createAgentSessionServices,
   hasTrustRequiringProjectResources,
 } from "@earendil-works/pi-coding-agent";
-import { SAFE_MODE_RESOURCE_LOADER_OPTIONS } from "../safe-mode";
+import { checkpointExtensionLoaderOptions } from "../safe-mode";
 import { resolveSessionScope } from "./model-scope";
 import type {
   AgentSession,
@@ -60,6 +60,12 @@ export type SessionRuntimeFactory = (options: {
   safeMode?: boolean;
   /** Whether the project is trusted, so its `.pi/settings.json` may be read. */
   projectTrusted?: boolean;
+  /**
+   * The bundled checkpoint extension (git-checkpoint plan step 24). No-op in
+   * safe mode: `checkpointExtensionLoaderOptions` decides, because `noExtensions`
+   * does *not* gate `additionalExtensionPaths`.
+   */
+  checkpointsExtensionPath?: string | null;
 }) => Promise<{
   runtime: AgentSessionRuntime;
   session: AgentSession;
@@ -91,9 +97,13 @@ export const createSdkSessionRuntime: SessionRuntimeFactory = async (options) =>
       cwd,
       agentDir,
       settingsManager,
-      // Safe mode (plan step 22): no third-party code at all — no extensions,
-      // skills, prompt templates, themes or project context files.
-      ...(options.safeMode ? { resourceLoaderOptions: SAFE_MODE_RESOURCE_LOADER_OPTIONS } : {}),
+      // Safe mode (plan step 22) and the app's own checkpoint extension (step 24)
+      // share one decision: in safe mode the options disable every collection
+      // *and* drop the extra path, because `noExtensions` alone does not.
+      resourceLoaderOptions: checkpointExtensionLoaderOptions({
+        safeMode: options.safeMode,
+        extensionPath: options.checkpointsExtensionPath,
+      }),
     });
     // Resolve `enabledModels` exactly as terminal Pi does at startup. The scope
     // is what extensions see as `ctx.scopedModels` and what `cycleModel` walks;

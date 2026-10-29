@@ -300,6 +300,11 @@ export interface SessionRuntimeRequest {
   safeMode?: boolean;
   /** Whether the project is trusted, so its `.pi/settings.json` may be read. */
   projectTrusted?: boolean;
+  /**
+   * The bundled checkpoint extension's path (git-checkpoint plan step 24). The
+   * composition root resolves it next to the host bundle; safe mode ignores it.
+   */
+  checkpointsExtensionPath?: string | null;
 }
 
 export interface SessionCoreDeps {
@@ -309,6 +314,8 @@ export interface SessionCoreDeps {
   npmCommand?: readonly string[] | null;
   /** Safe mode (plan step 22): the runtime is built with every loader disabled. */
   safeMode?: boolean;
+  /** The bundled checkpoint extension (git-checkpoint plan step 24). Safe mode wins. */
+  checkpointsExtensionPath?: string | null;
   /** Creates the SDK runtime (see `src/host/sdk/index.ts`). */
   createRuntime(
     request: SessionRuntimeRequest,
@@ -810,6 +817,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       npmCommand: deps.npmCommand,
       projectTrusted: trust.status(cwd).trusted,
       ...(deps.safeMode ? { safeMode: true } : {}),
+      ...(deps.checkpointsExtensionPath
+        ? { checkpointsExtensionPath: deps.checkpointsExtensionPath }
+        : {}),
     });
     runtime = created.runtime;
     settingsManager = created.runtime.services?.settingsManager ?? null;

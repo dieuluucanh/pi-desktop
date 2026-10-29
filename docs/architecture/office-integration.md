@@ -127,9 +127,11 @@ the open documents, otherwise the id).
 
 Three renderer surfaces consume that view:
 
-- **Documents panel** (`src/renderer/src/office/DocumentsPanel.tsx`), the session
-  right rail. It renders only when `/health` answers (plan D-A10: no Office
-  surface before setup) and lists each pane with its facts and actions — _Chat
+- **Documents section** (`src/renderer/src/rail/DocumentsSection.tsx`), one section of
+  the session's shared right rail (it was the whole rail until the 2026-10-27 plan added
+  Git, Changes, History and Checkpoints beside it — see
+  [`source-control.md`](source-control.md)). It renders only when `/health` answers (plan
+  D-A10: no Office surface before setup) and lists each pane with its facts and actions — _Chat
   about this_ (prepends the `[office:…]` tag to the composer draft), _Insert
   #mention_, _Copy id_, _Open Office_. With the bridge up but no pane attached it
   shows the empty state; the footer names the Office host and offers **Promote to
@@ -214,7 +216,7 @@ supervisor: if an Office session exists it aborts that session's run.
 | `tests/office/setup-view.test.ts`, `tests/office/setup-wizard.test.ts` | the view/wizard surface that carries the compatibility and the pin                                                                                          |
 | `tests/main/office-documents-service.test.ts`                          | the registry poll: projection, not-our-bridge rejection, change-only emission, start/stop/dispose                                                           |
 | `tests/shared/office-documents.test.ts`                                | the pane projection, mention values, document tag, capability states, target resolution, `office_list_documents` table parsing, `toDocumentMentions`        |
-| `tests/renderer/documents-panel.test.tsx`                              | the rail: visibility rules, per-pane facts, empty state, chat/mention actions, promotion footer                                                             |
+| `tests/renderer/documents-section.test.tsx`                            | the rail: visibility rules, per-pane facts, empty state, chat/mention actions, promotion footer                                                             |
 | `tests/renderer/office-tool-card.test.tsx`                             | office tool cards: target chip, capability note, document-list table and row actions                                                                        |
 | pi-for-office `bridge-extension/tests/{multi-document,smoke}.mjs`      | v2 handshake accepted, v1 rejected, `/health` protocolVersion + capabilities                                                                                |
 | pi-for-office `packages/protocol/tests/protocol.test.ts`               | the version window, the `abort` frame, v2 frame acceptance                                                                                                  |
@@ -230,6 +232,6 @@ supervisor: if an Office session exists it aborts that session's run.
 
 ### User guide
 
-The end-user side of this integration — install, set up, the Documents panel,
+The end-user side of this integration — install, set up, the Documents section,
 `#` mentions, promotion and troubleshooting — lives in
 [`../guide/office-setup.md`](../guide/office-setup.md).

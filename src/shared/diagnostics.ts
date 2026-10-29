@@ -33,6 +33,16 @@ export type IncidentKind =
   | "disk_full"
   | "unavailable"
   | "bad_request"
+  // Source control and folder checkpoints (git-checkpoint plan step 28). These
+  // are git's own failure modes, surfaced as first-class incidents so
+  // `classifyFailure` can name the fix instead of reporting "unknown".
+  | "git_missing"
+  | "git_locked"
+  | "git_auth"
+  | "git_conflict"
+  | "git_no_identity"
+  | "git_rejected"
+  | "checkpoint_locked_file"
   | "unknown";
 
 export type IncidentSeverity = "info" | "warning" | "error";
@@ -70,12 +80,42 @@ const UNAVAILABLE_PATTERN = /unavailable|not available|cannot start|no such rout
 const BAD_REQUEST_PATTERN = /unknown method|bad request|invalid|unsupported|is required/i;
 
 /**
+ * Source-control patterns (git-checkpoint plan step 28). They are checked
+ * *before* the generic ones on purpose: a locked index and an `EBUSY` retry both
+ * read like "permission" or "unknown" otherwise, and the fix is completely
+ * different (`remove .git/index.lock`, close the document).
+ */
+const GIT_MISSING_PATTERN =
+  /git is not installed|git is not on (this app's )?path|and make sure it is on your path|spawn git enoent/i;
+const GIT_LOCKED_PATTERN =
+  /index\.lock|unable to create '.*\.lock'|another git process|could not lock|cannot lock ref|unable to lock/i;
+const GIT_AUTH_PATTERN =
+  /authentication failed|could not read username|permission denied \(publickey\)|fatal: could not read password|terminal prompts disabled|invalid credentials|host key verification failed/i;
+const GIT_CONFLICT_PATTERN =
+  /automatic merge failed|fix conflicts|unmerged paths|conflict \(content\)|needs merge|you have unmerged files/i;
+const GIT_NO_IDENTITY_PATTERN =
+  /please tell me who you are|unable to auto-detect email address|empty ident name|no email was given and auto-detection is disabled/i;
+const GIT_REJECTED_PATTERN =
+  /\[rejected\]|non-fast-forward|failed to push some refs|updates were rejected/i;
+const CHECKPOINT_LOCKED_FILE_PATTERN =
+  /ebusy|resource busy|the process cannot access the file|being used by another process|could not be written.*locked|locked by/i;
+
+/**
  * Classifies an error message. Order matters: a read-only profile that is also
  * unreachable should be reported as the disk problem, because that is the fix
  * the user must apply first.
  */
 export function classifyFailure(message: string): IncidentKind {
   const text = typeof message === "string" ? message : String(message ?? "");
+  // Source control first: these messages also match the generic disk/permission
+  // patterns, and naming the git-specific fix is the whole point of the kind.
+  if (GIT_MISSING_PATTERN.test(text)) return "git_missing";
+  if (GIT_LOCKED_PATTERN.test(text)) return "git_locked";
+  if (GIT_AUTH_PATTERN.test(text)) return "git_auth";
+  if (GIT_CONFLICT_PATTERN.test(text)) return "git_conflict";
+  if (GIT_NO_IDENTITY_PATTERN.test(text)) return "git_no_identity";
+  if (GIT_REJECTED_PATTERN.test(text)) return "git_rejected";
+  if (CHECKPOINT_LOCKED_FILE_PATTERN.test(text)) return "checkpoint_locked_file";
   if (DISK_FULL_PATTERN.test(text)) return "disk_full";
   if (READ_ONLY_PATTERN.test(text)) return "read_only";
   if (PERMISSION_PATTERN.test(text)) return "permission";
@@ -120,6 +160,16 @@ const SEVERITY_BY_KIND: Record<IncidentKind, IncidentSeverity> = {
   disk_full: "error",
   unavailable: "error",
   bad_request: "warning",
+  // A missing git or an unconfigured identity blocks the feature but is not an
+  // app failure; a locked index, a conflict or a rejected push is the user's work
+  // in flight. None of them is "error" in the sense of "the app broke".
+  git_missing: "warning",
+  git_locked: "warning",
+  git_auth: "warning",
+  git_conflict: "warning",
+  git_no_identity: "warning",
+  git_rejected: "warning",
+  checkpoint_locked_file: "warning",
   unknown: "warning",
 };
 
@@ -174,6 +224,21 @@ export function incidentFix(kind: IncidentKind): string | null {
       return "The bundled runtime could not be resolved. Reinstall the app, or run runtime:verify to see what is missing.";
     case "uncaught_exception":
       return "An unexpected error escaped. Export diagnostics and restart; your sessions are on disk.";
+    // Source control and folder checkpoints (git-checkpoint plan step 28).
+    case "git_missing":
+      return "Install git and make sure it is on your PATH; it is not bundled with the app.";
+    case "git_locked":
+      return "Another git process is running. Close it, or delete .git/index.lock only if no git process is alive.";
+    case "git_auth":
+      return "git is waiting for credentials it cannot ask for. Run the same command in a terminal once so your credential helper or SSH agent stores them.";
+    case "git_conflict":
+      return "Resolve the conflicts in a terminal or your editor, then stage the files and commit.";
+    case "git_no_identity":
+      return "Set user.name and user.email for this repository — the rail's commit box offers a repository-local form.";
+    case "git_rejected":
+      return "The remote has commits you do not have. Pull (or fetch and merge) first, then push again.";
+    case "checkpoint_locked_file":
+      return "Close the document in Word/Excel/PowerPoint, then restore again; an open file cannot be written.";
     default:
       return null;
   }
@@ -350,6 +415,46 @@ export interface DiagnosticsSnapshot {
   safeMode: boolean;
   /** The startup-budget measurements (plan step 24). */
   startup: StartupReport;
+  /**
+   * Source control (git-checkpoint plan step 28). One entry per repository the
+   * rail has read, so a support bundle shows *which* folder failed and when —
+   * "git is broken" is not actionable, "`C:\work
+eports` failed at 10:04 with
+   * an index.lock" is.
+   */
+  git: DiagnosticsGitInfo;
+  /** Folder checkpoints (git-checkpoint plan step 28). */
+  checkpoints: DiagnosticsCheckpointInfo;
+}
+
+export interface DiagnosticsGitInfo {
+  /** `git --version`'s first line, or null when git is missing. */
+  version: string | null;
+  repos: {
+    root: string;
+    branch: string | null;
+    dirty: boolean;
+    /** How long the last `status` read took, or null when it never ran. */
+    lastStatusMs: number | null;
+    /** The last failure for this repository, already classified. */
+    lastError: string | null;
+  }[];
+}
+
+export interface DiagnosticsCheckpointInfo {
+  /** `<profileDir>/checkpoints`, or null when it could not be resolved. */
+  root: string | null;
+  enabled: boolean;
+  projects: {
+    key: string;
+    workTree: string;
+    commits: number;
+    bytes: number;
+    lastSnapshotAt: number | null;
+    skipped: number;
+  }[];
+  /** Whether the host reported the checkpoint extension (false in safe mode). */
+  runSnapshots: boolean;
 }
 
 export interface DiagnosticsExport {
@@ -387,6 +492,21 @@ export function incidentHeadline(incident: Incident): string {
       return "An unexpected promise rejection was caught";
     case "uncaught_exception":
       return "An unexpected error was caught";
+    // Source control and checkpoints (git-checkpoint plan step 28).
+    case "git_missing":
+      return "git is not installed";
+    case "git_locked":
+      return "Another git process holds the repository";
+    case "git_auth":
+      return "git could not authenticate";
+    case "git_conflict":
+      return "The repository has merge conflicts";
+    case "git_no_identity":
+      return "git has no commit identity";
+    case "git_rejected":
+      return "The remote rejected the push";
+    case "checkpoint_locked_file":
+      return "A file could not be written because it is open";
     default:
       return "Something went wrong";
   }

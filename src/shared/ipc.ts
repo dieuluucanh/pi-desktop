@@ -5,6 +5,16 @@ import type { DiagnosticsExport, DiagnosticsSnapshot } from "./diagnostics";
 import type { IntegrationsState, OfficeIntegrationRecordPatch } from "./integrations";
 import type { UiPrefs } from "./prefs";
 import type { ProfileMode } from "./profile";
+import type {
+  GitAction,
+  GitActionResult,
+  GitCommitEntry,
+  GitDiff,
+  GitDiffRequest,
+  GitLogRequest,
+  GitSnapshot,
+} from "./git";
+import type { CheckpointAction, CheckpointActionResult, CheckpointState } from "./checkpoints";
 import type { HostMethod } from "./host-protocol";
 import type { UpdateState } from "./updates";
 import type {
@@ -161,6 +171,42 @@ export const IPC = {
   updatesInstall: "updates:install",
   /** Main → renderer: the updater's state changed. */
   updatesState: "updates:state",
+
+  /**
+   * Source control (git-checkpoint plan step 7). The renderer addresses a
+   * *project folder*, never a repository path or an argv: main resolves the work
+   * tree, validates every action against it, and answers with the snapshot the
+   * rail renders.
+   */
+  gitSnapshot: "git:snapshot",
+  /** Re-reads now, bypassing the main-process memo. */
+  gitRefresh: "git:refresh",
+  /** Starts/stops the background status poll for one folder. */
+  gitWatch: "git:watch",
+  /** Runs one validated action from the closed `GitAction` union. */
+  gitAction: "git:action",
+  /** One diff side, for the viewer. */
+  gitDiff: "git:diff",
+  /** One page of the commit log. */
+  gitLog: "git:log",
+  /** HEAD's full commit message, for the amend box. */
+  gitHeadMessage: "git:head-message",
+  /** Local branch names, for the checkout menu. */
+  gitBranches: "git:branches",
+  /** Main → renderer: a folder's snapshot changed. */
+  gitPushed: "git:state",
+
+  /**
+   * Folder checkpoints (git-checkpoint plan step 21). Same shape as git: a
+   * hydration pair (`get`/`refresh`) plus a push, so the section can render
+   * immediately after a relaunch and still update live.
+   */
+  checkpointsGet: "checkpoints:get",
+  checkpointsRefresh: "checkpoints:refresh",
+  /** Runs one validated action from the closed `CheckpointAction` union. */
+  checkpointsAction: "checkpoints:action",
+  /** Main → renderer: a project's checkpoint state changed. */
+  checkpointsPushed: "checkpoints:state",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -194,6 +240,11 @@ export const MENU_COMMANDS = [
   "model-cycle-forward",
   "model-cycle-backward",
   "thinking-cycle",
+  // The right rail (git-checkpoint plan step 10): one toggle plus the two
+  // commands that open it on a specific section.
+  "toggle-rail",
+  "view-source-control",
+  "view-checkpoints",
 ] as const;
 
 export type MenuCommand = (typeof MENU_COMMANDS)[number];
@@ -442,6 +493,58 @@ export interface UpdatesBridge {
   onState(listener: (state: UpdateState) => void): () => void;
 }
 
+/**
+ * Source control (git-checkpoint plan step 7).
+ *
+ * `projectPath` is the *folder* the user opened (a tab's cwd or a remembered
+ * project), never a repository path: main resolves the work tree itself, so a
+ * renderer cannot point git at an arbitrary directory.
+ */
+export interface GitBridge {
+  /** The folder's snapshot; never throws (an unavailable state carries a reason). */
+  snapshot(projectPath: string): Promise<GitSnapshot>;
+  /** Re-reads immediately, bypassing main's short-lived memo. */
+  refresh(projectPath: string): Promise<GitSnapshot>;
+  /**
+   * Starts or stops the background poll. The rail watches only while its Git
+   * section is visible, so a hidden panel costs nothing.
+   */
+  watch(projectPath: string, enabled: boolean): Promise<boolean>;
+  /** Runs one action from the closed union; resolves to a classified result. */
+  action(projectPath: string, action: GitAction): Promise<GitActionResult>;
+  /** One diff side, for the viewer. */
+  diff(projectPath: string, request: GitDiffRequest): Promise<GitDiff>;
+  /** One page of the commit log. */
+  log(projectPath: string, request?: GitLogRequest): Promise<GitCommitEntry[]>;
+  /**
+   * HEAD's complete commit message, or null when there is no commit yet. Used to
+   * prefill the amend box: a subject-only prefill would drop the body.
+   */
+  headMessage(projectPath: string): Promise<string | null>;
+  /** Local branch names, sorted, for the checkout menu. */
+  branches(projectPath: string): Promise<string[]>;
+  /** Main → renderer: a watched folder's snapshot changed. */
+  onSnapshot(listener: (snapshot: GitSnapshot) => void): () => void;
+}
+
+/**
+ * Folder checkpoints (git-checkpoint plan step 21).
+ *
+ * The pair `get`/`refresh` exists for the same reason `office.documents()` /
+ * `refreshDocuments()` exists: the section has to render something on mount,
+ * after a relaunch, before any push arrives.
+ */
+export interface CheckpointsBridge {
+  /** The folder's checkpoint surface; never throws (a disabled state says why). */
+  get(projectPath: string): Promise<CheckpointState>;
+  /** Re-reads the timeline and the usage numbers. */
+  refresh(projectPath: string): Promise<CheckpointState>;
+  /** Runs one action from the closed union. */
+  action(projectPath: string, action: CheckpointAction): Promise<CheckpointActionResult>;
+  /** Main → renderer: a project's checkpoint state changed. */
+  onState(listener: (state: CheckpointState) => void): () => void;
+}
+
 /** The complete API exposed to the renderer as `window.pi`. */
 export interface PiDesktopBridge {
   getAppInfo(): Promise<AppInfo>;
@@ -465,4 +568,6 @@ export interface PiDesktopBridge {
   web: WebBridge;
   diagnostics: DiagnosticsBridge;
   updates: UpdatesBridge;
+  git: GitBridge;
+  checkpoints: CheckpointsBridge;
 }

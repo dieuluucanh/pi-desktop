@@ -108,6 +108,11 @@ function deps(overrides: Partial<DiagnosticsServiceDeps> = {}): DiagnosticsServi
   };
 }
 
+/** The new suites read the service rather than the raw deps. */
+function harness(overrides: Partial<DiagnosticsServiceDeps> = {}) {
+  return createDiagnosticsService(deps(overrides));
+}
+
 describe("snapshot", () => {
   it("flattens the process, paths, hosts and office state", () => {
     const service = createDiagnosticsService(deps());
@@ -255,5 +260,104 @@ describe("collectDiagnosticEnvironment", () => {
     expect(
       collectDiagnosticEnvironment({ PI_OFFLINE: "1", SECRET_TOKEN: "x", HOME: "/root" }),
     ).toEqual({ PI_OFFLINE: "1" });
+  });
+});
+
+/**
+ * Source control and checkpoint facts (git-checkpoint plan step 28).
+ *
+ * The bundle is what a user pastes into an issue, so two things matter: the facts
+ * are present when the service is wired, and an **identity email never reaches the
+ * file** even though the rail shows it in full.
+ */
+describe("source control and checkpoint facts", () => {
+  const gitInfo = {
+    version: "git version 2.43.0",
+    repos: [
+      {
+        root: "/work/app",
+        branch: "main",
+        dirty: true,
+        lastStatusMs: 42,
+        lastError: null,
+      },
+      {
+        root: "/work/other",
+        branch: null,
+        dirty: false,
+        lastStatusMs: null,
+        lastError: "fatal: Unable to create '.git/index.lock': File exists.",
+      },
+    ],
+  };
+  const checkpointInfo = {
+    root: "/profile/checkpoints",
+    enabled: true,
+    projects: [
+      {
+        key: "reports-1a2b3c4d",
+        workTree: "/work/reports",
+        commits: 37,
+        bytes: 1_200_000,
+        lastSnapshotAt: 1_700_000_000_000,
+        skipped: 2,
+      },
+    ],
+    runSnapshots: true,
+  };
+
+  it("reports both sections when the ports are wired", () => {
+    const service = harness({ git: () => gitInfo, checkpoints: () => checkpointInfo });
+    const snapshot = service.snapshot();
+    expect(snapshot.git.version).toBe("git version 2.43.0");
+    expect(snapshot.git.repos).toHaveLength(2);
+    expect(snapshot.checkpoints.projects[0]?.commits).toBe(37);
+    expect(snapshot.checkpoints.runSnapshots).toBe(true);
+  });
+
+  it("reports an empty, honest shape without the ports", () => {
+    const snapshot = harness().snapshot();
+    // Never `undefined`: a consumer that reads `snapshot.git.repos` must work.
+    expect(snapshot.git).toEqual({ version: null, repos: [] });
+    expect(snapshot.checkpoints).toMatchObject({ enabled: false, projects: [] });
+  });
+
+  it("renders both sections into the bundle", async () => {
+    const service = harness({ git: () => gitInfo, checkpoints: () => checkpointInfo });
+    const bundle = await service.exportBundle();
+    expect(bundle.text).toContain("## Source control");
+    expect(bundle.text).toContain("git version 2.43.0");
+    expect(bundle.text).toContain("/work/app");
+    expect(bundle.text).toContain("index.lock");
+    expect(bundle.text).toContain("## Folder checkpoints");
+    expect(bundle.text).toContain("reports-1a2b3c4d");
+  });
+
+  it("redacts a commit identity's email from the bundle", async () => {
+    // The rail shows `Ada <ada@example.com>`; the file must not.
+    const withIdentity = {
+      ...gitInfo,
+      repos: [
+        {
+          ...gitInfo.repos[0]!,
+          lastError: "Your identity is Ada <ada@example.com>",
+        },
+      ],
+    };
+    const service = harness({ git: () => withIdentity, checkpoints: () => checkpointInfo });
+    const bundle = await service.exportBundle();
+    expect(bundle.text).not.toContain("ada@example.com");
+    expect(bundle.text).toContain("Ada");
+    expect(bundle.redactions).toBeGreaterThan(0);
+  });
+
+  it("redacts a bare address too (git config output)", async () => {
+    const withBare = {
+      ...gitInfo,
+      repos: [{ ...gitInfo.repos[0]!, lastError: "user.email=ada@example.com" }],
+    };
+    const service = harness({ git: () => withBare, checkpoints: () => checkpointInfo });
+    const bundle = await service.exportBundle();
+    expect(bundle.text).not.toContain("ada@example.com");
   });
 });

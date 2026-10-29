@@ -10,6 +10,12 @@
 import { DEFAULT_PROFILE_MODE, sanitizeProfileMode, type ProfileMode } from "./profile";
 import { sanitizeDesktopKeybindings, type DesktopKeybindings } from "./desktop-keymap";
 import { sanitizePromptOrigins } from "./prompt-origin";
+import { DEFAULT_RAIL_PREFS, mergeRailPrefs, sanitizeRailPrefs, type RailPrefs } from "./rail";
+import {
+  DEFAULT_CHECKPOINT_CONFIG,
+  sanitizeCheckpointConfig,
+  type CheckpointConfig,
+} from "./checkpoints";
 
 export const PREF_KEYS = [
   "theme",
@@ -24,6 +30,8 @@ export const PREF_KEYS = [
   "desktopKeybindings",
   "showExpandedPrompts",
   "promptOrigins",
+  "rail",
+  "checkpoints",
 ] as const;
 
 export type PrefKey = (typeof PREF_KEYS)[number];
@@ -87,6 +95,21 @@ export interface UiPrefs {
    * `MAX_PROMPT_ORIGINS` (see `src/shared/prompt-origin.ts`).
    */
   promptOrigins: Record<string, string>;
+  /**
+   * The right rail (git-checkpoint plan step 10): whether it is open, its width,
+   * and which sections are expanded. Persisted so a relaunch restores the
+   * layout the user left, unlike the old ephemeral Documents toggle.
+   */
+  rail: RailPrefs;
+  /**
+   * Folder checkpoints (git-checkpoint plan D19): **the** source of the
+   * checkpoint settings. Main projects this object to
+   * `<profileDir>/checkpoints/config.json` on every change so the host-side Pi
+   * extension can read it; nothing else writes that file. Keeping the values
+   * here means one validated, app-owned store instead of two writable copies
+   * that drift.
+   */
+  checkpoints: CheckpointConfig;
 }
 
 /** Longest draft kept per tab, and how many tabs may hold one. */
@@ -110,6 +133,12 @@ export const DEFAULT_PREFS: UiPrefs = {
   desktopKeybindings: {},
   showExpandedPrompts: false,
   promptOrigins: {},
+  // A fresh object (not the shared default) so a caller mutating one prefs value
+  // cannot mutate the module-level default.
+  rail: { ...DEFAULT_RAIL_PREFS, sections: { ...DEFAULT_RAIL_PREFS.sections } },
+  // A fresh object for the same reason as `rail`: a caller mutating one prefs
+  // value must not mutate the module-level default (nor the shared config).
+  checkpoints: { ...DEFAULT_CHECKPOINT_CONFIG, exclude: [] },
 };
 
 const THEMES: readonly ThemeSetting[] = ["dark", "light", "system"];
@@ -171,11 +200,35 @@ export function sanitizePrefs(input: unknown): UiPrefs {
     showExpandedPrompts:
       typeof source.showExpandedPrompts === "boolean" ? source.showExpandedPrompts : false,
     promptOrigins: sanitizePromptOrigins(source.promptOrigins),
+    // An older `app-state.json` has no `rail`; the sanitizer supplies the
+    // defaults, so the migration needs no version bump.
+    rail: sanitizeRailPrefs(source.rail),
+    // Checkpoints are **on by default** (D14); the caps are what make that
+    // defensible, so an older app-state.json without the key gets the defaults
+    // rather than an off switch it never asked for. Unknown keys are dropped by
+    // the shared sanitizer, which clamps every number.
+    checkpoints: sanitizeCheckpointConfig(source.checkpoints),
   };
 }
 
 /** Applies a partial, untrusted patch over the current preferences. */
 export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
   const source = patch && typeof patch === "object" ? (patch as Record<string, unknown>) : {};
-  return sanitizePrefs({ ...current, ...source });
+  // `rail` is the one nested preference: a spread would let a `{ open: true }`
+  // patch wipe the width and the section state, so it merges one level deeper.
+  const rail = "rail" in source ? mergeRailPrefs(current.rail, source.rail) : current.rail;
+  // `checkpoints` is flat, but it must not lose keys present in the patch's
+  // absence: a `{ checkpoints: { enabled: false } }` patch keeps the retention
+  // values the user set earlier. The sanitizer fills the rest.
+  const checkpoints =
+    "checkpoints" in source
+      ? sanitizeCheckpointConfig({ ...current.checkpoints, ...asRecord(source.checkpoints) })
+      : current.checkpoints;
+  return sanitizePrefs({ ...current, ...source, rail, checkpoints });
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }

@@ -101,6 +101,15 @@ export interface HostInfo {
    * started by an older main process never reports one.
    */
   buildId?: string | null;
+  /**
+   * Optional host features (git-checkpoint plan step 24). Absent for a host
+   * started by an older main, so every reader must treat it as "unknown, assume
+   * no".
+   */
+  capabilities?: {
+    /** True when the checkpoint extension is loaded (never in safe mode). */
+    checkpointsExtension?: boolean;
+  };
 }
 
 export interface HostEvent {

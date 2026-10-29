@@ -15,6 +15,18 @@ import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { UiPrefs } from "../../src/shared/prefs";
 import { initialUpdateState, type UpdateState } from "../../src/shared/updates";
 import {
+  emptyGitSnapshot,
+  type GitActionResult,
+  type GitCommitEntry,
+  type GitDiff,
+  type GitSnapshot,
+} from "../../src/shared/git";
+import {
+  emptyCheckpointState,
+  type CheckpointActionResult,
+  type CheckpointState,
+} from "../../src/shared/checkpoints";
+import {
   projectNameOf,
   type ProjectRecord,
   type ProjectsSnapshot,
@@ -109,6 +121,18 @@ export interface BridgeOptions {
   diagnostics?: Partial<DiagnosticsSnapshot>;
   /** The updater's starting state (plan step 26); defaults to "unsupported". */
   update?: UpdateState;
+  /** Source control (git-checkpoint plan step 9). */
+  git?: GitSnapshot;
+  gitDiff?: GitDiff;
+  gitLog?: GitCommitEntry[];
+  gitAction?: GitActionResult;
+  /** HEAD's commit message the amend box prefills from. */
+  headMessage?: string | null;
+  /** Local branch names the checkout menu offers. */
+  branches?: string[];
+  /** Folder checkpoints (git-checkpoint plan step 21). */
+  checkpoints?: CheckpointState;
+  checkpointsAction?: CheckpointActionResult;
 }
 
 export interface BridgeHandles {
@@ -119,9 +143,15 @@ export interface BridgeHandles {
   webBounds: Array<{ tabId: string; bounds: WebTabBounds }>;
   webDecisions: WebNavigationDecision[];
   updateCalls: string[];
+  /** Every git bridge call, in order, with its payload. */
+  gitCalls: Array<{ kind: string; projectPath: string; payload?: unknown }>;
+  checkpointCalls: Array<{ kind: string; projectPath: string; payload?: unknown }>;
+  emitCheckpointState: (state: CheckpointState) => void;
   emitWebState(state: WebTabState): void;
   emitWebNavigationRequest(request: WebNavigationRequest): void;
   emitUpdateState(state: UpdateState): void;
+  /** Pushes a git snapshot to the renderer, like main's poll would. */
+  emitGitSnapshot(snapshot: GitSnapshot): void;
 }
 
 /** Installs a `window.pi` stub and returns the prefs store it writes to. */
@@ -148,6 +178,25 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
     ...diagnosticsSnapshot(info),
     ...options.diagnostics,
   };
+
+  const gitListeners = new Set<(snapshot: GitSnapshot) => void>();
+  const gitCalls: Array<{ kind: string; projectPath: string; payload?: unknown }> = [];
+  const checkpointCalls: Array<{ kind: string; projectPath: string; payload?: unknown }> = [];
+  const checkpointListeners = new Set<(state: CheckpointState) => void>();
+  const checkpointValue: CheckpointState =
+    options.checkpoints ?? emptyCheckpointState("/work/app", 1_700_000_000_000);
+  const checkpointActionResult: CheckpointActionResult = options.checkpointsAction ?? { ok: true };
+  const gitSnapshotValue: GitSnapshot = options.git ?? emptyGitSnapshot("/work/app");
+  const gitDiffValue: GitDiff = options.gitDiff ?? {
+    scope: "working",
+    files: [],
+    tooLarge: false,
+    truncated: false,
+  };
+  const gitLogValue: GitCommitEntry[] = options.gitLog ?? [];
+  const gitActionResult: GitActionResult = options.gitAction ?? { ok: true };
+  const gitHeadMessage: string | null = options.headMessage ?? null;
+  const gitBranches: string[] = options.branches ?? [];
 
   const bridge: PiDesktopBridge = {
     getAppInfo: async () => info,
@@ -335,12 +384,76 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
         return () => updateListeners.delete(listener);
       },
     },
+    git: {
+      snapshot: async (projectPath) => {
+        gitCalls.push({ kind: "snapshot", projectPath });
+        return { ...gitSnapshotValue, projectPath };
+      },
+      refresh: async (projectPath) => {
+        gitCalls.push({ kind: "refresh", projectPath });
+        return { ...gitSnapshotValue, projectPath };
+      },
+      watch: async (projectPath, enabled) => {
+        gitCalls.push({ kind: "watch", projectPath, payload: enabled });
+        return enabled;
+      },
+      action: async (projectPath, action) => {
+        gitCalls.push({ kind: "action", projectPath, payload: action });
+        return gitActionResult;
+      },
+      diff: async (projectPath, request) => {
+        gitCalls.push({ kind: "diff", projectPath, payload: request });
+        return gitDiffValue;
+      },
+      log: async (projectPath, request) => {
+        gitCalls.push({ kind: "log", projectPath, payload: request });
+        return gitLogValue;
+      },
+      headMessage: async (projectPath) => {
+        gitCalls.push({ kind: "head-message", projectPath });
+        return gitHeadMessage;
+      },
+      branches: async (projectPath) => {
+        gitCalls.push({ kind: "branches", projectPath });
+        return gitBranches;
+      },
+      onSnapshot: (listener) => {
+        gitListeners.add(listener);
+        return () => gitListeners.delete(listener);
+      },
+    },
+    checkpoints: {
+      get: async (projectPath) => {
+        checkpointCalls.push({ kind: "get", projectPath });
+        return { ...checkpointValue, projectPath };
+      },
+      refresh: async (projectPath) => {
+        checkpointCalls.push({ kind: "refresh", projectPath });
+        return { ...checkpointValue, projectPath };
+      },
+      action: async (projectPath, action) => {
+        checkpointCalls.push({ kind: "action", projectPath, payload: action });
+        return checkpointActionResult;
+      },
+      onState: (listener) => {
+        checkpointListeners.add(listener);
+        return () => checkpointListeners.delete(listener);
+      },
+    },
   };
 
   (window as unknown as { pi: PiDesktopBridge }).pi = bridge;
   return {
     bridge,
     prefs,
+    gitCalls,
+    emitGitSnapshot: (snapshot: GitSnapshot) => {
+      for (const listener of gitListeners) listener(snapshot);
+    },
+    checkpointCalls,
+    emitCheckpointState: (state: CheckpointState) => {
+      for (const listener of checkpointListeners) listener(state);
+    },
     webOpened,
     webCommands,
     webBounds,
@@ -434,5 +547,8 @@ function diagnosticsSnapshot(info: AppInfo): DiagnosticsSnapshot {
       },
       status: "unknown",
     },
+    // Source control and folder checkpoints (git-checkpoint plan step 28).
+    git: { version: null, repos: [] },
+    checkpoints: { root: null, enabled: false, projects: [], runSnapshots: false },
   };
 }

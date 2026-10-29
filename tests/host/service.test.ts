@@ -49,6 +49,7 @@ function harness(options: Partial<HostServiceOptions> = {}) {
       piVersion: "0.85.1",
       startedAt: 1_700_000_000_000,
       buildId: "build-1",
+      ...(options.info?.capabilities ? { capabilities: options.info.capabilities } : {}),
     },
     writeBlob: async (name, contents) => {
       const path = join(BLOB_DIR, name);
@@ -121,6 +122,16 @@ describe("host service dispatch", () => {
       bridgePort: 38618,
       pids: { pid: process.pid },
       buildId: "build-1",
+    });
+  });
+
+  it("reports the checkpoint extension capability (git-checkpoint step 24)", async () => {
+    const host = harness();
+    await host.request(1, "host.hello");
+    // Absent from the harness's info object, so the host must answer "no"
+    // rather than omitting the field: the rail reads a boolean.
+    expect(host.lastResult()).toMatchObject({
+      capabilities: { checkpointsExtension: false },
     });
   });
 

@@ -56,11 +56,10 @@ function tab(): TabRecord {
 function resetStore(panes = [excelPane]) {
   installBridge();
   useAppStore.setState({
-    prefs: { ...DEFAULT_PREFS, drafts: {} },
+    prefs: { ...DEFAULT_PREFS, drafts: {}, rail: { ...DEFAULT_PREFS.rail, open: true } },
     tabs: [tab()],
     activeTabId: "tab-1",
     officeDocuments: documentsViewFixture({ available: true, status: "ok", panes }),
-    documentsPanelOpen: true,
   });
 }
 

@@ -21,6 +21,10 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dia
 import { Separator } from "../ui/separator";
 import { Switch } from "../ui/switch";
 import { SettingsFieldEditor } from "../settings/SettingsFieldEditor";
+import {
+  CheckpointsSettingsCard,
+  SourceControlSettingsCard,
+} from "../settings/SourceControlSettings";
 
 /**
  * Settings (plan step 12).
@@ -285,6 +289,15 @@ export function SettingsView() {
           </div>
         </Row>
       </section>
+
+      {/*
+        Source control and checkpoints (git-checkpoint plan step 27). Both cards edit
+        `prefs` only: main projects the checkpoint keys to
+        `<profile>/checkpoints/config.json`, and the host-side extension reads that
+        file — there is no second write path (D19).
+      */}
+      <SourceControlSettingsCard />
+      <CheckpointsSettingsCard />
 
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold">Pi settings</h2>

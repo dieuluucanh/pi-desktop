@@ -31,6 +31,9 @@
 - [`guide/skills-themes-keybindings.md`](guide/skills-themes-keybindings.md) — skills, themes and
   `keybindings.json`.
 - [`guide/office-setup.md`](guide/office-setup.md) — Pi for Office as an optional integration.
+- [`guide/git-and-checkpoints.md`](guide/git-and-checkpoints.md) — the right rail's Git, Changes,
+  History and Checkpoints sections: staging and committing, what a checkpoint is (and is not),
+  restoring safely, retention, and `/rewind` in terminal Pi.
 - [`guide/plannotator-web-tabs.md`](guide/plannotator-web-tabs.md) — in-app web tabs and reviews.
 - [`guide/troubleshooting.md`](guide/troubleshooting.md) — safe mode, recovery, diagnostics.
 - [`guide/branding.md`](guide/branding.md) — the logo set, which mark belongs to which product, and
@@ -47,6 +50,9 @@
 - [`architecture/extension-ui.md`](architecture/extension-ui.md) — `ExtensionUIContext`
   member-by-member (the parity doc the definition of done calls `extension-parity.md`) and the
   TUI rendering surface.
+- [`architecture/source-control.md`](architecture/source-control.md) — the git and checkpoint
+  engines, the shadow-repository layout, the private-index recipe, the CAS-retry and
+  prune-suffix invariants, restore safety and the safe-mode rule for the extension.
 - [`architecture/office-integration.md`](architecture/office-integration.md) — the Office bridge:
   processes and flows, the protocol compatibility matrix, streaming/stop rules, `/health` usage and
   release order.

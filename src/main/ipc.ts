@@ -40,12 +40,30 @@ import type { UpdateState } from "../shared/updates";
 import { isTrustAnswer } from "../shared/projects";
 import type { OfficeStopResult } from "../shared/office-bridge";
 import {
+  parseGitAction,
+  parseGitDiffRequest,
+  parseGitLogRequest,
+  type GitAction,
+  type GitActionResult,
+  type GitCommitEntry,
+  type GitDiff,
+  type GitDiffRequest,
+  type GitLogRequest,
+  type GitSnapshot,
+} from "../shared/git";
+import {
   parseCloneProjectInput,
   parseCreateProjectInput,
   parseProjectActionInput,
   parseProjectMutation,
 } from "./projects-service";
 import type { OfficeSetupService } from "./office/setup-service";
+import {
+  parseCheckpointAction,
+  type CheckpointAction,
+  type CheckpointActionResult,
+  type CheckpointState,
+} from "../shared/checkpoints";
 
 /**
  * The Electron glue for the allowlisted IPC surface.
@@ -152,6 +170,31 @@ export interface IpcDependencies {
     check(): Promise<UpdateState>;
     download(): Promise<UpdateState>;
     install(): boolean;
+  };
+  /** Source control (git-checkpoint plan step 7). */
+  git: {
+    /**
+     * Resolves a renderer-supplied folder to one the app has open (a tab's cwd
+     * or a remembered project), or throws. The allowlist lives where the data
+     * does; the handlers never hold the project list themselves.
+     */
+    resolveProjectPath(value: unknown): Promise<string>;
+    snapshot(projectPath: string): Promise<GitSnapshot>;
+    refresh(projectPath: string): Promise<GitSnapshot>;
+    watch(projectPath: string, enabled: boolean): boolean;
+    action(projectPath: string, action: GitAction): Promise<GitActionResult>;
+    diff(projectPath: string, request: GitDiffRequest): Promise<GitDiff>;
+    log(projectPath: string, request: GitLogRequest): Promise<GitCommitEntry[]>;
+    headMessage(projectPath: string): Promise<string | null>;
+    branches(projectPath: string): Promise<string[]>;
+  };
+  /** Folder checkpoints (git-checkpoint plan step 21). */
+  checkpoints: {
+    /** Same allowlist as `git.resolveProjectPath`: a folder the app has open. */
+    resolveProjectPath(value: unknown): Promise<string>;
+    get(projectPath: string): Promise<CheckpointState>;
+    refresh(projectPath: string): Promise<CheckpointState>;
+    action(projectPath: string, action: CheckpointAction): Promise<CheckpointActionResult>;
   };
 }
 
@@ -390,6 +433,56 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.updatesCheck, () => deps.updates.check());
   ipcMain.handle(IPC.updatesDownload, () => deps.updates.download());
   ipcMain.handle(IPC.updatesInstall, () => deps.updates.install());
+
+  // Source control (git-checkpoint plan step 7). Every handler resolves the
+  // folder against the allowlist first, so git only ever runs in a folder the
+  // user opened; the action payload is then parsed against the closed union.
+  ipcMain.handle(IPC.gitSnapshot, async (_event, projectPath: unknown) =>
+    deps.git.snapshot(await deps.git.resolveProjectPath(projectPath)),
+  );
+  ipcMain.handle(IPC.gitRefresh, async (_event, projectPath: unknown) =>
+    deps.git.refresh(await deps.git.resolveProjectPath(projectPath)),
+  );
+  ipcMain.handle(IPC.gitWatch, async (_event, projectPath: unknown, enabled: unknown) => {
+    const path = await deps.git.resolveProjectPath(projectPath);
+    if (typeof enabled !== "boolean") throw new Error("git: enabled must be a boolean");
+    return deps.git.watch(path, enabled);
+  });
+  ipcMain.handle(IPC.gitAction, async (_event, projectPath: unknown, action: unknown) => {
+    const path = await deps.git.resolveProjectPath(projectPath);
+    const parsed = parseGitAction(action);
+    if (!parsed) throw new Error("git: unsupported action");
+    return deps.git.action(path, parsed);
+  });
+  ipcMain.handle(IPC.gitDiff, async (_event, projectPath: unknown, request: unknown) =>
+    deps.git.diff(await deps.git.resolveProjectPath(projectPath), parseGitDiffRequest(request)),
+  );
+  ipcMain.handle(IPC.gitLog, async (_event, projectPath: unknown, request: unknown) =>
+    deps.git.log(await deps.git.resolveProjectPath(projectPath), parseGitLogRequest(request)),
+  );
+  ipcMain.handle(IPC.gitHeadMessage, async (_event, projectPath: unknown) =>
+    deps.git.headMessage(await deps.git.resolveProjectPath(projectPath)),
+  );
+  ipcMain.handle(IPC.gitBranches, async (_event, projectPath: unknown) =>
+    deps.git.branches(await deps.git.resolveProjectPath(projectPath)),
+  );
+
+  // Folder checkpoints (git-checkpoint plan step 21). Same two rules as git: the
+  // folder must be one the app has open, and the action must parse against the
+  // closed union before the store sees it. `restore` is the one action that can
+  // overwrite work, so it re-validates its ref here as well.
+  ipcMain.handle(IPC.checkpointsGet, async (_event, projectPath: unknown) =>
+    deps.checkpoints.get(await deps.checkpoints.resolveProjectPath(projectPath)),
+  );
+  ipcMain.handle(IPC.checkpointsRefresh, async (_event, projectPath: unknown) =>
+    deps.checkpoints.refresh(await deps.checkpoints.resolveProjectPath(projectPath)),
+  );
+  ipcMain.handle(IPC.checkpointsAction, async (_event, projectPath: unknown, action: unknown) => {
+    const path = await deps.checkpoints.resolveProjectPath(projectPath);
+    const parsed = parseCheckpointAction(action);
+    if (!parsed) throw new Error("checkpoints: unsupported action");
+    return deps.checkpoints.action(path, parsed);
+  });
 }
 
 /** The default `revealPath` implementation: a non-empty string reveals, nothing else. */

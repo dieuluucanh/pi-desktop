@@ -201,10 +201,14 @@ src/host/safe-mode.ts          the one "no third-party code" policy value (step 
 src/renderer/src/App.tsx       regions + view routing + theme + menu dispatch
 src/renderer/src/menu-actions.ts  what each command does today
 src/renderer/src/state/app-store.ts  view state (zustand)
-src/renderer/src/layout/*      TitleBar, Sidebar, TabStrip, StatusBar, CommandPalette
+src/git/*                     the git engine: runner, repo, status, diff, service
+src/checkpoints/*             the shadow-repo engine, its Node fs adapter and config
+src/extensions/*              the app's own Pi extension (run snapshots + /rewind)
+src/renderer/src/layout/*      TitleBar, Sidebar, TabStrip, StatusBar, CommandPalette, RightRail
+src/renderer/src/rail/*       the rail's five section bodies and their dialogs
 src/renderer/src/views/*       Welcome, Session, Settings, Extensions, Connections,
                                Skills, Diagnostics
-src/renderer/src/office/*      OfficeIntegrationCard, DocumentsPanel + the unchanged wizard panel
+src/renderer/src/office/*      OfficeIntegrationCard, the Documents section body + the unchanged wizard panel
 src/renderer/src/web/*         WebTabView chrome, the URL/navigation dialogs, overlay detect
 src/renderer/src/session/*     Transcript, Composer, OfficeToolCard, …
 src/renderer/src/ui/*          Button, Badge, Kbd, Separator, Dialog, DropdownMenu,
@@ -442,8 +446,11 @@ and the renderer all read it, so a budget change is one edit.
 - `tests/main/office-documents-service.test.ts` — the registry poll projects
   `/health`, rejects another service on the port, emits only on change and stops
   cleanly (plan step 20).
-- `tests/renderer/documents-panel.test.tsx`, `tests/renderer/office-tool-card.test.tsx`
-  — the right rail and the office tool cards (plan step 20).
+- `tests/renderer/documents-section.test.tsx`, `tests/renderer/office-tool-card.test.tsx`
+  — the Documents section and the office tool cards (plan step 20).
+- `tests/renderer/right-rail.test.tsx`, `tests/renderer/rail-*.test.tsx`,
+  `tests/renderer/diff-dialog.test.tsx` — the rail host, its Git/Changes/History/
+  Checkpoints sections and the diff viewer (2026-10-27 plan).
 - `tests/renderer/office-documents-store.test.ts` — the registry in the store,
   the `#`-tagged composer draft and Office-host promotion.
 - `tests/shared/web-tabs.test.ts` — the URL policy (only http(s), loopback

@@ -83,6 +83,8 @@ export interface HostInfoLike {
   pids?: { pid?: number };
   /** Build fingerprint reported by `host.hello` (2026-10-24 stale-host plan). */
   buildId?: string | null;
+  /** Optional host features (git-checkpoint plan step 24); absent = unknown. */
+  capabilities?: { checkpointsExtension?: boolean };
 }
 
 /** The narrow supervisor surface this service drives. */

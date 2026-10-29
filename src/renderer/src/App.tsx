@@ -28,6 +28,8 @@ import { ExtensionsView } from "./views/ExtensionsView";
 import { SessionView } from "./views/SessionView";
 import { WebNavigationDialog } from "./web/WebNavigationDialog";
 import { WebUrlDialog } from "./web/WebUrlDialog";
+import { GitConsentDialog } from "./rail/GitConsentDialog";
+import { DiffDialog } from "./rail/DiffDialog";
 import { SettingsView } from "./views/SettingsView";
 import { SkillsView } from "./views/SkillsView";
 import { WelcomeView } from "./views/WelcomeView";
@@ -124,6 +126,15 @@ export function App() {
     const offDocuments = api.office.onDocuments((view) =>
       useAppStore.getState().applyOfficeDocuments(view),
     );
+    // Source control (git-checkpoint plan step 9) and folder checkpoints (step
+    // 21): main pushes a folder's snapshot only when it changed, so one
+    // subscription per surface keeps the rail live without polling the renderer.
+    const offGit = api.git.onSnapshot((snapshot) =>
+      useAppStore.getState().applyGitSnapshot(snapshot),
+    );
+    const offCheckpoints = api.checkpoints.onState((state) =>
+      useAppStore.getState().applyCheckpointState(state),
+    );
     // Web tabs (plan step 21): the live state of each native page view, and the
     // navigations main refused because they leave the review.
     const offWebState = api.web.onState((state) => useAppStore.getState().applyWebTabState(state));
@@ -144,6 +155,8 @@ export function App() {
       offState();
       offEvents();
       offDocuments();
+      offGit();
+      offCheckpoints();
       offWebState();
       offWebNav();
       offUpdates();
@@ -276,6 +289,8 @@ export function App() {
       <TrustDialog />
       <WebNavigationDialog />
       <WebUrlDialog />
+      <GitConsentDialog />
+      <DiffDialog />
       <ShortcutsHelp />
       <ShortcutDispatcher />
       <Toaster theme={theme} />

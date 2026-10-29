@@ -283,6 +283,24 @@ const SECRET_PATTERNS: ReadonlyArray<{ name: string; re: RegExp; replace: string
     re: /("?(?:api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|secret)"?\s*[:=]\s*"?)([A-Za-z0-9\-._~+/]{8,})/gi,
     replace: "$1***REDACTED***",
   },
+  {
+    // The address inside an identity (`Name <ada@example.com>`). The rail shows
+    // it in full — that is the user's own machine, and the identity is what the
+    // commit box edits — but a support bundle pasted into a public issue must not
+    // carry it. Every other pattern here is key- or prefix-shaped and would never
+    // match a bare address, so this needs its own rule (git-checkpoint step 28).
+    // The display name is kept: it identifies the author without leaking a
+    // contact address.
+    name: "email-in-identity",
+    re: /<[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}>/g,
+    replace: "<***@***>",
+  },
+  {
+    // A bare address (`user.email` output, a hint line in the rail's copy).
+    name: "bare-email",
+    re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
+    replace: "***@***",
+  },
 ];
 
 export interface RedactionResult {

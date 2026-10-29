@@ -56,6 +56,12 @@ export default defineConfig({
           exclude: ["tests/renderer/**", "tests/e2e/**", "node_modules/**"],
           environment: "node",
           restoreMocks: true,
+          // The git and checkpoint tests drive *real* git in a temp repository:
+          // one case can spawn a dozen processes. They take ~1-3 s on an idle
+          // machine and cross the 5 s default once the whole node suite runs its
+          // files in parallel. Same reasoning (and same shape) as the renderer
+          // project's timeout below: a real hang still fails, just later.
+          testTimeout: 30_000,
         },
       },
       {

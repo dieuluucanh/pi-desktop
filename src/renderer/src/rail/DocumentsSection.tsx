@@ -1,18 +1,18 @@
 /**
- * Documents panel (plan step 20).
+ * The Documents section body (git-checkpoint plan step 10).
  *
- * The right rail that makes the Office integration visible from a session: every
- * task pane the bridge has attached, with the facts a user needs to target it —
- * host app, name, id, focus, window count, advertised ops and last-seen age —
- * and the actions that turn a document into a prompt.
+ * This is the pane registry panel that used to be the whole right rail (plan
+ * step 20), moved into the rail as one collapsible section. The body is
+ * unchanged on purpose: every row, test id and action still does what it did,
+ * because the refactor is about *where* it lives, not what it does.
  *
  * It renders nothing until the bridge answers `/health` (plan D-A10: no Office
  * surface when Office was never set up), and an empty state that says exactly
  * what to open when the bridge is up but no document is attached.
  */
 
-import { useState } from "react";
-import { RefreshCw, X } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { RefreshCw } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { useAppStore } from "../state/app-store";
@@ -166,23 +166,26 @@ function OfficeHostFooter() {
   );
 }
 
-export function DocumentsPanel() {
+export interface DocumentsSectionProps {
+  /**
+   * Rendered at the right of the section's toolbar. The standalone panel passes
+   * its close button here; inside the rail the section header owns collapsing,
+   * so nothing is passed.
+   */
+  trailing?: ReactNode;
+}
+
+/** The pane list, with its toolbar, empty state and host footer. */
+export function DocumentsSection({ trailing }: DocumentsSectionProps) {
   const view = useAppStore((state) => state.officeDocuments);
-  const open = useAppStore((state) => state.documentsPanelOpen);
-  const toggle = useAppStore((state) => state.toggleDocumentsPanel);
   const refresh = useAppStore((state) => state.refreshOfficeDocuments);
 
-  // Visible only when the bridge responds (plan step 20) and the rail is open.
-  if (!view?.available || !open) return null;
+  // Nothing to show until the bridge identifies itself (plan D-A10).
+  if (!view?.available) return null;
 
   return (
-    <aside
-      className="flex w-72 shrink-0 flex-col border-l border-line bg-surface"
-      aria-label="Attached documents"
-      data-testid="documents-panel"
-    >
-      <header className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2">
-        <h2 className="text-xs font-semibold">Documents</h2>
+    <div className="flex min-h-0 flex-col" data-testid="documents-section">
+      <div className="flex shrink-0 items-center gap-2 px-3 py-1">
         <Badge tone="neutral">{view.panes.length}</Badge>
         <div className="ml-auto flex items-center gap-1">
           <button
@@ -193,16 +196,9 @@ export function DocumentsPanel() {
           >
             <RefreshCw className="size-3" aria-hidden />
           </button>
-          <button
-            type="button"
-            className="text-ink-faint hover:text-ink"
-            aria-label="Close documents panel"
-            onClick={toggle}
-          >
-            <X className="size-3" aria-hidden />
-          </button>
+          {trailing}
         </div>
-      </header>
+      </div>
 
       {view.compatibility && view.compatibility.shape === "older" ? (
         <p className="border-b border-line px-3 py-1 text-[11px] text-warn">
@@ -235,6 +231,6 @@ export function DocumentsPanel() {
         </a>
         <OfficeHostFooter />
       </div>
-    </aside>
+    </div>
   );
 }
