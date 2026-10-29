@@ -4,8 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { SessionView } from "../../src/renderer/src/views/SessionView";
+import { emptyGitSnapshot } from "../../src/shared/git";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
-import { installBridge } from "./fixtures";
+import { documentsViewFixture, installBridge } from "./fixtures";
 
 /**
  * The session view's chrome (plan step 6).
@@ -101,6 +102,99 @@ describe("session header", () => {
       });
     });
     expect(screen.getByRole("button", { name: "Change model" })).toHaveTextContent("openai/gpt-5");
+  });
+});
+
+describe("the docked panel rail (2026-10-29 plan)", () => {
+  it("has no Panel button in the session header", () => {
+    // The old button was gated on `officeDocuments.available`, so with no Office
+    // bridge it vanished — the "sometimes I see it" report. It is gone entirely.
+    render(<SessionView />);
+    expect(screen.queryByRole("button", { name: /^panel/i })).not.toBeInTheDocument();
+    // The header's other controls are untouched.
+    expect(screen.getByRole("button", { name: "Change model" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View mode" })).toBeInTheDocument();
+  });
+
+  it("shows the strip with no Office bridge at all", () => {
+    useAppStore.setState({ officeDocuments: null });
+    render(<SessionView />);
+    expect(screen.getByTestId("right-rail")).toBeInTheDocument();
+    expect(screen.getByTestId("rail-strip")).toBeInTheDocument();
+    expect(screen.getByTestId("rail-menu-source-control")).toBeInTheDocument();
+    expect(screen.getByTestId("rail-menu-checkpoints")).toBeInTheDocument();
+    // No Office bridge ⇒ no Documents entry, which is the standing D-A10 rule.
+    expect(screen.queryByTestId("rail-menu-documents")).not.toBeInTheDocument();
+  });
+
+  it("adds the Documents entry once the bridge is available", () => {
+    useAppStore.setState({
+      officeDocuments: documentsViewFixture({ available: true, status: "ok", panes: [] }),
+    });
+    render(<SessionView />);
+    expect(screen.getByTestId("rail-menu-documents")).toBeInTheDocument();
+  });
+
+  it("counts the changed files on the Source Control entry", () => {
+    const snapshot = {
+      ...emptyGitSnapshot("C:/work/app"),
+      available: true,
+      changed: [
+        {
+          path: "a.ts",
+          origPath: null,
+          status: "modified" as const,
+          staged: false,
+          unstaged: true,
+        },
+      ],
+      staged: [
+        {
+          path: "b.ts",
+          origPath: null,
+          status: "modified" as const,
+          staged: true,
+          unstaged: false,
+        },
+      ],
+    };
+    useAppStore.setState({ git: { "C:/work/app": snapshot } });
+    render(<SessionView />);
+    expect(screen.getByTestId("rail-menu-count-source-control")).toHaveTextContent("2");
+  });
+
+  it("watches git without the panel being opened", async () => {
+    // The badge lives on the always-visible strip, so the watch follows the tab.
+    const handles = installBridge();
+    useAppStore.setState({
+      prefs: { ...DEFAULT_PREFS, rail: { ...DEFAULT_PREFS.rail, open: false } },
+      // These outlive a test: a leftover watch target or snapshot would make the
+      // effect short-circuit and hide the behaviour under test.
+      gitWatched: null,
+      git: {},
+    });
+    render(<SessionView />);
+    await waitFor(() =>
+      expect(
+        handles.gitCalls.some(
+          (call) =>
+            call.kind === "watch" && call.projectPath === "C:/work/app" && call.payload === true,
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("seeds the checkpoint badge without the panel being opened", async () => {
+    const handles = installBridge();
+    useAppStore.setState({
+      prefs: { ...DEFAULT_PREFS, rail: { ...DEFAULT_PREFS.rail, open: false } },
+      checkpoints: {},
+      checkpointsUndoRef: {},
+    });
+    render(<SessionView />);
+    await waitFor(() =>
+      expect(handles.checkpointCalls.some((call) => call.kind === "get")).toBe(true),
+    );
   });
 });
 

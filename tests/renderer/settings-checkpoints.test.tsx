@@ -247,11 +247,29 @@ describe("SourceControlSettingsCard", () => {
     );
   });
 
-  it("opens the rail through prefs", async () => {
+  it("says how the panel is opened instead of offering a switch", async () => {
+    // The strip is always mounted now, so an on/off preference would be a second
+    // source of truth for whether the panel exists (D11).
     render(<SourceControlSettingsCard />);
-    expect(useAppStore.getState().prefs.rail.open).toBe(false);
-    await userEvent.click(screen.getByLabelText("Show the right rail"));
-    expect(useAppStore.getState().prefs.rail.open).toBe(true);
+    expect(screen.queryByLabelText("Show the right rail")).not.toBeInTheDocument();
+    expect(screen.getByTestId("source-control-rail-note")).toHaveTextContent(
+      /panel strip stays on the right edge/i,
+    );
+    expect(screen.getByTestId("source-control-rail-note")).toHaveTextContent(
+      /expands or collapses/i,
+    );
+  });
+
+  it("writes no rail preference from the card", () => {
+    // The card became read-only when the switch left: it has no control at all
+    // that could write `prefs.rail`, whose one writer is the store.
+    const handles = installBridge();
+    const before = useAppStore.getState().prefs.rail;
+    render(<SourceControlSettingsCard />);
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    expect(screen.queryAllByRole("switch")).toHaveLength(0);
+    expect(useAppStore.getState().prefs.rail).toEqual(before);
+    expect(handles.prefs.rail).toEqual(before);
   });
 
   it("reads the repository once on mount", async () => {

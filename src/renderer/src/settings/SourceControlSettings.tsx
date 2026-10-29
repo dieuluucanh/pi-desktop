@@ -27,6 +27,7 @@ import {
 import { useAppStore } from "../state/app-store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Kbd } from "../ui/kbd";
 import { Switch } from "../ui/switch";
 
 /** The retention presets, so a user does not have to type byte counts. */
@@ -196,8 +197,6 @@ export function CheckpointsSettingsCard() {
 }
 
 export function SourceControlSettingsCard() {
-  const prefs = useAppStore((state) => state.prefs);
-  const setPrefs = useAppStore((state) => state.setPrefs);
   const snapshot = useAppStore((state) => {
     const path = state.project?.path;
     return path ? state.git[path] : undefined;
@@ -214,20 +213,18 @@ export function SourceControlSettingsCard() {
 
   return (
     <section className="card flex flex-col gap-3" data-testid="settings-source-control">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold">Source control</h2>
-          <p className="text-xs text-ink-muted">
-            The right rail reads git directly. Authentication is delegated to git (your SSH agent or
-            credential helper); the app never stores a credential.
-          </p>
-        </div>
-        <Switch
-          checked={prefs.rail.open}
-          onCheckedChange={(open) => setPrefs({ rail: { ...prefs.rail, open } })}
-          aria-label="Show the right rail"
-        />
+      <div className="flex flex-col gap-1">
+        <h2 className="text-sm font-semibold">Source control</h2>
+        <p className="text-xs text-ink-muted">
+          The panel reads git directly. Authentication is delegated to git (your SSH agent or
+          credential helper); the app never stores a credential.
+        </p>
       </div>
+
+      <p className="text-xs text-ink-faint" data-testid="source-control-rail-note">
+        The panel strip stays on the right edge of a session. <Kbd>Ctrl</Kbd>+<Kbd>Shift</Kbd>+
+        <Kbd>G</Kbd> expands or collapses the panel.
+      </p>
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
         <dt className="text-ink-faint">Repository</dt>
@@ -261,7 +258,7 @@ export function SourceControlSettingsCard() {
             </>
           ) : (
             <span className="text-ink-faint">
-              not configured — set it in the rail&apos;s commit box (repository-local)
+              not configured — set it in the panel&apos;s commit box (repository-local)
             </span>
           )}
         </dd>
@@ -275,8 +272,8 @@ export function SourceControlSettingsCard() {
       ) : null}
 
       <p className="text-xs text-ink-faint">
-        Status polls only while the rail&apos;s Git section is open and the window has focus, so a
-        closed panel costs nothing.
+        Status polls while a session tab is open and the window has focus, so a background window
+        costs nothing.
       </p>
     </section>
   );

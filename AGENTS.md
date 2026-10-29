@@ -17,8 +17,10 @@ src/git/         the git engine (runner, repo, status, diff, service) — pure N
 src/checkpoints/ the shadow-repo checkpoint engine, its fs adapter and config — pure Node
 src/extensions/  the app's own Pi extension (run snapshots + /rewind) — pure Node, no SDK import
 src/preload/     the only place that touches contextBridge/ipcRenderer
-src/renderer/src/layout/   app chrome: title bar, sidebar, tab strip, status bar, palette, RightRail
-src/renderer/src/rail/     the right rail's five section bodies and their dialogs
+src/renderer/src/layout/   app chrome: title bar, sidebar, tab strip, status bar, palette
+src/renderer/src/rail/     the docked panel rail: the always-visible menu strip, its
+                           three menu bodies (Source Control, Checkpoints, Documents)
+                           and their dialogs
 src/renderer/src/views/    one module per full-page view (welcome, session, settings, …)
 src/renderer/src/ui/       owned primitives on Radix (button, dialog, scroll area, …)
 src/renderer/src/state/    renderer view state (zustand); never talks to a Pi host directly

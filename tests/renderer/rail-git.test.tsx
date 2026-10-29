@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
-import { GitSection } from "../../src/renderer/src/rail/GitSection";
+import { GitBranchBar, GitSyncRow, StashList } from "../../src/renderer/src/rail/GitSection";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import {
   emptyGitSnapshot,
@@ -72,6 +72,22 @@ function seed(
   });
 }
 
+/**
+ * Renders the three git pieces in the order the Source Control panel stacks them.
+ * They are separate components now (so the panel can pin the branch line and the
+ * sync verbs while the lists scroll), but one surface as far as these
+ * assertions are concerned.
+ */
+function renderGit(): void {
+  render(
+    <>
+      <GitBranchBar projectPath={PROJECT} />
+      <GitSyncRow projectPath={PROJECT} />
+      <StashList projectPath={PROJECT} />
+    </>,
+  );
+}
+
 function lastAction() {
   return [...handles.gitCalls].reverse().find((call) => call.kind === "action");
 }
@@ -86,7 +102,7 @@ beforeEach(() => {
 
 describe("branch state", () => {
   it("shows the branch, its upstream and the divergence", () => {
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
     expect(screen.getByTestId("git-branch")).toHaveTextContent("main");
     expect(screen.getByTestId("git-upstream")).toHaveTextContent("origin/main");
     expect(screen.getByText("↑2")).toBeInTheDocument();
@@ -95,7 +111,7 @@ describe("branch state", () => {
 
   it("says a detached HEAD is detached", () => {
     seed(snapshot({ repo: repo({ branch: null, detached: true, upstream: null }) }));
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
     expect(screen.getByTestId("git-branch")).toHaveTextContent("detached at abc1234");
   });
 
@@ -103,7 +119,7 @@ describe("branch state", () => {
     seed(
       snapshot({ repo: repo({ head: null, empty: true, upstream: null, ahead: 0, behind: 0 }) }),
     );
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
     expect(screen.getByTestId("git-branch")).toHaveTextContent("no commits yet");
   });
 
@@ -113,21 +129,24 @@ describe("branch state", () => {
         repo: repo({ ahead: 0, behind: 0 }),
       }),
     );
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
     expect(screen.queryByText(/↑/)).not.toBeInTheDocument();
     expect(screen.queryByText(/↓/)).not.toBeInTheDocument();
   });
 
   it("renders nothing for an unavailable repository", () => {
     seed(emptyGitSnapshot(PROJECT, "not_a_repo"));
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
+    // All three pieces bail out, not just the branch bar that owns the id.
     expect(screen.queryByTestId("git-section")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("git-sync")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("git-stashes-section")).not.toBeInTheDocument();
   });
 });
 
 describe("sync", () => {
   it("names the upstream in the pull and push labels", () => {
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
     expect(screen.getByRole("button", { name: "Pull from origin/main" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Push to origin/main" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Fetch from origin" })).toBeEnabled();
@@ -135,7 +154,7 @@ describe("sync", () => {
 
   it("disables pull without an upstream and explains the first push", () => {
     seed(snapshot({ repo: repo({ upstream: null, ahead: 0, behind: 0 }) }));
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
     expect(screen.getByRole("button", { name: "Pull from origin/main" })).toBeDisabled();
     // A branch with no upstream can still push: the first push sets it.
     expect(screen.getByRole("button", { name: "Push to origin/main" })).toBeEnabled();
@@ -144,7 +163,7 @@ describe("sync", () => {
 
   it("disables every verb without a remote", () => {
     seed(snapshot({ repo: repo({ remotes: [], upstream: null }) }));
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
     expect(screen.getByRole("button", { name: "Fetch" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Pull" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Push" })).toBeDisabled();
@@ -152,7 +171,7 @@ describe("sync", () => {
   });
 
   it("fetches, pulls and pushes with the right action", async () => {
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
 
     await userEvent.click(screen.getByRole("button", { name: "Fetch from origin" }));
     await userEvent.click(screen.getByRole("button", { name: "Pull from origin/main" }));
@@ -167,7 +186,7 @@ describe("sync", () => {
 
   it("never asks for consent before a network verb", async () => {
     seed(snapshot(), { consented: false });
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
 
     await userEvent.click(screen.getByRole("button", { name: "Push to origin/main" }));
 
@@ -178,7 +197,7 @@ describe("sync", () => {
 
 describe("branch list", () => {
   it("lists the local branches and disables the current one", async () => {
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
     await userEvent.click(screen.getByRole("button", { name: "Switch branch" }));
 
     const current = await screen.findByRole("button", { name: "Switch to main" });
@@ -190,7 +209,7 @@ describe("branch list", () => {
   });
 
   it("switches immediately when the tree is clean", async () => {
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
     await userEvent.click(screen.getByRole("button", { name: "Switch branch" }));
     await userEvent.click(await screen.findByRole("button", { name: "Switch to feat/x" }));
 
@@ -208,7 +227,7 @@ describe("branch list", () => {
         ],
       }),
     );
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
     await userEvent.click(screen.getByRole("button", { name: "Switch branch" }));
     await userEvent.click(await screen.findByRole("button", { name: "Switch to feat/x" }));
 
@@ -223,7 +242,7 @@ describe("branch list", () => {
   });
 
   it("creates a branch from the list", async () => {
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
     await userEvent.click(screen.getByRole("button", { name: "Switch branch" }));
     await userEvent.click(await screen.findByRole("button", { name: "Create branch…" }));
 
@@ -241,13 +260,13 @@ describe("branch list", () => {
 
 describe("stashes", () => {
   it("says when there is nothing stashed", () => {
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
     expect(screen.getByTestId("git-stashes-empty")).toHaveTextContent("No stashes.");
   });
 
   it("lists, restores and drops a stash", async () => {
     seed(snapshot({ stashes: [STASH] }));
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
 
     expect(screen.getByTestId("stash-0")).toHaveTextContent("WIP on main: work in progress");
 
@@ -261,7 +280,7 @@ describe("stashes", () => {
   });
 
   it("stashes the working tree on request", async () => {
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
     await userEvent.click(screen.getByRole("button", { name: "Stash changes" }));
     expect(lastAction()?.payload).toEqual({ kind: "stash-push", message: null });
   });
@@ -270,7 +289,7 @@ describe("stashes", () => {
 describe("write consent", () => {
   it("asks once and does not dispatch before the answer", async () => {
     seed(snapshot(), { consented: false });
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
 
     await userEvent.click(screen.getByRole("button", { name: "Stash changes" }));
 
@@ -283,7 +302,7 @@ describe("write consent", () => {
 
   it("runs the waiting write when consent is confirmed, and remembers", async () => {
     seed(snapshot({ stashes: [STASH] }), { consented: false });
-    render(<GitSection projectPath={PROJECT} />);
+    renderGit();
 
     await userEvent.click(screen.getByRole("button", { name: "Stash changes" }));
     await useAppStore.getState().confirmGitConsent();

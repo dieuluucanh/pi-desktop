@@ -96,9 +96,9 @@ export interface UiPrefs {
    */
   promptOrigins: Record<string, string>;
   /**
-   * The right rail (git-checkpoint plan step 10): whether it is open, its width,
-   * and which sections are expanded. Persisted so a relaunch restores the
-   * layout the user left, unlike the old ephemeral Documents toggle.
+   * The docked panel rail: whether the panel body is expanded, which menu it
+   * shows, its width, and the strip's order. Persisted so a relaunch restores
+   * the layout the user left, including a reordered strip.
    */
   rail: RailPrefs;
   /**
@@ -133,9 +133,9 @@ export const DEFAULT_PREFS: UiPrefs = {
   desktopKeybindings: {},
   showExpandedPrompts: false,
   promptOrigins: {},
-  // A fresh object (not the shared default) so a caller mutating one prefs value
-  // cannot mutate the module-level default.
-  rail: { ...DEFAULT_RAIL_PREFS, sections: { ...DEFAULT_RAIL_PREFS.sections } },
+  // A fresh object *and* a fresh order array (not the shared default) so a
+  // caller mutating one prefs value cannot mutate the module-level default.
+  rail: { ...DEFAULT_RAIL_PREFS, order: [...DEFAULT_RAIL_PREFS.order] },
   // A fresh object for the same reason as `rail`: a caller mutating one prefs
   // value must not mutate the module-level default (nor the shared config).
   checkpoints: { ...DEFAULT_CHECKPOINT_CONFIG, exclude: [] },

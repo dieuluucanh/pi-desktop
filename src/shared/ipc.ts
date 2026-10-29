@@ -240,11 +240,12 @@ export const MENU_COMMANDS = [
   "model-cycle-forward",
   "model-cycle-backward",
   "thinking-cycle",
-  // The right rail (git-checkpoint plan step 10): one toggle plus the two
-  // commands that open it on a specific section.
+  // The docked panel rail: one toggle for the panel body plus the commands that
+  // open it on a specific menu.
   "toggle-rail",
   "view-source-control",
   "view-checkpoints",
+  "view-documents",
 ] as const;
 
 export type MenuCommand = (typeof MENU_COMMANDS)[number];

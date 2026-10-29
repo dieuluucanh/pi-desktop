@@ -17,12 +17,10 @@ import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
 import { WidgetStrip } from "../extension-ui/WidgetStrip";
 import { ExtensionDialogDock } from "../extension-ui/ExtensionDialog";
-import { ChangesSection } from "../rail/ChangesSection";
 import { CheckpointsSection } from "../rail/CheckpointsSection";
 import { DocumentsSection } from "../rail/DocumentsSection";
-import { GitSection } from "../rail/GitSection";
-import { HistorySection } from "../rail/HistorySection";
 import { RightRail } from "../rail/RightRail";
+import { SourceControlPanel } from "../rail/SourceControlPanel";
 import { WorkingRow } from "../extension-ui/WorkingRow";
 import { RunStatusRow } from "../session/RunStatusRow";
 import { TuiCellProbe, TuiSlotFrame, TuiSurface } from "../tui/TuiSurface";
@@ -208,10 +206,9 @@ export function SessionView() {
     activeTabId ? state.tuiSurfaces[activeTabId] : undefined,
   );
   const officeDocuments = useAppStore((state) => state.officeDocuments);
-  const toggleRail = useAppStore((state) => state.toggleRail);
-  const railOpen = useAppStore((state) => state.prefs.rail.open);
   const watchGit = useAppStore((state) => state.watchGit);
   const loadGit = useAppStore((state) => state.loadGit);
+  const loadCheckpoints = useAppStore((state) => state.loadCheckpoints);
   const gitSnapshot = useAppStore((state) =>
     activeTabId
       ? state.git[state.tabs.find((tab) => tab.id === activeTabId)?.cwd ?? ""]
@@ -230,12 +227,8 @@ export function SessionView() {
     const cwd = activeTabId ? (state.tabs.find((tab) => tab.id === activeTabId)?.cwd ?? "") : "";
     return cwd ? state.checkpoints[cwd] : undefined;
   });
-  // Only the count drives the section header, so the selector returns a number
-  // rather than the page object (which would re-render on every appended row).
-  const gitLogCount = useAppStore((state) => {
-    const cwd = activeTabId ? (state.tabs.find((tab) => tab.id === activeTabId)?.cwd ?? "") : "";
-    return cwd ? state.gitLog[cwd]?.entries.length : undefined;
-  });
+  // Only the count drove a section header; the strip's badges now come from the
+  // snapshot and the checkpoint store directly.
   const webTabStates = useAppStore((state) => state.webTabStates);
   const [editingName, setEditingName] = useState(false);
   const [composerFocusToken, setComposerFocusToken] = useState(0);
@@ -343,18 +336,25 @@ export function SessionView() {
     if (activeId && active?.kind === "session") void loadShortcuts();
   }, [activeId, active?.kind, active?.status, loadShortcuts]);
 
-  // The rail's git watch follows the panel, not the tab: a closed panel costs
-  // nothing, and a tab switch re-points the poll at the new folder (plan step 8).
+  // Git polling follows the **tab**, not the panel: the strip's changed-file
+  // badge is visible while the panel is closed, so the snapshot has to be live
+  // then too. Main already pauses polling while the window is unfocused.
   const railCwd = active?.kind === "web" ? null : (active?.cwd ?? null);
   useEffect(() => {
-    void watchGit(railOpen ? railCwd : null);
-  }, [railOpen, railCwd, watchGit]);
+    void watchGit(railCwd);
+  }, [railCwd, watchGit]);
 
-  // Seed the snapshot when the panel opens, so the first paint is not empty
-  // while the first poll is still a tick away.
+  // Seed the snapshot on arrival, so the strip's badge is real on first paint
+  // rather than one poll interval later.
   useEffect(() => {
-    if (railOpen && railCwd) void loadGit(railCwd);
-  }, [railOpen, railCwd, loadGit]);
+    if (railCwd) void loadGit(railCwd);
+  }, [railCwd, loadGit]);
+
+  // Seed the checkpoint timeline for the same reason: its badge counts a store
+  // the panel has not necessarily opened yet. `loadCheckpoints` is idempotent.
+  useEffect(() => {
+    if (railCwd) void loadCheckpoints(railCwd);
+  }, [railCwd, loadCheckpoints]);
 
   if (!active) return <WelcomeView />;
   if (active.kind === "web") return <WebTabView tab={active} />;
@@ -474,18 +474,6 @@ export function SessionView() {
           <ContextRing usage={contextUsage} cost={cost} />
           <Separator orientation="vertical" className="mx-1" />
           <ViewModeMenu value={viewMode} onChange={(mode) => setViewMode(mode)} />
-          {officeDocuments?.available ? (
-            <Button
-              size="sm"
-              variant="ghost"
-              aria-label="Panel"
-              title="Git, changes, checkpoints and attached documents"
-              onClick={toggleRail}
-            >
-              Panel
-              {officeDocuments.panes.length > 0 ? ` (${officeDocuments.panes.length})` : ""}
-            </Button>
-          ) : null}
           {/* A review opened from this session stays linked to it (plan step 21). */}
           {tabs
             .filter((tab) => tab.kind === "web" && tab.sessionTabId === active.id)
@@ -731,20 +719,14 @@ export function SessionView() {
           ) : null}
         </div>
         <RightRail
-          sections={[
+          menus={[
             {
-              id: "git" as const,
-              content: <GitSection projectPath={active.cwd} />,
-            },
-            {
-              id: "changes" as const,
+              id: "source-control" as const,
               count: (gitSnapshot?.staged.length ?? 0) + (gitSnapshot?.changed.length ?? 0),
-              content: <ChangesSection projectPath={active.cwd} />,
-            },
-            {
-              id: "history" as const,
-              count: gitLogCount,
-              content: <HistorySection projectPath={active.cwd} />,
+              // Source Control pins the composer and the sync verbs and scrolls
+              // the lists itself, so the host must not wrap it in a scroller.
+              scroll: "self" as const,
+              content: <SourceControlPanel projectPath={active.cwd} />,
             },
             {
               id: "checkpoints" as const,

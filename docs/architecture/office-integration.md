@@ -127,11 +127,11 @@ the open documents, otherwise the id).
 
 Three renderer surfaces consume that view:
 
-- **Documents section** (`src/renderer/src/rail/DocumentsSection.tsx`), one section of
-  the session's shared right rail (it was the whole rail until the 2026-10-27 plan added
-  Git, Changes, History and Checkpoints beside it — see
-  [`source-control.md`](source-control.md)). It renders only when `/health` answers (plan
-  D-A10: no Office surface before setup) and lists each pane with its facts and actions — _Chat
+- **Documents menu** (`src/renderer/src/rail/DocumentsSection.tsx`), one of the three
+  menus in the session's docked panel rail (Source Control, Checkpoints, Documents —
+  see [`source-control.md`](source-control.md)). It renders only when `/health` answers
+  (plan D-A10: no Office surface before setup) and lists each pane with its facts and
+  actions — _Chat
   about this_ (prepends the `[office:…]` tag to the composer draft), _Insert
   #mention_, _Copy id_, _Open Office_. With the bridge up but no pane attached it
   shows the empty state; the footer names the Office host and offers **Promote to

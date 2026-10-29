@@ -21,7 +21,7 @@ everything platform-shaped arrives as a port:
 
 | Service                          | Ports it needs                                                           |
 | -------------------------------- | ------------------------------------------------------------------------ |
-| `src/main/git-service.ts`        | `isFocused()` — polling stops when the window is hidden                  |
+| `src/main/git-service.ts`        | `isFocused()` — polling pauses while the window is unfocused             |
 | `src/main/checkpoint-service.ts` | `attachedPanes()`, `tabs()`, `safeMode()`, `fingerprint()`, `onChange()` |
 
 `src/main/index.ts` is the only place those ports are implemented

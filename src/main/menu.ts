@@ -49,7 +49,7 @@ const FILE_ITEMS: readonly ItemSpec[] = [
 const VIEW_ITEMS: readonly ItemSpec[] = [
   { command: "command-palette", label: "Command Palette…", accelerator: "CmdOrCtrl+K" },
   { command: "toggle-sidebar", label: "Toggle Sidebar", accelerator: "CmdOrCtrl+B" },
-  { command: "toggle-rail", label: "Toggle Session Panel", accelerator: "CmdOrCtrl+Shift+G" },
+  { command: "toggle-rail", label: "Toggle Panel", accelerator: "CmdOrCtrl+Shift+G" },
   { command: "next-tab", label: "Next Session Tab", accelerator: "Ctrl+Tab" },
   { command: "previous-tab", label: "Previous Session Tab", accelerator: "Ctrl+Shift+Tab" },
 ];
@@ -66,6 +66,7 @@ const SESSION_ITEMS: readonly ItemSpec[] = [
 const GO_ITEMS: readonly ItemSpec[] = [
   { command: "view-source-control", label: "Source Control" },
   { command: "view-checkpoints", label: "Checkpoints" },
+  { command: "view-documents", label: "Documents" },
   { command: "view-extensions", label: "Extensions" },
   { command: "view-connections", label: "Connections" },
   { command: "view-skills", label: "Skills, Themes & Keys" },

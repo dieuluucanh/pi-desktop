@@ -6,7 +6,7 @@ import {
   openProjectAction,
 } from "../../src/renderer/src/menu-actions";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
-import { installBridge } from "./fixtures";
+import { documentsViewFixture, installBridge } from "./fixtures";
 
 /**
  * Menu commands are the app's command surface (plan step 1). The regression
@@ -119,6 +119,71 @@ describe("handleMenuCommand", () => {
       handleMenuCommand(command);
       expect(useAppStore.getState().hint, command).toBeNull();
     }
+  });
+
+  it("opens each panel menu from the Go menu", () => {
+    for (const [command, menu] of [
+      ["view-source-control", "source-control"],
+      ["view-checkpoints", "checkpoints"],
+    ] as const) {
+      useAppStore.setState({
+        prefs: { ...DEFAULT_PREFS, rail: { ...DEFAULT_PREFS.rail, open: false } },
+      });
+      handleMenuCommand(command);
+      expect(useAppStore.getState().prefs.rail, command).toMatchObject({
+        open: true,
+        activeMenu: menu,
+      });
+    }
+  });
+
+  it("toggles only the panel body", () => {
+    useAppStore.setState({
+      prefs: {
+        ...DEFAULT_PREFS,
+        rail: { ...DEFAULT_PREFS.rail, open: false, activeMenu: "checkpoints" },
+      },
+    });
+    handleMenuCommand("toggle-rail");
+    expect(useAppStore.getState().prefs.rail).toMatchObject({
+      open: true,
+      // A toggle does not reassign the menu the user was last on.
+      activeMenu: "checkpoints",
+    });
+    handleMenuCommand("toggle-rail");
+    expect(useAppStore.getState().prefs.rail.open).toBe(false);
+  });
+
+  it("opens Documents when Office is connected", () => {
+    useAppStore.setState({
+      officeDocuments: documentsViewFixture({ available: true, status: "ok", panes: [] }),
+      prefs: { ...DEFAULT_PREFS, rail: { ...DEFAULT_PREFS.rail, open: false } },
+      hint: null,
+    });
+    handleMenuCommand("view-documents");
+    expect(useAppStore.getState().prefs.rail).toMatchObject({
+      open: true,
+      activeMenu: "documents",
+    });
+    expect(useAppStore.getState().hint).toBeNull();
+  });
+
+  it("explains Documents instead of opening an empty panel when Office is absent", () => {
+    useAppStore.setState({
+      officeDocuments: null,
+      prefs: {
+        ...DEFAULT_PREFS,
+        rail: { ...DEFAULT_PREFS.rail, open: true, activeMenu: "source-control" },
+      },
+      hint: null,
+    });
+    handleMenuCommand("view-documents");
+    expect(useAppStore.getState().hint).toMatch(/not connected/i);
+    // The panel is left exactly where it was.
+    expect(useAppStore.getState().prefs.rail).toMatchObject({
+      open: true,
+      activeMenu: "source-control",
+    });
   });
 
   it("opens the shortcuts dialog on demand", () => {

@@ -127,11 +127,17 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
       store.toggleRail();
       return;
     case "view-source-control":
-      // Opens the rail on the Git section without disturbing the others.
-      store.openRailSection("git");
+      // Opens the panel on Source Control without toggling it.
+      store.openRailMenu("source-control");
       return;
     case "view-checkpoints":
-      store.openRailSection("checkpoints");
+      store.openRailMenu("checkpoints");
+      return;
+    case "view-documents":
+      // Documents only exists while the Office bridge answers `/health`; asking
+      // for it without one says so instead of opening an empty panel.
+      if (store.officeDocuments?.available) store.openRailMenu("documents");
+      else store.setHint("Pi for Office is not connected, so there are no attached documents.");
       return;
     case "view-settings":
       store.setView("settings");

@@ -1,11 +1,13 @@
 /**
- * The Git section (git-checkpoint plan step 13).
+ * The Source Control panel's three git pieces (git-checkpoint plan step 13,
+ * split for the docked rail's new order).
  *
- * The repository's identity and its two network-shaped verbs:
- *
- *  - **where am I** — branch (or detached/empty), ahead/behind, upstream;
- *  - **move** — a branch menu that switches (with a confirmation when the tree is
- *    dirty) and creates, and three named sync buttons.
+ * The panel reads top to bottom the way VS Code's source-control view does:
+ * **where am I** ({@link GitBranchBar}), then the commit composer, then **move**
+ * ({@link GitSyncRow}), and below the fold the working tree, the stashes
+ * ({@link StashList}) and the log. The split exists so the panel can pin the
+ * branch line, the composer and the sync verbs while only the lists scroll —
+ * one component could only have been one undifferentiated block.
  *
  * Fetch/pull/push never go through the write-consent dialog: they are explicit
  * buttons that name their target (`origin/main`), and the plan treats that as
@@ -28,11 +30,20 @@ import {
 
 const EMPTY_BRANCHES: readonly string[] = [];
 
-export interface GitSectionProps {
+export interface GitPartProps {
   projectPath: string;
 }
 
-export function GitSection({ projectPath }: GitSectionProps) {
+/**
+ * Where am I: the branch (or detached/empty), its upstream and divergence, the
+ * switch/create menu — and the stashes, which are about the working tree rather
+ * than the branch.
+ *
+ * This is the owner of the `git-section` test id: the whole Git surface has
+ * carried it since the single-section rail, and callers still ask "is the Git
+ * surface here at all?" with it.
+ */
+export function GitBranchBar({ projectPath }: GitPartProps) {
   const snapshot = useAppStore((state) => state.git[projectPath]);
   const branches = useAppStore((state) => state.gitBranches[projectPath] ?? EMPTY_BRANCHES);
   const loadGitBranches = useAppStore((state) => state.loadGitBranches);
@@ -47,8 +58,6 @@ export function GitSection({ projectPath }: GitSectionProps) {
   const view = branchView(repo);
   if (!snapshot?.available || !view || !repo) return null;
 
-  const target = syncTarget(repo);
-  const sync = syncAvailability(repo);
   const dirty = needsDirtyConfirmation(snapshot);
 
   const switchTo = (branch: string): void => {
@@ -117,7 +126,7 @@ export function GitSection({ projectPath }: GitSectionProps) {
       </div>
 
       {/*
-        An inline list rather than a floating menu: the rail is 320 px wide, and
+        An inline list rather than a floating menu: the panel is 320 px wide, and
         a portal-anchored popup in that column clips and steals pointer events.
       */}
       {branchesOpen ? (
@@ -175,6 +184,43 @@ export function GitSection({ projectPath }: GitSectionProps) {
         </form>
       ) : null}
 
+      {pendingBranch ? (
+        <ConfirmDialog
+          open
+          title={`Switch to ${pendingBranch} with uncommitted changes?`}
+          description="Git may refuse, or carry your edits across. Commit or stash them first to be sure nothing is lost."
+          confirmLabel="Switch anyway"
+          onConfirm={() => {
+            const branch = pendingBranch;
+            setPendingBranch(null);
+            void performGitAction(projectPath, { kind: "checkout-branch", branch });
+          }}
+          onCancel={() => setPendingBranch(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Move: fetch, pull and push, each naming its target.
+ *
+ * Three buttons rather than one menu because a network operation should be an
+ * explicit, readable act — and because the reason a verb is disabled ("no
+ * upstream", "no remote") has to be visible next to it.
+ */
+export function GitSyncRow({ projectPath }: GitPartProps) {
+  const snapshot = useAppStore((state) => state.git[projectPath]);
+  const performGitAction = useAppStore((state) => state.performGitAction);
+
+  const repo = snapshot?.repo;
+  if (!snapshot?.available || !repo) return null;
+
+  const target = syncTarget(repo);
+  const sync = syncAvailability(repo);
+
+  return (
+    <div className="flex flex-col gap-1 px-3 pb-2" data-testid="git-sync">
       <div className="flex items-center gap-1">
         <Button
           size="sm"
@@ -219,7 +265,25 @@ export function GitSection({ projectPath }: GitSectionProps) {
           {sync.reason}
         </p>
       ) : null}
+    </div>
+  );
+}
 
+/**
+ * The stash list: what is parked, and the two things you can do with it.
+ *
+ * `Stash changes` lives here rather than next to the commit box because it is a
+ * working-tree action, and because the list is where a user returns to restore
+ * or drop one.
+ */
+export function StashList({ projectPath }: GitPartProps) {
+  const snapshot = useAppStore((state) => state.git[projectPath]);
+  const performGitAction = useAppStore((state) => state.performGitAction);
+
+  if (!snapshot?.available) return null;
+
+  return (
+    <div className="flex flex-col gap-1 px-3 pb-2" data-testid="git-stashes-section">
       <div className="flex items-center gap-2">
         <h4 className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
           Stashes
@@ -274,21 +338,6 @@ export function GitSection({ projectPath }: GitSectionProps) {
           ))}
         </ul>
       )}
-
-      {pendingBranch ? (
-        <ConfirmDialog
-          open
-          title={`Switch to ${pendingBranch} with uncommitted changes?`}
-          description="Git may refuse, or carry your edits across. Commit or stash them first to be sure nothing is lost."
-          confirmLabel="Switch anyway"
-          onConfirm={() => {
-            const branch = pendingBranch;
-            setPendingBranch(null);
-            void performGitAction(projectPath, { kind: "checkout-branch", branch });
-          }}
-          onCancel={() => setPendingBranch(null)}
-        />
-      ) : null}
     </div>
   );
 }

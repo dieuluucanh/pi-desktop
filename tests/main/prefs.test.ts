@@ -174,23 +174,50 @@ describe("rail and checkpoint preferences", () => {
     expect(sanitizePrefs({ rail: { width: Number.NaN } }).rail.width).toBe(DEFAULT_RAIL_WIDTH);
   });
 
-  it("drops an unknown rail section id and keeps the known ones", () => {
+  it("drops an unknown strip id and keeps the known ones", () => {
     const rail = sanitizePrefs({
-      rail: { sections: { git: false, madeUp: true, documents: false } },
+      rail: { order: ["documents", "madeUp", "checkpoints", "documents"] },
     }).rail;
-    expect(rail.sections.git).toBe(false);
-    expect(rail.sections.documents).toBe(false);
-    expect(rail.sections).not.toHaveProperty("madeUp");
+    expect(rail.order).toEqual(["documents", "checkpoints", "source-control"]);
+    expect(rail.order).not.toContain("madeUp");
   });
 
-  it("merges one rail section without wiping the rest", () => {
+  it("replaces the strip order instead of merging it", () => {
     const current = sanitizePrefs({ rail: { open: true, width: 400 } });
-    const next = mergePrefs(current, { rail: { sections: { history: false } } });
+    const next = mergePrefs(current, { rail: { order: ["checkpoints"] } });
     expect(next.rail.width).toBe(400);
     expect(next.rail.open).toBe(true);
-    expect(next.rail.sections.history).toBe(false);
-    // The default `true` survives for every section the patch did not name.
-    expect(next.rail.sections.changes).toBe(true);
+    // A replace, then completed by the sanitizer — never a concatenation, which
+    // would duplicate `checkpoints`.
+    expect(next.rail.order).toEqual(["checkpoints", "source-control", "documents"]);
+  });
+
+  it("keeps a valid active menu and defaults an unknown one", () => {
+    expect(sanitizePrefs({ rail: { activeMenu: "documents" } }).rail.activeMenu).toBe("documents");
+    expect(sanitizePrefs({ rail: { activeMenu: "git" } }).rail.activeMenu).toBe("source-control");
+  });
+
+  it("loads a pre-strip document without a version bump", () => {
+    const rail = sanitizePrefs({
+      rail: {
+        open: true,
+        width: 400,
+        sections: { git: false, changes: false, history: true, checkpoints: true },
+      },
+    }).rail;
+    expect(rail).toEqual({
+      open: true,
+      activeMenu: "source-control",
+      width: 400,
+      order: ["source-control", "checkpoints", "documents"],
+    });
+  });
+
+  it("does not share its order array with the module default", () => {
+    const rail = sanitizePrefs({}).rail;
+    rail.order.push("documents");
+    expect(DEFAULT_PREFS.rail.order).toEqual(["source-control", "checkpoints", "documents"]);
+    expect(sanitizePrefs({}).rail.order).toEqual(["source-control", "checkpoints", "documents"]);
   });
 
   it("clamps every checkpoint number the sanitizer owns", () => {

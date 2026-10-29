@@ -13,6 +13,9 @@ main area        the active view (welcome | session | settings | extensions |
                  connections | skills | diagnostics)
 status bar       slim app-level facts only: build version · Pi profile ·
                  bundled runtime · transient hints · notifications
+panel rail       docked at the right edge of a session: an always-visible 44 px
+                 menu strip (Source Control · Checkpoints · Documents) beside one
+                 resizable panel body; the strip's order is user-adjustable
 composer footer  session facts, bound to the prompt input: cwd (branch) · model ·
                  thinking · context/tokens/cost, then one dim line of extension
                  statuses (ctx.ui.setStatus), ANSI-coloured
@@ -133,14 +136,24 @@ renderer's Tailwind scan root, so `styles.css` also declares them with
   only remembers what Pi cannot: that the user consented to the bridge install
   here and when setup last completed. Whether a package is installed stays a
   `packages` entry in Pi's `settings.json`, which terminal Pi also sees.
-- **Documents panel (plan step 20).** `DocumentsPanel` is the session's right
-  rail: it renders only while the bridge answers `/health` (plan D-A10) and lists
-  every attached task pane with its facts and actions. The registry is the main
-  process's `/health` poll (`src/main/office/documents-service.ts`), pushed over
+- **Docked panel rail (2026-10-29 plan).** The session's right edge carries an
+  always-visible 44 px menu **strip** — Source Control, Checkpoints, Documents —
+  beside one resizable panel body. Clicking an entry expands its body, clicking
+  the active entry collapses it back to the strip, and the strip's order is
+  user-adjustable (drag, or the per-entry reorder list). `prefs.rail` persists
+  `{ open, activeMenu, width, order }`; the strip is never unmounted, which is
+  what makes it the stable entry point (the old header button was gated on the
+  Office bridge and so came and went). A menu this session does not have —
+  Documents with no `/health` — is resolved at render time to the first
+  available menu without rewriting the user's choice.
+- **Documents section (plan step 20).** One of those three menus. It renders only
+  while the bridge answers `/health` (plan D-A10) and lists every attached task
+  pane with its facts and actions. The registry is the main process's `/health`
+  poll (`src/main/office/documents-service.ts`), pushed over
   `office:documents-state`; the pure projection lives in
   `src/shared/office-documents.ts` and also feeds the `#` completion source and
   the office tool cards. A session tab that owns port 38617 is the **Office
-  host**; the panel's footer names it or offers _Promote to Office host_.
+  host**; the menu's footer names it or offers _Promote to Office host_.
 - **Web tabs (plan step 21).** A `web` tab is a page the app did not write — a
   Plannotator review served on a loopback port, or any localhost UI. It has no Pi
   host: `src/shared/session-ipc.ts` carries only its record (`url`,
@@ -205,7 +218,10 @@ src/git/*                     the git engine: runner, repo, status, diff, servic
 src/checkpoints/*             the shadow-repo engine, its Node fs adapter and config
 src/extensions/*              the app's own Pi extension (run snapshots + /rewind)
 src/renderer/src/layout/*      TitleBar, Sidebar, TabStrip, StatusBar, CommandPalette, RightRail
-src/renderer/src/rail/*       the rail's five section bodies and their dialogs
+src/renderer/src/rail/*       the docked panel rail: RightRail (host), RailStrip (the
+                             always-visible menu column), the three menu bodies
+                             (SourceControlPanel, CheckpointsSection, DocumentsSection)
+                             and their dialogs
 src/renderer/src/views/*       Welcome, Session, Settings, Extensions, Connections,
                                Skills, Diagnostics
 src/renderer/src/office/*      OfficeIntegrationCard, the Documents section body + the unchanged wizard panel
@@ -448,9 +464,11 @@ and the renderer all read it, so a budget change is one edit.
   cleanly (plan step 20).
 - `tests/renderer/documents-section.test.tsx`, `tests/renderer/office-tool-card.test.tsx`
   — the Documents section and the office tool cards (plan step 20).
-- `tests/renderer/right-rail.test.tsx`, `tests/renderer/rail-*.test.tsx`,
-  `tests/renderer/diff-dialog.test.tsx` — the rail host, its Git/Changes/History/
-  Checkpoints sections and the diff viewer (2026-10-27 plan).
+- `tests/renderer/right-rail.test.tsx`, `tests/renderer/rail-order.test.tsx`,
+  `tests/renderer/rail-store.test.ts`, `tests/renderer/source-control-panel.test.tsx`,
+  `tests/renderer/rail-*.test.tsx`, `tests/renderer/diff-dialog.test.tsx` — the rail
+  host, the strip's order and store slice, the Source Control composition
+  (composer → sync → changes → stashes → history) and the diff viewer.
 - `tests/renderer/office-documents-store.test.ts` — the registry in the store,
   the `#`-tagged composer draft and Office-host promotion.
 - `tests/shared/web-tabs.test.ts` — the URL policy (only http(s), loopback

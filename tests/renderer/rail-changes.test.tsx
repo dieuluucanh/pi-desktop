@@ -370,4 +370,13 @@ describe("notices", () => {
     await userEvent.click(screen.getByRole("button", { name: "Refresh changes" }));
     expect(handles.gitCalls.at(-1)?.kind).toBe("refresh");
   });
+
+  it("no longer owns the commit composer", () => {
+    // The Source Control panel pins the composer above the lists (VS Code's
+    // order), so the section must not render it a second time.
+    seed(snapshot({ changed: [file("a.ts")] }));
+    render(<ChangesSection projectPath={PROJECT} />);
+    expect(screen.getByTestId("changes-section")).toBeInTheDocument();
+    expect(screen.queryByTestId("commit-box")).not.toBeInTheDocument();
+  });
 });

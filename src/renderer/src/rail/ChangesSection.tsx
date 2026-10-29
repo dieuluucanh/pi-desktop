@@ -24,7 +24,6 @@ import { ConfirmDialog } from "../ui/confirm-dialog";
 import { useAppStore } from "../state/app-store";
 import { gitStatusLetter, gitStatusTone, type GitFileEntry } from "../../../shared/git";
 import { discardPrompt, emptyStateFor, groupsOf, isUntracked, renameLabel } from "./changes-view";
-import { CommitBox } from "./CommitBox";
 
 export interface ChangesSectionProps {
   /** The folder the rail is showing (a tab's cwd or a remembered project). */
@@ -275,32 +274,16 @@ export function ChangesSection({ projectPath }: ChangesSectionProps) {
         onDiscard={setDiscardTarget}
       />
 
-      {snapshot?.available ? (
-        <>
-          <CommitBox projectPath={projectPath} />
-          <div className="flex items-center justify-end px-3 pt-1">
-            <button
-              type="button"
-              className="flex items-center gap-1 text-[11px] text-ink-faint hover:text-ink"
-              aria-label="Refresh changes"
-              onClick={() => void refreshGit(projectPath)}
-            >
-              <RefreshCw className="size-3" aria-hidden /> Refresh
-            </button>
-          </div>
-        </>
-      ) : (
-        <div className="flex items-center justify-end px-3 pt-1">
-          <button
-            type="button"
-            className="flex items-center gap-1 text-[11px] text-ink-faint hover:text-ink"
-            aria-label="Refresh changes"
-            onClick={() => void refreshGit(projectPath)}
-          >
-            <RefreshCw className="size-3" aria-hidden /> Refresh
-          </button>
-        </div>
-      )}
+      <div className="flex items-center justify-end px-3 pt-1">
+        <button
+          type="button"
+          className="flex items-center gap-1 text-[11px] text-ink-faint hover:text-ink"
+          aria-label="Refresh changes"
+          onClick={() => void refreshGit(projectPath)}
+        >
+          <RefreshCw className="size-3" aria-hidden /> Refresh
+        </button>
+      </div>
 
       {discardTarget ? (
         <ConfirmDialog

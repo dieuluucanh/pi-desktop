@@ -1,11 +1,31 @@
-# Git and checkpoints in the right rail
+# Git and checkpoints in the panel rail
 
-The **right rail** is one resizable column with five collapsible sections: **Git**,
-**Changes**, **History**, **Checkpoints**, **Documents**. Open it with the panel
-button in the session header, or <kbd>Ctrl/Cmd</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd>
-(rebindable in Settings → Shortcuts), or View → Source Control / Checkpoints.
+The **panel rail** is docked to the right edge of a session, the way VS Code's
+activity bar is. An always-visible vertical strip carries three menus —
+**Source Control**, **Checkpoints** and **Documents** — and clicking one expands
+its panel beside it; clicking the active one collapses the panel back to the
+strip. <kbd>Ctrl/Cmd</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd> (rebindable in Settings →
+Shortcuts) toggles the panel, and Go → Source Control / Checkpoints / Documents
+opens a specific menu.
 
-Its width and which sections are open are remembered per app.
+The strip's order is yours: drag an entry, or use its reorder list (_Move up_,
+_Move down_, _Move to top_, _Reset order_). The order, the last menu you opened and
+the panel's width are remembered per app.
+
+## The Source Control menu
+
+It reads top to bottom in the order you work:
+
+1. **The branch line** — branch (or _detached @ sha_, or _no commits yet_), `↑n ↓n`
+   against the upstream, and a _Switch_ list that also creates branches.
+2. **The commit box** — a message, <kbd>Ctrl/Cmd</kbd>+<kbd>Enter</kbd> to commit, an
+   _Amend_ switch that prefills the previous message, and the identity it will use.
+3. **Fetch · Pull · Push** — three buttons that name their target, disabled without
+   an upstream.
+4. **Changes**, **Stashes** and **History** — the scrolling half of the panel.
+
+The branch line, the commit box and the sync buttons stay pinned: you can scroll a
+long change list or commit log without losing the message you are writing.
 
 ## What it needs
 
@@ -17,28 +37,19 @@ Its width and which sections are open are remembered per app.
 If git is missing, every git and checkpoint surface says so, with instructions.
 Nothing fails silently.
 
-## Git, Changes and History
+## Changes and History
 
 - **Changes** shows two groups, _Staged Changes_ and _Changes_, with `M`/`A`/`D`/`R`/`U`
   badges, a per-file hover menu (stage, unstage, discard, open diff), and
   group-level _Stage all_ / _Unstage all_. A discard of a tracked file is a
   `git checkout --`; a discard of an **untracked** file moves it to the OS trash,
   not to oblivion.
-- **The commit box** (inside Changes) takes a message, <kbd>Ctrl/Cmd</kbd>+<kbd>Enter</kbd>
-  to commit, an _Amend_ switch that prefills the previous message, and the
-  identity it will use. When no identity is configured, the commit button is
-  disabled and an inline form offers to write `user.name`/`user.email` **for this
-  repository only** — the global variant is shown as a hint, never run behind
-  your back.
 - **History** lists commits, newest first, with _Load more_. Clicking one opens
   its diff.
-- **Git** shows the branch (or _detached @ sha_, or _no commits yet_), `↑n ↓n`
-  against the upstream, the remote, and stashes. _Fetch_, _Pull_ and _Push_ are
-  three buttons that name their target; they are disabled without an upstream.
-
-**Hunk staging.** The diff viewer renders each hunk with _Stage hunk_ (for a
-working file) or _Unstage hunk_ (for a staged one). A binary file shows one
-"binary file changed" row with _Reveal in file manager_.
+- **Stashes** lists what is parked, with _Restore_ and _Drop_, plus _Stash changes_.
+  **Hunk staging.** The diff viewer renders each hunk with _Stage hunk_ (for a
+  working file) or _Unstage hunk_ (for a staged one). A binary file shows one
+  "binary file changed" row with _Reveal in file manager_.
 
 **Consent.** Mutating git commands are gated once per session: staging, committing,
 discarding, branching and stashing ask the first time and remember the answer.
@@ -48,8 +59,9 @@ Network operations are always explicit named buttons and never run on a timer.
 fails immediately with git's own message plus a hint, instead of a hidden prompt
 that never appears. The app stores no credential, token or password.
 
-Status is polled only while the rail is open **and** the window has focus, so a
-closed panel costs nothing.
+Status is polled while a session tab is open **and** the window has focus, so a
+background window costs nothing — the strip's changed-file count stays live even
+when the panel is collapsed.
 
 ## Checkpoints: what they are
 

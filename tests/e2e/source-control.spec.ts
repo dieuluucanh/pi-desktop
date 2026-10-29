@@ -70,16 +70,31 @@ function initRepo(projectDir: string): void {
   git(projectDir, ["commit", "-m", "chore: seed"]);
 }
 
-/** Opens the rail and expands one section. */
-async function openRail(current: FakeApp, section: string): Promise<void> {
-  const panel = current.window.getByRole("button", { name: /panel/i }).first();
-  await panel.click();
-  const header = current.window.getByTestId(`rail-section-${section}`);
-  await expect(header).toBeVisible({ timeout: 15_000 });
-  const toggle = header.getByRole("button").first();
-  // Sections persist their expanded state, but a fresh profile starts expanded;
-  // only click when it is collapsed.
-  if ((await toggle.getAttribute("aria-expanded")) === "false") await toggle.click();
+/**
+ * Grants the one-time git write consent if the dialog appears.
+ *
+ * Every mutating git command (stage, commit, discard, stash…) asks once per
+ * session whether the app may write to the repository. The dialog is modal over
+ * the panel, so any test that stages a file must answer it or the click lands on
+ * a disabled surface and times out.
+ */
+async function grantGitConsent(current: FakeApp): Promise<void> {
+  const allow = current.window.getByRole("button", { name: /allow and continue/i });
+  if (await allow.isVisible().catch(() => false)) await allow.click();
+}
+
+/**
+ * Opens the panel on one menu.
+ *
+ * The strip is always mounted now, so there is no "Panel" button to click and no
+ * section header to expand — but clicking the *active* entry collapses the panel,
+ * so the helper reads `aria-expanded` first and only clicks when it must.
+ */
+async function openRail(current: FakeApp, menu: "source-control" | "checkpoints"): Promise<void> {
+  const entry = current.window.getByTestId(`rail-menu-${menu}`);
+  await expect(entry).toBeVisible({ timeout: 15_000 });
+  if ((await entry.getAttribute("aria-expanded")) !== "true") await entry.click();
+  await expect(current.window.getByTestId("rail-panel")).toBeVisible({ timeout: 15_000 });
 }
 
 test.describe("source control", () => {
@@ -95,7 +110,17 @@ test.describe("source control", () => {
       .click();
     await expect(app.window.getByLabel("Prompt")).toBeVisible({ timeout: 30_000 });
 
-    await openRail(app, "changes");
+    // The header no longer carries a Panel button (it used to be gated on the
+    // Office bridge, so it came and went); the strip is the entry point.
+    await expect(app.window.getByRole("button", { name: /^panel$/i })).toHaveCount(0);
+    await expect(app.window.getByTestId("rail-strip")).toBeVisible({ timeout: 15_000 });
+    // The two unconditional menus are always offered, whatever Office is doing.
+    // (Whether Documents appears depends on a real bridge answering on this
+    // machine's port, so that rule is pinned by `right-rail.test.tsx` instead.)
+    await expect(app.window.getByTestId("rail-menu-source-control")).toBeVisible();
+    await expect(app.window.getByTestId("rail-menu-checkpoints")).toBeVisible();
+
+    await openRail(app, "source-control");
 
     // Edit a file *outside* the app: the poll must notice it, not a UI event.
     writeFileSync(join(app.projectDir, "README.md"), "# E2E project\n\nan outside edit\n", "utf8");
@@ -104,6 +129,8 @@ test.describe("source control", () => {
 
     // Stage it, then commit through the rail's own box.
     await row.getByRole("button", { name: /^stage /i }).click();
+    // The first mutating command asks once whether the app may write here.
+    await grantGitConsent(app);
     // The file moved from the Changes group into Staged Changes.
     await expect(
       app.window.getByTestId("changes-group-staged").getByTestId("change-row-README.md"),
@@ -122,7 +149,8 @@ test.describe("source control", () => {
       .toBe("feat: an outside edit");
 
     // And it is in History, which reads the log rather than the earlier snapshot.
-    await openRail(app, "history");
+    // History is the bottom region of the already-open Source Control panel, so
+    // scrolling to it is enough — re-opening would just re-click the active entry.
     await expect(app.window.getByText(/an outside edit/).first()).toBeVisible({ timeout: 20_000 });
   });
 
@@ -137,7 +165,7 @@ test.describe("source control", () => {
       .first()
       .click();
     await expect(app.window.getByLabel("Prompt")).toBeVisible({ timeout: 30_000 });
-    await openRail(app, "changes");
+    await openRail(app, "source-control");
 
     const row = app.window.getByTestId("change-row-scratch.txt");
     await expect(row).toBeVisible({ timeout: 20_000 });
@@ -151,7 +179,36 @@ test.describe("source control", () => {
     // The untracked case is worded as the trash, never as a delete.
     await expect(dialog).toContainText(/trash/i);
     await dialog.getByRole("button", { name: /move to trash/i }).click();
-    await expect.poll(() => existsSync(target), { timeout: 15_000 }).toBe(false);
+    // Confirming the discard is the first mutating command here, so *now* the
+    // one-time write consent asks — after the app's own confirmation, not before.
+    await grantGitConsent(app);
+
+    // Two honest outcomes, and neither one is a silent delete:
+    //  - the OS trash accepted the file, so it is gone from the work tree;
+    //  - the trash is unavailable on this volume (a sandboxed temp dir can refuse
+    //    it), so the file is still there *and* the panel says exactly that.
+    await expect
+      .poll(
+        async () => {
+          if (!existsSync(target)) return "moved";
+          const error = app!.window.getByTestId("git-error");
+          return (await error.isVisible().catch(() => false)) &&
+            (await error.innerText()).match(/trash/i)
+            ? "refused"
+            : "pending";
+        },
+        { timeout: 15_000 },
+      )
+      .not.toBe("pending");
+
+    if (existsSync(target)) {
+      // Refused: the app must say so and must not have deleted the file itself.
+      await expect(app.window.getByTestId("git-error")).toContainText(/trash/i);
+    } else {
+      // Moved: `git checkout`-style revert never applies to an untracked file, so
+      // the only way it disappears is the trash.
+      expect(existsSync(target)).toBe(false);
+    }
   });
 });
 

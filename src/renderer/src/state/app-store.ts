@@ -182,7 +182,7 @@ import {
 import { classifyFailure, isOfflineError } from "../../../shared/diagnostics";
 import type { DiagnosticsSnapshot } from "../../../shared/diagnostics";
 import { sanitizeUpdateState, type UpdateState } from "../../../shared/updates";
-import { clampRailWidth, type RailSectionId } from "../../../shared/rail";
+import { clampRailWidth, sanitizeRailMenuOrder, type RailMenuId } from "../../../shared/rail";
 import {
   isMutatingGitAction,
   sanitizeGitSnapshot,
@@ -780,23 +780,28 @@ export interface AppStateShape {
   /** Fetches a spilled payload's body once and caches it. */
   loadBlob: (tabId: string, ref: BlobRef) => Promise<void>;
   loadDiagnostics: () => Promise<void>;
-  /** Whether the right-rail Documents panel is open. */
   /**
-   * The right rail (git-checkpoint plan step 10). Its open/width/section state
-   * lives in `prefs.rail` so it survives a relaunch, unlike the old ephemeral
-   * Documents toggle.
+   * The docked panel rail. Its open/active-menu/width/order state lives in
+   * `prefs.rail`, so the layout survives a relaunch: the strip is always
+   * mounted, and `open` means "the panel body is expanded".
    */
+  /** Toggles the panel body, leaving `activeMenu` alone (the menu command). */
   toggleRail: () => void;
   setRailOpen: (open: boolean) => void;
-  /** Collapses or expands one section, leaving the others alone. */
-  toggleRailSection: (id: RailSectionId) => void;
+  /**
+   * Expands the panel on one menu without toggling it. Used by Go → Source
+   * Control / Checkpoints / Documents and by the palette.
+   */
+  openRailMenu: (id: RailMenuId) => void;
+  /**
+   * The strip's click: switches to that menu and expands, or collapses it when
+   * it is already the active, open menu.
+   */
+  toggleRailMenu: (id: RailMenuId) => void;
+  /** Persists an adjusted strip order (drag-drop or the per-entry menu). */
+  setRailMenuOrder: (order: readonly RailMenuId[]) => void;
   /** Persists a clamped rail width (the resize handle commits on release). */
   setRailWidth: (width: number) => void;
-  /**
-   * Opens the rail on one section (View → Source Control / Checkpoints, the
-   * palette). Keeps the other sections' state untouched.
-   */
-  openRailSection: (id: RailSectionId) => void;
   loadOfficeDocuments: () => Promise<void>;
   applyOfficeDocuments: (view: OfficeDocumentsView) => void;
   refreshOfficeDocuments: () => Promise<void>;
@@ -4262,9 +4267,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       const view = await api.office.documents();
       set({ officeDocuments: view, officeDocumentsLoaded: true });
-      // A bridge that already has panes attached opens the rail on first load
-      // (today's behaviour, now expressed through the persisted rail state).
-      if (view.panes.length > 0 && !get().prefs.rail.open) get().setRailOpen(true);
+      // A bridge that already has panes attached opens the rail on Documents.
+      if (view.panes.length > 0) get().openRailMenu("documents");
     } catch {
       // The panel is an enhancement: an unreadable registry must never block
       // the session, so the store keeps its empty view.
@@ -4274,7 +4278,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   applyOfficeDocuments: (view) => {
     set({ officeDocuments: view, officeDocumentsLoaded: true });
-    if (view.panes.length > 0 && !get().prefs.rail.open) get().setRailOpen(true);
+    // A bridge that already has panes attached opens the rail on Documents.
+    if (view.panes.length > 0) get().openRailMenu("documents");
   },
 
   refreshOfficeDocuments: async () => {
@@ -4288,7 +4293,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  // ---- Right rail (git-checkpoint plan step 10) ----
+  // ---- Docked panel rail ----
 
   toggleRail: () => get().setRailOpen(!get().prefs.rail.open),
 
@@ -4297,11 +4302,28 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     get().setPrefs({ rail: { ...get().prefs.rail, open } });
   },
 
-  toggleRailSection: (id) => {
+  openRailMenu: (id) => {
     const rail = get().prefs.rail;
-    get().setPrefs({
-      rail: { ...rail, sections: { ...rail.sections, [id]: !rail.sections[id] } },
-    });
+    if (rail.open && rail.activeMenu === id) return;
+    get().setPrefs({ rail: { ...rail, open: true, activeMenu: id } });
+  },
+
+  toggleRailMenu: (id) => {
+    const rail = get().prefs.rail;
+    // The active entry collapses the body (the strip stays); any other entry
+    // switches to it and expands.
+    if (rail.open && rail.activeMenu === id) {
+      get().setPrefs({ rail: { ...rail, open: false } });
+      return;
+    }
+    get().setPrefs({ rail: { ...rail, open: true, activeMenu: id } });
+  },
+
+  setRailMenuOrder: (order) => {
+    const rail = get().prefs.rail;
+    const next = sanitizeRailMenuOrder(order);
+    if (next.length === rail.order.length && next.every((id, i) => id === rail.order[i])) return;
+    get().setPrefs({ rail: { ...rail, order: next } });
   },
 
   setRailWidth: (width) => {
@@ -4309,14 +4331,6 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const clamped = clampRailWidth(width);
     if (clamped === rail.width) return;
     get().setPrefs({ rail: { ...rail, width: clamped } });
-  },
-
-  openRailSection: (id) => {
-    const rail = get().prefs.rail;
-    if (rail.open && rail.sections[id]) return;
-    get().setPrefs({
-      rail: { ...rail, open: true, sections: { ...rail.sections, [id]: true } },
-    });
   },
 
   // ---- Source control (git-checkpoint plan step 9) ----
@@ -4513,6 +4527,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   loadCheckpoints: async (projectPath) => {
     const api = bridge()?.checkpoints;
     if (!api) return;
+    // Idempotent: the panel mounts this on expand and the strip seeds it for its
+    // count badge, so a second call for a folder already read must not refetch.
+    // `refreshCheckpoints` is the forced read.
+    if (get().checkpoints[projectPath]) return;
     try {
       get().applyCheckpointState(await api.get(projectPath));
     } catch (error) {
