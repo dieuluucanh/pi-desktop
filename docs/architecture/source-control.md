@@ -146,17 +146,87 @@ rewriting.
 
 ## Capture triggers
 
-| Trigger       | Who                                             | When                                                                                                                      |
-| ------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `run`         | the checkpoint extension, inside the agent loop | once per run, at its first `turn_start` — before the model edits anything                                                 |
-| `manual`      | the rail's _Snapshot now_                       | on click                                                                                                                  |
-| `pre-op`      | the git engine's `preOpSnapshot` port           | immediately before a discard or a branch switch; a failure aborts the action                                              |
-| `pre-restore` | the checkpoint service                          | immediately before a restore, or a `/rewind`                                                                              |
-| idle scan     | `src/main/checkpoint-service.ts`                | while an Office pane is attached, the session is idle, the folder's fingerprint changed, and `scanIntervalMs` has elapsed |
+| Trigger       | Who                                             | When                                                                                                                                                      |
+| ------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run`         | the checkpoint extension, inside the agent loop | once per run, at its first `turn_start` — before the model edits anything                                                                                 |
+| `manual`      | the rail's _Snapshot now_                       | on click                                                                                                                                                  |
+| `pre-op`      | the git engine's `preOpSnapshot` port           | immediately before a discard or a branch switch; a failure aborts the action                                                                              |
+| `pre-restore` | the checkpoint service                          | immediately before a restore, or a `/rewind`                                                                                                              |
+| idle scan     | `src/main/checkpoint-service.ts`                | while an Office pane is attached, **in the Office host session's folder**, that folder is idle, its fingerprint changed, and `scanIntervalMs` has elapsed |
 
 The idle scan exists because a tool hook cannot see Word save a document. Its
 fingerprint is a bounded `stat` walk (count, max mtime, total bytes), not a
 content hash: noticing the change must cost milliseconds on a 40 MB `.docx`.
+
+**Its target is the Office host's folder only** (`officeHostProjectPath`, wired
+in `src/main/index.ts` from the `office` tab that is not stopped). The bridge
+publishes a document name and a `url_sha256:` id, never a path, so there is no
+honest way to attribute a save to an arbitrary project. Scanning every folder the
+rail had ever looked at meant that opening one workbook started collecting
+"Office documents changed" checkpoints in unrelated projects. A folder is scanned
+only when the host works in it _and_ the rail has asked about it (`interested`);
+manual, pre-op and run snapshots are unaffected because their caller scopes them.
+
+## The Source Control menu's three blocks
+
+The menu body is three vertically stacked blocks, VS Code's shape, each owning
+its own `overflow-y-auto`:
+
+```text
+source-control-block   branch row · commit composer · collapsible Stashes
+─────────────── rail-splitter-top
+changes-block          Staged Changes / Changes (both collapsible)
+─────────────── rail-splitter-middle
+history-block          the commit log
+```
+
+Three scrollers instead of one pinned header over one list, because a long change
+list used to push the commit log off the bottom — scrolling to a commit scrolled
+the changed files away. Neither list can now evict the other.
+
+**Sizing** is two persisted fractions (`prefs.rail.split = { top, middle }`,
+History being the remainder) so they always sum to 1. A drag calls
+`railSplitWithDelta` from `src/shared/rail.ts`, which takes the container height
+as an argument — jsdom has no layout, so the arithmetic is a node test rather
+than a DOM one. Each boundary moves only its two neighbours: the top splitter
+trades height between Source Control and Changes with History fixed, and the
+middle splitter trades between Changes and History with Source Control fixed.
+
+**Floors.** Every block may be at least `MIN_BLOCK_PX` (80 px) and at least
+`MIN_SPLIT_FRACTION` (15 %) of the body. A panel shorter than three floors cannot
+honour them; every block still scrolls internally, so content stays reachable
+even at its floor, and `clampRailSplit` never produces a negative remainder.
+
+**A render-time clamp is never written back.** The displayed split is clamped
+against the height measured _now_, which differs per window size; persisting that
+would silently rewrite the user's preference whenever the window was small. Only
+an explicit gesture writes — a drag commits once on `pointerup` (never per
+pixel), a keyboard nudge once per key, and `Home`/`End` go to the floors.
+
+**Collapse** lives where it is cheap, not at block level: the `Staged Changes` /
+`Changes` headers and the `Stashes` header each own an `aria-expanded` toggle
+(`prefs.rail.collapsed`), with the group action as a **sibling** button so
+_Stage all_ never doubles as a fold. Stashes start collapsed — three stashes used
+to cost four rows in a column that also has to show changed files — while
+_Stash changes_ stays outside the fold, because stashing is what you do while
+looking at a change.
+
+## Scope: folder, session, app
+
+The three rail menus act on three different things, and each says so in a **scope
+line** pinned under the panel title by `RightRail` (not by a body, so a scrolling
+list cannot carry it away).
+
+| Menu           | Scope                    | Where the truth lives                                | How to switch                                    |
+| -------------- | ------------------------ | ---------------------------------------------------- | ------------------------------------------------ |
+| Source Control | the active session's cwd | `state.git[active.cwd]`; main polls that folder      | switch tab, or _Go to project_                   |
+| Checkpoints    | a project **folder**     | `<profile>/checkpoints/<basename>-<hash>` per folder | _Go to project_; rows keep the per-session chips |
+| Documents      | the app-wide bridge      | one bridge on port 38617, owned by the `office` tab  | _Open host session_, _Use this session instead_  |
+
+Checkpoints is deliberately folder-wide rather than per-session: the store is per
+folder, and hiding older folder state behind a session filter would make a
+restore from a new session look impossible. The existing _This session_ /
+_Before the fork_ chips carry the session linkage instead.
 
 ## The host-side extension
 

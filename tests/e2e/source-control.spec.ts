@@ -122,6 +122,11 @@ test.describe("source control", () => {
 
     await openRail(app, "source-control");
 
+    // The body is three blocks with their own scrollers, not one column.
+    for (const id of ["source-control-block", "changes-block", "history-block"]) {
+      await expect(app.window.getByTestId(id)).toBeVisible({ timeout: 15_000 });
+    }
+
     // Edit a file *outside* the app: the poll must notice it, not a UI event.
     writeFileSync(join(app.projectDir, "README.md"), "# E2E project\n\nan outside edit\n", "utf8");
     const row = app.window.getByTestId("change-row-README.md");
@@ -149,9 +154,56 @@ test.describe("source control", () => {
       .toBe("feat: an outside edit");
 
     // And it is in History, which reads the log rather than the earlier snapshot.
-    // History is the bottom region of the already-open Source Control panel, so
-    // scrolling to it is enough — re-opening would just re-click the active entry.
-    await expect(app.window.getByText(/an outside edit/).first()).toBeVisible({ timeout: 20_000 });
+    // History is the bottom block of the already-open Source Control panel, with
+    // its own scroller — so it is visible without re-opening the rail.
+    await expect(
+      app.window
+        .getByTestId("history-block")
+        .getByText(/an outside edit/)
+        .first(),
+    ).toBeVisible({ timeout: 20_000 });
+  });
+
+  test("collapses a change group and drags a block splitter", async () => {
+    app = await launchFakeApp();
+    initRepo(app.projectDir);
+    writeFileSync(join(app.projectDir, "README.md"), "# E2E project\n\nchanged\n", "utf8");
+
+    await app.window
+      .getByRole("button", { name: /new session/i })
+      .first()
+      .click();
+    await expect(app.window.getByLabel("Prompt")).toBeVisible({ timeout: 30_000 });
+    await openRail(app, "source-control");
+
+    await expect(app.window.getByTestId("change-row-README.md")).toBeVisible({ timeout: 20_000 });
+
+    // Collapsing `Changes` hides its rows but keeps the header and the count.
+    await app.window.getByTestId("changes-group-toggle-changed").click();
+    await expect(app.window.getByTestId("change-row-README.md")).toHaveCount(0);
+    await expect(app.window.getByTestId("changes-group-changed")).toBeVisible();
+
+    // Re-expanding restores them (the fold is a preference, not a one-way trip).
+    await app.window.getByTestId("changes-group-toggle-changed").click();
+    await expect(app.window.getByTestId("change-row-README.md")).toBeVisible();
+
+    // Dragging the top splitter changes the block heights. jsdom cannot do this
+    // and a unit test cannot either, so it is asserted here via geometry.
+    const top = app.window.getByTestId("source-control-block");
+    const before = await top.boundingBox();
+    const splitter = app.window.getByTestId("rail-splitter-top");
+    const handle = await splitter.boundingBox();
+    expect(before).not.toBeNull();
+    expect(handle).not.toBeNull();
+    await app.window.mouse.move(handle!.x + handle!.width / 2, handle!.y + handle!.height / 2);
+    await app.window.mouse.down();
+    await app.window.mouse.move(handle!.x + handle!.width / 2, handle!.y + 80, { steps: 8 });
+    await app.window.mouse.up();
+
+    const after = await top.boundingBox();
+    expect(after).not.toBeNull();
+    // Grow only (the drag is downward), and never past the panel.
+    expect(after!.height).toBeGreaterThan(before!.height);
   });
 
   test("refuses to enable a discarded untracked file's return (trash, not delete)", async () => {

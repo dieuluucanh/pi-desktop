@@ -45,6 +45,12 @@ export interface RailMenuSpec {
    * (Source Control keeps the commit composer in view).
    */
   scroll?: "host" | "self";
+  /**
+   * The pinned scope row under the title (which project/menu scope this body
+   * acts on). Rendered by the host, **outside** the scroll container, so a
+   * long-scrolling body (Checkpoints) cannot carry it away.
+   */
+  scope?: ReactNode;
   content: ReactNode;
 }
 
@@ -155,6 +161,10 @@ export function RightRail({ menus }: RightRailProps) {
               <X className="size-3" aria-hidden />
             </button>
           </header>
+
+          {/* Pinned: the answer to "which folder is this menu about?". Outside
+              the scroller on purpose — a body that scrolls must not take it. */}
+          {spec.scope}
 
           {spec.scroll === "self" ? (
             <div className="flex min-h-0 flex-1 flex-col">{spec.content}</div>

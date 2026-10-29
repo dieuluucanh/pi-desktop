@@ -17,7 +17,16 @@
  */
 
 import { useState } from "react";
-import { FileText, Plus, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Trash2,
+  X,
+} from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { ConfirmDialog } from "../ui/confirm-dialog";
@@ -126,6 +135,7 @@ function FileRow({
 }
 
 function Group({
+  id,
   title,
   files,
   staged,
@@ -133,7 +143,11 @@ function Group({
   actionLabel,
   onAction,
   onDiscard,
+  collapsed,
+  onToggle,
 }: {
+  /** `staged` / `changed` — the persisted collapse key and the test-id suffix. */
+  id: "staged" | "changed";
   title: string;
   files: GitFileEntry[];
   staged: boolean;
@@ -141,37 +155,55 @@ function Group({
   actionLabel: string;
   onAction: () => void;
   onDiscard: (file: GitFileEntry) => void;
+  collapsed: boolean;
+  onToggle: () => void;
 }) {
   if (files.length === 0) return null;
+  const listId = `changes-list-${id}`;
+  const Chevron = collapsed ? ChevronRight : ChevronDown;
   return (
-    <section
-      className="flex flex-col"
-      data-testid={`changes-group-${staged ? "staged" : "changed"}`}
-    >
+    <section className="flex flex-col" data-testid={`changes-group-${id}`}>
       <div className="flex items-center gap-2 px-3 py-1">
-        <h4 className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
-          {title}
-        </h4>
-        <Badge tone="neutral">{files.length}</Badge>
+        {/*
+         * The header is a toggle, but the group action is a **sibling** button:
+         * making the whole row one button would swallow *Stage all*, which is
+         * clicked constantly. Two siblings, two jobs.
+         */}
         <button
           type="button"
-          className="ml-auto text-[11px] text-ink-faint hover:text-ink"
+          className="flex min-w-0 items-center gap-2 text-left"
+          aria-expanded={!collapsed}
+          aria-controls={listId}
+          onClick={onToggle}
+          data-testid={`changes-group-toggle-${id}`}
+        >
+          <Chevron className="size-3 shrink-0 text-ink-faint" aria-hidden />
+          <h4 className="truncate text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
+            {title}
+          </h4>
+          <Badge tone="neutral">{files.length}</Badge>
+        </button>
+        <button
+          type="button"
+          className="ml-auto shrink-0 text-[11px] text-ink-faint hover:text-ink"
           onClick={onAction}
         >
           {actionLabel}
         </button>
       </div>
-      <ul className="flex flex-col">
-        {files.map((file) => (
-          <FileRow
-            key={`${staged ? "s" : "c"}:${file.path}`}
-            file={file}
-            staged={staged}
-            projectPath={projectPath}
-            onDiscard={onDiscard}
-          />
-        ))}
-      </ul>
+      {collapsed ? null : (
+        <ul className="flex flex-col" id={listId}>
+          {files.map((file) => (
+            <FileRow
+              key={`${staged ? "s" : "c"}:${file.path}`}
+              file={file}
+              staged={staged}
+              projectPath={projectPath}
+              onDiscard={onDiscard}
+            />
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
@@ -182,6 +214,10 @@ export function ChangesSection({ projectPath }: ChangesSectionProps) {
   const clearGitError = useAppStore((state) => state.clearGitError);
   const performGitAction = useAppStore((state) => state.performGitAction);
   const refreshGit = useAppStore((state) => state.refreshGit);
+  // Collapse is persisted (`prefs.rail.collapsed`), so a folded group stays
+  // folded across a relaunch — and Staged/Changes fold independently.
+  const collapsed = useAppStore((state) => state.prefs.rail.collapsed);
+  const setSourceControlCollapsed = useAppStore((state) => state.setSourceControlCollapsed);
   const [discardTarget, setDiscardTarget] = useState<GitFileEntry | null>(null);
 
   const groups = groupsOf(snapshot);
@@ -256,6 +292,7 @@ export function ChangesSection({ projectPath }: ChangesSectionProps) {
       ) : null}
 
       <Group
+        id="staged"
         title="Staged Changes"
         files={groups.staged}
         staged
@@ -263,8 +300,11 @@ export function ChangesSection({ projectPath }: ChangesSectionProps) {
         actionLabel="Unstage all"
         onAction={unstageAll}
         onDiscard={setDiscardTarget}
+        collapsed={collapsed.staged}
+        onToggle={() => setSourceControlCollapsed("staged", !collapsed.staged)}
       />
       <Group
+        id="changed"
         title="Changes"
         files={groups.changed}
         staged={false}
@@ -272,6 +312,8 @@ export function ChangesSection({ projectPath }: ChangesSectionProps) {
         actionLabel="Stage all"
         onAction={stageAll}
         onDiscard={setDiscardTarget}
+        collapsed={collapsed.changed}
+        onToggle={() => setSourceControlCollapsed("changed", !collapsed.changed)}
       />
 
       <div className="flex items-center justify-end px-3 pt-1">

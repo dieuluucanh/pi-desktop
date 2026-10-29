@@ -19,7 +19,9 @@ import { WidgetStrip } from "../extension-ui/WidgetStrip";
 import { ExtensionDialogDock } from "../extension-ui/ExtensionDialog";
 import { CheckpointsSection } from "../rail/CheckpointsSection";
 import { DocumentsSection } from "../rail/DocumentsSection";
+import { DocumentsScope } from "../rail/DocumentsScope";
 import { RightRail } from "../rail/RightRail";
+import { RailScopeLine } from "../rail/RailScopeLine";
 import { SourceControlPanel } from "../rail/SourceControlPanel";
 import { WorkingRow } from "../extension-ui/WorkingRow";
 import { RunStatusRow } from "../session/RunStatusRow";
@@ -31,7 +33,7 @@ import { WebTabView } from "../web/WebTabView";
 import { createCommandProvider } from "../completion/command-source";
 import { createDocumentProvider } from "../completion/document-source";
 import { createFileProvider } from "../completion/file-source";
-import { toDocumentMentions } from "../../../shared/office-documents";
+import { documentMentionsForHost, officeDocumentScope } from "../../../shared/office-documents";
 import { createCompletionProvider } from "../completion/stack";
 import type { CompletionItem, CompletionSuggestions } from "../completion/types";
 import { ContextRing } from "../session/ContextRing";
@@ -40,6 +42,7 @@ import { ThinkingPicker } from "../session/ThinkingPicker";
 import { contextUsageOf, modelKeyOf, thinkingLevelsOf } from "../session/model-catalog";
 import type { ViewMode } from "../../../shared/prefs";
 import { SESSION_STATUS_LABEL, type TabStatus } from "../../../shared/session-ipc";
+import { findProject } from "../../../shared/projects";
 
 /**
  * Session view (plan step 5).
@@ -113,13 +116,26 @@ function ViewModeMenu({
 }
 
 /**
- * The `#` completion source (plan step 20). It reads the live pane registry from
- * the store on every keystroke, so a document attached or detached mid-session is
- * reflected without rebuilding the completion stack — and it works even when the
- * bridge extension's own provider is absent.
+ * The `#` completion source.
+ *
+ * It reads the live registry from the store on every keystroke, so a document
+ * attached or detached mid-session is reflected without rebuilding the completion
+ * stack — and it works even when the bridge extension's own provider is absent.
+ *
+ * **Scoped to the host session** (plan D10): the list is empty unless this tab is
+ * the one that owns bridge port 38617, because a mention writes a prompt whose
+ * `office_*` call only that tab can serve. An empty list plus the Documents
+ * scope row's explanation beats offering a document that cannot answer.
  */
 const documentMentionSource = {
-  list: () => toDocumentMentions(useAppStore.getState().officeDocuments?.panes ?? []),
+  list: () => {
+    const state = useAppStore.getState();
+    return documentMentionsForHost(
+      state.officeDocuments?.panes ?? [],
+      state.tabs,
+      state.activeTabId,
+    );
+  },
 };
 
 /**
@@ -206,6 +222,15 @@ export function SessionView() {
     activeTabId ? state.tuiSurfaces[activeTabId] : undefined,
   );
   const officeDocuments = useAppStore((state) => state.officeDocuments);
+  /**
+   * Whether **this** session owns bridge port 38617. The Documents body needs it
+   * to disable the two actions that tag a prompt only the host can serve; the
+   * predicate lives in `shared/office-documents` so the renderer and main agree.
+   */
+  const documentsIsHost = useAppStore(
+    (state) =>
+      officeDocumentScope(state.officeDocuments?.panes ?? [], state.tabs, activeTabId).isHost,
+  );
   const watchGit = useAppStore((state) => state.watchGit);
   const loadGit = useAppStore((state) => state.loadGit);
   const loadCheckpoints = useAppStore((state) => state.loadCheckpoints);
@@ -298,6 +323,23 @@ export function SessionView() {
 
   const active = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeId = active?.id ?? null;
+
+  /**
+   * The rail's scope line names the active session's folder, and this takes the
+   * user to whatever owns it: the remembered project when there is one, or a
+   * freshly opened project entry when the folder is new (a session's cwd is not
+   * necessarily a project the user saved).
+   */
+  const boundProject = useAppStore((state) =>
+    active ? findProject(state.projects, active.cwd) : null,
+  );
+  const activateProject = useAppStore((state) => state.activateProject);
+  const openProject = useAppStore((state) => state.openProject);
+  const goToProject = (): void => {
+    if (!active) return;
+    if (boundProject) void activateProject(boundProject.path);
+    else void openProject(active.cwd);
+  };
   // An extension dialog is per-tab and wins over the composer and a docked TUI
   // overlay: it is the newest interaction the extension is blocked on.
   const dialog = extensionDialogs.find((entry) => entry.tabId === active?.id) ?? null;
@@ -726,11 +768,15 @@ export function SessionView() {
               // Source Control pins the composer and the sync verbs and scrolls
               // the lists itself, so the host must not wrap it in a scroller.
               scroll: "self" as const,
+              // Both Source Control and Checkpoints act on the session's folder,
+              // so both name it — and offer the way back to it.
+              scope: <RailScopeLine projectPath={active.cwd} onGoToProject={goToProject} />,
               content: <SourceControlPanel projectPath={active.cwd} />,
             },
             {
               id: "checkpoints" as const,
               count: checkpoints?.checkpoints.length ?? 0,
+              scope: <RailScopeLine projectPath={active.cwd} onGoToProject={goToProject} />,
               content: <CheckpointsSection projectPath={active.cwd} entryIds={activeEntryIds} />,
             },
             ...(officeDocuments?.available
@@ -738,7 +784,10 @@ export function SessionView() {
                   {
                     id: "documents" as const,
                     count: officeDocuments.panes.length,
-                    content: <DocumentsSection />,
+                    // Documents is app-wide, so its scope row names the session
+                    // that owns the bridge and offers the way to move it.
+                    scope: <DocumentsScope panes={officeDocuments.panes} />,
+                    content: <DocumentsSection isHost={documentsIsHost} />,
                   },
                 ]
               : []),

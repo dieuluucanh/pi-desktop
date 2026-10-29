@@ -45,6 +45,8 @@ function checkpoint(overrides: Partial<Checkpoint> = {}): Checkpoint {
 
 interface FakeStore extends CheckpointStore {
   snapshots: SnapshotRequest[];
+  /** The folder each snapshot was taken in, parallel to `snapshots`. */
+  snapshotCwds: string[];
   restores: { ref: string; removeAdded?: boolean }[];
   pruneCalls: number;
   /** Ordered log of every mutating call, for the ordering/mutex assertions. */
@@ -61,6 +63,7 @@ function fakeStore(overrides: Partial<FakeStore> = {}): FakeStore {
   const events: string[] = [];
   const store: FakeStore = {
     snapshots: [],
+    snapshotCwds: [],
     restores: [],
     pruneCalls: 0,
     events,
@@ -82,8 +85,9 @@ function fakeStore(overrides: Partial<FakeStore> = {}): FakeStore {
     async ensure() {
       return { ok: true, shadowDir: "/profile/checkpoints/reports" };
     },
-    async snapshot(_cwd, request) {
+    async snapshot(cwd, request) {
       store.snapshots.push(request);
+      store.snapshotCwds.push(cwd);
       store.events.push(`snapshot:${request.kind}`);
       const index = store.snapshots.length - 1;
       const result = store.snapshotOutcome(request, index);
@@ -160,6 +164,9 @@ function harness(overrides: Partial<CheckpointServiceDeps> = {}): Harness {
     config: async () => config,
     attachedPanes: () => panes,
     tabs: () => tabs,
+    // The idle scan is restricted to the Office host's folder, so the harness
+    // models a host in PROJECT unless a case says otherwise.
+    officeHostProjectPath: () => PROJECT,
     onChange: (state) => emitted.push(state),
     now: () => clock,
     ...overrides,
@@ -542,6 +549,73 @@ describe("the idle scan (D15)", () => {
     // No `get()` for PROJECT: nobody is looking at it.
     await h.service.tick();
     expect(h.store.snapshots).toEqual([]);
+  });
+
+  it("does not snapshot another project the rail merely visited", async () => {
+    // The regression this step fixes: opening one workbook used to start
+    // collecting "Office documents changed" checkpoints in every folder the rail
+    // had ever asked about.
+    const other = "/work/unrelated";
+    const fingerprints: Record<string, string> = { [PROJECT]: "v1", [other]: "a1" };
+    const h = scanning({ fingerprint: async (path) => fingerprints[path] ?? "x" });
+    h.setPanes([pane("Report.docx")]);
+    await h.service.get(PROJECT);
+    await h.service.get(other);
+    // Baseline both.
+    await h.service.tick();
+    expect(h.store.snapshots).toEqual([]);
+
+    // Both folders change; only the host's folder may be captured.
+    fingerprints[PROJECT] = "v2";
+    fingerprints[other] = "a2";
+    h.advance(DEFAULT_CHECKPOINT_CONFIG.scanIntervalMs);
+    await h.service.tick();
+
+    expect(h.store.snapshots).toHaveLength(1);
+    // The capture happened in the host's folder, not the other one.
+    expect(h.store.snapshotCwds).toEqual([PROJECT]);
+  });
+
+  it("does nothing when no session owns the Office bridge", async () => {
+    const h = scanning({
+      fingerprint: async () => "v1",
+      officeHostProjectPath: () => null,
+    });
+    h.setPanes([pane("Report.docx")]);
+    await h.service.get(PROJECT);
+    await h.service.tick();
+    expect(h.store.snapshots).toEqual([]);
+  });
+
+  it("does nothing when the host works in a different folder", async () => {
+    let fingerprint = "v1";
+    const h = scanning({
+      fingerprint: async () => fingerprint,
+      officeHostProjectPath: () => "/work/host-elsewhere",
+    });
+    h.setPanes([pane("Report.docx")]);
+    await h.service.get(PROJECT);
+    await h.service.tick();
+    fingerprint = "v2";
+    h.advance(DEFAULT_CHECKPOINT_CONFIG.scanIntervalMs);
+    await h.service.tick();
+    // A pane is attached and this folder changed, but it is not the host's.
+    expect(h.store.snapshots).toEqual([]);
+  });
+
+  it("matches the host folder through case and separator differences", async () => {
+    let fingerprint = "v1";
+    const h = scanning({
+      fingerprint: async () => fingerprint,
+      officeHostProjectPath: () => `${PROJECT.toUpperCase()}/`,
+    });
+    h.setPanes([pane("Report.docx")]);
+    await h.service.get(PROJECT);
+    await h.service.tick();
+    fingerprint = "v2";
+    h.advance(DEFAULT_CHECKPOINT_CONFIG.scanIntervalMs);
+    await h.service.tick();
+    expect(h.store.snapshots).toHaveLength(1);
   });
 });
 

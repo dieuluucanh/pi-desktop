@@ -1,14 +1,19 @@
 /**
- * The Documents section body (git-checkpoint plan step 10).
+ * The Documents section body.
  *
- * This is the pane registry panel that used to be the whole right rail (plan
- * step 20), moved into the rail as one collapsible section. The body is
- * unchanged on purpose: every row, test id and action still does what it did,
- * because the refactor is about *where* it lives, not what it does.
+ * The pane registry the bridge publishes on `/health`, as a list. It renders
+ * nothing until the bridge answers (plan D-A10: no Office surface when Office was
+ * never set up), and an empty state that says exactly what to open when the
+ * bridge is up but no document is attached.
  *
- * It renders nothing until the bridge answers `/health` (plan D-A10: no Office
- * surface when Office was never set up), and an empty state that says exactly
- * what to open when the bridge is up but no document is attached.
+ * **Host awareness (plan D10).** The bridge is app-wide, but an `office_*` call
+ * is served by exactly one session: the tab that owns port 38617. So the two
+ * actions that write into the composer — *Chat about this* and *Insert #mention*
+ * — are only enabled **in the host session**; everywhere else they are disabled
+ * and a line says why and points at the scope row's *Use this session instead*.
+ * Offering a button whose prompt can never be served is worse than offering the
+ * fix, and this body has no way to move the bridge itself: the scope row above it
+ * owns that, which is why `OfficeHostFooter` no longer lives here.
  */
 
 import { useState, type ReactNode } from "react";
@@ -44,7 +49,7 @@ function CopyButton({ value, label }: { value: string; label: string }) {
   );
 }
 
-function PaneRow({ pane }: { pane: OfficeDocumentPane }) {
+function PaneRow({ pane, isHost }: { pane: OfficeDocumentPane; isHost: boolean }) {
   const chatAboutDocument = useAppStore((state) => state.chatAboutDocument);
   const setDraft = useAppStore((state) => state.setDraft);
   const activeTabId = useAppStore((state) => state.activeTabId);
@@ -95,6 +100,9 @@ function PaneRow({ pane }: { pane: OfficeDocumentPane }) {
           size="sm"
           variant="secondary"
           aria-label={`Chat about ${pane.documentName ?? "this document"}`}
+          // Only the host session can serve the `office_*` call the tag implies.
+          disabled={!isHost}
+          title={isHost ? undefined : NOT_HOST_REASON}
           onClick={() => chatAboutDocument(pane)}
         >
           Chat about this
@@ -103,6 +111,8 @@ function PaneRow({ pane }: { pane: OfficeDocumentPane }) {
           size="sm"
           variant="ghost"
           aria-label="Insert document mention"
+          disabled={!isHost}
+          title={isHost ? undefined : NOT_HOST_REASON}
           onClick={insertMention}
         >
           Insert #{pane.mention}
@@ -134,39 +144,17 @@ function EmptyState() {
   );
 }
 
-/** Who owns the bridge port, and how to move it (plan step 20 session management). */
-function OfficeHostFooter() {
-  const tabs = useAppStore((state) => state.tabs);
-  const activeTabId = useAppStore((state) => state.activeTabId);
-  const promote = useAppStore((state) => state.promoteToOfficeHost);
-
-  const officeTab = tabs.find((tab) => tab.kind === "office") ?? null;
-  if (officeTab) {
-    return (
-      <p className="border-t border-line px-3 py-2 text-[11px] text-ink-faint">
-        Office host: <span className="text-ink-muted">{officeTab.title}</span> · port 38617
-      </p>
-    );
-  }
-  const active = tabs.find((tab) => tab.id === activeTabId) ?? null;
-  if (!active) return null;
-  return (
-    <div className="border-t border-line px-3 py-2 text-[11px] text-ink-faint">
-      <p>No session owns the Office host port.</p>
-      <Button
-        size="sm"
-        variant="secondary"
-        className="mt-1"
-        onClick={() => void promote(active.id)}
-        aria-label="Promote to Office host"
-      >
-        Promote to Office host
-      </Button>
-    </div>
-  );
-}
+/** Why the two composer actions are unavailable outside the host session. */
+const NOT_HOST_REASON =
+  'Only the Office host session can serve this. Use "Use this session instead" above.';
 
 export interface DocumentsSectionProps {
+  /**
+   * Whether the **active** session is the Office host (the tab that owns bridge
+   * port 38617). Resolved by the caller through `officeDocumentScope` so the
+   * renderer applies the same predicate main does.
+   */
+  isHost: boolean;
   /**
    * Rendered at the right of the section's toolbar. The standalone panel passes
    * its close button here; inside the rail the section header owns collapsing,
@@ -176,7 +164,7 @@ export interface DocumentsSectionProps {
 }
 
 /** The pane list, with its toolbar, empty state and host footer. */
-export function DocumentsSection({ trailing }: DocumentsSectionProps) {
+export function DocumentsSection({ isHost, trailing }: DocumentsSectionProps) {
   const view = useAppStore((state) => state.officeDocuments);
   const refresh = useAppStore((state) => state.refreshOfficeDocuments);
 
@@ -200,6 +188,17 @@ export function DocumentsSection({ trailing }: DocumentsSectionProps) {
         </div>
       </div>
 
+      {isHost ? null : (
+        <p
+          className="border-b border-line px-3 py-1 text-[11px] text-ink-faint"
+          data-testid="documents-not-host"
+        >
+          This session is not the Office host, so these documents cannot be used from its prompts.
+          Use <span className="text-ink-muted">Use this session instead</span> above to move the
+          bridge here.
+        </p>
+      )}
+
       {view.compatibility && view.compatibility.shape === "older" ? (
         <p className="border-b border-line px-3 py-1 text-[11px] text-warn">
           {view.compatibility.summary}
@@ -212,7 +211,7 @@ export function DocumentsSection({ trailing }: DocumentsSectionProps) {
         ) : (
           <ul className="flex flex-col gap-2 p-2">
             {view.panes.map((pane) => (
-              <PaneRow key={pane.paneId ?? pane.mention} pane={pane} />
+              <PaneRow key={pane.paneId ?? pane.mention} pane={pane} isHost={isHost} />
             ))}
           </ul>
         )}
@@ -229,7 +228,6 @@ export function DocumentsSection({ trailing }: DocumentsSectionProps) {
         >
           Open Office
         </a>
-        <OfficeHostFooter />
       </div>
     </div>
   );

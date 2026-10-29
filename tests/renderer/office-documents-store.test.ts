@@ -42,12 +42,17 @@ const excelPane = parseOfficeDocumentPane({
   lastSeen: 1_000,
 });
 
+/**
+ * The default tab **is** the Office host: `chatAboutDocument` only writes in the
+ * session that owns bridge port 38617, so the prepend cases need a host. The
+ * non-host behaviour has its own describe block below.
+ */
 function resetStore() {
   installBridge();
   useAppStore.setState({
     prefs: { ...DEFAULT_PREFS, drafts: {}, rail: { ...DEFAULT_PREFS.rail, open: false } },
     project: { path: PROJECT, name: "app" },
-    tabs: [tab()],
+    tabs: [tab({ kind: "office", title: "Office" })],
     activeTabId: "tab-1",
     officeDocuments: null,
     officeDocumentsLoaded: false,
@@ -103,7 +108,7 @@ describe("office documents store", () => {
     expect(useAppStore.getState().prefs.rail.open).toBe(false);
   });
 
-  it("prepends the document tag to the active draft, keeping the user's text", () => {
+  it("prepends the document tag in the host session, keeping the user's text", () => {
     useAppStore.getState().setDraft("tab-1", "summarize this");
 
     const target = useAppStore.getState().chatAboutDocument(excelPane!);
@@ -149,5 +154,66 @@ describe("office documents store", () => {
     expect(promoteOfficeHost).toHaveBeenCalledWith("tab-1");
     expect(useAppStore.getState().tabs[0]?.kind).toBe("office");
     expect(useAppStore.getState().hint).toMatch(/office host/i);
+  });
+});
+
+describe("chat about this follows the host session", () => {
+  const PANE = excelPane!;
+
+  it("leaves the draft untouched and explains in a non-host session", () => {
+    useAppStore.getState().setDraft("tab-1", "keep me");
+    useAppStore.setState({
+      // The host is another tab; this one is a sibling in the same project.
+      tabs: [
+        tab({ id: "tab-1", cwd: PROJECT }),
+        tab({ id: "tab-office", kind: "office", title: "Office" }),
+      ],
+      activeTabId: "tab-1",
+    });
+
+    const target = useAppStore.getState().chatAboutDocument(PANE);
+
+    expect(target).toBeNull();
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("keep me");
+    // The hint names the host and the one action that fixes it.
+    const hint = useAppStore.getState().hint ?? "";
+    expect(hint).toMatch(/Office/);
+    expect(hint).toMatch(/use this session instead/i);
+  });
+
+  it("never writes a tag, even into an empty draft", () => {
+    useAppStore.setState({
+      tabs: [tab({ id: "tab-1" }), tab({ id: "tab-office", kind: "office" })],
+      activeTabId: "tab-1",
+    });
+    useAppStore.getState().chatAboutDocument(PANE);
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBeUndefined();
+  });
+
+  it("points at starting a session when no host exists at all", () => {
+    useAppStore.setState({ tabs: [tab({ id: "tab-1" })], activeTabId: "tab-1" });
+    expect(useAppStore.getState().chatAboutDocument(PANE)).toBeNull();
+    expect(useAppStore.getState().hint).toMatch(/start an office session/i);
+  });
+
+  it("ignores a stopped office tab as a host", () => {
+    useAppStore.setState({
+      tabs: [tab({ id: "tab-1" }), tab({ id: "tab-office", kind: "office", status: "stopped" })],
+      activeTabId: "tab-1",
+    });
+    expect(useAppStore.getState().chatAboutDocument(PANE)).toBeNull();
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBeUndefined();
+  });
+
+  it("still prepends exactly once in the host session", () => {
+    useAppStore.setState({
+      tabs: [tab({ id: "tab-office", kind: "office" })],
+      activeTabId: "tab-office",
+    });
+    useAppStore.getState().chatAboutDocument(PANE);
+    useAppStore.getState().chatAboutDocument(PANE);
+    expect(
+      useAppStore.getState().prefs.drafts["tab-office"]?.match(/\[office:excel/g),
+    ).toHaveLength(1);
   });
 });

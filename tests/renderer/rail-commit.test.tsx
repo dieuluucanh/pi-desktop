@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { CommitBox } from "../../src/renderer/src/rail/CommitBox";
@@ -258,11 +258,21 @@ describe("committing", () => {
 });
 
 describe("amend", () => {
+  /** Amend lives in the inline `⋯` list now; open it first. */
+  async function openOptions(): Promise<void> {
+    await userEvent.click(screen.getByRole("button", { name: "Commit options" }));
+  }
+
+  async function clickAmend(): Promise<void> {
+    await openOptions();
+    await userEvent.click(screen.getByRole("menuitemcheckbox", { name: "Amend last commit" }));
+  }
+
   it("prefills HEAD's whole message", async () => {
     seed(STAGED, "feat: subject\n\nA body that must survive.");
     render(<CommitBox projectPath={PROJECT} />);
 
-    await userEvent.click(screen.getByRole("switch", { name: "Amend last commit" }));
+    await clickAmend();
 
     await waitFor(() =>
       expect(screen.getByLabelText("Commit message")).toHaveValue(
@@ -276,7 +286,7 @@ describe("amend", () => {
     seed(STAGED, "old message");
     render(<CommitBox projectPath={PROJECT} />);
 
-    await userEvent.click(screen.getByRole("switch", { name: "Amend last commit" }));
+    await clickAmend();
     await waitFor(() => expect(screen.getByLabelText("Commit message")).toHaveValue("old message"));
     await userEvent.click(screen.getByRole("button", { name: "Amend commit" }));
 
@@ -294,7 +304,7 @@ describe("amend", () => {
     render(<CommitBox projectPath={PROJECT} />);
 
     await userEvent.type(screen.getByLabelText("Commit message"), "first commit");
-    await userEvent.click(screen.getByRole("switch", { name: "Amend last commit" }));
+    await clickAmend();
 
     await waitFor(() =>
       expect(handles.gitCalls.some((call) => call.kind === "head-message")).toBe(true),
@@ -372,5 +382,163 @@ describe("keyboard", () => {
     fireEvent.keyDown(textarea, { key: "Escape" });
 
     expect(textarea).toHaveValue("work in progress");
+  });
+});
+
+describe("the compact composer", () => {
+  const NO_IDENTITY = snapshot({
+    staged: [file("src/a.ts", { staged: true, unstaged: false })],
+    repo: { ...snapshot().repo!, identity: null },
+  });
+
+  async function openOptions(): Promise<void> {
+    await userEvent.click(screen.getByRole("button", { name: "Commit options" }));
+  }
+
+  it("is two rows tall and does not resize", () => {
+    render(<CommitBox projectPath={PROJECT} />);
+    const textarea = screen.getByLabelText("Commit message");
+    expect(textarea).toHaveAttribute("rows", "2");
+    // A free-resizing box would push the button out of a 500 px block.
+    expect(textarea).toHaveClass("resize-none");
+  });
+
+  it("keeps the counter and the identity on one meta row", () => {
+    render(<CommitBox projectPath={PROJECT} />);
+    const counter = screen.getByTestId("commit-counter");
+    const identity = screen.getByTestId("commit-identity");
+    // Same parent: one row, not two stacked lines.
+    expect(counter.parentElement).toBe(identity.parentElement);
+    expect(identity).toHaveTextContent("Ada <ada@example.com>");
+    expect(identity).toHaveAttribute("title", "Ada <ada@example.com>");
+  });
+
+  it("truncates a long identity but keeps the whole text in the title", () => {
+    seed(
+      snapshot({
+        staged: [file("src/a.ts", { staged: true, unstaged: false })],
+        repo: {
+          ...snapshot().repo!,
+          identity: { name: "A Very Long Name", email: "a.long@example.com", source: "repo" },
+        },
+      }),
+    );
+    render(<CommitBox projectPath={PROJECT} />);
+    const identity = screen.getByTestId("commit-identity");
+    expect(identity).toHaveAttribute("title", "A Very Long Name <a.long@example.com>");
+    // The visible span is the truncating one, so the badge never gets pushed out.
+    expect(identity.querySelector(".truncate")).not.toBeNull();
+  });
+
+  it("says so when there is no identity at all", () => {
+    seed(NO_IDENTITY);
+    render(<CommitBox projectPath={PROJECT} />);
+    expect(screen.getByTestId("commit-identity")).toHaveTextContent("No identity");
+  });
+
+  it("opens the options list with the state it is in", async () => {
+    render(<CommitBox projectPath={PROJECT} />);
+    const trigger = screen.getByRole("button", { name: "Commit options" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("commit-options")).not.toBeInTheDocument();
+
+    await openOptions();
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("commit-options")).toBeInTheDocument();
+    expect(trigger).toHaveAttribute("aria-controls", "commit-options");
+    expect(screen.getByRole("menuitemcheckbox", { name: "Amend last commit" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+  });
+
+  it("offers Change identity when one exists, Set identity when not", async () => {
+    render(<CommitBox projectPath={PROJECT} />);
+    await openOptions();
+    expect(screen.getByRole("menuitem", { name: "Change identity" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Set identity" })).not.toBeInTheDocument();
+    cleanup();
+
+    seed(NO_IDENTITY);
+    render(<CommitBox projectPath={PROJECT} />);
+    await openOptions();
+    expect(screen.getByRole("menuitem", { name: "Set identity" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Change identity" })).not.toBeInTheDocument();
+  });
+
+  it("opens the identity form from the options list", async () => {
+    seed(NO_IDENTITY);
+    render(<CommitBox projectPath={PROJECT} />);
+    expect(screen.queryByTestId("identity-form")).not.toBeInTheDocument();
+
+    await openOptions();
+    await userEvent.click(screen.getByRole("menuitem", { name: "Set identity" }));
+
+    expect(screen.getByTestId("identity-form")).toBeInTheDocument();
+    // Choosing it closes the list; two open panels in one column is clutter.
+    expect(screen.queryByTestId("commit-options")).not.toBeInTheDocument();
+    // Consent is still required before the write is dispatched.
+    expect(screen.getByRole("button", { name: "Save identity" })).toBeDisabled();
+  });
+
+  it("still requires the consent checkbox after entering the form this way", async () => {
+    seed(NO_IDENTITY);
+    render(<CommitBox projectPath={PROJECT} />);
+    await openOptions();
+    await userEvent.click(screen.getByRole("menuitem", { name: "Set identity" }));
+
+    await userEvent.type(screen.getByLabelText("Commit name"), "Ada Lovelace");
+    await userEvent.type(screen.getByLabelText("Commit email"), "ada@example.com");
+    expect(screen.getByRole("button", { name: "Save identity" })).toBeDisabled();
+    expect(handles.gitCalls.some((call) => call.kind === "action")).toBe(false);
+
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: "Write identity to this repository" }),
+    );
+    expect(screen.getByRole("button", { name: "Save identity" })).toBeEnabled();
+  });
+
+  it("closes the list on Escape and returns focus to the trigger", async () => {
+    render(<CommitBox projectPath={PROJECT} />);
+    const trigger = screen.getByRole("button", { name: "Commit options" });
+    await openOptions();
+    expect(screen.getByTestId("commit-options")).toBeInTheDocument();
+
+    await userEvent.keyboard("{Escape}");
+
+    expect(screen.queryByTestId("commit-options")).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("marks amend as a checkbox in the list and reflects it back", async () => {
+    seed(STAGED, "old message");
+    render(<CommitBox projectPath={PROJECT} />);
+    await openOptions();
+    const amendItem = screen.getByRole("menuitemcheckbox", { name: "Amend last commit" });
+    await userEvent.click(amendItem);
+
+    await waitFor(() => expect(screen.getByLabelText("Commit message")).toHaveValue("old message"));
+    // The list closes on use; reopening shows the mode is on.
+    await openOptions();
+    expect(screen.getByRole("menuitemcheckbox", { name: "Amend last commit" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Amend commit" })).toBeInTheDocument();
+  });
+
+  it("keeps Set identity reachable from the blocked reason line", () => {
+    seed(NO_IDENTITY);
+    render(<CommitBox projectPath={PROJECT} />);
+    // The reason line must not depend on the options list being open.
+    expect(screen.getByTestId("commit-reason")).toHaveTextContent("Tell git who you are.");
+    expect(screen.getByRole("button", { name: "Set identity" })).toBeInTheDocument();
+  });
+
+  it("keeps the primary button full width and computed", () => {
+    seed(snapshot({ changed: [file("src/a.ts")] }));
+    render(<CommitBox projectPath={PROJECT} />);
+    // Nothing staged but changes present: the label promises to stage first.
+    expect(screen.getByRole("button", { name: "Stage all and commit" })).toBeInTheDocument();
   });
 });

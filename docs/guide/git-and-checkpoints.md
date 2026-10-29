@@ -14,18 +14,39 @@ the panel's width are remembered per app.
 
 ## The Source Control menu
 
-It reads top to bottom in the order you work:
+The menu is **three blocks**, stacked, each with its own scrollbar:
 
-1. **The branch line** — branch (or _detached @ sha_, or _no commits yet_), `↑n ↓n`
-   against the upstream, and a _Switch_ list that also creates branches.
-2. **The commit box** — a message, <kbd>Ctrl/Cmd</kbd>+<kbd>Enter</kbd> to commit, an
-   _Amend_ switch that prefills the previous message, and the identity it will use.
-3. **Fetch · Pull · Push** — three buttons that name their target, disabled without
-   an upstream.
-4. **Changes**, **Stashes** and **History** — the scrolling half of the panel.
+1. **Source Control** — the branch row, the commit box and Stashes.
+2. **Changes** — _Staged Changes_ and _Changes_.
+3. **Commit History** — the log.
 
-The branch line, the commit box and the sync buttons stay pinned: you can scroll a
-long change list or commit log without losing the message you are writing.
+Because each block scrolls on its own, a long change list can no longer push the
+history off the bottom (and scrolling to a commit cannot scroll your staged files
+away). Drag the divider between two blocks to give one more room; double-click a
+divider to reset. With the divider focused, <kbd>↑</kbd>/<kbd>↓</kbd> nudge it,
+<kbd>Shift</kbd> nudges further, and <kbd>Home</kbd>/<kbd>End</kbd> jump to the
+extremes. No block can shrink below a readable 80 px, and the split is remembered
+across launches.
+
+The top block, one row at a time:
+
+- **The branch row** — the branch name is the switch button (or _detached @ sha_,
+  or _no commits yet_), `↑n ↓n` beside it, then Fetch, Pull and Push as icons.
+  Their tooltip names the target. A line appears underneath **only** when
+  something is unavailable ("no upstream", "no remote is configured").
+- **The commit box** — a message, <kbd>Ctrl/Cmd</kbd>+<kbd>Enter</kbd> to commit,
+  the counter and the identity it will use, and a <kbd>⋯</kbd> menu holding
+  _Amend last commit_ (which prefills the previous message) plus _Change_ /
+  _Set identity_.
+- **Stashes** — collapsed by default, with the count and _Stash changes_ still
+  visible in the header. Open it for _Restore_ and _Drop_.
+
+_Staged Changes_, _Changes_ and _Stashes_ each fold away when you click their
+header, and the fold is remembered. _Stage all_ / _Unstage all_ are separate
+buttons, so bulk-staging never folds the list you are working through.
+
+The scope line under the menu title names the **folder** this menu acts on (the
+active session's folder) and gives you _Go to project_.
 
 ## What it needs
 
@@ -39,14 +60,15 @@ Nothing fails silently.
 
 ## Changes and History
 
-- **Changes** shows two groups, _Staged Changes_ and _Changes_, with `M`/`A`/`D`/`R`/`U`
-  badges, a per-file hover menu (stage, unstage, discard, open diff), and
-  group-level _Stage all_ / _Unstage all_. A discard of a tracked file is a
-  `git checkout --`; a discard of an **untracked** file moves it to the OS trash,
-  not to oblivion.
+- **Changes** shows two collapsible groups, _Staged Changes_ and _Changes_, with
+  `M`/`A`/`D`/`R`/`U` badges, a per-file hover menu (stage, unstage, discard, open
+  diff), and group-level _Stage all_ / _Unstage all_. A discard of a tracked file
+  is a `git checkout --`; a discard of an **untracked** file moves it to the OS
+  trash, not to oblivion.
 - **History** lists commits, newest first, with _Load more_. Clicking one opens
   its diff.
-- **Stashes** lists what is parked, with _Restore_ and _Drop_, plus _Stash changes_.
+- **Stashes** (collapsed until you open it, or until you use _Stash changes_)
+  lists what is parked, with _Restore_ and _Drop_.
   **Hunk staging.** The diff viewer renders each hunk with _Stage hunk_ (for a
   working file) or _Unstage hunk_ (for a staged one). A binary file shows one
   "binary file changed" row with _Reveal in file manager_.

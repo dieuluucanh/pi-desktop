@@ -210,6 +210,10 @@ describe("rail and checkpoint preferences", () => {
       activeMenu: "source-control",
       width: 400,
       order: ["source-control", "checkpoints", "documents"],
+      // The stale `sections` key is dropped and the two newer records take their
+      // defaults, so a document written before the three-block layout loads.
+      split: { top: 0.34, middle: 0.4 },
+      collapsed: { staged: false, changed: false, stashes: true },
     });
   });
 

@@ -141,11 +141,26 @@ renderer's Tailwind scan root, so `styles.css` also declares them with
   beside one resizable panel body. Clicking an entry expands its body, clicking
   the active entry collapses it back to the strip, and the strip's order is
   user-adjustable (drag, or the per-entry reorder list). `prefs.rail` persists
-  `{ open, activeMenu, width, order }`; the strip is never unmounted, which is
-  what makes it the stable entry point (the old header button was gated on the
-  Office bridge and so came and went). A menu this session does not have —
-  Documents with no `/health` — is resolved at render time to the first
+  `{ open, activeMenu, width, order, split, collapsed }`; the strip is never
+  unmounted, which is what makes it the stable entry point (the old header button
+  was gated on the Office bridge and so came and went). A menu this session does
+  not have — Documents with no `/health` — is resolved at render time to the first
   available menu without rewriting the user's choice.
+- **Source Control is three blocks (2026-10-29 plan).** The body stacks
+  Source Control (branch row, commit composer, collapsible Stashes), Changes and
+  Commit History, each with its own scroller, separated by two draggable
+  `BlockSplitter`s whose sizes persist in `prefs.rail.split`. `Staged Changes`,
+  `Changes` and `Stashes` fold independently (`prefs.rail.collapsed`; Stashes
+  start collapsed). A render-time clamp is never written back — only a drag, a
+  key or a double-click reset persists.
+- **The scope line.** A pinned row under each panel title names what that menu
+  acts on: the session's folder (Source Control, Checkpoints) or the Office host
+  session and its project (Documents). `RightRail` renders it from
+  `RailMenuSpec.scope`, **outside** the body's scroll container, so a scrolling
+  Checkpoints list cannot carry it away. Source Control and Checkpoints offer
+  _Go to project_; Documents offers _Open host session_ and, from a non-host
+  session, _Use this session instead_, which moves bridge port 38617 behind a
+  confirmation.
 - **Documents section (plan step 20).** One of those three menus. It renders only
   while the bridge answers `/health` (plan D-A10) and lists every attached task
   pane with its facts and actions. The registry is the main process's `/health`
@@ -153,7 +168,12 @@ renderer's Tailwind scan root, so `styles.css` also declares them with
   `office:documents-state`; the pure projection lives in
   `src/shared/office-documents.ts` and also feeds the `#` completion source and
   the office tool cards. A session tab that owns port 38617 is the **Office
-  host**; the menu's footer names it or offers _Promote to Office host_.
+  host**; the menu appears in **every** session (so the user can see Office is
+  running) and its scope line names the host session and project, offering _Open
+  host session_ / _Use this session instead_. In a non-host session the two
+  composer actions are disabled and `#` completion returns nothing, because only
+  the host can serve the `office_*` call; the scope line explains and offers the
+  fix.
 - **Web tabs (plan step 21).** A `web` tab is a page the app did not write — a
   Plannotator review served on a loopback port, or any localhost UI. It has no Pi
   host: `src/shared/session-ipc.ts` carries only its record (`url`,

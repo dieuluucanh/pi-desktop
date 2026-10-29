@@ -656,6 +656,10 @@ const checkpointService = createCheckpointService({
   },
   attachedPanes: () => officeDocuments.get().panes,
   tabs: () => sessions?.tabs() ?? [],
+  // The folder the bridge's owning session works in. Same predicate the renderer
+  // uses (`officeHostTab`), stated here because main has the tab list directly.
+  officeHostProjectPath: () =>
+    sessions?.tabs().find((tab) => tab.kind === "office" && tab.status !== "stopped")?.cwd ?? null,
   runSnapshots: () => !safeMode,
   onChange: (state) => {
     lastCheckpointState = state;

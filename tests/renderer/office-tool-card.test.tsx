@@ -42,7 +42,9 @@ const excelPane = parseOfficeDocumentPane({
 function tab(): TabRecord {
   return {
     id: "tab-1",
-    kind: "session",
+    // The active tab must be the Office host for "chat about this" to write a
+    // tag; a non-host session correctly refuses and sets a hint instead.
+    kind: "office",
     cwd: "C:/work/app",
     title: "app",
     sessionFile: null,

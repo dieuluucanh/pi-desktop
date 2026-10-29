@@ -1,8 +1,23 @@
 /**
- * The commit box (git-checkpoint plan step 12).
+ * The commit box.
  *
- * A message, an amend switch, the account the commit will be attributed to, and
- * one button. The three rules that keep it honest:
+ * The composer is the tallest fixed thing in a 320 px column, so it is shaped
+ * around frequency: the message and the button are used constantly, amend
+ * occasionally, the identity almost never.
+ *
+ * ```text
+ *  ┌ 2-row textarea ────────────────────┐
+ *  │ 0 / 20000 · Ada <ada@…> [global] ⋯ │  meta row
+ *  │ (reason line, only when blocked)   │
+ *  │ [ Commit ]                         │  full width
+ *  └────────────────────────────────────┘
+ * ```
+ *
+ * The `⋯` list is **inline**, like the rail strip's reorder menu: a portal popup
+ * in this column clips and steals pointer events. It holds *Amend last commit*,
+ * and whichever of *Change identity* / *Set identity* applies.
+ *
+ * The three rules that keep it honest:
  *
  *  - **The button says what it will do.** With nothing staged but changes
  *    present it reads *Stage all and commit* and stages first, so the click
@@ -14,10 +29,10 @@
  *    never executed on the user's behalf.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Ellipsis } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Switch } from "../ui/switch";
 import { useAppStore } from "../state/app-store";
 import { commitReadiness, identitySummary, messageCount, primaryActionLabel } from "./commit-view";
 
@@ -35,9 +50,25 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
   const [amend, setAmend] = useState(false);
   const [busy, setBusy] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const optionsTrigger = useRef<HTMLButtonElement | null>(null);
   const [consent, setConsent] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+
+  // Escape closes the options list and hands focus back to its trigger, so a
+  // keyboard user is never stranded in a list they cannot see.
+  useEffect(() => {
+    if (!optionsOpen) return;
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setOptionsOpen(false);
+      optionsTrigger.current?.focus();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [optionsOpen]);
 
   // Nothing to commit from a folder git cannot serve.
   if (!snapshot?.available) return null;
@@ -75,6 +106,7 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
 
   const onAmendChange = async (next: boolean): Promise<void> => {
     setAmend(next);
+    setOptionsOpen(false);
     if (!next) return;
     const head = await loadHeadCommitMessage(projectPath);
     if (head !== null) setMessage(head);
@@ -103,7 +135,7 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
       <textarea
         aria-label="Commit message"
         placeholder="Commit message"
-        rows={3}
+        rows={2}
         value={message}
         onChange={(event) => setMessage(event.target.value)}
         onKeyDown={(event) => {
@@ -117,39 +149,92 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
             event.currentTarget.blur();
           }
         }}
-        className="w-full resize-y rounded-sm border border-line bg-sunken px-2 py-1 text-xs text-ink outline-none focus:border-accent"
+        className="w-full resize-none rounded-sm border border-line bg-sunken px-2 py-1 text-xs text-ink outline-none focus:border-accent"
       />
 
+      {/* Meta row: how long the message is, who it is attributed to, options. */}
       <div className="flex items-center gap-2 text-[11px] text-ink-faint">
         <span data-testid="commit-counter" className={count.over ? "text-danger" : undefined}>
           {count.text}
         </span>
-        <label className="ml-auto flex items-center gap-1">
-          <Switch
-            checked={amend}
-            onCheckedChange={(next) => void onAmendChange(next)}
-            aria-label="Amend last commit"
-          />
-          Amend
-        </label>
+        {summary ? (
+          <span
+            className="flex min-w-0 flex-1 items-center gap-1"
+            data-testid="commit-identity"
+            title={summary.label}
+          >
+            <span className="min-w-0 flex-1 truncate">{summary.label}</span>
+            <Badge tone={summary.local ? "accent" : "neutral"}>{summary.sourceLabel}</Badge>
+          </span>
+        ) : (
+          <span className="min-w-0 flex-1 truncate" data-testid="commit-identity">
+            No identity
+          </span>
+        )}
+        <button
+          ref={optionsTrigger}
+          type="button"
+          className="shrink-0 rounded-xs px-1 text-ink-faint hover:bg-raised hover:text-ink"
+          aria-label="Commit options"
+          aria-expanded={optionsOpen}
+          aria-controls="commit-options"
+          onClick={() => setOptionsOpen((open) => !open)}
+        >
+          <Ellipsis className="size-3" aria-hidden />
+        </button>
       </div>
 
-      {summary ? (
+      {/*
+        Inline, not a portal popup: this column is 320 px wide, so a floating menu
+        clips and steals pointer events (the branch list made the same call).
+      */}
+      {optionsOpen ? (
         <div
-          className="flex items-center gap-1 text-[11px] text-ink-faint"
-          data-testid="commit-identity"
+          className="flex flex-col gap-0.5 rounded-sm border border-line bg-raised/40 p-1"
+          id="commit-options"
+          role="menu"
+          data-testid="commit-options"
         >
-          <span className="min-w-0 flex-1 truncate" title={summary.label}>
-            {summary.label}
-          </span>
-          <Badge tone={summary.local ? "accent" : "neutral"}>{summary.sourceLabel}</Badge>
           <button
             type="button"
-            className="text-ink-faint underline hover:text-ink"
-            onClick={() => setIdentityOpen((open) => !open)}
+            role="menuitemcheckbox"
+            aria-checked={amend}
+            aria-label="Amend last commit"
+            className="flex items-center gap-1.5 rounded-xs px-1 py-0.5 text-left text-[11px] hover:bg-raised"
+            onClick={() => void onAmendChange(!amend)}
           >
-            Change
+            <span aria-hidden className="w-3">
+              {amend ? "✓" : ""}
+            </span>
+            Amend last commit
           </button>
+          {identity ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="rounded-xs px-1 py-0.5 text-left text-[11px] hover:bg-raised"
+              onClick={() => {
+                setOptionsOpen(false);
+                setIdentityOpen(true);
+              }}
+            >
+              Change identity
+            </button>
+          ) : (
+            <button
+              type="button"
+              role="menuitem"
+              className="rounded-xs px-1 py-0.5 text-left text-[11px] hover:bg-raised"
+              onClick={() => {
+                setOptionsOpen(false);
+                setIdentityOpen(true);
+              }}
+            >
+              Set identity
+            </button>
+          )}
+          {/* Amend is a mode, not a one-shot: the button below reads "Amend commit"
+              while it is on, and the list says so when it is. */}
         </div>
       ) : null}
 

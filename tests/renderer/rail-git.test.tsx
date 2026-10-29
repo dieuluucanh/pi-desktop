@@ -1,10 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
-import { GitBranchBar, GitSyncRow, StashList } from "../../src/renderer/src/rail/GitSection";
+import { GitBranchRow, GitSyncNote, StashList } from "../../src/renderer/src/rail/GitSection";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import {
   emptyGitSnapshot,
+  type GitFileEntry,
   type GitRepoInfo,
   type GitSnapshot,
   type GitStashEntry,
@@ -48,6 +49,15 @@ function snapshot(overrides: Partial<GitSnapshot> = {}): GitSnapshot {
   };
 }
 
+/** A dirty file, so `Stash changes` has something to act on. */
+const CHANGED: GitFileEntry = {
+  path: "src/a.ts",
+  origPath: null,
+  status: "modified",
+  staged: false,
+  unstaged: true,
+};
+
 const STASH: GitStashEntry = {
   ref: "stash@{0}",
   index: 0,
@@ -73,16 +83,15 @@ function seed(
 }
 
 /**
- * Renders the three git pieces in the order the Source Control panel stacks them.
- * They are separate components now (so the panel can pin the branch line and the
- * sync verbs while the lists scroll), but one surface as far as these
- * assertions are concerned.
+ * Renders the git pieces the way the Source Control panel stacks them in its top
+ * block: the compact branch row (which owns the sync buttons), the conditional
+ * reason line, then the collapsible stash list.
  */
 function renderGit(): void {
   render(
     <>
-      <GitBranchBar projectPath={PROJECT} />
-      <GitSyncRow projectPath={PROJECT} />
+      <GitBranchRow projectPath={PROJECT} />
+      <GitSyncNote projectPath={PROJECT} />
       <StashList projectPath={PROJECT} />
     </>,
   );
@@ -259,14 +268,56 @@ describe("branch list", () => {
 });
 
 describe("stashes", () => {
-  it("says when there is nothing stashed", () => {
+  /** Stashes start folded away; every body assertion has to open them first. */
+  async function expand(): Promise<void> {
+    await userEvent.click(screen.getByTestId("git-stashes-toggle"));
+  }
+
+  it("starts collapsed, with the header and count still visible", () => {
+    seed(snapshot({ stashes: [STASH] }));
     renderGit();
+
+    expect(screen.getByTestId("git-stashes-section")).toBeInTheDocument();
+    expect(screen.getByTestId("git-stashes-toggle")).toHaveAttribute("aria-expanded", "false");
+    // The facts that matter while folded: how many, and the action.
+    expect(screen.getByTestId("git-stashes-section")).toHaveTextContent("Stashes");
+    expect(screen.getByTestId("git-stashes-section")).toHaveTextContent("1");
+    // Neither body form is rendered.
+    expect(screen.queryByTestId("git-stashes")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("git-stashes-empty")).not.toBeInTheDocument();
+  });
+
+  it("says when there is nothing stashed, once expanded", async () => {
+    renderGit();
+    await expand();
     expect(screen.getByTestId("git-stashes-empty")).toHaveTextContent("No stashes.");
+  });
+
+  it("reveals the list on click and remembers it stays open", async () => {
+    seed(snapshot({ stashes: [STASH] }));
+    renderGit();
+
+    await expand();
+    expect(screen.getByTestId("git-stashes-toggle")).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("git-stashes")).toBeInTheDocument();
+    // The fold is a preference, not component state.
+    expect(useAppStore.getState().prefs.rail.collapsed.stashes).toBe(false);
+  });
+
+  it("collapses again on a second click", async () => {
+    seed(snapshot({ stashes: [STASH] }));
+    renderGit();
+
+    await expand();
+    await userEvent.click(screen.getByTestId("git-stashes-toggle"));
+    expect(screen.queryByTestId("git-stashes")).not.toBeInTheDocument();
+    expect(useAppStore.getState().prefs.rail.collapsed.stashes).toBe(true);
   });
 
   it("lists, restores and drops a stash", async () => {
     seed(snapshot({ stashes: [STASH] }));
     renderGit();
+    await expand();
 
     expect(screen.getByTestId("stash-0")).toHaveTextContent("WIP on main: work in progress");
 
@@ -279,16 +330,27 @@ describe("stashes", () => {
     ]);
   });
 
-  it("stashes the working tree on request", async () => {
+  it("stashes the working tree without expanding the list", async () => {
+    // `Stash changes` is disabled with nothing to stash, so the tree must be dirty.
+    seed(snapshot({ changed: [CHANGED] }));
     renderGit();
+    // The header action stays outside the fold: stashing is what you do while
+    // looking at a change, not after digging through a list.
     await userEvent.click(screen.getByRole("button", { name: "Stash changes" }));
     expect(lastAction()?.payload).toEqual({ kind: "stash-push", message: null });
+    expect(useAppStore.getState().prefs.rail.collapsed.stashes).toBe(true);
+  });
+
+  it("disables Stash changes when there is nothing to stash", () => {
+    seed(snapshot({ changed: [] }));
+    renderGit();
+    expect(screen.getByRole("button", { name: "Stash changes" })).toBeDisabled();
   });
 });
 
 describe("write consent", () => {
   it("asks once and does not dispatch before the answer", async () => {
-    seed(snapshot(), { consented: false });
+    seed(snapshot({ changed: [CHANGED] }), { consented: false });
     renderGit();
 
     await userEvent.click(screen.getByRole("button", { name: "Stash changes" }));
@@ -301,7 +363,7 @@ describe("write consent", () => {
   });
 
   it("runs the waiting write when consent is confirmed, and remembers", async () => {
-    seed(snapshot({ stashes: [STASH] }), { consented: false });
+    seed(snapshot({ stashes: [STASH], changed: [CHANGED] }), { consented: false });
     renderGit();
 
     await userEvent.click(screen.getByRole("button", { name: "Stash changes" }));
@@ -311,6 +373,7 @@ describe("write consent", () => {
     expect(actions()).toEqual([{ kind: "stash-push", message: null }]);
 
     // The next write runs without a prompt.
+    await userEvent.click(screen.getByTestId("git-stashes-toggle"));
     await userEvent.click(screen.getByRole("button", { name: "Restore stash@{0}" }));
     expect(useAppStore.getState().gitConsentPrompt).toBeNull();
   });
@@ -323,5 +386,78 @@ describe("write consent", () => {
     useAppStore.getState().cancelGitConsent();
     expect(useAppStore.getState().gitConsentPrompt).toBeNull();
     expect(useAppStore.getState().gitConsentGranted).toBe(false);
+  });
+});
+
+describe("the compact branch row", () => {
+  it("keeps the four facts on one line and the sync verbs beside them", () => {
+    renderGit();
+    const row = screen.getByTestId("git-section");
+    // Where am I, how far off, how do I switch, how do I move.
+    expect(within(row).getByTestId("git-branch")).toBeInTheDocument();
+    expect(within(row).getByTestId("git-sync")).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Switch branch" })).toBeInTheDocument();
+    expect(within(row).getByText("↑2")).toBeInTheDocument();
+    expect(within(row).getByText("↓1")).toBeInTheDocument();
+  });
+
+  it("makes the branch name itself the switch button", () => {
+    renderGit();
+    // One control, not a label plus a separate "Switch" link: that was a whole
+    // row (and a 320 px column cannot spare it).
+    const branchButton = screen.getByTestId("git-branch");
+    expect(branchButton).toHaveAttribute("aria-label", "Switch branch");
+    expect(branchButton).toHaveTextContent("main");
+    expect(branchButton).toHaveAttribute("aria-expanded", "false");
+    expect(branchButton.tagName).toBe("BUTTON");
+  });
+
+  it("keeps the upstream text in the DOM even though it is not a row", () => {
+    renderGit();
+    // Screen readers and the existing assertions still read it; visible space is
+    // spent only on the note line, and only when something is blocked.
+    expect(screen.getByTestId("git-upstream")).toHaveTextContent("origin/main");
+    expect(screen.queryByTestId("git-sync-note")).not.toBeInTheDocument();
+  });
+
+  it("shows the reason line only when a verb is unavailable", () => {
+    seed(snapshot({ repo: repo({ remotes: [], upstream: null }) }));
+    renderGit();
+    expect(screen.getByTestId("git-sync-note")).toHaveTextContent(/No remote is configured/);
+  });
+
+  it("puts the disabled reason in the button's title", () => {
+    seed(snapshot({ repo: repo({ remotes: [], upstream: null }) }));
+    renderGit();
+    expect(screen.getByRole("button", { name: "Pull" })).toHaveAttribute(
+      "title",
+      expect.stringMatching(/No remote is configured/),
+    );
+  });
+
+  it("names the visible frontier for each verb without a target", () => {
+    seed(snapshot({ repo: repo({ upstream: null, ahead: 0, behind: 0 }) }));
+    renderGit();
+    // A branch with no upstream still knows where the first push would go.
+    expect(screen.getByRole("button", { name: "Push to origin/main" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Push to origin/main" })).toHaveAttribute(
+      "title",
+      "Push to origin/main",
+    );
+  });
+});
+
+describe("the stash toggle contract", () => {
+  it("points aria-controls at the body it folds", async () => {
+    seed(snapshot({ stashes: [STASH] }));
+    renderGit();
+    const toggle = screen.getByTestId("git-stashes-toggle");
+    const controlled = toggle.getAttribute("aria-controls");
+    expect(controlled).toBeTruthy();
+    await userEvent.click(toggle);
+    const list = document.getElementById(controlled!);
+    expect(list).not.toBeNull();
+    expect(list!.getAttribute("data-testid")).toBe("git-stashes");
+    expect(within(list!).getByTestId("stash-0")).toBeInTheDocument();
   });
 });

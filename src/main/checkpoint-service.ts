@@ -8,10 +8,13 @@
  *  1. **Manual** — the rail's *Snapshot now*.
  *  2. **Pre-op** — the git engine asks for a safety snapshot before a
  *     destructive action (D11), through {@link CheckpointService.snapshotBefore}.
- *  3. **Idle scan** — while an Office pane is attached and a session in that
- *     project is idle, a cheap fingerprint of the folder is compared every
- *     `scanIntervalMs`. Tool hooks cannot see a Word/Excel save, so this is the
- *     only trigger that covers a document edited outside the app.
+ *  3. **Idle scan** — while an Office pane is attached, a cheap fingerprint of
+ *     **the Office host session's folder** is compared every `scanIntervalMs`.
+ *     Tool hooks cannot see a Word/Excel save, so this is the only trigger that
+ *     covers a document edited outside the app. The bridge publishes a document
+ *     *name* and a `url_sha256:` id, never a path, so the host session's cwd is
+ *     the only defensible target — and the folder is scanned only when the rail
+ *     has actually asked about it (`interested`).
  *
  * Two invariants the rest of the app relies on:
  *
@@ -62,6 +65,16 @@ export interface CheckpointServiceDeps {
   attachedPanes(): readonly OfficeDocumentPane[];
   /** Open session tabs, for the "is this project busy?" question. */
   tabs(): readonly { cwd: string; status: string }[];
+  /**
+   * The folder the session that owns the Office bridge (port 38617) is working
+   * in, or null when no session holds it.
+   *
+   * The idle scan is restricted to it: a `/health` pane carries no file path, so
+   * scanning *every* folder the rail ever asked about meant that opening one
+   * workbook started snapshotting unrelated projects. Manual, pre-op and run
+   * snapshots are unaffected (they are scoped by the caller).
+   */
+  officeHostProjectPath?: () => string | null;
   /** Whether run snapshots can arrive at all (safe mode off, host capability). */
   runSnapshots?: () => boolean;
   /** Push a changed state to the renderer. */
@@ -453,7 +466,17 @@ export function createCheckpointService(deps: CheckpointServiceDeps): Checkpoint
       if (deps.attachedPanes().length === 0) return;
       const config = await deps.config().catch(() => DEFAULT_CHECKPOINT_CONFIG);
       if (!config.enabled) return;
+      // The bridge cannot say which file a pane has open, so the host session's
+      // folder is the only target that cannot be wrong. Without a host there is
+      // nothing to attribute a save to, and guessing would snapshot a folder
+      // nobody is editing.
+      const hostPath = deps.officeHostProjectPath?.() ?? null;
+      if (!hostPath) return;
+      const hostTarget = normalisePath(hostPath);
       for (const projectPath of [...interested]) {
+        // A prior `get()` for another folder must not collect "Office documents
+        // changed" checkpoints just because a workbook is open somewhere else.
+        if (normalisePath(projectPath) !== hostTarget) continue;
         if (projectBusy(projectPath)) continue;
         const previous = scans.get(projectPath);
         if (previous && now() - previous.at < config.scanIntervalMs) continue;

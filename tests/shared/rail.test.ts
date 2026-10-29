@@ -1,16 +1,25 @@
 import { describe, expect, it } from "vitest";
 import {
   ALWAYS_AVAILABLE_RAIL_MENU_IDS,
+  DEFAULT_RAIL_COLLAPSED,
   DEFAULT_RAIL_PREFS,
+  DEFAULT_RAIL_SPLIT,
   MAX_RAIL_WIDTH,
+  MAX_SPLIT_FRACTION,
+  MIN_BLOCK_PX,
   MIN_RAIL_WIDTH,
+  MIN_SPLIT_FRACTION,
   RAIL_MENU_IDS,
   availableRailMenus,
+  clampRailSplit,
   clampRailWidth,
   isRailMenuId,
   mergeRailPrefs,
   moveRailMenu,
+  railSplitFractions,
+  railSplitWithDelta,
   resolveActiveMenu,
+  sanitizeRailCollapsed,
   sanitizeRailMenuOrder,
   sanitizeRailPrefs,
   type RailMenuId,
@@ -227,12 +236,16 @@ describe("sanitizeRailPrefs", () => {
       activeMenu: "checkpoints",
       width: 420,
       order: ["checkpoints", "source-control", "documents"],
+      split: { top: 0.5, middle: 0.3 },
+      collapsed: { staged: true, changed: false, stashes: false },
     });
     expect(prefs).toEqual({
       open: true,
       activeMenu: "checkpoints",
       width: 420,
       order: ["checkpoints", "source-control", "documents"],
+      split: { top: 0.5, middle: 0.3 },
+      collapsed: { staged: true, changed: false, stashes: false },
     });
   });
 
@@ -278,9 +291,160 @@ describe("sanitizeRailPrefs", () => {
     const first = sanitizeRailPrefs(undefined);
     first.order.reverse();
     first.activeMenu = "documents";
+    first.split.top = 0.9;
+    first.collapsed.stashes = false;
     expect(DEFAULT_RAIL_PREFS.order).toEqual([...RAIL_MENU_IDS]);
     expect(DEFAULT_RAIL_PREFS.activeMenu).toBe("source-control");
+    expect(DEFAULT_RAIL_PREFS.split).toEqual(DEFAULT_RAIL_SPLIT);
+    expect(DEFAULT_RAIL_PREFS.collapsed).toEqual(DEFAULT_RAIL_COLLAPSED);
     expect(sanitizeRailPrefs(undefined).order).toEqual([...RAIL_MENU_IDS]);
+  });
+});
+
+describe("clampRailSplit", () => {
+  it("returns the defaults for nothing usable", () => {
+    expect(clampRailSplit(undefined)).toEqual(DEFAULT_RAIL_SPLIT);
+    expect(clampRailSplit(null)).toEqual(DEFAULT_RAIL_SPLIT);
+    expect(clampRailSplit("nope")).toEqual(DEFAULT_RAIL_SPLIT);
+    expect(clampRailSplit([])).toEqual(DEFAULT_RAIL_SPLIT);
+  });
+
+  it("clamps each fraction into the supported band", () => {
+    // middle lands on the floor, which leaves History exactly its own floor, so
+    // top is then renormalised down from MAX to 0.70 — that is the invariant
+    // working, not a bug: three blocks must still fit the panel.
+    const hostile = clampRailSplit({ top: 5, middle: -1 });
+    expect(hostile.middle).toBe(MIN_SPLIT_FRACTION);
+    expect(hostile.top).toBeCloseTo(1 - 2 * MIN_SPLIT_FRACTION, 9);
+    expect(hostile.top).toBeLessThanOrEqual(MAX_SPLIT_FRACTION);
+    // A pair with room to spare keeps its values verbatim.
+    expect(clampRailSplit({ top: 0.5, middle: 0.3 })).toEqual({ top: 0.5, middle: 0.3 });
+  });
+
+  it("falls back per key for a non-number", () => {
+    expect(clampRailSplit({ top: "wide", middle: 0.5 })).toEqual({
+      top: DEFAULT_RAIL_SPLIT.top,
+      middle: 0.5,
+    });
+    // NaN is not usable, so the default stands rather than poisoning the layout.
+    expect(clampRailSplit({ top: Number.NaN, middle: 0.5 })).toEqual({
+      top: DEFAULT_RAIL_SPLIT.top,
+      middle: 0.5,
+    });
+  });
+
+  it("renormalises an overlapping pair so History keeps its floor", () => {
+    // 0.7 + 0.7 = 1.4, which would leave History negative.
+    const split = clampRailSplit({ top: 0.7, middle: 0.7 });
+    expect(split.top + split.middle).toBeCloseTo(1 - MIN_SPLIT_FRACTION, 9);
+    expect(split.top).toBeGreaterThan(MIN_SPLIT_FRACTION);
+    expect(split.middle).toBeGreaterThan(MIN_SPLIT_FRACTION);
+  });
+
+  it("shrinks proportionally, so neither block collapses into the other", () => {
+    const split = clampRailSplit({ top: 0.72, middle: 0.6 });
+    expect(split.top + split.middle).toBeCloseTo(1 - MIN_SPLIT_FRACTION, 9);
+    // The larger block gives up more absolute height than the smaller one.
+    expect(0.72 - split.top).toBeGreaterThan(0.6 - split.middle);
+  });
+});
+
+describe("railSplitFractions", () => {
+  it("always sums to one", () => {
+    for (const split of [
+      DEFAULT_RAIL_SPLIT,
+      { top: 0.15, middle: 0.15 },
+      { top: 0.72, middle: 0.72 },
+      { top: 0.5, middle: 0.4 },
+    ]) {
+      const fractions = railSplitFractions(split);
+      expect(fractions.top + fractions.middle + fractions.history).toBeCloseTo(1, 9);
+      expect(fractions.history).toBeGreaterThanOrEqual(MIN_SPLIT_FRACTION - 1e-9);
+    }
+  });
+
+  it("reports the default split as the documented thirds", () => {
+    expect(railSplitFractions(DEFAULT_RAIL_SPLIT)).toEqual({
+      top: 0.34,
+      middle: 0.4,
+      history: expect.closeTo(0.26, 9),
+    });
+  });
+});
+
+describe("railSplitWithDelta", () => {
+  const BODY = 500;
+
+  it("moves the top boundary: Top and Changes trade height, History is fixed", () => {
+    const next = railSplitWithDelta({ top: 0.34, middle: 0.4 }, "top", 50, BODY);
+    expect(next.top).toBeCloseTo(0.34 + 50 / BODY, 9);
+    // A splitter moves a boundary, so only its two neighbours change.
+    expect(next.middle).toBeCloseTo(0.4 - 50 / BODY, 9);
+    expect(1 - next.top - next.middle).toBeCloseTo(0.26, 9);
+  });
+
+  it("moves the middle boundary and leaves the top untouched", () => {
+    const next = railSplitWithDelta({ top: 0.34, middle: 0.4 }, "middle", -50, BODY);
+    expect(next.top).toBe(0.34);
+    // Changes shrinks and History — the remainder — absorbs the difference.
+    expect(next.middle).toBeCloseTo(0.4 - 50 / BODY, 9);
+    expect(1 - next.top - next.middle).toBeCloseTo(0.26 + 50 / BODY, 9);
+  });
+
+  it("stops at MIN_BLOCK_PX for the block being shrunk", () => {
+    const shrunk = railSplitWithDelta({ top: 0.34, middle: 0.4 }, "top", -10_000, BODY);
+    expect(shrunk.top * BODY).toBeCloseTo(MIN_BLOCK_PX, 6);
+    const shrunkMiddle = railSplitWithDelta({ top: 0.34, middle: 0.4 }, "middle", -10_000, BODY);
+    expect(shrunkMiddle.middle * BODY).toBeCloseTo(MIN_BLOCK_PX, 6);
+  });
+
+  it("stops the top edge before Changes drops below its floor", () => {
+    const next = railSplitWithDelta({ top: 0.34, middle: 0.4 }, "top", 10_000, BODY);
+    // History is fixed; the drag is bounded by Changes hitting its floor.
+    expect(next.middle * BODY).toBeCloseTo(MIN_BLOCK_PX, 6);
+    expect(1 - next.top - next.middle).toBeCloseTo(0.26, 9);
+  });
+
+  it("stops the middle edge before History drops below its floor", () => {
+    const next = railSplitWithDelta({ top: 0.34, middle: 0.4 }, "middle", 10_000, BODY);
+    expect(next.top).toBe(0.34);
+    expect((1 - next.top - next.middle) * BODY).toBeCloseTo(MIN_BLOCK_PX, 6);
+  });
+
+  it("is a no-op without a measurable container", () => {
+    for (const containerPx of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(railSplitWithDelta({ top: 0.34, middle: 0.4 }, "top", 100, containerPx)).toEqual({
+        top: 0.34,
+        middle: 0.4,
+      });
+    }
+  });
+
+  it("is a no-op for a non-finite delta", () => {
+    expect(railSplitWithDelta({ top: 0.34, middle: 0.4 }, "top", Number.NaN, BODY)).toEqual({
+      top: 0.34,
+      middle: 0.4,
+    });
+  });
+
+  it("never exceeds MAX_SPLIT_FRACTION in a tall panel", () => {
+    const next = railSplitWithDelta({ top: 0.34, middle: 0.4 }, "top", 10_000, 4_000);
+    expect(next.top).toBeLessThanOrEqual(MAX_SPLIT_FRACTION);
+  });
+});
+
+describe("sanitizeRailCollapsed", () => {
+  it("defaults every group, with Stashes folded away", () => {
+    expect(sanitizeRailCollapsed(undefined)).toEqual(DEFAULT_RAIL_COLLAPSED);
+    expect(DEFAULT_RAIL_COLLAPSED).toEqual({ staged: false, changed: false, stashes: true });
+  });
+
+  it("keeps booleans and ignores anything else", () => {
+    expect(sanitizeRailCollapsed({ staged: true, changed: "yes", stashes: 0 })).toEqual({
+      staged: true,
+      changed: false,
+      stashes: true,
+    });
   });
 });
 
@@ -294,6 +458,8 @@ describe("mergeRailPrefs", () => {
       "source-control",
       "documents",
     ],
+    split: { top: 0.5, middle: 0.3 },
+    collapsed: { staged: true, changed: false, stashes: true },
   };
 
   it("keeps untouched fields when only `open` changes", () => {
@@ -325,6 +491,25 @@ describe("mergeRailPrefs", () => {
       order: [...current.order],
     });
   });
+
+  it("merges one split key without discarding its sibling", () => {
+    const next = mergeRailPrefs(
+      { ...current, order: [...current.order] },
+      { split: { top: 0.45 } },
+    );
+    expect(next.split).toEqual({ top: 0.45, middle: 0.3 });
+    expect(next.collapsed).toEqual(current.collapsed);
+    expect(next.width).toBe(400);
+  });
+
+  it("merges one collapsed key without discarding its siblings", () => {
+    const next = mergeRailPrefs(
+      { ...current, order: [...current.order] },
+      { collapsed: { stashes: false } },
+    );
+    expect(next.collapsed).toEqual({ staged: true, changed: false, stashes: false });
+    expect(next.split).toEqual(current.split);
+  });
 });
 
 describe("rail inside the preference patch", () => {
@@ -350,6 +535,22 @@ describe("rail inside the preference patch", () => {
     expect(next.rail.activeMenu).toBe("checkpoints");
     expect(next.rail.width).toBe(DEFAULT_RAIL_PREFS.width);
     expect(next.rail.order).toEqual([...RAIL_MENU_IDS]);
+    expect(next.rail.split).toEqual(DEFAULT_RAIL_SPLIT);
+    expect(next.rail.collapsed).toEqual(DEFAULT_RAIL_COLLAPSED);
+  });
+
+  it("keeps a dragged split and a collapsed group across an unrelated patch", () => {
+    const current = {
+      ...DEFAULT_PREFS,
+      rail: {
+        ...DEFAULT_RAIL_PREFS,
+        split: { top: 0.5, middle: 0.25 },
+        collapsed: { staged: true, changed: false, stashes: false },
+      },
+    };
+    const next = mergePrefs(current, { rail: { open: true } });
+    expect(next.rail.split).toEqual({ top: 0.5, middle: 0.25 });
+    expect(next.rail.collapsed).toEqual({ staged: true, changed: false, stashes: false });
   });
 
   it("migrates an app-state.json written before the rail existed", () => {
@@ -388,7 +589,11 @@ describe("rail inside the preference patch", () => {
     const copy = sanitizePrefs({}).rail;
     copy.order.push("documents");
     copy.activeMenu = "documents";
+    copy.split.top = 0.9;
+    copy.collapsed.stashes = false;
     expect(DEFAULT_PREFS.rail.order).toEqual([...RAIL_MENU_IDS]);
     expect(DEFAULT_PREFS.rail.activeMenu).toBe("source-control");
+    expect(DEFAULT_PREFS.rail.split).toEqual(DEFAULT_RAIL_SPLIT);
+    expect(DEFAULT_PREFS.rail.collapsed).toEqual(DEFAULT_RAIL_COLLAPSED);
   });
 });

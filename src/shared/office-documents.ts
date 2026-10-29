@@ -13,6 +13,7 @@
 
 import { PI_OFFICE_BRIDGE, officeHostLabel, type OfficeHost } from "./office";
 import { projectBridgeCompatibility, type BridgeCompatibility } from "./office-bridge";
+import type { TabRecord } from "./session-ipc";
 
 /** One attached task pane, as the Documents panel and the completion source see it. */
 export interface OfficeDocumentPane {
@@ -422,4 +423,79 @@ export function parseDocumentListTable(text: string): OfficeDocumentListRow[] {
     });
   }
   return rows;
+}
+
+/**
+ * Which tab owns bridge port 38617 — the **Office host**.
+ *
+ * Main reserves that port for the single `office`-kind tab (`host-supervisor`),
+ * and promotes one tab at a time (`session-service` demotes every other `office`
+ * tab when promotion happens). The renderer needs the same rule to answer "is
+ * *this* session the one that can serve an `office_*` call?", so it lives here
+ * rather than as a third copy of the predicate.
+ *
+ * `status !== "stopped"` matters: a stopped tab keeps its record (and its kind)
+ * until it is closed, but it no longer holds the port, so it is not a host. Note
+ * a `crashed`/`failed` tab is still the host — it is assigned the port, and
+ * whether its process currently answers is a different question from identity.
+ */
+export function officeHostTab(
+  tabs: readonly Pick<TabRecord, "id" | "kind" | "cwd" | "title" | "status">[],
+): Pick<TabRecord, "id" | "kind" | "cwd" | "title" | "status"> | null {
+  return tabs.find((tab) => tab.kind === "office" && tab.status !== "stopped") ?? null;
+}
+
+/** The Office host, as the Documents scope line renders it. */
+export interface OfficeHostInfo {
+  id: string;
+  title: string;
+  /** The folder the host session works in — where its documents live. */
+  projectPath: string;
+  status: TabRecord["status"];
+}
+
+export interface OfficeDocumentScope {
+  /** The host tab, or null when no session holds the bridge. */
+  host: OfficeHostInfo | null;
+  /** True when the **active** tab is the host, i.e. its `office_*` calls land. */
+  isHost: boolean;
+}
+
+/**
+ * Resolve the Documents menu's scope for the active tab.
+ *
+ * Since the bridge is app-wide but a *session* is what runs the tools, there are
+ * three states worth distinguishing, and this projection separates the middle
+ * one from nothing: a host exists and you are it, a host exists and you are not,
+ * and no host exists at all. The last one is the only case where "start a
+ * session" is the useful action.
+ */
+export function officeDocumentScope(
+  _panes: readonly OfficeDocumentPane[],
+  tabs: readonly Pick<TabRecord, "id" | "kind" | "cwd" | "title" | "status">[],
+  activeTabId: string | null,
+): OfficeDocumentScope {
+  const host = officeHostTab(tabs);
+  if (!host) return { host: null, isHost: false };
+  return {
+    host: { id: host.id, title: host.title, projectPath: host.cwd, status: host.status },
+    isHost: activeTabId !== null && host.id === activeTabId,
+  };
+}
+
+/**
+ * The `#` completion entries for the **active** session.
+ *
+ * Only the host session can serve an `office_*` call: the tool reaches whichever
+ * host owns port 38617, so in any other tab a mention would tag a prompt the
+ * bridge never answers. A list that offers what cannot work is worse than an
+ * empty one, so a non-host session gets `[]` and the UI explains why (plan D10).
+ */
+export function documentMentionsForHost(
+  panes: readonly OfficeDocumentPane[],
+  tabs: readonly Pick<TabRecord, "id" | "kind" | "cwd" | "title" | "status">[],
+  activeTabId: string | null,
+): DocumentMentionEntry[] {
+  const { isHost } = officeDocumentScope(panes, tabs, activeTabId);
+  return isHost ? toDocumentMentions(panes) : [];
 }

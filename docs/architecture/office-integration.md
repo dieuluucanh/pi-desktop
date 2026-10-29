@@ -129,16 +129,39 @@ Three renderer surfaces consume that view:
 
 - **Documents menu** (`src/renderer/src/rail/DocumentsSection.tsx`), one of the three
   menus in the session's docked panel rail (Source Control, Checkpoints, Documents —
-  see [`source-control.md`](source-control.md)). It renders only when `/health` answers
-  (plan D-A10: no Office surface before setup) and lists each pane with its facts and
-  actions — _Chat
-  about this_ (prepends the `[office:…]` tag to the composer draft), _Insert
-  #mention_, _Copy id_, _Open Office_. With the bridge up but no pane attached it
-  shows the empty state; the footer names the Office host and offers **Promote to
-  Office host**.
+  see [`source-control.md`](source-control.md)). It renders in **every** session
+  while `/health` answers (plan D-A10: no Office surface before setup), because
+  hiding it elsewhere would hide that Office is running, and lists each pane with
+  its facts and actions — _Chat about this_ (prepends the `[office:…]` tag to the
+  composer draft), _Insert #mention_, _Copy id_, _Open Office_. With the bridge up
+  but no pane attached it shows the empty state.
+- **The Documents scope line** (`src/renderer/src/rail/DocumentsScope.tsx`) is the
+  one owner of the host facts and the bridge-switching actions. It names the host
+  session, its project and its status, and offers:
+  - **Open host session** — focuses the tab that already holds port 38617;
+  - **Use this session instead** — from a non-host session, promotes this tab
+    behind a `ConfirmDialog` that names the demoted tab (promotion stops and
+    restarts it);
+  - **Start an Office session** — when no tab holds the port at all.
+
+  `officeDocumentScope` in `src/shared/office-documents.ts` applies the same
+  predicate main does (`kind === "office" && status !== "stopped"`).
+
+- **Scope in a non-host session (D10).** `office_*` calls reach whichever host owns
+  38617, so a sibling session cannot serve one. Its _Chat about this_ and _Insert
+  #mention_ are therefore **disabled**, a line (`documents-not-host`) explains why
+  and points at _Use this session instead_, and **`#` completion returns nothing**
+  (`documentMentionsForHost`). A mention that tags a prompt the bridge never
+  answers is worse than an empty list.
 - **`#` completion** — the same registry feeds `createDocumentProvider` through
   `toDocumentMentions()`, so mentions work even when the bridge extension's own
-  autocomplete provider is absent.
+  autocomplete provider is absent. It is gated on the active tab being the host.
+
+**Cross-session Office routing is deliberately absent.** An `office_*` call from a
+non-host session does not proxy to the host: that needs its own IPC, auth and
+idle-host semantics. Promotion is the supported way to move the bridge; a backlog
+entry tracks the proxy.
+
 - **Office tool cards** (`src/renderer/src/session/OfficeToolCard.tsx`) — an
   `office_*` call shows the document it targeted (`document: "active"` resolved
   against the registry) and whether the call was capability-gated (`advertised`,
@@ -150,6 +173,12 @@ has `officeHost: true` (the `office` tab kind); every other host gets 38618+.
 `promoteToOfficeHost(tabId)` in `src/main/session-service.ts` keeps that
 invariant: it demotes and stops any other `office` tab, then restarts the
 promoted tab's host so it binds 38617, resuming the session from its JSONL.
+
+**The idle checkpoint scan follows that host.** `checkpoint-service.ts` scans only
+the folder of the non-stopped `office` tab (`officeHostProjectPath`): the bridge
+reports a document name and a `url_sha256:` id, never a path, so the host
+session's cwd is the only defensible target. See
+[`source-control.md`](source-control.md#capture-triggers).
 
 ## Failure modes and what the user sees
 

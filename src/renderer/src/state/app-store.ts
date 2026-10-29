@@ -129,6 +129,7 @@ import {
   type ThemesSnapshot,
 } from "../../../shared/themes";
 import {
+  officeDocumentScope,
   officeDocumentTag,
   type OfficeDocumentPane,
   type OfficeDocumentsView,
@@ -182,7 +183,14 @@ import {
 import { classifyFailure, isOfflineError } from "../../../shared/diagnostics";
 import type { DiagnosticsSnapshot } from "../../../shared/diagnostics";
 import { sanitizeUpdateState, type UpdateState } from "../../../shared/updates";
-import { clampRailWidth, sanitizeRailMenuOrder, type RailMenuId } from "../../../shared/rail";
+import {
+  clampRailSplit,
+  clampRailWidth,
+  sanitizeRailMenuOrder,
+  type RailCollapsedGroup,
+  type RailMenuId,
+  type RailSplitPrefs,
+} from "../../../shared/rail";
 import {
   isMutatingGitAction,
   sanitizeGitSnapshot,
@@ -802,6 +810,17 @@ export interface AppStateShape {
   setRailMenuOrder: (order: readonly RailMenuId[]) => void;
   /** Persists a clamped rail width (the resize handle commits on release). */
   setRailWidth: (width: number) => void;
+  /**
+   * Persists the Source Control menu's block split (plan step 2). The splitters
+   * call this **once per gesture** — a drag commits on release, a keyboard nudge
+   * commits per key — so the persisted layout never churns mid-drag.
+   */
+  setRailSplit: (split: RailSplitPrefs) => void;
+  /**
+   * Folds one collapsible Source Control group away (or unfolds it). `group` is
+   * the stable key, not an index, so a new group cannot shift the others.
+   */
+  setSourceControlCollapsed: (group: RailCollapsedGroup, collapsed: boolean) => void;
   loadOfficeDocuments: () => Promise<void>;
   applyOfficeDocuments: (view: OfficeDocumentsView) => void;
   refreshOfficeDocuments: () => Promise<void>;
@@ -4333,6 +4352,19 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     get().setPrefs({ rail: { ...rail, width: clamped } });
   },
 
+  setRailSplit: (split) => {
+    const rail = get().prefs.rail;
+    const clamped = clampRailSplit(split);
+    if (clamped.top === rail.split.top && clamped.middle === rail.split.middle) return;
+    get().setPrefs({ rail: { ...rail, split: clamped } });
+  },
+
+  setSourceControlCollapsed: (group, collapsed) => {
+    const rail = get().prefs.rail;
+    if (rail.collapsed[group] === collapsed) return;
+    get().setPrefs({ rail: { ...rail, collapsed: { ...rail.collapsed, [group]: collapsed } } });
+  },
+
   // ---- Source control (git-checkpoint plan step 9) ----
 
   loadGit: async (projectPath) => {
@@ -4726,6 +4758,23 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const tabId = get().activeTabId;
     if (!tabId) {
       set({ hint: "Open a session before chatting about a document." });
+      return null;
+    }
+    // Only the session that owns bridge port 38617 can serve the `office_*` call
+    // the tag implies. Anywhere else the draft would carry a prompt that cannot
+    // be answered, so point at the Documents scope row instead of writing it.
+    const state = get();
+    const { host, isHost } = officeDocumentScope(
+      state.officeDocuments?.panes ?? [],
+      state.tabs,
+      tabId,
+    );
+    if (!isHost) {
+      set({
+        hint: host
+          ? `Only the Office host session (“${host.title}”) can use this document. Use “Use this session instead” in the Documents menu to move the bridge here.`
+          : "No session is running the Office bridge. Start an Office session from the Documents menu first.",
+      });
       return null;
     }
     const tag = officeDocumentTag(pane);

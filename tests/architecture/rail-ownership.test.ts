@@ -25,6 +25,15 @@ import { describe, expect, it } from "vitest";
  *     second, stale vocabulary still steering the UI.
  *  4. **No resurrected header toggle.** The session header no longer owns a
  *     Panel button; the strip is the entry point.
+ *  5. **Source Control is three blocks, each with its own scroller.** A single
+ *     scrolling column let a long change list push the commit log off the bottom;
+ *     the blocks and their two splitters are the fix, so a fourth scroller (or a
+ *     splittersess body) is the regression to catch.
+ *  6. **The scope line is pinned by the host, not by a body.** If a body renders
+ *     it, a scrolling list carries the answer to "which folder?" away.
+ *  7. **One owner for the Office host controls.** `DocumentsSection` renders
+ *     panes; the host facts and the bridge-switching actions belong to
+ *     `DocumentsScope`.
  */
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -185,6 +194,62 @@ describe("panel rail ownership", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it("keeps Source Control in three blocks with exactly two splitters", async () => {
+    const panel = await readFile(
+      join(repoRoot, "src", "renderer", "src", "rail", "SourceControlPanel.tsx"),
+      "utf8",
+    );
+    // Each block owns a scroller; the ids are how the tests address them.
+    for (const id of ["source-control-block", "changes-block", "history-block"]) {
+      expect(panel, id).toContain(id);
+    }
+    // Two boundaries for three blocks — a third would be a fourth block.
+    expect(panel.match(/<BlockSplitter/g) ?? []).toHaveLength(2);
+    // The old single scroller is what the three blocks replaced.
+    expect(panel).not.toContain("source-control-scroll");
+  });
+
+  it("renders the scope line outside the body's scroll wrapper", async () => {
+    const host = await readFile(
+      join(repoRoot, "src", "renderer", "src", "rail", "RightRail.tsx"),
+      "utf8",
+    );
+    // `spec.scope` must appear before the scroll container in the markup, so a
+    // body's own `overflow-y-auto` cannot carry the line away.
+    expect(host).toContain("{spec.scope}");
+    const scopeAt = host.indexOf("{spec.scope}");
+    const scrollerAt = host.indexOf("overflow-y-auto");
+    expect(scopeAt).toBeGreaterThan(-1);
+    expect(scrollerAt).toBeGreaterThan(-1);
+    expect(scopeAt).toBeLessThan(scrollerAt);
+    // And it is a menu-spec field, not something a body renders itself.
+    expect(host).toContain("scope?: ReactNode");
+  });
+
+  it("keeps host controls in one place", async () => {
+    const section = await readFile(
+      join(repoRoot, "src", "renderer", "src", "rail", "DocumentsSection.tsx"),
+      "utf8",
+    );
+    // The host footer (name + Promote) moved up into DocumentsScope; a second
+    // copy would let the two disagree about who holds the port. Prose naming the
+    // removal is fine (a migration comment), so only a real *use* is matched.
+    expect(section).not.toMatch(/<OfficeHostFooter/);
+    expect(section).not.toMatch(/OfficeHostFooter\(/);
+    expect(section).not.toContain('aria-label="Promote to Office host"');
+    const scope = await readFile(
+      join(repoRoot, "src", "renderer", "src", "rail", "DocumentsScope.tsx"),
+      "utf8",
+    );
+    for (const label of [
+      "Open host session",
+      "Use this session instead",
+      "Start an Office session",
+    ]) {
+      expect(scope, label).toContain(label);
+    }
   });
 
   it("mounts the rail from the session view, not from a view of its own", async () => {

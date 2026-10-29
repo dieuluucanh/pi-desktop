@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
-import { DEFAULT_RAIL_PREFS, RAIL_MENU_IDS } from "../../src/shared/rail";
+import {
+  DEFAULT_RAIL_COLLAPSED,
+  DEFAULT_RAIL_PREFS,
+  DEFAULT_RAIL_SPLIT,
+  MAX_SPLIT_FRACTION,
+  RAIL_MENU_IDS,
+} from "../../src/shared/rail";
 import { DEFAULT_PREFS, type UiPrefs } from "../../src/shared/prefs";
 import { installBridge } from "./fixtures";
 
@@ -78,7 +84,14 @@ describe("clicking a strip entry", () => {
     useAppStore.getState().toggleRailMenu("checkpoints");
     expect(set).toHaveBeenCalledTimes(1);
     expect(set.mock.calls[0]?.[0]).toEqual({
-      rail: { open: true, activeMenu: "checkpoints", width: 420, order: [...RAIL_MENU_IDS] },
+      rail: {
+        open: true,
+        activeMenu: "checkpoints",
+        width: 420,
+        order: [...RAIL_MENU_IDS],
+        split: { ...DEFAULT_RAIL_SPLIT },
+        collapsed: { ...DEFAULT_RAIL_COLLAPSED },
+      },
     });
   });
 });
@@ -163,6 +176,67 @@ describe("rail width", () => {
   it("does not write when the width is unchanged", () => {
     resetStore({ width: 320 });
     useAppStore.getState().setRailWidth(320);
+    expect(set).not.toHaveBeenCalled();
+  });
+});
+
+describe("source control block split", () => {
+  it("persists a split and leaves the rest of the rail alone", () => {
+    resetStore({ open: true, activeMenu: "checkpoints", width: 400 });
+    useAppStore.getState().setRailSplit({ top: 0.5, middle: 0.3 });
+    const rail = useAppStore.getState().prefs.rail;
+    expect(rail.split).toEqual({ top: 0.5, middle: 0.3 });
+    expect(rail).toMatchObject({
+      open: true,
+      activeMenu: "checkpoints",
+      width: 400,
+      order: [...RAIL_MENU_IDS],
+    });
+    // The persisted patch is the whole rail object (the single-writer path), so
+    // a main-side merge cannot drop a sibling record.
+    expect(set).toHaveBeenCalledTimes(1);
+    expect(set.mock.calls[0]?.[0]).toEqual({ rail });
+  });
+
+  it("clamps a hostile split before writing it", () => {
+    resetStore();
+    useAppStore.getState().setRailSplit({ top: 5, middle: -1 });
+    const split = useAppStore.getState().prefs.rail.split;
+    expect(split.top).toBeLessThanOrEqual(MAX_SPLIT_FRACTION);
+    expect(split.top).toBeGreaterThan(0);
+    expect(split.middle).toBeGreaterThan(0);
+    expect(split.top + split.middle).toBeLessThanOrEqual(1);
+    expect(set).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not write when the split is unchanged", () => {
+    resetStore();
+    useAppStore.getState().setRailSplit({ ...DEFAULT_RAIL_SPLIT });
+    expect(set).not.toHaveBeenCalled();
+  });
+});
+
+describe("collapsed source control groups", () => {
+  it("flips only the requested key", () => {
+    resetStore();
+    useAppStore.getState().setSourceControlCollapsed("stashes", false);
+    expect(useAppStore.getState().prefs.rail.collapsed).toEqual({
+      staged: false,
+      changed: false,
+      stashes: false,
+    });
+    useAppStore.getState().setSourceControlCollapsed("staged", true);
+    expect(useAppStore.getState().prefs.rail.collapsed).toEqual({
+      staged: true,
+      changed: false,
+      stashes: false,
+    });
+    expect(set).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not write on a repeated click", () => {
+    resetStore();
+    useAppStore.getState().setSourceControlCollapsed("stashes", true);
     expect(set).not.toHaveBeenCalled();
   });
 });

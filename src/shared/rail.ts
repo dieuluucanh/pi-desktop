@@ -7,9 +7,21 @@
  * **Documents** — beside one resizable **panel body**. Clicking an entry expands
  * its body; clicking the active entry collapses it again.
  *
+ * Two more pieces of the layout are persisted here:
+ *
+ *  - **`split`** — Source Control is three vertically stacked blocks (Source
+ *    Control, Changes, Commit History) sized by two fractions, so a user can
+ *    trade height between them with the block splitters.
+ *  - **`collapsed`** — the `Staged Changes` / `Changes` groups and the Stashes
+ *    list each remember whether they are folded away.
+ *
  * This module is shared rather than renderer-only because `prefs` persists the
  * layout: the closed key set in `src/shared/prefs.ts`, the main-process
  * sanitizer and the renderer all have to agree on the ids and on the order.
+ *
+ * One rule the split math exists to hold: **a render-time clamp is never written
+ * back**. `prefs.rail` has one writer (the store) and only an explicit user
+ * gesture — a drag, a keyboard nudge, a double-click reset — calls it.
  */
 
 /** The rail's menus, in their canonical (default strip) order. */
@@ -62,11 +74,71 @@ export interface RailPrefs {
   width: number;
   /** The strip's order, top to bottom. Always a permutation of {@link RAIL_MENU_IDS}. */
   order: RailMenuId[];
+  /** The Source Control menu's three block heights, as flex fractions. */
+  split: RailSplitPrefs;
+  /** Which collapsible groups inside Source Control are folded away. */
+  collapsed: RailCollapsedPrefs;
 }
+
+/**
+ * The Source Control menu's block heights, as fractions of the panel body.
+ *
+ * Two numbers describe three blocks: `history` is the remainder, so the three
+ * always fill the panel exactly. Source Control is the top block (branch row,
+ * commit composer, stashes), then Changes, then Commit History.
+ */
+export interface RailSplitPrefs {
+  /** Fraction of the body given to the Source Control block. */
+  top: number;
+  /** Fraction given to the Changes block; Commit History takes the rest. */
+  middle: number;
+}
+
+/** Which Source Control groups are collapsed. */
+export interface RailCollapsedPrefs {
+  /** The `Staged Changes` group. */
+  staged: boolean;
+  /** The `Changes` group. */
+  changed: boolean;
+  /** The Stashes list — collapsed by default. */
+  stashes: boolean;
+}
+
+/** A group whose collapse state is persisted. */
+export type RailCollapsedGroup = keyof RailCollapsedPrefs;
+
+/** Which boundary a block splitter moves. */
+export type RailSplitEdge = "top" | "middle";
 
 export const MIN_RAIL_WIDTH = 260;
 export const MAX_RAIL_WIDTH = 560;
 export const DEFAULT_RAIL_WIDTH = 320;
+
+/**
+ * The default block split: Source Control 34 %, Changes 40 %, History 26 %.
+ *
+ * Chosen so all three clear {@link MIN_BLOCK_PX} in a window at the app's
+ * minimum size: the smallest supported body is roughly 500 px tall, and the
+ * floors add up to 240 px.
+ */
+export const DEFAULT_RAIL_SPLIT: RailSplitPrefs = { top: 0.34, middle: 0.4 };
+
+/** Stashes start folded away; the two change groups start open. */
+export const DEFAULT_RAIL_COLLAPSED: RailCollapsedPrefs = {
+  staged: false,
+  changed: false,
+  stashes: true,
+};
+
+/** No block may be given less than this share of the body, whatever the drag. */
+export const MIN_SPLIT_FRACTION = 0.15;
+/** No block may be given more than this share; the other two need room. */
+export const MAX_SPLIT_FRACTION = 0.72;
+/** And no block may render shorter than this many pixels, measured at drag time. */
+export const MIN_BLOCK_PX = 80;
+/** Keyboard nudge for a block splitter (`Shift` multiplies it). */
+export const SPLITTER_KEYBOARD_STEP = 16;
+export const SPLITTER_KEYBOARD_STEP_LARGE = 48;
 
 /**
  * Defaults: the panel is **collapsed** (a session should not open with a column
@@ -78,12 +150,135 @@ export const DEFAULT_RAIL_PREFS: RailPrefs = {
   activeMenu: "source-control",
   width: DEFAULT_RAIL_WIDTH,
   order: [...RAIL_MENU_IDS],
+  split: { ...DEFAULT_RAIL_SPLIT },
+  collapsed: { ...DEFAULT_RAIL_COLLAPSED },
 };
 
 /** Clamps a width into the supported range; a non-number becomes the default. */
 export function clampRailWidth(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_RAIL_WIDTH;
   return Math.min(MAX_RAIL_WIDTH, Math.max(MIN_RAIL_WIDTH, Math.round(value)));
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/** A finite number, or the fallback. */
+function fraction(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * Coerces an untrusted block split into a usable one.
+ *
+ * Each fraction is clamped into `[MIN_SPLIT_FRACTION, MAX_SPLIT_FRACTION]`, and
+ * then the pair is shrunk — proportionally to the headroom each still has — so
+ * the three blocks cannot sum past 100 % with History still needing
+ * `MIN_SPLIT_FRACTION` of its own. Shrinking proportionally is what keeps the
+ * smaller block from being pushed below its floor while the larger one keeps
+ * most of its height.
+ */
+export function clampRailSplit(value: unknown): RailSplitPrefs {
+  const source = asRecord(value);
+  let top = clampFraction(fraction(source.top, DEFAULT_RAIL_SPLIT.top));
+  let middle = clampFraction(fraction(source.middle, DEFAULT_RAIL_SPLIT.middle));
+
+  const room = 1 - MIN_SPLIT_FRACTION;
+  const overlap = top + middle - room;
+  if (overlap > 0) {
+    const shrinkableTop = Math.max(0, top - MIN_SPLIT_FRACTION);
+    const shrinkableMiddle = Math.max(0, middle - MIN_SPLIT_FRACTION);
+    const shrinkable = shrinkableTop + shrinkableMiddle;
+    if (shrinkable > 0) {
+      // `ratio` never exceeds 1: when both blocks are already at their floor the
+      // pair sums to 2×MIN, which is well inside `room`.
+      const ratio = Math.min(1, overlap / shrinkable);
+      top -= shrinkableTop * ratio;
+      middle -= shrinkableMiddle * ratio;
+    }
+  }
+
+  return { top, middle };
+}
+
+function clampFraction(value: number): number {
+  return Math.min(MAX_SPLIT_FRACTION, Math.max(MIN_SPLIT_FRACTION, value));
+}
+
+/**
+ * The three blocks' flex weights, always summing to 1.
+ *
+ * The renderer uses these directly as `flexGrow`, so History is derived rather
+ * than stored: a persisted pair can never describe three blocks that overflow or
+ * leave a gap.
+ */
+export function railSplitFractions(split: RailSplitPrefs): {
+  top: number;
+  middle: number;
+  history: number;
+} {
+  const { top, middle } = clampRailSplit(split);
+  return { top, middle, history: 1 - top - middle };
+}
+
+/**
+ * The split after dragging one boundary by `deltaPx` in a container of
+ * `containerPx`.
+ *
+ * The measurement is passed in rather than read from the DOM so the arithmetic
+ * is testable without layout (jsdom measures nothing). A non-positive container
+ * (before first layout, or a collapsed ancestor) leaves the split untouched —
+ * the caller must not fabricate a delta it cannot scale.
+ *
+ * `edge: "top"` moves the boundary between Source Control and Changes: those two
+ * trade height and History keeps exactly its current share. `edge: "middle"`
+ * moves the boundary between Changes and History, so Top keeps its share and
+ * History (the remainder) absorbs the difference. That is what a splitter
+ * physically does — it moves a boundary, so only its two neighbours change.
+ */
+export function railSplitWithDelta(
+  split: RailSplitPrefs,
+  edge: RailSplitEdge,
+  deltaPx: number,
+  containerPx: number,
+): RailSplitPrefs {
+  const current = clampRailSplit(split);
+  if (!Number.isFinite(deltaPx) || !Number.isFinite(containerPx) || containerPx <= 0) {
+    return current;
+  }
+  const delta = deltaPx / containerPx;
+  // The px floors become fractions once the container is measured; whichever is
+  // stricter wins, so a tall panel is governed by MIN_SPLIT_FRACTION and a short
+  // one by MIN_BLOCK_PX.
+  const floor = Math.max(MIN_SPLIT_FRACTION, MIN_BLOCK_PX / containerPx);
+
+  if (edge === "top") {
+    // History is the fixed third: Top and Changes share what History leaves.
+    const history = 1 - current.top - current.middle;
+    const upper = Math.max(floor, Math.min(MAX_SPLIT_FRACTION, 1 - history - floor));
+    const top = clampBetween(current.top + delta, floor, upper);
+    return { top, middle: 1 - top - history };
+  }
+  // Top is fixed: Changes and History share the rest.
+  const upper = Math.max(floor, Math.min(MAX_SPLIT_FRACTION, 1 - current.top - floor));
+  return { top: current.top, middle: clampBetween(current.middle + delta, floor, upper) };
+}
+
+function clampBetween(value: number, lower: number, upper: number): number {
+  return Math.min(upper, Math.max(lower, value));
+}
+
+/** Coerces the collapse record; a missing or non-boolean key takes its default. */
+export function sanitizeRailCollapsed(value: unknown): RailCollapsedPrefs {
+  const source = asRecord(value);
+  return {
+    staged: typeof source.staged === "boolean" ? source.staged : DEFAULT_RAIL_COLLAPSED.staged,
+    changed: typeof source.changed === "boolean" ? source.changed : DEFAULT_RAIL_COLLAPSED.changed,
+    stashes: typeof source.stashes === "boolean" ? source.stashes : DEFAULT_RAIL_COLLAPSED.stashes,
+  };
 }
 
 /**
@@ -202,6 +397,10 @@ export function sanitizeRailPrefs(value: unknown): RailPrefs {
     activeMenu: isRailMenuId(source.activeMenu) ? source.activeMenu : DEFAULT_RAIL_PREFS.activeMenu,
     width: clampRailWidth(source.width),
     order: sanitizeRailMenuOrder(source.order),
+    // A document written before the three-block Source Control has neither
+    // record; both fall back to their defaults, so no version bump is needed.
+    split: clampRailSplit(source.split),
+    collapsed: sanitizeRailCollapsed(source.collapsed),
   };
 }
 
@@ -217,5 +416,12 @@ export function mergeRailPrefs(current: RailPrefs, patch: unknown): RailPrefs {
     // `order` is a list: a patch replaces it wholesale. Merging element-wise
     // would duplicate entries the moment two documents disagree.
     order: "order" in source ? source.order : current.order,
+    // `split` and `collapsed` are records: a patch of one key must not wipe its
+    // siblings, so they merge one level deeper than the spread above.
+    split: "split" in source ? { ...current.split, ...asRecord(source.split) } : current.split,
+    collapsed:
+      "collapsed" in source
+        ? { ...current.collapsed, ...asRecord(source.collapsed) }
+        : current.collapsed,
   });
 }

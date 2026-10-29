@@ -569,3 +569,152 @@ describe("TUI surface presentation (2026-10-26 plan, step 2)", () => {
     expect(document.querySelector('[data-tui-widgets="belowEditor"]')).toBeTruthy();
   });
 });
+
+describe("the rail scope line", () => {
+  /** Opens the rail on a menu so its body (and scope line) is mounted. */
+  function openRail(menu: "source-control" | "checkpoints" | "documents"): void {
+    useAppStore.setState({
+      prefs: {
+        ...useAppStore.getState().prefs,
+        rail: { ...useAppStore.getState().prefs.rail, open: true, activeMenu: menu },
+      },
+    });
+  }
+
+  it("names the active session's folder under Source Control", () => {
+    openRail("source-control");
+    render(<SessionView />);
+    const path = screen.getByTestId("rail-scope-path");
+    expect(path).toHaveTextContent("app");
+    expect(path).toHaveAttribute("title", "C:/work/app");
+  });
+
+  it("names it under Checkpoints too, and follows a menu switch", () => {
+    openRail("source-control");
+    render(<SessionView />);
+    expect(screen.getByTestId("rail-scope-path")).toHaveTextContent("app");
+
+    // Checkpoints is scoped to the same folder; the line must not disappear.
+    act(() => {
+      useAppStore.getState().toggleRailMenu("checkpoints");
+    });
+    expect(screen.getByTestId("rail-scope-path")).toHaveTextContent("app");
+    expect(screen.getByTestId("rail-scope-path")).toHaveAttribute("title", "C:/work/app");
+  });
+
+  it("follows the active tab's cwd", () => {
+    useAppStore.setState({
+      tabs: [
+        ...useAppStore.getState().tabs,
+        {
+          id: "tab-2",
+          kind: "session",
+          cwd: "C:/work/other-project",
+          title: "Other",
+          sessionFile: null,
+          status: "idle",
+          createdAt: 2,
+          lastActiveAt: 2,
+          model: "anthropic/claude",
+        },
+      ],
+    });
+    openRail("source-control");
+    render(<SessionView />);
+    act(() => {
+      useAppStore.getState().activateTab("tab-2");
+    });
+    expect(screen.getByTestId("rail-scope-path")).toHaveTextContent("other-project");
+  });
+
+  it("reaches activateProject for a remembered project", async () => {
+    const activateProject = vi.fn(async () => {});
+    useAppStore.setState({
+      projects: [{ path: "C:/work/app", name: "app", addedAt: 1, lastOpenedAt: 1 }] as never,
+      activateProject,
+    });
+    openRail("source-control");
+    render(<SessionView />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Go to project" }));
+    expect(activateProject).toHaveBeenCalledWith("C:/work/app");
+  });
+
+  it("opens the folder as a project when it is not remembered", async () => {
+    const openProject = vi.fn(async () => {});
+    useAppStore.setState({ projects: [], openProject });
+    openRail("source-control");
+    render(<SessionView />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Go to project" }));
+    // A session's cwd need not be a saved project; opening it is the one useful
+    // thing the button can do there.
+    expect(openProject).toHaveBeenCalledWith("C:/work/app");
+  });
+});
+
+describe("# document completion follows the host session", () => {
+  const PANE = {
+    host: "excel" as const,
+    hostLabel: "Excel",
+    paneId: "pane-1",
+    clientName: "Excel",
+    documentId: "url_sha256:aaaa1111",
+    documentName: "Book1.xlsx",
+    targetId: "url_sha256:aaaa1111",
+    focused: true,
+    visible: true,
+    windows: 1,
+    ops: [],
+    catalogVersion: null,
+    protocolVersion: null,
+    opsIgnoredCount: 0,
+    connectedAt: null,
+    lastSeen: null,
+    model: null,
+    provider: null,
+    mention: "Book1.xlsx",
+  };
+
+  function seedHost(isHostTab: boolean): void {
+    useAppStore.setState({
+      tabs: [
+        { ...useAppStore.getState().tabs[0]!, id: "tab-1", kind: isHostTab ? "office" : "session" },
+        ...(isHostTab
+          ? []
+          : [{ ...useAppStore.getState().tabs[0]!, id: "tab-office", kind: "office" as const }]),
+      ],
+      activeTabId: "tab-1",
+      officeDocuments: documentsViewFixture({
+        available: true,
+        status: "ok",
+        panes: [PANE],
+      }),
+    });
+  }
+
+  it("lists the attached documents in the host session", async () => {
+    seedHost(true);
+    render(<SessionView />);
+
+    const prompt = screen.getByLabelText("Prompt");
+    await userEvent.type(prompt, "#");
+
+    // The completion item's label carries the `#` the user typed.
+    expect(await screen.findByText("#Book1.xlsx")).toBeInTheDocument();
+    expect(screen.getByTestId("completion-overlay")).toBeInTheDocument();
+  });
+
+  it("lists nothing in a sibling session of the same project", async () => {
+    seedHost(false);
+    render(<SessionView />);
+
+    const prompt = screen.getByLabelText("Prompt");
+    await userEvent.type(prompt, "#");
+
+    // The `office_*` call would land on the other tab, so the menu offers
+    // nothing rather than a document this session cannot serve.
+    await waitFor(() => expect(screen.queryByTestId("completion-overlay")).not.toBeInTheDocument());
+    expect(screen.queryByText("#Book1.xlsx")).not.toBeInTheDocument();
+  });
+});

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ChangesSection } from "../../src/renderer/src/rail/ChangesSection";
@@ -57,6 +57,24 @@ function seed(value: GitSnapshot, gitError: string | null = null): void {
     git: { [PROJECT]: value },
     gitError,
   });
+}
+
+/** Seeds a persisted collapse state for the two change groups. */
+function seedCollapsed(collapsed: { staged?: boolean; changed?: boolean }): void {
+  useAppStore.setState({
+    prefs: {
+      ...useAppStore.getState().prefs,
+      rail: {
+        ...useAppStore.getState().prefs.rail,
+        collapsed: { ...useAppStore.getState().prefs.rail.collapsed, ...collapsed },
+      },
+    },
+  });
+}
+
+/** The persisted collapse state, i.e. what a relaunch would read back. */
+function persistedCollapsed(): { staged: boolean; changed: boolean; stashes: boolean } {
+  return { ...useAppStore.getState().prefs.rail.collapsed };
 }
 
 let handles: ReturnType<typeof installBridge>;
@@ -378,5 +396,121 @@ describe("notices", () => {
     render(<ChangesSection projectPath={PROJECT} />);
     expect(screen.getByTestId("changes-section")).toBeInTheDocument();
     expect(screen.queryByTestId("commit-box")).not.toBeInTheDocument();
+  });
+});
+
+describe("collapsible groups", () => {
+  function seedBoth(): void {
+    seed(
+      snapshot({
+        staged: [file("src/a.ts", { staged: true, unstaged: false })],
+        changed: [file("src/b.ts"), file("src/c.ts")],
+      }),
+    );
+  }
+
+  it("starts both groups expanded", () => {
+    seedBoth();
+    render(<ChangesSection projectPath={PROJECT} />);
+
+    expect(screen.getByTestId("change-row-src/a.ts")).toBeInTheDocument();
+    expect(screen.getByTestId("change-row-src/b.ts")).toBeInTheDocument();
+    expect(screen.getByTestId("changes-group-toggle-staged")).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByTestId("changes-group-toggle-changed")).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  it("hides the rows and remembers the fold when a header is clicked", async () => {
+    seedBoth();
+    render(<ChangesSection projectPath={PROJECT} />);
+
+    await userEvent.click(screen.getByTestId("changes-group-toggle-staged"));
+
+    expect(screen.queryByTestId("change-row-src/a.ts")).not.toBeInTheDocument();
+    // The group itself survives, with its count, so the user can reopen it.
+    expect(screen.getByTestId("changes-group-staged")).toHaveTextContent("Staged Changes");
+    expect(screen.getByTestId("changes-group-staged")).toHaveTextContent("1");
+    expect(persistedCollapsed().staged).toBe(true);
+    // The sibling group is untouched.
+    expect(screen.getByTestId("change-row-src/b.ts")).toBeInTheDocument();
+    expect(persistedCollapsed().changed).toBe(false);
+  });
+
+  it("restores the rows when the header is clicked again", async () => {
+    seedBoth();
+    render(<ChangesSection projectPath={PROJECT} />);
+
+    const toggle = screen.getByTestId("changes-group-toggle-staged");
+    await userEvent.click(toggle);
+    expect(screen.queryByTestId("change-row-src/a.ts")).not.toBeInTheDocument();
+    await userEvent.click(toggle);
+    expect(screen.getByTestId("change-row-src/a.ts")).toBeInTheDocument();
+    expect(persistedCollapsed().staged).toBe(false);
+  });
+
+  it("renders a group folded from persisted state, header and count intact", () => {
+    seedBoth();
+    seedCollapsed({ changed: true });
+    render(<ChangesSection projectPath={PROJECT} />);
+
+    expect(screen.getByTestId("changes-group-changed")).toHaveTextContent("Changes");
+    expect(screen.getByTestId("changes-group-changed")).toHaveTextContent("2");
+    expect(screen.queryByTestId("change-row-src/b.ts")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("change-row-src/c.ts")).not.toBeInTheDocument();
+    // Staged is still open.
+    expect(screen.getByTestId("change-row-src/a.ts")).toBeInTheDocument();
+  });
+
+  it("points aria-controls at the list it hides", async () => {
+    seedBoth();
+    render(<ChangesSection projectPath={PROJECT} />);
+
+    const toggle = screen.getByTestId("changes-group-toggle-changed");
+    const listId = toggle.getAttribute("aria-controls");
+    expect(listId).toBeTruthy();
+    const list = document.getElementById(listId!);
+    expect(list).not.toBeNull();
+    expect(list!.tagName).toBe("UL");
+    expect(within(list!).getByTestId("change-row-src/b.ts")).toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // The controlled element is gone from the DOM while folded.
+    expect(document.getElementById(listId!)).toBeNull();
+  });
+
+  it("stages all without toggling the group", async () => {
+    seedBoth();
+    render(<ChangesSection projectPath={PROJECT} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Stage all" }));
+
+    // The action ran…
+    expect(lastAction()?.payload).toEqual({ kind: "stage", paths: ["src/b.ts", "src/c.ts"] });
+    // …and the header was not treated as part of it: clicking *Stage all* must
+    // never fold the group (the change the user is working through would vanish).
+    expect(persistedCollapsed().changed).toBe(false);
+  });
+
+  it("unstages all without toggling the group", async () => {
+    seedBoth();
+    render(<ChangesSection projectPath={PROJECT} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Unstage all" }));
+
+    expect(lastAction()?.payload).toEqual({ kind: "unstage", paths: ["src/a.ts"] });
+    expect(persistedCollapsed().staged).toBe(false);
+  });
+
+  it("keeps the shared rows outside the groups", () => {
+    seedBoth();
+    render(<ChangesSection projectPath={PROJECT} />);
+    // The refresh row applies to both groups, so it must not be folded with one.
+    expect(screen.getByRole("button", { name: "Refresh changes" })).toBeInTheDocument();
   });
 });

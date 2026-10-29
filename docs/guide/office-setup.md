@@ -32,8 +32,12 @@ owns the bridge port. **Reset add-in** restores the previous sideload state.
 
 ## Using it
 
-With a pane connected, the Documents section appears in the session's right rail
-view. From a row you can:
+With a pane connected, the Documents menu appears in the right rail **in every
+session** — so you can always see that Office is running — and its scope line
+names the session that owns the bridge (the **Office host**), its project and its
+status.
+
+From a row you can:
 
 - **Chat about this document** — prepends a `[office:<host> "<name>" id=<id>]`
   tag to the composer draft (the same tag format the bridge extension uses);
@@ -46,8 +50,32 @@ workbooks, `document: "active"` follows focus and an explicit `#name` routes to
 that document; ambiguity is reported with the bridge’s candidate list.
 
 **Stop** aborts the Office session’s run, which ends a pane’s answer for every
-bridge version. **Promote to Office host** demotes any other Office tab, restarts
-the promoted one on port 38617 and resumes its session, so history is preserved.
+bridge version.
+
+### Switching the Office host
+
+Only one session can serve Office: the tab that holds bridge port 38617. The
+Documents scope line says which one that is and offers:
+
+- **Open host session** — jump to that tab;
+- **Use this session instead** — make _this_ tab the host. It asks first, because
+  it stops the current host, restarts it, and moves port 38617 here; the session’s
+  history is preserved (it resumes from its JSONL);
+- **Start an Office session** — the one useful action when no tab holds the port.
+
+### What a non-host session can and cannot do
+
+`office_*` calls are served by whichever session owns 38617, so from any other
+session:
+
+- you still **see** every attached document, with its facts;
+- _Chat about this_ and _Insert #mention_ are **disabled**, and a line says why;
+- typing `#` offers **nothing**, because a mention would tag a prompt that session
+  cannot answer.
+
+Promote the session (above) if you want to work with the documents from it.
+There is no cross-session proxy: routing an `office_*` call to the host from a
+non-host session needs its own IPC and is tracked in the backlog.
 
 ## Platform support
 

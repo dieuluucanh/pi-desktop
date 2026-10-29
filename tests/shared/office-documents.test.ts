@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   documentMentionValue,
+  documentMentionsForHost,
   emptyOfficeDocumentsView,
   formatPaneAge,
   officeCapabilityLabel,
+  officeDocumentScope,
   officeDocumentTag,
+  officeHostTab,
   officeToolCapability,
   officeToolTarget,
   parseDocumentListTable,
@@ -350,5 +353,127 @@ describe("toDocumentMentions", () => {
       "url_sha256:aaaa1111",
       "url_sha256:aaaa1111",
     ]);
+  });
+});
+
+/** One tab record, with only the fields the host helpers read. */
+function tab(
+  overrides: Partial<{
+    id: string;
+    kind: "session" | "office" | "web";
+    cwd: string;
+    title: string;
+    status: "idle" | "running" | "starting" | "crashed" | "failed" | "stopped";
+  }> = {},
+) {
+  return {
+    id: "tab-1",
+    kind: "session" as const,
+    cwd: "/work/danone-hcm",
+    title: "Session",
+    status: "idle" as const,
+    ...overrides,
+  };
+}
+
+describe("officeHostTab", () => {
+  it("finds the office tab that holds the bridge", () => {
+    const host = officeHostTab([tab(), tab({ id: "office-1", kind: "office", title: "Office" })]);
+    expect(host?.id).toBe("office-1");
+    expect(host?.kind).toBe("office");
+  });
+
+  it("ignores a stopped office tab, because it no longer holds the port", () => {
+    const host = officeHostTab([
+      tab({ id: "office-1", kind: "office", status: "stopped" }),
+      tab({ id: "office-2", kind: "office", status: "running" }),
+    ]);
+    // The live tab wins even though the stopped record comes first.
+    expect(host?.id).toBe("office-2");
+  });
+
+  it("returns null when the only candidate is stopped", () => {
+    expect(officeHostTab([tab({ kind: "office", status: "stopped" })])).toBeNull();
+  });
+
+  it("returns null when no tab is an office tab", () => {
+    expect(officeHostTab([tab(), tab({ id: "tab-2" })])).toBeNull();
+  });
+
+  it("returns null for an empty list", () => {
+    expect(officeHostTab([])).toBeNull();
+  });
+
+  it("still treats a crashed host as the host: it is assigned the port", () => {
+    // Whether its process answers right now is a different question from identity.
+    expect(officeHostTab([tab({ kind: "office", status: "crashed" })])?.status).toBe("crashed");
+    expect(officeHostTab([tab({ kind: "office", status: "failed" })])?.status).toBe("failed");
+  });
+});
+
+describe("officeDocumentScope", () => {
+  const panes = parseOfficeDocumentsView({
+    payload: healthPayload([excelPane]),
+    status: "ok",
+    fetchedAt: "2026-09-20T10:00:00.000Z",
+  }).panes;
+
+  it("reports isHost only for the host tab itself", () => {
+    const tabs = [tab({ id: "session-1" }), tab({ id: "office-1", kind: "office" })];
+    expect(officeDocumentScope(panes, tabs, "office-1").isHost).toBe(true);
+    expect(officeDocumentScope(panes, tabs, "session-1").isHost).toBe(false);
+  });
+
+  it("resolves the host's project path from its cwd", () => {
+    const tabs = [
+      tab({ id: "session-1", cwd: "/work/other" }),
+      tab({ id: "office-1", kind: "office", cwd: "/work/danone-hcm", title: "Office" }),
+    ];
+    expect(officeDocumentScope(panes, tabs, "session-1")).toEqual({
+      host: {
+        id: "office-1",
+        title: "Office",
+        projectPath: "/work/danone-hcm",
+        status: "idle",
+      },
+      isHost: false,
+    });
+  });
+
+  it("reports no host and no isHost flag when nothing holds the bridge", () => {
+    expect(officeDocumentScope(panes, [tab()], "tab-1")).toEqual({ host: null, isHost: false });
+  });
+
+  it("does not claim host-ness for a null active tab", () => {
+    expect(officeDocumentScope(panes, [tab({ kind: "office" })], null).isHost).toBe(false);
+  });
+});
+
+describe("documentMentionsForHost", () => {
+  const panes = parseOfficeDocumentsView({
+    payload: healthPayload([excelPane]),
+    status: "ok",
+    fetchedAt: "2026-09-20T10:00:00.000Z",
+  }).panes;
+
+  it("returns the mention list for the host session", () => {
+    const tabs = [tab({ id: "office-1", kind: "office" })];
+    const mentions = documentMentionsForHost(panes, tabs, "office-1");
+    expect(mentions).toHaveLength(1);
+    expect(mentions[0]?.name).toBe("Book1.xlsx");
+  });
+
+  it("returns nothing for a sibling session in the same project", () => {
+    const tabs = [
+      tab({ id: "office-1", kind: "office" }),
+      tab({ id: "session-1", cwd: "/work/danone-hcm" }),
+    ];
+    // Same folder, different tab: the `office_*` call still lands on the host,
+    // so a mention here would tag a prompt this session cannot serve.
+    expect(documentMentionsForHost(panes, tabs, "session-1")).toEqual([]);
+  });
+
+  it("returns nothing when no host exists at all", () => {
+    expect(documentMentionsForHost(panes, [tab()], "tab-1")).toEqual([]);
   });
 });
