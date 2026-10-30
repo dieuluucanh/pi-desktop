@@ -148,12 +148,76 @@ describe("office documents store", () => {
       window.pi as unknown as { sessions: { promoteOfficeHost: unknown } }
     ).sessions.promoteOfficeHost = promoteOfficeHost;
 
+    const refreshDocuments = vi.spyOn(window.pi.office, "refreshDocuments");
     const ok = await useAppStore.getState().promoteToOfficeHost("tab-1");
 
     expect(ok).toBe(true);
     expect(promoteOfficeHost).toHaveBeenCalledWith("tab-1");
     expect(useAppStore.getState().tabs[0]?.kind).toBe("office");
     expect(useAppStore.getState().hint).toMatch(/office host/i);
+    // The takeover returns before the bridge binds the port, so the copy must not
+    // claim the bridge is already live.
+    expect(useAppStore.getState().hint).toMatch(/re-binds port 38617/i);
+    expect(useAppStore.getState().hint).not.toMatch(/\(bridge port 38617\)/i);
+    // The new host serves the pane registry, so the old list is re-probed rather
+    // than left on screen until the next 5 s poll.
+    expect(refreshDocuments).toHaveBeenCalled();
+    expect(useAppStore.getState().promotingOfficeHost).toBe(false);
+  });
+
+  it("re-reads the pane registry after a host restart", async () => {
+    // A restart is the documented fix for a bridge that never bound the port, so
+    // the panel must not keep saying "waiting" until the next 5 s poll.
+    installBridge();
+    const refreshDocuments = vi.spyOn(window.pi.office, "refreshDocuments");
+
+    await useAppStore.getState().restartTab("tab-1");
+
+    expect(refreshDocuments).toHaveBeenCalled();
+  });
+
+  it("surfaces a failed takeover verbatim and clears the busy flag", async () => {
+    // A port the app cannot free rolls back on the main side; the renderer must
+    // report why instead of silently keeping the old host.
+    installBridge();
+    (
+      window.pi as unknown as { sessions: { promoteOfficeHost: unknown } }
+    ).sessions.promoteOfficeHost = vi.fn(async () => {
+      throw new Error("port 38617 is held by evil.exe (pid 7)");
+    });
+
+    const ok = await useAppStore.getState().promoteToOfficeHost("tab-1");
+
+    expect(ok).toBe(false);
+    expect(useAppStore.getState().hint).toContain("evil.exe");
+    expect(useAppStore.getState().promotingOfficeHost).toBe(false);
+  });
+
+  it("ignores a second click while a promotion is in flight", async () => {
+    installBridge();
+    let release: (() => void) | null = null;
+    const promoteOfficeHost = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({ tabs: [tab({ kind: "office" as const })], activeTabId: "tab-1" });
+        }),
+    );
+    (
+      window.pi as unknown as { sessions: { promoteOfficeHost: unknown } }
+    ).sessions.promoteOfficeHost = promoteOfficeHost;
+
+    const first = useAppStore.getState().promoteToOfficeHost("tab-1");
+    // The recovery restarts two hosts and re-binds a port; a double click must
+    // not queue a second round.
+    const second = await useAppStore.getState().promoteToOfficeHost("tab-1");
+    expect(second).toBe(false);
+
+    release!();
+    await first;
+
+    expect(promoteOfficeHost).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().promotingOfficeHost).toBe(false);
   });
 });
 

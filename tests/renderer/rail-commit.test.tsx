@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CommitBox } from "../../src/renderer/src/rail/CommitBox";
 import {
   commitReadiness,
@@ -64,6 +64,28 @@ const STAGED = snapshot({
 
 let handles: ReturnType<typeof installBridge>;
 
+/**
+ * The warnings the box raised, newest last. The box no longer prints its
+ * blockers inline (2026-10-30 plan), so the notification is the observable.
+ * `vi.hoisted` keeps the array alive before the mocked factory runs.
+ */
+const { notices } = vi.hoisted(() => ({ notices: [] as string[] }));
+vi.mock("sonner", () => ({
+  toast: {
+    warning: (message: string) => {
+      notices.push(message);
+      return 0;
+    },
+    success: () => 0,
+    error: () => 0,
+    message: () => 0,
+  },
+}));
+
+function published(): string[] {
+  return notices;
+}
+
 function seed(value: GitSnapshot, headMessage: string | null = null): void {
   handles = installBridge({
     git: value,
@@ -86,6 +108,7 @@ function lastAction() {
 }
 
 beforeEach(() => {
+  notices.length = 0;
   seed(STAGED);
 });
 
@@ -248,12 +271,27 @@ describe("committing", () => {
     );
   });
 
-  it("disables the button while there is nothing staged", () => {
+  it("keeps the button clickable when only the message is missing", () => {
     seed(snapshot({ changed: [file("a.ts")] }));
     render(<CommitBox projectPath={PROJECT} />);
-    // The label is actionable, but an empty message keeps it disabled.
-    expect(screen.getByRole("button", { name: "Stage all and commit" })).toBeDisabled();
-    expect(screen.getByTestId("commit-reason")).toHaveTextContent("Write a commit message.");
+    // Nothing staged but changes present: the label promises to stage first.
+    const button = screen.getByRole("button", { name: "Stage all and commit" });
+    // Logical blockers stay pressable so the press can explain itself; the box
+    // spends no row on a permanent warning (2026-10-30 plan).
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(screen.queryByTestId("commit-reason")).not.toBeInTheDocument();
+  });
+
+  it("explains a missing message only when Commit is pressed", async () => {
+    seed(snapshot({ changed: [file("a.ts")] }));
+    render(<CommitBox projectPath={PROJECT} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Stage all and commit" }));
+
+    expect(published().at(-1)).toMatch(/write a commit message first/i);
+    // Nothing was dispatched: the click never stages a half-applied intention.
+    expect(handles.gitCalls.filter((call) => call.kind === "action")).toEqual([]);
   });
 });
 
@@ -319,11 +357,18 @@ describe("identity", () => {
     repo: { ...snapshot().repo!, identity: null },
   });
 
-  it("disables committing and explains why", () => {
+  it("explains the missing identity when Commit is pressed, and opens the form", async () => {
     seed(NO_IDENTITY);
     render(<CommitBox projectPath={PROJECT} />);
-    expect(screen.getByTestId("commit-reason")).toHaveTextContent("Tell git who you are.");
-    expect(screen.getByRole("button", { name: "Commit" })).toBeDisabled();
+    // No warning row while the user is still working.
+    expect(screen.queryByTestId("commit-reason")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("identity-form")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Commit" }));
+
+    expect(published().at(-1)).toMatch(/tell git who you are/i);
+    // The toast names the menu; opening the form saves the user a hunt.
+    expect(screen.getByTestId("identity-form")).toBeInTheDocument();
   });
 
   it("needs an explicit checkbox before writing the repository config", async () => {
@@ -332,7 +377,9 @@ describe("identity", () => {
 
     // The form is not in the way until the user asks for it.
     expect(screen.queryByTestId("identity-form")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Set identity" }));
+    // A user with no identity reaches the form from the always-present `⋯` list.
+    await userEvent.click(screen.getByRole("button", { name: "Commit options" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Set identity" }));
 
     expect(screen.getByTestId("identity-form")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save identity" })).toBeDisabled();
@@ -343,7 +390,8 @@ describe("identity", () => {
     render(<CommitBox projectPath={PROJECT} />);
 
     // A user with no identity is offered the form instead of a dead button.
-    await userEvent.click(screen.getByRole("button", { name: "Set identity" }));
+    await userEvent.click(screen.getByRole("button", { name: "Commit options" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Set identity" }));
 
     expect(screen.getByTestId("identity-form")).toBeInTheDocument();
     const save = screen.getByRole("button", { name: "Save identity" });
@@ -527,12 +575,11 @@ describe("the compact composer", () => {
     expect(screen.getByRole("button", { name: "Amend commit" })).toBeInTheDocument();
   });
 
-  it("keeps Set identity reachable from the blocked reason line", () => {
+  it("keeps Set identity reachable from the options list", () => {
     seed(NO_IDENTITY);
     render(<CommitBox projectPath={PROJECT} />);
-    // The reason line must not depend on the options list being open.
-    expect(screen.getByTestId("commit-reason")).toHaveTextContent("Tell git who you are.");
-    expect(screen.getByRole("button", { name: "Set identity" })).toBeInTheDocument();
+    // The route to the form is the `⋯` list, which is always present.
+    expect(screen.getByRole("button", { name: "Commit options" })).toBeInTheDocument();
   });
 
   it("keeps the primary button full width and computed", () => {

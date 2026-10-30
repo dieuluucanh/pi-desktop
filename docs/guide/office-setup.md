@@ -33,9 +33,10 @@ owns the bridge port. **Reset add-in** restores the previous sideload state.
 ## Using it
 
 With a pane connected, the Documents menu appears in the right rail **in every
-session** — so you can always see that Office is running — and its scope line
-names the session that owns the bridge (the **Office host**), its project and its
-status.
+session** — so you can always see that Office is running. Its pinned row is one
+compact line that says only what is not obvious: _Office host: …_ (naming the
+host's project when it differs from the rail's) or _This session is the Office
+host._
 
 From a row you can:
 
@@ -55,12 +56,16 @@ bridge version.
 ### Switching the Office host
 
 Only one session can serve Office: the tab that holds bridge port 38617. The
-Documents scope line says which one that is and offers:
+Documents row says which one that is and offers:
 
 - **Open host session** — jump to that tab;
 - **Use this session instead** — make _this_ tab the host. It asks first, because
-  it stops the current host, restarts it, and moves port 38617 here; the session’s
-  history is preserved (it resumes from its JSONL);
+  it stops the current host, restarts it, and moves port 38617 here; the session's
+  history is preserved (it resumes from its JSONL). The old host's process is
+  stopped **and awaited**, and whatever else is holding 38617 — an earlier app
+  run, terminal Pi, an unrelated program — is terminated so the port really comes
+  free. If it cannot be freed, the previous host is restored and the error names
+  the process that refused to let go;
 - **Start an Office session** — the one useful action when no tab holds the port.
 
 ### What a non-host session can and cannot do

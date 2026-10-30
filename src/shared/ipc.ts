@@ -91,6 +91,12 @@ export const IPC = {
   /** Makes one tab the single Office host, owning the bridge port (plan step 20). */
   sessionPromoteOffice: "session:promote-office",
   sessionActivate: "session:activate",
+  /**
+   * Clears the active tab without closing one (2026-10-30 project-scoped rail
+   * plan): a selected project with no open session shows Welcome while the rail
+   * keeps that project's scope.
+   */
+  sessionDeactivate: "session:deactivate",
   sessionRestore: "session:restore",
   /** Re-checks host/session readiness after suspend or a missed push (no spawn). */
   sessionReconcile: "session:reconcile",
@@ -313,6 +319,8 @@ export interface SessionsBridge {
   /** Makes this tab the single Office host (plan step 20), restarting its host. */
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Clears the active tab without closing or stopping any host. */
+  deactivate(): Promise<SessionTabsEnvelope>;
   /** Makes the tab table truthful after sleep/resume or a lost host. */
   reconcile(): Promise<SessionTabsEnvelope>;
   restore(): Promise<SessionTabsEnvelope>;

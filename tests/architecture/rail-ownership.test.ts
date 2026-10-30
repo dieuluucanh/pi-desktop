@@ -196,6 +196,25 @@ describe("panel rail ownership", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("pins every block header through one primitive", async () => {
+    // Each block scrolls on its own, so the block's name and its one block-wide
+    // control (refresh) must not travel with the list. Two hand-rolled sticky
+    // headers would drift, so both go through `RailBlockHeader`.
+    const dir = join(repoRoot, "src", "renderer", "src", "rail");
+    const primitive = await readFile(join(dir, "RailBlockHeader.tsx"), "utf8");
+    expect(primitive).toContain("sticky");
+    expect(primitive).toContain("top-0");
+    expect(primitive).toContain("bg-surface");
+
+    for (const file of ["ChangesSection.tsx", "HistorySection.tsx"]) {
+      const body = await readFile(join(dir, file), "utf8");
+      expect(body, file).toContain('from "./RailBlockHeader"');
+      expect(body, file).toContain("<RailBlockHeader");
+      // The rule lives in the primitive, not in each caller.
+      expect(body, file).not.toContain("sticky top-0");
+    }
+  });
+
   it("keeps Source Control in three blocks with exactly two splitters", async () => {
     const panel = await readFile(
       join(repoRoot, "src", "renderer", "src", "rail", "SourceControlPanel.tsx"),
@@ -211,13 +230,14 @@ describe("panel rail ownership", () => {
     expect(panel).not.toContain("source-control-scroll");
   });
 
-  it("renders the scope line outside the body's scroll wrapper", async () => {
+  it("renders a pinned row outside the body's scroll wrapper", async () => {
     const host = await readFile(
       join(repoRoot, "src", "renderer", "src", "rail", "RightRail.tsx"),
       "utf8",
     );
     // `spec.scope` must appear before the scroll container in the markup, so a
-    // body's own `overflow-y-auto` cannot carry the line away.
+    // body's own `overflow-y-auto` cannot carry the row away. Since the
+    // 2026-10-30 plan only Documents pins one (its bridge actions).
     expect(host).toContain("{spec.scope}");
     const scopeAt = host.indexOf("{spec.scope}");
     const scrollerAt = host.indexOf("overflow-y-auto");
@@ -226,6 +246,34 @@ describe("panel rail ownership", () => {
     expect(scopeAt).toBeLessThan(scrollerAt);
     // And it is a menu-spec field, not something a body renders itself.
     expect(host).toContain("scope?: ReactNode");
+  });
+
+  it("keeps the project folder off every menu body", async () => {
+    // Source Control and Checkpoints used to pin a scope row naming the folder
+    // and offering *Go to project*. The rail is now app chrome scoped to the
+    // selected project (2026-10-30 plan), so the folder belongs in the panel
+    // header's `title` and nowhere else: a per-body row would be a second answer
+    // to "which folder is this?".
+    const files = await rendererFiles();
+    const offenders: string[] = [];
+    for (const file of files) {
+      const text = await readFile(file, "utf8");
+      if (text.includes("Go to project") || text.includes('data-testid="rail-scope')) {
+        offenders.push(relative(repoRoot, file).replace(/\\/g, "/"));
+      }
+    }
+    expect(offenders).toEqual([]);
+    const dir = join(repoRoot, "src", "renderer", "src", "rail");
+    expect(await readdir(dir)).not.toContain("RailScopeLine.tsx");
+  });
+
+  it("names the folder on the panel header instead", async () => {
+    const host = await readFile(
+      join(repoRoot, "src", "renderer", "src", "rail", "RightRail.tsx"),
+      "utf8",
+    );
+    expect(host).toContain("scopeTitle?: string");
+    expect(host).toMatch(/<h2[^>]*title=\{spec\.scopeTitle\}/);
   });
 
   it("keeps host controls in one place", async () => {
@@ -252,17 +300,29 @@ describe("panel rail ownership", () => {
     }
   });
 
-  it("mounts the rail from the session view, not from a view of its own", async () => {
+  it("mounts the rail from the app shell, not from a view", async () => {
+    // The rail follows the selected project, so it cannot live inside a view: a
+    // project with no open session still owns Source Control and Checkpoints
+    // (2026-10-30 plan).
+    const shell = await readFile(
+      join(repoRoot, "src", "renderer", "src", "layout", "ProjectRail.tsx"),
+      "utf8",
+    );
+    // Every menu is registered there, so an unmounted menu cannot silently exist.
+    for (const id of ["source-control", "checkpoints"]) {
+      expect(shell).toContain(`id: "${id}"`);
+    }
+    // Documents stays conditional on the Office bridge (plan D-A10).
+    expect(shell).toContain('id: "documents"');
+
+    const app = await readFile(join(repoRoot, "src", "renderer", "src", "App.tsx"), "utf8");
+    expect(app).toContain("<ProjectRail />");
+
+    // No view mounts a second copy: one rail, one host.
     const sessionView = await readFile(
       join(repoRoot, "src", "renderer", "src", "views", "SessionView.tsx"),
       "utf8",
     );
-    expect(sessionView).toContain("<RightRail");
-    // Every menu is registered there, so an unmounted menu cannot silently exist.
-    for (const id of ["source-control", "checkpoints"]) {
-      expect(sessionView).toContain(`id: "${id}"`);
-    }
-    // Documents stays conditional on the Office bridge (plan D-A10).
-    expect(sessionView).toContain('id: "documents"');
+    expect(sessionView).not.toContain("<RightRail");
   });
 });

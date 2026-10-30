@@ -196,6 +196,41 @@ describe("paging", () => {
   });
 });
 
+describe("the pinned header", () => {
+  it("pins Commit History above the log", () => {
+    render(<HistorySection projectPath={PROJECT} />);
+    // The block's own scroller is the parent; an opaque surface stops rows
+    // ghosting through while the list scrolls under it.
+    const header = screen.getByTestId("history-header");
+    expect(header).toHaveTextContent("Commit History");
+    expect(header.className).toContain("sticky");
+    expect(header.className).toContain("top-0");
+    expect(header.className).toContain("bg-surface");
+  });
+
+  it("counts the loaded commits and marks a further page", () => {
+    seed({
+      entries: [commit(), commit({ sha: "b".repeat(40), shortSha: "bbbbbbb" })],
+      hasMore: true,
+    });
+    render(<HistorySection projectPath={PROJECT} />);
+    expect(screen.getByTestId("history-count")).toHaveTextContent("2+");
+  });
+
+  it("refreshes from the first page, not the current cursor", async () => {
+    seed({ entries: [commit()], hasMore: true });
+    render(<HistorySection projectPath={PROJECT} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh commit history" }));
+
+    await waitFor(() =>
+      expect(handles.gitCalls.find((call) => call.kind === "log")?.payload).toEqual({
+        limit: HISTORY_PAGE_SIZE,
+      }),
+    );
+  });
+});
+
 describe("empty states", () => {
   it("says a repository with no commits has none", () => {
     seed({ snapshot: snapshot({ repo: { ...snapshot().repo!, empty: true, head: null } }) });
@@ -209,9 +244,17 @@ describe("empty states", () => {
     expect(screen.getByTestId("history-empty")).toHaveTextContent("No commits to show.");
   });
 
-  it("renders nothing for an unavailable repository", () => {
+  it("keeps its header and names why an unavailable repository has no log", () => {
     seed({ snapshot: emptyGitSnapshot(PROJECT, "git_missing") });
     render(<HistorySection projectPath={PROJECT} />);
-    expect(screen.queryByTestId("history-section")).not.toBeInTheDocument();
+
+    // A titled block that vanishes is the same class of bug as a vanishing
+    // Documents menu, so the header survives and only the reason changes.
+    expect(screen.getByTestId("history-header")).toHaveTextContent("Commit History");
+    expect(screen.getByTestId("history-empty")).toHaveTextContent("Git is not installed");
+    // There is nothing to reload on an unavailable repository.
+    expect(
+      screen.queryByRole("button", { name: "Refresh commit history" }),
+    ).not.toBeInTheDocument();
   });
 });

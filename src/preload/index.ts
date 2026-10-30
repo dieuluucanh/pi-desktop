@@ -94,6 +94,7 @@ const sessions: SessionsBridge = {
     ipcRenderer.invoke(IPC.sessionPromoteOffice, tabId) as Promise<SessionTabsEnvelope>,
   activate: (tabId: string) =>
     ipcRenderer.invoke(IPC.sessionActivate, tabId) as Promise<SessionTabsEnvelope>,
+  deactivate: () => ipcRenderer.invoke(IPC.sessionDeactivate) as Promise<SessionTabsEnvelope>,
   reconcile: () => ipcRenderer.invoke(IPC.sessionReconcile) as Promise<SessionTabsEnvelope>,
   restore: () => ipcRenderer.invoke(IPC.sessionRestore) as Promise<SessionTabsEnvelope>,
   restart: (tabId: string) =>

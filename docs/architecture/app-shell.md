@@ -153,27 +153,61 @@ renderer's Tailwind scan root, so `styles.css` also declares them with
   `Changes` and `Stashes` fold independently (`prefs.rail.collapsed`; Stashes
   start collapsed). A render-time clamp is never written back — only a drag, a
   key or a double-click reset persists.
-- **The scope line.** A pinned row under each panel title names what that menu
-  acts on: the session's folder (Source Control, Checkpoints) or the Office host
-  session and its project (Documents). `RightRail` renders it from
-  `RailMenuSpec.scope`, **outside** the body's scroll container, so a scrolling
-  Checkpoints list cannot carry it away. Source Control and Checkpoints offer
-  _Go to project_; Documents offers _Open host session_ and, from a non-host
-  session, _Use this session instead_, which moves bridge port 38617 behind a
-  confirmation.
-- **Documents section (plan step 20).** One of those three menus. It renders only
-  while the bridge answers `/health` (plan D-A10) and lists every attached task
-  pane with its facts and actions. The registry is the main process's `/health`
-  poll (`src/main/office/documents-service.ts`), pushed over
+- **Block headers are pinned (2026-10-30 rail-headers plan).** Each block's header
+  is its scroller's first child: `sticky top-0` with an opaque `bg-surface` and a
+  hairline, so the block's name, count and _Refresh_ stay visible while the rows
+  scroll under them. Both blocks use `rail/RailBlockHeader` (one owner for the
+  rule), and the header sits outside the `gap` column that holds the rows. The
+  Commit History block always renders its header — a repository with no log
+  explains why instead of leaving a bare block.
+- **Project scope.** The rail is **app chrome**, not part of a view: `ProjectRail`
+  sits beside the session column in `App.tsx` and is scoped to the **selected
+  project** (`railScopeFolder` in `src/shared/rail-scope.ts`), falling back to the
+  active session's folder when a cwd was never saved as a project. Selecting a
+  project jumps to that project's most recently active **open** tab, and clears
+  the active tab when the folder has none — so Welcome shows while the rail keeps
+  the project's source control and checkpoints. Selecting a session selects its
+  project. The rail is hidden on Settings, Extensions, Connections, Skills and
+  Diagnostics, which get the full width.
+- **No scope row.** The panel header names the folder in its `title`
+  (`RailMenuSpec.scopeTitle`); there is no per-menu project line and no
+  _Go to project_ button, because the panel and the sidebar always agree now.
+  `RightRail` still renders `RailMenuSpec.scope` **outside** the body's scroll
+  container, which is what keeps the Documents action row pinned.
+- **Documents section (plan step 20).** One of those three menus. Its **presence**
+  is a stable fact, not a probe reading (2026-10-30 rail-headers plan): the entry
+  is in the strip when the Pi settings list the bridge package
+  (`OfficeDocumentsView.configured`, read once at startup and after a wizard
+  install), **or** the bridge answers `/health` right now, **or** an `office`-kind
+  tab exists. One failed probe during a host restart therefore cannot make it
+  vanish, and `resolveActiveMenu` no longer falls back to another menu mid-takeover.
+  The body lists every attached task pane with its facts and actions; while the
+  bridge is not answering it says why (still starting, versus another program
+  owning port 38617) and keeps its re-check, instead of rendering nothing. When a
+  host exists but the bridge is down, the scope row offers _Restart host session_.
+  The registry is the main process's `/health` poll
+  (`src/main/office/documents-service.ts`), pushed over
   `office:documents-state`; the pure projection lives in
   `src/shared/office-documents.ts` and also feeds the `#` completion source and
   the office tool cards. A session tab that owns port 38617 is the **Office
   host**; the menu appears in **every** session (so the user can see Office is
-  running) and its scope line names the host session and project, offering _Open
-  host session_ / _Use this session instead_. In a non-host session the two
+  running). Its pinned row is one compact line — _Office host: …_ (with the
+  folder only when it differs from the rail's) or _This session is the Office
+  host._ — plus _Open host session_ / _Use this session instead_, or _Start an
+  Office session_ when no tab holds the bridge. In a non-host session the two
   composer actions are disabled and `#` completion returns nothing, because only
-  the host can serve the `office_*` call; the scope line explains and offers the
-  fix.
+  the host can serve the `office_*` call; the disabled buttons' `title` says so.
+  Promotion **really takes port 38617**: the old host is stopped and awaited,
+  this app's own PIDs are sampled _before_ any detach (a detached host has left
+  `hosts.list()`), then `src/main/office/port-owner.ts` finds the listener with
+  `Get-NetTCPConnection` (falling back to a dual-stack `netstat -ano`), terminates
+  it (never this app's own PIDs, never a kernel/System PID, re-reading the owner
+  before each signal) and **verifies the port is free**. A takeover that cannot
+  identify or free the owner now fails — with the owner named — rather than
+  reporting success and leaving a host that cannot bind. If the port cannot be
+  freed the displaced host is restored. A forced kill of a TUI in another
+  terminal can leave that console in raw mode; reopening it is the user's call,
+  and the confirm dialog says so.
 - **Web tabs (plan step 21).** A `web` tab is a page the app did not write — a
   Plannotator review served on a loopback port, or any localhost UI. It has no Pi
   host: `src/shared/session-ipc.ts` carries only its record (`url`,

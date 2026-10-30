@@ -17,12 +17,6 @@ import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
 import { WidgetStrip } from "../extension-ui/WidgetStrip";
 import { ExtensionDialogDock } from "../extension-ui/ExtensionDialog";
-import { CheckpointsSection } from "../rail/CheckpointsSection";
-import { DocumentsSection } from "../rail/DocumentsSection";
-import { DocumentsScope } from "../rail/DocumentsScope";
-import { RightRail } from "../rail/RightRail";
-import { RailScopeLine } from "../rail/RailScopeLine";
-import { SourceControlPanel } from "../rail/SourceControlPanel";
 import { WorkingRow } from "../extension-ui/WorkingRow";
 import { RunStatusRow } from "../session/RunStatusRow";
 import { TuiCellProbe, TuiSlotFrame, TuiSurface } from "../tui/TuiSurface";
@@ -33,7 +27,7 @@ import { WebTabView } from "../web/WebTabView";
 import { createCommandProvider } from "../completion/command-source";
 import { createDocumentProvider } from "../completion/document-source";
 import { createFileProvider } from "../completion/file-source";
-import { documentMentionsForHost, officeDocumentScope } from "../../../shared/office-documents";
+import { documentMentionsForHost } from "../../../shared/office-documents";
 import { createCompletionProvider } from "../completion/stack";
 import type { CompletionItem, CompletionSuggestions } from "../completion/types";
 import { ContextRing } from "../session/ContextRing";
@@ -42,7 +36,6 @@ import { ThinkingPicker } from "../session/ThinkingPicker";
 import { contextUsageOf, modelKeyOf, thinkingLevelsOf } from "../session/model-catalog";
 import type { ViewMode } from "../../../shared/prefs";
 import { SESSION_STATUS_LABEL, type TabStatus } from "../../../shared/session-ipc";
-import { findProject } from "../../../shared/projects";
 
 /**
  * Session view (plan step 5).
@@ -221,37 +214,6 @@ export function SessionView() {
   const tuiSurface = useAppStore((state) =>
     activeTabId ? state.tuiSurfaces[activeTabId] : undefined,
   );
-  const officeDocuments = useAppStore((state) => state.officeDocuments);
-  /**
-   * Whether **this** session owns bridge port 38617. The Documents body needs it
-   * to disable the two actions that tag a prompt only the host can serve; the
-   * predicate lives in `shared/office-documents` so the renderer and main agree.
-   */
-  const documentsIsHost = useAppStore(
-    (state) =>
-      officeDocumentScope(state.officeDocuments?.panes ?? [], state.tabs, activeTabId).isHost,
-  );
-  const watchGit = useAppStore((state) => state.watchGit);
-  const loadGit = useAppStore((state) => state.loadGit);
-  const loadCheckpoints = useAppStore((state) => state.loadCheckpoints);
-  const gitSnapshot = useAppStore((state) =>
-    activeTabId
-      ? state.git[state.tabs.find((tab) => tab.id === activeTabId)?.cwd ?? ""]
-      : undefined,
-  );
-  // The entry ids the open transcript knows (git-checkpoint plan step 25): a
-  // checkpoint's `entryId` is matched against this set to say whether it belongs
-  // to a turn of *this* conversation or to one before a fork.
-  const activeEntryIds = useAppStore((state) =>
-    activeTabId ? state.transcripts[activeTabId]?.entryIds : undefined,
-  );
-  // The checkpoint timeline for this tab's folder: the section header counts it,
-  // and the section body renders it. Selected as one value so a push from main
-  // re-renders this view once, not per row.
-  const checkpoints = useAppStore((state) => {
-    const cwd = activeTabId ? (state.tabs.find((tab) => tab.id === activeTabId)?.cwd ?? "") : "";
-    return cwd ? state.checkpoints[cwd] : undefined;
-  });
   // Only the count drove a section header; the strip's badges now come from the
   // snapshot and the checkpoint store directly.
   const webTabStates = useAppStore((state) => state.webTabStates);
@@ -324,22 +286,6 @@ export function SessionView() {
   const active = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeId = active?.id ?? null;
 
-  /**
-   * The rail's scope line names the active session's folder, and this takes the
-   * user to whatever owns it: the remembered project when there is one, or a
-   * freshly opened project entry when the folder is new (a session's cwd is not
-   * necessarily a project the user saved).
-   */
-  const boundProject = useAppStore((state) =>
-    active ? findProject(state.projects, active.cwd) : null,
-  );
-  const activateProject = useAppStore((state) => state.activateProject);
-  const openProject = useAppStore((state) => state.openProject);
-  const goToProject = (): void => {
-    if (!active) return;
-    if (boundProject) void activateProject(boundProject.path);
-    else void openProject(active.cwd);
-  };
   // An extension dialog is per-tab and wins over the composer and a docked TUI
   // overlay: it is the newest interaction the extension is blocked on.
   const dialog = extensionDialogs.find((entry) => entry.tabId === active?.id) ?? null;
@@ -378,25 +324,9 @@ export function SessionView() {
     if (activeId && active?.kind === "session") void loadShortcuts();
   }, [activeId, active?.kind, active?.status, loadShortcuts]);
 
-  // Git polling follows the **tab**, not the panel: the strip's changed-file
-  // badge is visible while the panel is closed, so the snapshot has to be live
-  // then too. Main already pauses polling while the window is unfocused.
-  const railCwd = active?.kind === "web" ? null : (active?.cwd ?? null);
-  useEffect(() => {
-    void watchGit(railCwd);
-  }, [railCwd, watchGit]);
-
-  // Seed the snapshot on arrival, so the strip's badge is real on first paint
-  // rather than one poll interval later.
-  useEffect(() => {
-    if (railCwd) void loadGit(railCwd);
-  }, [railCwd, loadGit]);
-
-  // Seed the checkpoint timeline for the same reason: its badge counts a store
-  // the panel has not necessarily opened yet. `loadCheckpoints` is idempotent.
-  useEffect(() => {
-    if (railCwd) void loadCheckpoints(railCwd);
-  }, [railCwd, loadCheckpoints]);
+  // Git polling and the checkpoint timeline are seeded by `ProjectRail` (the
+  // rail follows the selected project, not this tab — 2026-10-30 plan), so the
+  // session view no longer owns a scope of its own.
 
   if (!active) return <WelcomeView />;
   if (active.kind === "web") return <WebTabView tab={active} />;
@@ -760,39 +690,6 @@ export function SessionView() {
             />
           ) : null}
         </div>
-        <RightRail
-          menus={[
-            {
-              id: "source-control" as const,
-              count: (gitSnapshot?.staged.length ?? 0) + (gitSnapshot?.changed.length ?? 0),
-              // Source Control pins the composer and the sync verbs and scrolls
-              // the lists itself, so the host must not wrap it in a scroller.
-              scroll: "self" as const,
-              // Both Source Control and Checkpoints act on the session's folder,
-              // so both name it — and offer the way back to it.
-              scope: <RailScopeLine projectPath={active.cwd} onGoToProject={goToProject} />,
-              content: <SourceControlPanel projectPath={active.cwd} />,
-            },
-            {
-              id: "checkpoints" as const,
-              count: checkpoints?.checkpoints.length ?? 0,
-              scope: <RailScopeLine projectPath={active.cwd} onGoToProject={goToProject} />,
-              content: <CheckpointsSection projectPath={active.cwd} entryIds={activeEntryIds} />,
-            },
-            ...(officeDocuments?.available
-              ? [
-                  {
-                    id: "documents" as const,
-                    count: officeDocuments.panes.length,
-                    // Documents is app-wide, so its scope row names the session
-                    // that owns the bridge and offers the way to move it.
-                    scope: <DocumentsScope panes={officeDocuments.panes} />,
-                    content: <DocumentsSection isHost={documentsIsHost} />,
-                  },
-                ]
-              : []),
-          ]}
-        />
       </div>
 
       <ModelPicker

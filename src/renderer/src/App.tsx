@@ -5,6 +5,7 @@ import { PackageConsentDialog } from "./extensions/PackageConsentDialog";
 import { PrivacyDialog } from "./privacy/PrivacyDialog";
 import { TrustDialog } from "./projects/TrustDialog";
 import { Sidebar } from "./layout/Sidebar";
+import { ProjectRail } from "./layout/ProjectRail";
 import { StatusBar } from "./layout/StatusBar";
 import { TabStrip } from "./layout/TabStrip";
 import { TitleBar } from "./layout/TitleBar";
@@ -271,6 +272,13 @@ export function App() {
             <View />
           </section>
         </main>
+        {/*
+          The panel rail is app chrome, not part of a view (2026-10-30
+          project-scoped rail plan): it follows the selected project, so a
+          project with no open session still shows its source control and
+          checkpoints beside Welcome. Product views get the full width.
+        */}
+        <ProjectRail />
       </div>
       <StatusBar />
       <CommandPalette />

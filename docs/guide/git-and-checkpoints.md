@@ -45,8 +45,18 @@ _Staged Changes_, _Changes_ and _Stashes_ each fold away when you click their
 header, and the fold is remembered. _Stage all_ / _Unstage all_ are separate
 buttons, so bulk-staging never folds the list you are working through.
 
-The scope line under the menu title names the **folder** this menu acts on (the
-active session's folder) and gives you _Go to project_.
+The **Changes** block opens with its own header: the title, the combined count,
+and an icon-only refresh at the right. A clean tree shows just that header — the
+count says 0, so nothing spends two rows explaining an empty list.
+
+The rail is scoped to the **project you selected** in the sidebar, not to
+the tab that happens to be on screen. Selecting a project jumps to its most
+recently active open session; selecting a session selects its project. The panel
+header's tooltip names the folder.
+
+_Commit_ stays pressable even when something is missing. It explains what (stage
+something, write a message, set a git identity) only when you press it, as a
+notification, instead of printing a standing warning above the button.
 
 ## What it needs
 

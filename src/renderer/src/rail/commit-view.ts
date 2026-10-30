@@ -93,3 +93,31 @@ export function primaryActionLabel(snapshot: GitSnapshot | undefined, amend: boo
   if (hasChanges) return "Stage all and commit";
   return "Commit";
 }
+
+/**
+ * What to tell the user when they press Commit and it cannot go through.
+ *
+ * The box no longer prints this before the attempt (2026-10-30 plan): a line that
+ * says "Write a commit message" while the user is still typing was pure noise in
+ * a 320 px column. It is raised as a notification instead, at the moment the
+ * missing thing actually blocks something, and it names the fix rather than the
+ * rule.
+ */
+export function commitBlockedNotice(
+  snapshot: GitSnapshot | undefined,
+  message: string,
+  identity: GitIdentity | null | undefined,
+): string | null {
+  if (!snapshot?.available) return null;
+  if (snapshot.staged.length === 0 && snapshot.changed.length === 0) {
+    return "No changes to commit — stage something first.";
+  }
+  if (!identity) {
+    return "Tell git who you are: Commit options (⋯) → Set identity.";
+  }
+  if (message.trim().length === 0) return "Write a commit message first.";
+  if (message.length > MAX_COMMIT_MESSAGE) {
+    return "The commit message is longer than the limit; shorten it to commit.";
+  }
+  return null;
+}

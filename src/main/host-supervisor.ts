@@ -754,7 +754,13 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       } catch {
         // Fall through to a hard kill.
       }
-      child.kill("SIGTERM");
+      // Wait for the process to actually exit before reporting `stopped`
+      // (2026-10-30 project-scoped rail plan). The old shape answered
+      // `host.shutdown`, sent SIGTERM and returned immediately, so a caller that
+      // spawns a replacement (Office-host promotion) could race the dying child
+      // for port 38617 — the "port is already in use" the user saw. Detaching the
+      // child first makes its exit count as superseded, not as a crash.
+      await this.terminateChild(child);
       this.state = "stopped";
       this.emitter.emit("status", "stopped");
     }

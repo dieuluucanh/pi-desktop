@@ -49,8 +49,17 @@ export interface RailMenuSpec {
    * The pinned scope row under the title (which project/menu scope this body
    * acts on). Rendered by the host, **outside** the scroll container, so a
    * long-scrolling body (Checkpoints) cannot carry it away.
+   *
+   * Source Control and Checkpoints no longer pin a row (2026-10-30
+   * project-scoped rail plan): their folder is named by `scopeTitle` on the
+   * header instead, because the rail is always the selected project.
    */
   scope?: ReactNode;
+  /**
+   * The folder this menu acts on, shown as the panel header's `title` so the full
+   * path stays discoverable without spending a row on it.
+   */
+  scopeTitle?: string;
   content: ReactNode;
 }
 
@@ -151,7 +160,9 @@ export function RightRail({ menus }: RightRailProps) {
           />
 
           <header className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2">
-            <h2 className="text-xs font-semibold">{RAIL_MENU_LABELS[spec.id]}</h2>
+            <h2 className="text-xs font-semibold" title={spec.scopeTitle}>
+              {RAIL_MENU_LABELS[spec.id]}
+            </h2>
             <button
               type="button"
               className="ml-auto text-ink-faint hover:text-ink"

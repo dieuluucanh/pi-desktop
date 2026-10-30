@@ -292,7 +292,10 @@ function ProjectGroup({
               variant="ghost"
               className="justify-start text-xs"
               onClick={async () => {
-                await activateProject(project.path);
+                // `focusSession: false`: this click creates a session itself, so
+                // clearing the active tab first would flash Welcome (2026-10-30
+                // project-scoped rail plan).
+                await activateProject(project.path, { focusSession: false });
                 await useAppStore.getState().createSessionTab();
               }}
             >

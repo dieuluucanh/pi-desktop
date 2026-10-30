@@ -1,10 +1,12 @@
 /**
  * The Documents section body.
  *
- * The pane registry the bridge publishes on `/health`, as a list. It renders
- * nothing until the bridge answers (plan D-A10: no Office surface when Office was
- * never set up), and an empty state that says exactly what to open when the
- * bridge is up but no document is attached.
+ * The pane registry the bridge publishes on `/health`, as a list. The section is
+ * **always rendered** while the Documents menu is on screen (2026-10-30
+ * rail-headers plan): the rail decides presence from the install fact, so a body
+ * that vanished would leave a titled, blank panel. When the bridge is not
+ * answering it says why — "still starting" and "another program owns the port"
+ * need different actions — and the toolbar keeps its re-check.
  *
  * **Host awareness (plan D10).** The bridge is app-wide, but an `office_*` call
  * is served by exactly one session: the tab that owns port 38617. So the two
@@ -26,7 +28,7 @@ import {
   shortDocumentId,
   type OfficeDocumentPane,
 } from "../../../shared/office-documents";
-import { PI_FOR_OFFICE } from "../../../shared/office";
+import { PI_FOR_OFFICE, PI_OFFICE_BRIDGE } from "../../../shared/office";
 
 /** A tiny copy-to-clipboard button that confirms itself, like the transcript's. */
 function CopyButton({ value, label }: { value: string; label: string }) {
@@ -146,7 +148,7 @@ function EmptyState() {
 
 /** Why the two composer actions are unavailable outside the host session. */
 const NOT_HOST_REASON =
-  'Only the Office host session can serve this. Use "Use this session instead" above.';
+  'Only the Office host session can serve this. Use "Use this session instead" in the Documents header.';
 
 export interface DocumentsSectionProps {
   /**
@@ -168,13 +170,18 @@ export function DocumentsSection({ isHost, trailing }: DocumentsSectionProps) {
   const view = useAppStore((state) => state.officeDocuments);
   const refresh = useAppStore((state) => state.refreshOfficeDocuments);
 
-  // Nothing to show until the bridge identifies itself (plan D-A10).
-  if (!view?.available) return null;
+  // A body that returned `null` for a missing probe would leave a titled, blank
+  // panel now that the menu no longer depends on `/health` (2026-10-30
+  // rail-headers plan). Before the first probe the status is `unknown`, which
+  // reads as the same "waiting" sentence.
+  const available = view?.available === true;
+  const panes = view?.panes ?? [];
+  const waiting = unavailableCopy(view?.status ?? "unknown");
 
   return (
     <div className="flex min-h-0 flex-col" data-testid="documents-section">
       <div className="flex shrink-0 items-center gap-2 px-3 py-1">
-        <Badge tone="neutral">{view.panes.length}</Badge>
+        {available ? <Badge tone="neutral">{panes.length}</Badge> : null}
         <div className="ml-auto flex items-center gap-1">
           <button
             type="button"
@@ -188,29 +195,31 @@ export function DocumentsSection({ isHost, trailing }: DocumentsSectionProps) {
         </div>
       </div>
 
-      {isHost ? null : (
-        <p
-          className="border-b border-line px-3 py-1 text-[11px] text-ink-faint"
-          data-testid="documents-not-host"
-        >
-          This session is not the Office host, so these documents cannot be used from its prompts.
-          Use <span className="text-ink-muted">Use this session instead</span> above to move the
-          bridge here.
-        </p>
-      )}
+      {/*
+        No host banner here (2026-10-30 project-scoped rail plan): the Documents
+        scope row above already says who owns the bridge and offers the fix, so a
+        second copy would only repeat it — and the two could disagree. The two
+        actions below stay disabled with the reason in their `title`.
+      */}
 
-      {view.compatibility && view.compatibility.shape === "older" ? (
+      {available && view?.compatibility?.shape === "older" ? (
         <p className="border-b border-line px-3 py-1 text-[11px] text-warn">
           {view.compatibility.summary}
         </p>
       ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {view.panes.length === 0 ? (
+        {!available ? (
+          <div className="px-3 py-2 text-[11px] text-ink-muted" data-testid="documents-unavailable">
+            <p className="font-medium text-ink">{waiting.title}</p>
+            <p className="mt-1">{waiting.body}</p>
+            {view?.error ? <p className="mt-1 text-ink-faint">{view.error}</p> : null}
+          </div>
+        ) : panes.length === 0 ? (
           <EmptyState />
         ) : (
           <ul className="flex flex-col gap-2 p-2">
-            {view.panes.map((pane) => (
+            {panes.map((pane) => (
               <PaneRow key={pane.paneId ?? pane.mention} pane={pane} isHost={isHost} />
             ))}
           </ul>
@@ -231,4 +240,30 @@ export function DocumentsSection({ isHost, trailing }: DocumentsSectionProps) {
       </div>
     </div>
   );
+}
+
+/**
+ * What to say when the bridge is not answering. The status is the probe's own
+ * verdict (`checkBridgeHealth`), never a guess: a port owned by another program
+ * needs the user to close it, while an unreachable port usually means the Office
+ * host is still starting.
+ */
+function unavailableCopy(status: string): { title: string; body: string } {
+  switch (status) {
+    case "not-our-bridge":
+      return {
+        title: `Port ${PI_OFFICE_BRIDGE.defaultPort} is used by something else`,
+        body: "Another program owns the bridge port. Close it, then re-check.",
+      };
+    case "invalid-response":
+      return {
+        title: "The bridge answered with something unexpected",
+        body: "The port answered, but the reply was not the Pi Office bridge's health document.",
+      };
+    default:
+      return {
+        title: `Waiting for the bridge on port ${PI_OFFICE_BRIDGE.defaultPort}`,
+        body: "The Office host is starting, or no session is running the bridge. Re-check in a few seconds.",
+      };
+  }
 }

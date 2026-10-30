@@ -2,8 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { DocumentsScope } from "../../src/renderer/src/rail/DocumentsScope";
-import { RailScopeLine } from "../../src/renderer/src/rail/RailScopeLine";
-import { projectFolderName, projectScopeLabel } from "../../src/renderer/src/rail/scope-view";
+import { projectFolderName } from "../../src/renderer/src/rail/scope-view";
 import { RightRail, type RailMenuSpec } from "../../src/renderer/src/rail/RightRail";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_RAIL_PREFS } from "../../src/shared/rail";
@@ -13,27 +12,32 @@ import type { TabRecord } from "../../src/shared/session-ipc";
 import { installBridge } from "./fixtures";
 
 /**
- * The rail's scope line.
+ * The rail's scope, as the rail host and the Documents menu render it.
  *
- * The rail's three menus act on three different scopes, and the line is the only
- * place that says so. Two things matter beyond the copy: it must render **outside**
- * the body's scroll container (so a long Checkpoints list cannot scroll the
- * answer away), and it must offer a way to reach the folder it names.
+ * Two facts changed in the 2026-10-30 project-scoped rail plan and are pinned
+ * here:
+ *
+ *  - Source Control and Checkpoints no longer spend a row naming the folder and
+ *    offering **Go to project**: the rail always follows the selected project, so
+ *    the folder lives in the panel header's `title`.
+ *  - Documents keeps one compact note (plus its bridge actions). The old two-line
+ *    host header named the *host's* project and went stale as soon as the user
+ *    switched to a session in a different folder.
  */
 
 const PROJECT = "/work/danone-hcm";
 
-function openRail(): void {
+function openRail(activeMenu: RailMenuSpec["id"] = "source-control"): void {
   useAppStore.setState({
     prefs: {
       ...DEFAULT_PREFS,
       drafts: {},
-      rail: { ...DEFAULT_RAIL_PREFS, open: true, activeMenu: "source-control" },
+      rail: { ...DEFAULT_RAIL_PREFS, open: true, activeMenu },
     },
   });
 }
 
-describe("project scope labels", () => {
+describe("project folder names", () => {
   it("derives the folder name from either separator", () => {
     expect(projectFolderName("/work/danone-hcm")).toBe("danone-hcm");
     expect(projectFolderName("C:\\Users\\Lenovo\\Projects\\pi-desktop")).toBe("pi-desktop");
@@ -43,183 +47,93 @@ describe("project scope labels", () => {
 
   it("keeps a bare name and a filesystem root readable", () => {
     expect(projectFolderName("app")).toBe("app");
-    // A root is its own label. Trimming the only separator would turn `C:\` into
-    // `C:`, which on Windows means "the current directory on C:" — a different
-    // place entirely, in a row whose whole job is saying where you are.
+    // Trimming a root's only separator would change what it means on Windows.
     expect(projectFolderName("/")).toBe("/");
     expect(projectFolderName("C:\\")).toBe("C:\\");
     expect(projectFolderName("D:/")).toBe("D:/");
   });
-
-  it("prefers a remembered project's own name", () => {
-    expect(projectScopeLabel({ path: PROJECT, name: "Danone HCM" })).toEqual({
-      name: "Danone HCM",
-      path: PROJECT,
-      title: PROJECT,
-    });
-  });
-
-  it("falls back to the folder name when the project has none", () => {
-    expect(projectScopeLabel({ path: PROJECT })?.name).toBe("danone-hcm");
-    expect(projectScopeLabel({ path: PROJECT, name: "   " })?.name).toBe("danone-hcm");
-    expect(projectScopeLabel({ path: PROJECT, name: null })?.name).toBe("danone-hcm");
-  });
-
-  it("returns null for no folder at all", () => {
-    expect(projectScopeLabel(null)).toBeNull();
-    expect(projectScopeLabel({ path: "" })).toBeNull();
-  });
 });
 
-describe("RailScopeLine", () => {
-  it("names the folder, hides the path in the title, and offers the way to it", () => {
-    const onGoToProject = vi.fn();
-    render(<RailScopeLine projectPath={PROJECT} onGoToProject={onGoToProject} />);
+/** A menu set with no scope row, the shape `ProjectRail` builds. */
+function menus(scopeTitle?: string): RailMenuSpec[] {
+  return [
+    {
+      id: "source-control",
+      scroll: "self",
+      scopeTitle,
+      content: <p data-testid="sc-self">source control body</p>,
+    },
+    { id: "checkpoints", scopeTitle, content: <p data-testid="sc-host">checkpoints body</p> },
+    { id: "documents", content: <p data-testid="sc-none">documents body</p> },
+  ];
+}
 
-    const path = screen.getByTestId("rail-scope-path");
-    expect(path).toHaveTextContent("danone-hcm");
-    // The full path is what hover is for; the row is 320 px wide.
-    expect(path).toHaveAttribute("title", PROJECT);
-    expect(screen.getByRole("button", { name: "Go to project" })).toBeInTheDocument();
-  });
-
-  it("truncates rather than wrapping", () => {
-    render(<RailScopeLine projectPath={PROJECT} onGoToProject={() => {}} />);
-    expect(screen.getByTestId("rail-scope-path")).toHaveClass("truncate");
-  });
-
-  it("calls the handler exactly once per click", async () => {
-    const onGoToProject = vi.fn();
-    render(<RailScopeLine projectPath={PROJECT} onGoToProject={onGoToProject} />);
-    await userEvent.click(screen.getByRole("button", { name: "Go to project" }));
-    expect(onGoToProject).toHaveBeenCalledTimes(1);
-  });
-
-  it("renders a trailing row when the menu supplies one", () => {
-    render(
-      <RailScopeLine
-        projectPath={PROJECT}
-        onGoToProject={() => {}}
-        trailing={<p data-testid="extra-row">extra</p>}
-      />,
-    );
-    expect(screen.getByTestId("extra-row")).toBeInTheDocument();
-  });
-
-  it("renders nothing for an empty path", () => {
-    const { container } = render(<RailScopeLine projectPath="" onGoToProject={() => {}} />);
-    expect(container).toBeEmptyDOMElement();
-  });
-});
-
-describe("the rail host renders it outside the scroller", () => {
-  function menus(scope?: React.ReactNode): RailMenuSpec[] {
-    return [
-      {
-        id: "source-control",
-        scroll: "self",
-        scope,
-        content: <p data-testid="sc-self">source control body</p>,
-      },
-      { id: "checkpoints", scope, content: <p data-testid="sc-host">checkpoints body</p> },
-      { id: "documents", content: <p data-testid="sc-none">documents body</p> },
-    ];
-  }
-
-  it("sits under the title and above the body", () => {
+describe("the folder is named by the panel header, not by a row", () => {
+  it("puts the folder in the header's title", () => {
     installBridge();
     openRail();
-    render(
-      <RightRail menus={menus(<RailScopeLine projectPath={PROJECT} onGoToProject={() => {}} />)} />,
-    );
+    render(<RightRail menus={menus(PROJECT)} />);
 
-    const scope = screen.getByTestId("rail-scope");
     const heading = screen.getByRole("heading", { name: "Source Control" });
-    const body = screen.getByTestId("sc-self");
-    expect(heading.compareDocumentPosition(scope) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(scope.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(heading).toHaveAttribute("title", PROJECT);
   });
 
-  it("is not inside the body's scroll container, for a host-scrolled menu", () => {
+  it("carries the title on every menu that declares one", () => {
     installBridge();
-    openRail();
-    // Checkpoints uses the host scroller: the line must stay pinned above it.
-    useAppStore.setState({
-      prefs: {
-        ...useAppStore.getState().prefs,
-        rail: { ...useAppStore.getState().prefs.rail, open: true, activeMenu: "checkpoints" },
-      },
-    });
-    render(
-      <RightRail menus={menus(<RailScopeLine projectPath={PROJECT} onGoToProject={() => {}} />)} />,
-    );
+    openRail("checkpoints");
+    render(<RightRail menus={menus(PROJECT)} />);
 
-    const scope = screen.getByTestId("rail-scope");
-    const body = screen.getByTestId("sc-host");
-    const scroller = body.parentElement!;
-    expect(scroller).toHaveClass("overflow-y-auto");
-    // Containment, both ways: the two live in sibling containers.
-    expect(scroller.contains(scope)).toBe(false);
-    expect(scope.contains(scroller)).toBe(false);
-  });
-
-  it("is not inside the body's scroll container, for a self-scrolled menu", () => {
-    installBridge();
-    openRail();
-    render(
-      <RightRail menus={menus(<RailScopeLine projectPath={PROJECT} onGoToProject={() => {}} />)} />,
-    );
-    const scope = screen.getByTestId("rail-scope");
-    const body = screen.getByTestId("sc-self");
-    const wrapper = body.parentElement!;
-    expect(wrapper.contains(scope)).toBe(false);
-  });
-
-  it("renders no scope line for a menu that omits one", () => {
-    installBridge();
-    openRail();
-    render(<RightRail menus={menus(undefined)} />);
-    expect(screen.queryByTestId("rail-scope")).not.toBeInTheDocument();
-  });
-
-  it("swaps the scope line with the menu", () => {
-    installBridge();
-    openRail();
-    render(
-      <RightRail
-        menus={[
-          {
-            id: "source-control",
-            scope: <RailScopeLine projectPath={PROJECT} onGoToProject={() => {}} />,
-            content: <p>source control</p>,
-          },
-          { id: "checkpoints", content: <p>checkpoints</p> },
-        ]}
-      />,
-    );
-    expect(screen.getByTestId("rail-scope-path")).toHaveTextContent("danone-hcm");
+    expect(screen.getByRole("heading", { name: "Checkpoints" })).toHaveAttribute("title", PROJECT);
+    // Documents is app-wide: it declares no folder, so it gets no title.
     cleanup();
+    openRail("documents");
+    render(<RightRail menus={menus(PROJECT)} />);
+    expect(screen.getByRole("heading", { name: "Documents" })).not.toHaveAttribute("title");
+  });
 
-    // A menu without a scope keeps its own column clean.
-    useAppStore.setState({
-      prefs: {
-        ...useAppStore.getState().prefs,
-        rail: { ...useAppStore.getState().prefs.rail, open: true, activeMenu: "checkpoints" },
-      },
-    });
+  it("spends no row on a scope line any more", () => {
+    installBridge();
+    openRail();
+    render(<RightRail menus={menus(PROJECT)} />);
+
+    expect(screen.queryByTestId("rail-scope")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Go to project" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the body's own scroll container untouched", () => {
+    installBridge();
+    openRail();
+    render(<RightRail menus={menus(PROJECT)} />);
+    // The header must not push the body out of its scroller.
+    expect(screen.getByText("source control body").parentElement).not.toHaveClass(
+      "overflow-y-auto",
+    );
+
+    cleanup();
+    openRail("checkpoints");
+    render(<RightRail menus={menus(PROJECT)} />);
+    expect(screen.getByText("checkpoints body").parentElement).toHaveClass("overflow-y-auto");
+  });
+
+  it("still renders a pinned row for a menu that supplies one", () => {
+    // Documents is the one menu that pins something: its bridge actions.
+    installBridge();
+    openRail();
     render(
       <RightRail
         menus={[
           {
-            id: "source-control",
-            scope: <RailScopeLine projectPath={PROJECT} onGoToProject={() => {}} />,
-            content: <p>source control</p>,
+            id: "documents",
+            scope: <p data-testid="pinned-row">host actions</p>,
+            content: <p data-testid="sc-none">documents body</p>,
           },
-          { id: "checkpoints", content: <p>checkpoints</p> },
         ]}
       />,
     );
-    expect(screen.queryByTestId("rail-scope")).not.toBeInTheDocument();
+    const pinned = screen.getByTestId("pinned-row");
+    const body = screen.getByTestId("sc-none");
+    expect(pinned.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(body.parentElement!.contains(pinned)).toBe(false);
   });
 });
 
@@ -253,37 +167,54 @@ function seedScope(tabs: TabRecord[], activeTabId: string | null): void {
 }
 
 describe("DocumentsScope", () => {
-  it("names the host session and its project", () => {
+  it("names the host and its project when the host is elsewhere", () => {
     seedScope(
       [
-        tab({ id: "session-1" }),
+        tab({ id: "session-1", cwd: "/work/app" }),
         tab({ id: "office-1", kind: "office", title: "Office", cwd: "/work/danone-hcm" }),
       ],
       "session-1",
     );
-    render(<DocumentsScope panes={[PANE]} />);
+    render(<DocumentsScope panes={[PANE]} railFolder="/work/app" />);
 
     const host = screen.getByTestId("documents-scope-host");
-    expect(host).toHaveTextContent("Office");
-    expect(host).toHaveTextContent("danone-hcm");
-    expect(host).toHaveAttribute("title", "Office — /work/danone-hcm");
+    expect(host).toHaveTextContent("Office host: Office · /work/danone-hcm");
+    // The full path stays in the title for the narrow column.
+    expect(host).toHaveAttribute("title", "/work/danone-hcm");
   });
 
-  it("shows the host's status", () => {
+  it("omits the folder when the host works in the rail's folder", () => {
+    seedScope(
+      [tab({ id: "session-1" }), tab({ id: "office-1", kind: "office", title: "Office" })],
+      "session-1",
+    );
+    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
+
+    expect(screen.getByTestId("documents-scope-host")).toHaveTextContent("Office host: Office");
+    expect(screen.getByTestId("documents-scope-host")).not.toHaveTextContent("danone-hcm");
+  });
+
+  it("renders no project header row any more", () => {
     seedScope(
       [tab({ id: "office-1", kind: "office", title: "Office", status: "running" })],
-      "office-1",
+      "session-1",
     );
-    render(<DocumentsScope panes={[PANE]} />);
-    // The app's own lifecycle word, not the internal enum name.
-    expect(screen.getByTestId("documents-scope")).toHaveTextContent("working");
+    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
+
+    // The status badge and the two-line header are gone with the stale project
+    // name they carried.
+    const scope = screen.getByTestId("documents-scope");
+    expect(scope).not.toHaveTextContent("working");
+    expect(scope.querySelector("[data-testid='documents-scope-status']")).toBeNull();
   });
 
   it("says so plainly when this session is the host", () => {
     seedScope([tab({ id: "office-1", kind: "office", title: "Office" })], "office-1");
-    render(<DocumentsScope panes={[PANE]} />);
+    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
 
-    expect(screen.getByTestId("documents-scope-this-is-host")).toBeInTheDocument();
+    expect(screen.getByTestId("documents-scope-this-is-host")).toHaveTextContent(
+      "This session is the Office host.",
+    );
     // No "move the bridge" action in the session that already owns it.
     expect(
       screen.queryByRole("button", { name: "Use this session instead" }),
@@ -297,8 +228,9 @@ describe("DocumentsScope", () => {
       [tab({ id: "session-1" }), tab({ id: "office-1", kind: "office", title: "Office" })],
       "session-1",
     );
+
     useAppStore.setState({ activateTab });
-    render(<DocumentsScope panes={[PANE]} />);
+    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
 
     await userEvent.click(screen.getByRole("button", { name: "Open host session" }));
     expect(activateTab).toHaveBeenCalledWith("office-1");
@@ -314,15 +246,17 @@ describe("DocumentsScope", () => {
       [tab({ id: "session-1" }), tab({ id: "office-1", kind: "office", title: "Office" })],
       "session-1",
     );
-    render(<DocumentsScope panes={[PANE]} />);
+    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
 
     await userEvent.click(screen.getByRole("button", { name: "Use this session instead" }));
 
     // Nothing has moved yet: promotion restarts the other tab.
     expect(promoteOfficeHost).not.toHaveBeenCalled();
     const dialog = screen.getByTestId("confirm-dialog");
-    // The dialog names the tab that will be demoted.
+    // The dialog names the tab that will be demoted, and warns that the port's
+    // current owner is terminated (the takeover really does free the port).
     expect(dialog).toHaveTextContent("Office");
+    expect(dialog).toHaveTextContent(/terminated/i);
 
     await userEvent.click(screen.getByRole("button", { name: "Move the bridge" }));
     expect(promoteOfficeHost).toHaveBeenCalledTimes(1);
@@ -339,7 +273,7 @@ describe("DocumentsScope", () => {
       [tab({ id: "session-1" }), tab({ id: "office-1", kind: "office", title: "Office" })],
       "session-1",
     );
-    render(<DocumentsScope panes={[PANE]} />);
+    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
 
     await userEvent.click(screen.getByRole("button", { name: "Use this session instead" }));
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -348,11 +282,26 @@ describe("DocumentsScope", () => {
     expect(screen.queryByTestId("confirm-dialog")).not.toBeInTheDocument();
   });
 
+  it("refuses to promote a web tab, and says why", () => {
+    seedScope(
+      [
+        tab({ id: "web-1", kind: "web", cwd: "/work/app" }),
+        tab({ id: "office-1", kind: "office" }),
+      ],
+      "web-1",
+    );
+    render(<DocumentsScope panes={[PANE]} railFolder="/work/app" activeKind="web" />);
+
+    const promote = screen.getByRole("button", { name: "Use this session instead" });
+    expect(promote).toBeDisabled();
+    expect(promote).toHaveAttribute("title", "A web tab cannot host the Office bridge.");
+  });
+
   it("offers to start a session when no tab holds the bridge", async () => {
     const openOfficeSession = vi.fn(async () => {});
     seedScope([tab()], "tab-1");
     useAppStore.setState({ openOfficeSession });
-    render(<DocumentsScope panes={[PANE]} />);
+    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
 
     expect(screen.getByTestId("documents-scope-no-host")).toHaveTextContent(
       /no office session is running the bridge/i,
@@ -363,8 +312,35 @@ describe("DocumentsScope", () => {
 
   it("does not treat a stopped office tab as the host", () => {
     seedScope([tab({ id: "office-1", kind: "office", status: "stopped" })], "office-1");
-    render(<DocumentsScope panes={[PANE]} />);
+    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
     // A stopped tab keeps its record but no longer holds port 38617.
     expect(screen.getByTestId("documents-scope-no-host")).toBeInTheDocument();
+  });
+
+  it("offers a host restart only while the bridge is known to be down", async () => {
+    installBridge();
+    const restart = vi.fn(async () => ({ tabs: [], activeTabId: null }));
+    (window.pi as unknown as { sessions: { restart: unknown } }).sessions.restart = restart;
+    seedScope(
+      [tab({ id: "session-1" }), tab({ id: "office-1", kind: "office", title: "Office" })],
+      "session-1",
+    );
+
+    const { rerender } = render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
+    // Bridge answering: the normal switch actions, and nothing to recover from.
+    expect(screen.queryByRole("button", { name: "Restart host session" })).not.toBeInTheDocument();
+
+    rerender(<DocumentsScope panes={[PANE]} railFolder={PROJECT} bridgeDown />);
+    await userEvent.click(screen.getByRole("button", { name: "Restart host session" }));
+
+    // The host is the tab that owns the port, not the one the user is in.
+    expect(restart).toHaveBeenCalledWith("office-1");
+  });
+
+  it("offers the restart from the host session too", () => {
+    seedScope([tab({ id: "office-1", kind: "office", title: "Office" })], "office-1");
+    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} bridgeDown />);
+
+    expect(screen.getByRole("button", { name: "Restart host session" })).toBeInTheDocument();
   });
 });

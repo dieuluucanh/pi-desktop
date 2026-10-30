@@ -25,6 +25,12 @@ export const DEFAULT_DOCUMENTS_POLL_MS = 5_000;
 export interface OfficeDocumentsServiceOptions {
   /** Bridge port to probe. Defaults to the Office host's port (38617). */
   port?: number;
+  /**
+   * The stable "the bridge package is configured" fact (2026-10-30 rail-headers
+   * plan). Read on every projection rather than cached here, so a wizard that
+   * installs or removes the package is reflected on the next probe.
+   */
+  configured?: () => boolean;
   /** Injected probe (tests substitute a fake fetch/clock). */
   verify?: VerifyDeps;
   /** Injectable clock; must agree with `verify.now` when both are given. */
@@ -52,6 +58,10 @@ export interface OfficeDocumentsService {
 function signatureOf(view: OfficeDocumentsView): string {
   return JSON.stringify({
     available: view.available,
+    // The install fact can change without the payload changing (the wizard
+    // installs the package while the bridge is down), so it is part of the
+    // signature that decides whether the renderer hears about a probe.
+    configured: view.configured,
     status: view.status,
     serverVersion: view.serverVersion,
     protocolVersion: view.protocolVersion,
@@ -68,8 +78,9 @@ export function createOfficeDocumentsService(
   const verify = options.verify ?? createDefaultVerifyDeps();
   const now = options.now ?? ((): number => Date.now());
   const intervalMs = options.intervalMs ?? DEFAULT_DOCUMENTS_POLL_MS;
+  const configured = (): boolean => options.configured?.() === true;
 
-  let current = emptyOfficeDocumentsView(port);
+  let current = emptyOfficeDocumentsView(port, configured());
   let signature = signatureOf(current);
   let timer: ReturnType<typeof setTimeout> | null = null;
   let running = false;
@@ -92,6 +103,7 @@ export function createOfficeDocumentsService(
       port,
       error: check.error,
       fetchedAt: new Date(now()).toISOString(),
+      configured: configured(),
     });
     current = view;
     emit(view);

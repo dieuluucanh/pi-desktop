@@ -164,4 +164,51 @@ describe("createOfficeDocumentsService", () => {
 
     expect(probes()).toBe(0);
   });
+
+  it("carries the configured fact through every probe", async () => {
+    const { deps } = scriptedDeps([new Error("ECONNREFUSED"), healthBody([excelPane])]);
+    const service = createOfficeDocumentsService({
+      verify: deps,
+      now: () => 1_700_000_000_000,
+      configured: () => true,
+    });
+
+    // The initial view is built before the first probe and still knows the
+    // install fact, so the rail's menu can be present on the first frame.
+    expect(service.get().configured).toBe(true);
+    expect(service.get().available).toBe(false);
+
+    const down = await service.refresh();
+    expect(down.available).toBe(false);
+    expect(down.configured).toBe(true);
+
+    const up = await service.refresh();
+    expect(up.available).toBe(true);
+    expect(up.configured).toBe(true);
+  });
+
+  it("re-emits when the configured fact changes even if the payload does not", async () => {
+    // The wizard can install the package while the bridge is down, so the
+    // signature that gates pushes must include the install fact.
+    const { deps } = scriptedDeps([new Error("ECONNREFUSED")]);
+    let configured = false;
+    const seen: OfficeDocumentsView[] = [];
+    const service = createOfficeDocumentsService({
+      verify: deps,
+      now: () => 1_700_000_000_000,
+      configured: () => configured,
+      onView: (view) => seen.push(view),
+    });
+
+    await service.refresh();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.configured).toBe(false);
+
+    configured = true;
+    await service.refresh();
+
+    expect(seen).toHaveLength(2);
+    expect(seen[1]?.configured).toBe(true);
+    expect(seen[1]?.available).toBe(false);
+  });
 });

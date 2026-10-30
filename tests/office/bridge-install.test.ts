@@ -5,7 +5,9 @@ import { describe, expect, it } from "vitest";
 import type { MemoryFsPort } from "../../src/main/fs-port";
 import { createMemoryFsPort } from "../../src/main/fs-port";
 import {
+  bridgeConfiguredInSettings,
   bridgePackageDir,
+  bridgeSourceMatches,
   ensureBridgePackage,
   readBridgePackageState,
 } from "../../src/main/office/bridge-install";
@@ -353,5 +355,57 @@ describe("ensureBridgePackage", () => {
       dependencies: Record<string, string>;
     };
     expect(rootManifest.dependencies["@dieulc/pi-office-bridge"]).toBe(">=0.4.1 <1.0.0");
+  });
+});
+
+describe("bridgeSourceMatches", () => {
+  it("accepts the bare name, a pinned version and an npm source", () => {
+    expect(bridgeSourceMatches(PI_OFFICE_BRIDGE.packageName)).toBe(true);
+    expect(bridgeSourceMatches(`${PI_OFFICE_BRIDGE.packageName}@0.5.0`)).toBe(true);
+    expect(bridgeSourceMatches(`npm:${PI_OFFICE_BRIDGE.packageName}`)).toBe(true);
+    expect(bridgeSourceMatches(`  npm:${PI_OFFICE_BRIDGE.packageName}@^0.5.0  `)).toBe(true);
+  });
+
+  it("rejects a different package that merely shares the prefix", () => {
+    // A prefix match would claim `…-extra` is the bridge and keep the Documents
+    // menu on screen for a package that is not the bridge.
+    expect(bridgeSourceMatches(`${PI_OFFICE_BRIDGE.packageName}-extra`)).toBe(false);
+    expect(bridgeSourceMatches(`${PI_OFFICE_BRIDGE.packageName}-extra@1.0.0`)).toBe(false);
+    expect(bridgeSourceMatches("npm:@dieulc/pi-office")).toBe(false);
+    expect(bridgeSourceMatches("   ")).toBe(false);
+  });
+});
+
+describe("bridgeConfiguredInSettings", () => {
+  it("is true when settings list the bridge, string or object entry", async () => {
+    const asString = createMemoryFsPort({
+      files: { [SETTINGS]: JSON.stringify({ packages: [PINNED] }) },
+    });
+    expect(await bridgeConfiguredInSettings(asString, SETTINGS)).toBe(true);
+
+    const asObject = createMemoryFsPort({
+      files: {
+        [SETTINGS]: JSON.stringify({ packages: [{ source: PINNED, filtered: true }] }),
+      },
+    });
+    expect(await bridgeConfiguredInSettings(asObject, SETTINGS)).toBe(true);
+  });
+
+  it("is false for an unrelated package or a missing file", async () => {
+    const other = createMemoryFsPort({
+      files: { [SETTINGS]: JSON.stringify({ packages: ["npm:some-other-package@1.0.0"] }) },
+    });
+    expect(await bridgeConfiguredInSettings(other, SETTINGS)).toBe(false);
+
+    const missing = createMemoryFsPort();
+    expect(await bridgeConfiguredInSettings(missing, SETTINGS)).toBe(false);
+  });
+
+  it("throws on malformed settings instead of repairing them", async () => {
+    // AGENTS rule 5: a parse failure is surfaced. The caller logs it and treats
+    // the bridge as not configured; the file itself is never rewritten.
+    const fs = createMemoryFsPort({ files: { [SETTINGS]: "{ nope" } });
+    await expect(bridgeConfiguredInSettings(fs, SETTINGS)).rejects.toThrow(/JSON/);
+    expect(await fs.readTextFile(SETTINGS)).toBe("{ nope");
   });
 });

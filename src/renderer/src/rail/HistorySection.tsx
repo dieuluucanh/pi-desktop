@@ -10,9 +10,11 @@
 
 import { useEffect, useState } from "react";
 import { GitCommit } from "lucide-react";
+import { gitUnavailableMessage } from "../../../shared/git";
 import { Badge } from "../ui/badge";
 import { useAppStore } from "../state/app-store";
 import { absoluteTime, commitChips, relativeTime } from "./history-view";
+import { RailBlockHeader } from "./RailBlockHeader";
 
 export interface HistorySectionProps {
   projectPath: string;
@@ -39,21 +41,42 @@ export function HistorySection({ projectPath }: HistorySectionProps) {
     if (!page) void loadGitLog(projectPath);
   }, [page, projectPath, loadGitLog]);
 
-  if (!snapshot?.available) return null;
-
-  if (snapshot.repo?.empty) {
-    return (
-      <p className="px-3 py-2 text-[11px] text-ink-faint" data-testid="history-empty">
-        No commits yet.
-      </p>
-    );
-  }
-
+  const available = snapshot?.available === true;
   const entries = page?.entries ?? [];
+
+  // The header is pinned and always present: the rail's third block must not
+  // become an unlabelled void when git is unavailable (2026-10-30 rail-headers
+  // plan). Only the reason for the empty log changes.
+  const count =
+    available && entries.length > 0 ? `${entries.length}${page?.hasMore ? "+" : ""}` : undefined;
 
   return (
     <div className="flex flex-col pb-2" data-testid="history-section">
-      {entries.length === 0 ? (
+      <RailBlockHeader
+        title="Commit History"
+        testId="history-header"
+        {...(count === undefined ? {} : { count, countTestId: "history-count" })}
+        {...(available
+          ? {
+              onRefresh: () => void loadGitLog(projectPath),
+              refreshLabel: "Refresh commit history",
+            }
+          : {})}
+      />
+
+      {snapshot === undefined ? (
+        <p className="px-3 py-2 text-[11px] text-ink-faint" data-testid="history-empty">
+          Loading commit history…
+        </p>
+      ) : !available ? (
+        <p className="px-3 py-2 text-[11px] text-ink-faint" data-testid="history-empty">
+          {gitUnavailableMessage(snapshot.reason ?? "not_a_repo")}
+        </p>
+      ) : snapshot.repo?.empty ? (
+        <p className="px-3 py-2 text-[11px] text-ink-faint" data-testid="history-empty">
+          No commits yet.
+        </p>
+      ) : entries.length === 0 ? (
         <p className="px-3 py-2 text-[11px] text-ink-faint" data-testid="history-empty">
           {page?.loading ? "Loading commits…" : "No commits to show."}
         </p>
@@ -100,7 +123,7 @@ export function HistorySection({ projectPath }: HistorySectionProps) {
         </ul>
       )}
 
-      {page?.hasMore ? (
+      {available && page?.hasMore ? (
         <button
           type="button"
           className="mx-3 mt-1 self-start text-[11px] text-ink-faint underline hover:text-ink"

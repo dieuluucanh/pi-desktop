@@ -290,7 +290,7 @@ describe("degraded repositories", () => {
     expect(screen.queryByTestId("git-sync")).not.toBeInTheDocument();
   });
 
-  it("keeps the commit box's reason when no identity is configured", () => {
+  it("keeps the commit box usable but blocked when no identity is configured", () => {
     seed(
       snapshot({
         // `identity` is `| null`: an empty object is still truthy, and only a
@@ -305,7 +305,13 @@ describe("degraded repositories", () => {
     );
     render(<SourceControlPanel projectPath={PROJECT} />);
     fireEvent.change(screen.getByLabelText("Commit message"), { target: { value: "fix: x" } });
-    expect(screen.getByTestId("commit-reason")).toHaveTextContent("Tell git who you are.");
+    // No warning row is spent on it (2026-10-30 plan); the blocker is announced on
+    // the button and explained on the press.
+    expect(screen.queryByTestId("commit-reason")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stage all and commit" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   });
 
   it("keeps the splitters operable with no repository at all", () => {

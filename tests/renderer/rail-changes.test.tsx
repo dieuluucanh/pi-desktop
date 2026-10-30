@@ -312,16 +312,19 @@ describe("discard", () => {
 });
 
 describe("empty states", () => {
-  it("says the tree is clean", () => {
+  it("spends no paragraph on a clean tree", () => {
     seed(snapshot());
     render(<ChangesSection projectPath={PROJECT} />);
-    expect(screen.getByTestId("changes-empty")).toHaveTextContent("No changes");
+    // The header's count says it; a two-line "nothing changed" body would cost two
+    // rows to repeat an empty list (2026-10-30 project-scoped rail plan).
+    expect(screen.queryByTestId("changes-empty")).not.toBeInTheDocument();
+    expect(screen.getByTestId("changes-count")).toHaveTextContent("0");
   });
 
-  it("says a repository with no commits has nothing tracked", () => {
+  it("spends no paragraph on a repository with no commits", () => {
     seed(snapshot({ repo: { ...snapshot().repo!, empty: true, head: null } }));
     render(<ChangesSection projectPath={PROJECT} />);
-    expect(screen.getByTestId("changes-empty")).toHaveTextContent("No commits yet");
+    expect(screen.queryByTestId("changes-empty")).not.toBeInTheDocument();
   });
 
   it("offers to initialize a plain folder", async () => {
@@ -507,10 +510,55 @@ describe("collapsible groups", () => {
     expect(persistedCollapsed().staged).toBe(false);
   });
 
-  it("keeps the shared rows outside the groups", () => {
+  it("keeps the refresh in the header, not below the groups", () => {
     seedBoth();
     render(<ChangesSection projectPath={PROJECT} />);
-    // The refresh row applies to both groups, so it must not be folded with one.
-    expect(screen.getByRole("button", { name: "Refresh changes" })).toBeInTheDocument();
+    // One refresh for both groups, reachable without scrolling past them, and
+    // icon-only: the label beside a refresh arrow was pure repetition.
+    const refresh = screen.getByRole("button", { name: "Refresh changes" });
+    expect(refresh.textContent?.trim()).toBe("");
+    const header = screen.getByTestId("changes-header");
+    expect(header).toHaveTextContent("Changes");
+    expect(
+      header.compareDocumentPosition(refresh) & Node.DOCUMENT_POSITION_CONTAINED_BY,
+    ).toBeTruthy();
+    // ...and above the first group.
+    const firstGroup = screen.getByTestId("changes-group-staged");
+    expect(
+      refresh.compareDocumentPosition(firstGroup) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("shows the combined count in the header", () => {
+    seedBoth();
+    render(<ChangesSection projectPath={PROJECT} />);
+    // One staged plus two changed.
+    expect(screen.getByTestId("changes-count")).toHaveTextContent("3");
+  });
+
+  it("pins the header so it stays while the file list scrolls", () => {
+    seedBoth();
+    render(<ChangesSection projectPath={PROJECT} />);
+    // The block's scroller is the parent; `sticky top-0` + an opaque surface is
+    // what keeps the title, count and refresh visible over a long change list.
+    const header = screen.getByTestId("changes-header");
+    expect(header.className).toContain("sticky");
+    expect(header.className).toContain("top-0");
+    expect(header.className).toContain("bg-surface");
+  });
+
+  it("keeps the header outside the gap column that holds the lists", () => {
+    seedBoth();
+    render(<ChangesSection projectPath={PROJECT} />);
+    // A `gap-1` scroll column would leave a transparent 4 px strip between the
+    // sticky header and the first row, letting rows travel under the header.
+    const section = screen.getByTestId("changes-section");
+    const header = screen.getByTestId("changes-header");
+    const firstGroup = screen.getByTestId("changes-group-staged");
+    expect(section.firstElementChild).toBe(header);
+    expect(
+      header.compareDocumentPosition(firstGroup) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(header.className).not.toContain("gap-1");
   });
 });

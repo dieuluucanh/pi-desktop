@@ -86,25 +86,17 @@ export interface ChangesEmptyState {
   action: "init" | "install" | null;
 }
 
-/** The copy for a repository that is clean, or that git cannot serve. */
+/** The copy for a repository git cannot serve (a clean tree says nothing). */
 export function emptyStateFor(
   snapshot: GitSnapshot | undefined,
   reason: GitUnavailableReason | undefined,
 ): ChangesEmptyState | null {
   if (snapshot?.available) {
-    if (!groupsOf(snapshot).clean) return null;
-    if (snapshot.repo?.empty) {
-      return {
-        title: "No commits yet",
-        body: "Nothing is tracked, so there is nothing to stage. Add a file and it will appear here.",
-        action: null,
-      };
-    }
-    return {
-      title: "No changes",
-      body: "The working tree matches the last commit.",
-      action: null,
-    };
+    // A clean tree needs no paragraph (2026-10-30 project-scoped rail plan): the
+    // header's count is already 0, and "The working tree matches the last commit"
+    // spent two rows saying what an empty list says. Unavailable states keep
+    // their copy because each one carries an action.
+    return null;
   }
   switch (reason) {
     case "git_missing":

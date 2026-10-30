@@ -23,6 +23,7 @@ import {
   type ProviderSummary,
 } from "../../../shared/providers";
 import { normalizeScopePatterns, scopeKeys, scopeStarKeys } from "../../../shared/model-scope";
+import { mostRecentTabForFolder, sameFolder } from "../../../shared/rail-scope";
 import type { CustomProviderInput, CustomProviderSummary } from "../../../shared/custom-providers";
 import {
   findSettingsField,
@@ -501,7 +502,20 @@ export interface AppStateShape {
   loadProjects: () => Promise<void>;
   /** Applies a project-list snapshot returned by any `projects.*` call. */
   applyProjects: (snapshot: { projects: ProjectRecord[]; activeProject: string | null }) => void;
-  activateProject: (path: string | null) => Promise<void>;
+  activateProject: (path: string | null, options?: { focusSession?: boolean }) => Promise<void>;
+  /**
+   * Points the rail and the sidebar at `cwd` after a session was chosen (2026-10-30
+   * project-scoped rail plan). A remembered project is activated through main so
+   * the choice persists; a cwd that was never saved stays renderer-local.
+   */
+  selectProjectForCwd: (cwd: string) => Promise<void>;
+  /**
+   * Jumps into a project's most recently active **open** tab, or clears the
+   * selection when the folder has none (the rail keeps the project's scope).
+   */
+  focusProjectSession: (path: string) => Promise<void>;
+  /** Clears the active tab without closing one (`session:deactivate`). */
+  clearActiveTab: () => Promise<void>;
   removeProject: (path: string) => Promise<void>;
   reorderProject: (path: string, toIndex: number) => Promise<void>;
   updateProjectConfig: (path: string, patch: ProjectConfigPatch) => Promise<void>;
@@ -762,6 +776,11 @@ export interface AppStateShape {
 
   /** The live Office pane registry (plan step 20), pushed from main's poll. */
   officeDocuments: OfficeDocumentsView | null;
+  /**
+   * True while a bridge promotion is in flight. The takeover restarts two hosts
+   * and re-binds a port, so a second click must not start it again.
+   */
+  promotingOfficeHost: boolean;
   officeDocumentsLoaded: boolean;
   /** The app-wide diagnostics snapshot (plan step 22), null until first loaded. */
   diagnostics: DiagnosticsSnapshot | null;
@@ -1581,6 +1600,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   integrationsLoaded: false,
   officeDocuments: null,
   officeDocumentsLoaded: false,
+  promotingOfficeHost: false,
   diagnostics: null,
   diagnosticsError: null,
   update: null,
@@ -1687,16 +1707,67 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     });
   },
 
-  activateProject: async (path) => {
+  activateProject: async (path, options = {}) => {
     const api = bridge();
     if (!api?.projects) return;
     try {
       get().applyProjects(await api.projects.mutate({ action: "activate", path }));
-      if (path) {
-        set({ view: "session", hint: null });
-        void get().inspectProject(path);
-      }
+      if (!path) return;
+      set({ view: "session", hint: null });
+      void get().inspectProject(path);
+      // The rail is project-scoped (2026-10-30 plan), so selecting a project also
+      // selects a session in it. `focusSession: false` is for callers that are
+      // about to create a session themselves ("New session here"): clearing the
+      // selection first would flash Welcome.
+      if (options.focusSession !== false) await get().focusProjectSession(path);
     } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  selectProjectForCwd: async (cwd) => {
+    if (cwd.length === 0) return;
+    const current = get().project;
+    if (current && sameFolder(current.path, cwd)) return;
+    const known = findProject(get().projects, cwd);
+    if (!known) {
+      // A session can run in a folder that was never saved as a project; the rail
+      // still needs a scope, so the ref is set locally and never persisted.
+      set({ project: { path: cwd, name: projectNameOf(cwd) } });
+      return;
+    }
+    const api = bridge();
+    if (!api?.projects) {
+      set({ project: { path: known.path, name: known.name } });
+      return;
+    }
+    try {
+      get().applyProjects(await api.projects.mutate({ action: "activate", path: known.path }));
+    } catch (error) {
+      // A session click must still move the rail even if the project write fails.
+      set({ project: { path: known.path, name: known.name } });
+      get().noteFailure(error);
+    }
+  },
+
+  focusProjectSession: async (path) => {
+    const tab = mostRecentTabForFolder(get().tabs, path);
+    if (tab) {
+      await get().activateTab(tab.id);
+      return;
+    }
+    await get().clearActiveTab();
+  },
+
+  clearActiveTab: async () => {
+    const api = bridge();
+    const activeId = get().activeTabId;
+    set({ activeTabId: null });
+    if (!api?.sessions || activeId === null) return;
+    try {
+      get().applyTabs(await api.sessions.deactivate());
+    } catch (error) {
+      // Losing a cleared selection is harmless; the tabs themselves are intact.
       get().noteFailure(error);
     }
   },
@@ -2210,6 +2281,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // the fresh session must be re-listed (the previous list may be stale).
       if (get().activeTabId === tabId) void get().loadShortcuts({ refresh: true });
       get().invalidateCommands(tabId);
+      // A restart is also the documented fix for a bridge that never bound the
+      // port (2026-10-30 rail-headers plan), so read the registry now instead of
+      // leaving the Documents panel on the old probe until the next 5 s poll.
+      void get().refreshOfficeDocuments();
     } catch (error) {
       get().noteFailure(error);
     }
@@ -4096,14 +4171,38 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   promoteToOfficeHost: async (tabId) => {
     const api = bridge();
     if (!api?.sessions) return false;
+    // Promotion restarts two hosts and re-binds a port, so a second click while
+    // one is in flight would demote and re-spawn the same tabs twice.
+    if (get().promotingOfficeHost) return false;
+    set({ promotingOfficeHost: true });
     try {
       const envelope = await api.sessions.promoteOfficeHost(tabId);
       get().applyTabs(envelope);
-      set({ hint: "This session is now the Office host (bridge port 38617)." });
+      // The IPC returns when the host is spawned, not when `/health` answers: the
+      // bridge still has to load and bind 38617. Saying the bridge *is* ready was
+      // the promise behind "the Documents menu disappeared" (2026-10-30
+      // rail-headers plan), so the copy states the delay and the panel — not the
+      // toast — is the live truth.
+      const message =
+        "This session is now the Office host. The bridge re-binds port 38617 in a few seconds.";
+      set({ hint: message });
+      toast.success(message);
+      // The pane registry is served by the new host, so the old pane list is
+      // stale until the next probe. Ask for one now rather than waiting 5 s.
+      void get().refreshOfficeDocuments();
       return true;
     } catch (error) {
-      set({ hint: errorMessage(error) });
+      const message = errorMessage(error);
+      // The takeover really terminates the port's owner, so a failure has to be
+      // loud: the hint is transient, the toast is what a user notices.
+      set({ hint: message });
+      toast.error(message);
+      // A failed takeover rolls back to the previous host, so re-probe to show
+      // whatever bridge is actually answering now.
+      void get().refreshOfficeDocuments();
       return false;
+    } finally {
+      set({ promotingOfficeHost: false });
     }
   },
 
@@ -4991,6 +5090,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     set({ activeTabId: tabId, view: "session" });
     const tab = get().tabs.find((entry) => entry.id === tabId);
     if (tab?.kind === "web") return;
+    // The rail and the sidebar follow the session that is on screen (2026-10-30
+    // project-scoped rail plan): clicking a session in another project also
+    // selects that project. Fire-and-forget so waking the host is not delayed.
+    if (tab) void get().selectProjectForCwd(tab.cwd);
     // Switching tabs always re-checks; the ensure refreshes extension UI, the
     // TUI surface, shortcuts and the command cache after the host is awake.
     await get().ensureSession(tabId, { force: true });

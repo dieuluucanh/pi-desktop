@@ -53,7 +53,10 @@ import { createWebTabManager } from "./web-tabs";
 import { createElectronWebViewHost } from "./web-view-host";
 import { isDeletableSessionPath } from "./session-ops";
 import { createOfficeSetupService } from "./office/setup-service";
+import { bridgeConfiguredInSettings } from "./office/bridge-install";
 import { createOfficeDocumentsService } from "./office/documents-service";
+import { createKillProcess, releasePort } from "./office/port-owner";
+import { checkBridgeHealth, createDefaultVerifyDeps } from "./office/verify";
 import { createGitPushService } from "./git-service";
 import { createCheckpointService } from "./checkpoint-service";
 import { createCheckpointStore } from "../checkpoints/store";
@@ -72,6 +75,7 @@ import { createElectronUpdatePort } from "./electron-updater";
 import { createUpdateService, type UpdateService } from "./updater";
 import { initialUpdateState } from "../shared/updates";
 import { officeEvidenceLine } from "../shared/office-setup";
+import { PI_OFFICE_BRIDGE } from "../shared/office";
 import { profileModeFromDocument, type ProfileMode } from "../shared/profile";
 import {
   isSafeMode,
@@ -258,6 +262,32 @@ const hosts = runtime.nodePath
   : null;
 
 /**
+ * Frees the Office bridge port before a promoted session binds it
+ * (2026-10-30 project-scoped rail plan).
+ *
+ * Stopping our own host is not enough: an earlier app run, terminal Pi, or an
+ * unrelated program can still hold 38617, and the bridge extension would then
+ * report `EADDRINUSE` instead of listening. This terminates the holder — never
+ * this app's own processes — and verifies the port answers nothing afterwards.
+ */
+const releaseOfficePort = async (input: {
+  port: number;
+  ownPids: readonly number[];
+}): Promise<{ ok: boolean; detail?: string }> => {
+  const runner = createCommandRunner();
+  return releasePort(
+    { port: input.port, ownPids: input.ownPids, force: true },
+    {
+      runner,
+      kill: createKillProcess(runner),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      probe: async (port) =>
+        checkBridgeHealth(createDefaultVerifyDeps(), { port, timeoutMs: 1_500 }),
+    },
+  );
+};
+
+/**
  * The isolated web tabs (plan step 21): one `WebContentsView` per `web` tab,
  * reconciled from the tab table. Created before the session service because that
  * service's tab push is what drives the reconciliation.
@@ -281,6 +311,16 @@ const sessions: SessionService | null = hosts
       // Compare the running host's build id with the bundle on disk; an idle,
       // stale host is recycled before the next request (2026-10-24 plan).
       hostBuildId,
+      // Promotion must really take port 38617, and must never kill a process this
+      // app owns: the supervisor stops its own hosts and waits for their exit.
+      releaseOfficePort,
+      ownPids: () => [
+        process.pid,
+        ...(hosts?.list() ?? [])
+          .map((host) => host.info()?.pids.pid)
+          .filter((pid): pid is number => typeof pid === "number"),
+      ],
+      officeBridgePort: PI_OFFICE_BRIDGE.defaultPort,
       emit: (channel, payload) => {
         broadcastToWindows(SESSION_CHANNELS[channel], payload);
         // The tab table is the web-tab service's reconciliation input: a web tab
@@ -313,8 +353,15 @@ const sessionsIpc: IpcSessionDeps = {
   close: (tabId: string) => requireSessions().closeTab(tabId),
   closeOthers: (tabId: string) => requireSessions().closeOthers(tabId),
   reorder: (tabId: string, toIndex: number) => requireSessions().reorderTab(tabId, toIndex),
-  promoteOfficeHost: (tabId: string) => requireSessions().promoteToOfficeHost(tabId),
+  promoteOfficeHost: async (tabId: string) => {
+    const envelope = await requireSessions().promoteToOfficeHost(tabId);
+    // The promoted host re-binds the bridge asynchronously; probe now so the
+    // Documents panel stops saying "waiting" as soon as the port answers.
+    void officeDocuments.refresh();
+    return envelope;
+  },
   activate: (tabId: string) => requireSessions().activateTab(tabId),
+  deactivate: () => requireSessions().deactivate(),
   reconcile: () => requireSessions().reconcile(),
   restore: () => requireSessions().restoreTabs(),
   restart: (tabId: string) => requireSessions().restartTab(tabId),
@@ -522,6 +569,18 @@ function createWindow(): BrowserWindow {
 
 /** The last evidence line written to the log, so a poll loop does not spam it. */
 let lastOfficeEvidence: string | null = null;
+/**
+ * The stable "the bridge package is configured" fact behind the Documents menu
+ * (2026-10-30 rail-headers plan).
+ *
+ * It is deliberately separate from the live `/health` probe: one failed probe
+ * while a promoted host re-binds port 38617 must not remove the menu from the
+ * rail. Read once at startup and again whenever the setup wizard reports a
+ * bridge install.
+ */
+let bridgeConfigured = false;
+/** The wizard's last bridge-step status, so one install is handled once. */
+let lastBridgeStatus: string | null = null;
 
 const officeSetup = createOfficeSetupService({
   agentDir: paths.profileDir,
@@ -558,6 +617,16 @@ const officeSetup = createOfficeSetupService({
       lastOfficeEvidence = evidence;
       console.log(`[pi-desktop] office: ${evidence}`);
     }
+    // A wizard that just installed (or updated) the bridge changes the stable
+    // fact the Documents menu is built from, so pick it up without a restart.
+    const bridgeStatus = view.bridge?.status ?? null;
+    if (bridgeStatus !== lastBridgeStatus) {
+      lastBridgeStatus = bridgeStatus;
+      if (bridgeStatus !== null && bridgeStatus !== "failed") {
+        bridgeConfigured = true;
+        void officeDocuments.refresh();
+      }
+    }
   },
 });
 
@@ -567,8 +636,37 @@ const officeSetup = createOfficeSetupService({
  * need it even when the setup wizard is closed.
  */
 const officeDocuments = createOfficeDocumentsService({
+  // The menu's presence comes from this stable fact, not from one probe
+  // (2026-10-30 rail-headers plan).
+  configured: () => bridgeConfigured,
   onView: (view) => broadcastToWindows(IPC.officeDocumentsState, view),
 });
+
+/**
+ * Re-reads the bridge-package fact from the user-scope Pi settings file and asks
+ * the registry for one immediate probe, so the renderer sees the new value
+ * without waiting out the 5 s poll.
+ *
+ * A malformed settings file is surfaced, never repaired (AGENTS rule 5). The rail
+ * then falls back to the live probe and the office-tab rule, which is a missing
+ * menu at worst — never a crash or a rewritten file.
+ */
+async function refreshBridgeConfigured(): Promise<void> {
+  try {
+    bridgeConfigured = await bridgeConfiguredInSettings(
+      createNodeFsPort(),
+      join(paths.profileDir, "settings.json"),
+    );
+  } catch (error) {
+    console.warn(
+      `[pi-desktop] could not read the bridge package setting: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    bridgeConfigured = false;
+  }
+  void officeDocuments.refresh();
+}
 
 /**
  * Folder checkpoints (git-checkpoint plan step 20).
@@ -1148,7 +1246,13 @@ if (!app.requestSingleInstanceLock()) {
     // The registry poll is cheap (one loopback GET) and the panel must reflect a
     // bridge that a terminal Pi session owns, so it runs whenever the app does.
     // Safe mode starts with zero third-party code, so the poll stays off there.
-    if (!safeMode) officeDocuments.start();
+    if (!safeMode) {
+      // Read the stable install fact before the first probe, so a restart with a
+      // configured bridge paints the Documents menu on the first frame rather
+      // than waiting for `/health` to answer.
+      await refreshBridgeConfigured();
+      officeDocuments.start();
+    }
     // Git polling is not third-party code, so it runs in safe mode too; it only
     // costs anything while the rail's Git section is open.
     gitPush.start();

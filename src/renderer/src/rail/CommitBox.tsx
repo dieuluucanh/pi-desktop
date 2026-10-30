@@ -8,7 +8,6 @@
  * ```text
  *  ┌ 2-row textarea ────────────────────┐
  *  │ 0 / 20000 · Ada <ada@…> [global] ⋯ │  meta row
- *  │ (reason line, only when blocked)   │
  *  │ [ Commit ]                         │  full width
  *  └────────────────────────────────────┘
  * ```
@@ -30,11 +29,18 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Ellipsis } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { useAppStore } from "../state/app-store";
-import { commitReadiness, identitySummary, messageCount, primaryActionLabel } from "./commit-view";
+import {
+  commitBlockedNotice,
+  commitReadiness,
+  identitySummary,
+  messageCount,
+  primaryActionLabel,
+} from "./commit-view";
 
 export interface CommitBoxProps {
   /** The folder the rail is showing. */
@@ -80,7 +86,19 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
   const summary = identity ? identitySummary(identity) : null;
 
   const submit = async (): Promise<void> => {
-    if (busy || !readiness.canCommit) return;
+    if (busy) return;
+    if (!readiness.canCommit) {
+      // The box spends no row on advice (2026-10-30 project-scoped rail plan): a
+      // permanent "Write a commit message" beside an empty textarea is noise in a
+      // 320 px column. The click is where the missing thing actually matters, so
+      // that is where it is explained, as a notification.
+      const notice = commitBlockedNotice(snapshot, message, identity);
+      if (notice) toast.warning(notice);
+      // No identity configured: also open the form, since the toast names a menu
+      // the user would otherwise have to find.
+      if (!identity) setIdentityOpen(true);
+      return;
+    }
     setBusy(true);
     try {
       // The label promised to stage first when nothing was staged yet.
@@ -238,28 +256,21 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
         </div>
       ) : null}
 
-      {readiness.reason ? (
-        <p className="text-[11px] text-warn" data-testid="commit-reason">
-          {readiness.reason}
-          {!identity && !identityOpen ? (
-            <>
-              {" "}
-              <button
-                type="button"
-                className="underline hover:text-ink"
-                onClick={() => setIdentityOpen(true)}
-              >
-                Set identity
-              </button>
-            </>
-          ) : null}
-        </p>
-      ) : null}
+      {/*
+        No always-on reason line. The metas row above already shows the length
+        and the identity; anything else is said when the user tries to commit
+        (`commitBlockedNotice`). The identity form stays reachable from `⋯`.
+      */}
 
       <Button
         size="sm"
         variant="primary"
-        disabled={!readiness.canCommit || busy || count.over}
+        // `busy` is the only real disablement: a logical blocker must stay
+        // clickable so the click can explain itself (`aria-disabled` announces
+        // the same thing to assistive technology without swallowing the press).
+        disabled={busy}
+        aria-disabled={!readiness.canCommit || count.over}
+        title={readiness.reason ?? label}
         onClick={() => void submit()}
         aria-label={label}
       >

@@ -31,6 +31,7 @@ import {
   type ProjectRecord,
   type ProjectsSnapshot,
 } from "../../src/shared/projects";
+import { useAppStore } from "../../src/renderer/src/state/app-store";
 
 /** Shared renderer-test fixtures (plan step 1). */
 
@@ -97,6 +98,7 @@ export function documentsViewFixture(
 ): OfficeDocumentsView {
   return {
     available: false,
+    configured: false,
     port: 38617,
     status: "unknown",
     serverVersion: null,
@@ -231,7 +233,15 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
       closeOthers: async () => ({ tabs: [], activeTabId: null }),
       reorder: async () => ({ tabs: [], activeTabId: null }),
       promoteOfficeHost: async () => ({ tabs: [], activeTabId: null }),
-      activate: async () => ({ tabs: [], activeTabId: null }),
+      // `activate` (and `deactivate`) must answer with the *current* tab table:
+      // the store applies the response, so an empty envelope would wipe the tabs
+      // on any host wake (a keystroke, a click on the composer). Main always
+      // publishes its real table here, and so must the fake.
+      activate: async (tabId: string) => ({
+        tabs: useAppStore.getState().tabs,
+        activeTabId: tabId,
+      }),
+      deactivate: async () => ({ tabs: useAppStore.getState().tabs, activeTabId: null }),
       reconcile: async () => ({ tabs: [], activeTabId: null }),
       restore: async () => ({ tabs: [], activeTabId: null }),
       restart: async () => ({ tabs: [], activeTabId: null }),

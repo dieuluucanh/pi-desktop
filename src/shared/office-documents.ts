@@ -13,6 +13,7 @@
 
 import { PI_OFFICE_BRIDGE, officeHostLabel, type OfficeHost } from "./office";
 import { projectBridgeCompatibility, type BridgeCompatibility } from "./office-bridge";
+import { sameFolder } from "./rail-scope";
 import type { TabRecord } from "./session-ipc";
 
 /** One attached task pane, as the Documents panel and the completion source see it. */
@@ -55,6 +56,15 @@ export interface OfficeDocumentPane {
 export interface OfficeDocumentsView {
   /** True when the bridge answered `/health` (even with zero panes). */
   available: boolean;
+  /**
+   * True when the bridge package is listed in this profile's Pi settings.
+   *
+   * Unlike `available`, this is a **stable, offline fact**: it survives a probe
+   * failure, a host restart and the gap while a promoted session re-binds the
+   * port. The rail uses it to keep the Documents menu on screen (2026-10-30
+   * rail-headers plan) while `available` stays "the bridge answers right now".
+   */
+  configured: boolean;
   /** The port probed — the Office host's bridge port (`PI_OFFICE_BRIDGE.defaultPort`). */
   port: number;
   /** The probe result: `ok`, `unreachable`, `not-our-bridge`, `invalid-response`. */
@@ -179,6 +189,8 @@ export function parseOfficeDocumentsView(input: {
   port?: number;
   error?: string | null;
   fetchedAt: string;
+  /** The install fact; see {@link OfficeDocumentsView.configured}. */
+  configured?: boolean;
 }): OfficeDocumentsView {
   const port = input.port ?? PI_OFFICE_BRIDGE.defaultPort;
   const root = asRecord(input.payload);
@@ -199,6 +211,7 @@ export function parseOfficeDocumentsView(input: {
 
   return {
     available,
+    configured: input.configured === true,
     port,
     status: input.status,
     serverVersion,
@@ -221,9 +234,11 @@ export function parseOfficeDocumentsView(input: {
 /** The view before the first probe: not available, no panes. */
 export function emptyOfficeDocumentsView(
   port: number = PI_OFFICE_BRIDGE.defaultPort,
+  configured = false,
 ): OfficeDocumentsView {
   return {
     available: false,
+    configured,
     port,
     status: "unknown",
     serverVersion: null,
@@ -459,27 +474,38 @@ export interface OfficeDocumentScope {
   host: OfficeHostInfo | null;
   /** True when the **active** tab is the host, i.e. its `office_*` calls land. */
   isHost: boolean;
+  /**
+   * True when the host works in the rail's folder, i.e. the document set belongs
+   * to the project the panel is showing (2026-10-30 project-scoped rail plan).
+   */
+  hostInRailFolder: boolean;
 }
 
 /**
- * Resolve the Documents menu's scope for the active tab.
+ * Resolve the Documents menu's scope for the active tab and the rail's folder.
  *
  * Since the bridge is app-wide but a *session* is what runs the tools, there are
  * three states worth distinguishing, and this projection separates the middle
  * one from nothing: a host exists and you are it, a host exists and you are not,
  * and no host exists at all. The last one is the only case where "start a
  * session" is the useful action.
+ *
+ * `railFolder` is optional so a caller that only needs `isHost` (the composer's
+ * `#` mentions) does not have to know where the panel is pointed; without it the
+ * folder comparison is simply reported as `false`.
  */
 export function officeDocumentScope(
   _panes: readonly OfficeDocumentPane[],
   tabs: readonly Pick<TabRecord, "id" | "kind" | "cwd" | "title" | "status">[],
   activeTabId: string | null,
+  railFolder?: string | null,
 ): OfficeDocumentScope {
   const host = officeHostTab(tabs);
-  if (!host) return { host: null, isHost: false };
+  if (!host) return { host: null, isHost: false, hostInRailFolder: false };
   return {
     host: { id: host.id, title: host.title, projectPath: host.cwd, status: host.status },
     isHost: activeTabId !== null && host.id === activeTabId,
+    hostInRailFolder: railFolder ? sameFolder(host.cwd, railFolder) : false,
   };
 }
 

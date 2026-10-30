@@ -36,9 +36,11 @@ export const RAIL_MENU_IDS: readonly RailMenuId[] = [
 /**
  * The menus that exist in every session.
  *
- * `documents` is absent on purpose: it only appears once the Office bridge
- * answered `/health` (plan D-A10 — no Office surface when Office was never set
- * up), which is a runtime fact, not a stored one.
+ * `documents` is absent on purpose: it is a runtime fact, not a stored one.
+ * Since the 2026-10-30 rail-headers plan it is present when **either** the Pi
+ * settings list the bridge package (a stable, offline install fact), **or** the
+ * bridge answered `/health`, **or** an `office`-kind tab exists — so one failed
+ * probe during a host restart cannot remove the menu. See `ProjectRail`.
  */
 export const ALWAYS_AVAILABLE_RAIL_MENU_IDS: readonly RailMenuId[] = [
   "source-control",

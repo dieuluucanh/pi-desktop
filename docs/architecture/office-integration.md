@@ -129,23 +129,65 @@ Three renderer surfaces consume that view:
 
 - **Documents menu** (`src/renderer/src/rail/DocumentsSection.tsx`), one of the three
   menus in the session's docked panel rail (Source Control, Checkpoints, Documents —
-  see [`source-control.md`](source-control.md)). It renders in **every** session
-  while `/health` answers (plan D-A10: no Office surface before setup), because
-  hiding it elsewhere would hide that Office is running, and lists each pane with
-  its facts and actions — _Chat about this_ (prepends the `[office:…]` tag to the
-  composer draft), _Insert #mention_, _Copy id_, _Open Office_. With the bridge up
-  but no pane attached it shows the empty state.
-- **The Documents scope line** (`src/renderer/src/rail/DocumentsScope.tsx`) is the
-  one owner of the host facts and the bridge-switching actions. It names the host
-  session, its project and its status, and offers:
+  see [`source-control.md`](source-control.md)). Its **presence** is a stable fact
+  rather than a probe reading (2026-10-30 rail-headers plan): the entry is in the
+  strip when the Pi settings list the bridge package
+  (`OfficeDocumentsView.configured`, read once at startup and refreshed after a
+  wizard install), or the bridge answers `/health`, or an `office`-kind tab
+  exists. One failed probe while a promoted host re-binds 38617 can therefore not
+  remove the entry (and the fallback in `resolveActiveMenu` cannot switch the panel
+  away mid-takeover). The body lists each pane with its facts and actions — _Chat
+  about this_ (prepends the `[office:…]` tag to the composer draft), _Insert
+  #mention_, _Copy id_, _Open Office_ — and, while the bridge is not answering,
+  says which state it is in (the host is starting _vs._ another program owns
+  port 38617) and keeps its re-check instead of rendering nothing. With the bridge
+  up but no pane attached it shows the empty state.
+- **The Documents scope row** (`src/renderer/src/rail/DocumentsScope.tsx`) is the
+  one owner of the host facts and the bridge-switching actions. It is a single
+  compact line — _Office host: \<title>_ (with the host's folder only when it
+  differs from the rail's) or _This session is the Office host._ — plus:
   - **Open host session** — focuses the tab that already holds port 38617;
   - **Use this session instead** — from a non-host session, promotes this tab
-    behind a `ConfirmDialog` that names the demoted tab (promotion stops and
-    restarts it);
+    behind a `ConfirmDialog` that names the demoted tab and warns that the port's
+    current holder is terminated (and that a killed terminal TUI may need
+    reopening);
+  - **Restart host session** — only while the bridge is known to be down, so a
+    port that never came back is recoverable without closing a tab;
   - **Start an Office session** — when no tab holds the port at all.
 
-  `officeDocumentScope` in `src/shared/office-documents.ts` applies the same
-  predicate main does (`kind === "office" && status !== "stopped"`).
+  It no longer repeats the host's title and project as a two-line header: the rail
+  is scoped to the selected project (2026-10-30 plan), and a header naming the
+  _host's_ project went stale the moment the user switched to a session in another
+  folder. `officeDocumentScope` in `src/shared/office-documents.ts` applies the
+  same predicate main does (`kind === "office" && status !== "stopped"`).
+
+- **Promotion is a real takeover (2026-10-30 plan).** `promoteToOfficeHost`
+  (`src/main/session-service.ts`)
+  - samples the app's own PIDs **before** detaching anything (a detached host has
+    already left `hosts.list()`, so sampling later would let the reclaimer treat
+    our own still-exiting process as a stranger — 2026-10-30 rail-headers plan);
+  - stops every other `office` host and **awaits its exit**
+    (`HostSupervisor.shutdown` uses the exit-aware `terminateChild`);
+  - asks `releaseOfficePort` (`src/main/office/port-owner.ts`) to free 38617 before
+    the promoted host spawns. The reclaimer probes `/health`, then looks up the
+    listeners: `Get-NetTCPConnection -LocalPort 38617 -State Listen` first (its
+    answers are structured, so a localized `netstat` state word and IPv6-only
+    sockets cannot hide the owner), falling back to `netstat -ano` **without**
+    `-p tcp` (that filter is IPv4-only; a dual-stack `[::]` listener — what a Node
+    `listen(port)` binds — is invisible to it). `lsof -nP -iTCP:38617
+-sTCP:LISTEN -t` elsewhere. It refuses every PID the app owns and every PID
+    ≤ 4, re-reads the owner immediately before each signal (PID-reuse guard),
+    escalates `SIGTERM` → `SIGKILL` (`taskkill /T /F` on Windows), and polls until
+    the port answers nothing.
+  - **Never reports a free port that is not free.** If no owner can be identified,
+    or every listener is ours and the probe still answers after a bounded grace
+    window, the call fails with the owner/port state named. (Reporting success
+    here was the silent half-success: a promoted host that could not bind, and a
+    Documents menu that never recovered.) If the port cannot be freed, the
+    displaced host is re-promoted and the IPC call rejects with `office_port_busy`
+    naming the holder. The renderer turns both outcomes into a notification and
+    re-probes the pane registry, and its success copy says the bridge re-binds
+    "in a few seconds" rather than claiming it is already live.
 
 - **Scope in a non-host session (D10).** `office_*` calls reach whichever host owns
   38617, so a sibling session cannot serve one. Its _Chat about this_ and _Insert
@@ -182,14 +224,14 @@ session's cwd is the only defensible target. See
 
 ## Failure modes and what the user sees
 
-| Symptom                                    | Cause                                    | Where it surfaces                                                                                            |
-| ------------------------------------------ | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| "The bridge is too old to connect"         | protocol < 2                             | troubleshooting item `bridge-version-skew` (error)                                                           |
-| "The bridge uses an older protocol"        | protocol 2                               | troubleshooting item `bridge-version-skew` (warning), plus the panel's `Replies: final message only`         |
-| "The bridge exposes an older tool catalog" | `catalogVersion` < 3                     | troubleshooting item `catalog-version-skew`                                                                  |
-| "Port 38617 is already in use"             | another Pi session owns the bridge       | troubleshooting item `port-in-use`, with the `netstat`/`lsof` command and the `PI_OFFICE_BRIDGE_PORT` escape |
-| "The bridge is not listening yet"          | no session hosts it                      | troubleshooting item `bridge-not-listening`                                                                  |
-| "The add-in is not connected yet"          | manifest registered but no pane attached | troubleshooting item `pane-not-attached` (reopen Office so the manifest is re-read)                          |
+| Symptom                                    | Cause                                    | Where it surfaces                                                                                                                                                                                                       |
+| ------------------------------------------ | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "The bridge is too old to connect"         | protocol < 2                             | troubleshooting item `bridge-version-skew` (error)                                                                                                                                                                      |
+| "The bridge uses an older protocol"        | protocol 2                               | troubleshooting item `bridge-version-skew` (warning), plus the panel's `Replies: final message only`                                                                                                                    |
+| "The bridge exposes an older tool catalog" | `catalogVersion` < 3                     | troubleshooting item `catalog-version-skew`                                                                                                                                                                             |
+| "Port 38617 is already in use"             | another program or Pi session holds it   | troubleshooting item `port-in-use`, with the `netstat`/`lsof` command and the `PI_OFFICE_BRIDGE_PORT` escape; _Use this session instead_ terminates the holder and verifies the port first, and rolls back if it cannot |
+| "The bridge is not listening yet"          | no session hosts it                      | troubleshooting item `bridge-not-listening`                                                                                                                                                                             |
+| "The add-in is not connected yet"          | manifest registered but no pane attached | troubleshooting item `pane-not-attached` (reopen Office so the manifest is re-read)                                                                                                                                     |
 
 ## Upgrading the bridge
 

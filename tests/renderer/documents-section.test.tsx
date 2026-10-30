@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { DocumentsSection } from "../../src/renderer/src/rail/DocumentsSection";
@@ -10,14 +10,16 @@ import { documentsViewFixture, installBridge } from "./fixtures";
 
 /**
  * The Documents section (plan step 20, moved onto the rail by the 2026-10-27
- * plan): visible only when the bridge answers `/health`, one row per attached
- * pane, and the actions that turn a document into a targeted prompt.
+ * plan): one row per attached pane, the actions that turn a document into a
+ * targeted prompt, and — since the 2026-10-30 rail-headers plan — an honest body
+ * when the bridge is not answering.
  *
  * The column itself — its `<aside>`, width, toggle and close button — belongs to
  * `RightRail` and is asserted in `right-rail.test.tsx`. The host row and the
  * bridge-switching actions belong to `DocumentsScope` (`rail-scope.test.tsx`).
- * This suite covers the *body*: the rows, the empty state, and the two composer
- * actions plus the `isHost` gate that decides whether they can work.
+ * This suite covers the *body*: the rows, the empty state, the waiting state, and
+ * the two composer actions plus the `isHost` gate that decides whether they can
+ * work.
  */
 
 function tab(overrides: Partial<TabRecord> = {}): TabRecord {
@@ -79,9 +81,54 @@ function resetStore() {
 beforeEach(resetStore);
 
 describe("documents panel", () => {
-  it("renders nothing until the bridge answers /health", () => {
+  it("explains an unreachable bridge instead of vanishing", () => {
+    // The menu stays in the rail from the install fact (2026-10-30 rail-headers
+    // plan), so a body that returned null would leave a titled, blank panel.
     render(<DocumentsSection isHost />);
-    expect(screen.queryByTestId("documents-section")).not.toBeInTheDocument();
+
+    expect(screen.getByTestId("documents-section")).toBeInTheDocument();
+    const waiting = screen.getByTestId("documents-unavailable");
+    expect(waiting).toHaveTextContent("Waiting for the bridge on port 38617");
+    expect(waiting).toHaveTextContent(/office host is starting/i);
+    // The pane list and the "bridge is up but nothing attached" copy are both
+    // wrong while the port is silent.
+    expect(screen.queryByTestId("documents-empty")).not.toBeInTheDocument();
+    // The re-check and the route into Office stay reachable.
+    expect(screen.getByRole("button", { name: "Refresh documents" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open Office" })).toBeInTheDocument();
+  });
+
+  it("names the probe's verdict when another program owns the port", () => {
+    useAppStore.setState({
+      officeDocuments: documentsViewFixture({
+        available: false,
+        status: "not-our-bridge",
+        error: 'Port 38617 is served by "someone-else" instead of the Pi Office bridge.',
+      }),
+    });
+    render(<DocumentsSection isHost />);
+
+    const waiting = screen.getByTestId("documents-unavailable");
+    expect(waiting).toHaveTextContent("Port 38617 is used by something else");
+    expect(waiting).toHaveTextContent(/served by "someone-else"/i);
+  });
+
+  it("recovers the pane list when a later probe answers", () => {
+    render(<DocumentsSection isHost />);
+    expect(screen.getByTestId("documents-unavailable")).toBeInTheDocument();
+
+    act(() => {
+      useAppStore.setState({
+        officeDocuments: documentsViewFixture({
+          available: true,
+          status: "ok",
+          panes: [excelPane],
+        }),
+      });
+    });
+
+    expect(screen.queryByTestId("documents-unavailable")).not.toBeInTheDocument();
+    expect(screen.getByText("Book1.xlsx")).toBeInTheDocument();
   });
 
   it("lists each pane with its host, id, windows and advertised ops", () => {
@@ -156,13 +203,13 @@ describe("the host gate", () => {
     expect(screen.getByRole("button", { name: /insert document mention/i })).toBeDisabled();
   });
 
-  it("explains why, and points at the scope row's fix", () => {
+  it("says nothing in the body — the scope row owns that sentence", () => {
     render(<DocumentsSection isHost={false} />);
 
-    const note = screen.getByTestId("documents-not-host");
-    expect(note).toHaveTextContent(/not the office host/i);
-    // The action that fixes it lives in DocumentsScope, so the line names it.
-    expect(note).toHaveTextContent(/use this session instead/i);
+    // The host/non-host explanation lives once, in `DocumentsScope`, so the two
+    // cannot disagree (2026-10-30 project-scoped rail plan).
+    expect(screen.queryByTestId("documents-not-host")).not.toBeInTheDocument();
+    expect(screen.queryByText(/not the office host/i)).not.toBeInTheDocument();
   });
 
   it("keeps the rows themselves readable: the facts are still true", () => {
@@ -177,6 +224,11 @@ describe("the host gate", () => {
     expect(screen.getByRole("button", { name: /chat about book1\.xlsx/i })).toHaveAttribute(
       "title",
       expect.stringMatching(/only the office host session/i),
+    );
+    // The title names where the fix is, now that the body carries no banner.
+    expect(screen.getByRole("button", { name: /chat about book1\.xlsx/i })).toHaveAttribute(
+      "title",
+      expect.stringMatching(/documents header/i),
     );
   });
 

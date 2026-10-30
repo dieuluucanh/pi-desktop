@@ -137,8 +137,35 @@ describe("parseOfficeDocumentsView", () => {
   it("defaults the view before the first probe", () => {
     const view = emptyOfficeDocumentsView(38617);
     expect(view.available).toBe(false);
+    expect(view.configured).toBe(false);
     expect(view.status).toBe("unknown");
     expect(view.port).toBe(38617);
+  });
+
+  it("carries the configured fact independently of the probe", () => {
+    // The rail keeps the Documents menu on screen from this fact while the
+    // bridge is restarting (2026-10-30 rail-headers plan), so it must survive a
+    // failed probe and be distinguishable from "the bridge answers".
+    const down = parseOfficeDocumentsView({
+      payload: null,
+      status: "unreachable",
+      fetchedAt: "2026-09-20T10:00:00.000Z",
+      configured: true,
+    });
+    expect(down.available).toBe(false);
+    expect(down.configured).toBe(true);
+
+    const empty = emptyOfficeDocumentsView(38617, true);
+    expect(empty.available).toBe(false);
+    expect(empty.configured).toBe(true);
+
+    // Absent means false, never undefined.
+    const healthy = parseOfficeDocumentsView({
+      payload: healthPayload([excelPane]),
+      status: "ok",
+      fetchedAt: "2026-09-20T10:00:00.000Z",
+    });
+    expect(healthy.configured).toBe(false);
   });
 });
 
@@ -437,11 +464,30 @@ describe("officeDocumentScope", () => {
         status: "idle",
       },
       isHost: false,
+      hostInRailFolder: false,
     });
   });
 
+  it("reports whether the host works in the rail's folder", () => {
+    const tabs = [tab({ id: "office-1", kind: "office", cwd: "/work/danone-hcm" })];
+    // The rail is project-scoped, so the Documents note only names the host's
+    // project when it differs from the panel's (2026-10-30 plan).
+    expect(officeDocumentScope(panes, tabs, "session-1", "/work/danone-hcm/")).toMatchObject({
+      hostInRailFolder: true,
+    });
+    expect(officeDocumentScope(panes, tabs, "session-1", "/work/app")).toMatchObject({
+      hostInRailFolder: false,
+    });
+    // Without a rail folder the comparison is simply not made.
+    expect(officeDocumentScope(panes, tabs, "session-1").hostInRailFolder).toBe(false);
+  });
+
   it("reports no host and no isHost flag when nothing holds the bridge", () => {
-    expect(officeDocumentScope(panes, [tab()], "tab-1")).toEqual({ host: null, isHost: false });
+    expect(officeDocumentScope(panes, [tab()], "tab-1")).toEqual({
+      host: null,
+      isHost: false,
+      hostInRailFolder: false,
+    });
   });
 
   it("does not claim host-ness for a null active tab", () => {

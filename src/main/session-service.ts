@@ -21,6 +21,7 @@ import {
   type HostMemoryMetrics,
 } from "../shared/performance";
 import { sanitizeWebUrl, webTabTitle } from "../shared/web-tabs";
+import { PI_OFFICE_BRIDGE } from "../shared/office";
 import {
   CONTROL_TAB_ID,
   sanitizeTabs,
@@ -145,6 +146,24 @@ export interface SessionServiceDeps {
   /** Flush a delta batch early once it grows past this many bytes. */
   coalesceBytes?: number;
   maxTabs?: number;
+  /**
+   * Makes the Office bridge port free before a promoted host binds it
+   * (2026-10-30 project-scoped rail plan). It terminates whatever listens on the
+   * port — including a process this app does not own — so the takeover the user
+   * asked for cannot fail with "port is already in use".
+   *
+   * Injected rather than imported so this module stays Electron-free and the
+   * tests can script the outcome. Absent in tests and in callers that have no
+   * Office integration: promotion then behaves as it did before.
+   */
+  releaseOfficePort?: (input: {
+    port: number;
+    ownPids: readonly number[];
+  }) => Promise<{ ok: boolean; detail?: string }>;
+  /** PIDs this app owns, passed to the reclaimer so it never kills itself. */
+  ownPids?: () => readonly number[];
+  /** The bridge port; defaults to `PI_OFFICE_BRIDGE.defaultPort` (38617). */
+  officeBridgePort?: number;
 }
 
 export interface SessionService {
@@ -156,6 +175,13 @@ export interface SessionService {
   restoreTabs(): Promise<SessionTabsEnvelope>;
   createTab(input: CreateTabInput): Promise<SessionTabsEnvelope>;
   activateTab(tabId: string): Promise<SessionTabsEnvelope>;
+  /**
+   * Clears the active tab without closing one (2026-10-30 project-scoped rail
+   * plan). Every tab and every host stays exactly as it was; only the selection
+   * is dropped, so a project with no open session can show Welcome while the
+   * rail keeps that project's scope.
+   */
+  deactivate(): Promise<SessionTabsEnvelope>;
   /**
    * Makes the tab table truthful about host/session readiness after a suspend,
    * a lost process, or a renderer that missed pushes. It never spawns; the next
@@ -1000,6 +1026,18 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       return envelope();
     },
 
+    async deactivate() {
+      // Clearing a *selection* is not closing a tab: every host keeps running and
+      // every record is untouched, so switching back is instant. This is what
+      // lets a project with no open session own the rail while the session column
+      // shows Welcome (2026-10-30 project-scoped rail plan).
+      if (activeId === null) return envelope();
+      activeId = null;
+      publishTabs();
+      await persist();
+      return envelope();
+    },
+
     async reconcile() {
       for (const tab of tabs.values()) {
         if (tab.kind === "web") continue;
@@ -1099,8 +1137,21 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // Already the office host and running: nothing to restart.
       if (tab.kind === "office" && hosts.has(tabId)) return envelope();
 
-      // One office host only: demote every other `office` tab and stop its host
-      // so port 38617 is free for the promoted tab (plan step 20 acceptance).
+      // Remember the host we are about to displace, so a failed takeover can put
+      // it back instead of leaving the app with no bridge at all.
+      const previous = [...tabs.values()].find(
+        (record) => record.id !== tabId && record.kind === "office",
+      );
+
+      // Snapshot the PIDs **before** anything is detached (2026-10-30
+      // rail-headers plan). The reclaimer must never signal this app, and a host
+      // that has just been detached has already left `hosts.list()` — sampling
+      // later would make our own still-exiting process look like a stranger.
+      const ownPids = deps.ownPids?.() ?? [];
+
+      // One office host only: demote every other `office` tab and stop its host.
+      // `detachHost` awaits the process exit (step 8), so the old bridge has
+      // really let go of the port by the time we look at it.
       for (const [id, record] of [...tabs]) {
         if (id === tabId || record.kind !== "office") continue;
         recycling.delete(id);
@@ -1111,6 +1162,35 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // Restart the promoted tab so its host is spawned with `officeHost: true`.
       recycling.delete(tabId);
       await detachHost(tabId);
+
+      // Free the bridge port *before* the new host binds it (2026-10-30 plan).
+      // Stopping our own host is not enough: an earlier app run, terminal Pi, or
+      // an unrelated squatter can still hold 38617, and the bridge extension
+      // would report `EADDRINUSE` instead of listening. The reclaimer terminates
+      // the owner (never this app's own processes) and verifies the port is free.
+      const release = deps.releaseOfficePort;
+      if (release) {
+        const freed = await release({
+          port: deps.officeBridgePort ?? PI_OFFICE_BRIDGE.defaultPort,
+          ownPids,
+        });
+        if (!freed.ok) {
+          // Roll back: re-promote the host we displaced so the user keeps the
+          // bridge they had, and fail with the reason the port stayed busy.
+          if (previous) {
+            tabs.set(previous.id, { ...previous, kind: "office", status: "stopped" });
+            publishTabs();
+            await persist();
+            await service.activateTab(previous.id).catch(() => undefined);
+          }
+          throw new SessionServiceError(
+            freed.detail ??
+              `Office bridge port ${deps.officeBridgePort ?? PI_OFFICE_BRIDGE.defaultPort} is in use, so this session cannot take the bridge.`,
+            "office_port_busy",
+          );
+        }
+      }
+
       tab.kind = "office";
       tab.status = "stopped";
       publishTabs();

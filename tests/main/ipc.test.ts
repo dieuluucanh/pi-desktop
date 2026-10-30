@@ -95,6 +95,7 @@ async function register(recording: Recording): Promise<void> {
       reorder: async () => envelope(),
       promoteOfficeHost: async () => envelope(),
       activate: async () => envelope(),
+      deactivate: async () => envelope(),
       reconcile: async () => envelope(),
       restore: async () => envelope(),
       restart: async () => envelope(),

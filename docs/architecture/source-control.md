@@ -173,16 +173,30 @@ The menu body is three vertically stacked blocks, VS Code's shape, each owning
 its own `overflow-y-auto`:
 
 ```text
-source-control-block   branch row · commit composer · collapsible Stashes
-─────────────── rail-splitter-top
-changes-block          Staged Changes / Changes (both collapsible)
-─────────────── rail-splitter-middle
-history-block          the commit log
+┌ source-control-block   branch row · commit composer · collapsible Stashes
+├─────────────── rail-splitter-top
+├ changes-block          [pinned] Changes · Staged Changes / Changes (both collapsible)
+├─────────────── rail-splitter-middle
+└ history-block          [pinned] Commit History · the log
 ```
 
 Three scrollers instead of one pinned header over one list, because a long change
 list used to push the commit log off the bottom — scrolling to a commit scrolled
 the changed files away. Neither list can now evict the other.
+
+**Block headers are pinned** (2026-10-30 rail-headers plan). Each block's header
+is the first child of its scroller, `sticky top-0` with an opaque `bg-surface`
+and a `border-b` hairline, so the block's name, count and its one block-wide
+control (_Refresh_) stay visible while the list scrolls. Both blocks render the
+same `RailBlockHeader` primitive — two hand-rolled sticky headers would drift —
+and `tests/architecture/rail-ownership.test.ts` keeps the rule in one place.
+The header sits **outside** the `gap-1` column that holds the rows: a gap on the
+scroll container would leave a transparent strip travelling under the header.
+
+**The Commit History block always has its header**, including when git is
+unavailable: it then explains the state (`gitUnavailableMessage`) instead of
+rendering nothing, because a titled block that vanishes is the same bug class as
+a vanishing menu.
 
 **Sizing** is two persisted fractions (`prefs.rail.split = { top, middle }`,
 History being the remainder) so they always sum to 1. A drag calls
@@ -213,15 +227,33 @@ looking at a change.
 
 ## Scope: folder, session, app
 
-The three rail menus act on three different things, and each says so in a **scope
-line** pinned under the panel title by `RightRail` (not by a body, so a scrolling
-list cannot carry it away).
+The three rail menus act on two scopes, and the panel header names the folder it
+is showing in its `title`. There is no per-menu scope row (2026-10-30
+project-scoped rail plan): the rail is app chrome scoped to the **selected
+project**, so the panel and the sidebar cannot disagree.
 
-| Menu           | Scope                    | Where the truth lives                                | How to switch                                    |
-| -------------- | ------------------------ | ---------------------------------------------------- | ------------------------------------------------ |
-| Source Control | the active session's cwd | `state.git[active.cwd]`; main polls that folder      | switch tab, or _Go to project_                   |
-| Checkpoints    | a project **folder**     | `<profile>/checkpoints/<basename>-<hash>` per folder | _Go to project_; rows keep the per-session chips |
-| Documents      | the app-wide bridge      | one bridge on port 38617, owned by the `office` tab  | _Open host session_, _Use this session instead_  |
+| Menu           | Scope                     | Where the truth lives                                | How to switch                                     |
+| -------------- | ------------------------- | ---------------------------------------------------- | ------------------------------------------------- |
+| Source Control | the rail's project folder | `state.git[folder]`; main polls that folder          | select a project, or click a session in it        |
+| Checkpoints    | the same project folder   | `<profile>/checkpoints/<basename>-<hash>` per folder | select a project; rows keep the per-session chips |
+| Documents      | the app-wide bridge       | one bridge on port 38617, owned by the `office` tab  | _Open host session_, _Use this session instead_   |
+
+Selecting a project jumps to its most recently active **open** tab (never a
+saved-but-closed session, and never a `web` tab); a project with no open tab
+clears the active selection so Welcome shows while the rail keeps that project's
+source control and checkpoints.
+
+The **Changes** block opens with its pinned header — the title, the combined file
+count, and an icon-only _Refresh changes_ button — followed by the two collapsible
+lists. A clean tree renders no paragraph: the count already says 0. The
+**Commit History** block has the same shape (title, loaded-commit count, refresh)
+and reloads page one rather than the current cursor.
+
+The **commit box** keeps only the message, the meta row and the button. A
+blocking condition (nothing staged, no message, no git identity, an over-long
+message) is explained at the moment the button is pressed, as a notification; the
+button stays pressable and carries the reason in its `title` and `aria-disabled`,
+so no row is spent on a standing warning.
 
 Checkpoints is deliberately folder-wide rather than per-session: the store is per
 folder, and hiding older folder state behind a session filter would make a

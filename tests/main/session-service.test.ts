@@ -151,6 +151,12 @@ function createHarness(
     fail?: { method: HostMethod; error: Error };
     /** Awaited inside the fake `supervisor.start`, to hold a spawn in flight. */
     onStart?: (spec: SpawnSpec) => Promise<void> | void;
+    /** Scripts the Office-port reclaimer; absent keeps the pre-2026-10-30 path. */
+    releaseOfficePort?: (input: {
+      port: number;
+      ownPids: readonly number[];
+    }) => Promise<{ ok: boolean; detail?: string }>;
+    ownPids?: () => readonly number[];
   } = {},
 ): {
   service: SessionService;
@@ -218,6 +224,8 @@ function createHarness(
     newId: () => `tab-${++counter}`,
     ...(options.hostBuildId ? { hostBuildId: options.hostBuildId } : {}),
     ...(options.maxTabs === undefined ? {} : { maxTabs: options.maxTabs }),
+    ...(options.releaseOfficePort ? { releaseOfficePort: options.releaseOfficePort } : {}),
+    ...(options.ownPids ? { ownPids: options.ownPids } : {}),
     emit: (channel, payload) => pushes.push({ channel, payload }),
   });
 
@@ -355,6 +363,39 @@ describe("tab lifecycle", () => {
     expect(envelope.activeTabId).toBe("tab-1");
     expect(hosts.has("tab-2")).toBe(false);
     expect(stored.tabs.map((tab) => tab.id)).toEqual(["tab-1"]);
+  });
+
+  it("clears the active tab without closing a tab or stopping a host", async () => {
+    // 2026-10-30 project-scoped rail plan: selecting a project with no open
+    // session must leave the session column on Welcome while the rail keeps the
+    // project's scope. Clearing a selection is not closing a tab.
+    const { service, hosts, stored, pushes } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\one" });
+    await service.createTab({ cwd: "C:\\work\\two" });
+    pushes.length = 0;
+
+    const envelope = await service.deactivate();
+
+    expect(envelope.activeTabId).toBeNull();
+    expect(envelope.tabs.map((tab) => tab.id)).toEqual(["tab-1", "tab-2"]);
+    expect(envelope.tabs.map((tab) => tab.status)).toEqual(["idle", "idle"]);
+    expect(hosts.size).toBe(2);
+    expect(stored.activeTabId).toBeNull();
+    expect(stored.tabs).toHaveLength(2);
+    expect(pushes.some((push) => push.channel === "tabs")).toBe(true);
+  });
+
+  it("keeps the cleared selection idempotent", async () => {
+    const { service, stored } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\one" });
+    await service.deactivate();
+    stored.activeTabId = "sentinel";
+
+    const envelope = await service.deactivate();
+
+    expect(envelope.activeTabId).toBeNull();
+    // A second clear is a no-op, so it does not rewrite the persisted document.
+    expect(stored.activeTabId).toBe("sentinel");
   });
 });
 
@@ -1183,6 +1224,129 @@ describe("promoteToOfficeHost (plan step 20)", () => {
   it("rejects an unknown tab", async () => {
     const { service } = createHarness();
     await expect(service.promoteToOfficeHost("tab-nope")).rejects.toThrow(/unknown session tab/);
+  });
+
+  it("frees the bridge port after stopping the old host and before the new spawn", async () => {
+    // 2026-10-30 project-scoped rail plan: "Use this session instead" must really
+    // take port 38617, so the reclaimer runs after the old host exited and before
+    // the promoted host binds.
+    const order: string[] = [];
+    const { service } = createHarness({
+      releaseOfficePort: async (input) => {
+        order.push(`release:${input.port}`);
+        return { ok: true };
+      },
+      ownPids: () => [process.pid, 4242],
+    });
+    await service.createTab({ cwd: "C:\\work\\app", kind: "office" });
+    await service.createTab({ cwd: "C:\\work\\app" });
+    // The stop happened first, so the reclaimer never needs to fight a live host.
+    order.push("stopped:tab-1");
+
+    await service.promoteToOfficeHost("tab-2");
+
+    expect(order).toEqual(["stopped:tab-1", "release:38617"]);
+    expect(service.tabs().map((tab) => tab.kind)).toEqual(["session", "office"]);
+  });
+
+  it("passes the app's own PIDs so the reclaimer never kills itself", async () => {
+    let seen: readonly number[] = [];
+    const { service } = createHarness({
+      ownPids: () => [process.pid, 5151],
+      releaseOfficePort: async (input) => {
+        seen = input.ownPids;
+        return { ok: true };
+      },
+    });
+    await service.createTab({ cwd: "C:\\work\\app" });
+    await service.promoteToOfficeHost("tab-1");
+
+    expect(seen).toEqual([process.pid, 5151]);
+  });
+
+  it("samples this app's own PIDs before any host is detached", async () => {
+    // A detached host has already left `hosts.list()`, so sampling later would
+    // let the reclaimer treat our own still-exiting process as a stranger and
+    // signal it (2026-10-30 rail-headers plan).
+    const calls: string[] = [];
+    let seen: readonly number[] = [];
+    const { service, hosts } = createHarness({
+      ownPids: () => {
+        calls.push(`own:${[...hosts.keys()].sort().join(",")}`);
+        return [process.pid, 7001];
+      },
+      releaseOfficePort: async (input) => {
+        calls.push("release");
+        seen = input.ownPids;
+        return { ok: true };
+      },
+    });
+    await service.createTab({ cwd: "C:\\work\\app", kind: "office" });
+    await service.createTab({ cwd: "C:\\work\\app" });
+
+    await service.promoteToOfficeHost("tab-2");
+
+    // Sampled once, while both hosts were still live.
+    expect(calls[0]).toBe("own:tab-1,tab-2");
+    expect(calls).toContain("release");
+    expect(seen).toEqual([process.pid, 7001]);
+  });
+
+  it("rolls back to the previous host when the port cannot be freed", async () => {
+    // The worst outcome would be demoting the working host and leaving the app
+    // with no bridge at all, so a failed takeover restores what was there.
+    const { service, specs } = createHarness({
+      releaseOfficePort: async () => ({
+        ok: false,
+        detail: "port 38617 is held by evil.exe (pid 7)",
+      }),
+    });
+    await service.createTab({ cwd: "C:\\work\\app", kind: "office" });
+    await service.createTab({ cwd: "C:\\work\\app" });
+
+    await expect(service.promoteToOfficeHost("tab-2")).rejects.toThrow(/evil\.exe/);
+
+    // The displaced host is the Office host again and active; the promoted tab
+    // did not silently become a second one.
+    expect(service.tabs().map((tab) => [tab.id, tab.kind])).toEqual([
+      ["tab-1", "office"],
+      ["tab-2", "session"],
+    ]);
+    expect(service.activeTabId()).toBe("tab-1");
+    // It was re-spawned as the office host (a fresh 38617 attempt), and the
+    // promoted tab never got an office spawn.
+    expect(specs.filter((spec) => spec.sessionId === "tab-2").length).toBe(1);
+    expect(
+      specs.filter((spec) => spec.sessionId === "tab-1").map((spec) => spec.officeHost),
+    ).toContain(true);
+  });
+
+  it("gives a readable error when the port is busy and there is nothing to restore", async () => {
+    const { service } = createHarness({
+      releaseOfficePort: async () => ({ ok: false }),
+    });
+    await service.createTab({ cwd: "C:\\work\\app" });
+
+    await expect(service.promoteToOfficeHost("tab-1")).rejects.toThrow(
+      /Office bridge port 38617 is in use/,
+    );
+    // A tab that never held the bridge stays a plain session.
+    expect(service.tabs()[0]!.kind).toBe("session");
+  });
+
+  it("does not call the reclaimer when the tab already owns the bridge", async () => {
+    let calls = 0;
+    const { service } = createHarness({
+      releaseOfficePort: async () => {
+        calls += 1;
+        return { ok: true };
+      },
+    });
+    await service.createTab({ cwd: "C:\\work\\app", kind: "office" });
+
+    await service.promoteToOfficeHost("tab-1");
+
+    expect(calls).toBe(0);
   });
 });
 

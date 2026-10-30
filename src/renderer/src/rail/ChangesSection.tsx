@@ -17,22 +17,14 @@
  */
 
 import { useState } from "react";
-import {
-  ChevronDown,
-  ChevronRight,
-  FileText,
-  Plus,
-  RefreshCw,
-  RotateCcw,
-  Trash2,
-  X,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { useAppStore } from "../state/app-store";
 import { gitStatusLetter, gitStatusTone, type GitFileEntry } from "../../../shared/git";
 import { discardPrompt, emptyStateFor, groupsOf, isUntracked, renameLabel } from "./changes-view";
+import { RailBlockHeader } from "./RailBlockHeader";
 
 export interface ChangesSectionProps {
   /** The folder the rail is showing (a tab's cwd or a remembered project). */
@@ -249,82 +241,95 @@ export function ChangesSection({ projectPath }: ChangesSectionProps) {
   };
 
   return (
-    <div className="flex flex-col gap-1 pb-2" data-testid="changes-section">
-      {gitError ? (
-        <div
-          className="mx-2 flex items-start gap-2 rounded-sm border border-danger/40 bg-danger/10 px-2 py-1 text-[11px] text-danger"
-          role="alert"
-          data-testid="git-error"
-        >
-          <span className="min-w-0 flex-1">{gitError}</span>
-          <button
-            type="button"
-            className="shrink-0 text-danger/80 hover:text-danger"
-            aria-label="Dismiss git error"
-            onClick={clearGitError}
-          >
-            <X className="size-3" aria-hidden />
-          </button>
-        </div>
-      ) : null}
-
-      {empty ? (
-        <div className="px-3 py-3 text-xs text-ink-muted" data-testid="changes-empty">
-          <p className="font-medium text-ink">{empty.title}</p>
-          <p className="mt-1">{empty.body}</p>
-          {empty.action === "init" ? (
-            <Button
-              size="sm"
-              variant="secondary"
-              className="mt-2"
-              onClick={() => void performGitAction(projectPath, { kind: "init" })}
-            >
-              Initialize repository
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
-
-      {groups.truncated ? (
-        <p className="px-3 py-1 text-[11px] text-warn" data-testid="changes-truncated">
-          This repository has more changed paths than the panel shows. Use a terminal for the rest.
-        </p>
-      ) : null}
-
-      <Group
-        id="staged"
-        title="Staged Changes"
-        files={groups.staged}
-        staged
-        projectPath={projectPath}
-        actionLabel="Unstage all"
-        onAction={unstageAll}
-        onDiscard={setDiscardTarget}
-        collapsed={collapsed.staged}
-        onToggle={() => setSourceControlCollapsed("staged", !collapsed.staged)}
-      />
-      <Group
-        id="changed"
+    <div className="flex flex-col" data-testid="changes-section">
+      {/*
+        The block's own header (2026-10-30 project-scoped rail plan), pinned
+        (2026-10-30 rail-headers plan). Refresh used to be a labelled row at the
+        *bottom* of the block, below both groups, which meant scrolling past
+        everything to reach the one control that does not depend on the list. It
+        belongs with the title, and the label is redundant beside a refresh icon.
+      */}
+      <RailBlockHeader
         title="Changes"
-        files={groups.changed}
-        staged={false}
-        projectPath={projectPath}
-        actionLabel="Stage all"
-        onAction={stageAll}
-        onDiscard={setDiscardTarget}
-        collapsed={collapsed.changed}
-        onToggle={() => setSourceControlCollapsed("changed", !collapsed.changed)}
+        testId="changes-header"
+        count={groups.stagedCount + groups.changedCount}
+        countTestId="changes-count"
+        onRefresh={() => void refreshGit(projectPath)}
+        refreshLabel="Refresh changes"
       />
 
-      <div className="flex items-center justify-end px-3 pt-1">
-        <button
-          type="button"
-          className="flex items-center gap-1 text-[11px] text-ink-faint hover:text-ink"
-          aria-label="Refresh changes"
-          onClick={() => void refreshGit(projectPath)}
-        >
-          <RefreshCw className="size-3" aria-hidden /> Refresh
-        </button>
+      {/*
+        Everything below the header lives in its own gap column. A `gap-1` on the
+        scroll container itself would leave a 4 px transparent strip between the
+        sticky header and the first row, letting rows travel under the header.
+      */}
+      <div className="flex flex-col gap-1 pb-2">
+        {gitError ? (
+          <div
+            className="mx-2 flex items-start gap-2 rounded-sm border border-danger/40 bg-danger/10 px-2 py-1 text-[11px] text-danger"
+            role="alert"
+            data-testid="git-error"
+          >
+            <span className="min-w-0 flex-1">{gitError}</span>
+            <button
+              type="button"
+              className="shrink-0 text-danger/80 hover:text-danger"
+              aria-label="Dismiss git error"
+              onClick={clearGitError}
+            >
+              <X className="size-3" aria-hidden />
+            </button>
+          </div>
+        ) : null}
+
+        {empty ? (
+          <div className="px-3 py-3 text-xs text-ink-muted" data-testid="changes-empty">
+            <p className="font-medium text-ink">{empty.title}</p>
+            <p className="mt-1">{empty.body}</p>
+            {empty.action === "init" ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="mt-2"
+                onClick={() => void performGitAction(projectPath, { kind: "init" })}
+              >
+                Initialize repository
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+
+        {groups.truncated ? (
+          <p className="px-3 py-1 text-[11px] text-warn" data-testid="changes-truncated">
+            This repository has more changed paths than the panel shows. Use a terminal for the
+            rest.
+          </p>
+        ) : null}
+
+        <Group
+          id="staged"
+          title="Staged Changes"
+          files={groups.staged}
+          staged
+          projectPath={projectPath}
+          actionLabel="Unstage all"
+          onAction={unstageAll}
+          onDiscard={setDiscardTarget}
+          collapsed={collapsed.staged}
+          onToggle={() => setSourceControlCollapsed("staged", !collapsed.staged)}
+        />
+        <Group
+          id="changed"
+          title="Changes"
+          files={groups.changed}
+          staged={false}
+          projectPath={projectPath}
+          actionLabel="Stage all"
+          onAction={stageAll}
+          onDiscard={setDiscardTarget}
+          collapsed={collapsed.changed}
+          onToggle={() => setSourceControlCollapsed("changed", !collapsed.changed)}
+        />
       </div>
 
       {discardTarget ? (

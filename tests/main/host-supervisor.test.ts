@@ -30,6 +30,11 @@ interface FakeBehaviour {
   silent?: readonly string[];
   /** Answer for a method; `undefined` falls back to the default answer. */
   answer?: (request: HostRequestFrame) => unknown;
+  /**
+   * Keeps the process alive after `kill()` until the test calls `finishExit()`.
+   * Models a host that is slow to release a port.
+   */
+  ignoreKill?: boolean;
 }
 
 class FakeHost implements SpawnedHostProcess {
@@ -39,8 +44,12 @@ class FakeHost implements SpawnedHostProcess {
   readonly requests: HostRequestFrame[] = [];
   readonly pid: number;
   killed = false;
+  /** Every `kill()` call, so an escalation can be told from the first signal. */
+  readonly killCalls: Array<string | number | undefined> = [];
   private readonly emitter = new EventEmitter();
   private readonly behaviour: FakeBehaviour;
+  /** Set by `ignoreKill`: the process stays alive until `finishExit()`. */
+  private pendingExit = false;
 
   constructor(pid: number, behaviour: FakeBehaviour = {}) {
     this.pid = pid;
@@ -53,10 +62,24 @@ class FakeHost implements SpawnedHostProcess {
     return this;
   }
 
-  kill(): boolean {
+  kill(signal?: string | number): boolean {
+    this.killCalls.push(signal);
     this.killed = true;
+    if (this.behaviour.ignoreKill) {
+      // A process that does not die on SIGTERM: the supervisor's bounded wait is
+      // what keeps `stop()` from hanging forever.
+      this.pendingExit = true;
+      return true;
+    }
     this.emitter.emit("exit", 0, "SIGTERM");
     return true;
+  }
+
+  /** Emits the exit frame a `kill` refused to emit (`ignoreKill`). */
+  finishExit(): void {
+    if (!this.pendingExit) return;
+    this.pendingExit = false;
+    this.emitter.emit("exit", 0, "SIGTERM");
   }
 
   /** Simulates an unexpected process death (e.g. the SDK calling exit). */
@@ -377,6 +400,44 @@ describe("host supervisor shutdown", () => {
 
     expect(spawned.every((child) => child.killed)).toBe(true);
     expect(supervisor.list()).toHaveLength(0);
+  });
+
+  it("waits for the child to exit before reporting the port released", async () => {
+    // 2026-10-30 project-scoped rail plan: promotion re-spawns on 38617 right
+    // after this resolves, so a child that is still dying would hold the port.
+    const { supervisor, spawned } = harness({
+      // Exit only when the test says so: a child that ignores SIGTERM for a while.
+      behaviours: [{ ignoreKill: true }],
+    });
+    const host = await supervisor.start({
+      sessionId: "office",
+      cwd: normalize("C:/work"),
+      officeHost: true,
+    });
+    expect(host.port).toBe(38617);
+
+    const stopping = supervisor.stop("office");
+    let settled = false;
+    void stopping.then(() => {
+      settled = true;
+    });
+
+    // The shutdown request was answered and SIGTERM was sent...
+    await vi.waitFor(() =>
+      expect(spawned[0]?.requests.some((r) => r.method === "host.shutdown")).toBe(true),
+    );
+    await vi.waitFor(() => expect(spawned[0]?.killCalls.length).toBeGreaterThan(0));
+    // ...but the supervisor must not pretend the host is gone yet.
+    expect(settled).toBe(false);
+    expect(supervisor.list()).toHaveLength(1);
+
+    spawned[0]!.finishExit();
+    await stopping;
+
+    expect(settled).toBe(true);
+    expect(host.status()).toBe("stopped");
+    expect(supervisor.list()).toHaveLength(0);
+    expect(supervisor.allocatedPorts()).toEqual([]);
   });
 
   it("refuses to restart a host that is already shutting down (plan step 27)", async () => {
