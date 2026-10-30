@@ -109,6 +109,8 @@ export interface HostInfo {
   capabilities?: {
     /** True when the checkpoint extension is loaded (never in safe mode). */
     checkpointsExtension?: boolean;
+    /** Which installed copy was found, or the bundled fallback. */
+    checkpointExtensionSource?: "profile" | "package" | "bundled" | null;
   };
 }
 

@@ -51,11 +51,19 @@ export const MAX_TRACKED_CHECKPOINTS = 100;
 
 /** The session-entry payload a `pi.checkpoint` entry carries. */
 export interface CheckpointEntryData {
-  entryId: string;
+  /** The assistant turn this snapshot precedes; null for a prompt that never ran. */
+  entryId: string | null;
   ref: string;
   prompt: string;
   createdAt: number;
   kind: CheckpointKind;
+}
+
+/** The subset of Pi's `input` event this extension reads. */
+export interface CheckpointInputEvent {
+  text: string;
+  source?: "interactive" | "rpc" | "extension";
+  streamingBehavior?: "steer" | "followUp";
 }
 
 /** A minimal `ExtensionContext`: the members this extension reads. */
@@ -86,11 +94,19 @@ export interface CheckpointExtensionApi {
     handler: (event: { reason: string }, ctx: CheckpointExtensionContext) => Promise<void> | void,
   ): () => void;
   on(
-    event: "agent_start",
-    handler: (event: unknown, ctx: CheckpointExtensionContext) => Promise<void> | void,
+    event: "input",
+    handler: (event: CheckpointInputEvent, ctx: CheckpointExtensionContext) => Promise<void> | void,
   ): () => void;
   on(
     event: "turn_start",
+    handler: (event: unknown, ctx: CheckpointExtensionContext) => Promise<void> | void,
+  ): () => void;
+  on(
+    event: "agent_settled",
+    handler: (event: unknown, ctx: CheckpointExtensionContext) => Promise<void> | void,
+  ): () => void;
+  on(
+    event: "session_shutdown",
     handler: (event: unknown, ctx: CheckpointExtensionContext) => Promise<void> | void,
   ): () => void;
   on(
@@ -130,6 +146,11 @@ export interface CheckpointExtensionDeps {
 
 /* ---------------------------------------------------------------- helpers */
 
+/** A prompt as a single-line timeline label, capped for a 320 px row. */
+export function promptLabel(text: string): string {
+  return text.replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
 /** The prompt text a turn was answering, trimmed for a timeline row. */
 export function promptSnippet(entries: readonly { type: string; data?: unknown }[]): string {
   // Walk backwards: the newest user message is the prompt this run is for.
@@ -139,7 +160,7 @@ export function promptSnippet(entries: readonly { type: string; data?: unknown }
     const data = entry.data as { role?: unknown; content?: unknown } | undefined;
     if (data?.role !== "user") continue;
     const text = textOf(data.content);
-    if (text) return text.replace(/\s+/g, " ").trim().slice(0, 120);
+    if (text) return promptLabel(text);
   }
   return "";
 }
@@ -162,10 +183,18 @@ function textOf(content: unknown): string {
 export function parseCheckpointEntry(data: unknown): CheckpointEntryData | null {
   if (!data || typeof data !== "object" || Array.isArray(data)) return null;
   const record = data as Record<string, unknown>;
-  if (typeof record.entryId !== "string" || record.entryId.length === 0) return null;
+  if (
+    record.entryId !== undefined &&
+    record.entryId !== null &&
+    typeof record.entryId !== "string"
+  ) {
+    return null;
+  }
   if (typeof record.ref !== "string" || !/^[0-9a-f]{40}$/.test(record.ref)) return null;
+  const entryId =
+    typeof record.entryId === "string" && record.entryId.length > 0 ? record.entryId : null;
   return {
-    entryId: record.entryId,
+    entryId,
     ref: record.ref,
     prompt: typeof record.prompt === "string" ? record.prompt.slice(0, 300) : "",
     createdAt:
@@ -220,6 +249,12 @@ export async function sweepOldShadowRepos(
 
 /* ------------------------------------------------------------- the factory */
 
+interface PendingCheckpoint {
+  ref: string;
+  prompt: string;
+  createdAt: number;
+}
+
 /**
  * Builds the extension. A default export is what Pi's loader calls, and it takes
  * the API object as its only argument.
@@ -241,11 +276,12 @@ export default function checkpointExtension(
 
   /** This session's checkpoints, newest first (mirrors the durable entries). */
   let tracked: CheckpointEntryData[] = [];
-  /** Armed by `agent_start`, consumed by the first `turn_start` of the run. */
-  let runNeedsSnapshot = false;
-  /** The ref the current run produced, waiting for its durable entry id. */
-  let pendingRef: string | null = null;
-  let pendingPrompt = "";
+  /** True once this host has emitted an `input` event (Pi 1.4+). */
+  let inputSeen = false;
+  /** Prompt snapshots waiting for their turn's durable entry id. */
+  const pending: PendingCheckpoint[] = [];
+  /** Failure keys already reported, so a long session does not spam one error. */
+  const notifiedFailures = new Set<string>();
   /** The session id, kept for the entry payload and for Diagnostics. */
   let sessionId = "";
 
@@ -266,10 +302,14 @@ export default function checkpointExtension(
     }
   };
 
+  const entryKey = (entry: CheckpointEntryData): string => entry.entryId ?? `ref:${entry.ref}`;
+
   const remember = (entry: CheckpointEntryData): void => {
     // The durable entry wins; keep the in-memory list bounded and de-duplicated
-    // so a replay of `session_start` does not double-count.
-    tracked = [entry, ...tracked.filter((known) => known.entryId !== entry.entryId)].slice(
+    // so a replay of `session_start` does not double-count. Unlinked entries
+    // have no entry id, so their ref is their stable key.
+    const key = entryKey(entry);
+    tracked = [entry, ...tracked.filter((known) => entryKey(known) !== key)].slice(
       0,
       MAX_TRACKED_CHECKPOINTS,
     );
@@ -287,6 +327,9 @@ export default function checkpointExtension(
 
   pi.on("session_start", async (event, ctx) => {
     sessionId = ctx.sessionManager.getSessionId();
+    inputSeen = false;
+    pending.length = 0;
+    notifiedFailures.clear();
     rehydrate(ctx);
     const settings = await config();
     // A reload must not re-run the sweep: it is a 30-day maintenance pass, not a
@@ -302,60 +345,94 @@ export default function checkpointExtension(
     }
   });
 
-  pi.on("agent_start", () => {
-    // Fires again for a retry or a follow-up; the duplicate is discarded at
-    // `turn_end` when the entry id is already known.
-    runNeedsSnapshot = true;
-    pendingRef = null;
-    pendingPrompt = "";
-  });
-
-  pi.on("turn_start", async (_event, ctx) => {
-    if (!runNeedsSnapshot) return;
-    runNeedsSnapshot = false;
+  /**
+   * Takes one snapshot and queues it for the next turn. `same_tree` is a
+   * deliberate no-op; a real failure is reported once per reason so a folder
+   * without git does not produce a notification for every prompt.
+   */
+  const takeSnapshot = async (ctx: CheckpointExtensionContext, prompt: string): Promise<void> => {
     const settings = await config();
     if (!settings.enabled) return;
-    const prompt = promptSnippet(ctx.sessionManager.getEntries());
     const result = await store.snapshot(ctx.cwd, {
       kind: "run",
-      label: prompt || "Before the agent's turn",
+      label: prompt || "Before the prompt",
       sessionId,
       maxFileBytes: settings.maxFileBytes,
       exclude: settings.exclude,
     });
     if (result.ok && result.checkpoint) {
-      pendingRef = result.checkpoint.ref;
-      pendingPrompt = prompt;
+      pending.push({ ref: result.checkpoint.ref, prompt, createdAt: now() });
       return;
     }
-    pendingRef = null;
     if (result.reason && result.reason !== "same_tree") {
-      // git missing is reported once at session_start; anything else is worth a
-      // line the first time it happens in this run.
-      notify(ctx, `Checkpoint not taken: ${result.detail ?? result.reason}`);
+      const key = `${result.reason}:${result.detail ?? ""}`;
+      if (!notifiedFailures.has(key)) {
+        notifiedFailures.add(key);
+        notify(ctx, `Checkpoint not taken: ${result.detail ?? result.reason}`);
+      }
     }
+  };
+
+  /** Writes queued snapshots that never got a turn, so they are not lost. */
+  const flushPending = (): void => {
+    while (pending.length > 0) {
+      const next = pending.shift();
+      if (!next) break;
+      const data: CheckpointEntryData = {
+        entryId: null,
+        ref: next.ref,
+        prompt: next.prompt,
+        createdAt: next.createdAt,
+        kind: "run",
+      };
+      pi.appendEntry(CHECKPOINT_ENTRY_TYPE, data);
+      remember(data);
+    }
+  };
+
+  pi.on("input", async (event, ctx) => {
+    // A host that emits `input` never needs the old turn_start fallback. Set the
+    // flag before filtering so extension-originated messages are not mistaken
+    // for a host without the event.
+    inputSeen = true;
+    if (event.source === "extension") return;
+    const prompt = promptLabel(event.text);
+    if (!prompt) return;
+    await takeSnapshot(ctx, prompt);
+  });
+
+  pi.on("turn_start", async (_event, ctx) => {
+    // Legacy hosts (Pi before `input`) still get one snapshot per run at the
+    // first turn. Once an input was captured, that is the primary path.
+    if (inputSeen || pending.length > 0) return;
+    const prompt = promptSnippet(ctx.sessionManager.getEntries());
+    await takeSnapshot(ctx, prompt || "Before the prompt");
   });
 
   pi.on("turn_end", (event) => {
-    const ref = pendingRef;
-    pendingRef = null;
-    if (!ref) return;
+    const next = pending.shift();
+    if (!next) return;
     const entryId = event.messageEntryId;
     if (!entryId) return;
     // A retry lands on the same message entry; it must not append a second entry
-    // for one turn.
+    // for one turn. The pending snapshot is dropped with it.
     if (tracked.some((known) => known.entryId === entryId)) return;
     const data: CheckpointEntryData = {
       entryId,
-      ref,
-      prompt: pendingPrompt,
-      createdAt: now(),
+      ref: next.ref,
+      prompt: next.prompt,
+      createdAt: next.createdAt,
       kind: "run",
     };
     pi.appendEntry(CHECKPOINT_ENTRY_TYPE, data);
     remember(data);
-    pendingPrompt = "";
   });
+
+  // `agent_settled` means no retry/compaction/queued continuation will run, so
+  // any remaining snapshot belongs to a prompt that will never get a turn.
+  // `session_shutdown` catches a prompt rejected before any run started.
+  pi.on("agent_settled", () => flushPending());
+  pi.on("session_shutdown", () => flushPending());
 
   pi.on("session_before_fork", (event, ctx) => {
     // A fork point usually has a checkpoint. Restoring it *here* would be a modal
@@ -383,7 +460,7 @@ export default function checkpointExtension(
       }
       const labels = tracked.map(
         (entry, index) =>
-          `${relativeLabel(entry.createdAt, now())} · ${entry.prompt || "Before the agent's turn"}` +
+          `${relativeLabel(entry.createdAt, now())} · ${entry.prompt || "Before the prompt"}` +
           ` · ${entry.ref.slice(0, 8)}${index === 0 ? " (newest)" : ""}`,
       );
       const chosen = await ctx.ui.select("Rewind to which checkpoint?", labels);
@@ -392,11 +469,12 @@ export default function checkpointExtension(
       const target = tracked[index];
       if (!target) return;
 
-      const mode = await ctx.ui.select("What should be restored?", [
-        "Files and conversation",
-        "Files only",
-        "Conversation only",
-      ]);
+      // An unlinked prompt has no conversation branch point: offering a mode
+      // that cannot work would be a lie, so it gets only the file restore.
+      const modes = target.entryId
+        ? ["Files and conversation", "Files only", "Conversation only"]
+        : ["Files only"];
+      const mode = await ctx.ui.select("What should be restored?", modes);
       if (!mode) return;
 
       let filesRestored = false;
@@ -429,7 +507,7 @@ export default function checkpointExtension(
       }
 
       let conversationRewound = false;
-      if (mode !== "Files only") {
+      if (mode !== "Files only" && target.entryId) {
         const navigation = await ctx.navigateTree(target.entryId, { summarize: false });
         if (navigation.cancelled) {
           ctx.ui.notify("The conversation was not rewound.", "info");

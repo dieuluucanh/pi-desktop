@@ -33,13 +33,12 @@ it matters, a workaround that ships today.
 
 ## Deferred from the git/checkpoint plan
 
-| Item                                      | Why it is deferred                                                                                                                                                    | Ships today instead                                                       |
-| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| **Publishing `pi-checkpoints` to npm**    | Publication is a release decision, not an implementation one, and an entry in `RECOMMENDED_PACKAGES` that resolved to nothing would be a lie.                         | `npm run build:extension` + `pi install path:<repo>/dist/pi-checkpoints`. |
-| **A merge-conflict resolution editor**    | A real 3-way editor is a project of its own; terminal git already does it well and the rail names the conflict with a fix hint.                                       | `git_conflict` incident + git's own message; resolve in a terminal.       |
-| **Rebase / cherry-pick / submodule UI**   | Explicit non-goals of the plan: each needs its own design (a todo list, a sequencer view), and none is required for the source-control parity the rail targets.       | The rail refuses with a clear message; terminal git does the work.        |
-| **`git blame` / a per-line history view** | A different surface (line-anchored, needs the file's content and the commit trail per hunk) rather than an extension of the rail.                                     | Terminal `git blame`.                                                     |
-| **Per-hunk discard**                      | Discarding half a hunk is the one operation where a mistake is unrecoverable without the OS trash; the plan ships whole-file discard to trash plus a pre-op snapshot. | Whole-file discard, recoverable from the OS trash.                        |
+| Item                                      | Why it is deferred                                                                                                                                                    | Ships today instead                                                 |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| **A merge-conflict resolution editor**    | A real 3-way editor is a project of its own; terminal git already does it well and the rail names the conflict with a fix hint.                                       | `git_conflict` incident + git's own message; resolve in a terminal. |
+| **Rebase / cherry-pick / submodule UI**   | Explicit non-goals of the plan: each needs its own design (a todo list, a sequencer view), and none is required for the source-control parity the rail targets.       | The rail refuses with a clear message; terminal git does the work.  |
+| **`git blame` / a per-line history view** | A different surface (line-anchored, needs the file's content and the commit trail per hunk) rather than an extension of the rail.                                     | Terminal `git blame`.                                               |
+| **Per-hunk discard**                      | Discarding half a hunk is the one operation where a mistake is unrecoverable without the OS trash; the plan ships whole-file discard to trash plus a pre-op snapshot. | Whole-file discard, recoverable from the OS trash.                  |
 
 ## Deferred from the session-parity plan (Phase G)
 

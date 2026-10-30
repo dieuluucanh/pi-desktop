@@ -14,6 +14,7 @@ import {
   type DocumentMention,
 } from "../../src/renderer/src/completion/document-source";
 import { createFileProvider } from "../../src/renderer/src/completion/file-source";
+import { createShellProvider } from "../../src/renderer/src/completion/shell-source";
 import { createCompletionProvider } from "../../src/renderer/src/completion/stack";
 import {
   applyCompletionInPlace,
@@ -492,6 +493,46 @@ describe("the stack", () => {
   it("survives a factory that returns nothing", () => {
     const bad = (() => undefined) as unknown as CompletionProviderFactory;
     expect(() => createCompletionProvider({ command, extensionFactories: [bad] })).not.toThrow();
+  });
+});
+
+describe("shell completion", () => {
+  const shell = createShellProvider({
+    loadFiles: async () => ({ files: ["src/app.ts", "src/renderer/main.ts", "docs/readme.md"] }),
+  });
+  const provider = createCompletionProvider({
+    command: createCommandProvider({ loadCommands: async () => HOST_COMMANDS }),
+    file: createFileProvider({ loadFiles: async () => ({ files: ["src/app.ts"] }) }),
+    shell,
+  });
+
+  it("completes workspace paths after ! and !!", async () => {
+    expect(
+      (await provider.getSuggestions(["!git add src"], 0, 12, { signal: signal() }))?.items[0]
+        ?.value,
+    ).toBe("src/app.ts");
+    expect(
+      (await provider.getSuggestions(["!!git add src"], 0, 13, { signal: signal() }))?.items[0]
+        ?.value,
+    ).toBe("src/app.ts");
+  });
+
+  it("does not invent a completion for a flag, an absolute path or a non-path word", async () => {
+    expect(
+      await provider.getSuggestions(["!git push -u origin"], 0, 20, { signal: signal() }),
+    ).toBeNull();
+    expect(
+      await provider.getSuggestions(["!cat /etc/hosts"], 0, 15, { signal: signal() }),
+    ).toBeNull();
+    expect(
+      await provider.getSuggestions(["!git add --force"], 0, 17, { signal: signal() }),
+    ).toBeNull();
+  });
+
+  it("keeps / on the first line a command line", async () => {
+    expect(
+      (await provider.getSuggestions(["/he"], 0, 3, { signal: signal() }))?.items[0]?.label,
+    ).toBe("/help");
   });
 });
 

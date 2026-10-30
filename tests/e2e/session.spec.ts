@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { expect, test } from "@playwright/test";
 import { launchFakeApp, type FakeApp } from "./fixtures/fake-app";
 import { removeTempDirs } from "./fixtures/app";
@@ -9,6 +10,10 @@ import { removeTempDirs } from "./fixtures/app";
  */
 
 let app: FakeApp | undefined;
+
+// The host runs `!` through the same Bash Pi uses. A Windows CI machine without
+// Git Bash cannot exercise the path, so the test says so instead of failing.
+const hasBash = spawnSync("bash", ["-c", "true"], { stdio: "ignore" }).status === 0;
 
 test.afterEach(async () => {
   if (!app) return;
@@ -43,6 +48,21 @@ test("@smoke creates a session and streams a reply from the model", async () => 
 
   // The user message is in the transcript too.
   await expect(app.window.getByText("Say hello")).toBeVisible();
+});
+
+test("runs ! and !! shell commands without losing the composer", async () => {
+  test.skip(!hasBash, "bash is not on PATH");
+  app = await launchFakeApp();
+  const composer = await startSession(app);
+
+  await composer.fill("!echo shell-e2e-ok");
+  await composer.press("Enter");
+  await expect(app.window.getByText("shell-e2e-ok")).toBeVisible({ timeout: 30_000 });
+
+  await composer.fill("!!echo excluded-e2e-ok");
+  await composer.press("Enter");
+  await expect(app.window.getByText("excluded-e2e-ok")).toBeVisible({ timeout: 30_000 });
+  await expect(composer).toHaveValue("");
 });
 
 test("@smoke aborts a running reply and returns the session to idle", async () => {

@@ -27,6 +27,7 @@ import { WebTabView } from "../web/WebTabView";
 import { createCommandProvider } from "../completion/command-source";
 import { createDocumentProvider } from "../completion/document-source";
 import { createFileProvider } from "../completion/file-source";
+import { createShellProvider } from "../completion/shell-source";
 import { documentMentionsForHost } from "../../../shared/office-documents";
 import { createCompletionProvider } from "../completion/stack";
 import type { CompletionItem, CompletionSuggestions } from "../completion/types";
@@ -240,6 +241,7 @@ export function SessionView() {
             completeAppCommandArguments(activeTabId ?? "", request.name, request.prefix),
         }),
         file: createFileProvider({ loadFiles: () => loadFiles(activeTabId ?? "") }),
+        shell: createShellProvider({ loadFiles: () => loadFiles(activeTabId ?? "") }),
         document: createDocumentProvider(documentMentionSource),
         extension: activeTabId
           ? {

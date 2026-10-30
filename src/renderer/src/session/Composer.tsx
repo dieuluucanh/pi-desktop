@@ -253,6 +253,7 @@ export function Composer({
 
   const queued = [...queue.steering, ...queue.followUp];
   const bashMode = draft.trimStart().startsWith("!");
+  const shellExcluded = draft.trimStart().startsWith("!!");
   const registerPaste = useAppStore((state) => state.registerPaste);
   const pasteBodies = useAppStore((state) => state.pasteBodies[tabId]);
   // A marker restored from a previous launch has no body: say so, because the
@@ -472,6 +473,17 @@ export function Composer({
         </span>
       ) : null}
 
+      {bashMode ? (
+        <p
+          data-testid="composer-shell-mode"
+          role="status"
+          aria-live="polite"
+          className="mb-1 text-[11px] text-warn"
+        >
+          shell · {shellExcluded ? "output excluded from model" : "output kept in context"}
+        </p>
+      ) : null}
+
       {lostMarkers.length > 0 ? (
         <p className="mb-1 text-[11px] text-warn" data-testid="paste-content-lost">
           Paste content for {lostMarkers.map((id) => `#${id}`).join(", ")} is no longer in memory
@@ -507,7 +519,7 @@ export function Composer({
           value={draft}
           placeholder={
             bashMode
-              ? "Shell command — ! keeps context, !! excludes it…"
+              ? "Shell command — runs in this folder; !! keeps output out of model context…"
               : sleeping && enabled
                 ? "This session is asleep — type or press Tab to wake it…"
                 : enabled
@@ -818,6 +830,13 @@ export function Composer({
         <div className="flex min-w-0 shrink items-center gap-3 overflow-hidden">
           <span className="shrink-0">
             <span className="font-mono">/</span> commands
+          </span>
+          <span
+            className="shrink-0"
+            data-testid="composer-shell-hint"
+            title="Run a shell command in this folder. Use !! to keep its output out of model context."
+          >
+            <span className="font-mono">!</span> shell
           </span>
           <span className="shrink-0">
             <span className="font-mono">@</span> files

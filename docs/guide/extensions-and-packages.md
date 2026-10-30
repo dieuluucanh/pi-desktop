@@ -50,6 +50,11 @@ The **Packages** section installs, updates, removes and pins Pi packages.
 A browsable gallery is a read-only link to <https://pi.dev/packages>; the app
 never installs from a feed silently.
 
+Pi Desktop already bundles its checkpoint extension, so `@dieulc/checkpoints` is
+only needed for terminal Pi. Installing it in a profile that already has the
+`~/.pi` clone copy would create two discovered copies; pick one. When an
+installed copy exists, Desktop uses it instead of the bundled one.
+
 ## Extension UI in the app
 
 Extensions see the desktop as a `tui` host and behave as they do in the

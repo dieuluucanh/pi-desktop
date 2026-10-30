@@ -311,7 +311,7 @@ describe("presentation", () => {
       note: null,
     };
     expect(checkpointLabel({ ...base, label: "my snapshot" })).toBe("my snapshot");
-    expect(checkpointLabel(base)).toBe("Before the agent's turn");
+    expect(checkpointLabel(base)).toBe("Before the prompt");
     expect(checkpointLabel({ ...base, kind: "manual" })).toBe("Manual snapshot");
     expect(checkpointLabel({ ...base, kind: "pre-op" })).toBe("Before a destructive action");
     expect(checkpointLabel({ ...base, kind: "pre-restore" })).toBe("Before a restore");

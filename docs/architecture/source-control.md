@@ -146,13 +146,13 @@ rewriting.
 
 ## Capture triggers
 
-| Trigger       | Who                                             | When                                                                                                                                                      |
-| ------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `run`         | the checkpoint extension, inside the agent loop | once per run, at its first `turn_start` — before the model edits anything                                                                                 |
-| `manual`      | the rail's _Snapshot now_                       | on click                                                                                                                                                  |
-| `pre-op`      | the git engine's `preOpSnapshot` port           | immediately before a discard or a branch switch; a failure aborts the action                                                                              |
-| `pre-restore` | the checkpoint service                          | immediately before a restore, or a `/rewind`                                                                                                              |
-| idle scan     | `src/main/checkpoint-service.ts`                | while an Office pane is attached, **in the Office host session's folder**, that folder is idle, its fingerprint changed, and `scanIntervalMs` has elapsed |
+| Trigger       | Who                                             | When                                                                                                                                                       |
+| ------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run`         | the checkpoint extension, inside the agent loop | once per user prompt at Pi's `input` event (steer/follow-up included), before the prompt is processed; a Pi <1.4 host falls back to the first `turn_start` |
+| `manual`      | the rail's _Snapshot now_                       | on click                                                                                                                                                   |
+| `pre-op`      | the git engine's `preOpSnapshot` port           | immediately before a discard or a branch switch; a failure aborts the action                                                                               |
+| `pre-restore` | the checkpoint service                          | immediately before a restore, or a `/rewind`                                                                                                               |
+| idle scan     | `src/main/checkpoint-service.ts`                | while an Office pane is attached, **in the Office host session's folder**, that folder is idle, its fingerprint changed, and `scanIntervalMs` has elapsed  |
 
 The idle scan exists because a tool hook cannot see Word save a document. Its
 fingerprint is a bounded `stat` walk (count, max mtime, total bytes), not a
@@ -262,10 +262,19 @@ _Before the fork_ chips carry the session linkage instead.
 
 ## The host-side extension
 
-`src/extensions/pi-checkpoints.ts` is a normal Pi extension with two load paths:
+`src/extensions/pi-checkpoints.ts` is a normal Pi extension with one source and
+three load paths:
 
-- **automatic** — `additionalExtensionPaths` on the host's resource loader;
-- **manual** — `pi install path:<repo>/dist/pi-checkpoints`.
+- **bundled** — `additionalExtensionPaths` on the host's resource loader;
+- **profile clone** — `<profile>/extensions/checkpoints/index.mjs`, discovered by Pi;
+- **npm package** — `<profile>/npm/node_modules/@dieulc/checkpoints`, discovered by Pi.
+
+The host resolves **profile → npm → bundled** (`src/host/checkpoint-extension.ts`)
+and only passes the bundled path through `additionalExtensionPaths`. An installed
+copy therefore wins, and the bundled copy never loads alongside it. The npm
+package is `@dieulc/checkpoints`; the unscoped `pi-checkpoints` name belongs to
+another author. Development can still use
+`npm run build:extension && pi install path:<repo>/dist/pi-checkpoints`.
 
 ### Safe mode does not disable `additionalExtensionPaths`
 
@@ -285,9 +294,10 @@ the "zero third-party code" promise. `checkpointExtensionLoaderOptions` in
 `src/host/safe-mode.ts` makes the two branches mutually exclusive, and
 `tests/host/safe-mode.test.ts` asserts both **as values**.
 
-The host reports `capabilities.checkpointsExtension` on `host.hello`; a stale host
-answers nothing, which the rail reads as "run snapshots are unavailable" (never as
-silence).
+The host reports `capabilities.checkpointsExtension` and
+`capabilities.checkpointExtensionSource` (`profile`, `package`, `bundled`, or
+null) on `host.hello`; a stale host answers nothing, which the rail reads as
+"automatic snapshots are unavailable" (never as silence).
 
 ### Structural types, not an SDK import
 

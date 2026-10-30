@@ -270,7 +270,7 @@ src/renderer/src/menu-actions.ts  what each command does today
 src/renderer/src/state/app-store.ts  view state (zustand)
 src/git/*                     the git engine: runner, repo, status, diff, service
 src/checkpoints/*             the shadow-repo engine, its Node fs adapter and config
-src/extensions/*              the app's own Pi extension (run snapshots + /rewind)
+src/extensions/*              the app's own Pi extension (prompt snapshots + /rewind)
 src/renderer/src/layout/*      TitleBar, Sidebar, TabStrip, StatusBar, CommandPalette, RightRail
 src/renderer/src/rail/*       the docked panel rail: RightRail (host), RailStrip (the
                              always-visible menu column), the three menu bodies

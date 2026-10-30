@@ -68,6 +68,10 @@ The composer is a plain text area with Pi’s autocomplete contract:
   queue-mode change applies to open sessions without a reload.
 - `!command` runs a shell command in the session folder (streamed into the
   transcript, `Esc` cancels it); `!!command` keeps it out of the model's context.
+  The composer shows a **shell** chip and a `! shell` hint, and completes
+  workspace paths after the command word. Commands are non-interactive: `git
+status`, `git add`, `git push -u origin main` work with configured credentials,
+  but a password/TUI prompt needs a real terminal.
 - A large paste collapses to `[paste #1 +240 lines]`; the body stays in memory
   and is expanded when sent. After a restart the marker says its content is lost
   rather than sending the token.

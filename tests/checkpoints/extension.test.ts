@@ -6,6 +6,7 @@ import checkpointExtension, {
   CHECKPOINT_ENTRY_TYPE,
   MAX_TRACKED_CHECKPOINTS,
   parseCheckpointEntry,
+  promptLabel,
   promptSnippet,
   relativeLabel,
   sweepOldShadowRepos,
@@ -61,7 +62,8 @@ interface Harness {
   editorTexts: string[];
   /** Fires one event the way Pi would. */
   fire(
-    event: "session_start" | "agent_start" | "turn_start" | "turn_end",
+    event:
+      "session_start" | "input" | "turn_start" | "turn_end" | "agent_settled" | "session_shutdown",
     payload?: unknown,
   ): Promise<void>;
   fireFork(entryId: string): Promise<unknown>;
@@ -317,43 +319,77 @@ describe("session_start", () => {
   });
 });
 
-describe("the run snapshot", () => {
-  it("takes exactly one snapshot for a two-turn run", async () => {
-    const h = harness({ entries: [userMessage("add a chart to the report")] });
+describe("the prompt snapshot", () => {
+  it("takes one snapshot per prompt, not per turn", async () => {
+    const h = harness();
     await h.fire("session_start", { reason: "new" });
-    await h.fire("agent_start");
+
+    await h.fire("input", { text: "first prompt", source: "rpc" });
     await h.fire("turn_start");
     await h.fire("turn_end", { messageEntryId: "e1" });
-    // A second turn in the same run: no second snapshot.
+
+    await h.fire("input", { text: "second prompt", source: "rpc" });
     await h.fire("turn_start");
     await h.fire("turn_end", { messageEntryId: "e2" });
 
-    expect(h.store.snapshots).toHaveLength(1);
-    expect(h.store.snapshots[0]).toMatchObject({ kind: "run" });
-    // The prompt is the label, so the timeline row says what the run was for.
-    expect(h.store.snapshots[0]?.label).toBe("add a chart to the report");
+    expect(h.store.snapshots).toHaveLength(2);
+    expect(h.store.snapshots.map((request) => request.label)).toEqual([
+      "first prompt",
+      "second prompt",
+    ]);
+    expect(h.appended.map((entry) => (entry.data as CheckpointEntryData).entryId)).toEqual([
+      "e1",
+      "e2",
+    ]);
   });
 
-  it("does not duplicate the entry when a retry re-fires agent_start", async () => {
-    const h = harness({ entries: [userMessage("do it")] });
+  it("links the oldest pending snapshot when a steer arrives before the turn ends", async () => {
+    const h = harness();
     await h.fire("session_start", { reason: "new" });
-    await h.fire("agent_start");
-    await h.fire("turn_start");
+    await h.fire("input", { text: "original", source: "rpc" });
+    await h.fire("input", { text: "steer", source: "rpc", streamingBehavior: "steer" });
     await h.fire("turn_end", { messageEntryId: "e1" });
+    await h.fire("turn_end", { messageEntryId: "e2" });
 
-    // Retry: the same message entry comes back.
-    await h.fire("agent_start");
-    await h.fire("turn_start");
+    expect(h.appended).toHaveLength(2);
+    expect((h.appended[0]?.data as CheckpointEntryData).prompt).toBe("original");
+    expect((h.appended[1]?.data as CheckpointEntryData).prompt).toBe("steer");
+  });
+
+  it("records a prompt that never got a turn as unlinked at agent_settled", async () => {
+    const h = harness();
+    await h.fire("session_start", { reason: "new" });
+    await h.fire("input", { text: "queued", source: "rpc" });
+    await h.fire("agent_settled", { aborted: false });
+
+    expect(h.appended).toHaveLength(1);
+    expect(h.appended[0]?.data).toMatchObject({ entryId: null, prompt: "queued" });
+  });
+
+  it("flushes a rejected prompt on session_shutdown", async () => {
+    const h = harness();
+    await h.fire("session_start", { reason: "new" });
+    await h.fire("input", { text: "rejected", source: "rpc" });
+    await h.fire("session_shutdown");
+
+    expect(h.appended).toHaveLength(1);
+    expect(h.appended[0]?.data).toMatchObject({ entryId: null, prompt: "rejected" });
+  });
+
+  it("does not duplicate the entry when a retry returns the same message entry", async () => {
+    const h = harness();
+    await h.fire("session_start", { reason: "new" });
+    await h.fire("input", { text: "do it", source: "rpc" });
+    await h.fire("turn_end", { messageEntryId: "e1" });
     await h.fire("turn_end", { messageEntryId: "e1" });
 
     expect(h.appended).toHaveLength(1);
   });
 
   it("appends the durable entry under the documented custom type", async () => {
-    const h = harness({ entries: [userMessage("ship it")] });
+    const h = harness();
     await h.fire("session_start", { reason: "new" });
-    await h.fire("agent_start");
-    await h.fire("turn_start");
+    await h.fire("input", { text: "ship it", source: "rpc" });
     await h.fire("turn_end", { messageEntryId: "e9" });
 
     expect(h.appended).toHaveLength(1);
@@ -367,46 +403,60 @@ describe("the run snapshot", () => {
     });
   });
 
-  it("respects the disabled switch and never touches the store", async () => {
-    const h = harness({ config: { enabled: false }, entries: [userMessage("x")] });
+  it("skips extension-originated input", async () => {
+    const h = harness();
     await h.fire("session_start", { reason: "new" });
-    await h.fire("agent_start");
-    await h.fire("turn_start");
+    await h.fire("input", { text: "background note", source: "extension" });
+    expect(h.store.snapshots).toEqual([]);
+  });
+
+  it("respects the disabled switch and never touches the store", async () => {
+    const h = harness({ config: { enabled: false } });
+    await h.fire("session_start", { reason: "new" });
+    await h.fire("input", { text: "x", source: "rpc" });
     await h.fire("turn_end", { messageEntryId: "e1" });
     expect(h.store.snapshots).toEqual([]);
     expect(h.appended).toEqual([]);
   });
 
-  it("treats same_tree as normal (nothing to record)", async () => {
-    const h = harness({
-      entries: [userMessage("x")],
-      snapshot: () => ({ ok: false, reason: "same_tree" }),
-    });
+  it("treats same_tree as normal and stays silent", async () => {
+    const h = harness({ snapshot: () => ({ ok: false, reason: "same_tree" }) });
     await h.fire("session_start", { reason: "new" });
-    await h.fire("agent_start");
-    await h.fire("turn_start");
+    await h.fire("input", { text: "x", source: "rpc" });
     await h.fire("turn_end", { messageEntryId: "e1" });
     expect(h.appended).toEqual([]);
     expect(h.notifications).toEqual([]);
   });
 
-  it("warns about a real failure instead of throwing", async () => {
+  it("reports a real failure once instead of throwing on every prompt", async () => {
     const h = harness({
-      entries: [userMessage("x")],
       snapshot: () => ({ ok: false, reason: "git_failed", detail: "index.lock" }),
     });
     await h.fire("session_start", { reason: "new" });
-    await h.fire("agent_start");
-    await h.fire("turn_start");
-    expect(h.notifications.at(-1)?.message).toContain("index.lock");
+    await h.fire("input", { text: "one", source: "rpc" });
+    await h.fire("input", { text: "two", source: "rpc" });
+    expect(h.notifications).toHaveLength(1);
+    expect(h.notifications[0]?.message).toContain("index.lock");
   });
 
-  it("does nothing when a turn starts without an armed run", async () => {
-    const h = harness({ entries: [userMessage("x")] });
+  it("keeps a turn_start fallback for hosts without the input event", async () => {
+    const h = harness({ entries: [userMessage("legacy prompt")] });
     await h.fire("session_start", { reason: "new" });
     await h.fire("turn_start");
     await h.fire("turn_end", { messageEntryId: "e1" });
-    expect(h.store.snapshots).toEqual([]);
+
+    expect(h.store.snapshots).toHaveLength(1);
+    expect(h.store.snapshots[0]?.label).toBe("legacy prompt");
+    expect((h.appended[0]?.data as CheckpointEntryData).entryId).toBe("e1");
+  });
+
+  it("does not take a second fallback snapshot once input is supported", async () => {
+    const h = harness({ entries: [userMessage("not used")] });
+    await h.fire("session_start", { reason: "new" });
+    await h.fire("input", { text: "modern", source: "rpc" });
+    await h.fire("turn_start");
+    await h.fire("turn_end", { messageEntryId: "e1" });
+    expect(h.store.snapshots).toHaveLength(1);
   });
 
   it("keeps the in-memory list bounded", async () => {
@@ -505,11 +555,29 @@ describe("/rewind", () => {
   it("rehydrates before listing, so an entry appended this turn is offered", async () => {
     const h = harness({ entries: [userMessage("go")] });
     await h.fire("session_start", { reason: "new" });
-    await h.fire("agent_start");
-    await h.fire("turn_start");
+    await h.fire("input", { text: "go", source: "rpc" });
     await h.fire("turn_end", { messageEntryId: "e1" });
     await h.rewind({});
     expect(h.labels()[0]).toContain("aaaaaaa");
+  });
+
+  it("offers only Files only for an unlinked prompt", async () => {
+    const data: CheckpointEntryData = {
+      entryId: null,
+      ref: "9".repeat(40),
+      prompt: "queued prompt",
+      createdAt: NOW - 1000,
+      kind: "run",
+    };
+    const h = harness({
+      entries: [{ type: "custom", customType: CHECKPOINT_ENTRY_TYPE, data }],
+    });
+    await h.fire("session_start", { reason: "resume" });
+    await h.rewind({});
+
+    expect(h.labels()[0]).toContain("queued prompt");
+    expect(h.store.restores).toHaveLength(1);
+    expect(h.navigations).toEqual([]);
   });
 });
 
@@ -525,6 +593,8 @@ describe("pure helpers", () => {
 
   it("collapses whitespace so a multi-line prompt fits one row", () => {
     expect(promptSnippet([userMessage("  add a\n chart  ")])).toBe("add a chart");
+    expect(promptLabel("  add a\n chart  ")).toBe("add a chart");
+    expect(promptLabel("x".repeat(200))).toHaveLength(120);
   });
 
   it("parses a well-formed entry and rejects everything else", () => {
@@ -539,7 +609,11 @@ describe("pure helpers", () => {
     ).toMatchObject({ entryId: "e1", kind: "run" });
     expect(parseCheckpointEntry(null)).toBeNull();
     expect(parseCheckpointEntry({ entryId: "e1", ref: "short" })).toBeNull();
-    expect(parseCheckpointEntry({ ref: "a".repeat(40) })).toBeNull();
+    // An entry without a turn id is an unlinked prompt, not malformed.
+    expect(parseCheckpointEntry({ ref: "a".repeat(40) })).toMatchObject({ entryId: null });
+    expect(parseCheckpointEntry({ entryId: null, ref: "a".repeat(40) })).toMatchObject({
+      entryId: null,
+    });
   });
 
   it("defaults an unknown kind instead of dropping the entry", () => {

@@ -26,6 +26,7 @@
     "build": "npm run build:host && electron-vite build",
     "build:host": "vite build --config vite.host.config.ts",
     "build:extension": "node scripts/build-extension.mjs",
+    "sync:extension": "node scripts/sync-extension.mjs",
     "preview": "electron-vite preview",
     "typecheck": "npm run typecheck:node && npm run typecheck:web && npm run typecheck:e2e",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",

@@ -13,7 +13,7 @@
 
 /** Why a snapshot was taken. */
 export type CheckpointKind =
-  /** Automatically, once per agent run, before the first edit. */
+  /** Automatically, once per user prompt, before the prompt is processed. */
   | "run"
   /** The user pressed "Snapshot now". */
   | "manual"
@@ -392,7 +392,7 @@ export function checkpointLabel(checkpoint: Checkpoint): string {
   if (label.length > 0) return label;
   switch (checkpoint.kind) {
     case "run":
-      return "Before the agent's turn";
+      return "Before the prompt";
     case "manual":
       return "Manual snapshot";
     case "pre-op":
@@ -413,7 +413,7 @@ export type CheckpointUnavailableReason =
   | "git_missing"
   /** The config projection says disabled. */
   | "disabled"
-  /** Safe mode: manual snapshots work, run snapshots come from a host extension. */
+  /** Safe mode: manual snapshots work, automatic prompt snapshots do not. */
   | "safe_mode"
   /** The shadow repo was created for a different folder (a copied profile). */
   | "work_tree_mismatch"
@@ -633,7 +633,7 @@ function describeUnavailableFallback(reason: CheckpointUnavailableReason): strin
     case "disabled":
       return "Checkpoints are turned off in Settings.";
     case "safe_mode":
-      return "Run snapshots are off in safe mode. Manual snapshots still work.";
+      return "Automatic snapshots are off in safe mode. Manual snapshots still work.";
     case "work_tree_mismatch":
       return "These checkpoints were taken in a different folder; refusing to touch this one.";
     case "unavailable":

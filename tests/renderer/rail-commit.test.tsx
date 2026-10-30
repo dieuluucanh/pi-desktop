@@ -589,3 +589,43 @@ describe("the compact composer", () => {
     expect(screen.getByRole("button", { name: "Stage all and commit" })).toBeInTheDocument();
   });
 });
+
+describe("option row alignment", () => {
+  async function openOptions(): Promise<void> {
+    await userEvent.click(screen.getByRole("button", { name: "Commit options" }));
+  }
+
+  it("gives every row the same fixed leading slot", async () => {
+    render(<CommitBox projectPath={PROJECT} />);
+    await openOptions();
+
+    const rows = screen.getAllByTestId("rail-menu-item");
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.getAttribute("data-rail-menu-kind")).toMatch(/^(check|action)$/);
+      // The first child is the indicator slot; the second is the label. Both
+      // rows share this structure, which is what aligns their text.
+      const slot = row.firstElementChild;
+      expect(slot).toHaveAttribute("aria-hidden", "true");
+      expect(slot?.className).toMatch(/size-3\.5/);
+      expect(slot?.nextElementSibling?.textContent).toBe(row.textContent);
+    }
+  });
+
+  it("draws the check only when amend is on", async () => {
+    seed(STAGED, "old message");
+    render(<CommitBox projectPath={PROJECT} />);
+    await openOptions();
+
+    const before = screen.getByRole("menuitemcheckbox", { name: "Amend last commit" });
+    expect(before.querySelector("svg")).toBeNull();
+
+    await userEvent.click(before);
+    await waitFor(() => expect(screen.getByLabelText("Commit message")).toHaveValue("old message"));
+    await openOptions();
+
+    const after = screen.getByRole("menuitemcheckbox", { name: "Amend last commit" });
+    expect(after.querySelector("svg")).not.toBeNull();
+    expect(after).toHaveAttribute("aria-checked", "true");
+  });
+});

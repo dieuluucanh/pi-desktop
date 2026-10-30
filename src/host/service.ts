@@ -68,6 +68,8 @@ export interface HostServiceInfo {
 export interface HostCapabilities {
   /** The checkpoint extension was loaded (never true in safe mode). */
   checkpointsExtension: boolean;
+  /** Which copy was found: a profile clone, npm package, or the app bundle. */
+  checkpointExtensionSource?: "profile" | "package" | "bundled" | null;
 }
 
 export interface HostServiceOptions {

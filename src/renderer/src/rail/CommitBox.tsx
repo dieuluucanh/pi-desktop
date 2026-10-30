@@ -33,6 +33,7 @@ import { toast } from "sonner";
 import { Ellipsis } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { RailMenuItem } from "./RailMenuItem";
 import { useAppStore } from "../state/app-store";
 import {
   commitBlockedNotice,
@@ -213,44 +214,23 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
           role="menu"
           data-testid="commit-options"
         >
-          <button
-            type="button"
+          <RailMenuItem
             role="menuitemcheckbox"
-            aria-checked={amend}
-            aria-label="Amend last commit"
-            className="flex items-center gap-1.5 rounded-xs px-1 py-0.5 text-left text-[11px] hover:bg-raised"
-            onClick={() => void onAmendChange(!amend)}
+            checked={amend}
+            ariaLabel="Amend last commit"
+            onSelect={() => void onAmendChange(!amend)}
           >
-            <span aria-hidden className="w-3">
-              {amend ? "✓" : ""}
-            </span>
             Amend last commit
-          </button>
-          {identity ? (
-            <button
-              type="button"
-              role="menuitem"
-              className="rounded-xs px-1 py-0.5 text-left text-[11px] hover:bg-raised"
-              onClick={() => {
-                setOptionsOpen(false);
-                setIdentityOpen(true);
-              }}
-            >
-              Change identity
-            </button>
-          ) : (
-            <button
-              type="button"
-              role="menuitem"
-              className="rounded-xs px-1 py-0.5 text-left text-[11px] hover:bg-raised"
-              onClick={() => {
-                setOptionsOpen(false);
-                setIdentityOpen(true);
-              }}
-            >
-              Set identity
-            </button>
-          )}
+          </RailMenuItem>
+          <RailMenuItem
+            ariaLabel={identity ? "Change identity" : "Set identity"}
+            onSelect={() => {
+              setOptionsOpen(false);
+              setIdentityOpen(true);
+            }}
+          >
+            {identity ? "Change identity" : "Set identity"}
+          </RailMenuItem>
           {/* Amend is a mode, not a one-shot: the button below reads "Amend commit"
               while it is on, and the list says so when it is. */}
         </div>

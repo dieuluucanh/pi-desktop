@@ -67,6 +67,18 @@ resource. The window shows a safe-mode banner.
 - A closed tab mid-run leaves no orphan process: hosts are owned by the main
   process and stopped on close and on quit.
 
+## A `!` shell command did not run
+
+- `!command` and `!!command` are executed by the host through the same Bash Pi
+  uses; they are not an interactive terminal. Commands that need a password, an
+  editor or another TTY prompt belong in a real terminal. `git push` works when
+  git's credential helper or SSH agent is already configured.
+- A session host older than the app can fail with a `_bashAbortControllers` /
+  `_bashAbortController` message. Restart the session tab or the app; current
+  builds call the SDK method with its session receiver.
+- `!` needs Bash on `PATH` (Git Bash on Windows). If Bash or `git` is missing,
+  the app reports it rather than hanging. `Esc` cancels a running command.
+
 ## Slash-command suggestions stopped working after a host edit
 
 Extension sub-commands (`/profile `, `/commit-policy `, `/write-policy `) are

@@ -233,8 +233,8 @@ export function CheckpointsSection({ projectPath, entryIds }: CheckpointsSection
 
       {runOff ? (
         <p className="px-3 py-1 text-[11px] text-ink-faint" data-testid="checkpoints-run-off">
-          Run snapshots are unavailable — safe mode is on, or the session host is older than this
-          build. Manual snapshots still work.
+          Automatic snapshots are unavailable — safe mode is on, or the session host is older than
+          this build. Manual snapshots still work.
         </p>
       ) : null}
 
@@ -253,8 +253,8 @@ export function CheckpointsSection({ projectPath, entryIds }: CheckpointsSection
 
       {state.checkpoints.length === 0 ? (
         <p className="px-3 py-2 text-[11px] text-ink-faint" data-testid="checkpoints-empty">
-          No checkpoints yet. One is taken automatically before each agent run, and you can take one
-          at any time.
+          No checkpoints yet. One is taken automatically before each prompt, and you can take one at
+          any time.
         </p>
       ) : (
         <ul className="flex flex-col">

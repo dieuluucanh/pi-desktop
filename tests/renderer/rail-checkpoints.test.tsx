@@ -97,7 +97,7 @@ beforeEach(() => {
 
 describe("presentation helpers", () => {
   it("labels every kind", () => {
-    expect(KIND_LABELS.run).toBe("Run");
+    expect(KIND_LABELS.run).toBe("Prompt");
     expect(KIND_LABELS["pre-restore"]).toBe("Restore");
   });
 
@@ -115,7 +115,7 @@ describe("presentation helpers", () => {
   });
 
   it("falls back to the kind's sentence when a label is blank", () => {
-    expect(checkpointTitle(checkpoint({ label: "" }))).toBe("Before the agent's turn");
+    expect(checkpointTitle(checkpoint({ label: "" }))).toBe("Before the prompt");
     expect(checkpointTitle(checkpoint({ label: "Named", kind: "manual" }))).toBe("Named");
   });
 
@@ -162,7 +162,7 @@ describe("timeline", () => {
 
   it("shows the kind chip and the detail line", () => {
     render(<CheckpointsSection projectPath={PROJECT} />);
-    expect(screen.getByText("Run")).toBeTruthy();
+    expect(screen.getByText("Prompt")).toBeTruthy();
     expect(screen.getByTestId("checkpoint-detail").textContent).toContain("3 files");
   });
 

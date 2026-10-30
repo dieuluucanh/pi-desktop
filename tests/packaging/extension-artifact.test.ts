@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { beforeAll, describe, expect, it } from "vitest";
+import { CHECKPOINT_EXTENSION_PACKAGE_NAME } from "../../src/shared/checkpoint-extension";
 
 /**
  * The terminal-Pi artifact (git-checkpoint plan step 26).
@@ -73,7 +74,7 @@ describe("the built artifact", () => {
       private?: boolean;
       pi?: { extensions?: unknown };
     };
-    expect(manifest.name).toBe("pi-checkpoints");
+    expect(manifest.name).toBe(CHECKPOINT_EXTENSION_PACKAGE_NAME);
     // `readPiManifest` (and Pi itself) reads exactly this field.
     expect(manifest.pi?.extensions).toEqual(["./index.mjs"]);
     // Not publishable by accident: publication is a separate release decision.
@@ -91,6 +92,7 @@ describe("the built artifact", () => {
   it("documents the install command", async () => {
     const readme = await readFile(join(outDir, "README.md"), "utf8");
     expect(readme).toContain("pi install path:");
+    expect(readme).toContain("pi install npm:@dieulc/checkpoints");
     // The one caveat a user must know before installing.
     expect(readme).toMatch(/git/);
   });

@@ -12,6 +12,8 @@ import type { CommandRunner } from "../../src/host/commands";
 
 interface TestSession {
   prompt: Mock<(text: string, options?: unknown) => Promise<void>>;
+  steer: Mock<(text: string, images?: unknown, options?: unknown) => Promise<void>>;
+  followUp: Mock<(text: string, images?: unknown, options?: unknown) => Promise<void>>;
   setModel: Mock<(model: unknown, options?: unknown) => Promise<void>>;
   cycleModel: Mock<(direction?: string, options?: unknown) => Promise<unknown>>;
   cycleThinkingLevel: Mock<(options?: unknown) => unknown>;
@@ -623,11 +625,23 @@ describe("queue modes and retry", () => {
 });
 
 describe("prompt semantics", () => {
-  it("passes images and streamingBehavior through", async () => {
+  it("passes images, streamingBehavior and the RPC source through", async () => {
     const { call, session } = await started();
     const images = [{ type: "image", data: "abc", mimeType: "image/png" }];
     await call("prompt", { text: "look", images, streamingBehavior: "steer" });
-    expect(session.prompt).toHaveBeenCalledWith("look", { images, streamingBehavior: "steer" });
+    expect(session.prompt).toHaveBeenCalledWith("look", {
+      images,
+      streamingBehavior: "steer",
+      source: "rpc",
+    });
+  });
+
+  it("labels steer and follow-up queueing as RPC input", async () => {
+    const { call, session } = await started();
+    await call("steer", { text: "change course" });
+    await call("followUp", { text: "after this" });
+    expect(session.steer).toHaveBeenCalledWith("change course", undefined, { source: "rpc" });
+    expect(session.followUp).toHaveBeenCalledWith("after this", undefined, { source: "rpc" });
   });
 
   it("refuses a plain prompt while streaming, exactly like Pi's RPC mode", async () => {
@@ -725,7 +739,8 @@ describe("prompt ack + prompt origins (2026-10-26 composer plan)", () => {
     expect(resolved).toBe(false);
     release();
     await expect(pending).resolves.toMatchObject({ sessionId: "s1" });
-    expect(prompt.mock.calls[0]?.[1]).toBeUndefined();
+    // The source is always labelled, even without ack or streaming behavior.
+    expect(prompt.mock.calls[0]?.[1]).toMatchObject({ source: "rpc" });
   });
 
   it("tags a template expansion with the raw command and keeps the message untouched", async () => {
@@ -913,6 +928,25 @@ describe("bash mode (plan step 7)", () => {
       })),
     };
   }
+
+  it("keeps the session receiver when executeBash is a class-style method", async () => {
+    const calls: string[] = [];
+    const executeBash = async function (this: { bashReceiverMarker?: string }, command: string) {
+      // Mirrors the SDK: a detached call would make `this` undefined here.
+      if (this?.bashReceiverMarker !== "session") throw new Error("lost the session receiver");
+      calls.push(command);
+      return { output: "receiver-ok\n", exitCode: 0, cancelled: false, truncated: false };
+    };
+    const context = await started({ bashReceiverMarker: "session", executeBash });
+
+    await expect(context.call("bash.run", { command: "pwd" })).resolves.toMatchObject({
+      result: { output: "receiver-ok\n" },
+    });
+    await expect(
+      context.call("bash.run", { command: "ls", ack: "started" }),
+    ).resolves.toMatchObject({ started: true });
+    expect(calls).toEqual(["pwd", "ls"]);
+  });
 
   it("emits message_start before executeBash, then the final message_end", async () => {
     const order: string[] = [];

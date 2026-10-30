@@ -75,8 +75,8 @@ export type PiPayload = object;
 export interface HostSession extends SessionStateLike {
   subscribe?(listener: (event: { type: string; [key: string]: unknown }) => void): () => void;
   prompt(text: string, options?: unknown): Promise<void>;
-  steer?(text: string): Promise<unknown>;
-  followUp?(text: string): Promise<unknown>;
+  steer?(text: string, images?: unknown, options?: { source?: string }): Promise<unknown>;
+  followUp?(text: string, images?: unknown, options?: { source?: string }): Promise<unknown>;
   abort?(): Promise<void>;
   clearQueue?(): ClearedQueue;
   executeBash?(
@@ -973,6 +973,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const options: Record<string, unknown> = {
         ...(input.images ? { images: input.images } : {}),
         ...(behavior ? { streamingBehavior: behavior } : {}),
+        // Pi's RPC mode labels prompts this way; the checkpoint extension uses
+        // it to distinguish user input from extension-originated messages.
+        source: "rpc",
       };
       if (input.ack === "preflight") {
         return await new Promise<unknown>((resolve, reject) => {
@@ -1026,7 +1029,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const current = ensure();
       const text = requireString(asRecord(params).text, "text");
       if (!current.steer) throw new SessionCoreError("steering is not supported", "unsupported");
-      await current.steer(text);
+      await current.steer(text, undefined, { source: "rpc" });
       return { queued: true };
     },
 
@@ -1035,7 +1038,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const text = requireString(asRecord(params).text, "text");
       if (!current.followUp)
         throw new SessionCoreError("follow-up is not supported", "unsupported");
-      await current.followUp(text);
+      await current.followUp(text, undefined, { source: "rpc" });
       return { queued: true };
     },
 
@@ -1509,6 +1512,12 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       if (!executeBash) {
         throw new SessionCoreError("running bash is not supported", "unsupported");
       }
+      // `AgentSession.executeBash` is a class method that reads
+      // `this._bashAbortControllers`; extracting it and calling it bare made
+      // `this` undefined (the `!`/`!!` error). Keep the receiver explicitly so
+      // a later "cleanup" cannot reintroduce the failure.
+      const runBash: typeof executeBash = (command, onChunk, options) =>
+        executeBash.call(current, command, onChunk, options);
       // Terminal Pi refuses a second command while one runs (`interactive-mode`
       // checks `session.isBashRunning`); the run is not queued, so a double
       // submit must say so instead of racing two shells.
@@ -1588,7 +1597,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         }
         let execution: Promise<BashResultLike>;
         try {
-          execution = executeBash(command, undefined, {
+          execution = runBash(command, undefined, {
             excludeFromContext,
             id,
             ...(outcome.operations === undefined ? {} : { operations: outcome.operations }),
@@ -1607,7 +1616,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       try {
         const result: BashResultLike =
           outcome.result ??
-          (await executeBash(command, undefined, {
+          (await runBash(command, undefined, {
             excludeFromContext,
             id,
             ...(outcome.operations === undefined ? {} : { operations: outcome.operations }),

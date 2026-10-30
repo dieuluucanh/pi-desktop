@@ -17,6 +17,7 @@ import {
   isHostRole,
   type HostRole,
 } from "../shared/host-protocol";
+import { resolveCheckpointExtension } from "./checkpoint-extension";
 import { createControlCore } from "./control-core";
 import { createExtensionRendererRegistry } from "./extension-renderers";
 import { createExtensionUiBridge, createExtensionUiPort } from "./extension-ui";
@@ -435,10 +436,17 @@ export function runService(
         : null;
 
     // Resolved before the core is built: safe mode ignores it entirely, and the
-    // capability reported on `host.hello` is exactly "the extension was found".
-    const checkpointExtensionPath = safeMode
-      ? null
-      : resolveCheckpointExtensionPath(import.meta.url, extensionFileExists);
+    // capability reported on `host.hello` says which copy was found. A profile
+    // clone or npm install wins over the bundled fallback; only the bundled
+    // copy is passed through `additionalExtensionPaths` (the other two are
+    // discovered by Pi's loader).
+    const checkpointExtension = resolveCheckpointExtension({
+      hostModuleUrl: import.meta.url,
+      agentDir,
+      exists: extensionFileExists,
+      ...(safeMode ? { safeMode: true } : {}),
+    });
+    const checkpointExtensionPath = checkpointExtension.path;
 
     const core =
       providerPort && customProviderStore
@@ -459,7 +467,9 @@ export function runService(
             // Safe mode never even resolves the path: the loader-options helper
             // would ignore it, and reporting the capability as true would be a
             // lie the rail then acts on.
-            ...(safeMode ? {} : { checkpointsExtensionPath: checkpointExtensionPath }),
+            ...(safeMode || checkpointExtensionPath === null
+              ? {}
+              : { checkpointsExtensionPath: checkpointExtensionPath }),
             ...(npmCommand ? { npmCommand } : {}),
             ...(bindSession ? { bindSession } : {}),
             emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
@@ -514,7 +524,10 @@ export function runService(
         buildId: env[HOST_BUILD_ENV]?.trim() || null,
         // A stale host never reaches this line at all, so "false" here means
         // exactly what the rail reads it as (R9).
-        capabilities: { checkpointsExtension: checkpointExtensionPath !== null },
+        capabilities: {
+          checkpointsExtension: checkpointExtension.source !== null,
+          checkpointExtensionSource: checkpointExtension.source,
+        },
       },
       onShutdown: () => {
         service.stop();

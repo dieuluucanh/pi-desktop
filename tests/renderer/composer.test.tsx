@@ -41,6 +41,7 @@ function renderComposer(overrides: Partial<Parameters<typeof Composer>[0]> = {})
   };
   const rendered = render(<Composer {...props} />);
   return {
+    props,
     onSend,
     onStop,
     onClearQueue,
@@ -595,5 +596,29 @@ describe("caret readout", () => {
     // findable in a dark buffer (plan step 1).
     renderComposer();
     expect(screen.getByLabelText("Prompt")).toHaveClass("caret-accent");
+  });
+});
+
+describe("shell mode", () => {
+  it("names the mode and explains whether output stays in context", () => {
+    const { rerender, props } = renderComposer({ draft: "!git status" });
+    expect(screen.getByTestId("composer-shell-mode")).toHaveTextContent(
+      "shell · output kept in context",
+    );
+    expect(screen.getByTestId("composer-shell-hint")).toHaveTextContent("! shell");
+    expect(screen.getByLabelText("Prompt")).toHaveClass("border-warn");
+
+    rerender(<Composer {...props} draft="!!git status" />);
+    expect(screen.getByTestId("composer-shell-mode")).toHaveTextContent(
+      "shell · output excluded from model",
+    );
+  });
+
+  it("disappears when the shell prefix is removed", () => {
+    const { rerender, props } = renderComposer({ draft: "!pwd" });
+    expect(screen.getByTestId("composer-shell-mode")).toBeInTheDocument();
+
+    rerender(<Composer {...props} draft="pwd" />);
+    expect(screen.queryByTestId("composer-shell-mode")).not.toBeInTheDocument();
   });
 });

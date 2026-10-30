@@ -148,7 +148,7 @@ export function describeUnavailable(reason: CheckpointUnavailableReason): string
     case "disabled":
       return "Checkpoints are turned off in Settings.";
     case "safe_mode":
-      return "Run snapshots are off in safe mode. Manual snapshots still work.";
+      return "Automatic snapshots are off in safe mode. Manual snapshots still work.";
     case "work_tree_mismatch":
       return "These checkpoints were taken in a different folder; refusing to touch this one.";
     case "unavailable":

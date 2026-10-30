@@ -106,7 +106,7 @@ When they are taken:
 
 | Kind                        | When                                                                                                                                                   |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Run**                     | automatically, once per agent run, before the model edits anything (from a Pi extension)                                                               |
+| **Prompt (`run`)**          | automatically, once per user prompt, before it is processed (steer and follow-up included; from a Pi extension)                                        |
 | **Manual**                  | when you press _Snapshot now_                                                                                                                          |
 | **Safety (`pre-op`)**       | immediately before a discard or a branch switch — and if the snapshot fails, the action is refused                                                     |
 | **Restore (`pre-restore`)** | immediately before any restore, so the restore is undoable                                                                                             |
@@ -134,9 +134,10 @@ just before restoring. **Removing files created after the checkpoint is opt-in**
 
 - It is **not** a commit: nothing is staged, nothing enters your history, and no
   remote ever sees it.
-- It does **not** capture your conversation. A _run_ checkpoint records which
-  session entry it belongs to, and `/rewind` in terminal Pi can use that; the rail
-  only labels it.
+- It does **not** capture your conversation. A prompt checkpoint records which
+  turn it belongs to; `/rewind` in terminal Pi can use that. A prompt that never
+  got a turn is kept as an unlinked, files-only checkpoint. The rail only labels
+  the link.
 - It is **not** a backup: the bytes live on the same disk, in
   `<profile>/checkpoints/`.
 
@@ -156,27 +157,37 @@ copies.
 
 ## `/rewind` in terminal Pi
 
-The same extension ships as an installable package:
+Pi Desktop bundles the extension, so no install is needed there. Terminal Pi
+users install the published package:
 
 ```bash
-npm run build:extension            # in the Pi Desktop repository
-pi install path:<repo>/dist/pi-checkpoints
+pi install npm:@dieulc/checkpoints
 ```
 
+Update it with `pi update --extensions`; remove it with
+`pi remove npm:@dieulc/checkpoints`. A development checkout can use
+`npm run build:extension && pi install path:<repo>/dist/pi-checkpoints`.
+
+The host prefers an installed profile/npm copy over the bundled one, so the
+extension never loads twice. Pick **one** installed copy — the `~/.pi` clone or
+the npm package, not both.
+
 `/rewind` lists this session's checkpoints and offers **Files and conversation**,
-**Files only** or **Conversation only**. It takes a safety snapshot before
-restoring files, exactly as the rail does, and it reads the same shadow repository
-— so a checkpoint taken by the app appears in terminal Pi and vice versa.
+**Files only** or **Conversation only** (unlinked prompts are Files only). It
+takes a safety snapshot before restoring files, exactly as the rail does, and it
+reads the same shadow repository — so a checkpoint taken by the app appears in
+terminal Pi and vice versa.
 
 ## Safe mode
 
-Safe mode hard-disables the checkpoint extension, so **run** snapshots do not
-happen. Manual snapshots, the pre-op hook and restores still work, and the section
-says so. Safe mode's promise — zero third-party code loaded — is not weakened by
-the app's own extension.
+Safe mode hard-disables the checkpoint extension, so **automatic** snapshots do
+not happen. Manual snapshots, the pre-op hook and restores still work, and the
+section says so. Safe mode's promise — zero third-party code loaded — is not
+weakened by the app's own extension.
 
-A session whose host predates the extension reports that too (_run snapshots are
-unavailable_), rather than leaving you to wonder why no run checkpoints appear.
+A session whose host predates the extension reports that too (_automatic
+snapshots are unavailable_), rather than leaving you to wonder why no prompt
+checkpoints appear.
 
 ## Where the bytes live
 

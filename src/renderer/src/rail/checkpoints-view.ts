@@ -46,7 +46,7 @@ export function linkageLabel(linkage: CheckpointLinkage): string | null {
 
 /** The chip label for a checkpoint's kind. */
 export const KIND_LABELS: Record<CheckpointKind, string> = {
-  run: "Run",
+  run: "Prompt",
   manual: "Manual",
   "pre-op": "Safety",
   "pre-restore": "Restore",

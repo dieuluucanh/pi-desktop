@@ -189,8 +189,8 @@ export function CheckpointsSettingsCard() {
         {describeRetention(config)} · {formatBytes(config.maxBytesPerProject)} per folder.
       </p>
       <p className="text-xs text-ink-faint">
-        Run snapshots come from a Pi extension and are off in safe mode; manual snapshots and the
-        pre-action safety snapshots still work there.
+        Automatic snapshots come from a Pi extension and are off in safe mode; manual snapshots and
+        the pre-action safety snapshots still work there.
       </p>
     </section>
   );
