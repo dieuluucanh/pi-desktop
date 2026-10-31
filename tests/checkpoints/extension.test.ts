@@ -57,6 +57,7 @@ function checkpoint(overrides: Partial<Checkpoint> = {}): Checkpoint {
 
 interface Harness {
   api: CheckpointExtensionApi;
+  commands: Map<string, (args: string, ctx: CheckpointCommandContext) => Promise<void>>;
   store: CheckpointStore & { snapshots: SnapshotRequest[]; restores: string[] };
   appended: { customType: string; data: unknown }[];
   notifications: { message: string; type?: string }[];
@@ -69,7 +70,7 @@ interface Harness {
     payload?: unknown,
   ): Promise<void>;
   fireFork(entryId: string): Promise<unknown>;
-  /** Runs `/rewind` and answers its two pickers. */
+  /** Runs `/checkpoint` and answers its two pickers. */
   rewind(choices: { target?: string; mode?: string }): Promise<void>;
   /** The picker labels the extension offered, in order. */
   labels(): string[];
@@ -136,7 +137,7 @@ function harness(
     },
   } as unknown as Harness["store"];
 
-  /** The options of the most recent *rewind* picker (not the mode picker). */
+  /** The options of the most recent checkpoint picker (not the mode picker). */
   let rewindOptions: string[] = [];
 
   const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
@@ -153,7 +154,7 @@ function harness(
     appendEntry(customType, data) {
       appended.push({ customType, data });
       // Pi persists the entry immediately; the context must reflect it, or a
-      // `rehydrate` inside `/rewind` would not see what this turn just appended.
+      // `rehydrate` inside `/checkpoint` would not see what this turn just appended.
       entries.push({ type: "custom", customType, data });
     },
     registerCommand(name, options) {
@@ -174,8 +175,10 @@ function harness(
       async select(title, choices) {
         picker = { title, options: choices };
         offered.push(choices);
-        if (title.includes("Rewind")) rewindOptions = choices;
-        const wanted = title.includes("Rewind") ? choices[0] : availableMode(choices);
+        if (title.includes("Restore to which checkpoint")) rewindOptions = choices;
+        const wanted = title.includes("Restore to which checkpoint")
+          ? choices[0]
+          : availableMode(choices);
         return wanted;
       },
       notify(message, type) {
@@ -200,6 +203,7 @@ function harness(
 
   return {
     api,
+    commands,
     store,
     appended,
     notifications,
@@ -220,8 +224,8 @@ function harness(
     },
     async rewind(choices) {
       wantedMode = choices.mode;
-      const handler = commands.get("rewind");
-      if (!handler) throw new Error("rewind was not registered");
+      const handler = commands.get("checkpoint");
+      if (!handler) throw new Error("checkpoint was not registered");
       await handler("", ctxWithUi);
       // The first select's answer is driven by `choices.target`, so re-run with
       // the wanted label when one was named.
@@ -236,7 +240,7 @@ function harness(
             ui: {
               ...ctxWithUi.ui,
               async select(title, options2) {
-                if (title.includes("Rewind")) return chosen;
+                if (title.includes("Restore to which checkpoint")) return chosen;
                 return wantedMode && options2.includes(wantedMode) ? wantedMode : options2[0];
               },
             },
@@ -246,7 +250,7 @@ function harness(
       }
     },
     labels() {
-      // The rewind picker, not the mode picker that immediately follows it.
+      // The checkpoint picker, not the mode picker that immediately follows it.
       return rewindOptions.length > 0 ? rewindOptions : (picker?.options ?? []);
     },
   };
@@ -307,10 +311,10 @@ describe("session_start", () => {
   it("rehydrates the checkpoints this session already has", async () => {
     const h = harness({ entries: [customEntry("e1", "a".repeat(40))] });
     await h.fire("session_start", { reason: "resume" });
-    // The rehydrated entry is what `/rewind` lists, with no new snapshot taken.
+    // The rehydrated entry is what `/checkpoint` lists, with no new snapshot taken.
     await h.rewind({});
     expect(h.labels()[0]).toContain("earlier");
-    // No *run* snapshot was taken: the only snapshot here is the rewind's own
+    // No *run* snapshot was taken: the only snapshot here is the restore's own
     // safety net, which is a different kind.
     expect(h.store.snapshots.filter((request) => request.kind === "run")).toEqual([]);
   });
@@ -522,7 +526,13 @@ describe("session_before_fork", () => {
   });
 });
 
-describe("/rewind", () => {
+describe("/checkpoint", () => {
+  it("registers checkpoint and no longer registers rewind", () => {
+    const h = harness();
+    expect(h.commands.has("checkpoint")).toBe(true);
+    expect(h.commands.has("rewind")).toBe(false);
+  });
+
   it("restores files, then navigates the tree, then refills the editor", async () => {
     const h = harness({ entries: [customEntry("e1", "c".repeat(40))] });
     await h.fire("session_start", { reason: "resume" });
@@ -552,7 +562,7 @@ describe("/rewind", () => {
     expect(h.navigations).toHaveLength(1);
   });
 
-  it("aborts the rewind when the safety snapshot fails", async () => {
+  it("aborts the restore when the safety snapshot fails", async () => {
     const h = harness({
       entries: [customEntry("e1", "f".repeat(40))],
       snapshot: () => ({ ok: false, reason: "git_failed", detail: "disk full" }),
@@ -571,18 +581,18 @@ describe("/rewind", () => {
     await h.fire("session_start", { reason: "resume" });
     await h.rewind({ mode: "Files only" });
     expect(h.notifications.at(-1)?.message).toContain("locked");
-    // The conversation was not rewound either: a half-rewind would be worse.
+    // The conversation was not restored either: a half-restore would be worse.
     expect(h.navigations).toEqual([]);
   });
 
-  it("says so when the conversation rewind was cancelled", async () => {
+  it("says so when the conversation restore was cancelled", async () => {
     const h = harness({ entries: [customEntry("e1", "2".repeat(40))], navigationCancelled: true });
     await h.fire("session_start", { reason: "resume" });
     await h.rewind({ mode: "Conversation only" });
     // `navigateTree` reported `cancelled`, so the editor is left alone and the
     // user is told the conversation did not move.
     expect(h.navigations).toHaveLength(1);
-    expect(h.notifications.at(-1)?.message).toMatch(/not rewound/i);
+    expect(h.notifications.at(-1)?.message).toMatch(/not restored/i);
     expect(h.editorTexts).toEqual([]);
   });
 

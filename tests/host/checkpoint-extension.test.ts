@@ -12,7 +12,7 @@ import {
  * The installed-copy precedence (2026-10-30 plan step 12).
  *
  * The app ships a bundled extension, but a profile clone or an npm install must
- * win so `/rewind` is not registered twice. Only the bundled fallback is passed
+ * win so `/checkpoint` is not registered twice. Only the bundled fallback is passed
  * through `additionalExtensionPaths`; the other two are discovered by Pi.
  */
 

@@ -1,0 +1,42 @@
+{
+  "name": "@dieulc/checkpoints",
+  "version": "0.1.1",
+  "type": "module",
+  "private": false,
+  "keywords": [
+    "pi-package",
+    "pi",
+    "checkpoints",
+    "rewind",
+    "git",
+    "folder"
+  ],
+  "description": "Folder checkpoints and /checkpoint for Pi: shadow-git snapshots that work in any folder, git repository or not.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dieuluucanh/pi-desktop.git",
+    "directory": "packages/checkpoints"
+  },
+  "bugs": {
+    "url": "https://github.com/dieuluucanh/pi-desktop/issues"
+  },
+  "homepage": "https://github.com/dieuluucanh/pi-desktop#readme",
+  "pi": {
+    "extensions": [
+      "./index.mjs"
+    ]
+  },
+  "files": [
+    "index.mjs",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

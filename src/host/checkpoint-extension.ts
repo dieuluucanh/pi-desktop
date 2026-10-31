@@ -3,13 +3,13 @@
  * (2026-10-30 rail-shell-checkpoint plan).
  *
  * The app ships a bundled copy for zero-install Desktop use. A user may also
- * have installed `@dieulc/checkpoints` for terminal Pi, either as the `~/.pi`
- * clone (`<agentDir>/extensions/checkpoints`) or from npm
+ * have installed `@dieulc/checkpoints` for terminal Pi, either as a profile copy
+ * (`<agentDir>/extensions/checkpoints`) or from npm
  * (`<agentDir>/npm/node_modules/@dieulc/checkpoints`). Loading both the bundled
- * and an installed copy would register `/rewind` and take snapshots twice, so
+ * and an installed copy would register `/checkpoint` and take snapshots twice, so
  * the host resolves **one** source:
  *
- *   profile clone  →  npm package  →  bundled fallback
+ *   profile copy  →  npm package  →  bundled fallback
  *
  * Only the bundled fallback is passed through `additionalExtensionPaths`;
  * profile/npm copies are discovered by Pi's own resource loader. Safe mode

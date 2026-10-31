@@ -9,6 +9,7 @@ export default tseslint.config(
     ignores: [
       "out/**",
       "dist/**",
+      "packages/checkpoints/index.mjs",
       "release/**",
       "coverage/**",
       "node_modules/**",

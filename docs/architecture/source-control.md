@@ -151,7 +151,7 @@ rewriting.
 | `run`         | the checkpoint extension, inside the agent loop | once per user prompt at Pi's `input` event (steer/follow-up included), before the prompt is processed; a Pi <1.4 host falls back to the first `turn_start` |
 | `manual`      | the rail's _Snapshot now_                       | on click                                                                                                                                                   |
 | `pre-op`      | the git engine's `preOpSnapshot` port           | immediately before a discard or a branch switch; a failure aborts the action                                                                               |
-| `pre-restore` | the checkpoint service                          | immediately before a restore, or a `/rewind`                                                                                                               |
+| `pre-restore` | the checkpoint service                          | immediately before a restore, or a `/checkpoint`                                                                                                           |
 | idle scan     | `src/main/checkpoint-service.ts`                | while an Office pane is attached, **in the live bridge owner's folder**, that folder is idle, its fingerprint changed, and `scanIntervalMs` has elapsed    |
 
 The idle scan exists because a tool hook cannot see Word save a document. Its
@@ -275,15 +275,22 @@ _Before the fork_ chips carry the session linkage instead.
 three load paths:
 
 - **bundled** — `additionalExtensionPaths` on the host's resource loader;
-- **profile clone** — `<profile>/extensions/checkpoints/index.mjs`, discovered by Pi;
+- **profile copy** — `<profile>/extensions/checkpoints/index.mjs`, discovered by Pi;
 - **npm package** — `<profile>/npm/node_modules/@dieulc/checkpoints`, discovered by Pi.
 
 The host resolves **profile → npm → bundled** (`src/host/checkpoint-extension.ts`)
 and only passes the bundled path through `additionalExtensionPaths`. An installed
 copy therefore wins, and the bundled copy never loads alongside it. The npm
 package is `@dieulc/checkpoints`; the unscoped `pi-checkpoints` name belongs to
-another author. Development can still use
-`npm run build:extension && pi install path:<repo>/dist/pi-checkpoints`.
+another author. The package is maintained and released from this repository:
+`packages/checkpoints` holds its manifest/README/LICENSE/CHANGELOG, and
+`npm run build:extension` generates `index.mjs` from
+`src/extensions/pi-checkpoints.ts`. Development can use
+`npm run build:extension && pi install path:<repo>/packages/checkpoints`.
+
+The terminal command is `/checkpoint` (files, conversation, or both).
+`@dieulc/workflow` keeps its older git-only `/rewind` implementation, which uses
+a different shadow repository and does not share this folder store.
 
 ### Safe mode does not disable `additionalExtensionPaths`
 
@@ -314,7 +321,7 @@ The extension imports **neither** `@earendil-works/*` nor `electron`. It declare
 the narrow `CheckpointExtensionApi` it uses, the same way
 `src/renderer/src/completion/types.ts` and `src/shared/model-scope.ts` mirror
 theirs. AGENTS rule 4 is the first reason; the second is that
-`dist/pi-checkpoints/index.mjs` has to load with **no `node_modules` beside it**,
+`packages/checkpoints/index.mjs` has to load with **no `node_modules` beside it**,
 and a real SDK import would make that impossible. A test greps the import
 specifiers to keep it true.
 

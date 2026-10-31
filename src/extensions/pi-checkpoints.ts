@@ -1,5 +1,5 @@
 /**
- * The checkpoint extension: run-scoped snapshots and `/rewind` (git-checkpoint
+ * The checkpoint extension: run-scoped snapshots and `/checkpoint` (git-checkpoint
  * plan step 23).
  *
  * Pi Desktop takes *manual* and *pre-op* checkpoints from main, but a snapshot
@@ -9,12 +9,12 @@
  *
  *  - **Automatically** by the app's host through `additionalExtensionPaths`
  *    (step 24; hard-disabled in safe mode).
- *  - **Manually** in terminal Pi, from the artifact `scripts/build-extension.mjs`
- *    produces under `dist/pi-checkpoints/`.
+ *  - **Manually** in terminal Pi, from the publishable package
+ *    `packages/checkpoints/`, built by `scripts/build-extension.mjs`.
  *
  * Both loads matter, and they are the same code: the shadow repo is keyed by the
- * *folder*, so a checkpoint taken by the app shows up in terminal `/rewind` and
- * vice versa.
+ * *folder*, so a checkpoint taken by the app shows up in terminal `/checkpoint`
+ * and vice versa.
  *
  * ## Why the types are structural
  *
@@ -78,7 +78,7 @@ export interface CheckpointExtensionContext {
   };
 }
 
-/** A minimal `ExtensionCommandContext`: adds the tree navigation `/rewind` needs. */
+/** A minimal `ExtensionCommandContext`: adds the tree navigation `/checkpoint` needs. */
 export interface CheckpointCommandContext extends CheckpointExtensionContext {
   ui: {
     select(title: string, options: string[]): Promise<string | undefined>;
@@ -365,7 +365,7 @@ export default function checkpointExtension(
     await sweepOldShadowRepos(fs, profileDir, store, now(), settings.retentionDays).catch(() => 0);
     const probe = await store.ensure(ctx.cwd).catch(() => null);
     if (probe && !probe.ok && probe.reason === "git_missing") {
-      notify(ctx, "Folder checkpoints need git; /rewind is unavailable in this folder.");
+      notify(ctx, "Folder checkpoints need git; /checkpoint is unavailable in this folder.");
     }
   });
 
@@ -461,20 +461,20 @@ export default function checkpointExtension(
   pi.on("session_before_fork", (event, ctx) => {
     // A fork point usually has a checkpoint. Restoring it *here* would be a modal
     // in front of every fork, so the extension only says where it is: the new
-    // session inherits these entries, and `/rewind` in it reaches the same ref.
+    // session inherits these entries, and `/checkpoint` in it reaches the same ref.
     // The hook still exists because a fork with no checkpoint is silent, and a
     // user who expected one should learn that before the fork happens.
     const found = tracked.find((entry) => entry.entryId === event.entryId);
     if (!found) return undefined;
     const ui = (ctx as { ui?: { notify?: (m: string, t?: string) => void } }).ui;
     ui?.notify?.(
-      `This fork point has a checkpoint (${found.ref.slice(0, 8)}); /rewind in the new session restores it.`,
+      `This fork point has a checkpoint (${found.ref.slice(0, 8)}); /checkpoint in the new session restores it.`,
       "info",
     );
     return undefined;
   });
 
-  pi.registerCommand("rewind", {
+  pi.registerCommand("checkpoint", {
     description: "Restore the folder (and optionally the conversation) to an earlier checkpoint",
     async handler(_args, ctx) {
       rehydrate(ctx);
@@ -487,7 +487,7 @@ export default function checkpointExtension(
           `${relativeLabel(entry.createdAt, now())} · ${entry.prompt || "Before the prompt"}` +
           ` · ${entry.ref.slice(0, 8)}${index === 0 ? " (newest)" : ""}`,
       );
-      const chosen = await ctx.ui.select("Rewind to which checkpoint?", labels);
+      const chosen = await ctx.ui.select("Restore to which checkpoint?", labels);
       if (!chosen) return;
       const index = labels.indexOf(chosen);
       const target = tracked[index];
@@ -503,16 +503,16 @@ export default function checkpointExtension(
 
       let filesRestored = false;
       if (mode !== "Conversation only") {
-        // A pre-restore snapshot keeps the rewind undoable, exactly as the rail's
+        // A pre-restore snapshot keeps the restore undoable, exactly as the rail's
         // restore does (D10).
         const safety = await store.snapshot(ctx.cwd, {
           kind: "pre-restore",
-          label: `Before rewinding to ${target.ref.slice(0, 8)}`,
+          label: `Before restoring to ${target.ref.slice(0, 8)}`,
           sessionId,
         });
         if (!safety.ok && safety.reason !== "same_tree") {
           ctx.ui.notify(
-            `A safety snapshot is required before rewinding, and it failed: ${
+            `A safety snapshot is required before restoring, and it failed: ${
               safety.detail ?? safety.reason ?? "unknown error"
             }`,
             "warning",
@@ -530,13 +530,13 @@ export default function checkpointExtension(
         filesRestored = true;
       }
 
-      let conversationRewound = false;
+      let conversationRestored = false;
       if (mode !== "Files only" && target.entryId) {
         const navigation = await ctx.navigateTree(target.entryId, { summarize: false });
         if (navigation.cancelled) {
-          ctx.ui.notify("The conversation was not rewound.", "info");
+          ctx.ui.notify("The conversation was not restored.", "info");
         } else {
-          conversationRewound = true;
+          conversationRestored = true;
           // Put the prompt back in the editor so the user can edit and resend it
           // rather than retyping it.
           ctx.ui.setEditorText(target.prompt);
@@ -544,17 +544,17 @@ export default function checkpointExtension(
       }
 
       // Report what actually happened: a cancelled navigation after a successful
-      // file restore must not read as "the rewind worked".
-      if (filesRestored && conversationRewound) {
-        ctx.ui.notify(`Rewound to ${target.ref.slice(0, 8)}: files and conversation.`, "info");
+      // file restore must not read as "the restore worked".
+      if (filesRestored && conversationRestored) {
+        ctx.ui.notify(`Restored to ${target.ref.slice(0, 8)}: files and conversation.`, "info");
       } else if (filesRestored) {
         ctx.ui.notify(
           `Files restored to ${target.ref.slice(0, 8)}; the conversation was left alone.`,
           "info",
         );
-      } else if (conversationRewound) {
+      } else if (conversationRestored) {
         ctx.ui.notify(
-          `Conversation rewound to ${target.ref.slice(0, 8)}; the files were left alone.`,
+          `Conversation restored to ${target.ref.slice(0, 8)}; the files were left alone.`,
           "info",
         );
       }

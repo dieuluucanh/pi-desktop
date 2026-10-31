@@ -33,7 +33,7 @@
 - [`guide/office-setup.md`](guide/office-setup.md) — Pi for Office as an optional integration.
 - [`guide/git-and-checkpoints.md`](guide/git-and-checkpoints.md) — the right rail's Git, Changes,
   History and Checkpoints sections: staging and committing, what a checkpoint is (and is not),
-  restoring safely, retention, and `/rewind` in terminal Pi.
+  restoring safely, retention, and `/checkpoint` in terminal Pi.
 - [`guide/plannotator-web-tabs.md`](guide/plannotator-web-tabs.md) — in-app web tabs and reviews.
 - [`guide/troubleshooting.md`](guide/troubleshooting.md) — safe mode, recovery, diagnostics.
 - [`guide/branding.md`](guide/branding.md) — the logo set, which mark belongs to which product, and

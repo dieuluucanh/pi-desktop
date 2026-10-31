@@ -1,58 +1,77 @@
 import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { beforeAll, describe, expect, it } from "vitest";
-import { CHECKPOINT_EXTENSION_PACKAGE_NAME } from "../../src/shared/checkpoint-extension";
+
+import {
+  CHANGELOG_FILE,
+  ENTRY_FILE,
+  LICENSE_FILE,
+  PACKAGE_DIR,
+  PACKAGE_NAME,
+  README_FILE,
+  REPOSITORY_DIRECTORY,
+  REPOSITORY_URL,
+  REQUIRED_FILES,
+  validateTarballFiles,
+} from "../../scripts/extension-package.mjs";
 
 /**
- * The terminal-Pi artifact (git-checkpoint plan step 26).
+ * The publishable checkpoint package (2026-10-31 re-home plan).
  *
  * `scripts/build-extension.mjs` bundles `src/extensions/pi-checkpoints.ts` into
- * an installable path package. Three things make it usable, and this suite pins
- * all three:
+ * `packages/checkpoints/index.mjs`; the manifest/README/LICENSE/CHANGELOG are
+ * tracked source. This suite pins the four things that make the directory
+ * publishable:
  *
- *  1. It **builds** and exposes a default factory function.
- *  2. It carries **no `@earendil-works` specifier**, so it loads with no
- *     `node_modules` beside it (the structural types are what make that possible).
- *  3. Its `package.json` declares `pi.extensions` — the field Pi's loader reads —
- *     and its version tracks the root `package.json`, so an artifact can never be
- *     shipped as a stale copy.
+ *  1. it builds and exposes a default factory function;
+ *  2. the bundle carries no `@earendil-works` specifier and no dangling relative
+ *     import, so it loads with no `node_modules` beside it;
+ *  3. the manifest declares `pi.extensions` and the Pi Desktop repository;
+ *  4. `npm pack` contains the entry, README, LICENSE and CHANGELOG, and no test,
+ *     `node_modules` or lockfile content.
  */
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
-const outDir = join(repoRoot, "dist", "pi-checkpoints");
+const buildScript = join(repoRoot, "scripts", "build-extension.mjs");
 const execFileAsync = promisify(execFile);
 
+const NPM =
+  process.platform === "win32"
+    ? { command: process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", "npm"] }
+    : { command: "npm", args: [] };
+
+function packagePath(name: string): string {
+  return join(PACKAGE_DIR, name);
+}
+
 beforeAll(async () => {
-  // Build once for the whole suite: the script is the unit under test.
-  await execFileAsync(process.execPath, [join(repoRoot, "scripts", "build-extension.mjs")], {
-    cwd: repoRoot,
-    timeout: 120_000,
-  });
+  await execFileAsync(process.execPath, [buildScript], { cwd: repoRoot, timeout: 120_000 });
 }, 180_000);
 
-describe("the built artifact", () => {
-  it("emits index.mjs, package.json and a README", async () => {
-    for (const name of ["index.mjs", "package.json", "README.md"]) {
-      const info = await stat(join(outDir, name));
+describe("the publishable package", () => {
+  it("has every tracked file and the built entry", async () => {
+    for (const name of REQUIRED_FILES) {
+      const info = await stat(packagePath(name));
       expect(info.isFile(), name).toBe(true);
     }
+    expect(ENTRY_FILE).toBe("index.mjs");
   });
 
   it("exposes a default factory function", async () => {
-    const module = (await import(join(outDir, "index.mjs"))) as { default?: unknown };
+    const module = (await import(
+      `${pathToFileURL(packagePath(ENTRY_FILE)).href}?v=${Date.now()}`
+    )) as { default?: unknown };
     expect(typeof module.default).toBe("function");
   });
 
   it("loads when the factory is called with the API object alone", async () => {
     // The exact contract of Pi's `initializeExtension`: `await factory(load.api)`.
-    // Asserting only `typeof default === "function"` let a required second
-    // argument reach users, where it aborted every `pi` startup.
-    const module = (await import(join(outDir, "index.mjs"))) as {
-      default: (api: unknown) => void | Promise<void>;
-    };
+    const module = (await import(
+      `${pathToFileURL(packagePath(ENTRY_FILE)).href}?v=${Date.now()}`
+    )) as { default: (api: unknown) => void | Promise<void> };
     const api = {
       on: () => () => undefined,
       appendEntry: () => undefined,
@@ -61,54 +80,74 @@ describe("the built artifact", () => {
     await expect(Promise.resolve(module.default(api))).resolves.toBeUndefined();
   });
 
-  it("has no unresolved @earendil-works specifier", async () => {
-    const bundle = await readFile(join(outDir, "index.mjs"), "utf8");
-    // The extension mirrors the SDK structurally, so nothing needs the package.
+  it("has no unresolved @earendil-works or relative import", async () => {
+    const bundle = await readFile(packagePath(ENTRY_FILE), "utf8");
     expect(bundle).not.toMatch(/@earendil-works/);
-    // And it is a real bundle: only Node built-ins may survive as bare imports.
+
     const specifiers = [...bundle.matchAll(/from\s+["']([^"']+)["']/g)].map((match) => match[1]);
     const bare = specifiers.filter(
       (id) => id !== undefined && !id.startsWith(".") && !id.startsWith("/"),
     );
     expect(bare.filter((id) => !id?.startsWith("node:") && !id?.startsWith("file:"))).toEqual([]);
+
+    // Every relative import was inlined; a surviving one would point at a source
+    // file that is not shipped in the tarball.
+    expect(specifiers.filter((id) => id?.startsWith("."))).toEqual([]);
   });
 
-  it("has no unresolved relative import left dangling", async () => {
-    const bundle = await readFile(join(outDir, "index.mjs"), "utf8");
-    // Every relative import must have been inlined; a surviving one would point
-    // at a `src/` file that is not shipped.
-    const relatives = [...bundle.matchAll(/from\s+["'](\.[^"']+)["']/g)].map((match) => match[1]);
-    expect(relatives).toEqual([]);
-  });
-
-  it("declares pi.extensions in its manifest", async () => {
-    const text = await readFile(join(outDir, "package.json"), "utf8");
-    const manifest = JSON.parse(text) as {
+  it("declares the publishable identity and Pi entry", async () => {
+    const manifest = JSON.parse(await readFile(packagePath("package.json"), "utf8")) as {
       name?: string;
       version?: string;
       private?: boolean;
+      repository?: { url?: string; directory?: string };
       pi?: { extensions?: unknown };
+      files?: string[];
+      publishConfig?: { access?: string };
     };
-    expect(manifest.name).toBe(CHECKPOINT_EXTENSION_PACKAGE_NAME);
-    // `readPiManifest` (and Pi itself) reads exactly this field.
+    expect(manifest.name).toBe(PACKAGE_NAME);
+    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+/);
+    expect(manifest.private).not.toBe(true);
+    expect(manifest.repository).toEqual({
+      type: "git",
+      url: REPOSITORY_URL,
+      directory: REPOSITORY_DIRECTORY,
+    });
     expect(manifest.pi?.extensions).toEqual(["./index.mjs"]);
-    // Not publishable by accident: publication is a separate release decision.
-    expect(manifest.private).toBe(true);
+    expect(manifest.files).toEqual(
+      expect.arrayContaining([ENTRY_FILE, README_FILE, LICENSE_FILE, CHANGELOG_FILE]),
+    );
+    expect(manifest.publishConfig?.access).toBe("public");
   });
 
-  it("tracks the root package version", async () => {
-    const rootText = await readFile(join(repoRoot, "package.json"), "utf8");
-    const root = JSON.parse(rootText) as { version?: string };
-    const text = await readFile(join(outDir, "package.json"), "utf8");
-    const artifact = JSON.parse(text) as { version?: string };
-    expect(artifact.version).toBe(root.version);
+  it("has a tarball with the intended files only", async () => {
+    const result = await execFileAsync(NPM.command, [...NPM.args, "pack", "--dry-run", "--json"], {
+      cwd: PACKAGE_DIR,
+      timeout: 60_000,
+    });
+    const text = String(result.stdout ?? "");
+    const parsed = JSON.parse(text.slice(text.indexOf("["), text.lastIndexOf("]") + 1)) as [
+      { files?: { path?: string }[] },
+    ];
+    const files = (parsed[0]?.files ?? []).map((file) => String(file.path ?? ""));
+    expect(validateTarballFiles(files)).toEqual([]);
+    expect(files).toEqual(expect.arrayContaining([...REQUIRED_FILES]));
   });
 
-  it("documents the install command", async () => {
-    const readme = await readFile(join(outDir, "README.md"), "utf8");
-    expect(readme).toContain("pi install path:");
+  it("registers /checkpoint and not the workflow /rewind command", async () => {
+    const source = await readFile(
+      fileURLToPath(new URL("../../src/extensions/pi-checkpoints.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(source).toContain('registerCommand("checkpoint"');
+    expect(source).not.toContain('registerCommand("rewind"');
+  });
+
+  it("documents the install routes and the source of the package", async () => {
+    const readme = await readFile(packagePath(README_FILE), "utf8");
     expect(readme).toContain("pi install npm:@dieulc/checkpoints");
-    // The one caveat a user must know before installing.
+    expect(readme).toContain("pi install path:");
+    expect(readme).toContain("src/extensions/pi-checkpoints.ts");
     expect(readme).toMatch(/git/);
   });
 });

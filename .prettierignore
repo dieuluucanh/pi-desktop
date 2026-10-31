@@ -3,6 +3,7 @@ out
 dist
 release
 coverage
+packages/checkpoints/index.mjs
 test-results
 playwright-report
 resources/runtime

@@ -29,7 +29,7 @@ recorded with the release, not hidden here.
 | UI/UX best practice (Claude/ChatGPT/Codex/OpenCode desktop)                   | 1, 5, 6, 7, 8, 11, 16, 17            | `tests/e2e/shell.spec.ts`, `docs/architecture/app-shell.md`                                                            |
 | Source control: staging, hunk staging, commit/amend, discard, stash, sync     | 1, 2, 3, 4, 5, 6, 9, 11, 12, 13, 14  | `tests/git/service.test.ts`, `tests/renderer/rail-changes.test.tsx`, `tests/renderer/rail-commit.test.tsx`             |
 | Folder checkpoints for any folder, with restore, undo and retention           | 17, 18, 19, 20, 21, 22, 27           | `tests/checkpoints/store.test.ts`, `tests/main/checkpoint-service.test.ts`, `tests/renderer/rail-checkpoints.test.tsx` |
-| `/rewind` in terminal Pi from the same checkpoint store                       | 23, 24, 25, 26                       | `tests/checkpoints/extension.test.ts`, `tests/packaging/extension-artifact.test.ts`                                    |
+| `/checkpoint` in terminal Pi from the same checkpoint store                   | 23, 24, 25, 26                       | `tests/checkpoints/extension.test.ts`, `tests/packaging/extension-artifact.test.ts`                                    |
 
 ## How to read a "documented limitation"
 

@@ -552,7 +552,7 @@ export function emptyCheckpointState(projectPath: string, now: number): Checkpoi
  *    no conversation to navigate to.
  *
  * **One rule, one place.** The rail, the section and any future surface (a
- * terminal `/rewind` listing) must agree on which checkpoints can rewind a
+ * terminal `/checkpoint` listing) must agree on which checkpoints can rewind a
  * conversation, because getting it wrong jumps the user somewhere they did not
  * ask for.
  */

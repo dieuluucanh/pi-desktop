@@ -30,3 +30,9 @@ Changing a pin here means changing it there.
 The bundled runtime — not Electron's Node — runs every Pi host process and every
 npm install (plan D3). `resources/runtime/` is gitignored; `npm run runtime:fetch`
 populates it.
+
+## Published extension (independent version)
+
+`@dieulc/checkpoints` is a separately versioned npm package (`packages/checkpoints`),
+not an app dependency pin. Its version, changelog and tag (`@dieulc/checkpoints@x.y.z`)
+are owned by the package release tool; changing the app version never changes it.

@@ -96,6 +96,7 @@ src/preload/         the only place that touches contextBridge/ipcRenderer
 src/renderer/src/    React app: layout/, views/, ui/ primitives, state/ (zustand), styles/
 src/host/            the Pi host process (all SDK contact in src/host/sdk/)
 src/shared/          types, constants and the single IPC allowlist
+packages/checkpoints/  the publishable @dieulc/checkpoints package
 resources/           vendored Office manifest, fetched Node/npm runtime
 tests/               vitest (node project + jsdom renderer project) and Playwright E2E
 docs/                product/parity + backlog, the user guide, releases and the architecture docs

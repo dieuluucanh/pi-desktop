@@ -137,7 +137,7 @@ just before restoring. **Removing files created after the checkpoint is opt-in**
 - It is **not** a commit: nothing is staged, nothing enters your history, and no
   remote ever sees it.
 - It does **not** capture your conversation. A prompt checkpoint records which
-  turn it belongs to; `/rewind` in terminal Pi can use that. A prompt that never
+  turn it belongs to; `/checkpoint` in terminal Pi can use that. A prompt that never
   got a turn is kept as an unlinked, files-only checkpoint. The rail only labels
   the link.
 - It is **not** a backup: the bytes live on the same disk, in
@@ -157,7 +157,7 @@ Only the recent checkpoints of a folder are cheap: git stores unchanged files
 once, so the ten snapshots of a mostly-unchanged folder are far smaller than ten
 copies.
 
-## `/rewind` in terminal Pi
+## `/checkpoint` in terminal Pi
 
 Pi Desktop bundles the extension, so no install is needed there. Terminal Pi
 users install the published package:
@@ -168,17 +168,27 @@ pi install npm:@dieulc/checkpoints
 
 Update it with `pi update --extensions`; remove it with
 `pi remove npm:@dieulc/checkpoints`. A development checkout can use
-`npm run build:extension && pi install path:<repo>/dist/pi-checkpoints`.
+`npm run build:extension && pi install path:<repo>/packages/checkpoints`.
 
 The host prefers an installed profile/npm copy over the bundled one, so the
-extension never loads twice. Pick **one** installed copy — the `~/.pi` clone or
-the npm package, not both.
+extension never loads twice. Pick **one** installed copy — a profile copy or the
+npm package, not both. The `~/.pi` dotfiles clone no longer contains this
+package; install the npm package if you want folder checkpoints in terminal Pi.
 
-`/rewind` lists this session's checkpoints and offers **Files and conversation**,
-**Files only** or **Conversation only** (unlinked prompts are Files only). It
-takes a safety snapshot before restoring files, exactly as the rail does, and it
-reads the same shadow repository — so a checkpoint taken by the app appears in
-terminal Pi and vice versa.
+If you already have `0.1.1` installed, update it (`pi update --extensions`) before
+relying on `/checkpoint`: Pi Desktop prefers the installed copy over its bundled
+extension, and `0.1.1` still registers the old command name.
+
+`/checkpoint` lists this session's checkpoints and offers **Files and
+conversation**, **Files only** or **Conversation only** (unlinked prompts are
+Files only). It takes a safety snapshot before restoring files, exactly as the
+rail does, and it reads the same shadow repository — so a checkpoint taken by the
+app appears in terminal Pi and vice versa.
+
+`@dieulc/workflow` keeps its older `/rewind` command for git-backed message and
+tracked-file restore. That implementation uses its own shadow repository under
+`<profile>/checkpoints/checkpoint-<slug>.git`; it is separate from the folder
+store above.
 
 ## Safe mode
 
