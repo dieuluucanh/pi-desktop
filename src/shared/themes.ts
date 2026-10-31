@@ -324,6 +324,23 @@ export function resolveThemeSwatches(
 }
 
 /**
+ * The chrome variables a theme can set. `applyChromeTheme` clears all of them
+ * before applying a new theme, so a key a custom theme set cannot survive a
+ * switch to a theme that omits it.
+ */
+export const THEME_CHROME_VARIABLES = [
+  "--color-accent",
+  "--color-ink",
+  "--color-ink-muted",
+  "--color-ink-faint",
+  "--color-ok",
+  "--color-danger",
+  "--color-warn",
+  "--color-canvas",
+  "--color-surface",
+] as const;
+
+/**
  * Maps swatches onto the app chrome's CSS variables (the token names in
  * `src/renderer/src/styles/tokens.css`). The renderer sets these on
  * `document.documentElement`, so a custom Pi theme recolours the chrome without

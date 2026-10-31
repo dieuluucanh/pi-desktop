@@ -12,7 +12,7 @@ tab strip        session tabs (empty until step 11) + the "+" action
 main area        the active view (welcome | session | settings | extensions |
                  connections | skills | diagnostics)
 status bar       slim app-level facts only: build version · Pi profile ·
-                 bundled runtime · transient hints · notifications
+                 bundled runtime · display zoom · transient hints · notifications
 panel rail       docked at the right edge of a session: an always-visible 44 px
                  menu strip (Source Control · Checkpoints · Documents) beside one
                  resizable panel body; the strip's order is user-adjustable
@@ -36,6 +36,25 @@ The footer is rendered as a **sibling of the editor branch**, not inside
 non-overlay `ctx.ui.custom()` UI and `<TuiSurface>` replaces the composer. An
 extension's `ctx.ui.setEditorComponent()` is recorded but never mounted: the
 native composer is always the editor (2026-10-26 plan).
+
+**Right-click is the platform's editing menu.** Electron ships no default
+context menu, so the app builds one from `src/main/context-menu.ts` and attaches
+it to the main window's `webContents`: Undo / Redo / Cut / Paste / Select All for
+an editable field, and Copy for any non-collapsed selection — including a
+selection inside the extension TUI surface, where Ctrl+C normally belongs to the
+terminal. The template is pure and unit-tested; `index.ts` only supplies the
+`webContents` actions (2026-10-30 copy plan).
+
+**Display zoom is an app fact (2026-10-30 zoom plan).** The factor lives in
+`prefs.zoomFactor` (50 %–300 %, discrete levels) and is applied by main with
+`webContents.setZoomFactor` to every window. The status bar carries the always-
+visible `− 100 % +` cluster (the application menu is hidden on Windows/Linux
+until Alt), Settings has a Display zoom row, and View → Zoom In / Zoom Out /
+Actual Size use explicit `Ctrl/Cmd+=`, `Ctrl/Cmd+-` and `Ctrl/Cmd+0`
+accelerators. The Electron zoom roles were removed because `zoomIn` binds
+`Ctrl+Shift+=` on Windows/Linux (`electron#40674`) — the reported "zoom does
+not work". The factor is re-applied on `did-finish-load` because Chromium keeps
+a per-origin zoom map.
 
 **Extension interactions live in the session column (2026-10-26).**
 `ctx.ui.select/confirm/input/editor` render as an inline `ExtensionDialogDock`
@@ -83,10 +102,10 @@ argument suggestion only fills.
 **The session header is one cluster (2026-10-21).** The title, the status badge
 and the restart action are the left group; the controls on the right are one
 row of equally-weighted ghost buttons — model, thinking level, the context ring,
-a vertical rule, the view mode, the documents panel, the linked reviews and
-`Stop`. The view mode was a native `<select>`, the only unstyled control in the
-header; it is now a menu in the app's own vocabulary, with a `✓` on the active
-mode. The title truncates and the hints clip, so the row never wraps.
+a vertical rule, the documents panel, the linked reviews and `Stop`. The title
+truncates and the hints clip, so the row never wraps. Tool-card detail is not a
+header control: Ctrl+O (or each card's chevron) is the one expand-all switch
+(2026-10-30 copy plan removed the Normal/Verbose/Summary menu).
 
 **Global CSS lives in `@layer base`.** Tailwind v4 emits its own rules into
 cascade layers, and in CSS an _unlayered_ rule beats every layered one regardless
@@ -456,9 +475,10 @@ and the renderer all read it, so a budget change is one edit.
   cwd/branch/model/thinking and the context budget, the ANSI-coloured extension
   status line, and the `mode: …` chip for every recognised mode.
 - `tests/renderer/composer.test.tsx` — Enter vs Shift+Enter, IME safety, the
-  steer/follow-up choice, the hint row, the workflow mode border/badge
-  (always visible, announced, focus ring does not mask it) and Tab dispatch to a
-  registered extension shortcut before completion.
+  one-Send streaming model (Enter steers, Alt+Enter queues a follow-up), the hint
+  row, the workflow mode border/badge (always visible, announced, focus ring does
+  not mask it) and Tab dispatch to a registered extension shortcut before
+  completion.
 - `tests/renderer/session-events.test.ts` — the reducer, including the
   hidden-item boundary: a `display: false` custom message is dropped (live and on
   reload), and the rule never keys on `customType`.
@@ -575,8 +595,8 @@ process, which is the Playwright suite's job, not a Vitest one.
 
 **Playwright-Electron E2E.** `tests/e2e/fixtures/fake-app.ts` launches the built
 app with the fake provider and a seeded project. `session.spec.ts` covers
-create → send → stream → abort, the steering/follow-up modes and two independent
-tabs; `settings.spec.ts` round-trips a preference across a restart;
+create → send → stream → abort, the one-Send model (Enter steers, Alt+Enter queues
+a follow-up) and two independent tabs; `settings.spec.ts` round-trips a preference across a restart;
 `persistence.spec.ts` restores a tab and its transcript; `web-tab.spec.ts` opens
 a loopback URL in an in-app tab; `shell.spec.ts` and `performance.spec.ts` stay
 as the tagged `@smoke`/`@perf` subsets. `npm run test:e2e` runs them all; CI runs

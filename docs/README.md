@@ -24,7 +24,7 @@
 - [`guide/providers-and-auth.md`](guide/providers-and-auth.md) — Connections, OAuth, write-only API
   keys, custom gateways, proxy/offline.
 - [`guide/models-and-thinking.md`](guide/models-and-thinking.md) — model picker, thinking levels,
-  usage, view mode.
+  usage, tool detail.
 - [`guide/extensions-and-packages.md`](guide/extensions-and-packages.md) — the Extensions hub,
   enable/disable, packages and consent, safe mode.
 - [`guide/settings.md`](guide/settings.md) — every Pi setting, scopes, raw JSON, backups.

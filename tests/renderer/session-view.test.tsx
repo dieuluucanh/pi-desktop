@@ -1,9 +1,10 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { SessionView } from "../../src/renderer/src/views/SessionView";
+import { ShortcutDispatcher } from "../../src/renderer/src/shortcuts/ShortcutDispatcher";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { documentsViewFixture, installBridge } from "./fixtures";
 
@@ -12,8 +13,7 @@ import { documentsViewFixture, installBridge } from "./fixtures";
  *
  * The header used to pack eight differently-styled controls, including a
  * native `<select>` that matched nothing beside it. The cluster is now one row
- * of equally-weighted buttons, and the view mode is a menu in the app's own
- * vocabulary.
+ * of equally-weighted buttons; Ctrl+O is the only tool-detail switch.
  */
 
 const TAB = "tab-1";
@@ -21,7 +21,7 @@ const TAB = "tab-1";
 function resetStore(): void {
   installBridge();
   useAppStore.setState({
-    prefs: { ...DEFAULT_PREFS, drafts: {}, viewMode: "normal" },
+    prefs: { ...DEFAULT_PREFS, drafts: {} },
     tabs: [
       {
         id: TAB,
@@ -55,20 +55,20 @@ describe("session header", () => {
     expect(screen.queryByText("idle")).toBeNull();
   });
 
-  it("shows the view mode as one of the header's buttons, not a native select", () => {
-    render(<SessionView />);
-    // A native select was the only unstyled control in the header.
+  it("has no view-mode control; Ctrl+O is the only tool-detail switch", () => {
+    render(
+      <>
+        <SessionView />
+        <ShortcutDispatcher />
+      </>,
+    );
     expect(screen.queryByRole("combobox")).toBeNull();
-    expect(screen.getByRole("button", { name: "View mode" })).toHaveTextContent("Normal");
-  });
+    expect(screen.queryByRole("button", { name: "View mode" })).toBeNull();
 
-  it("switches the view mode from the menu", async () => {
-    const user = userEvent.setup();
-    render(<SessionView />);
-
-    await user.click(screen.getByRole("button", { name: "View mode" }));
-    await user.click(await screen.findByRole("menuitem", { name: /Verbose/ }));
-    expect(useAppStore.getState().prefs.viewMode).toBe("verbose");
+    fireEvent.keyDown(document.body, { key: "o", ctrlKey: true });
+    expect(useAppStore.getState().toolsExpanded[TAB]).toBe(true);
+    fireEvent.keyDown(document.body, { key: "o", ctrlKey: true });
+    expect(useAppStore.getState().toolsExpanded[TAB]).toBe(false);
   });
 
   it("keeps the facts and the actions in one cluster, split by a rule", () => {

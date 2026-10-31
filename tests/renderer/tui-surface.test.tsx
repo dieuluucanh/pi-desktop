@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TuiSlotFrame, TuiSurface } from "../../src/renderer/src/tui/TuiSurface";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
@@ -21,6 +21,28 @@ import { installBridge } from "./fixtures";
 const TAB = "tab-1";
 const CELL = { width: 8, height: 16 };
 const GRID = { rows: 24, cols: 80 };
+
+const originalClipboard = navigator.clipboard;
+
+/** Replace the clipboard for one test; `copyText` prefers it over execCommand. */
+function stubClipboard(): ReturnType<typeof vi.fn> {
+  const writeText = vi.fn(async () => undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+  return writeText;
+}
+
+function selectFrame(): void {
+  const frame = document.querySelector("[data-tui-frame]");
+  if (!frame) throw new Error("no frame rendered");
+  const range = document.createRange();
+  range.selectNodeContents(frame);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
 
 function stubRequest(impl: (method: string, params?: unknown) => Promise<unknown>) {
   const request = vi.fn((input: { method: string; params?: unknown }) =>
@@ -62,6 +84,14 @@ beforeEach(() => {
   });
 });
 
+afterEach(() => {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: originalClipboard,
+  });
+  window.getSelection()?.removeAllRanges();
+});
+
 describe("TuiSurface", () => {
   it("renders nothing when inactive", () => {
     const { container } = render(dock(EMPTY_TUI_SURFACE));
@@ -95,6 +125,54 @@ describe("TuiSurface", () => {
       method: "tui.input",
       params: { data: "\x1b[200~hello world\x1b[201~" },
     });
+  });
+
+  it("copies a selected frame instead of forwarding Ctrl+C", () => {
+    const request = stubRequest(async () => ({ ok: true }));
+    const writeText = stubClipboard();
+    render(dock(customFrame()));
+    selectFrame();
+
+    fireEvent.keyDown(screen.getByLabelText("Extension input"), { key: "c", ctrlKey: true });
+
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("Pick one"));
+    expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ method: "tui.input" }));
+  });
+
+  it("still forwards Ctrl+C when nothing is selected", () => {
+    const request = stubRequest(async () => ({ ok: true }));
+    const writeText = stubClipboard();
+    render(dock(customFrame()));
+
+    fireEvent.keyDown(screen.getByLabelText("Extension input"), { key: "c", ctrlKey: true });
+
+    expect(writeText).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledWith({
+      tabId: TAB,
+      method: "tui.input",
+      params: { data: "\x03" },
+    });
+  });
+
+  it("copies the whole frame from the surface's Copy button", async () => {
+    stubRequest(async () => ({ ok: true }));
+    const writeText = stubClipboard();
+    render(dock(customFrame()));
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy extension text" }));
+
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("Pick one\n> Build"));
+  });
+
+  it("copies the selection when the Copy button is used with one", () => {
+    stubRequest(async () => ({ ok: true }));
+    const writeText = stubClipboard();
+    render(dock(customFrame()));
+    selectFrame();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy extension text" }));
+
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("> Build"));
   });
 
   it("forwards a plain wheel to the extension as an SGR sequence", () => {

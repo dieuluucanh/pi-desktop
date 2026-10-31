@@ -43,7 +43,9 @@ The top block, one row at a time:
 
 _Staged Changes_, _Changes_ and _Stashes_ each fold away when you click their
 header, and the fold is remembered. _Stage all_ / _Unstage all_ are separate
-buttons, so bulk-staging never folds the list you are working through.
+buttons, so bulk-staging never folds the list you are working through. The
+_Staged Changes_ and _Changes_ rows stay pinned under the block header while
+their files scroll, so the list you are working in is always named.
 
 The **Changes** block opens with its own header: the title, the combined count,
 and an icon-only refresh at the right. A clean tree shows just that header — the

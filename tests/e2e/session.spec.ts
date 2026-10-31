@@ -87,7 +87,7 @@ test("@smoke aborts a running reply and returns the session to idle", async () =
   await expect(stop).toBeHidden({ timeout: 30_000 });
 });
 
-test("offers steering and follow-up modes while streaming", async () => {
+test("uses one Send button and queues a follow-up with Alt+Enter", async () => {
   app = await launchFakeApp();
   const composer = await startSession(app);
 
@@ -99,21 +99,22 @@ test("offers steering and follow-up modes while streaming", async () => {
   await composer.fill("start a long answer");
   await composer.press("Enter");
 
-  // While streaming the composer offers the steer/follow-up modes, and the send
-  // button becomes the delivery action for the chosen mode (plan step 6).
-  const steerMode = app.window.getByRole("button", { name: "steer mode" });
-  const followUpMode = app.window.getByRole("button", { name: "follow-up mode" });
-  await expect(steerMode).toBeVisible({ timeout: 30_000 });
-  await expect(followUpMode).toBeVisible();
-  await expect(app.window.getByRole("button", { name: /^steer$/i })).toBeVisible();
+  // One Send button in every state; the delivery choice is the chord, exactly
+  // like terminal Pi (Enter steers, Alt+Enter queues a follow-up).
+  const send = app.window.getByRole("button", { name: /^send$/i });
+  await expect(send).toBeVisible({ timeout: 30_000 });
+  await expect(send).toHaveAttribute("title", /Alt\+Enter/);
+  await expect(app.window.getByRole("button", { name: "steer mode" })).toHaveCount(0);
+  await expect(app.window.getByRole("button", { name: "follow-up mode" })).toHaveCount(0);
 
-  await followUpMode.click();
-  await expect(followUpMode).toHaveAttribute("aria-pressed", "true");
-  await expect(app.window.getByRole("button", { name: /^follow up$/i })).toBeVisible();
+  await composer.fill("after this");
+  await composer.press("Alt+Enter");
+  await expect(app.window.getByTestId("pending-queue").getByText("Follow-up")).toBeVisible({
+    timeout: 15_000,
+  });
 
   // Stop the long run so the app can shut down promptly.
   await app.window.locator('button[title="Esc"]').click();
-  await expect(steerMode).toBeHidden({ timeout: 30_000 });
 });
 
 test("@smoke keeps two session tabs independent", async () => {

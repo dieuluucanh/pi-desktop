@@ -547,6 +547,30 @@ describe("collapsible groups", () => {
     expect(header.className).toContain("bg-surface");
   });
 
+  it("pins each group header under the block header", () => {
+    seedBoth();
+    render(<ChangesSection projectPath={PROJECT} />);
+    // `top-7` is the `h-7` block header; an opaque surface keeps rows from
+    // ghosting through while the group's files scroll under it.
+    for (const id of ["staged", "changed"] as const) {
+      const header = screen.getByTestId(`changes-group-header-${id}`);
+      expect(header.className).toContain("sticky");
+      expect(header.className).toContain("top-7");
+      expect(header.className).toContain("bg-surface");
+      expect(header.className).toContain("border-b");
+      expect(header.className).not.toContain("top-0");
+    }
+  });
+
+  it("keeps a collapsed group's header pinned", async () => {
+    seedBoth();
+    render(<ChangesSection projectPath={PROJECT} />);
+    await userEvent.click(screen.getByTestId("changes-group-toggle-staged"));
+    const header = screen.getByTestId("changes-group-header-staged");
+    expect(header.className).toContain("sticky");
+    expect(screen.queryByTestId("changes-list-staged")).toBeNull();
+  });
+
   it("keeps the header outside the gap column that holds the lists", () => {
     seedBoth();
     render(<ChangesSection projectPath={PROJECT} />);

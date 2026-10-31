@@ -1,5 +1,10 @@
 import type { MenuCommand } from "../../shared/ipc";
 import { projectNameOf } from "../../shared/projects";
+import {
+  DEFAULT_ZOOM,
+  zoomIn as nextZoomLevel,
+  zoomOut as previousZoomLevel,
+} from "../../shared/zoom";
 import { useAppStore } from "./state/app-store";
 
 /**
@@ -125,6 +130,17 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
       return;
     case "toggle-rail":
       store.toggleRail();
+      return;
+    // Display zoom is applied by main from the persisted pref; the menu handler
+    // only advances the level (2026-10-30 zoom plan).
+    case "zoom-in":
+      store.setPrefs({ zoomFactor: nextZoomLevel(store.prefs.zoomFactor) });
+      return;
+    case "zoom-out":
+      store.setPrefs({ zoomFactor: previousZoomLevel(store.prefs.zoomFactor) });
+      return;
+    case "zoom-reset":
+      store.setPrefs({ zoomFactor: DEFAULT_ZOOM });
       return;
     case "view-source-control":
       // Opens the panel on Source Control without toggling it.

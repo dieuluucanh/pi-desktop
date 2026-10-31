@@ -78,6 +78,36 @@ describe("SettingsView", () => {
     expect(within(field).getByText("global")).toBeInTheDocument();
   });
 
+  it("has no tool-call detail control (Ctrl+O owns expansion)", async () => {
+    stubRequest();
+    render(<SettingsView />);
+
+    await screen.findByTestId("setting-compaction.enabled");
+    expect(screen.queryByText("Tool-call detail")).toBeNull();
+  });
+
+  it("points theme changes at the single Skills theme surface", async () => {
+    stubRequest();
+    render(<SettingsView />);
+
+    await screen.findByTestId("setting-compaction.enabled");
+    // The raw Pi `theme` field and the app-pref segmented control are gone; the
+    // catalogue in Skills is the one control.
+    expect(screen.queryByTestId("setting-theme")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Open theme settings" }));
+    expect(useAppStore.getState().view).toBe("skills");
+  });
+
+  it("changes the display zoom from App preferences", async () => {
+    stubRequest();
+    render(<SettingsView />);
+
+    const row = await screen.findByTestId("display-zoom");
+    await userEvent.click(within(row).getByRole("button", { name: "Zoom in" }));
+    expect(useAppStore.getState().prefs.zoomFactor).toBe(1.1);
+    expect(within(row).getByText("110%")).toBeInTheDocument();
+  });
+
   it("writes a boolean to the global scope", async () => {
     const request = stubRequest();
     render(<SettingsView />);

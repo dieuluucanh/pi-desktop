@@ -7,10 +7,14 @@
  * ```text
  *  ┌ source-control-block ─────────────┐  branch row · commit composer · stashes
  *  ├──────── rail-splitter-top ────────┤
- *  ├ changes-block ────────────────────┤  Staged Changes / Changes
+ *  ├ changes-block ────────────────────┤  Staged Changes / Changes (both pinned)
  *  ├──────── rail-splitter-middle ─────┤
  *  └ history-block ────────────────────┘  commit log
  * ```
+ *
+ * Each block's own header is pinned at `top-0`; inside the Changes block the two
+ * group headers pin at `top-7`, directly under it, so "Staged Changes" and
+ * "Changes" stay visible while their files scroll.
  *
  * Why three blocks rather than one pinned header over one scroller (the previous
  * composition): a long change list pushed the history off the bottom, so

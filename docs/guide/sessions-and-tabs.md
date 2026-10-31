@@ -60,12 +60,11 @@ is warmed in the background so the first session is fast.
 The composer is a plain text area with Pi’s autocomplete contract:
 
 - `Enter` sends, `Shift+Enter` inserts a newline; IME composition is respected.
-- While the agent is streaming, sending offers **Steer** or **Follow-up**
-  (remembered per session, default from the message-delivery settings).
-  `Ctrl+Q` / `Alt+Enter` always queue a follow-up. Queued messages appear as
-  pending rows above the composer labelled **Steering** / **Follow-up**;
-  `Alt+Up` restores them all into the draft ("restore all"), and a Settings
-  queue-mode change applies to open sessions without a reload.
+- While the agent is streaming, Enter **steers** the current turn. `Ctrl+Q` /
+  `Alt+Enter` queue a **follow-up** instead. Queued messages appear as pending
+  rows above the composer labelled **Steering** / **Follow-up**; `Alt+Up`
+  restores them all into the draft ("restore all"), and a Settings queue-mode
+  change applies to open sessions without a reload.
 - `!command` runs a shell command in the session folder (streamed into the
   transcript, `Esc` cancels it); `!!command` keeps it out of the model's context.
   The composer shows a **shell** chip and a `! shell` hint, and completes

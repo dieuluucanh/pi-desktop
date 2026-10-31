@@ -155,7 +155,17 @@ function Group({
   const Chevron = collapsed ? ChevronRight : ChevronDown;
   return (
     <section className="flex flex-col" data-testid={`changes-group-${id}`}>
-      <div className="flex items-center gap-2 px-3 py-1">
+      {/*
+       * Pinned under the block header (2026-10-30 copy/composer/theme/zoom
+       * plan). `top-7` is `RailBlockHeader`'s `h-7`; `z-[9]` keeps the block
+       * header (`z-10`) above it. Both groups share the same offset, so the
+       * next group's header covers the previous one as it scrolls past — the
+       * VS Code behaviour.
+       */}
+      <div
+        className="sticky top-7 z-[9] flex items-center gap-2 border-b border-line bg-surface px-3 py-1"
+        data-testid={`changes-group-header-${id}`}
+      >
         {/*
          * The header is a toggle, but the group action is a **sibling** button:
          * making the whole row one button would swallow *Stage all*, which is

@@ -5,13 +5,6 @@ import { parseWorkflowStatus } from "../../../shared/workflow-mode";
 import { Transcript } from "../session/Transcript";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { cn } from "../ui/cn";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "../ui/dropdown-menu";
 import { Separator } from "../ui/separator";
 import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
@@ -35,7 +28,6 @@ import { ContextRing } from "../session/ContextRing";
 import { ModelPicker } from "../session/ModelPicker";
 import { ThinkingPicker } from "../session/ThinkingPicker";
 import { contextUsageOf, modelKeyOf, thinkingLevelsOf } from "../session/model-catalog";
-import type { ViewMode } from "../../../shared/prefs";
 import { SESSION_STATUS_LABEL, type TabStatus } from "../../../shared/session-ipc";
 
 /**
@@ -57,57 +49,6 @@ const STATUS_TONE: Record<TabStatus, "neutral" | "accent" | "ok" | "warn" | "dan
 
 /** Stable empty scope for a tab whose scope has not loaded yet. */
 const EMPTY_SCOPE: readonly string[] = [];
-
-/** The transcript density modes, in the order the menu lists them. */
-const VIEW_MODES: readonly ViewMode[] = ["normal", "verbose", "summary"];
-
-const VIEW_MODE_LABELS: Record<ViewMode, string> = {
-  normal: "Normal",
-  verbose: "Verbose",
-  summary: "Summary",
-};
-
-/**
- * The view-mode control (plan step 6).
- *
- * A native `<select>` was the only unstyled control in the session header: it
- * did not match the buttons beside it, and it could not show which mode was
- * active in the app's own vocabulary. The menu does both — and the marker on
- * the active entry is the same one the extension dialogs use (plan step 4).
- */
-function ViewModeMenu({
-  value,
-  onChange,
-}: {
-  value: ViewMode;
-  onChange: (mode: ViewMode) => void;
-}) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button size="sm" variant="ghost" aria-label="View mode" title={`View mode: ${value}`}>
-          {VIEW_MODE_LABELS[value]}
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        {VIEW_MODES.map((mode) => (
-          <DropdownMenuItem key={mode} onSelect={() => onChange(mode)}>
-            <span
-              aria-hidden
-              className={cn(
-                "w-3 shrink-0 text-center font-mono",
-                mode === value ? "text-accent" : "text-transparent",
-              )}
-            >
-              {mode === value ? "✓" : " "}
-            </span>
-            {VIEW_MODE_LABELS[mode]}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
 
 /**
  * The `#` completion source.
@@ -154,10 +95,8 @@ export function SessionView() {
   const clearQueue = useAppStore((state) => state.clearQueue);
   const restoreQueue = useAppStore((state) => state.restoreQueue);
   const setDraft = useAppStore((state) => state.setDraft);
-  const setSendMode = useAppStore((state) => state.setSendMode);
   const historyStep = useAppStore((state) => state.historyStep);
   const drafts = useAppStore((state) => state.prefs.drafts);
-  const sendModes = useAppStore((state) => state.sendModes);
   const loadCommands = useAppStore((state) => state.loadCommands);
   const completeCommandArguments = useAppStore((state) => state.completeCommandArguments);
   const completeAppCommandArguments = useAppStore((state) => state.completeAppCommandArguments);
@@ -173,7 +112,6 @@ export function SessionView() {
   const setThinking = useAppStore((state) => state.setThinking);
   const toggleModelScope = useAppStore((state) => state.toggleModelScope);
   const renameSession = useAppStore((state) => state.renameSession);
-  const setViewMode = useAppStore((state) => state.setViewMode);
   const openPicker = useAppStore((state) => state.openPicker);
   const closePicker = useAppStore((state) => state.closePicker);
   const setView = useAppStore((state) => state.setView);
@@ -190,7 +128,6 @@ export function SessionView() {
   const scopeBusyKey = useAppStore((state) =>
     activeTabId ? (state.modelScopeBusy[activeTabId] ?? null) : null,
   );
-  const viewMode = useAppStore((state) => state.prefs.viewMode);
   const extensionUi = useAppStore((state) =>
     activeTabId ? state.extensionUi[activeTabId] : undefined,
   );
@@ -361,11 +298,9 @@ export function SessionView() {
   // composer — otherwise Tab/arrow keys silently stop reaching the extension.
   const surfaceOwnsKeyboard = tuiOwnsComposer || floatingOverlay || dialog !== null;
 
-  // The view mode is a semantic override (plan step 18): Verbose expands every
-  // tool card, Summary collapses them, Normal uses the Ctrl+O state (or each
-  // card's own default while the user has not toggled anything).
-  const effectiveToolsExpanded =
-    viewMode === "verbose" ? true : viewMode === "summary" ? false : (toolsExpandedState ?? null);
+  // Ctrl+O is the only expand-all control: null leaves each card on its own
+  // default, true/false is the explicit app-wide state (2026-10-30 copy plan).
+  const effectiveToolsExpanded = toolsExpandedState ?? null;
 
   return (
     <div className="relative flex h-full flex-col">
@@ -447,7 +382,6 @@ export function SessionView() {
           </Button>
           <ContextRing usage={contextUsage} cost={cost} />
           <Separator orientation="vertical" className="mx-1" />
-          <ViewModeMenu value={viewMode} onChange={(mode) => setViewMode(mode)} />
           {/* A review opened from this session stays linked to it (plan step 21). */}
           {tabs
             .filter((tab) => tab.kind === "web" && tab.sessionTabId === active.id)
@@ -598,14 +532,13 @@ export function SessionView() {
                 onWake={() => void ensureSession(active.id)}
                 draft={drafts[active.id] ?? ""}
                 queue={transcript?.queue ?? { steering: [], followUp: [] }}
-                sendMode={sendModes[active.id] ?? "steer"}
                 workflowStatus={extensionUi?.statuses?.workflow ?? null}
                 extensionShortcuts={shortcuts.shortcuts}
                 onInvokeShortcut={(key) => void invokeShortcut(key)}
                 onRequestShortcuts={() => void loadShortcuts()}
                 onDraftChange={(text) => setDraft(active.id, text)}
                 onSend={async (text, images, options) => {
-                  const mode = options?.followUp ? "followUp" : (sendModes[active.id] ?? "steer");
+                  const mode = options?.followUp ? "followUp" : "steer";
                   return sendPrompt(active.id, text, {
                     ...(active.status === "running" ? { mode } : {}),
                     ...(options?.preferredSource
@@ -626,7 +559,6 @@ export function SessionView() {
                 onStop={() => void stopRun(active.id)}
                 onClearQueue={() => void clearQueue(active.id)}
                 onRestoreQueue={() => void restoreQueue(active.id)}
-                onSendModeChange={(mode) => setSendMode(active.id, mode)}
                 onHistoryStep={(direction) => historyStep(active.id, direction)}
               />
             </div>

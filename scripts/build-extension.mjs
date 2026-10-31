@@ -29,7 +29,7 @@
 
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "vite";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -147,6 +147,17 @@ async function main() {
     "utf8",
   );
   await writeFile(join(outDir, "README.md"), README, "utf8");
+
+  // Loader-contract smoke test. Pi calls a default export with the API object
+  // alone (`await factory(load.api)`), so a bundle that needs a second argument
+  // would ship fine and then abort every `pi` startup. Fail the build instead.
+  const artifact = await import(pathToFileURL(join(outDir, "index.mjs")).href);
+  const api = {
+    on: () => () => undefined,
+    appendEntry: () => undefined,
+    registerCommand: () => undefined,
+  };
+  await artifact.default(api);
 
   const stat = await readFile(join(outDir, "index.mjs"), "utf8");
   process.stdout.write(

@@ -1,4 +1,5 @@
-import { useEffect, useRef, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
+import { Copy } from "lucide-react";
 
 import {
   bracketedPaste,
@@ -7,7 +8,9 @@ import {
 } from "../../../shared/terminal-keys";
 import type { TuiFrame, TuiSurfaceSnapshot } from "../../../shared/tui-surface";
 import { useAppStore } from "../state/app-store";
+import { copyText, selectedTextWithin } from "../ui/clipboard";
 import { AnsiBlock } from "./AnsiBlock";
+import { frameText } from "./frame-text";
 import { overlayPixelRect, type CellSize, type TuiGrid } from "./tui-geometry";
 
 /**
@@ -40,10 +43,22 @@ interface SurfaceInputHandlers {
 function useSurfaceInput(
   onInput: (data: string) => void,
   scrollRef: React.RefObject<HTMLDivElement | null>,
+  surfaceRef: React.RefObject<HTMLDivElement | null>,
   cell: CellSize,
 ): SurfaceInputHandlers {
   const onKeyDown = (event: React.KeyboardEvent): void => {
     if (event.nativeEvent.isComposing) return;
+    // A real selection wins over the terminal chord (2026-10-30 copy plan).
+    // Ctrl+C with nothing selected must still reach the extension as `^C`,
+    // because that is how a Pi component aborts; Esc keeps doing the same.
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
+      const selected = selectedTextWithin(surfaceRef.current);
+      if (selected) {
+        event.preventDefault();
+        void copyText(selected);
+        return;
+      }
+    }
     if (event.key === "PageUp" || event.key === "PageDown") {
       const node = scrollRef.current;
       if (node && node.scrollHeight > node.clientHeight + 1) {
@@ -177,7 +192,8 @@ export function TuiSurface({
   const sendTuiInput = useAppStore((state) => state.sendTuiInput);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const input = useSurfaceInput((data) => sendTuiInput(tabId, data), scrollRef, cell);
+  const [copied, setCopied] = useState(false);
+  const input = useSurfaceInput((data) => sendTuiInput(tabId, data), scrollRef, containerRef, cell);
 
   const frame = snapshot.custom;
   useEffect(() => {
@@ -185,6 +201,31 @@ export function TuiSurface({
   }, [frame, focusToken]);
 
   if (!frame) return null;
+
+  const copySurface = (): void => {
+    const text = selectedTextWithin(containerRef.current) ?? frameText(frame);
+    if (!text) return;
+    void copyText(text).then((ok) => {
+      if (!ok) return;
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1_500);
+    });
+  };
+
+  const copyFloating = (
+    <button
+      type="button"
+      data-testid="tui-copy"
+      className="absolute bottom-1 right-1 z-30 flex items-center gap-1 rounded-xs border border-line bg-surface/90 px-1.5 py-0.5 text-[10px] text-ink-faint opacity-0 transition-opacity hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+      aria-label="Copy extension text"
+      title="Copy the selected text, or the whole extension surface"
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={copySurface}
+    >
+      <Copy className="size-3" aria-hidden />
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
 
   const body = (
     <div
@@ -213,12 +254,13 @@ export function TuiSurface({
         data-tui-overlay=""
         data-tui-surface="overlay"
         aria-label="Extension dialog"
-        className="absolute z-20 flex flex-col overflow-hidden border border-line bg-surface outline-none"
+        className="group absolute z-20 flex flex-col overflow-hidden border border-line bg-surface outline-none"
         style={rect}
         onKeyDown={input.onKeyDown}
         onPaste={input.onPaste}
       >
         {body}
+        {copyFloating}
       </div>
     );
   }
@@ -234,7 +276,7 @@ export function TuiSurface({
       autoFocus
       data-tui-surface="dock"
       aria-label={snapshot.overlay ? "Extension dialog" : "Extension input"}
-      className="relative flex min-h-0 shrink flex-col overflow-hidden border-t border-line bg-surface outline-none"
+      className="group relative flex min-h-0 shrink flex-col overflow-hidden border-t border-line bg-surface outline-none"
       style={{ maxHeight: dockMaxHeight }}
       onKeyDown={input.onKeyDown}
       onPaste={input.onPaste}
@@ -243,9 +285,22 @@ export function TuiSurface({
         <div className="flex shrink-0 items-center gap-2 border-b border-line px-2 py-1 text-[11px] text-ink-faint">
           <span className="font-medium text-ink-muted">Extension UI</span>
           <span>keys are forwarded to the extension</span>
+          <button
+            type="button"
+            data-testid="tui-copy"
+            className="ml-auto flex shrink-0 items-center gap-1 text-[11px] text-ink-faint hover:text-ink"
+            aria-label="Copy extension text"
+            title="Copy the selected text, or the whole extension surface"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={copySurface}
+          >
+            <Copy className="size-3" aria-hidden />
+            {copied ? "Copied" : "Copy"}
+          </button>
         </div>
       )}
       {body}
+      {snapshot.overlay ? copyFloating : null}
     </div>
   );
 }

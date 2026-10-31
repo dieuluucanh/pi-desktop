@@ -9,6 +9,10 @@
  *  - **`sticky top-0`, opaque `bg-surface`.** A transparent background would let
  *    rows ghost through the header while scrolling; the panel paints
  *    `bg-surface`, so the header paints it too.
+ *  - **A fixed `h-7`.** The height is the sticky offset contract for the group
+ *    headers inside the block: `ChangesSection` pins them at `top-7`, which is
+ *    exactly this header's height. A different height here would leave a gap or
+ *    overlap rows.
  *  - **A hairline bottom border.** It stays visible at rest (the same separator
  *    the panel header uses), so the pinned state needs no scroll listener.
  *  - **`z-10`.** Above the rows it covers, below dialogs/portals.
@@ -49,7 +53,7 @@ export function RailBlockHeader({
 }: RailBlockHeaderProps) {
   return (
     <div
-      className="sticky top-0 z-10 flex shrink-0 items-center gap-2 border-b border-line bg-surface px-3 py-1"
+      className="sticky top-0 z-10 flex h-7 shrink-0 items-center gap-2 border-b border-line bg-surface px-3"
       data-testid={testId}
     >
       <h3 className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted">{title}</h3>

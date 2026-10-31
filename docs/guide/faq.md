@@ -68,6 +68,21 @@ app updates its own code, the package manager updates extensions.
 **Is it translated?**
 Not yet (i18n is backlog). The UI is English in v0.2.0.
 
+**How do I copy the proposed commit message from `/commit`?**
+The extension renders it in a questionnaire panel. Select the text and press
+<kbd>Ctrl</kbd>+<kbd>C</kbd> (<kbd>Cmd</kbd>+<kbd>C</kbd> on macOS), or use the
+panel's **Copy** button, right-click → **Copy**, or the panel's own context menu;
+The selection takes precedence over the extension's
+`^C`, and <kbd>Esc</kbd> still aborts. The same works for any text an extension
+draws, and for ordinary assistant messages in the transcript.
+
+**How do I make the app bigger or smaller?**
+Use <kbd>Ctrl/Cmd</kbd>+<kbd>=</kbd> to zoom in, <kbd>Ctrl/Cmd</kbd>+<kbd>-</kbd> to
+zoom out, and <kbd>Ctrl/Cmd</kbd>+<kbd>0</kbd> for 100 %. The same controls are in
+View → Zoom In / Zoom Out / Actual Size, in the status bar's `− 100 % +`
+cluster, and in Settings → Display zoom. The level is remembered across
+launches.
+
 **Where do I report a bug?**
 Attach a Diagnostics support bundle (it is redacted) and the version from
 Settings → About or the title bar, and open an issue on the repository.

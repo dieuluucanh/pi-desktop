@@ -539,14 +539,19 @@ describe("renameSession", () => {
   });
 });
 
-describe("preferences", () => {
-  it("persists the view mode per app, not per session", async () => {
+describe("display zoom", () => {
+  it("persists a clamped zoom factor and steps through the levels", () => {
     const set = vi.fn(async () => ({}));
     (window.pi as unknown as { prefs: { set: unknown } }).prefs.set = set;
 
-    useAppStore.getState().setViewMode("verbose");
+    useAppStore.getState().setZoomFactor(1.25);
+    expect(useAppStore.getState().prefs.zoomFactor).toBe(1.25);
+    expect(set).toHaveBeenCalledWith({ zoomFactor: 1.25 });
 
-    expect(useAppStore.getState().prefs.viewMode).toBe("verbose");
-    expect(set).toHaveBeenCalledWith({ viewMode: "verbose" });
+    useAppStore.getState().zoomIn();
+    expect(useAppStore.getState().prefs.zoomFactor).toBe(1.5);
+
+    useAppStore.getState().zoomReset();
+    expect(useAppStore.getState().prefs.zoomFactor).toBe(1);
   });
 });

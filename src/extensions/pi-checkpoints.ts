@@ -26,6 +26,9 @@
  * mirror theirs.
  */
 
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import { createNodeGitRunner } from "../git/runner";
 import { createCheckpointStore, type CheckpointStore } from "../checkpoints/store";
 import type { CheckpointFs } from "../checkpoints/store";
@@ -133,10 +136,14 @@ export interface CheckpointExtensionApi {
   ): void;
 }
 
-/** The config the extension reads; injected so a test needs no filesystem. */
+/**
+ * Test seams. Everything here is optional: Pi's loader calls the default export
+ * with the API object alone, so production values are resolved from the
+ * environment (see `resolveProfileDir`), never injected by the host.
+ */
 export interface CheckpointExtensionDeps {
-  /** Where `checkpoints/` lives (from `PI_CODING_AGENT_DIR`). */
-  profileDir: string;
+  /** Test seam: overrides the profile resolved from `PI_CODING_AGENT_DIR`. */
+  profileDir?: string;
   /** Test seam: the shadow-repo engine. Defaults to the Node one. */
   store?: CheckpointStore;
   /** Test seam: the config reader. Defaults to `<profile>/checkpoints/config.json`. */
@@ -256,23 +263,42 @@ interface PendingCheckpoint {
 }
 
 /**
+ * The Pi profile, resolved the way Pi itself resolves it: an explicit value
+ * (tests) wins, then `PI_CODING_AGENT_DIR`, then `~/.pi/agent`. Read when the
+ * factory runs, not at import time, so a host or a test can set the env first.
+ */
+export function resolveProfileDir(
+  explicit?: string,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const value = explicit?.trim() || env.PI_CODING_AGENT_DIR?.trim();
+  if (!value) return join(homedir(), ".pi", "agent");
+  if (value === "~") return homedir();
+  if (value.startsWith("~/") || value.startsWith("~\\")) {
+    return join(homedir(), value.slice(2));
+  }
+  return value;
+}
+
+/**
  * Builds the extension. A default export is what Pi's loader calls, and it takes
  * the API object as its only argument.
  */
 export default function checkpointExtension(
   pi: CheckpointExtensionApi,
-  deps: CheckpointExtensionDeps,
+  deps: CheckpointExtensionDeps = {},
 ): void {
+  const profileDir = resolveProfileDir(deps.profileDir);
   const now = deps.now ?? ((): number => Date.now());
   const store =
     deps.store ??
     createCheckpointStore({
       runner: createNodeGitRunner(),
       fs: createNodeCheckpointFs(),
-      profileDir: deps.profileDir,
+      profileDir,
     });
   const readConfigFor =
-    deps.config ?? ((): Promise<CheckpointConfig> => readConfigOrDefault(deps.profileDir));
+    deps.config ?? ((): Promise<CheckpointConfig> => readConfigOrDefault(profileDir));
 
   /** This session's checkpoints, newest first (mirrors the durable entries). */
   let tracked: CheckpointEntryData[] = [];
@@ -336,7 +362,7 @@ export default function checkpointExtension(
     // per-event cost.
     if (event.reason === "reload") return;
     const fs = createNodeCheckpointFs();
-    await sweepOldShadowRepos(fs, deps.profileDir, store, now(), settings.retentionDays).catch(
+    await sweepOldShadowRepos(fs, profileDir, store, now(), settings.retentionDays).catch(
       () => 0,
     );
     const probe = await store.ensure(ctx.cwd).catch(() => null);

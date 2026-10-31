@@ -74,6 +74,25 @@ describe("menuTemplate", () => {
     expect(accelerators).not.toContain("CmdOrCtrl+O");
   });
 
+  it("binds app zoom to Ctrl+= / Ctrl+- / Ctrl+0, not Electron's roles", () => {
+    const { template } = build();
+    const items = allItems(template);
+    const zoom = items
+      .filter((item) => item.id?.startsWith("zoom-"))
+      .map((item) => [item.id, item.accelerator]);
+
+    expect(zoom).toEqual([
+      ["zoom-in", "CmdOrCtrl+="],
+      ["zoom-out", "CmdOrCtrl+-"],
+      ["zoom-reset", "CmdOrCtrl+0"],
+    ]);
+    // The role binds `Plus` (Ctrl+Shift+=) on Windows/Linux, which is the bug
+    // this menu path replaces (electron#40674).
+    expect(items.some((item) => item.role === "zoomIn")).toBe(false);
+    expect(items.some((item) => item.role === "zoomOut")).toBe(false);
+    expect(items.some((item) => item.role === "resetZoom")).toBe(false);
+  });
+
   it("keeps Pi for Office out of the primary menus", () => {
     const { template } = build();
     const fileIds = collectIds(

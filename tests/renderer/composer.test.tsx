@@ -22,20 +22,17 @@ function renderComposer(overrides: Partial<Parameters<typeof Composer>[0]> = {})
   const onStop = vi.fn();
   const onClearQueue = vi.fn();
   const onRestoreQueue = vi.fn();
-  const onSendModeChange = vi.fn();
   const onDraftChange = vi.fn();
   const props: Parameters<typeof Composer>[0] = {
     tabId: "tab-1",
     running: false,
     draft: "",
     queue: { steering: [], followUp: [] },
-    sendMode: "steer",
     onDraftChange,
     onSend,
     onStop,
     onClearQueue,
     onRestoreQueue,
-    onSendModeChange,
     onHistoryStep: () => null,
     ...overrides,
   };
@@ -46,7 +43,6 @@ function renderComposer(overrides: Partial<Parameters<typeof Composer>[0]> = {})
     onStop,
     onClearQueue,
     onRestoreQueue,
-    onSendModeChange,
     onDraftChange,
     ...rendered,
   };
@@ -92,22 +88,29 @@ describe("sending", () => {
 });
 
 describe("streaming delivery", () => {
-  it("marks a send with the chosen mode while running", async () => {
+  it("sends a steer on Enter and a follow-up on Alt+Enter while running", async () => {
     const user = userEvent.setup();
-    const { onSend, onSendModeChange } = renderComposer({ running: true, draft: "change of plan" });
+    const { onSend } = renderComposer({ running: true, draft: "change of plan" });
     const prompt = screen.getByLabelText("Prompt");
 
-    // The default delivery mode comes from the store (steer), so a plain Enter sends.
     await user.click(prompt);
     await user.keyboard("{Enter}");
     expect(onSend).toHaveBeenCalledTimes(1);
-
-    await user.click(screen.getByRole("button", { name: "follow-up mode" }));
-    expect(onSendModeChange).toHaveBeenCalledWith("followUp");
+    expect(onSend.mock.calls[0]?.[2]?.followUp).toBeUndefined();
 
     await user.click(prompt);
-    await user.keyboard("{Enter}");
+    await user.keyboard("{Alt>}{Enter}{/Alt}");
     expect(onSend).toHaveBeenCalledTimes(2);
+    expect(onSend.mock.calls[1]?.[2]?.followUp).toBe(true);
+  });
+
+  it("offers one Send button and no steer/follow-up toggles", () => {
+    renderComposer({ running: true });
+
+    expect(screen.getByRole("button", { name: /^send$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "steer mode" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "follow-up mode" })).toBeNull();
+    expect(screen.getByText(/Alt\+Enter queues a follow-up/)).toBeInTheDocument();
   });
 
   it("stops the run on Escape while streaming", async () => {
@@ -271,14 +274,7 @@ describe("follow-up chords (plan step 9)", () => {
   });
 });
 
-describe("send mode memory", () => {
-  it("reports a mode change", async () => {
-    const user = userEvent.setup();
-    const { onSendModeChange } = renderComposer({ running: true });
-    await user.click(screen.getByRole("button", { name: "follow-up mode" }));
-    expect(onSendModeChange).toHaveBeenCalledWith("followUp");
-  });
-
+describe("hint row", () => {
   it("renders the hint row", () => {
     renderComposer();
     const hints = screen.getByText(/commands/);
@@ -438,13 +434,11 @@ describe("extension shortcut dispatch (Tab)", () => {
           running={false}
           draft={draft}
           queue={{ steering: [], followUp: [] }}
-          sendMode="steer"
           onDraftChange={setDraft}
           onSend={async () => true}
           onStop={() => undefined}
           onClearQueue={() => undefined}
           onRestoreQueue={() => undefined}
-          onSendModeChange={() => undefined}
           onHistoryStep={() => null}
           extensionShortcuts={[{ key: "tab" }]}
           onInvokeShortcut={onInvokeShortcut}
@@ -508,13 +502,11 @@ describe("sleeping session (2026-10-24 plan)", () => {
         running={false}
         draft=""
         queue={{ steering: [], followUp: [] }}
-        sendMode="steer"
         onDraftChange={() => undefined}
         onSend={async () => true}
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onSendModeChange={() => undefined}
         onHistoryStep={() => null}
         focusToken={1}
       />,
@@ -549,13 +541,11 @@ describe("caret readout", () => {
         running={false}
         draft={draft}
         queue={{ steering: [], followUp: [] }}
-        sendMode="steer"
         onDraftChange={setDraft}
         onSend={async () => true}
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onSendModeChange={() => undefined}
         onHistoryStep={() => null}
       />
     );

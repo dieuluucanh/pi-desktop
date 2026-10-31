@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import type { AppInfo, WebTabOpenInput } from "../../../shared/ipc";
 import type { BlobRef, HostMethod } from "../../../shared/host-protocol";
-import { DEFAULT_PREFS, type UiPrefs, type ViewMode } from "../../../shared/prefs";
+import { DEFAULT_PREFS, type UiPrefs } from "../../../shared/prefs";
 import {
   findProject,
   projectNameOf,
@@ -72,6 +72,12 @@ import {
   type WebTabState,
 } from "../../../shared/web-tabs";
 import {
+  DEFAULT_ZOOM,
+  clampZoomFactor,
+  zoomIn as nextZoomLevel,
+  zoomOut as previousZoomLevel,
+} from "../../../shared/zoom";
+import {
   sanitizeMarkdownTransformResult,
   sanitizeRenderedFrame,
   type MarkdownTransformRequest,
@@ -123,12 +129,15 @@ import {
   type OfficeIntegrationRecordPatch,
 } from "../../../shared/integrations";
 import {
+  BUILTIN_THEME_SWATCHES,
   EMPTY_THEMES,
+  THEME_CHROME_VARIABLES,
   activeThemeSwatches,
   sanitizeThemesSnapshot,
   themeCssVariables,
   type ThemesSnapshot,
 } from "../../../shared/themes";
+import { systemThemeName } from "../themes/system-theme";
 import {
   officeDocumentScope,
   officeDocumentTag,
@@ -478,6 +487,11 @@ export interface AppStateShape {
   closePalette: () => void;
   togglePalette: () => void;
   setPrefs: (patch: Partial<UiPrefs>) => void;
+  /** Persists a display-zoom level (clamped by the shared helper). */
+  setZoomFactor: (factor: number) => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  zoomReset: () => void;
   /** Opens the onboarding wizard at the first step that still matters. */
   startOnboarding: () => void;
   setOnboardingStep: (step: OnboardingStep) => void;
@@ -563,11 +577,9 @@ export interface AppStateShape {
   resetTranscript: (tabId: string) => void;
 
   /** Composer (plan step 6). */
-  sendModes: Record<string, SendMode>;
   draftHistory: Record<string, string[]>;
   /** Where the user is browsing history for a tab (-1 = the live draft). */
   historyIndex: Record<string, number>;
-  setSendMode: (tabId: string, mode: SendMode) => void;
   setDraft: (tabId: string, text: string) => void;
   sendPrompt: (
     tabId: string,
@@ -666,7 +678,6 @@ export interface AppStateShape {
   restoreQueue: (tabId: string) => Promise<void>;
   /** Pulls enabledModels from disk into every live tab (focus/reload). */
   syncModelScopesFromDisk: () => Promise<void>;
-  setViewMode: (mode: ViewMode) => void;
   openPicker: (picker: PickerKind, options?: { search?: string }) => void;
   closePicker: () => void;
   /** What `/login <provider>` asked Connections to show, consumed by the view. */
@@ -1031,7 +1042,11 @@ export interface AppStateShape {
   themesError: string | null;
   loadThemes: (options?: { refresh?: boolean }) => Promise<void>;
   /** Activates a theme through the `theme` setting, then recolours the chrome. */
-  setActiveTheme: (name: string) => Promise<boolean>;
+  setActiveTheme: (name: string, options?: { keepFollowSystem?: boolean }) => Promise<boolean>;
+  /** Persists follow-system and, when enabled, applies the matching built-in theme. */
+  setFollowSystemTheme: (enabled: boolean) => void;
+  /** Re-applies the built-in theme that matches the OS, when following. */
+  applySystemTheme: () => Promise<void>;
   /** Imports a `.json` theme file into the profile and selects it. */
   importTheme: (filename: string, content: string) => Promise<boolean>;
 
@@ -1122,7 +1137,7 @@ export interface AppStateShape {
   /**
    * The app's expand-all state per tab (plan step 18). `null`/absent means each
    * card keeps its own default (an error card starts open); a boolean forces
-   * every tool card. `app.tools.expand` and the view mode drive it.
+   * every tool card. `app.tools.expand` drives it.
    */
   toolsExpanded: Record<string, boolean | null>;
   /** Flips expand-all for a tab and mirrors it to `ctx.ui.getToolsExpanded()`. */
@@ -1549,7 +1564,6 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   sessionInfoTabId: null,
   sessionInfoData: null,
   sessionInfoError: null,
-  sendModes: {},
   draftHistory: {},
   historyIndex: {},
   completionCommands: {},
@@ -1658,6 +1672,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     set({ prefs });
     void bridge()?.prefs.set(patch);
   },
+
+  setZoomFactor: (factor) => get().setPrefs({ zoomFactor: clampZoomFactor(factor) }),
+  zoomIn: () => get().setZoomFactor(nextZoomLevel(get().prefs.zoomFactor)),
+  zoomOut: () => get().setZoomFactor(previousZoomLevel(get().prefs.zoomFactor)),
+  zoomReset: () => get().setZoomFactor(DEFAULT_ZOOM),
 
   toggleSidebar: () => get().setPrefs({ sidebarCollapsed: !get().prefs.sidebarCollapsed }),
 
@@ -2526,8 +2545,6 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (request) void request.then(undefined, () => undefined);
   },
 
-  setSendMode: (tabId, mode) => set({ sendModes: { ...get().sendModes, [tabId]: mode } }),
-
   setDraft: (tabId, text) => {
     const drafts = { ...get().prefs.drafts, [tabId]: text };
     set({ prefs: { ...get().prefs, drafts } });
@@ -2837,11 +2854,6 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     await get().applyModelScopeToTabs();
   },
 
-  setViewMode: (mode) => {
-    set({ prefs: { ...get().prefs, viewMode: mode } });
-    void bridge()?.prefs.set({ viewMode: mode });
-  },
-
   sendPromptNow: async (tabId, text, options = {}) => {
     const api = bridge();
     const trimmed = text.trim();
@@ -2866,7 +2878,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // Re-read after the ensure: the host may already be streaming while the
     // renderer still showed idle, and a streamed send needs a delivery mode.
     const running = get().tabs.find((entry) => entry.id === tabId)?.status === "running";
-    const mode = running ? (options.mode ?? get().sendModes[tabId] ?? "steer") : undefined;
+    const mode = running ? (options.mode ?? "steer") : undefined;
     // A `[paste #N …]` marker is display sugar: the model must receive the body
     // (plan step 20).
     const params: Record<string, unknown> = {
@@ -3908,16 +3920,29 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       });
       const themes = sanitizeThemesSnapshot(raw);
       set({ themes, themesLoaded: true, themesBusy: false, themesError: null });
+      // Follow-system wins over the stored theme: switch the built-in theme to
+      // match the OS, then let the normal path cache and paint it.
+      if (get().prefs.followSystemTheme) {
+        const desired = systemThemeName();
+        if (themes.active !== desired) {
+          const ok = await get().setActiveTheme(desired, { keepFollowSystem: true });
+          if (!ok) get().applyChromeTheme();
+          return;
+        }
+      }
+      // Keep the first-paint cache in step with the theme Pi actually loaded.
+      // Only write when it differs: this runs on every launch and on retry.
+      const active = activeThemeSwatches(themes);
+      if (active && get().prefs.theme !== active.variant) {
+        get().setPrefs({ theme: active.variant });
+      }
       get().applyChromeTheme();
     } catch (error) {
       set({ themesBusy: false, themesLoaded: true, themesError: errorMessage(error) });
     }
   },
 
-  setActiveTheme: async (name) => {
-    if (!get().settings) await get().loadSettings();
-    const settings = get().settings;
-    void settings;
+  setActiveTheme: async (name, options) => {
     const scope = settingsTargetForProject(get(), get().project?.path ?? null);
     const ok = await get().setSetting("theme", name, scope as SettingsScope);
     if (ok) {
@@ -3927,9 +3952,33 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         themes: get().themes.themes.map((entry) => ({ ...entry, active: entry.name === name })),
       };
       set({ themes });
+      const active = themes.themes.find((entry) => entry.name === name);
+      const variant = active?.variant ?? (name === "light" ? "light" : null);
+      if (variant && get().prefs.theme !== variant) get().setPrefs({ theme: variant });
+      // Choosing a theme is an explicit choice; follow-system yields. The
+      // follow-system reconciler passes `keepFollowSystem` so it does not turn
+      // itself off.
+      if (!options?.keepFollowSystem && get().prefs.followSystemTheme) {
+        get().setPrefs({ followSystemTheme: false });
+      }
       get().applyChromeTheme();
     }
     return ok;
+  },
+
+  setFollowSystemTheme: (enabled) => {
+    get().setPrefs({ followSystemTheme: enabled });
+    if (enabled) void get().applySystemTheme();
+  },
+
+  applySystemTheme: async () => {
+    if (!get().prefs.followSystemTheme) return;
+    const desired = systemThemeName();
+    if (get().themes.active === desired) {
+      get().applyChromeTheme();
+      return;
+    }
+    await get().setActiveTheme(desired, { keepFollowSystem: true });
   },
 
   importTheme: async (filename, content) => {
@@ -4104,18 +4153,31 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   applyChromeTheme: () => {
-    const snapshot = get().themes;
-    const active = activeThemeSwatches(snapshot);
     if (typeof document === "undefined") return;
     const root = document.documentElement;
+    // Clear every variable first: a custom theme may have set keys the next
+    // theme omits, and leaving them behind means the colours are a blend of two
+    // themes (2026-10-30 theme pass).
+    for (const key of THEME_CHROME_VARIABLES) root.style.removeProperty(key);
+    const followName = get().prefs.followSystemTheme ? systemThemeName() : null;
+    const active = followName
+      ? (get().themes.themes.find((theme) => theme.name === followName) ?? {
+          name: followName,
+          scope: "builtin" as const,
+          active: true,
+          variant: followName,
+          swatches: { ...BUILTIN_THEME_SWATCHES[followName] },
+        })
+      : activeThemeSwatches(get().themes);
     if (!active) {
       root.removeAttribute("data-theme");
       return;
     }
     const variables: Record<string, string> = themeCssVariables(active.swatches, active.variant);
-    for (const [key, value] of Object.entries(variables)) {
-      if (key === "data-theme") root.setAttribute("data-theme", value);
-      else if (value) root.style.setProperty(key, value);
+    root.setAttribute("data-theme", active.variant);
+    for (const key of THEME_CHROME_VARIABLES) {
+      const value = variables[key];
+      if (value) root.style.setProperty(key, value);
     }
   },
 

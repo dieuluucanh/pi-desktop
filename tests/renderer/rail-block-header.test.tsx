@@ -30,6 +30,8 @@ describe("RailBlockHeader", () => {
     expect(header.className).toContain("top-0");
     expect(header.className).toContain("bg-surface");
     expect(header.className).toContain("border-line");
+    // The fixed height is the offset contract for the Changes group headers.
+    expect(header.className).toContain("h-7");
   });
 
   it("omits the badge rather than rendering a meaningless zero", () => {

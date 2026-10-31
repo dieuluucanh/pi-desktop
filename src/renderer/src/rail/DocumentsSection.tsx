@@ -22,6 +22,7 @@ import { useState, type ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { copyText } from "../ui/clipboard";
 import { useAppStore } from "../state/app-store";
 import {
   formatPaneAge,
@@ -38,9 +39,8 @@ function CopyButton({ value, label }: { value: string; label: string }) {
       type="button"
       className="text-[11px] text-ink-faint hover:text-ink"
       onClick={() => {
-        const clipboard = navigator.clipboard;
-        if (!clipboard) return;
-        void clipboard.writeText(value).then(() => {
+        void copyText(value).then((ok) => {
+          if (!ok) return;
           setCopied(true);
           setTimeout(() => setCopied(false), 1_500);
         });

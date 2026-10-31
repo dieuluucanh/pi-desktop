@@ -3,7 +3,16 @@ import { readFileSync } from "node:fs";
 import { stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, clipboard, dialog, nativeImage, powerMonitor, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  Menu,
+  nativeImage,
+  powerMonitor,
+  shell,
+} from "electron";
 import {
   IPC,
   type AppInfo,
@@ -22,6 +31,7 @@ import type { CreateTabInput, SessionTabsEnvelope } from "../shared/session-ipc"
 import { CONTROL_TAB_ID } from "../shared/session-ipc";
 import { HOST_METHODS } from "../shared/host-protocol";
 import { menuAcceleratorsFor, resolveDesktopKeymap } from "../shared/desktop-keymap";
+import { DEFAULT_ZOOM, clampZoomFactor } from "../shared/zoom";
 import { APP_COPYRIGHT, APP_NAME, APP_USER_MODEL_ID, resolveBranding } from "./branding";
 import { createAppStore } from "./app-store";
 import { createNodeFsPort } from "./fs-port";
@@ -36,6 +46,7 @@ import {
   type IpcSessionDeps,
 } from "./ipc";
 import { installAppMenu } from "./menu";
+import { contextMenuTemplate } from "./context-menu";
 import { createCommandRunner } from "./office/exec";
 import { buildBugReport, messagesFromJsonl, shareSession, summarizeForBugReport } from "./share";
 import { openInExternalEditor } from "./editor";
@@ -516,6 +527,16 @@ function setWindowTitle(title: unknown): boolean {
   return true;
 }
 
+/** The renderer owns the zoom preference; main applies it to every window. */
+let windowZoomFactor: number = DEFAULT_ZOOM;
+
+function applyZoom(factor: unknown): void {
+  windowZoomFactor = clampZoomFactor(factor);
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.setZoomFactor(windowZoomFactor);
+  }
+}
+
 function createWindow(): BrowserWindow {
   // The window's security posture is declared once in `./security.ts`; the test
   // in `tests/main/security.test.ts` reads those options, so this call site
@@ -536,6 +557,12 @@ function createWindow(): BrowserWindow {
     window.show();
   });
 
+  // Chromium keeps a per-origin zoom map; without re-applying the stored factor
+  // on load a previous session's zoom could win (2026-10-30 zoom plan).
+  window.webContents.on("did-finish-load", () => {
+    if (!window.isDestroyed()) window.webContents.setZoomFactor(windowZoomFactor);
+  });
+
   const forwardState = (): void => {
     if (!window.isDestroyed()) window.webContents.send(IPC.windowState, windowStateOf(window));
   };
@@ -551,6 +578,37 @@ function createWindow(): BrowserWindow {
   window.webContents.setWindowOpenHandler(({ url }) => {
     void openExternal(url);
     return { action: "deny" };
+  });
+
+  // Electron has no default context menu. The template is pure and tested; this
+  // call site only supplies the window's editing commands (2026-10-30 copy plan).
+  window.webContents.on("context-menu", (_event, params) => {
+    const contents = window.webContents;
+    const withContents = (action: () => void): void => {
+      if (!window.isDestroyed() && !contents.isDestroyed()) action();
+    };
+    const template = contextMenuTemplate(
+      {
+        selectionText: params.selectionText,
+        isEditable: params.isEditable,
+        canUndo: params.editFlags.canUndo,
+        canRedo: params.editFlags.canRedo,
+        canCut: params.editFlags.canCut,
+        canCopy: params.editFlags.canCopy,
+        canPaste: params.editFlags.canPaste,
+        canSelectAll: params.editFlags.canSelectAll,
+      },
+      {
+        undo: () => withContents(() => contents.undo()),
+        redo: () => withContents(() => contents.redo()),
+        cut: () => withContents(() => contents.cut()),
+        copy: () => withContents(() => contents.copy()),
+        paste: () => withContents(() => contents.paste()),
+        selectAll: () => withContents(() => contents.selectAll()),
+      },
+    );
+    if (template.length === 0) return;
+    Menu.buildFromTemplate(template).popup({ window });
   });
 
   window.on("closed", () => {
@@ -1096,6 +1154,11 @@ if (!app.requestSingleInstanceLock()) {
           if (patch && typeof patch === "object" && "checkpoints" in patch) {
             await projectCheckpointConfig(prefs.checkpoints);
           }
+          // Display zoom is a window property, not a renderer style: apply it
+          // here so a menu click or the status-bar cluster takes effect at once.
+          if (patch && typeof patch === "object" && "zoomFactor" in patch) {
+            applyZoom(prefs.zoomFactor);
+          }
           return prefs;
         },
       },
@@ -1236,7 +1299,12 @@ if (!app.requestSingleInstanceLock()) {
         },
       },
     });
+    // Load the persisted display zoom before the window paints; `applyZoom`
+    // after creation covers the already-loaded case and every extra window.
+    const startupPrefs = (await appState.read()).prefs;
+    windowZoomFactor = clampZoomFactor(startupPrefs.zoomFactor);
     mainWindow = createWindow();
+    applyZoom(windowZoomFactor);
     // Check once, unobtrusively, in the background (plan step 26). A user can
     // always ask from Help → Check for Updates; this is the "there is a newer
     // build" path. Offline starts are skipped, and the timer is cleared on quit.

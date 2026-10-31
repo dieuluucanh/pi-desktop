@@ -22,6 +22,7 @@ import { Camera, Copy, History, RotateCcw, Trash2 } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { ConfirmDialog } from "../ui/confirm-dialog";
+import { copyText } from "../ui/clipboard";
 import { useAppStore } from "../state/app-store";
 import type { Checkpoint } from "../../../shared/checkpoints";
 import { RestoreDialog } from "./RestoreDialog";
@@ -51,15 +52,7 @@ export interface CheckpointsSectionProps {
   entryIds?: Readonly<Record<string, true>>;
 }
 
-/** Copy a string, falling back to the legacy path in an older webview. */
-async function copyText(text: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    // A denied clipboard permission is not worth a banner: the ref is visible in
-    // the row's title, so the user can still read it.
-  }
-}
+/** Copy a string through the shared clipboard helper (one failure policy). */
 
 export function CheckpointsSection({ projectPath, entryIds }: CheckpointsSectionProps) {
   const state = useAppStore((store) => store.checkpoints[projectPath]);

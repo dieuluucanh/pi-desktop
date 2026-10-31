@@ -46,6 +46,21 @@ describe("the built artifact", () => {
     expect(typeof module.default).toBe("function");
   });
 
+  it("loads when the factory is called with the API object alone", async () => {
+    // The exact contract of Pi's `initializeExtension`: `await factory(load.api)`.
+    // Asserting only `typeof default === "function"` let a required second
+    // argument reach users, where it aborted every `pi` startup.
+    const module = (await import(join(outDir, "index.mjs"))) as {
+      default: (api: unknown) => void | Promise<void>;
+    };
+    const api = {
+      on: () => () => undefined,
+      appendEntry: () => undefined,
+      registerCommand: () => undefined,
+    };
+    await expect(Promise.resolve(module.default(api))).resolves.toBeUndefined();
+  });
+
   it("has no unresolved @earendil-works specifier", async () => {
     const bundle = await readFile(join(outDir, "index.mjs"), "utf8");
     // The extension mirrors the SDK structurally, so nothing needs the package.

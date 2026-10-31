@@ -16,12 +16,14 @@ import {
   sanitizeCheckpointConfig,
   type CheckpointConfig,
 } from "./checkpoints";
+import { DEFAULT_ZOOM, clampZoomFactor } from "./zoom";
 
 export const PREF_KEYS = [
   "theme",
+  "followSystemTheme",
+  "zoomFactor",
   "sidebarCollapsed",
   "sidebarWidth",
-  "viewMode",
   "drafts",
   "telemetryEnabled",
   "privacyAcknowledged",
@@ -37,14 +39,26 @@ export const PREF_KEYS = [
 export type PrefKey = (typeof PREF_KEYS)[number];
 
 export type ThemeSetting = "dark" | "light" | "system";
-export type ViewMode = "normal" | "verbose" | "summary";
 
 export interface UiPrefs {
   theme: ThemeSetting;
+  /**
+   * Follow the OS light/dark setting while using Pi's built-in themes. Off by
+   * default: an explicit theme choice is the normal case. Enabling it activates
+   * the built-in `dark`/`light` theme and keeps it in step with the OS; choosing
+   * any theme manually turns it off. `theme` above is then only the first-paint
+   * cache of the resolved variant.
+   */
+  followSystemTheme: boolean;
+  /**
+   * App-level display zoom (1 = 100 %), persisted so a relaunch restores it.
+   * Main applies it with `webContents.setZoomFactor`; the shared sanitizer
+   * clamps it to the supported levels.
+   */
+  zoomFactor: number;
   sidebarCollapsed: boolean;
   /** Sidebar width in CSS pixels, clamped to the supported range. */
   sidebarWidth: number;
-  viewMode: ViewMode;
   /**
    * Per-tab composer drafts (plan step 6), so an unfinished prompt survives a
    * tab switch or an app restart. Bounded below: a draft is not a document.
@@ -122,9 +136,10 @@ export const DEFAULT_SIDEBAR_WIDTH = 268;
 
 export const DEFAULT_PREFS: UiPrefs = {
   theme: "dark",
+  followSystemTheme: false,
+  zoomFactor: DEFAULT_ZOOM,
   sidebarCollapsed: false,
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
-  viewMode: "normal",
   drafts: {},
   telemetryEnabled: false,
   privacyAcknowledged: false,
@@ -142,7 +157,6 @@ export const DEFAULT_PREFS: UiPrefs = {
 };
 
 const THEMES: readonly ThemeSetting[] = ["dark", "light", "system"];
-const VIEW_MODES: readonly ViewMode[] = ["normal", "verbose", "summary"];
 
 function clampWidth(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_SIDEBAR_WIDTH;
@@ -165,9 +179,15 @@ export function sanitizeDrafts(input: unknown): Record<string, string> {
 export function sanitizePrefs(input: unknown): UiPrefs {
   const source = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
   const theme = source.theme;
-  const viewMode = source.viewMode;
   return {
     theme: THEMES.includes(theme as ThemeSetting) ? (theme as ThemeSetting) : DEFAULT_PREFS.theme,
+    // An older app-state.json may only have `theme: "system"`; that was the
+    // follow-system choice before this key existed, so migrate it.
+    followSystemTheme:
+      typeof source.followSystemTheme === "boolean"
+        ? source.followSystemTheme
+        : source.theme === "system",
+    zoomFactor: clampZoomFactor(source.zoomFactor),
     sidebarCollapsed:
       typeof source.sidebarCollapsed === "boolean"
         ? source.sidebarCollapsed
@@ -176,9 +196,6 @@ export function sanitizePrefs(input: unknown): UiPrefs {
       typeof source.sidebarWidth === "number"
         ? clampWidth(source.sidebarWidth)
         : DEFAULT_PREFS.sidebarWidth,
-    viewMode: VIEW_MODES.includes(viewMode as ViewMode)
-      ? (viewMode as ViewMode)
-      : DEFAULT_PREFS.viewMode,
     drafts: sanitizeDrafts(source.drafts),
     // A missing value is off: an older app-state.json (or a fresh profile) must
     // never opt the user into telemetry by omission.

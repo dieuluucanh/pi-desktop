@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import checkpointExtension, {
@@ -9,6 +10,7 @@ import checkpointExtension, {
   promptLabel,
   promptSnippet,
   relativeLabel,
+  resolveProfileDir,
   sweepOldShadowRepos,
   type CheckpointCommandContext,
   type CheckpointEntryData,
@@ -268,6 +270,38 @@ function customEntry(entryId: string, ref: string): unknown {
   };
   return { type: "custom", customType: CHECKPOINT_ENTRY_TYPE, data };
 }
+
+describe("the loader contract", () => {
+  /** Exactly the members Pi's `ExtensionAPI` provides that this extension uses. */
+  function bareApi(): CheckpointExtensionApi {
+    return {
+      on: () => () => undefined,
+      appendEntry: () => undefined,
+      registerCommand: () => undefined,
+    };
+  }
+
+  it("builds when Pi calls it with the API object alone", () => {
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = join(PROFILE, "from-env");
+    try {
+      // Pi's loader is `await factory(load.api)` — no second argument. A required
+      // `deps` used to throw here and abort startup for the whole CLI.
+      expect(() => checkpointExtension(bareApi())).not.toThrow();
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+    }
+  });
+
+  it("resolves the profile from the dep, then the environment, then the home default", () => {
+    expect(resolveProfileDir("/explicit", { PI_CODING_AGENT_DIR: "/from-env" })).toBe("/explicit");
+    expect(resolveProfileDir(undefined, { PI_CODING_AGENT_DIR: "/from-env" })).toBe("/from-env");
+    expect(resolveProfileDir("   ", { PI_CODING_AGENT_DIR: "   " })).toBe(
+      join(homedir(), ".pi", "agent"),
+    );
+  });
+});
 
 describe("session_start", () => {
   it("rehydrates the checkpoints this session already has", async () => {
@@ -710,7 +744,10 @@ describe("import surface", () => {
     expect(specifiers.filter((id) => id?.startsWith("@earendil-works"))).toEqual([]);
     expect(specifiers.filter((id) => id === "electron")).toEqual([]);
     expect(specifiers.filter((id) => id?.startsWith("node:fs"))).toEqual([]);
-    // Everything it does import is relative: the bundler inlines those.
-    expect(specifiers.every((id) => id?.startsWith("."))).toBe(true);
+    // Node built-ins (the profile path) are fine; everything else must be
+    // relative, because the bundler inlines those and only those.
+    expect(
+      specifiers.every((id) => id?.startsWith(".") || id?.startsWith("node:")),
+    ).toBe(true);
   });
 });

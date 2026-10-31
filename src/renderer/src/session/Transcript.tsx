@@ -3,6 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { diffLines } from "diff";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { copyText, hasSelectionWithin } from "../ui/clipboard";
 import { cn } from "../ui/cn";
 import { Markdown } from "./Markdown";
 import { HighlightText } from "./Highlight";
@@ -352,22 +353,20 @@ function NoticeView({
  * teach users not to trust the transcript's controls.
  */
 function MessageActions({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
   return (
     <div className="mt-1 flex gap-2 text-[11px] text-ink-faint">
       <button
         type="button"
         className="hover:text-ink"
         onClick={() => {
-          const clipboard = navigator.clipboard;
-          if (!clipboard) return;
-          void clipboard.writeText(text).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1_500);
+          void copyText(text).then((ok) => {
+            setStatus(ok ? "copied" : "failed");
+            setTimeout(() => setStatus("idle"), 1_500);
           });
         }}
       >
-        {copied ? "copied" : "copy"}
+        {status === "copied" ? "copied" : status === "failed" ? "copy failed" : "copy"}
       </button>
     </div>
   );
@@ -733,9 +732,10 @@ export function Transcript({
     [items],
   );
 
-  // Command prompts (2026-10-26 composer plan): Summary/Ctrl+O/Verbose are the
-  // global override, the App preference is the neutral default, and a per-row
-  // toggle wins until the global state changes.
+  // Command prompts (2026-10-26 composer plan): Ctrl+O is the global override,
+  // the App preference is the neutral default, and a per-row toggle wins until
+  // the global state changes. The Normal/Verbose/Summary mode was removed
+  // (2026-10-30 copy plan); Ctrl+O is the only expand-all switch.
   const showExpandedPrompts = useAppStore((state) => state.prefs.showExpandedPrompts);
   const defaultPromptExpanded = toolsExpanded ?? showExpandedPrompts;
   const [promptOverrides, setPromptOverrides] = useState<Record<string, boolean>>({});
@@ -758,18 +758,30 @@ export function Transcript({
     overscan: 8,
   });
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
-    const node = scrollRef.current;
-    if (!node) return;
-    if (typeof node.scrollTo === "function") {
-      node.scrollTo({ top: node.scrollHeight, behavior });
-    } else {
-      node.scrollTop = node.scrollHeight;
-    }
-    stickToBottom.current = true;
-    setAtBottom(true);
-    setHasNews(false);
-  }, []);
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior = "auto", options?: { force?: boolean }) => {
+      const node = scrollRef.current;
+      if (!node) return;
+      // A live selection belongs to the user. Auto-follow must not move the
+      // viewport out from under a drag-select while a response streams; the
+      // pill and Ctrl+End are the explicit ways to force it (2026-10-30 copy
+      // plan).
+      if (!options?.force && hasSelectionWithin(node)) {
+        setAtBottom(false);
+        setHasNews(true);
+        return;
+      }
+      if (typeof node.scrollTo === "function") {
+        node.scrollTo({ top: node.scrollHeight, behavior });
+      } else {
+        node.scrollTop = node.scrollHeight;
+      }
+      stickToBottom.current = true;
+      setAtBottom(true);
+      setHasNews(false);
+    },
+    [],
+  );
 
   /**
    * A size signature of the last item's streamed text. Streaming deltas grow the
@@ -845,7 +857,7 @@ export function Transcript({
       const target = event.target as HTMLElement | null;
       if (target?.closest?.("input, textarea, [contenteditable='true']")) return;
       event.preventDefault();
-      scrollToBottom("smooth");
+      scrollToBottom("smooth", { force: true });
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -961,7 +973,7 @@ export function Transcript({
         type="button"
         data-testid="jump-to-latest"
         className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-line bg-surface px-3 py-1 text-xs shadow-sm hover:bg-raised"
-        onClick={() => scrollToBottom("smooth")}
+        onClick={() => scrollToBottom("smooth", { force: true })}
       >
         {hasNews ? "New messages · jump to latest" : "Jump to latest"}
       </button>

@@ -252,6 +252,11 @@ export const MENU_COMMANDS = [
   "view-source-control",
   "view-checkpoints",
   "view-documents",
+  // App display zoom (2026-10-30 zoom plan). Explicit CmdOrCtrl+= replaces the
+  // Electron `zoomIn` role, whose Windows/Linux default is Ctrl+Shift+=.
+  "zoom-in",
+  "zoom-out",
+  "zoom-reset",
 ] as const;
 
 export type MenuCommand = (typeof MENU_COMMANDS)[number];

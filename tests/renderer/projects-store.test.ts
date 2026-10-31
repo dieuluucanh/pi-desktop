@@ -69,7 +69,6 @@ function resetStore(): void {
     activeTabId: null,
     transcripts: {},
     sessionStates: {},
-    sendModes: {},
     draftHistory: {},
     historyIndex: {},
     picker: null,

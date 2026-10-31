@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { SettingsScope } from "../../../shared/settings-schema";
+import { formatZoomPercent } from "../../../shared/zoom";
 import {
   getSettingsValue,
   groupSettingsFields,
@@ -13,7 +14,6 @@ import {
   settingsGlobalValueProvenance,
   splitAdvancedFields,
 } from "../../../shared/settings-view";
-import type { ThemeSetting, ViewMode } from "../../../shared/prefs";
 import { useAppStore } from "../state/app-store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -39,12 +39,21 @@ import {
  * validated document edit; a malformed file is surfaced here, never overwritten.
  */
 
-const THEMES: readonly ThemeSetting[] = ["dark", "light", "system"];
-const VIEW_MODES: readonly ViewMode[] = ["normal", "verbose", "summary"];
+/**
+ * Settings fields this view does not render because another surface owns them.
+ * `theme` is the Pi theme setting; the Skills → Themes catalogue is its one
+ * control (the raw JSON editor remains an escape hatch).
+ */
+const APP_OWNED_SETTINGS = new Set(["theme"]);
 
 export function SettingsView() {
   const prefs = useAppStore((state) => state.prefs);
   const setPrefs = useAppStore((state) => state.setPrefs);
+  const setView = useAppStore((state) => state.setView);
+  const zoomFactor = useAppStore((state) => state.prefs.zoomFactor);
+  const zoomIn = useAppStore((state) => state.zoomIn);
+  const zoomOut = useAppStore((state) => state.zoomOut);
+  const zoomReset = useAppStore((state) => state.zoomReset);
   const toggleSidebar = useAppStore((state) => state.toggleSidebar);
   const info = useAppStore((state) => state.info);
   const project = useAppStore((state) => state.project);
@@ -217,20 +226,27 @@ export function SettingsView() {
         <h2 className="text-sm font-semibold">App preferences</h2>
         <Row
           label="Theme"
-          hint="First-paint fallback only; the active Pi theme (Skills → Themes) owns the chrome once it loads."
+          hint="Light, dark and custom themes live in Skills, themes & keys — one catalogue, one control."
         >
-          <Segmented
-            options={THEMES}
-            value={prefs.theme}
-            onChange={(theme) => setPrefs({ theme })}
-          />
+          <Button size="sm" onClick={() => setView("skills")}>
+            Open theme settings
+          </Button>
         </Row>
-        <Row label="Tool-call detail" hint="How much of each tool call the transcript shows.">
-          <Segmented
-            options={VIEW_MODES}
-            value={prefs.viewMode}
-            onChange={(viewMode) => setPrefs({ viewMode })}
-          />
+        <Row
+          label="Display zoom"
+          hint="Changes the size of the whole app. View → Zoom In / Zoom Out / Actual Size, or Ctrl/Cmd + = / - / 0."
+        >
+          <div className="flex items-center gap-2" data-testid="display-zoom">
+            <Button size="sm" variant="ghost" aria-label="Zoom out" onClick={zoomOut}>
+              −
+            </Button>
+            <Button size="sm" variant="ghost" title="Reset to 100%" onClick={zoomReset}>
+              {formatZoomPercent(zoomFactor)}
+            </Button>
+            <Button size="sm" variant="ghost" aria-label="Zoom in" onClick={zoomIn}>
+              +
+            </Button>
+          </div>
         </Row>
         <Row
           label="Expanded command prompts"
@@ -315,7 +331,9 @@ export function SettingsView() {
 
       {groups.map(({ group, fields }) => {
         const { basic, advanced } = splitAdvancedFields(fields);
-        const visible = showAdvanced ? [...basic, ...advanced] : basic;
+        const visible = (showAdvanced ? [...basic, ...advanced] : basic).filter(
+          (field) => !APP_OWNED_SETTINGS.has(field.key),
+        );
         if (visible.length === 0) return null;
         return (
           <section
@@ -510,32 +528,6 @@ function Row({
       <div className="text-sm">{label}</div>
       {hint ? <div className="text-xs text-ink-faint">{hint}</div> : null}
       {children}
-    </div>
-  );
-}
-
-function Segmented<T extends string>({
-  options,
-  value,
-  onChange,
-}: {
-  options: readonly T[];
-  value: T;
-  onChange: (next: T) => void;
-}) {
-  return (
-    <div className="flex gap-1">
-      {options.map((option) => (
-        <Button
-          key={option}
-          size="sm"
-          variant={option === value ? "secondary" : "ghost"}
-          aria-pressed={option === value}
-          onClick={() => onChange(option)}
-        >
-          {option}
-        </Button>
-      ))}
     </div>
   );
 }

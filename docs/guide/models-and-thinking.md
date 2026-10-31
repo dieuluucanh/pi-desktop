@@ -94,17 +94,14 @@ and the footer shows tokens and cost from `getSessionStats()`. Long sessions can
 be compacted manually with `/compact`, or automatically according to the
 compaction settings.
 
-## View mode
+## Tool detail
 
-The session header’s **view mode** controls how much tool detail the transcript
-shows:
-
-- **Normal** — tool cards collapsed to a summary.
-- **Verbose** — every tool call expanded.
-- **Summary** — the most compact rendering.
-
-The mode is an app preference (`prefs.viewMode`) and persists across sessions. It
-also overrides the `app.tools.expand` binding (`Ctrl+O`) for the transcript.
+Tool cards and command prompts are expanded or collapsed with
+<kbd>Ctrl</kbd>+<kbd>O</kbd> (Pi's `app.tools.expand`), and each card also has its
+own chevron. There is no Normal/Verbose/Summary mode: the app follows terminal
+Pi here, where Ctrl+O is the only expand-all switch. Command prompts stay
+collapsed by default; `prefs.showExpandedPrompts` changes that default for plain
+prompts and commands such as `/commit`.
 
 ## Related
 

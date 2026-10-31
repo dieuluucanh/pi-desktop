@@ -7,6 +7,7 @@ import {
 import { useAppStore } from "../state/app-store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { copyText } from "../ui/clipboard";
 import { Separator } from "../ui/separator";
 import { OfficeSetupPanel } from "./OfficeSetupPanel";
 import { useOfficeSetup } from "./useOfficeSetup";
@@ -87,13 +88,7 @@ export function OfficeIntegrationCard() {
   const copyDiagnostics = async (): Promise<void> => {
     const text = await office.loadDiagnostics();
     if (!text) return;
-    try {
-      await navigator.clipboard?.writeText(text);
-      setCopied(true);
-    } catch {
-      // A missing clipboard is not worth an error banner; the bundle is still
-      // rendered by the wizard panel below.
-    }
+    if (await copyText(text)) setCopied(true);
   };
 
   return (

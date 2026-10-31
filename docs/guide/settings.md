@@ -64,8 +64,12 @@ changed while off, the current file is kept and the app reports it.
 A few things live in app state on purpose, so they never change terminal Pi’s
 behaviour:
 
-- theme fallback before Pi’s theme loads (`prefs.theme`);
-- sidebar layout, view mode and per-tab drafts;
+- theme first-paint cache (`prefs.theme`); the active Pi theme is loaded at startup
+  and owns the chrome from then on;
+- follow-system appearance (`prefs.followSystemTheme`) and app display zoom
+  (`prefs.zoomFactor`; View → Zoom In / Zoom Out / Actual Size, or
+  <kbd>Ctrl/Cmd</kbd>+<kbd>=</kbd> / <kbd>-</kbd> / <kbd>0</kbd>);
+- sidebar layout and per-tab drafts;
 - telemetry opt-in (`PI_TELEMETRY=0` unless enabled);
 - the Pi profile choice (shared vs app-private);
 - `externalEditor` is a Pi setting, but the launcher that spawns the editor is

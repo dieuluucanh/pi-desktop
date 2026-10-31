@@ -29,7 +29,7 @@ of the SDK's `ExtensionUIContext` appears here.
 | `setWorkingMessage` / `setWorkingVisible` / `setWorkingIndicator` | the working row above the composer                                        | custom frames + interval honoured; `visible:false` hides it                                              |
 | `setHiddenThinkingLabel`                                          | transcript thinking blocks                                                | replaces the collapsed thinking label                                                                    |
 | `setTitle`                                                        | window title (validated in main)                                          | bounded, single-line                                                                                     |
-| `getToolsExpanded` / `setToolsExpanded`                           | transcript tool-card expansion (`oi.state` + `oi.setToolsExpanded`)       | the app owns `Ctrl+O` and the view mode; the host’s copy stays truthful                                  |
+| `getToolsExpanded` / `setToolsExpanded`                           | transcript tool-card expansion (`oi.state` + `oi.setToolsExpanded`)       | the app owns `Ctrl+O`; the host’s copy stays truthful                                                    |
 | `pasteToEditor` / `setEditorText`                                 | composer mirror (`oi.editorText`)                                         | renderer reports its buffer back, debounced per tab                                                      |
 | `getEditorText`                                                   | the mirror                                                                | **eventually consistent** — the host cannot read a textarea synchronously                                |
 | `addAutocompleteProvider`                                         | the composer’s completion stack (`completion.suggest` / `apply`)          | the host runs `factory(current)`; the renderer sends its `/`, `@`, `#` result as `current`               |
@@ -150,6 +150,21 @@ component is mounted, the panel replaces the composer and the keys go to the
 extension. The panel says so: a caption row (`Extension UI` · _keys are
 forwarded to the extension_) and an accent border. The read-only header/footer
 slots (`TuiSlotFrame`) stay plain chrome.
+
+**Copying from a TUI surface (2026-10-30 copy plan).** The frame is real,
+selectable DOM, but the surface forwards every Ctrl key as terminal bytes — so
+Ctrl+C used to become the terminal's `^C` and there was no way to copy a
+proposed commit message out of the Workflow questionnaire. Two rules fix it:
+
+- **A selection wins.** Ctrl+C / Cmd+C with a non-collapsed selection inside the
+  surface copies the selected text instead of forwarding `^C`. Without a
+  selection the chord still reaches the extension, and Esc still aborts.
+- **A Copy control is always available.** The dock's caption row (and a
+  hover-revealed corner button on overlay surfaces) presses the same path: copy
+  the selection if there is one, otherwise the whole frame with ANSI escapes and
+  terminal padding stripped (`src/renderer/src/tui/frame-text.ts`).
+
+The renderer's right-click menu offers the same Copy action.
 
 **A custom editor is recorded, not mounted (2026-10-26).** Pi’s interactive
 mode’s `setCustomEditorComponent` wires `onSubmit`, `onChange`, the autocomplete

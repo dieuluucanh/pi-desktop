@@ -77,12 +77,12 @@ sidebar   ─ command palette · New session · Open project · projects → ses
             Settings · Extensions · Connections · Skills · Diagnostics
 tabs      ─ one tab per open session (plus web tabs and the Office session)
 main area ─ the active view (session, settings, extensions, …)
-status bar─ host state · tokens · cost · context % · hints · version
+status bar─ host state · tokens · cost · context % · display zoom · hints · version
 ```
 
 Keyboard: `Ctrl/Cmd+K` command palette, `Ctrl/Cmd+N` new session, `Ctrl/Cmd+W`
-close session, `Ctrl/Cmd+B` sidebar, `Ctrl+Tab` next session, `Ctrl/Cmd+/`
-shortcuts, `Esc` stops the run.
+close session, `Ctrl/Cmd+B` sidebar, `Ctrl/Cmd+=` / `-` / `0` zoom in / out /
+reset, `Ctrl+Tab` next session, `Ctrl/Cmd+/` shortcuts, `Esc` stops the run.
 
 ## Your first session
 

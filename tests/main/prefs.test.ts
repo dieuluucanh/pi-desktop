@@ -27,6 +27,7 @@ describe("sanitizePrefs", () => {
         "checkpoints",
         "desktopKeybindings",
         "drafts",
+        "followSystemTheme",
         "onboardingCompletedAt",
         "privacyAcknowledged",
         "profileMode",
@@ -37,7 +38,7 @@ describe("sanitizePrefs", () => {
         "sidebarWidth",
         "telemetryEnabled",
         "theme",
-        "viewMode",
+        "zoomFactor",
       ].sort(),
     );
     expect(result.theme).toBe("light");
@@ -64,6 +65,24 @@ describe("sanitizePrefs", () => {
     });
   });
 
+  it("sanitizes the display zoom to a supported level", () => {
+    expect(sanitizePrefs({}).zoomFactor).toBe(1);
+    expect(sanitizePrefs({ zoomFactor: 1.25 }).zoomFactor).toBe(1.25);
+    expect(sanitizePrefs({ zoomFactor: 99 }).zoomFactor).toBe(3);
+    expect(sanitizePrefs({ zoomFactor: 0.01 }).zoomFactor).toBe(0.5);
+    expect(sanitizePrefs({ zoomFactor: "big" }).zoomFactor).toBe(1);
+  });
+
+  it("migrates theme: system to follow-system and keeps an explicit boolean", () => {
+    expect(sanitizePrefs({}).followSystemTheme).toBe(false);
+    expect(sanitizePrefs({ theme: "system" }).followSystemTheme).toBe(true);
+    expect(sanitizePrefs({ theme: "system", followSystemTheme: false }).followSystemTheme).toBe(
+      false,
+    );
+    expect(sanitizePrefs({ theme: "light" }).followSystemTheme).toBe(false);
+    expect(sanitizePrefs({ followSystemTheme: "yes" }).followSystemTheme).toBe(false);
+  });
+
   it("defaults expanded command prompts off and sanitizes their origin map", () => {
     // The plan's default: a fresh or older app-state.json must not reveal
     // command system prompts by omission.
@@ -82,7 +101,6 @@ describe("sanitizePrefs", () => {
   it("falls back per field when a value is invalid", () => {
     const result = sanitizePrefs({
       theme: "neon",
-      viewMode: "yelling",
       sidebarCollapsed: "yes",
       sidebarWidth: "wide",
     });
@@ -98,25 +116,17 @@ describe("sanitizePrefs", () => {
     expect(sanitizePrefs({ sidebarWidth: 300.6 }).sidebarWidth).toBe(301);
   });
 
-  it("accepts every documented theme and view mode", () => {
+  it("accepts every documented theme", () => {
     for (const theme of ["dark", "light", "system"] as const) {
       expect(sanitizePrefs({ theme }).theme).toBe(theme);
-    }
-    for (const viewMode of ["normal", "verbose", "summary"] as const) {
-      expect(sanitizePrefs({ viewMode }).viewMode).toBe(viewMode);
     }
   });
 });
 
 describe("mergePrefs", () => {
   it("applies a partial patch over the current values", () => {
-    const merged = mergePrefs(
-      { ...DEFAULT_PREFS, theme: "light", viewMode: "verbose" },
-      {
-        viewMode: "summary",
-      },
-    );
-    expect(merged).toEqual({ ...DEFAULT_PREFS, theme: "light", viewMode: "summary" });
+    const merged = mergePrefs({ ...DEFAULT_PREFS, theme: "light" }, { theme: "system" });
+    expect(merged).toEqual({ ...DEFAULT_PREFS, theme: "system" });
   });
 
   it("cannot be used to inject an unknown key", () => {

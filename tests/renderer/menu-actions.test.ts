@@ -113,6 +113,21 @@ describe("handleMenuCommand", () => {
     expect(useAppStore.getState().prefs.sidebarCollapsed).toBe(true);
   });
 
+  it("changes the display zoom from the View menu", () => {
+    useAppStore.getState().zoomReset();
+
+    handleMenuCommand("zoom-in");
+    expect(useAppStore.getState().prefs.zoomFactor).toBe(1.1);
+
+    handleMenuCommand("zoom-out");
+    expect(useAppStore.getState().prefs.zoomFactor).toBe(1);
+
+    handleMenuCommand("zoom-in");
+    handleMenuCommand("zoom-in");
+    handleMenuCommand("zoom-reset");
+    expect(useAppStore.getState().prefs.zoomFactor).toBe(1);
+  });
+
   it("routes close and tab cycling at the tab table instead of a hint", () => {
     for (const command of ["close-session", "next-tab", "previous-tab"] as const) {
       useAppStore.setState({ hint: null, tabs: [], activeTabId: null });

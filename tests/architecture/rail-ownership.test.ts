@@ -205,6 +205,8 @@ describe("panel rail ownership", () => {
     expect(primitive).toContain("sticky");
     expect(primitive).toContain("top-0");
     expect(primitive).toContain("bg-surface");
+    // The fixed height is the sticky offset the Changes group headers use.
+    expect(primitive).toContain("h-7");
 
     for (const file of ["ChangesSection.tsx", "HistorySection.tsx"]) {
       const body = await readFile(join(dir, file), "utf8");
@@ -213,6 +215,12 @@ describe("panel rail ownership", () => {
       // The rule lives in the primitive, not in each caller.
       expect(body, file).not.toContain("sticky top-0");
     }
+
+    // The Changes groups pin under the block header (`top-7` = `h-7`) rather
+    // than re-declaring the block-header rule.
+    const changes = await readFile(join(dir, "ChangesSection.tsx"), "utf8");
+    expect(changes).toContain("sticky top-7");
+    expect(changes).toContain("changes-group-header-");
   });
 
   it("keeps Source Control in three blocks with exactly two splitters", async () => {

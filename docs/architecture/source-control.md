@@ -175,7 +175,7 @@ its own `overflow-y-auto`:
 ```text
 ┌ source-control-block   branch row · commit composer · collapsible Stashes
 ├─────────────── rail-splitter-top
-├ changes-block          [pinned] Changes · Staged Changes / Changes (both collapsible)
+├ changes-block          [pinned] Changes · [pinned] Staged Changes / Changes
 ├─────────────── rail-splitter-middle
 └ history-block          [pinned] Commit History · the log
 ```
@@ -192,6 +192,14 @@ same `RailBlockHeader` primitive — two hand-rolled sticky headers would drift 
 and `tests/architecture/rail-ownership.test.ts` keeps the rule in one place.
 The header sits **outside** the `gap-1` column that holds the rows: a gap on the
 scroll container would leave a transparent strip travelling under the header.
+
+**Changes group headers are pinned too** (2026-10-30 copy/composer/theme/zoom
+plan, amending the rail-headers plan's D2). `RailBlockHeader` is a fixed `h-7`
+(28 px); the `Staged Changes` and `Changes` rows are `sticky top-7 z-[9]` with
+the same opaque surface, so they pin directly under the block header while
+their own group is in view. Both groups share the offset: scrolling into
+_Changes_ lets its header replace _Staged Changes_ at the same position, the
+way VS Code's sections behave. Collapsing a group leaves its header pinned.
 
 **The Commit History block always has its header**, including when git is
 unavailable: it then explains the state (`gitUnavailableMessage`) instead of

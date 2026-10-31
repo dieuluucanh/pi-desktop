@@ -13,7 +13,6 @@ import {
   type WorkflowModeView,
 } from "../../../shared/workflow-mode";
 import type { TranscriptQueue } from "./session-events";
-import type { SendMode } from "../state/app-store";
 import { CompletionOverlay } from "../completion/CompletionOverlay";
 import { matchShortcut } from "../shortcuts/dom-keys";
 import { joinBuffer, offsetToPosition, positionToOffset, splitBuffer } from "../completion/token";
@@ -37,8 +36,9 @@ import type {
  *  - **IME safety**: Enter during composition confirms candidates, it must never
  *    send. Both `isComposing` and the legacy `keyCode === 229` are checked.
  *  - **Streaming delivery**: while the agent runs, a message must be marked
- *    `steer` or `followUp` (the host refuses it otherwise, exactly like RPC), so
- *    the composer makes the choice explicit and remembers it per session.
+ *    `steer` or `followUp` (the host refuses it otherwise, exactly like RPC).
+ *    Enter steers; Alt+Enter / Ctrl+Q queue a follow-up. The choice is the
+ *    chord, not a remembered toggle — the same model as terminal Pi.
  *  - **Escape**: stop the run and put the queued text back in the editor.
  */
 
@@ -55,7 +55,6 @@ export interface ComposerProps {
   focusToken?: number;
   draft: string;
   queue: TranscriptQueue;
-  sendMode: SendMode;
   onDraftChange: (text: string) => void;
   onSend: (
     text: string,
@@ -78,7 +77,6 @@ export interface ComposerProps {
   onInvokeShortcut?: (key: string) => void;
   /** Asks the store to load the extension shortcuts (once). */
   onRequestShortcuts?: () => void;
-  onSendModeChange: (mode: SendMode) => void;
   onHistoryStep: (direction: 1 | -1) => string | null;
   /** The completion engine (plan step 7); omit it to disable completion. */
   completion?: ComposerCompletion;
@@ -219,7 +217,6 @@ export function Composer({
   focusToken = 0,
   draft,
   queue,
-  sendMode,
   workflowStatus,
   extensionShortcuts,
   onInvokeShortcut,
@@ -229,7 +226,6 @@ export function Composer({
   onStop,
   onClearQueue,
   onRestoreQueue,
-  onSendModeChange,
   onHistoryStep,
   completion,
   completionSlot,
@@ -524,7 +520,7 @@ export function Composer({
                 ? "This session is asleep — type or press Tab to wake it…"
                 : enabled
                   ? running
-                    ? `Type to steer the run (${sendMode === "steer" ? "steer" : "follow-up"})…`
+                    ? "Type to steer the run — Enter steers, Alt+Enter queues a follow-up…"
                     : "Ask Pi to change something…  / commands · @ files · # documents"
                   : "This session is not running — start it above to send a prompt."
           }
@@ -769,40 +765,16 @@ export function Composer({
         />
 
         <div className="flex flex-col items-stretch gap-1">
-          {running ? (
-            <div className="flex gap-1">
-              <Button
-                size="sm"
-                variant={sendMode === "steer" ? "secondary" : "ghost"}
-                aria-pressed={sendMode === "steer"}
-                aria-label="steer mode"
-                title="Deliver this message as a steer (interrupts the current turn)"
-                onClick={() => onSendModeChange("steer")}
-              >
-                steer
-              </Button>
-              <Button
-                size="sm"
-                variant={sendMode === "followUp" ? "secondary" : "ghost"}
-                aria-pressed={sendMode === "followUp"}
-                aria-label="follow-up mode"
-                title="Deliver this message once the agent stops"
-                onClick={() => onSendModeChange("followUp")}
-              >
-                follow-up
-              </Button>
-            </div>
-          ) : null}
           <div className="flex gap-1">
             <Button
               size="sm"
               variant="primary"
               disabled={!enabled || busy}
               onClick={() => void submit()}
-              title="Enter"
+              title={running ? "Enter steers · Alt+Enter queues a follow-up" : "Enter"}
             >
               <Send className="size-3.5" aria-hidden />
-              {running ? (sendMode === "steer" ? "Steer" : "Follow up") : "Send"}
+              Send
             </Button>
             {running ? (
               <Button size="sm" variant="danger" onClick={onStop} title="Esc">
@@ -845,7 +817,8 @@ export function Composer({
             <span className="font-mono">#</span> documents
           </span>
           <span className="shrink-0">
-            Enter sends · Shift+Enter newline{running ? " · Esc stops" : ""}
+            Enter sends · Shift+Enter newline
+            {running ? " · Alt+Enter queues a follow-up · Esc stops" : ""}
           </span>
         </div>
         {/* Where the cursor is. The browser's caret is a thin blinking line that

@@ -52,6 +52,12 @@ const VIEW_ITEMS: readonly ItemSpec[] = [
   { command: "toggle-rail", label: "Toggle Panel", accelerator: "CmdOrCtrl+Shift+G" },
   { command: "next-tab", label: "Next Session Tab", accelerator: "Ctrl+Tab" },
   { command: "previous-tab", label: "Previous Session Tab", accelerator: "Ctrl+Shift+Tab" },
+  // `CmdOrCtrl+=` is the chord users expect (Ctrl+= on Windows/Linux, Cmd+= on
+  // macOS). Electron's `role: "zoomIn"` binds `Plus` instead, i.e. Shift+=,
+  // which is why the old menu zoom appeared broken (electron#40674).
+  { command: "zoom-in", label: "Zoom In", accelerator: "CmdOrCtrl+=" },
+  { command: "zoom-out", label: "Zoom Out", accelerator: "CmdOrCtrl+-" },
+  { command: "zoom-reset", label: "Actual Size", accelerator: "CmdOrCtrl+0" },
 ];
 
 const SESSION_ITEMS: readonly ItemSpec[] = [
@@ -156,10 +162,6 @@ export function menuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
       { type: "separator" },
       { role: "reload" },
       { role: "toggleDevTools" },
-      { type: "separator" },
-      { role: "resetZoom" },
-      { role: "zoomIn" },
-      { role: "zoomOut" },
       { type: "separator" },
       { role: "togglefullscreen" },
     ],

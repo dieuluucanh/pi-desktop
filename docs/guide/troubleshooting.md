@@ -143,6 +143,16 @@ A **malformed** `settings.json`, `auth.json` or `app-state.json` is reported and
 left untouched; fix it by hand and reload. `settings.json` is backed up before
 the first write per run.
 
+## Display and window
+
+- **The UI is too small or too large** — <kbd>Ctrl/Cmd</kbd>+<kbd>=</kbd> zooms
+  in, <kbd>Ctrl/Cmd</kbd>+<kbd>-</kbd> zooms out, and <kbd>Ctrl/Cmd</kbd>+<kbd>0</kbd>
+  resets to 100 %. The status bar's `− 100 % +` cluster and Settings → Display
+  zoom do the same; the level survives a restart. The range is 50 %–300 %.
+- **Zoom resets after a reload** — it should not: main re-applies
+  `prefs.zoomFactor` on `did-finish-load`. If it does, check that
+  `app-state.json` is writable.
+
 ## Extensions and packages
 
 - A loader error appears in the Extensions hub’s status banner and diagnostics,
@@ -152,6 +162,11 @@ the first write per run.
 - `/reload` reloads a live session and shows what changed; **Reload runtime** in
   the hub does the same with no session open.
 - Pin a known-good version from the package list if an update broke something.
+- **Cannot copy text from an extension panel** — select the text and press
+  <kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Cmd</kbd>+<kbd>C</kbd>, or use the panel's
+  **Copy** button, or right-click → **Copy**. A selection is copied instead of
+  being sent to the extension;
+  with nothing selected the chord still reaches it, and <kbd>Esc</kbd> aborts.
 
 ## Pi for Office
 

@@ -23,12 +23,21 @@ Themes are listed as built-in, user or project. Each row shows:
   ramp);
 - scope and variant badges;
 - an **Import `.json`** action for a user/project theme file;
-- **Activate**, which writes Pi’s `theme` setting.
+- the whole row is a **radio** — click anywhere on it (including its swatches)
+  to apply that theme. The active row is checked and shows **Active**; applying
+  another writes Pi’s `theme` setting and recolours the app chrome.
 
 The active Pi theme drives both the TUI surface extensions render into **and**
 the app chrome: `src/renderer/src/styles/tokens.css` maps the theme’s colours to
-the app’s CSS variables. Until Pi’s theme loads, the appearance preference
-(`prefs.theme`) paints the first frame.
+the app’s CSS variables. The catalogue is loaded at startup, so the selected
+theme applies without visiting this view; `prefs.theme` only caches the active
+theme’s dark/light variant for the first frame before the catalogue answers.
+
+**Match system appearance** is a switch above the catalogue. While it is on,
+the app watches the OS light/dark setting and activates the built-in `dark` or
+`light` theme (writing Pi’s `theme` setting so terminal Pi follows too). It is
+off by default; choosing any theme manually turns it off. Custom themes are
+always explicit choices — there is no meaningful way for them to follow the OS.
 
 ## Keybindings
 

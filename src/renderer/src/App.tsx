@@ -11,6 +11,7 @@ import { TabStrip } from "./layout/TabStrip";
 import { TitleBar } from "./layout/TitleBar";
 import { handleMenuCommand } from "./menu-actions";
 import { useAppStore, type AppView } from "./state/app-store";
+import { systemThemeName, watchSystemTheme } from "./themes/system-theme";
 import { OnboardingWizard } from "./onboarding/OnboardingWizard";
 import { ShortcutDispatcher } from "./shortcuts/ShortcutDispatcher";
 import { ShortcutsHelp } from "./shortcuts/ShortcutsHelp";
@@ -54,20 +55,14 @@ const VIEWS: Record<AppView, () => ReactElement> = {
   diagnostics: DiagnosticsView,
 };
 
-function prefersLight(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-color-scheme: light)").matches
-  );
-}
-
 export function App() {
   const view = useAppStore((state) => state.view);
   const theme = useAppStore((state) => state.prefs.theme);
+  const followSystemTheme = useAppStore((state) => state.prefs.followSystemTheme);
   const loadPrefs = useAppStore((state) => state.loadPrefs);
   const loadProjects = useAppStore((state) => state.loadProjects);
   const loadTabs = useAppStore((state) => state.loadTabs);
+  const loadThemes = useAppStore((state) => state.loadThemes);
   const loadUpdateState = useAppStore((state) => state.loadUpdateState);
   const prefsLoaded = useAppStore((state) => state.prefsLoaded);
   const privacyAcknowledged = useAppStore((state) => state.prefs.privacyAcknowledged);
@@ -186,10 +181,29 @@ export function App() {
     // The appearance preference paints first paint; once the Pi theme loads,
     // the active Pi theme owns the chrome (plan step 15) and this yields.
     if (useAppStore.getState().themesLoaded) return;
-    const resolved = theme === "system" ? (prefersLight() ? "light" : "dark") : theme;
+    const resolved = followSystemTheme || theme === "system" ? systemThemeName() : theme;
     document.documentElement.dataset.theme = resolved;
     document.documentElement.style.colorScheme = resolved;
-  }, [theme]);
+  }, [theme, followSystemTheme]);
+
+  useEffect(() => {
+    // While follow-system is on, the OS appearance re-activates the matching
+    // built-in Pi theme (and writes the `theme` setting so terminal Pi agrees).
+    if (!followSystemTheme) return;
+    return watchSystemTheme(() => {
+      void useAppStore.getState().applySystemTheme();
+    });
+  }, [followSystemTheme]);
+
+  useEffect(() => {
+    // Load the active Pi theme as soon as the prefs are known, instead of
+    // waiting for a visit to Skills → Themes. Without this the Settings theme
+    // picker appeared to do nothing once the catalogue finally loaded
+    // (2026-10-30 theme pass). A failure is surfaced by the store and retried
+    // from the Themes section.
+    if (!prefsLoaded) return;
+    void loadThemes();
+  }, [prefsLoaded, loadThemes]);
 
   useEffect(() => {
     // The first-run flow (plan step 26) opens after the privacy screen and only

@@ -36,6 +36,32 @@ function skillEntry(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function settingsSnapshot(theme = "dark") {
+  return {
+    settings: { global: { theme }, project: {} },
+    errors: [],
+    files: {
+      global: { path: "g", exists: true, mtimeMs: 1 },
+      project: { path: "p", exists: false, mtimeMs: null },
+    },
+    projectTrusted: true,
+  };
+}
+
+/** The view loads resources, themes, keybindings and shortcuts; a theme click
+ * additionally reads and writes the `theme` setting. */
+function stubViewRequests() {
+  return stubRequest(async (method) => {
+    if (method === "resources.list") return useAppStore.getState().resources;
+    if (method === "themes.list") return useAppStore.getState().themes;
+    if (method === "keybindings.get") return useAppStore.getState().keybindings;
+    if (method === "shortcuts.list") return useAppStore.getState().shortcuts;
+    if (method === "settings.get") return settingsSnapshot();
+    if (method === "settings.set") return settingsSnapshot("light");
+    throw new Error(`unexpected ${method}`);
+  });
+}
+
 beforeEach(() => {
   installBridge();
   useAppStore.setState({
@@ -70,7 +96,10 @@ beforeEach(() => {
     resourcesLoaded: true,
     themes: {
       active: "dark",
-      themes: [{ name: "dark", scope: "builtin", active: true, variant: "dark", swatches: {} }],
+      themes: [
+        { name: "dark", scope: "builtin", active: true, variant: "dark", swatches: {} },
+        { name: "light", scope: "builtin", active: false, variant: "light", swatches: {} },
+      ],
     },
     themesLoaded: true,
     keybindings: {
@@ -88,13 +117,7 @@ beforeEach(() => {
     shortcutsLoaded: true,
     transcripts: {},
   } as never);
-  stubRequest(async (method) => {
-    if (method === "resources.list") return useAppStore.getState().resources;
-    if (method === "themes.list") return useAppStore.getState().themes;
-    if (method === "keybindings.get") return useAppStore.getState().keybindings;
-    if (method === "shortcuts.list") return useAppStore.getState().shortcuts;
-    throw new Error(`unexpected ${method}`);
-  });
+  stubViewRequests();
 });
 
 describe("SkillsView", () => {
@@ -104,6 +127,37 @@ describe("SkillsView", () => {
     expect(screen.getByText("<path>")).toBeInTheDocument();
     expect(screen.getAllByText("dark").length).toBeGreaterThan(0);
     expect(screen.getByTestId("extension-shortcuts")).toBeInTheDocument();
+  });
+
+  it("selects a theme by clicking its whole card", async () => {
+    const request = stubViewRequests();
+    render(<SkillsView />);
+
+    const light = await screen.findByTestId("theme-builtin-light");
+    expect(light).toHaveAttribute("role", "radio");
+    expect(light).toHaveAttribute("aria-checked", "false");
+
+    await userEvent.click(light);
+
+    await waitFor(() => expect(useAppStore.getState().themes.active).toBe("light"));
+    expect(light).toHaveAttribute("aria-checked", "true");
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "settings.set",
+        params: expect.objectContaining({ key: "theme", value: "light" }),
+      }),
+    );
+  });
+
+  it("toggles follow-system appearance", async () => {
+    render(<SkillsView />);
+
+    const toggle = await screen.findByRole("switch", { name: "Match system appearance" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    await userEvent.click(toggle);
+
+    expect(useAppStore.getState().prefs.followSystemTheme).toBe(true);
   });
 
   it("running a skill inserts /skill:<name> without sending", async () => {

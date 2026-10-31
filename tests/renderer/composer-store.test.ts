@@ -38,7 +38,6 @@ beforeEach(() => {
     activeTabId: "tab-1",
     transcripts: {},
     sessionStates: {},
-    sendModes: {},
     draftHistory: {},
     historyIndex: {},
     hint: null,
