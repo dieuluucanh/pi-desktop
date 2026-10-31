@@ -66,6 +66,7 @@ import { isDeletableSessionPath } from "./session-ops";
 import { createOfficeSetupService } from "./office/setup-service";
 import { bridgeConfiguredInSettings } from "./office/bridge-install";
 import { createOfficeDocumentsService } from "./office/documents-service";
+import { createOfficeBridgeControl } from "./office/bridge-control";
 import { createKillProcess, releasePort } from "./office/port-owner";
 import { checkBridgeHealth, createDefaultVerifyDeps } from "./office/verify";
 import { createGitPushService } from "./git-service";
@@ -85,8 +86,9 @@ import { createDiagnosticsService } from "./diagnostics-service";
 import { createElectronUpdatePort } from "./electron-updater";
 import { createUpdateService, type UpdateService } from "./updater";
 import { initialUpdateState } from "../shared/updates";
-import { officeEvidenceLine } from "../shared/office-setup";
+import { officeEvidenceLine, type OfficeBridgeEnsureResult } from "../shared/office-setup";
 import { PI_OFFICE_BRIDGE } from "../shared/office";
+import { officeBridgeOwnerTab } from "../shared/office-documents";
 import { profileModeFromDocument, type ProfileMode } from "../shared/profile";
 import {
   isSafeMode,
@@ -251,6 +253,15 @@ const SESSION_CHANNELS: Record<SessionEmitChannel, string> = {
  * One host process per session tab (plan step 4). Hosts are started by the tab
  * layer (plan step 11); main owns their lifetime so a quit always cleans up.
  */
+/**
+ * The live bridge owner, read by the supervisor's idle check. The supervisor is
+ * constructed before the documents poller, so the lookup is a mutable holder
+ * filled in immediately after the poller exists.
+ */
+const bridgeOwnerSessionId: { current: () => string | null } = {
+  current: () => null,
+};
+
 const hosts = runtime.nodePath
   ? createHostSupervisor({
       nodePath: runtime.nodePath,
@@ -269,6 +280,9 @@ const hosts = runtime.nodePath
       // The running host reports this id in `host.hello`; a later rebuild makes
       // it differ from the file on disk (2026-10-24 stale-host plan).
       hostBuildId,
+      // A session hosting the on-demand bridge must survive the idle reaper,
+      // even when it is not the old `office` kind.
+      isPinned: (sessionId) => bridgeOwnerSessionId.current() === sessionId,
     })
   : null;
 
@@ -648,6 +662,10 @@ const officeSetup = createOfficeSetupService({
   npmCliPath: runtime.npmCliPath,
   dryRun: process.env.PI_DESKTOP_OFFICE_DRY_RUN === "1",
   backupDir: join(paths.userData, "backups"),
+  // The wizard is explicit: setup asks a Pi session to connect before it opens
+  // Office. The implementation is declared below (after the control service)
+  // and only runs when the user starts the wizard.
+  ensureBridge: ensureOfficeBridge,
   openPath: (target) => shell.openPath(target),
   openExternal: async (url) => {
     // Defence in depth: every other `openExternal` path runs the protocol
@@ -698,6 +716,74 @@ const officeDocuments = createOfficeDocumentsService({
   // (2026-10-30 rail-headers plan).
   configured: () => bridgeConfigured,
   onView: (view) => broadcastToWindows(IPC.officeDocumentsState, view),
+});
+
+bridgeOwnerSessionId.current = () => officeDocuments.get().owner?.sessionId ?? null;
+
+/**
+ * The on-demand bridge actions. Main owns the sequence (close the old owner,
+ * free a foreign port, connect the target) so the renderer never races two
+ * commands or kills a process itself.
+ */
+/**
+ * The wizard's bridge step. Prefer the live owner, then an existing office tab,
+ * then any non-web session; create one only when the app has none. Never takes
+ * over a foreign port silently — the wizard reports the conflict instead.
+ */
+async function ensureOfficeBridge(): Promise<OfficeBridgeEnsureResult> {
+  if (!sessions) {
+    return { ok: false, error: "The Pi runtime is unavailable, so no bridge can start." };
+  }
+  const tabs = sessions.tabs();
+  const target =
+    officeBridgeOwnerTab(officeDocuments.get(), tabs) ??
+    tabs.find((tab) => tab.kind === "office" && tab.status !== "stopped") ??
+    tabs.find((tab) => tab.kind !== "web") ??
+    null;
+
+  let tabId = target?.id ?? null;
+  if (tabId === null) {
+    try {
+      await sessions.createTab({ cwd: app.getPath("home"), kind: "office" });
+      tabId = sessions.activeTabId();
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+  if (tabId === null) {
+    return { ok: false, error: "Could not open a Pi session for the Office bridge." };
+  }
+
+  const result = await officeControl.connect(tabId, { takeover: false });
+  if (result.ok) {
+    return { ok: true, error: null, detail: `tab ${tabId}` };
+  }
+  return {
+    ok: false,
+    error: result.message ?? `Bridge connect failed (${result.reason}).`,
+    detail: result.reason,
+  };
+}
+
+const officeControl = createOfficeBridgeControl({
+  tabs: () => sessions?.tabs() ?? [],
+  probe: () => officeDocuments.refresh(),
+  request: (tabId, method, params) => {
+    if (!sessions) {
+      return Promise.reject(new Error("The Pi runtime is unavailable, so no bridge can start."));
+    }
+    return sessions.request(tabId, method, params);
+  },
+  releasePort: releaseOfficePort,
+  ownPids: () => [
+    process.pid,
+    ...(hosts?.list() ?? [])
+      .map((host) => host.info()?.pids.pid)
+      .filter((pid): pid is number => typeof pid === "number"),
+  ],
 });
 
 /**
@@ -812,10 +898,13 @@ const checkpointService = createCheckpointService({
   },
   attachedPanes: () => officeDocuments.get().panes,
   tabs: () => sessions?.tabs() ?? [],
-  // The folder the bridge's owning session works in. Same predicate the renderer
-  // uses (`officeHostTab`), stated here because main has the tab list directly.
-  officeHostProjectPath: () =>
-    sessions?.tabs().find((tab) => tab.kind === "office" && tab.status !== "stopped")?.cwd ?? null,
+  // The folder the bridge's owning session works in. The live owner is
+  // `/health.owner.sessionId`; the legacy office-tab fallback lives in the
+  // shared projection, so the renderer and main cannot disagree.
+  officeHostProjectPath: () => {
+    const tab = officeBridgeOwnerTab(officeDocuments.get(), sessions?.tabs() ?? []);
+    return tab?.cwd ?? null;
+  },
   runSnapshots: () => !safeMode,
   onChange: (state) => {
     lastCheckpointState = state;
@@ -1197,13 +1286,17 @@ if (!app.requestSingleInstanceLock()) {
       // The Office session owns the bridge and the app owns the session, so Stop
       // aborts that session's run — which ends a pane's answer for every bridge
       // version (protocol v3 additionally lets a pane stop its own run).
+      officeControl,
       officeRun: {
         stop: async (): Promise<OfficeStopResult> => {
-          const officeTab = sessions
-            ?.envelope()
-            .tabs.find((tab) => tab.kind === "office" && tab.status !== "stopped");
-          const host = officeTab ? hosts?.get(officeTab.id) : undefined;
-          if (!host) return { ok: false, reason: "idle" };
+          const view = officeDocuments.get();
+          const ownerTab = officeBridgeOwnerTab(view, sessions?.envelope().tabs ?? []);
+          const host = ownerTab ? hosts?.get(ownerTab.id) : undefined;
+          if (!host) {
+            // A terminal/foreign process owns the bridge; the app cannot abort
+            // a run it does not host, and saying "idle" would be a lie.
+            return { ok: false, reason: view.available && view.owner ? "external" : "idle" };
+          }
           try {
             await host.request("abort");
             return { ok: true };

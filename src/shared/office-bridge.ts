@@ -19,6 +19,7 @@
  */
 
 import { PI_OFFICE_BRIDGE } from "./office";
+import type { OfficeBridgeOwner } from "./office-documents";
 
 /** Office host apps that can attach a pane. `null` = the bridge did not say. */
 export type BridgeHost = "excel" | "word" | "powerpoint" | null;
@@ -294,8 +295,35 @@ export interface OfficeRunView {
 
 export interface OfficeStopResult {
   ok: boolean;
-  reason?: "idle" | "failed";
+  reason?: "idle" | "failed" | "external";
   error?: string;
+}
+
+/** Why an on-demand bridge action ended the way it did (bridge 0.6+). */
+export type OfficeBridgeControlReason =
+  | "connected"
+  | "already-connected"
+  | "closed"
+  | "not-connected"
+  | "legacy-bridge"
+  | "command-missing"
+  | "port-busy"
+  | "wrong-owner"
+  | "bad-tab"
+  | "host-unavailable"
+  | "timeout"
+  | "failed";
+
+/** The result of Connect / Disconnect / Restart from the Documents rail. */
+export interface OfficeBridgeControlResult {
+  ok: boolean;
+  reason: OfficeBridgeControlReason;
+  /** The live owner after the action, or the owner that blocked it. */
+  owner?: OfficeBridgeOwner | null;
+  /** User-facing sentence; the renderer may use it verbatim. */
+  message?: string;
+  /** True when a confirmed takeover could free the port. */
+  canTakeover?: boolean;
 }
 
 /** What the UI needs to render the Office run: nothing when no session runs it. */

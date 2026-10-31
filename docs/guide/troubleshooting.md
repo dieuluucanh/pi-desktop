@@ -170,12 +170,15 @@ the first write per run.
 
 ## Pi for Office
 
-- **Nothing listens on 38617** — the Office session is not running or Office is
-  not open. Open the Office host app; the card’s **Re-check bridge** polls
-  `/health`.
-- **Port conflict** — another program owns 38617. The card says so explicitly;
-  close it and retry, or use a different bridge port via
-  `PI_OFFICE_BRIDGE_PORT`.
+- **Nothing listens on 38617** — the bridge is off. Run `/office connect` in the
+  session you want, or click **Connect this session** in the Documents rail. The
+  bridge does not start just because a session opened.
+- **Port conflict** — another Pi session or program owns 38617. The row shows the
+  owner (PID/cwd); close it there, or use **Take over** in Desktop. A terminal
+  user can run `/office close` in the owner or use
+  `/office connect <port>`.
+- **"Automatic bridge (legacy)"** — a 0.5.x bridge auto-starts and has no close
+  command. Click **Update bridge** to install the pinned 0.6+ package.
 - **Add-in not appearing in Office** — use **Copy diagnostics**; common causes
   are a stale sideload entry, an Office update invalidating the cache, or a
   WSL/remote setup that cannot see the host registry. **Reset add-in** then

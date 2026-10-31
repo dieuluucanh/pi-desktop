@@ -36,6 +36,7 @@ function officeViewFixture(overrides: Partial<OfficeSetupView> = {}): OfficeSetu
     sideload: null,
     openOffice: null,
     health: null,
+    bridgeConnect: null,
     compatibility: null,
     run: null,
     panes: [],

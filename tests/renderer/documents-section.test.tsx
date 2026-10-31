@@ -88,8 +88,8 @@ describe("documents panel", () => {
 
     expect(screen.getByTestId("documents-section")).toBeInTheDocument();
     const waiting = screen.getByTestId("documents-unavailable");
-    expect(waiting).toHaveTextContent("Waiting for the bridge on port 38617");
-    expect(waiting).toHaveTextContent(/office host is starting/i);
+    expect(waiting).toHaveTextContent("The Office bridge is off");
+    expect(waiting).toHaveTextContent(/connect this session from the row above/i);
     // The pane list and the "bridge is up but nothing attached" copy are both
     // wrong while the port is silent.
     expect(screen.queryByTestId("documents-empty")).not.toBeInTheDocument();

@@ -1,5 +1,5 @@
 import type { OfficeSetupStepId, OfficeSetupView } from "./office-setup";
-import type { OfficeStopResult } from "./office-bridge";
+import type { OfficeBridgeControlResult, OfficeStopResult } from "./office-bridge";
 import type { OfficeDocumentsView } from "./office-documents";
 import type { DiagnosticsExport, DiagnosticsSnapshot } from "./diagnostics";
 import type { IntegrationsState, OfficeIntegrationRecordPatch } from "./integrations";
@@ -143,6 +143,11 @@ export const IPC = {
   officeDocumentsRefresh: "office:documents-refresh",
   /** Main → renderer: the pane registry changed. */
   officeDocumentsState: "office:documents-state",
+
+  /** On-demand bridge lifecycle (bridge 0.6+). */
+  officeBridgeConnect: "office:bridge-connect",
+  officeBridgeClose: "office:bridge-close",
+  officeBridgeRestart: "office:bridge-restart",
 
   /**
    * Integrations (plan step 19): the app's own record of a consented install,
@@ -377,6 +382,22 @@ export interface OfficeBridge {
   refreshDocuments(): Promise<OfficeDocumentsView>;
   /** Main → renderer: the pane registry changed. */
   onDocuments(listener: (view: OfficeDocumentsView) => void): () => void;
+  /**
+   * Starts the on-demand bridge in `tabId`. When another app tab owns it, main
+   * closes that tab's bridge first; a terminal/foreign owner requires
+   * `takeover: true` (the UI asks first).
+   */
+  connectBridge(
+    tabId: string,
+    options?: { takeover?: boolean },
+  ): Promise<OfficeBridgeControlResult>;
+  /** Stops the bridge, but only when `tabId` is its live owner. */
+  closeBridge(tabId: string): Promise<OfficeBridgeControlResult>;
+  /** Stops (if owned) and starts again in `tabId`. */
+  restartBridge(
+    tabId: string,
+    options?: { takeover?: boolean },
+  ): Promise<OfficeBridgeControlResult>;
 }
 
 /** UI preferences persisted by the main process (plan step 1). */

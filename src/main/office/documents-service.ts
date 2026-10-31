@@ -66,6 +66,10 @@ function signatureOf(view: OfficeDocumentsView): string {
     serverVersion: view.serverVersion,
     protocolVersion: view.protocolVersion,
     catalogVersion: view.catalogVersion,
+    // Ownership is part of the live registry: a bridge that moves between
+    // tabs must reach the renderer even when the pane list is unchanged.
+    owner: view.owner,
+    manualLifecycle: view.manualLifecycle,
     error: view.error,
     panes: view.panes,
   });

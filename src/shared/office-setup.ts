@@ -121,6 +121,14 @@ export interface OfficeSetupLogView {
   message: string;
 }
 
+/** The wizard's explicit "start/connect the bridge" step (bridge 0.6+). */
+export interface OfficeBridgeEnsureResult {
+  ok: boolean;
+  error: string | null;
+  /** Optional context, e.g. the owner tab or port. */
+  detail?: string;
+}
+
 export interface OfficeSetupView {
   status: OfficeSetupStatus;
   currentStep: OfficeSetupStepId | null;
@@ -136,6 +144,8 @@ export interface OfficeSetupView {
   sideload: OfficeSetupSideloadView | null;
   openOffice: OfficeSetupOpenOfficeView | null;
   health: OfficeSetupHealthView | null;
+  /** The wizard's explicit connect step; null before it has run. */
+  bridgeConnect: OfficeBridgeEnsureResult | null;
   /**
    * What the connected bridge can actually do. Protocol v3 (bridge 0.5.0) adds
    * streamed deltas and a pane-side Stop; an older bridge connects and answers

@@ -150,10 +150,17 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
       store.openRailMenu("checkpoints");
       return;
     case "view-documents":
-      // Documents only exists while the Office bridge answers `/health`; asking
-      // for it without one says so instead of opening an empty panel.
-      if (store.officeDocuments?.available) store.openRailMenu("documents");
-      else store.setHint("Pi for Office is not connected, so there are no attached documents.");
+      // The menu is also the place to *connect* the bridge, so it opens while
+      // the package is configured even when `/health` is silent.
+      if (
+        store.officeDocuments?.available ||
+        store.officeDocuments?.configured ||
+        store.tabs.some((tab) => tab.kind === "office")
+      ) {
+        store.openRailMenu("documents");
+      } else {
+        store.setHint("Pi for Office is not installed. Install it from Extensions → Integrations.");
+      }
       return;
     case "view-settings":
       store.setView("settings");

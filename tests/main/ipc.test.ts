@@ -40,6 +40,7 @@ vi.mock("electron", () => ({
 interface Recording {
   gitCalls: { kind: string; arg?: unknown }[];
   checkpointCalls: { kind: string; arg?: unknown }[];
+  officeCalls: { kind: string; tabId?: string; takeover?: boolean }[];
 }
 
 const OPEN_PROJECT = "/work/app";
@@ -113,6 +114,20 @@ async function register(recording: Recording): Promise<void> {
     officeSetup: {} as never,
     integrations: { get: async () => ({}) as never, recordOffice: async () => ({}) as never },
     officeRun: { stop: async () => ({ ok: true }) as never },
+    officeControl: {
+      connect: async (tabId, options) => {
+        recording.officeCalls.push({ kind: "connect", tabId, ...options });
+        return { ok: true, reason: "connected" };
+      },
+      close: async (tabId) => {
+        recording.officeCalls.push({ kind: "close", tabId });
+        return { ok: true, reason: "closed" };
+      },
+      restart: async (tabId, options) => {
+        recording.officeCalls.push({ kind: "restart", tabId, ...options });
+        return { ok: true, reason: "connected" };
+      },
+    },
     officeDocuments: {
       get: () => ({ available: false, panes: [] }) as never,
       refresh: async () => ({ available: false, panes: [] }) as never,
@@ -192,8 +207,35 @@ let recording: Recording;
 
 beforeEach(async () => {
   handlers.clear();
-  recording = { gitCalls: [], checkpointCalls: [] };
+  recording = { gitCalls: [], checkpointCalls: [], officeCalls: [] };
   await register(recording);
+});
+
+describe("office bridge control channels", () => {
+  it("forwards connect with the takeover flag", async () => {
+    await invoke(IPC.officeBridgeConnect, { tabId: "t1", takeover: true });
+    expect(recording.officeCalls).toEqual([{ kind: "connect", tabId: "t1", takeover: true }]);
+  });
+
+  it("forwards close and restart", async () => {
+    await invoke(IPC.officeBridgeClose, "t1");
+    await invoke(IPC.officeBridgeRestart, { tabId: "t1" });
+    expect(recording.officeCalls).toEqual([
+      { kind: "close", tabId: "t1" },
+      { kind: "restart", tabId: "t1", takeover: false },
+    ]);
+  });
+
+  it("requires a non-empty tab id", () => {
+    expect(() => invoke(IPC.officeBridgeConnect, { tabId: "  " })).toThrow(/tab id/);
+    expect(() => invoke(IPC.officeBridgeClose, null)).toThrow(/tab id/);
+  });
+
+  it("rejects a non-boolean takeover", () => {
+    expect(() => invoke(IPC.officeBridgeRestart, { tabId: "t1", takeover: "yes" })).toThrow(
+      /takeover must be a boolean/,
+    );
+  });
 });
 
 describe("the project-folder allowlist", () => {

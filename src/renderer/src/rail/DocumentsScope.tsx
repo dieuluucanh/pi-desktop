@@ -1,37 +1,21 @@
 /**
- * The Documents menu's scope: **which session owns the Office bridge**, and how
- * to change that.
+ * The Documents menu's scope: **which session owns the live bridge**, and how to
+ * change that.
  *
- * The Documents menu is the one app-wide menu (one bridge on port 38617, owned by
- * the single `office`-kind tab). Since the rail is project-scoped and the bridge
- * is not, this row is where the two meet — and it is deliberately small:
+ * Ownership is no longer a tab kind; it is `/health.owner.sessionId`, published
+ * by the bridge (0.6+). The old office-kind fallback only applies to a legacy
+ * auto-start bridge. This row is the one place the user connects, disconnects or
+ * moves the bridge:
  *
  * ```text
  *  ▸ Documents
  *  Office host: Office session · danone-hcm
- *  Open host session   Use this session instead
+ *  Open host session   Move bridge here
  * ```
  *
- * The host's title and project used to be a two-line header with a status badge.
- * That header named the *host*, not the rail, so switching between sessions in
- * different projects left a project name on screen that had nothing to do with
- * the panel (2026-10-30 project-scoped rail plan). It is now one line that says
- * only what is *not* obvious — and says nothing at all when there is no host.
- *
- * Three actions, and they are genuinely different (plan D9):
- *
- *  - **Open host session** — meaningful in a non-host session, where it simply
- *    focuses the tab that already holds the port.
- *  - **Use this session instead** — the supported way to move the bridge. It
- *    *promotes this tab*, which demotes and restarts the current host, so it asks
- *    first (a click that silently interrupts someone's Office work would be a
- *    trap). A web tab cannot host the bridge and says so through the disabled
- *    button's title.
- *  - **Start an Office session** — the only useful action when no tab holds the
- *    port at all.
- *
- * Host facts come from `officeDocumentScope` so the renderer applies the same
- * predicate main does (`kind === "office" && status !== "stopped"`).
+ * A bridge that is off offers **Connect this session**; an off bridge in a web
+ * tab offers **Start an Office session** instead. A terminal/foreign owner is
+ * shown with its PID and requires an explicit confirmation before takeover.
  */
 
 import { useState } from "react";
@@ -39,62 +23,122 @@ import { Plug } from "lucide-react";
 import { Button } from "../ui/button";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { useAppStore } from "../state/app-store";
-import { officeDocumentScope, type OfficeDocumentPane } from "../../../shared/office-documents";
 import { documentScopeNote } from "../../../shared/rail-scope";
-
+import {
+  emptyOfficeDocumentsView,
+  officeDocumentScope,
+  type OfficeBridgeOwner,
+  type OfficeDocumentPane,
+  type OfficeDocumentsView,
+} from "../../../shared/office-documents";
 export interface DocumentsScopeProps {
-  /** The panes from the last `/health` probe (identifies the menu's contents). */
-  panes: readonly OfficeDocumentPane[];
+  /**
+   * The live registry. Optional for callers that only have panes (tests); the
+   * store value is used when omitted.
+   */
+  view?: OfficeDocumentsView | null;
+  /** Legacy/test form: a pane list without a full view. */
+  panes?: readonly OfficeDocumentPane[];
   /** The folder the rail is scoped to, so the note can omit a redundant path. */
   railFolder?: string | null;
   /** The active tab's kind: a `web` tab can never hold the bridge. */
   activeKind?: string | null;
-  /**
-   * True when the bridge is known not to be answering. That is the one moment a
-   * host restart is the useful action, so the escape hatch appears only then
-   * (2026-10-30 rail-headers plan).
-   */
+  /** Legacy/test form: the bridge is known to be down. */
   bridgeDown?: boolean;
 }
 
+function ownerSentence(owner: OfficeBridgeOwner | null): string {
+  if (!owner) return "The bridge is running outside Pi Desktop.";
+  const where = owner.cwd ? ` · ${owner.cwd}` : "";
+  const pid = owner.pid ?? "?";
+  if (owner.client === "cli") {
+    return `Bridge owned by a terminal Pi session (PID ${pid}${where}).`;
+  }
+  if (owner.client === "desktop") {
+    return `Bridge owned by another Pi Desktop session (PID ${pid}${where}).`;
+  }
+  return `The bridge is running outside Pi Desktop (PID ${pid}${where}).`;
+}
+
 export function DocumentsScope({
+  view: suppliedView,
   panes,
   railFolder = null,
   activeKind = null,
   bridgeDown = false,
 }: DocumentsScopeProps): React.JSX.Element {
+  const storeView = useAppStore((state) => state.officeDocuments);
   const tabs = useAppStore((state) => state.tabs);
   const activeTabId = useAppStore((state) => state.activeTabId);
   const activateTab = useAppStore((state) => state.activateTab);
-  const promoteToOfficeHost = useAppStore((state) => state.promoteToOfficeHost);
+  const connectOfficeBridge = useAppStore((state) => state.connectOfficeBridge);
+  const closeOfficeBridge = useAppStore((state) => state.closeOfficeBridge);
+  const restartOfficeBridge = useAppStore((state) => state.restartOfficeBridge);
   const openOfficeSession = useAppStore((state) => state.openOfficeSession);
-  const restartTab = useAppStore((state) => state.restartTab);
+  const refreshOfficeDocuments = useAppStore((state) => state.refreshOfficeDocuments);
+  const installOfficeBridge = useAppStore((state) => state.installOfficeBridge);
+  const busy = useAppStore((state) => state.officeBridgeBusy);
 
-  const [confirming, setConfirming] = useState(false);
-  const { host, isHost } = officeDocumentScope(panes, tabs, activeTabId, railFolder);
+  const view: OfficeDocumentsView | null =
+    suppliedView ??
+    storeView ??
+    (panes !== undefined
+      ? {
+          ...emptyOfficeDocumentsView(),
+          available: !bridgeDown,
+          status: bridgeDown ? "unreachable" : "ok",
+          panes: [...panes],
+        }
+      : null);
+
+  const { host, isHost } = officeDocumentScope(view ?? [], tabs, activeTabId, railFolder);
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
-  const note = documentScopeNote({ host, isHost, railFolder });
-  const canPromote = activeKind !== "web";
+  const available = view?.available === true;
+  const manualLifecycle = view?.manualLifecycle === true;
+  const legacy = available && !manualLifecycle;
+  const owner = view?.owner ?? null;
+  const portConflict = view?.status === "not-our-bridge";
+  const canHost = activeKind !== "web" && activeTabId !== null;
+  const busyReason = busy ? "An Office bridge action is already running." : undefined;
+  const webReason = activeTabId === null ? undefined : "A web tab cannot host the Office bridge.";
 
-  const promote = async (): Promise<void> => {
-    setConfirming(false);
-    if (!activeTabId) return;
-    await promoteToOfficeHost(activeTabId);
+  const [confirming, setConfirming] = useState<"move" | "takeover" | null>(null);
+
+  const note = documentScopeNote({ host, isHost, railFolder });
+  const close = (): void => {
+    if (activeTabId) void closeOfficeBridge(activeTabId);
   };
+  const restart = (): void => {
+    if (activeTabId) void restartOfficeBridge(activeTabId);
+  };
+  const connect = (): void => {
+    if (activeTabId) void connectOfficeBridge(activeTabId);
+  };
+  const move = async (): Promise<void> => {
+    setConfirming(null);
+    if (activeTabId) await connectOfficeBridge(activeTabId);
+  };
+  const takeover = async (): Promise<void> => {
+    setConfirming(null);
+    if (activeTabId) await connectOfficeBridge(activeTabId, { takeover: true });
+  };
+
+  const update = (): void => installOfficeBridge();
+
+  const actionDisabled = busy || !canHost;
+  const actionTitle = busy ? busyReason : webReason;
 
   return (
     <div
       className="flex shrink-0 flex-col gap-1 border-b border-line px-3 py-1 text-[11px]"
       data-testid="documents-scope"
     >
-      {host ? (
+      {available && host ? (
         <>
           {note ? (
             <p
               className="flex items-start gap-1.5 text-ink-faint"
-              data-testid={
-                note.tone === "host" ? "documents-scope-this-is-host" : "documents-scope-host"
-              }
+              data-testid={isHost ? "documents-scope-this-is-host" : "documents-scope-host"}
               title={host.projectPath}
             >
               <Plug className="mt-0.5 size-3 shrink-0" aria-hidden />
@@ -102,100 +146,216 @@ export function DocumentsScope({
             </p>
           ) : null}
 
-          {isHost ? (
-            bridgeDown ? (
-              <div className="flex flex-wrap items-center gap-1">
-                <RestartHostButton onRestart={() => void restartTab(host.id)} />
-              </div>
-            ) : null
-          ) : (
-            <div className="flex flex-wrap items-center gap-1">
+          {legacy ? (
+            <p className="text-warn" data-testid="documents-legacy-bridge">
+              Automatic bridge (legacy). Update to connect and disconnect on demand.
+            </p>
+          ) : null}
+
+          <div className="flex flex-wrap items-center gap-1">
+            {isHost ? (
+              legacy ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-5 px-1 text-[11px]"
+                  onClick={update}
+                >
+                  Update bridge
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-5 px-1 text-[11px]"
+                    aria-label="Disconnect Office bridge"
+                    onClick={close}
+                    disabled={busy}
+                    title={busyReason}
+                  >
+                    Disconnect
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-5 px-1 text-[11px]"
+                    aria-label="Restart Office bridge"
+                    onClick={restart}
+                    disabled={busy}
+                    title={busyReason}
+                  >
+                    Restart
+                  </Button>
+                </>
+              )
+            ) : (
+              <>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-5 px-1 text-[11px]"
+                  aria-label="Open host session"
+                  onClick={() => void activateTab(host.id)}
+                >
+                  Open host session
+                </Button>
+                {legacy ? (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-5 px-1 text-[11px]"
+                    onClick={update}
+                  >
+                    Update bridge
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-5 px-1 text-[11px]"
+                    aria-label="Move bridge here"
+                    disabled={actionDisabled}
+                    title={actionTitle}
+                    onClick={() => setConfirming("move")}
+                  >
+                    Move bridge here
+                  </Button>
+                )}
+              </>
+            )}
+          </div>
+        </>
+      ) : available ? (
+        <>
+          <p
+            className="flex items-start gap-1.5 text-ink-faint"
+            data-testid="documents-scope-external"
+          >
+            <Plug className="mt-0.5 size-3 shrink-0" aria-hidden />
+            <span className="min-w-0 flex-1">{ownerSentence(owner)}</span>
+          </p>
+          <div className="flex flex-wrap items-center gap-1">
+            {legacy ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-5 px-1 text-[11px]"
+                onClick={update}
+              >
+                Update bridge
+              </Button>
+            ) : (
               <Button
                 size="sm"
                 variant="ghost"
                 className="h-5 px-1 text-[11px]"
-                aria-label="Open host session"
-                onClick={() => void activateTab(host.id)}
+                aria-label="Take over Office bridge"
+                disabled={actionDisabled}
+                title={actionTitle}
+                onClick={() => setConfirming("takeover")}
               >
-                Open host session
+                Take over bridge
               </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-5 px-1 text-[11px]"
-                aria-label="Use this session instead"
-                disabled={!canPromote}
-                title={canPromote ? undefined : "A web tab cannot host the Office bridge."}
-                onClick={() => setConfirming(true)}
-              >
-                Use this session instead
-              </Button>
-              {/* The bridge never came back after a takeover: restart the host
-                  instead of making the user close and reopen a tab. */}
-              {bridgeDown ? <RestartHostButton onRestart={() => void restartTab(host.id)} /> : null}
-            </div>
-          )}
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-5 px-1 text-[11px]"
+              aria-label="Re-check Office bridge"
+              onClick={() => void refreshOfficeDocuments()}
+            >
+              Re-check
+            </Button>
+          </div>
         </>
       ) : (
         <>
           <p className="text-ink-faint" data-testid="documents-scope-no-host">
-            No Office session is running the bridge.
+            {portConflict ? "Port 38617 is owned by another program." : "The Office bridge is off."}
           </p>
-          <div>
+          <div className="flex flex-wrap items-center gap-1">
+            {portConflict ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-5 px-1 text-[11px]"
+                aria-label="Take over Office port"
+                disabled={actionDisabled}
+                title={actionTitle}
+                onClick={() => setConfirming("takeover")}
+              >
+                Take over port
+              </Button>
+            ) : canHost ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-5 px-1 text-[11px]"
+                aria-label="Connect this session"
+                disabled={busy}
+                title={busyReason}
+                onClick={connect}
+              >
+                Connect this session
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-5 px-1 text-[11px]"
+                aria-label="Start an Office session"
+                disabled={busy}
+                title={busyReason}
+                onClick={() => void openOfficeSession()}
+              >
+                Start an Office session
+              </Button>
+            )}
             <Button
               size="sm"
-              variant="secondary"
+              variant="ghost"
               className="h-5 px-1 text-[11px]"
-              aria-label="Start an Office session"
-              onClick={() => void openOfficeSession()}
+              aria-label="Re-check Office bridge"
+              onClick={() => void refreshOfficeDocuments()}
             >
-              Start an Office session
+              Re-check
             </Button>
           </div>
         </>
       )}
 
-      {confirming && host ? (
+      {confirming === "move" && host ? (
         <ConfirmDialog
           open
           title={`Make “${activeTab?.title ?? "this session"}” the Office host?`}
           description={
             <>
-              <span className="font-medium">{host.title}</span> will stop being the Office host and
-              its session will restart. Whatever process currently holds the bridge port will be
-              terminated (if that process is a terminal session, reopening that terminal is up to
-              you), and the pane registry reconnects to this session.
+              <span className="font-medium">{host.title}</span> will stop hosting the bridge. Its
+              session stays open; only the bridge closes, and this session connects in its place.
             </>
           }
           confirmLabel="Move the bridge"
-          onConfirm={() => void promote()}
-          onCancel={() => setConfirming(false)}
+          onConfirm={() => void move()}
+          onCancel={() => setConfirming(null)}
+        />
+      ) : null}
+
+      {confirming === "takeover" ? (
+        <ConfirmDialog
+          open
+          title="Take over the Office bridge?"
+          description={
+            <>
+              {ownerSentence(owner)} Taking over terminates the process that owns port 38617. If
+              that process is a terminal Pi session, reopening it is up to you.
+            </>
+          }
+          confirmLabel="Take over"
+          onConfirm={() => void takeover()}
+          onCancel={() => setConfirming(null)}
         />
       ) : null}
     </div>
-  );
-}
-
-/**
- * The escape hatch for a bridge that did not come back (2026-10-30 rail-headers
- * plan). It re-spawns the host session, which re-binds port 38617, so the user
- * does not have to close and reopen a tab — or a terminal — to recover.
- *
- * Restarting ends a running turn, so the consequence is in the title rather than
- * behind a second confirmation: the button only appears while the bridge is
- * already down, where there is no run in progress to lose.
- */
-function RestartHostButton({ onRestart }: { onRestart: () => void }): React.JSX.Element {
-  return (
-    <Button
-      size="sm"
-      variant="ghost"
-      className="h-5 px-1 text-[11px]"
-      aria-label="Restart host session"
-      title="Restart this session so it re-binds the Office bridge port."
-      onClick={onRestart}
-    >
-      Restart host session
-    </Button>
   );
 }

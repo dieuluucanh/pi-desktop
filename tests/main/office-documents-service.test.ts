@@ -131,6 +131,42 @@ describe("createOfficeDocumentsService", () => {
     expect(seen[1]?.panes).toHaveLength(2);
   });
 
+  it("re-emits when the bridge owner moves between tabs", async () => {
+    const ownerA = {
+      pid: 11,
+      sessionId: "tab-a",
+      client: "desktop",
+      cwd: "/work/app",
+    };
+    const body = (owner: unknown): string =>
+      healthBody([excelPane], {
+        serverVersion: "0.6.0",
+        capabilities: ["http-health", "agent-deltas", "manual-lifecycle"],
+        owner,
+      });
+    const { deps } = scriptedDeps([
+      body(ownerA),
+      body(ownerA),
+      body({ ...ownerA, sessionId: "tab-b" }),
+    ]);
+    const seen: OfficeDocumentsView[] = [];
+    const service = createOfficeDocumentsService({
+      verify: deps,
+      now: () => 1_700_000_000_000,
+      onView: (view) => seen.push(view),
+    });
+
+    await service.refresh();
+    await service.refresh();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.owner?.sessionId).toBe("tab-a");
+    expect(seen[0]?.manualLifecycle).toBe(true);
+
+    await service.refresh();
+    expect(seen).toHaveLength(2);
+    expect(seen[1]?.owner?.sessionId).toBe("tab-b");
+  });
+
   it("polls on its interval and stops cleanly", async () => {
     vi.useFakeTimers();
     const { deps, probes } = scriptedDeps([healthBody([excelPane])]);

@@ -193,7 +193,7 @@ describe("handleMenuCommand", () => {
       hint: null,
     });
     handleMenuCommand("view-documents");
-    expect(useAppStore.getState().hint).toMatch(/not connected/i);
+    expect(useAppStore.getState().hint).toMatch(/not installed/i);
     // The panel is left exactly where it was.
     expect(useAppStore.getState().prefs.rail).toMatchObject({
       open: true,

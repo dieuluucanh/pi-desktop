@@ -4,6 +4,7 @@ import {
   deriveOfficeIntegrationFacts,
   type OfficeIntegrationStatus,
 } from "../../../shared/integrations";
+import { officeBridgeOwnerTab } from "../../../shared/office-documents";
 import { useAppStore } from "../state/app-store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -44,6 +45,12 @@ export function OfficeIntegrationCard() {
   const recordOfficeIntegration = useAppStore((state) => state.recordOfficeIntegration);
   const installOfficeBridge = useAppStore((state) => state.installOfficeBridge);
   const openOfficeSession = useAppStore((state) => state.openOfficeSession);
+  const connectOfficeBridge = useAppStore((state) => state.connectOfficeBridge);
+  const closeOfficeBridge = useAppStore((state) => state.closeOfficeBridge);
+  const officeDocuments = useAppStore((state) => state.officeDocuments);
+  const tabs = useAppStore((state) => state.tabs);
+  const activeTabId = useAppStore((state) => state.activeTabId);
+  const officeBridgeBusy = useAppStore((state) => state.officeBridgeBusy);
   const record = useAppStore((state) => state.integrations.office);
 
   const [copied, setCopied] = useState(false);
@@ -56,7 +63,11 @@ export function OfficeIntegrationCard() {
 
   const view = office.view;
   const facts = useMemo(() => deriveOfficeIntegrationFacts({ view, packages }), [view, packages]);
-  const busy = office.busy || view?.running === true;
+  const ownerTab = officeBridgeOwnerTab(officeDocuments, tabs);
+  const bridgeLive = officeDocuments?.available === true;
+  const isOwner = ownerTab !== null && ownerTab.id === activeTabId;
+  const canControl = activeTabId !== null;
+  const busy = office.busy || view?.running === true || officeBridgeBusy;
 
   // Record the completed setup once per finish, so the card can say when it last
   // verified the machine (plan step 19: "recorded in app state").
@@ -126,6 +137,16 @@ export function OfficeIntegrationCard() {
           }
         />
         <Fact label="Pinned version" value={facts.pinnedVersion} />
+        <Fact
+          label="Bridge control"
+          value={
+            facts.lifecycle === "manual"
+              ? "on demand (0.6+)"
+              : facts.lifecycle === "legacy"
+                ? "automatic (legacy)"
+                : "—"
+          }
+        />
         <Fact label="Add-in" value={facts.sideloaded ? "sideloaded" : "not sideloaded"} />
         <Fact label="Port" value={String(facts.port)} />
         <Fact
@@ -147,6 +168,18 @@ export function OfficeIntegrationCard() {
         ) : null}
       </dl>
 
+      {facts.lifecycle === "manual" || facts.lifecycle === "legacy" ? (
+        <p className="text-[11px] text-ink-faint" data-testid="office-bridge-state">
+          {facts.lifecycle === "legacy"
+            ? "This bridge starts automatically. Update it to connect and disconnect on demand."
+            : bridgeLive
+              ? isOwner
+                ? "This session is hosting the bridge."
+                : `The bridge is hosted by ${ownerTab?.title ?? "another session"}.`
+              : "The bridge is off. Connect a session when you want to use Office."}
+        </p>
+      ) : null}
+
       <Separator />
 
       <div className="flex flex-wrap items-center gap-2">
@@ -158,6 +191,31 @@ export function OfficeIntegrationCard() {
               ? "Repair"
               : "Set up Pi for Office"}
         </Button>
+        {facts.lifecycle === "legacy" ? (
+          <Button size="sm" variant="secondary" onClick={installOfficeBridge} disabled={busy}>
+            Update bridge
+          </Button>
+        ) : null}
+        {facts.lifecycle === "manual" && isOwner ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => activeTabId && void closeOfficeBridge(activeTabId)}
+            disabled={busy}
+          >
+            Disconnect bridge
+          </Button>
+        ) : null}
+        {facts.lifecycle === "manual" && !isOwner && canControl ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => activeTabId && void connectOfficeBridge(activeTabId)}
+            disabled={busy}
+          >
+            Connect bridge
+          </Button>
+        ) : null}
         <Button
           size="sm"
           variant="secondary"

@@ -38,7 +38,7 @@ import {
 import type { DiagnosticsSaveResult } from "../shared/ipc";
 import type { UpdateState } from "../shared/updates";
 import { isTrustAnswer } from "../shared/projects";
-import type { OfficeStopResult } from "../shared/office-bridge";
+import type { OfficeBridgeControlResult, OfficeStopResult } from "../shared/office-bridge";
 import {
   parseGitAction,
   parseGitDiffRequest,
@@ -147,6 +147,12 @@ export interface IpcDependencies {
    * flight) until the app owns one — the wizard's health probe is unaffected.
    */
   officeRun: { stop: () => Promise<OfficeStopResult> };
+  /** On-demand bridge lifecycle (bridge 0.6+): connect/close/restart. */
+  officeControl: {
+    connect(tabId: string, options?: { takeover?: boolean }): Promise<OfficeBridgeControlResult>;
+    close(tabId: string): Promise<OfficeBridgeControlResult>;
+    restart(tabId: string, options?: { takeover?: boolean }): Promise<OfficeBridgeControlResult>;
+  };
   /** Live Office pane registry (plan step 20), pushed from main's poll. */
   officeDocuments: {
     get(): OfficeDocumentsView;
@@ -237,6 +243,25 @@ function requireRealTabId(deps: IpcDependencies, value: unknown): string {
 }
 
 /** Validates the project-panel settings toggle input. */
+function parseBridgeTabId(value: unknown): string {
+  const tabId = typeof value === "string" ? value.trim() : "";
+  if (tabId.length === 0) {
+    throw new Error("office: bridge control requires a session tab id");
+  }
+  return tabId;
+}
+
+function parseBridgeControlInput(value: unknown): { tabId: string; takeover: boolean } {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  if (record.takeover !== undefined && typeof record.takeover !== "boolean") {
+    throw new Error("office: takeover must be a boolean");
+  }
+  return {
+    tabId: parseBridgeTabId(record.tabId),
+    takeover: record.takeover === true,
+  };
+}
+
 function parseProjectSettingsToggle(value: unknown): ProjectSettingsToggleInput {
   const record = asRecord(value);
   const path = typeof record.path === "string" ? record.path.trim() : "";
@@ -396,6 +421,17 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.officeStopRun, () => deps.officeRun.stop());
   ipcMain.handle(IPC.officeDocuments, () => deps.officeDocuments.get());
   ipcMain.handle(IPC.officeDocumentsRefresh, () => deps.officeDocuments.refresh());
+  ipcMain.handle(IPC.officeBridgeConnect, (_event, input: unknown) => {
+    const { tabId, takeover } = parseBridgeControlInput(input);
+    return deps.officeControl.connect(tabId, { takeover });
+  });
+  ipcMain.handle(IPC.officeBridgeClose, (_event, tabId: unknown) => {
+    return deps.officeControl.close(parseBridgeTabId(tabId));
+  });
+  ipcMain.handle(IPC.officeBridgeRestart, (_event, input: unknown) => {
+    const { tabId, takeover } = parseBridgeControlInput(input);
+    return deps.officeControl.restart(tabId, { takeover });
+  });
   // Same implementation as `app:reveal-path` — one path-validation rule.
   ipcMain.handle(IPC.officeReveal, (_event, target: unknown) => deps.revealPath(target));
 

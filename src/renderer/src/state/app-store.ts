@@ -139,11 +139,13 @@ import {
 } from "../../../shared/themes";
 import { systemThemeName } from "../themes/system-theme";
 import {
+  officeBridgeOwnerTab,
   officeDocumentScope,
   officeDocumentTag,
   type OfficeDocumentPane,
   type OfficeDocumentsView,
 } from "../../../shared/office-documents";
+import type { OfficeBridgeControlResult } from "../../../shared/office-bridge";
 import { sanitizeKeybindingsSnapshot, type KeybindingsSnapshot } from "../../../shared/keybindings";
 import {
   EMPTY_SHORTCUTS,
@@ -777,19 +779,27 @@ export interface AppStateShape {
   loadIntegrations: () => Promise<void>;
   /** Records a consented install / completed setup (validated in main). */
   recordOfficeIntegration: (patch: OfficeIntegrationRecordPatch) => Promise<void>;
-  /** Opens (or focuses) the Office session tab, which owns the bridge port. */
+  /** Opens (or focuses) a session and connects the on-demand bridge. */
   openOfficeSession: () => Promise<void>;
   /**
-   * Makes `tabId` the single Office host (plan step 20): demotes any other
-   * `office` tab and restarts this host on port 38617, resuming its session.
+   * Makes `tabId` the single Office host (plan step 20, legacy bridges only):
+   * demotes any other `office` tab and restarts this host on port 38617.
    */
   promoteToOfficeHost: (tabId: string) => Promise<boolean>;
+  /** Starts the bridge in `tabId`; closes another app tab's bridge first. */
+  connectOfficeBridge: (tabId: string, options?: { takeover?: boolean }) => Promise<boolean>;
+  /** Stops the bridge, but only when `tabId` is its live owner. */
+  closeOfficeBridge: (tabId: string) => Promise<boolean>;
+  /** Stops (if owned) and starts again in `tabId`. */
+  restartOfficeBridge: (tabId: string, options?: { takeover?: boolean }) => Promise<boolean>;
 
   /** The live Office pane registry (plan step 20), pushed from main's poll. */
   officeDocuments: OfficeDocumentsView | null;
+  /** True while a Connect/Disconnect/Restart action is in flight. */
+  officeBridgeBusy: boolean;
   /**
-   * True while a bridge promotion is in flight. The takeover restarts two hosts
-   * and re-binds a port, so a second click must not start it again.
+   * True while a legacy bridge promotion is in flight. The takeover restarts
+   * two hosts and re-binds a port, so a second click must not start it again.
    */
   promotingOfficeHost: boolean;
   officeDocumentsLoaded: boolean;
@@ -1365,6 +1375,22 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** One sentence for the toast and the transient hint. */
+function officeControlMessage(
+  result: OfficeBridgeControlResult,
+  action: "connect" | "close" | "restart",
+): string {
+  if (!result.ok) return result.message ?? `Office bridge action failed (${result.reason}).`;
+  if (action === "close" || result.reason === "closed" || result.reason === "not-connected") {
+    return "Office bridge is off.";
+  }
+  if (action === "restart") return "Office bridge restarted.";
+  if (result.reason === "already-connected") {
+    return "Office bridge is already connected in this session.";
+  }
+  return "Office bridge connected.";
+}
+
 /** Element-wise comparison for the small string lists the host reports. */
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -1614,6 +1640,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   integrationsLoaded: false,
   officeDocuments: null,
   officeDocumentsLoaded: false,
+  officeBridgeBusy: false,
   promotingOfficeHost: false,
   diagnostics: null,
   diagnosticsError: null,
@@ -4221,13 +4248,89 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   openOfficeSession: async () => {
-    const existing = get().tabs.find((tab) => tab.kind === "office");
-    if (existing) {
-      await get().activateTab(existing.id);
+    const state = get();
+    const owner = officeBridgeOwnerTab(state.officeDocuments, state.tabs);
+    const existingOffice = state.tabs.find((tab) => tab.kind === "office") ?? null;
+    const target = owner ?? existingOffice;
+    if (target) {
+      await get().activateTab(target.id);
       set({ view: "session" });
+      await get().connectOfficeBridge(target.id);
       return;
     }
     await get().createSessionTab("office");
+    set({ view: "session" });
+    const tabId = get().activeTabId;
+    if (tabId) await get().connectOfficeBridge(tabId);
+  },
+
+  connectOfficeBridge: async (tabId, options) => {
+    const api = bridge();
+    if (!api?.office) return false;
+    if (get().officeBridgeBusy) return false;
+    set({ officeBridgeBusy: true });
+    try {
+      const result = await api.office.connectBridge(tabId, options);
+      const message = officeControlMessage(result, "connect");
+      set({ hint: message });
+      if (result.ok) toast.success(message);
+      else toast.error(message);
+      await get().refreshOfficeDocuments();
+      return result.ok;
+    } catch (error) {
+      const message = errorMessage(error);
+      set({ hint: message });
+      toast.error(message);
+      return false;
+    } finally {
+      set({ officeBridgeBusy: false });
+    }
+  },
+
+  closeOfficeBridge: async (tabId) => {
+    const api = bridge();
+    if (!api?.office) return false;
+    if (get().officeBridgeBusy) return false;
+    set({ officeBridgeBusy: true });
+    try {
+      const result = await api.office.closeBridge(tabId);
+      const message = officeControlMessage(result, "close");
+      set({ hint: message });
+      if (result.ok) toast.success(message);
+      else toast.error(message);
+      await get().refreshOfficeDocuments();
+      return result.ok;
+    } catch (error) {
+      const message = errorMessage(error);
+      set({ hint: message });
+      toast.error(message);
+      return false;
+    } finally {
+      set({ officeBridgeBusy: false });
+    }
+  },
+
+  restartOfficeBridge: async (tabId, options) => {
+    const api = bridge();
+    if (!api?.office) return false;
+    if (get().officeBridgeBusy) return false;
+    set({ officeBridgeBusy: true });
+    try {
+      const result = await api.office.restartBridge(tabId, options);
+      const message = officeControlMessage(result, "restart");
+      set({ hint: message });
+      if (result.ok) toast.success(message);
+      else toast.error(message);
+      await get().refreshOfficeDocuments();
+      return result.ok;
+    } catch (error) {
+      const message = errorMessage(error);
+      set({ hint: message });
+      toast.error(message);
+      return false;
+    } finally {
+      set({ officeBridgeBusy: false });
+    }
   },
 
   promoteToOfficeHost: async (tabId) => {
@@ -4925,16 +5028,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // the tag implies. Anywhere else the draft would carry a prompt that cannot
     // be answered, so point at the Documents scope row instead of writing it.
     const state = get();
-    const { host, isHost } = officeDocumentScope(
-      state.officeDocuments?.panes ?? [],
-      state.tabs,
-      tabId,
-    );
+    const { host, isHost } = officeDocumentScope(state.officeDocuments ?? [], state.tabs, tabId);
     if (!isHost) {
       set({
         hint: host
-          ? `Only the Office host session (“${host.title}”) can use this document. Use “Use this session instead” in the Documents menu to move the bridge here.`
-          : "No session is running the Office bridge. Start an Office session from the Documents menu first.",
+          ? `Only the Office host session (“${host.title}”) can use this document. Use “Move bridge here” in the Documents menu to move the bridge here.`
+          : "No session is running the Office bridge. Connect a session from the Documents menu first.",
       });
       return null;
     }

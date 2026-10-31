@@ -10,6 +10,7 @@
  */
 
 import { PI_OFFICE_BRIDGE, type OfficeHost } from "../../shared/office";
+import type { OfficeBridgeEnsureResult } from "../../shared/office-setup";
 import type { FsPort } from "../fs-port";
 import { npmRootPaths } from "../packages/npm-root";
 import type { PackageInstaller } from "../packages/installer";
@@ -67,6 +68,8 @@ export interface OfficeSetupState {
   sideload: SideloadResult | null;
   openOffice: OpenOfficeResult | null;
   health: BridgeHealthCheck | null;
+  /** The explicit "connect a Pi session" step, or null before it has run. */
+  bridgeConnect: OfficeBridgeEnsureResult | null;
   panes: BridgePane[];
   checklist: ChecklistStep[];
   troubleshooting: TroubleshootItem[];
@@ -107,6 +110,12 @@ export interface OfficeSetupControllerOptions {
   /** Open an Office app during `run()`. Default: true. */
   openOfficeApp?: boolean;
   waitForPane?: { pollIntervalMs?: number; timeoutMs?: number };
+  /**
+   * Starts/connects the bridge in a Pi session. Injected by main because the
+   * controller is deliberately session-agnostic; absent in headless tests that
+   * only exercise the install/sideload/health steps.
+   */
+  ensureBridge?: () => Promise<OfficeBridgeEnsureResult>;
   now?: () => Date;
   onChange?: (state: OfficeSetupState) => void;
   env?: Record<string, string | undefined>;
@@ -141,6 +150,7 @@ export class OfficeSetupController {
       sideload: null,
       openOffice: null,
       health: null,
+      bridgeConnect: null,
       panes: [],
       checklist: [],
       troubleshooting: [],
@@ -192,6 +202,7 @@ export class OfficeSetupController {
         : null,
       openOffice: this.state.openOffice,
       health: this.state.health,
+      bridgeConnect: this.state.bridgeConnect,
       panes: this.state.panes,
     });
 
@@ -384,6 +395,32 @@ export class OfficeSetupController {
     return this.update({ openOffice: result });
   }
 
+  /**
+   * Asks a Pi session to start the bridge (bridge 0.6+). Idempotent from the
+   * user's point of view: an already-connected bridge reports success.
+   */
+  async ensureBridge(): Promise<OfficeSetupState> {
+    const ensure = this.options.ensureBridge;
+    if (!ensure) return this.state;
+    this.addLog("info", "Connecting the Office bridge…");
+    let result: OfficeBridgeEnsureResult;
+    try {
+      result = await ensure();
+    } catch (error) {
+      result = {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    this.addLog(
+      result.ok ? "info" : "warn",
+      result.ok
+        ? `Office bridge connected${result.detail ? ` (${result.detail})` : ""}.`
+        : `Office bridge did not connect: ${result.error ?? "unknown error"}`,
+    );
+    return this.update({ bridgeConnect: result });
+  }
+
   /** One health probe (used by the panel's "check again" action). */
   async refreshHealth(): Promise<OfficeSetupState> {
     const check = await checkBridgeHealth(this.options.verify, { port: this.port });
@@ -399,6 +436,9 @@ export class OfficeSetupController {
 
   async verifyBridge(): Promise<OfficeSetupState> {
     this.update({ currentStep: "verify", status: "running" });
+    // A Retry on the verify step must be able to bring the bridge up; a normal
+    // run already connected it before opening Office, so this is idempotent.
+    if (this.state.bridgeConnect?.ok !== true) await this.ensureBridge();
     const result = await waitForPane(this.options.verify, {
       port: this.port,
       ...(this.options.hosts ? { hosts: this.options.hosts } : {}),
@@ -459,6 +499,10 @@ export class OfficeSetupController {
       }
 
       await this.sideload();
+      // The bridge is explicit now (0.6+), so setup asks a session to connect it
+      // before opening Office. A failure is recorded and shown in the checklist;
+      // the rest of the wizard still runs so its evidence is complete.
+      await this.ensureBridge();
       // A port conflict is worth knowing before we launch Office.
       await this.refreshHealth();
 

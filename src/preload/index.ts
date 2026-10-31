@@ -39,7 +39,7 @@ import type {
   SessionTabsEnvelope,
 } from "../shared/session-ipc";
 import type { OfficeSetupStepId, OfficeSetupView } from "../shared/office-setup";
-import type { OfficeStopResult } from "../shared/office-bridge";
+import type { OfficeBridgeControlResult, OfficeStopResult } from "../shared/office-bridge";
 import type { OfficeDocumentsView } from "../shared/office-documents";
 import type { DiagnosticsExport, DiagnosticsSnapshot } from "../shared/diagnostics";
 import type { UpdateState } from "../shared/updates";
@@ -129,6 +129,18 @@ const office: OfficeBridge = {
     ipcRenderer.invoke(IPC.officeDocumentsRefresh) as Promise<OfficeDocumentsView>,
   onDocuments: (listener: (view: OfficeDocumentsView) => void) =>
     subscribe<OfficeDocumentsView>(IPC.officeDocumentsState, listener),
+  connectBridge: (tabId: string, options?: { takeover?: boolean }) =>
+    ipcRenderer.invoke(IPC.officeBridgeConnect, {
+      tabId,
+      ...options,
+    }) as Promise<OfficeBridgeControlResult>,
+  closeBridge: (tabId: string) =>
+    ipcRenderer.invoke(IPC.officeBridgeClose, tabId) as Promise<OfficeBridgeControlResult>,
+  restartBridge: (tabId: string, options?: { takeover?: boolean }) =>
+    ipcRenderer.invoke(IPC.officeBridgeRestart, {
+      tabId,
+      ...options,
+    }) as Promise<OfficeBridgeControlResult>,
 };
 
 const prefs: PrefsBridge = {

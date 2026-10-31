@@ -746,8 +746,6 @@ describe("import surface", () => {
     expect(specifiers.filter((id) => id?.startsWith("node:fs"))).toEqual([]);
     // Node built-ins (the profile path) are fine; everything else must be
     // relative, because the bundler inlines those and only those.
-    expect(
-      specifiers.every((id) => id?.startsWith(".") || id?.startsWith("node:")),
-    ).toBe(true);
+    expect(specifiers.every((id) => id?.startsWith(".") || id?.startsWith("node:"))).toBe(true);
   });
 });

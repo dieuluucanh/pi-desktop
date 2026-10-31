@@ -1,5 +1,5 @@
 import { PI_OFFICE_BRIDGE } from "../../shared/office";
-import type { OfficeSetupView } from "../../shared/office-setup";
+import type { OfficeBridgeEnsureResult, OfficeSetupView } from "../../shared/office-setup";
 import { createMemoryFsPort, createNodeFsPort, type FsPort } from "../fs-port";
 import { createNpmPackageInstaller, type PackageInstaller } from "../packages/installer";
 import { createDefaultDetectDeps, type DetectDeps } from "./detect";
@@ -51,6 +51,8 @@ export interface OfficeSetupServiceOptions {
   sideload?: SideloadDeps;
   installer?: PackageInstaller;
   waitForPane?: { pollIntervalMs?: number; timeoutMs?: number };
+  /** Starts/connects the bridge in a Pi session (bridge 0.6+). */
+  ensureBridge?: () => Promise<OfficeBridgeEnsureResult>;
   now?: () => Date;
 }
 
@@ -120,6 +122,7 @@ export function createOfficeSetupService(options: OfficeSetupServiceOptions): Of
     ...(options.appInfo ? { appInfo: options.appInfo } : {}),
     ...(dryRun ? { openOfficeApp: false } : {}),
     ...(options.waitForPane ? { waitForPane: options.waitForPane } : {}),
+    ...(options.ensureBridge ? { ensureBridge: options.ensureBridge } : {}),
     now,
     onChange: (state) => {
       latest = state;

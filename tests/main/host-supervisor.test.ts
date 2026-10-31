@@ -145,6 +145,7 @@ function harness(
     maxRssBytes?: number;
     idleTimeoutMs?: number;
     maxRestarts?: number;
+    isPinned?: (sessionId: string) => boolean;
   } = {},
 ) {
   const spawned: FakeHost[] = [];
@@ -181,6 +182,7 @@ function harness(
     safeMode: options.safeMode ?? false,
     telemetryEnabled: options.telemetryEnabled ?? false,
     ...(options.hostBuildId ? { hostBuildId: options.hostBuildId } : {}),
+    ...(options.isPinned ? { isPinned: options.isPinned } : {}),
   });
 
   return { supervisor, spawned, spawnCalls, fs };
@@ -648,5 +650,24 @@ describe("host supervisor resource guardrails (plan step 24)", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(supervisor.get("office")?.status()).toBe("ready");
+  });
+
+  it("does not recycle a pinned bridge owner, then recycles after unpin", async () => {
+    let pinned = true;
+    const { supervisor, spawned } = harness({
+      idleTimeoutMs: 5,
+      isPinned: () => pinned,
+    });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(supervisor.get("s1")?.status()).toBe("ready");
+    expect(spawned[0]?.killed).toBe(false);
+
+    pinned = false;
+    await vi.waitFor(() => {
+      expect(supervisor.get("s1")).toBeUndefined();
+    });
+    expect(spawned[0]?.killed).toBe(true);
   });
 });

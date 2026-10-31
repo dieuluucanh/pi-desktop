@@ -20,7 +20,7 @@ import { PI_OFFICE_BRIDGE } from "../../src/shared/office";
 describe("projectBridgeCompatibility", () => {
   it("targets protocol v3", () => {
     expect(PI_OFFICE_BRIDGE.knownProtocolVersion).toBe(3);
-    expect(PI_OFFICE_BRIDGE.pinnedVersion).toBe("^0.5.0");
+    expect(PI_OFFICE_BRIDGE.pinnedVersion).toBe("^0.6.0");
   });
 
   it("reports the current bridge as fully capable", () => {

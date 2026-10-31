@@ -73,7 +73,9 @@ export const PI_FOR_OFFICE = {
 export const PI_OFFICE_BRIDGE = {
   packageName: "@dieulc/pi-office-bridge",
   /** Pinned version range the app installs and tests against. */
-  pinnedVersion: "^0.5.0",
+  pinnedVersion: "^0.6.0",
+  /** The first bridge that stays off until `/office connect`. */
+  manualLifecycleVersion: "0.6.0",
   /** Last known protocol/catalog versions of the bridge (diagnostics only). */
   knownProtocolVersion: 3,
   knownCatalogVersion: 3,
@@ -85,6 +87,31 @@ export const PI_OFFICE_BRIDGE = {
 
 /** Office data-registry versions probed on Windows. */
 export const OFFICE_REGISTRY_VERSIONS: readonly string[] = ["16.0", "15.0"] as const;
+
+function versionParts(version: string | null | undefined): [number, number, number] | null {
+  const match = /^(\d+)\.(\d+)\.(\d+)/u.exec((version ?? "").trim());
+  if (!match) return null;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  if (![major, minor, patch].every((part) => Number.isFinite(part))) return null;
+  return [major, minor, patch];
+}
+
+/**
+ * True when the bridge supports the on-demand lifecycle (0.6+).
+ *
+ * Used as a defensive fallback when `/health` omits the `manual-lifecycle`
+ * capability; a bridge that advertises the capability wins even if its version
+ * string is unusual. Prereleases sort with their numeric core, which is what we
+ * want here (0.6.0-rc.1 already behaves as 0.6).
+ */
+export function bridgeSupportsManualLifecycle(version: string | null | undefined): boolean {
+  const parts = versionParts(version);
+  if (!parts) return false;
+  const [major, minor] = parts;
+  return major > 0 || (major === 0 && minor >= 6);
+}
 
 export function officeHostLabel(host: OfficeHost): string {
   return OFFICE_HOST_DESCRIPTORS.find((d) => d.host === host)?.label ?? host;

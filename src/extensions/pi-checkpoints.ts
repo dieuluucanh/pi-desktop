@@ -362,9 +362,7 @@ export default function checkpointExtension(
     // per-event cost.
     if (event.reason === "reload") return;
     const fs = createNodeCheckpointFs();
-    await sweepOldShadowRepos(fs, profileDir, store, now(), settings.retentionDays).catch(
-      () => 0,
-    );
+    await sweepOldShadowRepos(fs, profileDir, store, now(), settings.retentionDays).catch(() => 0);
     const probe = await store.ensure(ctx.cwd).catch(() => null);
     if (probe && !probe.ok && probe.reason === "git_missing") {
       notify(ctx, "Folder checkpoints need git; /rewind is unavailable in this folder.");

@@ -107,7 +107,7 @@ function fakeInstaller(fs: MemoryFsPort, options: InstallerOptions = {}): Packag
     description: "fake npm",
     async installAll(root): Promise<InstallResult> {
       const ok = options.ok ?? true;
-      const version = options.installVersion ?? "0.5.0";
+      const version = options.installVersion ?? "0.6.0";
       if (ok && version !== null) {
         await fs.writeTextFile(
           BRIDGE_PKG_JSON,
@@ -154,6 +154,7 @@ function harness(
     openPath?: (target: string) => Promise<string>;
     waitForPane?: { pollIntervalMs?: number; timeoutMs?: number };
     openOfficeApp?: boolean;
+    ensureBridge?: () => Promise<{ ok: boolean; error: string | null; detail?: string }>;
     onChange?: (state: ReturnType<OfficeSetupController["getState"]>) => void;
   } = {},
 ): Harness {
@@ -185,6 +186,7 @@ function harness(
     openPath: overrides.openPath ?? (async () => ""),
     ...(overrides.waitForPane ? { waitForPane: overrides.waitForPane } : {}),
     ...(overrides.openOfficeApp !== undefined ? { openOfficeApp: overrides.openOfficeApp } : {}),
+    ...(overrides.ensureBridge ? { ensureBridge: overrides.ensureBridge } : {}),
     now: () => new Date("2026-09-18T10:00:00.000Z"),
     env: { PI_OFFICE_BRIDGE_PORT: String(PI_OFFICE_BRIDGE.defaultPort) },
     appInfo: {
@@ -222,7 +224,7 @@ describe("OfficeSetupController.run — happy path", () => {
     expect(state.error).toBeNull();
     expect(state.detection?.sideload.installed).toBe(true);
     expect(state.bridge?.status).toBe("installed");
-    expect(state.bridge?.state.version).toBe("0.5.0");
+    expect(state.bridge?.state.version).toBe("0.6.0");
     expect(state.sideload?.verified).toBe(true);
     expect(state.openOffice?.ok).toBe(true);
     expect(state.panes).toHaveLength(1);
@@ -241,7 +243,7 @@ describe("OfficeSetupController.run — happy path", () => {
 
     // Real writes: settings pinned, npm root built, manifest registered+detected.
     expect(await fs.readTextFile(path.join(AGENT_DIR, "settings.json"))).toContain(
-      "npm:@dieulc/pi-office-bridge@^0.5.0",
+      "npm:@dieulc/pi-office-bridge@^0.6.0",
     );
     expect(await fs.readTextFile(path.join(WEF_DIR, "manifest.prod.xml"))).toBe(MANIFEST);
 
@@ -254,6 +256,45 @@ describe("OfficeSetupController.run — happy path", () => {
     expect(state.diagnostics).toContain("## Bridge health");
     expect(state.diagnostics).toContain("status: ok");
     expect(state.diagnostics).toContain("pi-office-bridge");
+  });
+
+  it("connects the bridge once before opening Office", async () => {
+    let ensured = 0;
+    const { controller } = harness({
+      fetchSteps: [{ body: JSON.stringify(PANE_HEALTH) }],
+      ensureBridge: async () => {
+        ensured += 1;
+        return { ok: true, error: null, detail: "tab office" };
+      },
+    });
+
+    const state = await controller.run();
+
+    expect(ensured).toBe(1);
+    expect(state.bridgeConnect).toEqual({ ok: true, error: null, detail: "tab office" });
+    expect(state.log.some((entry) => entry.message.includes("Office bridge connected"))).toBe(true);
+    expect(state.checklist.find((step) => step.id === "bridge-listening")?.status).toBe("ok");
+  });
+
+  it("records a failed connect in the checklist instead of throwing", async () => {
+    const { controller } = harness({
+      ensureBridge: async () => ({
+        ok: false,
+        error: "This bridge starts automatically (0.5.x). Update it.",
+      }),
+      fetchSteps: [{ throw: new Error("ECONNREFUSED") }],
+      waitForPane: { pollIntervalMs: 1_000, timeoutMs: 2_000 },
+    });
+
+    const state = await controller.run();
+
+    expect(state.status).toBe("attention");
+    expect(state.bridgeConnect?.ok).toBe(false);
+    const step = state.checklist.find((entry) => entry.id === "bridge-listening");
+    expect(step?.status).toBe("failed");
+    expect(step?.detail).toMatch(/0\.5\.x/);
+    expect(step?.actions.join(" ")).toMatch(/\/office connect/);
+    expect(state.log.some((entry) => entry.message.includes("did not connect"))).toBe(true);
   });
 
   it("records the install log lines in the wizard log", async () => {

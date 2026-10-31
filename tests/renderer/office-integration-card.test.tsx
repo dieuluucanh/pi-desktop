@@ -5,7 +5,7 @@ import { OfficeIntegrationCard } from "../../src/renderer/src/office/OfficeInteg
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { emptyIntegrationsState } from "../../src/shared/integrations";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
-import { installBridge, officeViewFixture } from "./fixtures";
+import { documentsViewFixture, installBridge, officeViewFixture } from "./fixtures";
 
 /**
  * The Pi for Office integration card (plan step 19). The installed/connected
@@ -47,10 +47,87 @@ describe("office integration card", () => {
     await userEvent.click(screen.getByRole("button", { name: /install bridge package/i }));
 
     const consent = useAppStore.getState().packageConsent;
-    expect(consent?.source).toBe("npm:@dieulc/pi-office-bridge@^0.5.0");
+    expect(consent?.source).toBe("npm:@dieulc/pi-office-bridge@^0.6.0");
     expect(consent?.integration).toBe("office");
     // The Office session needs a bridge, so it stays disabled until then.
     expect(screen.getByRole("button", { name: /open office session/i })).toBeDisabled();
+  });
+
+  it("offers Connect when a 0.6 bridge is installed but off", async () => {
+    const connect = vi.fn(async () => true);
+    useAppStore.setState({
+      packages: [
+        {
+          source: "npm:@dieulc/pi-office-bridge@^0.6.0",
+          name: "@dieulc/pi-office-bridge",
+          kind: "npm",
+          scope: "user",
+          filtered: false,
+          version: "0.6.0",
+          pinned: true,
+          installedPath: "C:/profile/agent/npm/node_modules/@dieulc/pi-office-bridge",
+          installed: true,
+        },
+      ],
+      packagesLoaded: true,
+      packagesCwd: "C:/work/app",
+      tabs: [
+        {
+          id: "tab-1",
+          kind: "session",
+          cwd: "C:/work/app",
+          title: "app",
+          sessionFile: null,
+          status: "idle",
+          createdAt: 1,
+          lastActiveAt: 1,
+          model: null,
+        },
+      ],
+      activeTabId: "tab-1",
+      officeDocuments: documentsViewFixture({
+        available: true,
+        status: "ok",
+        manualLifecycle: true,
+        owner: null,
+        panes: [],
+      }),
+      connectOfficeBridge: connect,
+    });
+    render(<OfficeIntegrationCard />);
+
+    await screen.findByTestId("office-integration-card");
+    expect(screen.getByText("on demand (0.6+)")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Connect bridge" }));
+    expect(connect).toHaveBeenCalledWith("tab-1");
+  });
+
+  it("offers Update bridge for an automatic 0.5 bridge", async () => {
+    useAppStore.setState({
+      packages: [
+        {
+          source: "npm:@dieulc/pi-office-bridge@^0.5.0",
+          name: "@dieulc/pi-office-bridge",
+          kind: "npm",
+          scope: "user",
+          filtered: false,
+          version: "0.5.2",
+          pinned: true,
+          installedPath: "C:/profile/agent/npm/node_modules/@dieulc/pi-office-bridge",
+          installed: true,
+        },
+      ],
+      packagesLoaded: true,
+      packagesCwd: "C:/work/app",
+    });
+    render(<OfficeIntegrationCard />);
+
+    await screen.findByTestId("office-integration-card");
+    expect(screen.getByText("automatic (legacy)")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Update bridge" }));
+    expect(useAppStore.getState().packageConsent?.source).toBe(
+      "npm:@dieulc/pi-office-bridge@^0.6.0",
+    );
   });
 
   it("reports an installed bridge from the package manager before the wizard runs", async () => {

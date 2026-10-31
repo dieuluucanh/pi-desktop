@@ -208,25 +208,26 @@ renderer's Tailwind scan root, so `styles.css` also declares them with
   (`src/main/office/documents-service.ts`), pushed over
   `office:documents-state`; the pure projection lives in
   `src/shared/office-documents.ts` and also feeds the `#` completion source and
-  the office tool cards. A session tab that owns port 38617 is the **Office
-  host**; the menu appears in **every** session (so the user can see Office is
-  running). Its pinned row is one compact line — _Office host: …_ (with the
-  folder only when it differs from the rail's) or _This session is the Office
-  host._ — plus _Open host session_ / _Use this session instead_, or _Start an
-  Office session_ when no tab holds the bridge. In a non-host session the two
-  composer actions are disabled and `#` completion returns nothing, because only
-  the host can serve the `office_*` call; the disabled buttons' `title` says so.
-  Promotion **really takes port 38617**: the old host is stopped and awaited,
-  this app's own PIDs are sampled _before_ any detach (a detached host has left
-  `hosts.list()`), then `src/main/office/port-owner.ts` finds the listener with
-  `Get-NetTCPConnection` (falling back to a dual-stack `netstat -ano`), terminates
-  it (never this app's own PIDs, never a kernel/System PID, re-reading the owner
-  before each signal) and **verifies the port is free**. A takeover that cannot
-  identify or free the owner now fails — with the owner named — rather than
-  reporting success and leaving a host that cannot bind. If the port cannot be
-  freed the displaced host is restored. A forced kill of a TUI in another
-  terminal can leave that console in raw mode; reopening it is the user's call,
-  and the confirm dialog says so.
+  the office tool cards. The menu appears in **every** session while the package
+  is configured, even when the bridge is off. Its pinned row is the control
+  surface: _The Office bridge is off_ + _Connect this session_, or _Office host:
+  …_ / _This session is the Office host._ plus Disconnect/Restart. Another app
+  tab offers _Open host session_ / _Move bridge here_; a terminal/foreign owner
+  offers a confirmed _Take over_. Moving runs `/office close` in the old tab and
+  `/office connect 38617` in the new one, **without restarting either session**.
+  A non-owner session has its two composer actions disabled and `#` completion
+  returns nothing, because only the live owner can serve the `office_*` call.
+
+  A legacy 0.5.x bridge cannot be closed by the app; the row offers _Update
+  bridge_ instead. The old `promoteToOfficeHost` path stays only as a
+  compatibility hook and has no renderer caller. A takeover of a terminal or
+  foreign owner is still explicit: `src/main/office/port-owner.ts` samples this
+  app's PIDs before detaching, finds the listener (structured
+  `Get-NetTCPConnection`, falling back to dual-stack `netstat -ano`), terminates
+  it only after confirmation, re-reads the owner before each signal, and
+  **verifies the port is free**. A forced kill of a TUI can leave that console in
+  raw mode; reopening it is the user's call, and the confirm dialog says so.
+
 - **Web tabs (plan step 21).** A `web` tab is a page the app did not write — a
   Plannotator review served on a loopback port, or any localhost UI. It has no Pi
   host: `src/shared/session-ipc.ts` carries only its record (`url`,

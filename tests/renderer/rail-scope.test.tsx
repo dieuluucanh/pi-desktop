@@ -7,9 +7,12 @@ import { RightRail, type RailMenuSpec } from "../../src/renderer/src/rail/RightR
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_RAIL_PREFS } from "../../src/shared/rail";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
-import { parseOfficeDocumentPane } from "../../src/shared/office-documents";
+import {
+  parseOfficeDocumentPane,
+  type OfficeDocumentsView,
+} from "../../src/shared/office-documents";
 import type { TabRecord } from "../../src/shared/session-ipc";
-import { installBridge } from "./fixtures";
+import { documentsViewFixture, installBridge } from "./fixtures";
 
 /**
  * The rail's scope, as the rail host and the Documents menu render it.
@@ -162,185 +165,254 @@ const PANE = parseOfficeDocumentPane({
   visible: true,
 })!;
 
-function seedScope(tabs: TabRecord[], activeTabId: string | null): void {
-  useAppStore.setState({ tabs, activeTabId, officeDocuments: null });
-}
-
 describe("DocumentsScope", () => {
-  it("names the host and its project when the host is elsewhere", () => {
+  function seedScope(
+    tabs: TabRecord[],
+    activeTabId: string | null,
+    view: OfficeDocumentsView,
+    activeKind: string | null = null,
+  ): void {
+    useAppStore.setState({
+      tabs,
+      activeTabId,
+      officeDocuments: view,
+      officeBridgeBusy: false,
+    });
+    if (activeKind) {
+      // The prop is read directly; the store does not need a second copy.
+    }
+  }
+
+  function ownerView(sessionId: string | null, overrides: Partial<OfficeDocumentsView> = {}) {
+    return documentsViewFixture({
+      available: true,
+      status: "ok",
+      manualLifecycle: true,
+      panes: [PANE],
+      owner: {
+        pid: 7,
+        sessionId,
+        client: sessionId === null ? "cli" : "desktop",
+        cwd: "/work/app",
+      },
+      ...overrides,
+    });
+  }
+
+  function offView(overrides: Partial<OfficeDocumentsView> = {}) {
+    return documentsViewFixture({
+      available: false,
+      status: "unreachable",
+      manualLifecycle: false,
+      panes: [],
+      owner: null,
+      ...overrides,
+    });
+  }
+
+  it("names the owner and its project when the bridge is in another tab", () => {
     seedScope(
       [
         tab({ id: "session-1", cwd: "/work/app" }),
         tab({ id: "office-1", kind: "office", title: "Office", cwd: "/work/danone-hcm" }),
       ],
       "session-1",
+      ownerView("office-1"),
     );
-    render(<DocumentsScope panes={[PANE]} railFolder="/work/app" />);
+    render(<DocumentsScope railFolder="/work/app" />);
 
     const host = screen.getByTestId("documents-scope-host");
     expect(host).toHaveTextContent("Office host: Office · /work/danone-hcm");
-    // The full path stays in the title for the narrow column.
     expect(host).toHaveAttribute("title", "/work/danone-hcm");
   });
 
-  it("omits the folder when the host works in the rail's folder", () => {
+  it("omits the folder when the owner works in the rail's folder", () => {
     seedScope(
       [tab({ id: "session-1" }), tab({ id: "office-1", kind: "office", title: "Office" })],
       "session-1",
+      ownerView("office-1"),
     );
-    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
+    render(<DocumentsScope railFolder={PROJECT} />);
 
     expect(screen.getByTestId("documents-scope-host")).toHaveTextContent("Office host: Office");
     expect(screen.getByTestId("documents-scope-host")).not.toHaveTextContent("danone-hcm");
   });
 
-  it("renders no project header row any more", () => {
-    seedScope(
-      [tab({ id: "office-1", kind: "office", title: "Office", status: "running" })],
-      "session-1",
-    );
-    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
-
-    // The status badge and the two-line header are gone with the stale project
-    // name they carried.
-    const scope = screen.getByTestId("documents-scope");
-    expect(scope).not.toHaveTextContent("working");
-    expect(scope.querySelector("[data-testid='documents-scope-status']")).toBeNull();
-  });
-
-  it("says so plainly when this session is the host", () => {
-    seedScope([tab({ id: "office-1", kind: "office", title: "Office" })], "office-1");
-    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
+  it("offers Disconnect and Restart when this session is the owner", () => {
+    seedScope([tab({ id: "session-1" })], "session-1", ownerView("session-1"));
+    render(<DocumentsScope railFolder={PROJECT} />);
 
     expect(screen.getByTestId("documents-scope-this-is-host")).toHaveTextContent(
       "This session is the Office host.",
     );
-    // No "move the bridge" action in the session that already owns it.
-    expect(
-      screen.queryByRole("button", { name: "Use this session instead" }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Disconnect Office bridge" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restart Office bridge" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open host session" })).not.toBeInTheDocument();
   });
 
-  it("opens the host session from another session", async () => {
+  it("opens the owner session from another tab", async () => {
     const activateTab = vi.fn(async () => {});
     seedScope(
       [tab({ id: "session-1" }), tab({ id: "office-1", kind: "office", title: "Office" })],
       "session-1",
+      ownerView("office-1"),
     );
-
     useAppStore.setState({ activateTab });
-    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
 
+    render(<DocumentsScope railFolder={PROJECT} />);
     await userEvent.click(screen.getByRole("button", { name: "Open host session" }));
     expect(activateTab).toHaveBeenCalledWith("office-1");
   });
 
-  it("asks before moving the bridge, then promotes once", async () => {
-    const promoteOfficeHost = vi.fn(async () => ({ tabs: [tab()], activeTabId: "session-1" }));
-    installBridge();
-    (
-      window.pi as unknown as { sessions: { promoteOfficeHost: unknown } }
-    ).sessions.promoteOfficeHost = promoteOfficeHost;
+  it("asks before moving the bridge, then connects this tab", async () => {
+    const connectOfficeBridge = vi.fn(async () => true);
     seedScope(
       [tab({ id: "session-1" }), tab({ id: "office-1", kind: "office", title: "Office" })],
       "session-1",
+      ownerView("office-1"),
     );
-    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
+    useAppStore.setState({ connectOfficeBridge });
 
-    await userEvent.click(screen.getByRole("button", { name: "Use this session instead" }));
+    render(<DocumentsScope railFolder={PROJECT} />);
+    await userEvent.click(screen.getByRole("button", { name: "Move bridge here" }));
 
-    // Nothing has moved yet: promotion restarts the other tab.
-    expect(promoteOfficeHost).not.toHaveBeenCalled();
+    expect(connectOfficeBridge).not.toHaveBeenCalled();
     const dialog = screen.getByTestId("confirm-dialog");
-    // The dialog names the tab that will be demoted, and warns that the port's
-    // current owner is terminated (the takeover really does free the port).
     expect(dialog).toHaveTextContent("Office");
-    expect(dialog).toHaveTextContent(/terminated/i);
+    expect(dialog).toHaveTextContent(/session stays open/i);
 
     await userEvent.click(screen.getByRole("button", { name: "Move the bridge" }));
-    expect(promoteOfficeHost).toHaveBeenCalledTimes(1);
-    expect(promoteOfficeHost).toHaveBeenCalledWith("session-1");
+    expect(connectOfficeBridge).toHaveBeenCalledWith("session-1");
   });
 
-  it("cancelling the confirmation moves nothing", async () => {
-    const promoteOfficeHost = vi.fn(async () => ({ tabs: [tab()], activeTabId: "session-1" }));
-    installBridge();
-    (
-      window.pi as unknown as { sessions: { promoteOfficeHost: unknown } }
-    ).sessions.promoteOfficeHost = promoteOfficeHost;
+  it("cancelling the move changes nothing", async () => {
+    const connectOfficeBridge = vi.fn(async () => true);
     seedScope(
       [tab({ id: "session-1" }), tab({ id: "office-1", kind: "office", title: "Office" })],
       "session-1",
+      ownerView("office-1"),
     );
-    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
+    useAppStore.setState({ connectOfficeBridge });
 
-    await userEvent.click(screen.getByRole("button", { name: "Use this session instead" }));
+    render(<DocumentsScope railFolder={PROJECT} />);
+    await userEvent.click(screen.getByRole("button", { name: "Move bridge here" }));
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
-    expect(promoteOfficeHost).not.toHaveBeenCalled();
+    expect(connectOfficeBridge).not.toHaveBeenCalled();
     expect(screen.queryByTestId("confirm-dialog")).not.toBeInTheDocument();
   });
 
-  it("refuses to promote a web tab, and says why", () => {
+  it("refuses to move a bridge into a web tab and says why", () => {
     seedScope(
       [
         tab({ id: "web-1", kind: "web", cwd: "/work/app" }),
         tab({ id: "office-1", kind: "office" }),
       ],
       "web-1",
+      ownerView("office-1"),
+      "web",
     );
-    render(<DocumentsScope panes={[PANE]} railFolder="/work/app" activeKind="web" />);
+    render(<DocumentsScope railFolder="/work/app" activeKind="web" />);
 
-    const promote = screen.getByRole("button", { name: "Use this session instead" });
-    expect(promote).toBeDisabled();
-    expect(promote).toHaveAttribute("title", "A web tab cannot host the Office bridge.");
+    const move = screen.getByRole("button", { name: "Move bridge here" });
+    expect(move).toBeDisabled();
+    expect(move).toHaveAttribute("title", "A web tab cannot host the Office bridge.");
   });
 
-  it("offers to start a session when no tab holds the bridge", async () => {
-    const openOfficeSession = vi.fn(async () => {});
-    seedScope([tab()], "tab-1");
-    useAppStore.setState({ openOfficeSession });
-    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
+  it("offers Connect this session when the bridge is off", async () => {
+    const connectOfficeBridge = vi.fn(async () => true);
+    seedScope([tab({ id: "session-1" })], "session-1", offView());
+    useAppStore.setState({ connectOfficeBridge });
 
+    render(<DocumentsScope railFolder={PROJECT} />);
     expect(screen.getByTestId("documents-scope-no-host")).toHaveTextContent(
-      /no office session is running the bridge/i,
+      /office bridge is off/i,
     );
+    await userEvent.click(screen.getByRole("button", { name: "Connect this session" }));
+    expect(connectOfficeBridge).toHaveBeenCalledWith("session-1");
+  });
+
+  it("offers Start an Office session when there is no active tab", async () => {
+    const openOfficeSession = vi.fn(async () => {});
+    seedScope([], null, offView());
+    useAppStore.setState({ openOfficeSession });
+
+    render(<DocumentsScope railFolder={PROJECT} />);
     await userEvent.click(screen.getByRole("button", { name: "Start an Office session" }));
     expect(openOfficeSession).toHaveBeenCalledTimes(1);
   });
 
-  it("does not treat a stopped office tab as the host", () => {
-    seedScope([tab({ id: "office-1", kind: "office", status: "stopped" })], "office-1");
-    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
-    // A stopped tab keeps its record but no longer holds port 38617.
-    expect(screen.getByTestId("documents-scope-no-host")).toBeInTheDocument();
-  });
-
-  it("offers a host restart only while the bridge is known to be down", async () => {
-    installBridge();
-    const restart = vi.fn(async () => ({ tabs: [], activeTabId: null }));
-    (window.pi as unknown as { sessions: { restart: unknown } }).sessions.restart = restart;
+  it("shows a foreign owner and asks before taking over", async () => {
+    const connectOfficeBridge = vi.fn(async () => true);
     seedScope(
-      [tab({ id: "session-1" }), tab({ id: "office-1", kind: "office", title: "Office" })],
+      [tab({ id: "session-1" })],
       "session-1",
+      ownerView(null, { owner: { pid: 99, sessionId: null, client: "cli", cwd: "/work/app" } }),
+    );
+    useAppStore.setState({ connectOfficeBridge });
+
+    render(<DocumentsScope railFolder={PROJECT} />);
+    expect(screen.getByTestId("documents-scope-external")).toHaveTextContent(
+      /terminal Pi session \(PID 99/,
     );
 
-    const { rerender } = render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} />);
-    // Bridge answering: the normal switch actions, and nothing to recover from.
-    expect(screen.queryByRole("button", { name: "Restart host session" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Take over Office bridge" }));
+    const dialog = screen.getByTestId("confirm-dialog");
+    expect(dialog).toHaveTextContent(/terminates the process/i);
 
-    rerender(<DocumentsScope panes={[PANE]} railFolder={PROJECT} bridgeDown />);
-    await userEvent.click(screen.getByRole("button", { name: "Restart host session" }));
-
-    // The host is the tab that owns the port, not the one the user is in.
-    expect(restart).toHaveBeenCalledWith("office-1");
+    await userEvent.click(screen.getByRole("button", { name: "Take over" }));
+    expect(connectOfficeBridge).toHaveBeenCalledWith("session-1", { takeover: true });
   });
 
-  it("offers the restart from the host session too", () => {
-    seedScope([tab({ id: "office-1", kind: "office", title: "Office" })], "office-1");
-    render(<DocumentsScope panes={[PANE]} railFolder={PROJECT} bridgeDown />);
+  it("offers a takeover for a foreign program on the port", async () => {
+    const connectOfficeBridge = vi.fn(async () => true);
+    seedScope(
+      [tab({ id: "session-1" })],
+      "session-1",
+      offView({ status: "not-our-bridge", error: "port busy" }),
+    );
+    useAppStore.setState({ connectOfficeBridge });
 
-    expect(screen.getByRole("button", { name: "Restart host session" })).toBeInTheDocument();
+    render(<DocumentsScope railFolder={PROJECT} />);
+    expect(screen.getByTestId("documents-scope-no-host")).toHaveTextContent(
+      /owned by another program/i,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Take over Office port" }));
+    await userEvent.click(screen.getByRole("button", { name: "Take over" }));
+    expect(connectOfficeBridge).toHaveBeenCalledWith("session-1", { takeover: true });
+  });
+
+  it("shows the legacy bridge update path instead of controls it cannot use", () => {
+    const installOfficeBridge = vi.fn();
+    seedScope(
+      [tab({ id: "office-1", kind: "office", title: "Office" })],
+      "office-1",
+      documentsViewFixture({
+        available: true,
+        status: "ok",
+        manualLifecycle: false,
+        owner: null,
+        panes: [PANE],
+      }),
+    );
+    useAppStore.setState({ installOfficeBridge });
+
+    render(<DocumentsScope railFolder={PROJECT} />);
+    expect(screen.getByTestId("documents-legacy-bridge")).toHaveTextContent(/legacy/i);
+    expect(screen.getByRole("button", { name: "Update bridge" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Disconnect Office bridge" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Move bridge here" })).not.toBeInTheDocument();
+  });
+
+  it("calls Restart on the owner tab", async () => {
+    const restartOfficeBridge = vi.fn(async () => true);
+    seedScope([tab({ id: "session-1" })], "session-1", ownerView("session-1"));
+    useAppStore.setState({ restartOfficeBridge });
+
+    render(<DocumentsScope railFolder={PROJECT} />);
+    await userEvent.click(screen.getByRole("button", { name: "Restart Office bridge" }));
+    expect(restartOfficeBridge).toHaveBeenCalledWith("session-1");
   });
 });

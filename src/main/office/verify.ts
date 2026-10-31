@@ -13,6 +13,7 @@ import {
   officeHostLabel,
   type OfficeHost,
 } from "../../shared/office";
+import type { OfficeBridgeEnsureResult } from "../../shared/office-setup";
 import type { BridgeInstallStatus } from "./bridge-install";
 import type { OfficeDetectionResult, OfficeOs } from "./types";
 
@@ -417,6 +418,8 @@ export interface ChecklistInput {
   } | null;
   openOffice: OpenOfficeResult | null;
   health: BridgeHealthCheck | null;
+  /** The explicit connect step, when the wizard ran it. */
+  bridgeConnect?: OfficeBridgeEnsureResult | null;
   panes: readonly BridgePane[];
 }
 
@@ -508,30 +511,42 @@ export function buildSetupChecklist(input: ChecklistInput): ChecklistStep[] {
   });
 
   const health = input.health;
+  const connect = input.bridgeConnect ?? null;
+  const connectFailed = connect?.ok === false;
   steps.push({
     id: "bridge-listening",
     title: `Bridge listening on port ${PI_OFFICE_BRIDGE.defaultPort}`,
     status:
       health === null
-        ? "pending"
+        ? connectFailed
+          ? "failed"
+          : "pending"
         : health.status === "ok"
           ? "ok"
-          : health.status === "not-our-bridge"
+          : health.status === "not-our-bridge" || connectFailed
             ? "failed"
             : "running",
     detail:
       health === null
-        ? "Waiting for the Pi session to start the bridge."
+        ? connectFailed
+          ? (connect?.error ?? "The bridge did not start.")
+          : "Waiting for the Pi session to start the bridge."
         : health.status === "ok"
           ? `${health.health?.serverName}${health.health?.serverVersion ? ` v${health.health.serverVersion}` : ""} (protocol v${health.health?.protocolVersion ?? "?"}, catalog v${health.health?.catalogVersion ?? "?"})`
-          : (health.error ?? "Not reachable yet."),
-    actions: health?.portConflict
+          : ((connectFailed ? (connect?.error ?? health.error) : health.error) ??
+            "Not reachable yet."),
+    actions: connectFailed
       ? [
-          `Something else is using port ${PI_OFFICE_BRIDGE.defaultPort}. Close it, or set ${PI_OFFICE_BRIDGE.envPort} for the Office session.`,
+          "Run /office connect in a Pi session, or use Connect in the Documents panel.",
+          "If this profile still has a bridge older than 0.6, update it from Extensions → Integrations.",
         ]
-      : health && health.status === "unreachable"
-        ? ["Make sure the Pi for Office session is running (a session hosts the bridge)."]
-        : [],
+      : health?.portConflict
+        ? [
+            `Something else is using port ${PI_OFFICE_BRIDGE.defaultPort}. Close it, or set ${PI_OFFICE_BRIDGE.envPort} for the Office session.`,
+          ]
+        : health && health.status === "unreachable"
+          ? ["Make sure the Pi for Office session is running (a session hosts the bridge)."]
+          : [],
   });
 
   const panes = input.panes;

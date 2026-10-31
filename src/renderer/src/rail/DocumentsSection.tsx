@@ -12,7 +12,7 @@
  * is served by exactly one session: the tab that owns port 38617. So the two
  * actions that write into the composer — *Chat about this* and *Insert #mention*
  * — are only enabled **in the host session**; everywhere else they are disabled
- * and a line says why and points at the scope row's *Use this session instead*.
+ * and a line says why and points at the scope row's *Move bridge here*.
  * Offering a button whose prompt can never be served is worse than offering the
  * fix, and this body has no way to move the bridge itself: the scope row above it
  * owns that, which is why `OfficeHostFooter` no longer lives here.
@@ -148,7 +148,7 @@ function EmptyState() {
 
 /** Why the two composer actions are unavailable outside the host session. */
 const NOT_HOST_REASON =
-  'Only the Office host session can serve this. Use "Use this session instead" in the Documents header.';
+  'Only the Office host session can serve this. Use "Move bridge here" in the Documents header.';
 
 export interface DocumentsSectionProps {
   /**
@@ -262,8 +262,8 @@ function unavailableCopy(status: string): { title: string; body: string } {
       };
     default:
       return {
-        title: `Waiting for the bridge on port ${PI_OFFICE_BRIDGE.defaultPort}`,
-        body: "The Office host is starting, or no session is running the bridge. Re-check in a few seconds.",
+        title: "The Office bridge is off",
+        body: `Connect this session from the row above. The bridge stays off until you ask for it, so no other Pi session is holding port ${PI_OFFICE_BRIDGE.defaultPort}.`,
       };
   }
 }

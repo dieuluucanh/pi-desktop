@@ -70,7 +70,7 @@ export function ProjectRail(): React.JSX.Element | null {
 
   if (!RAIL_VIEWS.has(view) || !folder) return null;
 
-  const scope = officeDocumentScope(officeDocuments?.panes ?? [], tabs, activeTabId, folder);
+  const scope = officeDocumentScope(officeDocuments ?? [], tabs, activeTabId, folder);
   const snapshot = gitSnapshot[folder];
   const timeline = checkpoints[folder];
   const officeTab = tabs.find((tab) => tab.kind === "office") ?? null;
@@ -109,10 +109,9 @@ export function ProjectRail(): React.JSX.Element | null {
             // the bridge and offers the way to move it.
             scope: (
               <DocumentsScope
-                panes={officeDocuments?.panes ?? []}
+                view={officeDocuments}
                 railFolder={folder}
                 activeKind={activeTab?.kind ?? null}
-                bridgeDown={officeDocuments !== null && !officeDocuments.available}
               />
             ),
             content: <DocumentsSection isHost={scope.isHost} />,

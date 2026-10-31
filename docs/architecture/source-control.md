@@ -152,14 +152,15 @@ rewriting.
 | `manual`      | the rail's _Snapshot now_                       | on click                                                                                                                                                   |
 | `pre-op`      | the git engine's `preOpSnapshot` port           | immediately before a discard or a branch switch; a failure aborts the action                                                                               |
 | `pre-restore` | the checkpoint service                          | immediately before a restore, or a `/rewind`                                                                                                               |
-| idle scan     | `src/main/checkpoint-service.ts`                | while an Office pane is attached, **in the Office host session's folder**, that folder is idle, its fingerprint changed, and `scanIntervalMs` has elapsed  |
+| idle scan     | `src/main/checkpoint-service.ts`                | while an Office pane is attached, **in the live bridge owner's folder**, that folder is idle, its fingerprint changed, and `scanIntervalMs` has elapsed    |
 
 The idle scan exists because a tool hook cannot see Word save a document. Its
 fingerprint is a bounded `stat` walk (count, max mtime, total bytes), not a
 content hash: noticing the change must cost milliseconds on a 40 MB `.docx`.
 
-**Its target is the Office host's folder only** (`officeHostProjectPath`, wired
-in `src/main/index.ts` from the `office` tab that is not stopped). The bridge
+**Its target is the live bridge owner's folder only** (`officeHostProjectPath`,
+wired in `src/main/index.ts` from `/health.owner.sessionId`, with the old
+`office` tab as a 0.5.x fallback). The bridge
 publishes a document name and a `url_sha256:` id, never a path, so there is no
 honest way to attribute a save to an arbitrary project. Scanning every folder the
 rail had ever looked at meant that opening one workbook started collecting
@@ -240,11 +241,11 @@ is showing in its `title`. There is no per-menu scope row (2026-10-30
 project-scoped rail plan): the rail is app chrome scoped to the **selected
 project**, so the panel and the sidebar cannot disagree.
 
-| Menu           | Scope                     | Where the truth lives                                | How to switch                                     |
-| -------------- | ------------------------- | ---------------------------------------------------- | ------------------------------------------------- |
-| Source Control | the rail's project folder | `state.git[folder]`; main polls that folder          | select a project, or click a session in it        |
-| Checkpoints    | the same project folder   | `<profile>/checkpoints/<basename>-<hash>` per folder | select a project; rows keep the per-session chips |
-| Documents      | the app-wide bridge       | one bridge on port 38617, owned by the `office` tab  | _Open host session_, _Use this session instead_   |
+| Menu           | Scope                     | Where the truth lives                                | How to switch                                                            |
+| -------------- | ------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------ |
+| Source Control | the rail's project folder | `state.git[folder]`; main polls that folder          | select a project, or click a session in it                               |
+| Checkpoints    | the same project folder   | `<profile>/checkpoints/<basename>-<hash>` per folder | select a project; rows keep the per-session chips                        |
+| Documents      | the app-wide bridge       | one bridge on port 38617, owner from `/health`       | Connect/Disconnect, _Open host session_, _Move bridge here_, _Take over_ |
 
 Selecting a project jumps to its most recently active **open** tab (never a
 saved-but-closed session, and never a `web` tab); a project with no open tab

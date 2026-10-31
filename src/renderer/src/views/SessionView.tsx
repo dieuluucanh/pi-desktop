@@ -65,11 +65,7 @@ const EMPTY_SCOPE: readonly string[] = [];
 const documentMentionSource = {
   list: () => {
     const state = useAppStore.getState();
-    return documentMentionsForHost(
-      state.officeDocuments?.panes ?? [],
-      state.tabs,
-      state.activeTabId,
-    );
+    return documentMentionsForHost(state.officeDocuments ?? [], state.tabs, state.activeTabId);
   },
 };
 

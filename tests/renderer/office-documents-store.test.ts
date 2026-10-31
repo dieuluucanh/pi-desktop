@@ -242,7 +242,7 @@ describe("chat about this follows the host session", () => {
     // The hint names the host and the one action that fixes it.
     const hint = useAppStore.getState().hint ?? "";
     expect(hint).toMatch(/Office/);
-    expect(hint).toMatch(/use this session instead/i);
+    expect(hint).toMatch(/move bridge here/i);
   });
 
   it("never writes a tag, even into an empty draft", () => {
@@ -257,7 +257,7 @@ describe("chat about this follows the host session", () => {
   it("points at starting a session when no host exists at all", () => {
     useAppStore.setState({ tabs: [tab({ id: "tab-1" })], activeTabId: "tab-1" });
     expect(useAppStore.getState().chatAboutDocument(PANE)).toBeNull();
-    expect(useAppStore.getState().hint).toMatch(/start an office session/i);
+    expect(useAppStore.getState().hint).toMatch(/connect a session/i);
   });
 
   it("ignores a stopped office tab as a host", () => {
@@ -279,5 +279,105 @@ describe("chat about this follows the host session", () => {
     expect(
       useAppStore.getState().prefs.drafts["tab-office"]?.match(/\[office:excel/g),
     ).toHaveLength(1);
+  });
+});
+
+describe("on-demand bridge controls", () => {
+  function ownedView(sessionId = "tab-1") {
+    return documentsViewFixture({
+      available: true,
+      status: "ok",
+      manualLifecycle: true,
+      owner: { pid: 7, sessionId, client: "desktop", cwd: PROJECT },
+      panes: [excelPane!],
+    });
+  }
+
+  it("connects the requested tab and re-probes the registry", async () => {
+    installBridge();
+    const connectBridge = vi.fn(async () => ({ ok: true, reason: "connected" }));
+    (window.pi as unknown as { office: { connectBridge: unknown } }).office.connectBridge =
+      connectBridge;
+    const refreshDocuments = vi.spyOn(window.pi.office, "refreshDocuments");
+
+    const ok = await useAppStore.getState().connectOfficeBridge("tab-1");
+
+    expect(ok).toBe(true);
+    expect(connectBridge).toHaveBeenCalledWith("tab-1", undefined);
+    expect(refreshDocuments).toHaveBeenCalled();
+    expect(useAppStore.getState().officeBridgeBusy).toBe(false);
+    expect(useAppStore.getState().hint).toMatch(/connected/i);
+  });
+
+  it("closes the bridge and reports the off state", async () => {
+    installBridge();
+    const closeBridge = vi.fn(async () => ({ ok: true, reason: "closed" }));
+    (window.pi as unknown as { office: { closeBridge: unknown } }).office.closeBridge = closeBridge;
+
+    const ok = await useAppStore.getState().closeOfficeBridge("tab-1");
+
+    expect(ok).toBe(true);
+    expect(closeBridge).toHaveBeenCalledWith("tab-1");
+    expect(useAppStore.getState().hint).toMatch(/off/i);
+  });
+
+  it("surfaces a port conflict message verbatim", async () => {
+    installBridge();
+    (window.pi as unknown as { office: { connectBridge: unknown } }).office.connectBridge = vi.fn(
+      async () => ({
+        ok: false,
+        reason: "port-busy",
+        message: "A terminal Pi session owns the bridge on port 38617.",
+      }),
+    );
+
+    const ok = await useAppStore.getState().connectOfficeBridge("tab-1");
+
+    expect(ok).toBe(false);
+    expect(useAppStore.getState().hint).toContain("terminal Pi session");
+  });
+
+  it("ignores a second action while the first is in flight", async () => {
+    installBridge();
+    let release: (() => void) | null = null;
+    const connectBridge = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ ok: true, reason: "connected" });
+        }),
+    );
+    (window.pi as unknown as { office: { connectBridge: unknown } }).office.connectBridge =
+      connectBridge;
+
+    const first = useAppStore.getState().connectOfficeBridge("tab-1");
+    const second = await useAppStore.getState().connectOfficeBridge("tab-1");
+    expect(second).toBe(false);
+    release!();
+    await first;
+    expect(connectBridge).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().officeBridgeBusy).toBe(false);
+  });
+
+  it("uses the live owner (not the tab kind) for chat and mentions", () => {
+    useAppStore.setState({
+      tabs: [tab({ id: "tab-1" }), tab({ id: "tab-office", kind: "office" })],
+      activeTabId: "tab-1",
+      officeDocuments: ownedView("tab-1"),
+    });
+    useAppStore.getState().setDraft("tab-1", "summarize");
+
+    expect(useAppStore.getState().chatAboutDocument(excelPane!)).toBe("tab-1");
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toContain("[office:excel");
+  });
+
+  it("refuses chat when another tab owns the live bridge", () => {
+    useAppStore.setState({
+      tabs: [tab({ id: "tab-1" }), tab({ id: "tab-office", kind: "office" })],
+      activeTabId: "tab-1",
+      officeDocuments: ownedView("tab-office"),
+    });
+
+    expect(useAppStore.getState().chatAboutDocument(excelPane!)).toBeNull();
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBeUndefined();
   });
 });

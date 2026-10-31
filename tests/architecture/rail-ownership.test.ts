@@ -301,7 +301,8 @@ describe("panel rail ownership", () => {
     );
     for (const label of [
       "Open host session",
-      "Use this session instead",
+      "Move bridge here",
+      "Connect this session",
       "Start an Office session",
     ]) {
       expect(scope, label).toContain(label);

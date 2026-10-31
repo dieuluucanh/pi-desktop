@@ -185,6 +185,12 @@ export interface HostSupervisorOptions {
   /** How often to poll `host.metrics`; `0` disables polling (tests). */
   memoryPollMs?: number;
   /**
+   * A session that must not be idle-recycled right now (the Office bridge
+   * owner). Evaluated at every idle tick, so a bridge that moves between tabs
+   * pins the new owner without a restart.
+   */
+  isPinned?: (sessionId: string) => boolean;
+  /**
    * Safe mode (plan step 22): passed to every child as `PI_DESKTOP_SAFE_MODE` so
    * the host loads no third-party resources and refuses package changes.
    */
@@ -632,16 +638,27 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       return info;
     }
 
+    private pinned(): boolean {
+      try {
+        return options.isPinned?.(this.sessionId) === true;
+      } catch {
+        // A broken predicate must not keep a host alive forever; fail open to
+        // the existing recycle behaviour.
+        return false;
+      }
+    }
+
     private scheduleIdleCheck(): void {
       const idleTimeoutMs = options.idleTimeoutMs;
       if (!idleTimeoutMs || idleTimeoutMs <= 0 || this.officeHost) return;
       if (this.idleTimer) clearTimeout(this.idleTimer);
       this.idleTimer = setTimeout(() => {
         const since = now() - this.lastActivityAt;
-        // Recycle only when nothing is in flight and the host has had no real
-        // traffic for the whole window. The session service sees the `stopped`
-        // status, drops its stale handle and re-spawns on the next activation.
-        if (this.pending.size === 0 && since >= idleTimeoutMs) {
+        // Recycle only when nothing is in flight, the host has had no real
+        // traffic for the whole window, and no live bridge is pinned to it. The
+        // session service sees the `stopped` status, drops its stale handle and
+        // re-spawns on the next activation.
+        if (this.pending.size === 0 && since >= idleTimeoutMs && !this.pinned()) {
           this.appendLog("info", `recycling idle host after ${Math.round(since / 1000)} s`);
           this.onIdle?.();
           return;

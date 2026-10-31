@@ -3,6 +3,8 @@ import {
   documentMentionValue,
   documentMentionsForHost,
   emptyOfficeDocumentsView,
+  officeBridgeOwnerTab,
+  parseOfficeBridgeOwner,
   formatPaneAge,
   officeCapabilityLabel,
   officeDocumentScope,
@@ -18,6 +20,7 @@ import {
   toDocumentMentions,
   type OfficeDocumentPane,
 } from "../../src/shared/office-documents";
+import { bridgeSupportsManualLifecycle } from "../../src/shared/office";
 
 /** A `/health` payload as the bridge (0.5.0) emits it. */
 function healthPayload(panes: unknown[]) {
@@ -30,6 +33,16 @@ function healthPayload(panes: unknown[]) {
     catalogVersion: 3,
     port: 38617,
     panes,
+  };
+}
+
+/** A 0.6 `/health` payload: manual lifecycle plus the owner block. */
+function manualHealthPayload(panes: unknown[], owner: unknown = null) {
+  return {
+    ...healthPayload(panes),
+    serverVersion: "0.6.0",
+    capabilities: ["http-health", "agent-deltas", "client-abort", "manual-lifecycle"],
+    owner,
   };
 }
 
@@ -166,6 +179,143 @@ describe("parseOfficeDocumentsView", () => {
       fetchedAt: "2026-09-20T10:00:00.000Z",
     });
     expect(healthy.configured).toBe(false);
+  });
+});
+
+describe("bridge owner projection", () => {
+  const desktopOwner = {
+    pid: 4242,
+    sessionId: "tab-owner",
+    client: "desktop",
+    cwd: "/work/app",
+  };
+
+  it("parses the owner and the manual-lifecycle capability", () => {
+    const view = parseOfficeDocumentsView({
+      payload: manualHealthPayload([], desktopOwner),
+      status: "ok",
+      fetchedAt: "2026-09-20T10:00:00.000Z",
+    });
+    expect(view.owner).toEqual(desktopOwner);
+    expect(view.manualLifecycle).toBe(true);
+  });
+
+  it("keeps a legacy bridge ownerless and automatic", () => {
+    const view = parseOfficeDocumentsView({
+      payload: healthPayload([]),
+      status: "ok",
+      fetchedAt: "2026-09-20T10:00:00.000Z",
+    });
+    expect(view.owner).toBeNull();
+    expect(view.manualLifecycle).toBe(false);
+  });
+
+  it("infers manual lifecycle from a 0.6 serverVersion when the capability is absent", () => {
+    const view = parseOfficeDocumentsView({
+      payload: {
+        ...healthPayload([]),
+        serverVersion: "0.6.0",
+        capabilities: ["http-health"],
+      },
+      status: "ok",
+      fetchedAt: "2026-09-20T10:00:00.000Z",
+    });
+    expect(view.manualLifecycle).toBe(true);
+  });
+
+  it("does not trust an owner from a non-bridge payload", () => {
+    const view = parseOfficeDocumentsView({
+      payload: { owner: desktopOwner },
+      status: "not-our-bridge",
+      fetchedAt: "2026-09-20T10:00:00.000Z",
+    });
+    expect(view.available).toBe(false);
+    expect(view.owner).toBeNull();
+    expect(view.manualLifecycle).toBe(false);
+  });
+
+  it("parses partial owner data defensively", () => {
+    expect(parseOfficeBridgeOwner({ pid: 7 })).toEqual({
+      pid: 7,
+      sessionId: null,
+      client: "unknown",
+      cwd: null,
+    });
+    expect(parseOfficeBridgeOwner({})).toBeNull();
+    expect(parseOfficeBridgeOwner(null)).toBeNull();
+  });
+
+  it("maps the owner sessionId to a tab, and an external owner to null", () => {
+    const tabs = [tab({ id: "tab-owner" }), tab({ id: "tab-other" })];
+    const view = parseOfficeDocumentsView({
+      payload: manualHealthPayload([], desktopOwner),
+      status: "ok",
+      fetchedAt: "2026-09-20T10:00:00.000Z",
+    });
+    expect(officeBridgeOwnerTab(view, tabs)?.id).toBe("tab-owner");
+
+    const external = parseOfficeDocumentsView({
+      payload: manualHealthPayload([], { ...desktopOwner, sessionId: null, client: "cli" }),
+      status: "ok",
+      fetchedAt: "2026-09-20T10:00:00.000Z",
+    });
+    expect(officeBridgeOwnerTab(external, tabs)).toBeNull();
+  });
+
+  it("falls back to the office tab only for a legacy bridge", () => {
+    const tabs = [tab({ id: "office-1", kind: "office" })];
+    const legacy = parseOfficeDocumentsView({
+      payload: healthPayload([]),
+      status: "ok",
+      fetchedAt: "2026-09-20T10:00:00.000Z",
+    });
+    expect(officeBridgeOwnerTab(legacy, tabs)?.id).toBe("office-1");
+
+    const manual = parseOfficeDocumentsView({
+      payload: manualHealthPayload([], { ...desktopOwner, sessionId: null, client: "cli" }),
+      status: "ok",
+      fetchedAt: "2026-09-20T10:00:00.000Z",
+    });
+    // A manual bridge owned by a terminal must not be attributed to an idle
+    // office tab that happens to exist.
+    expect(officeBridgeOwnerTab(manual, tabs)).toBeNull();
+  });
+
+  it("does not report a host when the bridge is off", () => {
+    const view = parseOfficeDocumentsView({
+      payload: null,
+      status: "unreachable",
+      fetchedAt: "2026-09-20T10:00:00.000Z",
+    });
+    expect(officeBridgeOwnerTab(view, [tab({ id: "office-1", kind: "office" })])).toBeNull();
+    expect(
+      officeDocumentScope(view, [tab({ id: "office-1", kind: "office" })], "office-1"),
+    ).toEqual({ host: null, isHost: false, hostInRailFolder: false });
+  });
+
+  it("uses the live owner for scope and mentions", () => {
+    const tabs = [tab({ id: "tab-owner" }), tab({ id: "tab-other" })];
+    const view = parseOfficeDocumentsView({
+      payload: manualHealthPayload([excelPane], desktopOwner),
+      status: "ok",
+      fetchedAt: "2026-09-20T10:00:00.000Z",
+    });
+    expect(officeDocumentScope(view, tabs, "tab-owner").isHost).toBe(true);
+    expect(officeDocumentScope(view, tabs, "tab-other").isHost).toBe(false);
+    expect(documentMentionsForHost(view, tabs, "tab-owner")).toHaveLength(1);
+    expect(documentMentionsForHost(view, tabs, "tab-other")).toEqual([]);
+  });
+});
+
+describe("bridgeSupportsManualLifecycle", () => {
+  it("is true only for 0.6+", () => {
+    expect(bridgeSupportsManualLifecycle("0.5.0")).toBe(false);
+    expect(bridgeSupportsManualLifecycle("0.5.9")).toBe(false);
+    expect(bridgeSupportsManualLifecycle("0.6.0")).toBe(true);
+    expect(bridgeSupportsManualLifecycle("0.6.0-rc.1")).toBe(true);
+    expect(bridgeSupportsManualLifecycle("1.0.0")).toBe(true);
+    expect(bridgeSupportsManualLifecycle(null)).toBe(false);
+    expect(bridgeSupportsManualLifecycle("unknown")).toBe(false);
   });
 });
 

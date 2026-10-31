@@ -13,8 +13,9 @@ fully usable without it and shows no Office surface until it is set up.
   even when the bridge extension’s own autocomplete provider is absent;
 - **office tool cards** that name the target document and show whether a call was
   capability-gated;
-- an **Office session** — one session tab owns the bridge port (38617); other
-  sessions use 38618 and up.
+- an **on-demand bridge** — no session claims the port at open. Connect the
+  session you want from the Documents rail (or run `/office connect` in a
+  terminal); only one session owns port 38617 at a time.
 
 ## Installing it
 
@@ -22,8 +23,9 @@ fully usable without it and shows no Office surface until it is set up.
 2. **Install bridge package** runs the standard package consent dialog for
    `@dieulc/pi-office-bridge` (pinned version). Nothing installs without consent.
 3. **Set up / Repair** runs the wizard: detect the machine and Office installs →
-   install the bridge package → sideload the manifest → verify by opening Office
-   and polling the bridge’s `/health` until a pane attaches.
+   install the bridge package → sideload the manifest → **connect one Pi
+   session** → open Office and poll `/health` until a pane attaches. Setup is
+   still zero-touch; normal sessions remain off.
 
 Each step is retryable; a cancel leaves no partial registry value. The card
 shows the pinned version, protocol/catalog versions, sideload state, port and the
@@ -32,11 +34,10 @@ owns the bridge port. **Reset add-in** restores the previous sideload state.
 
 ## Using it
 
-With a pane connected, the Documents menu appears in the right rail **in every
-session** — so you can always see that Office is running. Its pinned row is one
-compact line that says only what is not obvious: _Office host: …_ (naming the
-host's project when it differs from the rail's) or _This session is the Office
-host._
+The Documents menu appears in the right rail once the bridge package is
+configured, **even while the bridge is off**. Its pinned row is the control
+surface: _The Office bridge is off_ with **Connect this session**, or _Office
+host: …_ / _This session is the Office host._ while it is running.
 
 From a row you can:
 
@@ -50,23 +51,33 @@ Then just talk to the model: “read A1:C10 from Sheet1 and summarize”. With t
 workbooks, `document: "active"` follows focus and an explicit `#name` routes to
 that document; ambiguity is reported with the bridge’s candidate list.
 
-**Stop** aborts the Office session’s run, which ends a pane’s answer for every
-bridge version.
+**Stop** aborts the live owner session’s run, which ends a pane’s answer for
+every bridge version. If a terminal Pi owns the bridge, the app cannot abort a
+run it does not host; the panel says to stop it there.
 
-### Switching the Office host
+### Connecting, moving and closing the bridge
 
 Only one session can serve Office: the tab that holds bridge port 38617. The
 Documents row says which one that is and offers:
 
-- **Open host session** — jump to that tab;
-- **Use this session instead** — make _this_ tab the host. It asks first, because
-  it stops the current host, restarts it, and moves port 38617 here; the session's
-  history is preserved (it resumes from its JSONL). The old host's process is
-  stopped **and awaited**, and whatever else is holding 38617 — an earlier app
-  run, terminal Pi, an unrelated program — is terminated so the port really comes
-  free. If it cannot be freed, the previous host is restored and the error names
-  the process that refused to let go;
-- **Start an Office session** — the one useful action when no tab holds the port.
+- **Connect this session** — start the bridge in the active tab;
+- **Disconnect** / **Restart** — while this tab owns it;
+- **Open host session** — jump to the owning tab;
+- **Move bridge here** — asks first, then closes the old tab's bridge and
+  connects this one. The old **session stays open**; only the bridge moves, and
+  neither session restarts. This is the supported replacement for the old
+  promotion/restart flow;
+- **Take over bridge** — when a terminal Pi or another program owns 38617. It
+  asks first and terminates the holder; the terminal session may need reopening;
+- **Update bridge** — when a 0.5.x bridge is detected. That version starts
+  automatically and has no close command, so update before using the controls.
+
+`/new`, `/reload`, a crash or a host restart all start the bridge **off**; click
+Reconnect/Connect again. This is deliberate — keeping a server across Pi's
+extension reload would orphan it. While the bridge is off, the add-in keeps its
+own reconnect loop if **Enable local Pi agent** is on; it reattaches as soon as
+you connect again. Turn that toggle off in the add-in if you do not want it to
+retry.
 
 ### What a non-host session can and cannot do
 
@@ -78,9 +89,9 @@ session:
 - typing `#` offers **nothing**, because a mention would tag a prompt that session
   cannot answer.
 
-Promote the session (above) if you want to work with the documents from it.
-There is no cross-session proxy: routing an `office_*` call to the host from a
-non-host session needs its own IPC and is tracked in the backlog.
+Use **Move bridge here** if you want to work with the documents from this
+session. There is no cross-session proxy: routing an `office_*` call to the host
+from a non-host session needs its own IPC and is tracked in the backlog.
 
 ## Platform support
 
@@ -92,9 +103,11 @@ are OS-injected, so the wizard runs headlessly in tests.
 ## Troubleshooting
 
 The card’s **Copy diagnostics** produces the same redacted bundle as
-Diagnostics. Common issues: port 38617 in use, the add-in not appearing in
-Office, a stale sideload entry, version skew between the bridge and the add-in.
-Every item names the remedy.
+Diagnostics. Common issues: the bridge is off (run `/office connect` or click
+Connect), port 38617 is held by a terminal/foreign process (close it there or
+Take over), an automatic 0.5.x bridge (Update bridge), the add-in not appearing
+in Office, a stale sideload entry, version skew between the bridge and the
+add-in. Every item names the remedy.
 
 ## Uninstalling
 
