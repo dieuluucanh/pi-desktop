@@ -41,6 +41,11 @@ export const CHANGELOG_HEADER =
  * the checkpoint store and git runner, so their changes affect the package even
  * though they live outside `packages/checkpoints`.
  */
+export const RELEASE_FILE_PATHS = [
+  "packages/checkpoints/package.json",
+  "packages/checkpoints/CHANGELOG.md",
+];
+
 export const PACKAGE_PATHS = [
   "packages/checkpoints",
   "src/extensions/pi-checkpoints.ts",
@@ -331,6 +336,20 @@ export function prependChangelog(existing, section) {
 }
 
 /** Rewrite only the manifest's version field, preserving formatting. */
+/** Paths in a `git status --porcelain` result, without the XY letters. */
+export function changedPaths(status) {
+  return String(status ?? "")
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .map((line) => line.slice(3).trim().replace(/^"|"$/g, ""));
+}
+
+/** True when the only dirty files are the two files a release writes before committing. */
+export function onlyReleaseFilesChanged(status) {
+  const paths = changedPaths(status);
+  return paths.length > 0 && paths.every((file) => RELEASE_FILE_PATHS.includes(file));
+}
+
 export function writeVersionText(source, version) {
   const field = /^(\s*"version":\s*)"[^"]*"/m;
   if (!field.test(source)) throw new Error("could not find the version field");

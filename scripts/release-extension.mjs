@@ -32,6 +32,7 @@ import {
   classifyStatus,
   documentsVersion,
   finalizeUnreleased,
+  onlyReleaseFilesChanged,
   parseReleaseArgs,
   prependChangelog,
   readChangelog,
@@ -111,8 +112,12 @@ function preflight(opts) {
   if (branch !== opts.branch) {
     throw new ReleaseError(`must release from "${opts.branch}" (currently on "${branch}")`);
   }
-  if (out(must(git(["status", "--porcelain"]), "git status")).length > 0) {
-    throw new ReleaseError("working tree is not clean — commit or stash first");
+  const status = out(must(git(["status", "--porcelain"]), "git status"));
+  if (status.length > 0) {
+    if (!opts.continueMode || !onlyReleaseFilesChanged(status)) {
+      throw new ReleaseError("working tree is not clean — commit or stash first");
+    }
+    console.log("Resuming with uncommitted package release files");
   }
   must(git(["fetch", "origin", opts.branch]), `git fetch origin ${opts.branch}`);
   const behind = Number(
@@ -378,7 +383,20 @@ function main() {
   if (!opts.continueMode) {
     prepareChangelog(nextVersion, opts);
     formatReleaseFiles();
-    must(npm(["run", "verify:extension"], { stdio: "inherit" }), "npm run verify:extension");
+    must(
+      npm(["run", "verify:extension"], { cwd: REPO_ROOT, stdio: "inherit" }),
+      "npm run verify:extension",
+    );
+    commitRelease(nextVersion);
+  } else if (out(git(["status", "--porcelain"])).length > 0) {
+    // A previous run failed after writing the version/changelog but before the
+    // commit (for example a bad local tool invocation). Resume by committing
+    // exactly those two files, then publishing the same version.
+    formatReleaseFiles();
+    must(
+      npm(["run", "verify:extension"], { cwd: REPO_ROOT, stdio: "inherit" }),
+      "npm run verify:extension",
+    );
     commitRelease(nextVersion);
   }
 

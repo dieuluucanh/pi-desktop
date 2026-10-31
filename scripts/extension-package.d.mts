@@ -18,6 +18,7 @@ export const DEFAULT_NPM_USER: string;
 export const BUMP_KINDS: readonly string[];
 export const CHANGELOG_HEADER: string;
 export const PACKAGE_PATHS: readonly string[];
+export const RELEASE_FILE_PATHS: readonly string[];
 
 export interface PackageManifest {
   name?: string;
@@ -74,4 +75,6 @@ export function changelogSection(version: string, subjects: string[], date: stri
 export function documentsVersion(changelog: string, version: string): boolean;
 export function finalizeUnreleased(changelog: string, version: string, date: string): string | null;
 export function prependChangelog(existing: string, section: string): string;
+export function changedPaths(status: string): string[];
+export function onlyReleaseFilesChanged(status: string): boolean;
 export function writeVersionText(source: string, version: string): string;
