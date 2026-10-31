@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   bumpVersion,
+  changedPaths,
   changelogSection,
   classifyRegistryState,
   classifyStatus,
   documentsVersion,
   finalizeUnreleased,
+  onlyReleaseFilesChanged,
   parseConventionalSubject,
   parseReleaseArgs,
   prependChangelog,
@@ -71,6 +73,17 @@ describe("version and tag helpers", () => {
 
   it("uses the npm package name in tags", () => {
     expect(tagFor("0.1.2")).toBe("@dieulc/checkpoints@0.1.2");
+  });
+
+  it("recognises an interrupted release's two dirty files", () => {
+    const status = " M packages/checkpoints/package.json\n M packages/checkpoints/CHANGELOG.md\n";
+    expect(changedPaths(status)).toEqual([
+      "packages/checkpoints/package.json",
+      "packages/checkpoints/CHANGELOG.md",
+    ]);
+    expect(onlyReleaseFilesChanged(status)).toBe(true);
+    expect(onlyReleaseFilesChanged(" M src/extensions/pi-checkpoints.ts\n")).toBe(false);
+    expect(onlyReleaseFilesChanged("")).toBe(false);
   });
 
   it("rewrites only the manifest version field", () => {
