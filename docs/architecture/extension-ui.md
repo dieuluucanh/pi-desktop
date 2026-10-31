@@ -20,24 +20,24 @@ of the SDK's `ExtensionUIContext` appears here.
 
 ## Member mapping
 
-| `ExtensionUIContext` member                                       | Where it lands                                                            | Notes                                                                                                    |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `select` / `confirm` / `input` / `editor`                         | inline dock in the session column through `oi.request` / `oi.respond`     | keyboard-first, live `timeout` countdown (store-enforced), `signal` cancel, Escape cancels               |
-| `notify(message, type)`                                           | transcript notice + history panel; warning/error also toast (`oi.notify`) | info output is chat content as in terminal Pi; the archive keeps every notification                      |
-| `setStatus(key, text)`                                            | the composer footer’s dim status line (`oi.state`)                        | `undefined` removes the entry; values are sanitised for `title` and rendered ANSI-aware                  |
-| `setWidget(key, lines \| factory, opts)`                          | string strip (`oi.state`) or TUI widget frames (`tui.state`)              | string arrays keep the strip; a component factory renders above/below the editor dock; one owner per key |
-| `setWorkingMessage` / `setWorkingVisible` / `setWorkingIndicator` | the working row above the composer                                        | custom frames + interval honoured; `visible:false` hides it                                              |
-| `setHiddenThinkingLabel`                                          | transcript thinking blocks                                                | replaces the collapsed thinking label                                                                    |
-| `setTitle`                                                        | window title (validated in main)                                          | bounded, single-line                                                                                     |
-| `getToolsExpanded` / `setToolsExpanded`                           | transcript tool-card expansion (`oi.state` + `oi.setToolsExpanded`)       | the app owns `Ctrl+O`; the host’s copy stays truthful                                                    |
-| `pasteToEditor` / `setEditorText`                                 | composer mirror (`oi.editorText`)                                         | renderer reports its buffer back, debounced per tab                                                      |
-| `getEditorText`                                                   | the mirror                                                                | **eventually consistent** — the host cannot read a textarea synchronously                                |
-| `addAutocompleteProvider`                                         | the composer’s completion stack (`completion.suggest` / `apply`)          | the host runs `factory(current)`; the renderer sends its `/`, `@`, `#` result as `current`               |
-| `onTerminalInput`                                                 | first shot at keys in the TUI surface                                     | runs before the surface’s own handling                                                                   |
-| `custom(factory, opts)`                                           | the TUI surface (`tui.state` frames)                                      | `overlay`/`overlayOptions`/`onHandle` supported; returns `undefined` when nothing is shown               |
-| `setFooter` / `setHeader`                                         | TUI slots above/below the transcript                                      | the factory’s component is rendered per frame                                                            |
-| `setEditorComponent` / `getEditorComponent`                       | recorded on the UI port; **never mounted**                                | the native composer is always the editor; see “A custom editor is recorded, not mounted”                 |
-| `theme` / `getAllThemes` / `getTheme` / `setTheme`                | host theme + `oi.theme`                                                   | `setTheme` installs the theme in the host process and persists Pi’s `theme` setting                      |
+| `ExtensionUIContext` member                                       | Where it lands                                                                                          | Notes                                                                                                                                                                                                                  |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `select` / `confirm` / `input` / `editor`                         | inline dock in the session column through `oi.request` / `oi.respond`                                   | keyboard-first, live `timeout` countdown (store-enforced), `signal` cancel, Escape cancels                                                                                                                             |
+| `notify(message, type)`                                           | transcript notice + history panel; warning/error also toast (`oi.notify`)                               | info output is chat content as in terminal Pi; the archive keeps every notification                                                                                                                                    |
+| `setStatus(key, text)`                                            | one column in the wrapping session-footer status rail (`oi.state`)                                      | `undefined` removes the entry; keep status text short so it behaves as a column; values are sanitised for `title` and rendered ANSI-aware                                                                              |
+| `setWidget(key, lines \| factory, opts)`                          | string strip (`oi.state`) or TUI widget frames (`tui.state`)                                            | string arrays keep the strip; a component factory renders above/below the editor dock; a **single-line** component frame joins the footer rail instead of taking its own strip (2026-10-31 UI plan); one owner per key |
+| `setWorkingMessage` / `setWorkingVisible` / `setWorkingIndicator` | the working row above the composer                                                                      | custom frames + interval honoured; `visible:false` hides it                                                                                                                                                            |
+| `setHiddenThinkingLabel`                                          | transcript thinking blocks                                                                              | replaces the collapsed thinking label                                                                                                                                                                                  |
+| `setTitle`                                                        | window title (validated in main)                                                                        | bounded, single-line                                                                                                                                                                                                   |
+| `getToolsExpanded` / `setToolsExpanded`                           | transcript tool-card expansion (`oi.state` + `oi.setToolsExpanded`)                                     | the app owns `Ctrl+O`; the host’s copy stays truthful                                                                                                                                                                  |
+| `pasteToEditor` / `setEditorText`                                 | composer mirror (`oi.editorText`)                                                                       | renderer reports its buffer back, debounced per tab                                                                                                                                                                    |
+| `getEditorText`                                                   | the mirror                                                                                              | **eventually consistent** — the host cannot read a textarea synchronously                                                                                                                                              |
+| `addAutocompleteProvider`                                         | the composer’s completion stack (`completion.suggest` / `apply`)                                        | the host runs `factory(current)`; the renderer sends its `/`, `@`, `#` result as `current`                                                                                                                             |
+| `onTerminalInput`                                                 | first shot at keys in the TUI surface                                                                   | runs before the surface’s own handling                                                                                                                                                                                 |
+| `custom(factory, opts)`                                           | the TUI surface (`tui.state` frames)                                                                    | `overlay`/`overlayOptions`/`onHandle` supported; returns `undefined` when nothing is shown                                                                                                                             |
+| `setFooter` / `setHeader`                                         | `setFooter` replaces the built-in session footer; `setHeader` renders a TUI frame in the session column | the factory’s component is rendered per frame; a custom footer owns the statuses (it receives the `FooterDataProvider`)                                                                                                |
+| `setEditorComponent` / `getEditorComponent`                       | recorded on the UI port; **never mounted**                                                              | the native composer is always the editor; see “A custom editor is recorded, not mounted”                                                                                                                               |
+| `theme` / `getAllThemes` / `getTheme` / `setTheme`                | host theme + `oi.theme`                                                                                 | `setTheme` installs the theme in the host process and persists Pi’s `theme` setting                                                                                                                                    |
 
 | `shortcuts` (registered via `pi.registerShortcut`) | the composer’s Tab cycle and the session’s other chords (`shortcuts.list` / `shortcuts.invoke`) | checked before the editor’s own handling, as in Pi; the list is listed per tab on activation |
 
@@ -235,16 +235,17 @@ outside this repo, so the parser is tolerant by construction.
 The desktop shows exactly the extension’s three modes — Default, Plan, Build.
 The Plannotator phrase `⏸ plan — reviewing in browser` is a Plan **sub-state**,
 not a mode (it is Plannotator’s phase label, rendered merely because the
-Plannotator package is installed): the badge and the footer chip always read
-`Plan` for it, while the raw phrase stays visible in the badge’s tooltip and in
-the footer’s extension-status row (2026-10-20 startup-tab-cycle plan).
+Plannotator package is installed): the composer label always reads `Plan` for
+it, while the raw phrase stays visible in the label’s tooltip and in the
+footer’s extension-status row (2026-10-20 startup-tab-cycle plan).
 
-**Colour is never the only signal (2026-10-19).** The mode is named in two
-places — the composer badge and a `mode: …` chip in the footer — and both are
-exposed with `role="status"`. Every recognised mode has a label, including
-`Default`, and the badge is shown at every window width. The footer (and its chip)
-renders as a sibling of the editor branch in `SessionView`, so the indicator
-survives a non-overlay `ctx.ui.custom()` component replacing the composer.
+**Colour is never the only signal (2026-10-19, tightened 2026-10-31).** The mode
+is named in the composer’s top-right corner and exposed with `role="status"`.
+Every recognised mode has a label, including `Default`, and the label is shown at
+every window width; Plan/Build use the same warn/accent tone as the border. It
+renders inside the composer, so it survives a non-overlay `ctx.ui.custom()`
+replacement of the editor; the footer has no duplicate `mode: …` chip (the raw
+`workflow` status still appears as its mode/progress column).
 
 **Tab reaches the extension’s shortcut first.** Terminal Pi checks
 `onExtensionShortcut` _before_ the editor (`custom-editor.js`), which is how the
@@ -281,15 +282,15 @@ auto-spaced one.
 
 ## Tests
 
-| Area                        | Tests                                                                                                                                                                                                                                                                                                                    |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Wire model                  | `tests/shared/extension-ui.test.ts`, `tests/shared/tui-surface.test.ts`, `tests/shared/extension-render.test.ts`                                                                                                                                                                                                         |
-| Host UI port                | `tests/host/extension-ui.test.ts` (includes `resetSessionUi`), `tests/host/sdk-extension-ui.test.ts` (the bind reset)                                                                                                                                                                                                    |
-| TUI surface                 | `tests/host/tui-surface.test.ts`, `tests/host/sdk-tui-surface.test.ts` (real `SelectList`/`Editor` by keyboard; a custom editor factory is never invoked; component widget lifecycle)                                                                                                                                    |
-| Viewport + presentation     | `tests/renderer/tui-geometry.test.ts`, `tests/renderer/tui-surface.test.tsx`, `tests/renderer/tui-widgets.test.tsx`, `tests/renderer/session-view.test.tsx` (session-column grid, dock vs float, no backdrop, wheel/focus, widget strips)                                                                                |
-| Renderers                   | `tests/host/extension-renderers.test.ts`                                                                                                                                                                                                                                                                                 |
-| Renderer store + components | `tests/renderer/extension-ui-store.test.ts` (dialog timers and close-tab purge), `tests/renderer/extension-ui.test.tsx` (inline dock), `tests/renderer/tui-surface-store.test.ts`, `tests/renderer/extension-render-store.test.ts`, `tests/renderer/extension-block.test.tsx`, `tests/renderer/composer-footer.test.tsx` |
-| Integration                 | `tests/host/integration.test.ts` (a real extension’s `confirm()` round-trips `oi.request`/`oi.respond`; a `session_start` `setEditorComponent` produces no editor frame before or after `/reload`), `tests/e2e/custom-editor.spec.ts` (a seeded extension leaves the native composer, and Enter sends)                   |
+| Area                        | Tests                                                                                                                                                                                                                                                                                                                   |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wire model                  | `tests/shared/extension-ui.test.ts`, `tests/shared/tui-surface.test.ts`, `tests/shared/extension-render.test.ts`                                                                                                                                                                                                        |
+| Host UI port                | `tests/host/extension-ui.test.ts` (includes `resetSessionUi`), `tests/host/sdk-extension-ui.test.ts` (the bind reset)                                                                                                                                                                                                   |
+| TUI surface                 | `tests/host/tui-surface.test.ts`, `tests/host/sdk-tui-surface.test.ts` (real `SelectList`/`Editor` by keyboard; a custom editor factory is never invoked; component widget lifecycle)                                                                                                                                   |
+| Viewport + presentation     | `tests/renderer/tui-geometry.test.ts`, `tests/renderer/tui-surface.test.tsx`, `tests/renderer/tui-widgets.test.tsx`, `tests/renderer/session-view.test.tsx` (session-column grid, dock vs float, no backdrop, wheel/focus, widget strips)                                                                               |
+| Renderers                   | `tests/host/extension-renderers.test.ts`                                                                                                                                                                                                                                                                                |
+| Renderer store + components | `tests/renderer/extension-ui-store.test.ts` (dialog timers and close-tab purge), `tests/renderer/extension-ui.test.tsx` (inline dock), `tests/renderer/tui-surface-store.test.ts`, `tests/renderer/extension-render-store.test.ts`, `tests/renderer/extension-block.test.tsx`, `tests/renderer/session-footer.test.tsx` |
+| Integration                 | `tests/host/integration.test.ts` (a real extension’s `confirm()` round-trips `oi.request`/`oi.respond`; a `session_start` `setEditorComponent` produces no editor frame before or after `/reload`), `tests/e2e/custom-editor.spec.ts` (a seeded extension leaves the native composer, and Enter sends)                  |
 
 ## Known limitations / backlog (2026-10-26)
 
@@ -306,3 +307,9 @@ auto-spaced one.
 - **`opts.signal` abort** resolves the host promise without clearing an
   already-visible renderer dialog; the store timeout is the current backstop.
 - **Stale `tuiSurfaces`** are not deleted when a tab closes.
+- **An extension `setFooter` factory gets a reduced `FooterDataProvider`**: the
+  renderer-built session footer shows the real git branch (from project
+  inspection), but a custom footer’s `footerData.getGitBranch()` is `null` and
+  `getAvailableProviderCount()` is `0` (`src/host/sdk/tui-surface.ts`). Fixing
+  that needs a host-side branch watcher and a provider count; the built-in
+  footer is unaffected (2026-10-31 minimal-session-ui).

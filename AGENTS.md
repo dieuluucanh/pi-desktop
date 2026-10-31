@@ -17,7 +17,7 @@ src/git/         the git engine (runner, repo, status, diff, service) — pure N
 src/checkpoints/ the shadow-repo checkpoint engine, its fs adapter and config — pure Node
 src/extensions/  the app's own Pi extension (run snapshots + /checkpoint) — pure Node, no SDK import
 src/preload/     the only place that touches contextBridge/ipcRenderer
-src/renderer/src/layout/   app chrome: title bar, sidebar, tab strip, status bar, palette
+src/renderer/src/layout/   app chrome: sidebar, tab strip, status bar, palette
 src/renderer/src/rail/     the docked panel rail: the always-visible menu strip, its
                            three menu bodies (Source Control, Checkpoints, Documents)
                            and their dialogs

@@ -139,6 +139,7 @@ function harness(overrides: Record<string, unknown> = {}) {
     wrapCommandRunner,
     createBashPort,
     readChangelog,
+    describeModelThinking,
     ...sessionOverrides
   } = overrides;
   const session = fakeSession(sessionOverrides);
@@ -176,6 +177,9 @@ function harness(overrides: Record<string, unknown> = {}) {
     ...(wrapCommandRunner == null ? {} : { wrapCommandRunner: wrapCommandRunner as never }),
     ...(createBashPort == null ? {} : { createBashPort: createBashPort as never }),
     ...(readChangelog == null ? {} : { readChangelog: readChangelog as never }),
+    ...(describeModelThinking == null
+      ? {}
+      : { describeModelThinking: describeModelThinking as never }),
   });
 
   const handlers = core.handlers();
@@ -476,12 +480,25 @@ describe("model & thinking", () => {
       models: Array<{ id: string }>;
       auth: Record<string, { configured: boolean; source?: string }>;
       thinkingLevels: string[];
+      thinkingByModel: Record<string, string[]>;
     };
     expect(result.models.map((model) => model.id)).toEqual(["claude-sonnet-4-5", "gpt-5"]);
     expect(result.auth["anthropic"]).toMatchObject({ configured: true, source: "stored" });
     // The unconfigured provider is reported as such, which is what "Sign in" reads.
     expect(result.auth["openai"]?.configured).toBe(false);
     expect(Array.isArray(result.thinkingLevels)).toBe(true);
+    expect(result.thinkingByModel).toEqual({});
+  });
+
+  it("reports per-model supported thinking levels through the injected port", async () => {
+    const describeModelThinking = vi.fn(() => ({ probe: ["off"] }));
+    const { call } = await started({ describeModelThinking });
+
+    const result = (await call("model.available")) as {
+      thinkingByModel: Record<string, string[]>;
+    };
+    expect(describeModelThinking).toHaveBeenCalled();
+    expect(result.thinkingByModel).toEqual({ probe: ["off"] });
   });
 
   it("prefers the runtime catalog and falls back to the scoped set", async () => {

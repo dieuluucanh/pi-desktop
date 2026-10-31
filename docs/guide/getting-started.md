@@ -72,12 +72,15 @@ launch; the app offers a restart.
 ## The window
 
 ```text
-title bar ─ update banner · active project · Open project · New session
-sidebar   ─ command palette · New session · Open project · projects → sessions ·
+tabs      ─ one tab per open session (plus web tabs and the Office session);
+            the topmost row, with the "+" new-session action
+sidebar   ─ command palette · projects (+ menu · open folder) → sessions ·
             Settings · Extensions · Connections · Skills · Diagnostics
-tabs      ─ one tab per open session (plus web tabs and the Office session)
 main area ─ the active view (session, settings, extensions, …)
-status bar─ host state · tokens · cost · context % · display zoom · hints · version
+footer    ─ session footer: pwd (branch) · tokens/cost/context · model •
+            thinking · extension statuses · compact widgets, in one wrapping
+            row (an extension setFooter replaces it)
+status bar─ active project path · display zoom · version · profile · runtime · hints
 ```
 
 Keyboard: `Ctrl/Cmd+K` command palette, `Ctrl/Cmd+N` new session, `Ctrl/Cmd+W`

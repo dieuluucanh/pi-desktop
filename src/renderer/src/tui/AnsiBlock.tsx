@@ -1,6 +1,12 @@
 import type { CSSProperties, ReactElement } from "react";
 
-import { parseAnsiLine, visibleWidth, type AnsiSpan, type AnsiStyle } from "../../../shared/ansi";
+import {
+  parseAnsiLine,
+  stripAnsi,
+  visibleWidth,
+  type AnsiSpan,
+  type AnsiStyle,
+} from "../../../shared/ansi";
 import type { TuiFrame } from "../../../shared/tui-surface";
 import { isSelectedSpan, selectedSpanStyle, SELECTED_SPAN_CLASS } from "./selection";
 
@@ -119,6 +125,31 @@ export function AnsiBlock({ frame, className, selection }: AnsiBlockProps): Reac
       {frame.lines.map((line, index) => (
         <AnsiLine key={index} line={line} width={frame.width} selection={selection} />
       ))}
+    </div>
+  );
+}
+
+export interface AnsiInlineFrameProps {
+  frame: TuiFrame;
+  className?: string;
+}
+
+/**
+ * One-line widget frame rendered at its natural width, for the footer rail
+ * (2026-10-31 UI plan). It drops the host's fixed-width padding so the line can
+ * share a row with the session facts; the plain text stays in `title` when the
+ * rail truncates it.
+ */
+export function AnsiInlineFrame({ frame, className }: AnsiInlineFrameProps): ReactElement {
+  const line = frame.lines[0] ?? "";
+  return (
+    <div
+      data-testid={`inline-widget-${frame.seq}`}
+      data-inline-widget={frame.seq}
+      className={className}
+      title={stripAnsi(line).trim()}
+    >
+      <AnsiLine line={line} width={visibleWidth(line)} />
     </div>
   );
 }

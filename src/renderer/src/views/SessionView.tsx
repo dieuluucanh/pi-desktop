@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Cpu } from "lucide-react";
 import { Composer } from "../session/Composer";
-import { ComposerFooter } from "../session/ComposerFooter";
-import { parseWorkflowStatus } from "../../../shared/workflow-mode";
+import { SessionFooter } from "../session/SessionFooter";
 import { Transcript } from "../session/Transcript";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Separator } from "../ui/separator";
 import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
 import { WidgetStrip } from "../extension-ui/WidgetStrip";
@@ -13,7 +11,8 @@ import { ExtensionDialogDock } from "../extension-ui/ExtensionDialog";
 import { WorkingRow } from "../extension-ui/WorkingRow";
 import { RunStatusRow } from "../session/RunStatusRow";
 import { TuiCellProbe, TuiSlotFrame, TuiSurface } from "../tui/TuiSurface";
-import { TuiWidgetStrip } from "../tui/TuiWidgetStrip";
+import { TuiWidgetStrip, TuiWidgetInline } from "../tui/TuiWidgetStrip";
+import { splitSingleLineFrames } from "../../../shared/tui-surface";
 import { isDockedOverlay } from "../tui/tui-geometry";
 import { useTuiViewport } from "../tui/use-tui-viewport";
 import { WebTabView } from "../web/WebTabView";
@@ -27,25 +26,19 @@ import type { CompletionItem, CompletionSuggestions } from "../completion/types"
 import { ContextRing } from "../session/ContextRing";
 import { ModelPicker } from "../session/ModelPicker";
 import { ThinkingPicker } from "../session/ThinkingPicker";
+import { ThinkingLevelIcon } from "../session/ThinkingLevelIcon";
+import { thinkingLevelTitle } from "../../../shared/thinking";
 import { contextUsageOf, modelKeyOf, thinkingLevelsOf } from "../session/model-catalog";
-import { SESSION_STATUS_LABEL, type TabStatus } from "../../../shared/session-ipc";
 
 /**
  * Session view (plan step 5).
  *
- * A compact header (status, model, usage, restart) and then the transcript —
- * which is where the session actually lives now. With no open tab it stays the
- * welcome state, so the app never shows an empty chat box with nowhere to send.
+ * The transcript is the view. There is no session header any more
+ * (minimal-session-ui step 4): the tab strip owns the title, status dot and
+ * review tabs; the composer owns Stop and the model/thinking/context controls;
+ * the error banner owns Restart. What remains above the transcript is only the
+ * error banner, so every other pixel goes to the conversation.
  */
-
-const STATUS_TONE: Record<TabStatus, "neutral" | "accent" | "ok" | "warn" | "danger"> = {
-  starting: "warn",
-  idle: "ok",
-  running: "accent",
-  crashed: "danger",
-  failed: "danger",
-  stopped: "neutral",
-};
 
 /** Stable empty scope for a tab whose scope has not loaded yet. */
 const EMPTY_SCOPE: readonly string[] = [];
@@ -78,11 +71,11 @@ const documentMentionSource = {
 
 export function SessionView() {
   const project = useAppStore((state) => state.project);
+  const homeDir = useAppStore((state) => state.info?.homeDir ?? null);
   const tabs = useAppStore((state) => state.tabs);
   const activeTabId = useAppStore((state) => state.activeTabId);
   const sessionStates = useAppStore((state) => state.sessionStates);
   const transcripts = useAppStore((state) => state.transcripts);
-  const activateTab = useAppStore((state) => state.activateTab);
   const ensureSession = useAppStore((state) => state.ensureSession);
   const restartTab = useAppStore((state) => state.restartTab);
   const hydrateTranscript = useAppStore((state) => state.hydrateTranscript);
@@ -107,7 +100,6 @@ export function SessionView() {
   const setModel = useAppStore((state) => state.setModel);
   const setThinking = useAppStore((state) => state.setThinking);
   const toggleModelScope = useAppStore((state) => state.toggleModelScope);
-  const renameSession = useAppStore((state) => state.renameSession);
   const openPicker = useAppStore((state) => state.openPicker);
   const closePicker = useAppStore((state) => state.closePicker);
   const setView = useAppStore((state) => state.setView);
@@ -150,8 +142,6 @@ export function SessionView() {
   );
   // Only the count drove a section header; the strip's badges now come from the
   // snapshot and the checkpoint store directly.
-  const webTabStates = useAppStore((state) => state.webTabStates);
-  const [editingName, setEditingName] = useState(false);
   const [composerFocusToken, setComposerFocusToken] = useState(0);
   const [surfaceFocusToken, setSurfaceFocusToken] = useState(0);
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -275,11 +265,13 @@ export function SessionView() {
   const thinkingLevel =
     typeof activeState?.thinkingLevel === "string" ? activeState.thinkingLevel : null;
   const currentModelKey = modelKeyOf(activeState?.model);
-  // The header/footer follow the live session state; the tab record is the
-  // fallback before the first state frame arrives (plan step 3).
+  // The footer and the composer controls follow the live session state; the tab
+  // record is the fallback before the first state frame arrives (plan step 3).
   const modelLabel = modelKeyOf(activeState?.model) ?? active.model;
-  const needsRestart =
-    active.status === "stopped" || active.status === "crashed" || active.status === "failed";
+  const modelId =
+    typeof (activeState?.model as { id?: unknown })?.id === "string"
+      ? ((activeState?.model as { id: string }).id ?? null)
+      : (active.model?.split("/").pop() ?? null);
   // A non-overlay `custom` component owns the composer region. A bottom-anchored
   // full-width overlay (the workflow questionnaire) is a bottom sheet, so it is
   // docked in flow as well: the transcript shrinks and stays scrollable instead
@@ -298,108 +290,19 @@ export function SessionView() {
   // default, true/false is the explicit app-wide state (2026-10-30 copy plan).
   const effectiveToolsExpanded = toolsExpandedState ?? null;
 
+  // A custom footer owns the footer region, so every widget stays in its strip.
+  // Otherwise a one-line widget is a footer column (2026-10-31 UI plan).
+  const belowWidgets = tuiSurface?.widgetsBelow ?? [];
+  const belowSplit = tuiSurface?.footer
+    ? { inline: [], stacked: belowWidgets }
+    : splitSingleLineFrames(belowWidgets);
+
   return (
     <div className="relative flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-line px-4 py-2">
-        {/* The session's identity on the left: the title truncates rather than
-            pushing the controls off the row (plan step 6). */}
-        <div className="flex min-w-0 shrink items-center gap-2">
-          {editingName ? (
-            <input
-              aria-label="Session name"
-              autoFocus
-              defaultValue={active.title}
-              onBlur={(event) => {
-                setEditingName(false);
-                void renameSession(active.id, event.target.value);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  setEditingName(false);
-                  void renameSession(active.id, event.currentTarget.value);
-                }
-                if (event.key === "Escape") setEditingName(false);
-              }}
-              className="min-w-0 flex-1 rounded-sm border border-line bg-raised px-2 py-0.5 text-sm text-ink outline-none"
-            />
-          ) : (
-            <h1
-              className="min-w-0 truncate text-sm font-semibold"
-              title="Double-click to rename"
-              onDoubleClick={() => setEditingName(true)}
-            >
-              {active.title}
-            </h1>
-          )}
-          <Badge
-            tone={STATUS_TONE[active.status]}
-            title={`Session status: ${SESSION_STATUS_LABEL[active.status]}`}
-          >
-            {SESSION_STATUS_LABEL[active.status]}
-          </Badge>
-          {needsRestart ? (
-            <button
-              type="button"
-              className="shrink-0 text-xs text-accent underline"
-              onClick={() => {
-                if (active.status === "stopped") void ensureSession(active.id, { force: true });
-                else void activateTab(active.id);
-              }}
-            >
-              {active.status === "stopped" ? "Start session" : "Restart session"}
-            </button>
-          ) : null}
-        </div>
-
-        {/* The controls on the right: one row of equally-weighted buttons,
-            split into the session's facts and the session's actions by a thin
-            rule, so the cluster reads as one group (plan step 6). */}
-        <div className="ml-auto flex min-w-0 shrink items-center gap-1">
-          <Button
-            size="sm"
-            variant="ghost"
-            aria-label="Change model"
-            title={modelLabel ?? "Choose a model"}
-            onClick={() => {
-              openPicker("model");
-              void loadModels(active.id);
-            }}
-          >
-            <span className="max-w-40 truncate">{modelLabel ?? "Choose model"}</span>
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            aria-label="Change thinking level"
-            title={thinkingLevel ? `Thinking: ${thinkingLevel}` : "Thinking level"}
-            onClick={() => openPicker("thinking")}
-          >
-            {thinkingLevel ?? "thinking"}
-          </Button>
-          <ContextRing usage={contextUsage} cost={cost} />
-          <Separator orientation="vertical" className="mx-1" />
-          {/* A review opened from this session stays linked to it (plan step 21). */}
-          {tabs
-            .filter((tab) => tab.kind === "web" && tab.sessionTabId === active.id)
-            .map((tab) => (
-              <Button
-                key={tab.id}
-                size="sm"
-                variant="ghost"
-                aria-label={`Open review ${webTabStates[tab.id]?.title ?? tab.title}`}
-                title={tab.url ?? ""}
-                onClick={() => void activateTab(tab.id)}
-              >
-                Review: {webTabStates[tab.id]?.title ?? tab.title}
-              </Button>
-            ))}
-          {active.status === "running" ? (
-            <Button size="sm" variant="secondary" onClick={() => void stopRun(active.id)}>
-              Stop
-            </Button>
-          ) : null}
-        </div>
-      </header>
+      {/* The tab strip carries the visible title, status and review tabs; the
+          only heading this view needs is for assistive tech (minimal-session-ui
+          step 4). */}
+      <h1 className="sr-only">{active.title}</h1>
 
       {active.error || active.status === "crashed" || active.status === "failed" ? (
         <div className="banner banner--error mx-4 mt-2 flex items-start justify-between gap-3">
@@ -463,7 +366,6 @@ export function SessionView() {
               followPaused={picker !== null}
             />
           </div>
-
           {transcript?.runStatus ? (
             <RunStatusRow
               status={transcript.runStatus}
@@ -477,7 +379,6 @@ export function SessionView() {
               }}
             />
           ) : null}
-
           {active.status === "running" ? (
             <WorkingRow
               working={
@@ -498,10 +399,8 @@ export function SessionView() {
               className="shrink-0 border-t border-line py-1"
             />
           ) : null}
-
           <WidgetStrip tabId={active.id} placement="aboveEditor" />
           <TuiWidgetStrip frames={tuiSurface?.widgetsAbove ?? []} placement="aboveEditor" />
-
           {dialog ? (
             <ExtensionDialogDock
               dialog={dialog}
@@ -526,6 +425,40 @@ export function SessionView() {
                 sleeping={active.status === "stopped"}
                 focusToken={composerFocusToken}
                 onWake={() => void ensureSession(active.id)}
+                toolsSlot={
+                  <>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      data-testid="composer-model"
+                      aria-label="Change model"
+                      title={
+                        modelLabel
+                          ? `${modelLabel}${thinkingLevel ? ` · thinking ${thinkingLevel}` : ""}`
+                          : "Choose a model"
+                      }
+                      onClick={() => {
+                        openPicker("model");
+                        void loadModels(active.id);
+                      }}
+                    >
+                      <Cpu className="size-3.5" aria-hidden />
+                    </Button>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      data-testid="composer-thinking"
+                      aria-label={
+                        thinkingLevel ? `Thinking level: ${thinkingLevel}` : "Thinking level"
+                      }
+                      title={thinkingLevelTitle(thinkingLevel, levels, modelLabel)}
+                      onClick={() => openPicker("thinking")}
+                    >
+                      <ThinkingLevelIcon level={thinkingLevel} />
+                    </Button>
+                    <ContextRing usage={contextUsage} cost={cost} />
+                  </>
+                }
                 draft={drafts[active.id] ?? ""}
                 queue={transcript?.queue ?? { steering: [], followUp: [] }}
                 workflowStatus={extensionUi?.statuses?.workflow ?? null}
@@ -559,56 +492,59 @@ export function SessionView() {
               />
             </div>
           )}
-
-          <TuiWidgetStrip frames={tuiSurface?.widgetsBelow ?? []} placement="belowEditor" />
+          <TuiWidgetStrip frames={belowSplit.stacked} placement="belowEditor" />{" "}
           <WidgetStrip tabId={active.id} placement="belowEditor" />
-
+          {/* One footer: an extension's `ctx.ui.setFooter()` replaces the
+              built-in Pi-shaped rows instead of stacking above them
+              (minimal-session-ui step 7). It renders outside the editor branch,
+              so it survives a `custom` UI. */}
           {tuiSurface?.footer ? (
             <TuiSlotFrame
               frame={tuiSurface.footer}
               className="shrink-0 border-t border-line py-1"
             />
-          ) : null}
-
-          {/* The session footer renders *outside* the editor branch above, so the
-              mode chip and extension statuses survive when an extension shows a
-              non-overlay `custom` UI (`tuiOwnsComposer`) and replaces `<Composer>`. */}
-          <ComposerFooter
-            className="shrink-0 px-3 pb-1"
-            facts={{
-              cwd: active.cwd,
-              branch: gitBranch,
-              model: modelLabel,
-              thinking: thinkingLevel,
-              context: contextUsage,
-              cost,
-              usage:
-                activeState &&
-                typeof (activeState.tokens as { input?: unknown })?.input === "number"
-                  ? {
-                      input: Number((activeState.tokens as { input?: unknown }).input ?? 0),
-                      output: Number((activeState.tokens as { output?: unknown }).output ?? 0),
-                      cacheRead: Number(
-                        (activeState.tokens as { cacheRead?: unknown }).cacheRead ?? 0,
-                      ),
-                      cacheWrite: Number(
-                        (activeState.tokens as { cacheWrite?: unknown }).cacheWrite ?? 0,
-                      ),
-                    }
-                  : null,
-              auto: {
-                compaction: (activeState as { autoCompaction?: unknown })?.autoCompaction === true,
-                retry: (activeState as { autoRetry?: unknown })?.autoRetry === true,
-              },
-              provider:
-                typeof (activeState?.model as { provider?: unknown })?.provider === "string"
-                  ? ((activeState?.model as { provider?: string }).provider ?? null)
-                  : null,
-              workflow: parseWorkflowStatus(extensionUi?.statuses?.workflow ?? null),
-            }}
-            statuses={extensionUi?.statuses}
-          />
-
+          ) : (
+            <SessionFooter
+              className="shrink-0 px-3 pb-1"
+              homeDir={homeDir}
+              widgets={
+                belowSplit.inline.length > 0 ? <TuiWidgetInline frames={belowSplit.inline} /> : null
+              }
+              facts={{
+                cwd: active.cwd,
+                branch: gitBranch,
+                model: modelLabel,
+                modelId,
+                thinking: thinkingLevel,
+                context: contextUsage,
+                cost,
+                usage:
+                  activeState &&
+                  typeof (activeState.tokens as { input?: unknown })?.input === "number"
+                    ? {
+                        input: Number((activeState.tokens as { input?: unknown }).input ?? 0),
+                        output: Number((activeState.tokens as { output?: unknown }).output ?? 0),
+                        cacheRead: Number(
+                          (activeState.tokens as { cacheRead?: unknown }).cacheRead ?? 0,
+                        ),
+                        cacheWrite: Number(
+                          (activeState.tokens as { cacheWrite?: unknown }).cacheWrite ?? 0,
+                        ),
+                      }
+                    : null,
+                auto: {
+                  compaction:
+                    (activeState as { autoCompaction?: unknown })?.autoCompaction === true,
+                  retry: (activeState as { autoRetry?: unknown })?.autoRetry === true,
+                },
+                provider:
+                  typeof (activeState?.model as { provider?: unknown })?.provider === "string"
+                    ? ((activeState?.model as { provider?: string }).provider ?? null)
+                    : null,
+              }}
+              statuses={extensionUi?.statuses}
+            />
+          )}
           {floatingOverlay && tuiSurface ? (
             <TuiSurface
               tabId={active.id}
@@ -653,6 +589,7 @@ export function SessionView() {
         open={picker === "thinking"}
         levels={levels}
         current={thinkingLevel}
+        modelLabel={modelLabel}
         onPick={(level, options) => void setThinking(active.id, level, options)}
         onClose={closePicker}
       />

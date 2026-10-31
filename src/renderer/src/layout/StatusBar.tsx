@@ -3,6 +3,7 @@ import { Badge } from "../ui/badge";
 import { useAppStore } from "../state/app-store";
 import { NotificationCenter } from "../extension-ui/NotificationCenter";
 import { formatZoomPercent } from "../../../shared/zoom";
+import { compactPath, tildePath } from "../../../shared/paths";
 
 /**
  * The app-level status bar (2026-10-19 UI rework).
@@ -21,6 +22,10 @@ import { formatZoomPercent } from "../../../shared/zoom";
  *  - **The view mode** was removed (2026-10-30 copy plan); Ctrl+O is the one
  *    tool-detail switch. Display zoom lives here because it is an app fact.
  *
+ * The active project folder is the first app fact in the bar (minimal-session-ui
+ * step 3): the removed title bar was its only home. The session-scoped cwd still
+ * lives in the session footer, so the two never compete for the same line.
+ *
  * Every value that can be long keeps its full form in a `title`, so the visible
  * chrome stays one line while nothing becomes unreachable. The profile path is
  * also exposed as `data-profile` because the packaged E2E test proves
@@ -36,6 +41,7 @@ export function lastPathSegment(path: string): string {
 
 export function StatusBar() {
   const info = useAppStore((state) => state.info);
+  const project = useAppStore((state) => state.project);
   const hint = useAppStore((state) => state.hint);
   const zoomFactor = useAppStore((state) => state.prefs.zoomFactor);
   const zoomIn = useAppStore((state) => state.zoomIn);
@@ -54,6 +60,13 @@ export function StatusBar() {
 
   return (
     <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-line bg-surface px-3 text-[11px] text-ink-muted">
+      <span
+        data-testid="status-project"
+        className="min-w-0 truncate"
+        title={project ? project.path : "No project open"}
+      >
+        {project ? compactPath(tildePath(project.path, info?.homeDir)) : "No project open"}
+      </span>
       <div className="ml-auto flex items-center gap-3">
         <div className="flex items-center gap-0.5" data-testid="status-zoom">
           <button

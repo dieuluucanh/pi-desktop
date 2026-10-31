@@ -85,4 +85,4 @@ launches.
 
 **Where do I report a bug?**
 Attach a Diagnostics support bundle (it is redacted) and the version from
-Settings → About or the title bar, and open an issue on the repository.
+Settings → About or the status bar, and open an issue on the repository.

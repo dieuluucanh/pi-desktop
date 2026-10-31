@@ -36,6 +36,10 @@ function stubRequest(
         scoped: [{ model: { id: "gpt-5", provider: "openai" }, thinkingLevel: "high" }],
         auth: { anthropic: { configured: true, source: "stored" }, openai: { configured: false } },
         thinkingLevels: ["off", "low", "high"],
+        thinkingByModel: {
+          "anthropic/claude-sonnet-4-5": ["off", "low", "high"],
+          "openai/gpt-5": ["off", "high"],
+        },
       };
     }
     if (input.method === "model.set") {
@@ -82,6 +86,12 @@ describe("loadModels", () => {
     ]);
     // The scoped wrapper's thinking level survives normalisation.
     expect(state.modelCatalog["tab-1"]?.[1]?.thinkingLevel).toBe("high");
+    expect(state.modelCatalog["tab-1"]?.[0]?.supportedThinkingLevels).toEqual([
+      "off",
+      "low",
+      "high",
+    ]);
+    expect(state.modelCatalog["tab-1"]?.[1]?.supportedThinkingLevels).toEqual(["off", "high"]);
     expect(state.providerAuth["tab-1"]?.["openai"]).toMatchObject({ configured: false });
     expect(state.thinkingLevels["tab-1"]).toEqual(["off", "low", "high"]);
     // The live scope is what the dialog's stars and the extension pickers use.

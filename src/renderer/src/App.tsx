@@ -8,7 +8,7 @@ import { Sidebar } from "./layout/Sidebar";
 import { ProjectRail } from "./layout/ProjectRail";
 import { StatusBar } from "./layout/StatusBar";
 import { TabStrip } from "./layout/TabStrip";
-import { TitleBar } from "./layout/TitleBar";
+import { UpdateBanner } from "./updates/UpdateBanner";
 import { handleMenuCommand } from "./menu-actions";
 import { useAppStore, type AppView } from "./state/app-store";
 import { systemThemeName, watchSystemTheme } from "./themes/system-theme";
@@ -39,10 +39,13 @@ import { WelcomeView } from "./views/WelcomeView";
 /**
  * App shell (plan step 1, IA per D-A4).
  *
- * Regions: title bar, sidebar (projects → sessions, then the product views),
- * session tab strip, the active view, status bar, plus the command palette and
- * the toast host. Global shortcuts belong to the Electron menu (step 1) — the
- * renderer only owns palette-local keys, so nothing fires twice.
+ * Regions: sidebar (projects → sessions, then the product views), session tab
+ * strip (the topmost app row — the OS frame owns the window controls), the
+ * active view, status bar, plus the command palette and the toast host. Global
+ * shortcuts belong to the Electron menu (step 1) — the renderer only owns
+ * palette-local keys, so nothing fires twice. The update offer is a slim
+ * conditional row above the tab strip; it costs no height when there is
+ * nothing to do (`UpdateBanner` returns null).
  */
 
 const VIEWS: Record<AppView, () => ReactElement> = {
@@ -219,7 +222,7 @@ export function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <TitleBar />
+      <UpdateBanner />
       {bridgeMissing ? (
         <div className="banner banner--error m-3">
           The preload bridge is unavailable (window.pi is missing), so no command can reach the main

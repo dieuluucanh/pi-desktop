@@ -64,8 +64,10 @@ changed while off, the current file is kept and the app reports it.
 A few things live in app state on purpose, so they never change terminal Pi’s
 behaviour:
 
-- theme first-paint cache (`prefs.theme`); the active Pi theme is loaded at startup
-  and owns the chrome from then on;
+- theme first-paint cache (`prefs.theme`) and per-theme chrome colour overrides
+  (`prefs.themeColors`); the active Pi theme is loaded at startup and owns the
+  accent/status colours from then on, while the app owns the high-contrast
+  neutral surfaces;
 - follow-system appearance (`prefs.followSystemTheme`) and app display zoom
   (`prefs.zoomFactor`; View → Zoom In / Zoom Out / Actual Size, or
   <kbd>Ctrl/Cmd</kbd>+<kbd>=</kbd> / <kbd>-</kbd> / <kbd>0</kbd>);

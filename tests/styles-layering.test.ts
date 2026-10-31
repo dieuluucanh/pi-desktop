@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { parseWorkflowStatus, workflowBorderClass } from "../src/shared/workflow-mode";
+import {
+  parseWorkflowStatus,
+  workflowBadgeClass,
+  workflowBorderClass,
+} from "../src/shared/workflow-mode";
 
 /**
  * `styles.css` cascade-layering guard (2026-10-19).
@@ -72,7 +76,9 @@ describe("styles.css layering", () => {
     // which lives outside the renderer root, so its directory must be scanned.
     expect(css).toContain('@source "../../../shared"');
     // And the utility names are pinned explicitly (same order as the function).
-    expect(css).toContain('@source inline("border-line border-accent border-warn")');
+    expect(css).toContain(
+      '@source inline("border-line border-accent border-warn text-accent text-warn text-ink-faint")',
+    );
   });
 });
 
@@ -93,6 +99,10 @@ describe("workflow border class contract", () => {
     workflowBorderClass(parseWorkflowStatus("\u23f8 plan")),
     workflowBorderClass(parseWorkflowStatus("\u25e6 commits:never")),
     workflowBorderClass(null),
+    workflowBadgeClass(parseWorkflowStatus("\u25b6 build")),
+    workflowBadgeClass(parseWorkflowStatus("\u23f8 plan")),
+    workflowBadgeClass(parseWorkflowStatus("\u25e6 commits:never")),
+    workflowBadgeClass(null),
   ];
 
   it("lists exactly the classes the function returns", () => {

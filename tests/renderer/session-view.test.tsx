@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -6,6 +6,8 @@ import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { SessionView } from "../../src/renderer/src/views/SessionView";
 import { ShortcutDispatcher } from "../../src/renderer/src/shortcuts/ShortcutDispatcher";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
+import { EMPTY_EXTENSION_UI } from "../../src/shared/extension-ui";
+import { EMPTY_TUI_SURFACE } from "../../src/shared/tui-surface";
 import { documentsViewFixture, installBridge } from "./fixtures";
 
 /**
@@ -48,11 +50,102 @@ beforeEach(() => {
   resetStore();
 });
 
-describe("session header", () => {
-  it("uses the user-facing lifecycle word for an idle session", () => {
+describe("session chrome", () => {
+  it("has no visible session header; the heading stays for assistive tech", () => {
     render(<SessionView />);
-    expect(screen.getByTitle("Session status: ready")).toHaveTextContent("ready");
-    expect(screen.queryByText("idle")).toBeNull();
+    // The tab strip owns the visible title and status; the view keeps only a
+    // screen-reader heading so it still has an accessible name.
+    expect(screen.queryByTitle("Session status: ready")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Fix the bug" })).toHaveClass("sr-only");
+  });
+
+  it("keeps the model/thinking/context controls beside the composer", () => {
+    render(<SessionView />);
+    const tools = screen.getByTestId("composer-tools");
+    expect(within(tools).getByRole("button", { name: "Change model" })).toBeInTheDocument();
+    expect(within(tools).getByTestId("composer-thinking")).toHaveAttribute(
+      "aria-label",
+      "Thinking level",
+    );
+    expect(within(tools).getByTestId("context-ring")).toBeInTheDocument();
+  });
+
+  it("shows the thinking level as a brain icon, not a text label", () => {
+    render(<SessionView />);
+    const thinking = screen.getByTestId("composer-thinking");
+    expect(thinking.textContent).toBe("");
+    expect(thinking.querySelector("[data-testid='brain']")).not.toBeNull();
+    expect(thinking).toHaveAttribute(
+      "title",
+      [
+        "Thinking level",
+        "This model does not report a thinking level.",
+        "Model: anthropic/claude",
+      ].join("\n"),
+    );
+  });
+
+  it("keeps the model and thinking tooltips in step with the live pair", () => {
+    render(<SessionView />);
+    act(() => {
+      useAppStore.getState().applySessionState({
+        tabId: TAB,
+        state: {
+          model: { provider: "synthetic", id: "deepseek" },
+          thinkingLevel: "max",
+          thinkingLevels: ["off", "low", "high", "xhigh", "max"],
+        },
+      });
+    });
+
+    const model = screen.getByTestId("composer-model");
+    const thinking = screen.getByTestId("composer-thinking");
+    expect(model).toHaveAttribute("title", "synthetic/deepseek · thinking max");
+    expect(thinking).toHaveAttribute(
+      "title",
+      [
+        "Thinking: max (full)",
+        "Maximum reasoning effort",
+        "Model: synthetic/deepseek",
+        "Supports: off, low, high, xhigh, max",
+      ].join("\n"),
+    );
+    expect(thinking.querySelector("[data-testid='brain']")).toHaveAttribute("data-fill", "4");
+  });
+
+  it("shows the live model in the icon's tooltip, not as a label", () => {
+    // The tab spawned on one model; the host has since switched (plan step 1).
+    useAppStore.setState({
+      sessionStates: { [TAB]: { model: { provider: "opencode-go", id: "other-model" } } },
+    });
+    render(<SessionView />);
+    const model = screen.getByRole("button", { name: "Change model" });
+    expect(model).toHaveAttribute("title", "opencode-go/other-model");
+    // An icon, not a long label: the visible text is gone.
+    expect(model.textContent).toBe("");
+  });
+
+  it("updates the model tooltip when a host state frame reports a change", () => {
+    render(<SessionView />);
+    act(() => {
+      useAppStore.getState().applySessionState({
+        tabId: TAB,
+        state: { model: { provider: "openai", id: "gpt-5" } },
+      });
+    });
+    expect(screen.getByRole("button", { name: "Change model" })).toHaveAttribute(
+      "title",
+      "openai/gpt-5",
+    );
+  });
+
+  it("keeps the error banner's Restart when the host crashed", () => {
+    useAppStore.setState({
+      tabs: [{ ...useAppStore.getState().tabs[0]!, status: "crashed", error: "host failed" }],
+    });
+    render(<SessionView />);
+    expect(screen.getByText("host failed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restart" })).toBeInTheDocument();
   });
 
   it("has no view-mode control; Ctrl+O is the only tool-detail switch", () => {
@@ -70,37 +163,93 @@ describe("session header", () => {
     fireEvent.keyDown(document.body, { key: "o", ctrlKey: true });
     expect(useAppStore.getState().toolsExpanded[TAB]).toBe(false);
   });
+});
 
-  it("keeps the facts and the actions in one cluster, split by a rule", () => {
-    render(<SessionView />);
-    // The vertical rule says which way it runs, so assistive tech reads it as
-    // a separator between the two groups (plan step 6).
-    const rule = document.querySelector('[aria-orientation="vertical"]');
-    expect(rule).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Change model" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Change thinking level" })).toBeInTheDocument();
+describe("extension footer and widget placement (minimal-session-ui step 7)", () => {
+  const frame = (seq: number, text: string) => ({
+    seq,
+    width: 20,
+    height: 1,
+    lines: [text],
+    cursor: null,
   });
 
-  it("shows the live model from the session state, not the stale tab record", () => {
-    // The tab spawned on one model; the host has since switched (plan step 1).
+  it("lets an extension footer replace the built-in footer instead of stacking", () => {
     useAppStore.setState({
-      sessionStates: { [TAB]: { model: { provider: "opencode-go", id: "other-model" } } },
+      tuiSurfaces: {
+        [TAB]: {
+          ...EMPTY_TUI_SURFACE,
+          active: true,
+          footer: frame(1, "EXT FOOTER"),
+        },
+      },
+      extensionUi: { [TAB]: { ...EMPTY_EXTENSION_UI, statuses: { probe: "on" } } },
     });
+
     render(<SessionView />);
-    expect(screen.getByRole("button", { name: "Change model" })).toHaveTextContent(
-      "opencode-go/other-model",
-    );
+    expect(screen.getByText("EXT FOOTER")).toBeInTheDocument();
+    // The built-in rows are gone, not duplicated.
+    expect(screen.queryByTestId("session-footer")).toBeNull();
+    // A custom footer owns the statuses (Pi hands it the FooterDataProvider).
+    expect(screen.queryByTestId("extension-status-probe")).toBeNull();
   });
 
-  it("moves the header when a host state frame reports a different model", () => {
-    render(<SessionView />);
-    act(() => {
-      useAppStore.getState().applySessionState({
-        tabId: TAB,
-        state: { model: { provider: "openai", id: "gpt-5" } },
-      });
+  it("renders the built-in footer and its statuses when no extension footer is set", () => {
+    useAppStore.setState({
+      extensionUi: { [TAB]: { ...EMPTY_EXTENSION_UI, statuses: { probe: "on" } } },
     });
-    expect(screen.getByRole("button", { name: "Change model" })).toHaveTextContent("openai/gpt-5");
+
+    render(<SessionView />);
+    expect(screen.getByTestId("session-footer")).toBeInTheDocument();
+    expect(screen.getByTestId("extension-status-probe")).toHaveTextContent("on");
+  });
+
+  it("keeps extension widgets in Pi's above/below editor positions", () => {
+    useAppStore.setState({
+      tuiSurfaces: {
+        [TAB]: {
+          ...EMPTY_TUI_SURFACE,
+          active: true,
+          widgetsAbove: [frame(1, "ABOVE WIDGET")],
+          widgetsBelow: [frame(2, "BELOW WIDGET")],
+        },
+      },
+    });
+
+    render(<SessionView />);
+    expect(screen.getByText("ABOVE WIDGET")).toBeInTheDocument();
+    expect(screen.getByText("BELOW WIDGET")).toBeInTheDocument();
+  });
+
+  it("puts a one-line below-editor widget in the footer and keeps multi-line ones in the strip", () => {
+    useAppStore.setState({
+      tuiSurfaces: {
+        [TAB]: {
+          ...EMPTY_TUI_SURFACE,
+          active: true,
+          widgetsBelow: [
+            frame(1, "ONE-LINE PI-LENS"),
+            {
+              seq: 2,
+              width: 20,
+              height: 2,
+              lines: ["MULTI-LINE 1", "MULTI-LINE 2"],
+              cursor: null,
+            },
+          ],
+        },
+      },
+    });
+
+    render(<SessionView />);
+    const footer = screen.getByTestId("session-footer");
+    const inline = screen.getByTestId("inline-widget-1");
+    expect(footer.contains(inline)).toBe(true);
+    expect(inline).toHaveTextContent("ONE-LINE PI-LENS");
+
+    const multi = screen.getByText("MULTI-LINE 1");
+    expect(footer.contains(multi)).toBe(false);
+    expect(multi.closest("[data-tui-widgets='belowEditor']")).not.toBeNull();
   });
 });
 

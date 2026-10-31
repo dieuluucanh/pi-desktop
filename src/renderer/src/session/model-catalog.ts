@@ -25,6 +25,8 @@ export interface ModelCatalogEntry {
   label: string;
   /** Per-model thinking level from `enabledModels`, when the user scoped one. */
   thinkingLevel?: string;
+  /** Levels this model accepts, from the host's capability preview. */
+  supportedThinkingLevels?: string[];
   /** The model object exactly as Pi reported it, sent back unchanged. */
   raw: unknown;
 }
@@ -82,16 +84,33 @@ export function toCatalogEntry(value: unknown): ModelCatalogEntry | null {
 }
 
 /** Normalises a whole catalog, dropping malformed entries and duplicates. */
-export function toCatalog(models: readonly unknown[]): ModelCatalogEntry[] {
+export function toCatalog(
+  models: readonly unknown[],
+  thinkingByModel?: Readonly<Record<string, readonly string[]>>,
+): ModelCatalogEntry[] {
   const entries: ModelCatalogEntry[] = [];
   const seen = new Set<string>();
   for (const model of models) {
     const entry = toCatalogEntry(model);
     if (!entry || seen.has(entry.key)) continue;
     seen.add(entry.key);
+    const supported = thinkingByModel?.[entry.key];
+    if (supported && supported.length > 0) entry.supportedThinkingLevels = [...supported];
     entries.push(entry);
   }
   return entries;
+}
+
+/** Coerces a host `thinkingByModel` map into `provider/id → string[]`. */
+export function sanitizeThinkingByModel(value: unknown): Record<string, string[]> {
+  const record = asRecord(value);
+  const result: Record<string, string[]> = {};
+  for (const [key, levels] of Object.entries(record)) {
+    if (!Array.isArray(levels)) continue;
+    const list = levels.filter((level): level is string => typeof level === "string");
+    if (list.length > 0) result[key] = list;
+  }
+  return result;
 }
 
 /** The `provider/id` key of a model object as Pi reports it, when both parts exist. */

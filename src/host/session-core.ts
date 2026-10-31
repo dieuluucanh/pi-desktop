@@ -369,6 +369,12 @@ export interface SessionCoreDeps {
    */
   observeModelChanges?(session: HostSession, onChange: () => void): () => void;
   /**
+   * Per-model supported thinking levels for `model.available` (2026-10-31 UI
+   * plan). The SDK adapter lives in `src/host/sdk/model-thinking.ts`; the core
+   * stays SDK-free. Missing means the renderer simply has no preview.
+   */
+  describeModelThinking?(models: readonly unknown[]): Record<string, string[]>;
+  /**
    * Settings writes (plan step 12). The composition root supplies the SDK port
    * built over this session's own manager, so `settings.set` here is visible to
    * the session without a second manager.
@@ -1475,6 +1481,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         source: scopeState?.source ?? scopeWriteTarget(readSettingsScopes(settingsManager)),
         diagnostics: scopeState?.diagnostics ?? [],
         auth: providerAuthStatus(current, models),
+        thinkingByModel: deps.describeModelThinking ? deps.describeModelThinking(models) : {},
         thinkingLevels: snapshot().thinkingLevels,
         current: snapshot().model,
       };

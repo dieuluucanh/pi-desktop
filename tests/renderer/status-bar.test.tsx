@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { StatusBar } from "../../src/renderer/src/layout/StatusBar";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
-import { installBridge } from "./fixtures";
+import { appInfoFixture, installBridge } from "./fixtures";
 
 /**
  * The status bar's display-zoom cluster (2026-10-30 zoom plan). It is the
@@ -14,7 +14,25 @@ import { installBridge } from "./fixtures";
 
 beforeEach(() => {
   installBridge();
-  useAppStore.setState({ prefs: { ...DEFAULT_PREFS }, info: null, hint: null });
+  useAppStore.setState({ prefs: { ...DEFAULT_PREFS }, info: null, project: null, hint: null });
+});
+
+describe("status bar project path", () => {
+  it("shows the active project with the home folder abbreviated", () => {
+    const info = appInfoFixture();
+    const path = `${info.homeDir}\\Projects\\pi-desktop`;
+    useAppStore.setState({ info, project: { path, name: "pi-desktop" } });
+
+    render(<StatusBar />);
+    const chip = screen.getByTestId("status-project");
+    expect(chip).toHaveTextContent("~\\Projects\\pi-desktop");
+    expect(chip).toHaveAttribute("title", path);
+  });
+
+  it("says no project is open when none is selected", () => {
+    render(<StatusBar />);
+    expect(screen.getByTestId("status-project")).toHaveTextContent("No project open");
+  });
 });
 
 describe("status bar zoom", () => {

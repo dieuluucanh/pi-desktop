@@ -58,6 +58,24 @@ describe("ModelPicker", () => {
     expect(screen.getByRole("option", { name: /GPT-5/ })).toHaveAttribute("aria-selected", "false");
   });
 
+  it("previews each model's supported thinking levels", () => {
+    const entries = toCatalog(
+      [
+        { id: "deepseek", provider: "synthetic", name: "DeepSeek" },
+        { id: "plain", provider: "synthetic", name: "Plain" },
+      ],
+      {
+        "synthetic/deepseek": ["off", "low", "high", "xhigh", "max"],
+      },
+    );
+    renderPicker({ entries });
+
+    const deepseek = screen.getByText("off/low/high/xhigh/max");
+    expect(deepseek).toHaveAttribute("title", "Supports thinking: off, low, high, xhigh, max");
+    // A model with no capability entry shows no extra span.
+    expect(screen.queryByText("off", { exact: true })).toBeNull();
+  });
+
   it("shows the credential state, and offers Sign in when there is none", async () => {
     const user = userEvent.setup();
     const { onSignIn } = renderPicker();
@@ -181,9 +199,9 @@ describe("ThinkingPicker", () => {
       />,
     );
 
-    const levels = [...screen.getByTestId("thinking-levels").querySelectorAll("[data-level]")].map(
-      (node) => node.getAttribute("data-level"),
-    );
+    const levels = [
+      ...screen.getByTestId("thinking-levels").querySelectorAll("button[data-level]"),
+    ].map((node) => node.getAttribute("data-level"));
     expect(levels).toEqual(["off", "high"]);
     expect(screen.getByRole("option", { name: /high/ })).toHaveAttribute("aria-selected", "true");
 
@@ -207,6 +225,41 @@ describe("ThinkingPicker", () => {
   it("says so when the model cannot think", () => {
     render(<ThinkingPicker open levels={[]} current={null} onPick={vi.fn()} onClose={vi.fn()} />);
     expect(screen.getByText(/does not support thinking levels/)).toBeInTheDocument();
+  });
+
+  it("orders the host list, names the model and describes every level", () => {
+    render(
+      <ThinkingPicker
+        open
+        levels={["max", "low", "off", "high", "xhigh"]}
+        current="max"
+        modelLabel="synthetic/deepseek"
+        onPick={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const levels = [
+      ...screen.getByTestId("thinking-levels").querySelectorAll("button[data-level]"),
+    ].map((node) => node.getAttribute("data-level"));
+    expect(levels).toEqual(["off", "low", "high", "xhigh", "max"]);
+    expect(screen.getByText("Levels supported by synthetic/deepseek.")).toBeInTheDocument();
+    expect(screen.getByText("Maximum reasoning effort")).toBeInTheDocument();
+    expect(screen.getByText("Extra-high reasoning effort")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /max/ })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("shows a custom level instead of a blank description", () => {
+    render(
+      <ThinkingPicker
+        open
+        levels={["off", "ultra"]}
+        current="off"
+        onPick={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Custom level")).toBeInTheDocument();
   });
 });
 

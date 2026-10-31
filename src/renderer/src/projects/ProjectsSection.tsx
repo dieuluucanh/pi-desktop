@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Copy,
   FolderOpen,
+  FolderPlus,
   GitBranch,
   Plus,
   RefreshCw,
@@ -14,9 +15,16 @@ import {
 } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 import { Switch } from "../ui/switch";
 import { useAppStore } from "../state/app-store";
 import { openProjectAction } from "../menu-actions";
+import { CloneProjectDialog, CreateProjectDialog } from "./ProjectDialogs";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
 import type {
   PiProjectResources,
@@ -51,6 +59,10 @@ export function ProjectsSection() {
   const activePath = useAppStore((state) => state.project?.path ?? null);
   const tabs = useAppStore((state) => state.tabs);
   const projectsLoaded = useAppStore((state) => state.projectsLoaded);
+  // Both dialogs already exist for the welcome view; the Projects header is the
+  // in-workspace entry point (minimal-session-ui step 2).
+  const [createOpen, setCreateOpen] = useState(false);
+  const [cloneOpen, setCloneOpen] = useState(false);
 
   return (
     <div className="flex flex-col gap-1 px-1" data-testid="projects-section">
@@ -58,15 +70,34 @@ export function ProjectsSection() {
         <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">
           Projects
         </span>
-        <Button
-          size="sm"
-          variant="ghost"
-          aria-label="Add project"
-          title="Add project folder…"
-          onClick={() => void openProjectAction()}
-        >
-          <FolderOpen className="size-3.5" aria-hidden />
-        </Button>
+        <div className="flex items-center gap-0.5">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="icon-sm" variant="ghost" aria-label="New project" title="New project…">
+                <Plus className="size-3.5" aria-hidden />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => setCreateOpen(true)}>
+                <FolderPlus className="size-3.5" aria-hidden />
+                New project…
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setCloneOpen(true)}>
+                <GitBranch className="size-3.5" aria-hidden />
+                Clone repository…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label="Open project folder"
+            title="Open project folder…"
+            onClick={() => void openProjectAction()}
+          >
+            <FolderOpen className="size-3.5" aria-hidden />
+          </Button>
+        </div>
       </div>
 
       {projects.length === 0 ? (
@@ -87,6 +118,9 @@ export function ProjectsSection() {
           />
         ))
       )}
+
+      <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <CloneProjectDialog open={cloneOpen} onOpenChange={setCloneOpen} />
     </div>
   );
 }

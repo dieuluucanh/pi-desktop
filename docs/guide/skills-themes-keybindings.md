@@ -19,19 +19,27 @@ composer. See [Extensions and packages](extensions-and-packages.md).
 
 Themes are listed as built-in, user or project. Each row shows:
 
-- a **swatch preview** resolved from the theme’s colours (including the ANSI-256
-  ramp);
+- a **preview** of the resolved chrome colours (including the separator);
 - scope and variant badges;
 - an **Import `.json`** action for a user/project theme file;
-- the whole row is a **radio** — click anywhere on it (including its swatches)
-  to apply that theme. The active row is checked and shows **Active**; applying
-  another writes Pi’s `theme` setting and recolours the app chrome.
+- the row is a **radio** — clicking an inactive row applies that theme. The active
+  row also shows the **chrome colour editor**: Canvas, Surface, Raised/Sunken,
+  Separator, Strong separator, Text/Muted/Faint, Accent, Success, Warning and
+  Error, each a native colour picker with its hex value.
 
-The active Pi theme drives both the TUI surface extensions render into **and**
-the app chrome: `src/renderer/src/styles/tokens.css` maps the theme’s colours to
-the app’s CSS variables. The catalogue is loaded at startup, so the selected
-theme applies without visiting this view; `prefs.theme` only caches the active
-theme’s dark/light variant for the first frame before the catalogue answers.
+The editor reuses the same palette as `src/renderer/src/styles/tokens.css`. Dark
+is a deliberately high-contrast palette: separators and muted text are lighter
+than the old near-invisible lines, while the built-in theme still supplies the
+accent and status hues. Changing a colour applies immediately and is stored per
+theme in app preferences (`prefs.themeColors`); **Reset colours** removes that
+theme's overrides. The overrides affect the Desktop chrome only — Pi's theme
+JSON file and terminal Pi are unchanged.
+
+The active Pi theme drives the accent/status colours and the TUI surface
+extensions render into; the app owns the neutral surface/line palette so borders
+stay readable. The catalogue is loaded at startup, so the selected theme applies
+without visiting this view; `prefs.theme` only caches the active theme’s
+dark/light variant for the first frame before the catalogue answers.
 
 **Match system appearance** is a switch above the catalogue. While it is on,
 the app watches the OS light/dark setting and activates the built-in `dark` or

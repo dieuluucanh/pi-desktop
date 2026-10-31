@@ -11,7 +11,13 @@ import { useAppStore } from "../state/app-store";
  * new says so in the status bar instead of leaving a banner on screen. Dev
  * builds report `supported: false`, so the banner stays absent — the Help menu
  * explains why when asked.
+ *
+ * Since the in-app title bar was removed (minimal-session-ui step 1), the
+ * banner is a slim full-width row at the top of the app shell. It returns
+ * `null` when there is nothing actionable, so it costs no layout when idle.
  */
+const ROW_CLASS = "flex items-center gap-2 border-b border-line bg-surface px-3 py-1.5";
+
 export function UpdateBanner() {
   const update = useAppStore((state) => state.update);
   const downloadUpdate = useAppStore((state) => state.downloadUpdate);
@@ -22,7 +28,7 @@ export function UpdateBanner() {
 
   if (update.phase === "available") {
     return (
-      <div className="flex items-center gap-2" role="status" data-testid="update-banner">
+      <div className={ROW_CLASS} role="status" data-testid="update-banner">
         <Badge tone="accent">{version} available</Badge>
         <Button size="sm" variant="secondary" onClick={() => void downloadUpdate()}>
           <Download className="size-3.5" aria-hidden />
@@ -35,7 +41,7 @@ export function UpdateBanner() {
   if (update.phase === "downloading") {
     const percent = update.percent ?? 0;
     return (
-      <div className="flex items-center gap-2" role="status" data-testid="update-banner">
+      <div className={ROW_CLASS} role="status" data-testid="update-banner">
         <Badge tone="neutral">Downloading {percent}%</Badge>
         <span
           className="h-1 w-24 overflow-hidden rounded-full bg-line"
@@ -50,7 +56,7 @@ export function UpdateBanner() {
 
   if (update.phase === "downloaded") {
     return (
-      <div className="flex items-center gap-2" role="status" data-testid="update-banner">
+      <div className={ROW_CLASS} role="status" data-testid="update-banner">
         <Badge tone="ok">{version} ready</Badge>
         <Button size="sm" variant="primary" onClick={() => void installUpdate()}>
           <RotateCcw className="size-3.5" aria-hidden />
@@ -62,7 +68,7 @@ export function UpdateBanner() {
 
   if (update.phase === "error") {
     return (
-      <div className="flex items-center gap-2" role="status" data-testid="update-banner">
+      <div className={ROW_CLASS} role="status" data-testid="update-banner">
         <Badge tone="danger">Update failed</Badge>
         <Button size="sm" variant="ghost" onClick={() => void downloadUpdate()}>
           <RefreshCw className="size-3.5" aria-hidden />

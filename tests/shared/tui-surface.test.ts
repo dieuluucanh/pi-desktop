@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_TUI_SURFACE,
+  isSingleLineFrame,
   isTuiSlot,
   sanitizeTuiBounds,
   sanitizeTuiFrame,
   sanitizeTuiInput,
   sanitizeTuiResize,
   sanitizeTuiSurfaceSnapshot,
+  splitSingleLineFrames,
 } from "../../src/shared/tui-surface";
 
 /**
@@ -88,5 +90,26 @@ describe("tui surface sanitizers", () => {
     expect(snapshot.widgetsAbove.map((entry) => entry.lines)).toEqual([["widget"], ["widget"]]);
     expect(snapshot.widgetsBelow).toHaveLength(16);
     expect(sanitizeTuiSurfaceSnapshot({}).widgetsBelow).toEqual([]);
+  });
+
+  it("splits only one-line widgets into footer columns", () => {
+    const frame = (seq: number, lines: string[]) => ({
+      seq,
+      width: 20,
+      height: lines.length,
+      lines,
+      cursor: null,
+    });
+    const one = frame(1, ["pi-lens compact"]);
+    const two = frame(2, ["pi-lens", "src/a.ts"]);
+    const empty = frame(3, []);
+
+    expect(isSingleLineFrame(one)).toBe(true);
+    expect(isSingleLineFrame(two)).toBe(false);
+    expect(isSingleLineFrame(empty)).toBe(false);
+    expect(splitSingleLineFrames([one, two, empty])).toEqual({
+      inline: [one],
+      stacked: [two, empty],
+    });
   });
 });

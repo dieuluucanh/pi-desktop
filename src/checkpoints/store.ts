@@ -529,9 +529,10 @@ export function createCheckpointStore(deps: CheckpointStoreDeps): CheckpointStor
     const resolved = await resolve(cwd);
     if (!resolved.ok) return { dropped: 0 };
     // `list` answers newest-first (the rail's order) and `planPrune` takes
-    // oldest-first, so the conversion is the index in *this* array: on a tie
-    // (two snapshots inside one git second, which is normal for a burst of runs)
-    // the sort would otherwise be free to drop the newest one.
+    // oldest-first. `order` must grow with recency (`1` = oldest), because
+    // `planPrune` sorts by it ascending on a same-second tie. Getting this
+    // backwards makes a burst of snapshots drop the newest one instead of the
+    // oldest — the store test pins it.
     const newestFirst = await list(cwd, { limit: 500 });
     const checkpoints = [...newestFirst].reverse();
     const plan = planPrune(
@@ -539,8 +540,8 @@ export function createCheckpointStore(deps: CheckpointStoreDeps): CheckpointStor
         id: entry.id,
         createdAt: entry.createdAt,
         bytes: entry.bytes,
-        // Oldest first, matching the array's order.
-        order: checkpoints.length - index,
+        // Oldest first, matching the array's order and `planPrune`'s tie-break.
+        order: index + 1,
       })),
       config,
       now(),

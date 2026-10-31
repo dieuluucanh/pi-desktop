@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -301,12 +301,15 @@ describe("workflow mode border", () => {
     // without it the mode changes with no visible feedback in the composer.
     const plan = renderComposer({ workflowStatus: "\u23f8 plan" });
     expect(promptBox()).toHaveClass("border-warn");
+    expect(promptBox()).toHaveClass("pr-14");
     expect(screen.getByTestId("workflow-mode-badge")).toHaveTextContent("Plan");
+    expect(screen.getByTestId("workflow-mode-badge").firstElementChild).toHaveClass("text-warn");
     plan.unmount();
 
     renderComposer({ workflowStatus: "\u25b6 build 3/8" });
     expect(promptBox()).toHaveClass("border-accent");
     expect(screen.getByTestId("workflow-mode-badge")).toHaveTextContent("Build");
+    expect(screen.getByTestId("workflow-mode-badge").firstElementChild).toHaveClass("text-accent");
   });
 
   it("decodes an ANSI-coloured status exactly like a plain one", () => {
@@ -329,7 +332,22 @@ describe("workflow mode border", () => {
     // workflow had no textual indicator at all. Every recognised mode is named.
     renderComposer({ workflowStatus: "\u25e6 commits:never" });
     expect(promptBox()).toHaveClass("border-line");
+    expect(promptBox()).toHaveClass("pr-14");
     expect(screen.getByTestId("workflow-mode-badge")).toHaveTextContent("Default");
+    expect(screen.getByTestId("workflow-mode-badge").firstElementChild).toHaveClass(
+      "text-ink-faint",
+    );
+  });
+
+  it("renders the badge inside the input's top-right corner", () => {
+    renderComposer({ workflowStatus: "\u23f8 plan" });
+    const input = screen.getByTestId("composer-input");
+    const badge = within(input).getByTestId("workflow-mode-badge");
+    // It is part of the composer box, not a floating sibling above it.
+    expect(input.contains(badge)).toBe(true);
+    expect(badge.className).toContain("absolute");
+    expect(badge.className).toContain("top-1");
+    expect(badge.className).not.toContain("bottom-1");
   });
 
   it("keeps the badge readable at every width and to assistive tech", () => {
@@ -610,5 +628,22 @@ describe("shell mode", () => {
 
     rerender(<Composer {...props} draft="pwd" />);
     expect(screen.queryByTestId("composer-shell-mode")).not.toBeInTheDocument();
+  });
+});
+
+describe("session tools slot (minimal-session-ui step 4)", () => {
+  it("renders the view's tools above Send", () => {
+    renderComposer({ toolsSlot: <button type="button">Model picker</button> });
+
+    const tools = screen.getByTestId("composer-tools");
+    expect(tools).toHaveTextContent("Model picker");
+    const send = screen.getByRole("button", { name: /send/i });
+    // The tools row sits in the blank space above the Send row.
+    expect(tools.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("adds no row when the view supplies no tools", () => {
+    renderComposer();
+    expect(screen.queryByTestId("composer-tools")).toBeNull();
   });
 });

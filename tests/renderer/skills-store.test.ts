@@ -128,7 +128,7 @@ describe("themes actions", () => {
     expect(useAppStore.getState().prefs.theme).toBe("light");
   });
 
-  it("clears a variable the previous theme set when the next one omits it", () => {
+  it("replaces a variable the previous theme set with the resolved palette", () => {
     document.documentElement.style.setProperty("--color-accent", "#123456");
     useAppStore.setState({
       themes: {
@@ -147,8 +147,9 @@ describe("themes actions", () => {
 
     useAppStore.getState().applyChromeTheme();
 
-    expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("");
-    expect(document.documentElement.style.getPropertyValue("--color-ink")).toBe("#000000");
+    // Built-in themes use the app neutral palette; no stale custom value survives.
+    expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("#3b6fd4");
+    expect(document.documentElement.style.getPropertyValue("--color-ink")).toBe("#1c2128");
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
   });
 
@@ -276,6 +277,43 @@ describe("themes actions", () => {
     expect(ok).toBe(true);
     expect(useAppStore.getState().themes.active).toBe("light");
     expect(seen.some((entry) => entry.method === "settings.set")).toBe(true);
+  });
+
+  it("stores a per-theme colour override and repaints the chrome", () => {
+    useAppStore.setState({
+      themes: {
+        active: "dark",
+        themes: [
+          {
+            name: "dark",
+            scope: "builtin",
+            active: true,
+            variant: "dark",
+            swatches: { accent: "#a798d7" },
+          },
+        ],
+      },
+    });
+
+    useAppStore.getState().setThemeColor("dark", "line", "#123456");
+
+    expect(useAppStore.getState().prefs.themeColors.dark?.line).toBe("#123456");
+    expect(document.documentElement.style.getPropertyValue("--color-line")).toBe("#123456");
+
+    useAppStore.getState().resetThemeColors("dark");
+    expect(useAppStore.getState().prefs.themeColors.dark).toBeUndefined();
+    expect(document.documentElement.style.getPropertyValue("--color-line")).toBe("#4e5b79");
+  });
+
+  it("ignores malformed colours", () => {
+    useAppStore.setState({
+      themes: {
+        active: "dark",
+        themes: [{ name: "dark", scope: "builtin", active: true, variant: "dark", swatches: {} }],
+      },
+    });
+    useAppStore.getState().setThemeColor("dark", "line", "red");
+    expect(useAppStore.getState().prefs.themeColors.dark).toBeUndefined();
   });
 
   it("imports a theme and selects it", async () => {

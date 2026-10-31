@@ -1,18 +1,20 @@
 # Models and thinking
 
-The session header shows the current model, the thinking level, a context-usage
-ring and the token/cost totals. Each of these has a picker.
+The composer's controls show the current model (the icon's tooltip), the
+thinking level as a four-fill brain icon, a context-usage ring and the
+token/cost totals. Each of these has a picker.
 
 ## Choosing a model
 
-Open the model picker from the header or with `/model`. It groups models by
+Open the model picker from the composer's model icon or with `/model`. It groups models by
 provider and shows:
 
 - **auth badges** — a provider you are not signed in to says “Sign in” and routes
   to Connections;
 - **search**;
 - your **model scope** (`enabledModels`) — the starred models, listed first;
-- the thinking level the selected model supports;
+- **the thinking levels each model supports**, previewed on its row before you
+  select it (Pi's `thinkingLevelMap` is the authority);
 - the model the session actually reports, which may differ from the one you
   asked for if the provider resolves a catalog entry to its own choice. The app
   shows the recorded model rather than the requested one.
@@ -68,10 +70,29 @@ remains the only persisted scope state.
 
 ## Thinking level
 
-`/thinking`, the header picker, or `Ctrl/Cmd+Alt+T` cycles the level. The list is
-clamped to `getAvailableThinkingLevels()` for the current model, so you can never
-select a level the model does not support. A model without auth shows a single
-“off/low” set and a sign-in route.
+`/thinking`, the composer's brain icon, or `Ctrl/Cmd+Alt+T` cycles the level. The
+list is clamped to `getAvailableThinkingLevels()` for the current model, so you
+can never select a level the model does not support; the picker names the model
+and sorts the levels canonically. A model without auth shows a single “off/low”
+set and a sign-in route.
+
+The brain icon has four fill states plus an empty `off` outline:
+
+| Level            | Brain fill    |
+| ---------------- | ------------- |
+| `off`            | empty outline |
+| `minimal`, `low` | 1/4           |
+| `medium`         | 1/2           |
+| `high`           | 3/4           |
+| `xhigh`, `max`   | full          |
+
+Hovering the icon shows the exact level, its description, the current model and
+the model's supported set, so `xhigh` and `max` never look identical by accident.
+
+The workflow extension's `/profile` and `/role` editors use the same model
+capability data: when a model disables `minimal` or `medium`, those levels are
+not offered, and an unsupported value already stored in a profile is clamped on
+save or activation with a warning.
 
 Cycling shortcuts (from Pi’s keybindings):
 
@@ -89,8 +110,8 @@ These are editable in `keybindings.json` (see
 
 ## Usage
 
-The header’s ring reads Pi’s own `contextUsage` (percent of the context window)
-and the footer shows tokens and cost from `getSessionStats()`. Long sessions can
+The composer's ring reads Pi's own `contextUsage` (percent of the context window)
+and the session footer shows tokens and cost from `getSessionStats()`. Long sessions can
 be compacted manually with `/compact`, or automatically according to the
 compaction settings.
 

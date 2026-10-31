@@ -132,9 +132,12 @@ import {
   BUILTIN_THEME_SWATCHES,
   EMPTY_THEMES,
   THEME_CHROME_VARIABLES,
+  THEME_COLOR_KEYS,
   activeThemeSwatches,
+  normalizeThemeColor,
   sanitizeThemesSnapshot,
   themeCssVariables,
+  type ThemeColorKey,
   type ThemesSnapshot,
 } from "../../../shared/themes";
 import { systemThemeName } from "../themes/system-theme";
@@ -188,10 +191,12 @@ import {
 } from "../../../shared/commands";
 import {
   findExactModelEntry,
+  sanitizeThinkingByModel,
   thinkingLevelsOf,
   toCatalog,
   type ModelCatalogEntry,
 } from "../session/model-catalog";
+import { orderThinkingLevels } from "../../../shared/thinking";
 import { classifyFailure, isOfflineError } from "../../../shared/diagnostics";
 import type { DiagnosticsSnapshot } from "../../../shared/diagnostics";
 import { sanitizeUpdateState, type UpdateState } from "../../../shared/updates";
@@ -292,6 +297,14 @@ function purgeClosedTabDialogs(openTabs: ReadonlySet<string>): void {
 
 /** In-flight ensures, so focus + click + first keystroke share one activation. */
 const sessionEnsuring = new Map<string, Promise<boolean>>();
+/**
+ * In-flight transcript hydrations. A restored tab mounts and then receives its
+ * first state frame; without this guard both effects call `messages.get` and
+ * `hydrateMessages` appends the same JSONL twice (the duplicate-message bug the
+ * 2026-10-31 header removal exposed: there is no Start button to serialize the
+ * two reads any more).
+ */
+const transcriptHydrating = new Map<string, Promise<void>>();
 /** Last successful interaction-driven activation per tab (throttles keystrokes). */
 const sessionEnsuredAt = new Map<string, number>();
 /** Minimum gap between non-forced ensures; a send/tab switch always forces. */
@@ -1059,6 +1072,10 @@ export interface AppStateShape {
   applySystemTheme: () => Promise<void>;
   /** Imports a `.json` theme file into the profile and selects it. */
   importTheme: (filename: string, content: string) => Promise<boolean>;
+  /** Stores one chrome colour override for a theme and repaints. */
+  setThemeColor: (themeName: string, key: ThemeColorKey, value: string) => void;
+  /** Removes every colour override for a theme and repaints. */
+  resetThemeColors: (themeName: string) => void;
 
   /** Keybindings (plan step 15): the profile's overrides with validation. */
   keybindings: KeybindingsSnapshot | null;
@@ -2274,26 +2291,36 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (!api?.sessions) return;
     const current = get().transcripts[tabId];
     if (current?.hydrated) return;
+    const inFlight = transcriptHydrating.get(tabId);
+    if (inFlight) return inFlight;
+    const run = (async () => {
+      try {
+        const result = (await api.sessions.request({ tabId, method: "messages.get" })) as {
+          messages?: unknown[];
+        };
+        const base = get().transcripts[tabId] ?? createTranscriptState();
+        set({
+          transcripts: {
+            ...get().transcripts,
+            [tabId]: hydrateMessages(base, result.messages ?? [], get().prefs.promptOrigins),
+          },
+        });
+      } catch {
+        // A session that cannot report history still streams, so this is best
+        // effort — but a failed read must not be cached as "no history": after a
+        // relaunch the host may still be starting, and the view retries hydration
+        // when the tab status changes (plan step 25).
+        const base = get().transcripts[tabId] ?? createTranscriptState();
+        set({
+          transcripts: { ...get().transcripts, [tabId]: { ...base, hydrated: false } },
+        });
+      }
+    })();
+    transcriptHydrating.set(tabId, run);
     try {
-      const result = (await api.sessions.request({ tabId, method: "messages.get" })) as {
-        messages?: unknown[];
-      };
-      const base = get().transcripts[tabId] ?? createTranscriptState();
-      set({
-        transcripts: {
-          ...get().transcripts,
-          [tabId]: hydrateMessages(base, result.messages ?? [], get().prefs.promptOrigins),
-        },
-      });
-    } catch {
-      // A session that cannot report history still streams, so this is best
-      // effort — but a failed read must not be cached as "no history": after a
-      // relaunch the host may still be starting, and the view retries hydration
-      // when the tab status changes (plan step 25).
-      const base = get().transcripts[tabId] ?? createTranscriptState();
-      set({
-        transcripts: { ...get().transcripts, [tabId]: { ...base, hydrated: false } },
-      });
+      await run;
+    } finally {
+      transcriptHydrating.delete(tabId);
     }
   },
 
@@ -2630,12 +2657,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
             enabledModels?: unknown;
             auth?: Record<string, unknown>;
             thinkingLevels?: unknown[];
+            thinkingByModel?: Record<string, unknown>;
           }
         | undefined;
       set({
         modelCatalog: {
           ...get().modelCatalog,
-          [tabId]: toCatalog(Array.isArray(response?.models) ? response.models : []),
+          [tabId]: toCatalog(
+            Array.isArray(response?.models) ? response.models : [],
+            sanitizeThinkingByModel(response?.thinkingByModel),
+          ),
         },
         providerAuth: { ...get().providerAuth, [tabId]: response?.auth ?? {} },
         thinkingLevels: {
@@ -3253,7 +3284,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // `/thinking <level>` sets an exact level; an unknown level is an error
       // with the available list (Pi's handleThinkingCommand).
       if (argument.length > 0) {
-        const levels = get().thinkingLevels[tabId] ?? thinkingLevelsOf(get().sessionStates[tabId]);
+        const levels = orderThinkingLevels(
+          get().thinkingLevels[tabId] ?? thinkingLevelsOf(get().sessionStates[tabId]),
+        );
         const wanted = argument.trim().toLowerCase();
         const level = levels.find((candidate) => candidate.toLowerCase() === wanted);
         if (level) {
@@ -3993,6 +4026,26 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     return ok;
   },
 
+  setThemeColor: (themeName, key, value) => {
+    if (!THEME_COLOR_KEYS.includes(key)) return;
+    const color = normalizeThemeColor(value);
+    if (!color) return;
+    const current = get().prefs.themeColors[themeName] ?? {};
+    const themeColors = {
+      ...get().prefs.themeColors,
+      [themeName]: { ...current, [key]: color },
+    };
+    get().setPrefs({ themeColors });
+    get().applyChromeTheme();
+  },
+
+  resetThemeColors: (themeName) => {
+    const themeColors = { ...get().prefs.themeColors };
+    delete themeColors[themeName];
+    get().setPrefs({ themeColors });
+    get().applyChromeTheme();
+  },
+
   setFollowSystemTheme: (enabled) => {
     get().setPrefs({ followSystemTheme: enabled });
     if (enabled) void get().applySystemTheme();
@@ -4200,7 +4253,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       root.removeAttribute("data-theme");
       return;
     }
-    const variables: Record<string, string> = themeCssVariables(active.swatches, active.variant);
+    const variables: Record<string, string> = themeCssVariables(
+      active,
+      get().prefs.themeColors[active.name],
+    );
     root.setAttribute("data-theme", active.variant);
     for (const key of THEME_CHROME_VARIABLES) {
       const value = variables[key];

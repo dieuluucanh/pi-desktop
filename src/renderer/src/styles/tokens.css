@@ -10,15 +10,15 @@
  */
 
 @theme {
-  --color-canvas: #0f1115;
-  --color-surface: #161a21;
-  --color-raised: #1b2029;
-  --color-sunken: #0b0d11;
-  --color-line: #232936;
-  --color-line-strong: #313a4b;
-  --color-ink: #e6e9ef;
-  --color-ink-muted: #98a1b3;
-  --color-ink-faint: #6b7487;
+  --color-canvas: #0b0d12;
+  --color-surface: #141922;
+  --color-raised: #232b39;
+  --color-sunken: #080a0e;
+  --color-line: #4e5b79;
+  --color-line-strong: #6b7a99;
+  --color-ink: #eef2f8;
+  --color-ink-muted: #aab4c6;
+  --color-ink-faint: #7f8ba0;
   --color-accent: #7aa2f7;
   --color-accent-ink: #0b0d11;
   --color-danger: #f7768e;

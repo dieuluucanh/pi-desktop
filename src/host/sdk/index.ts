@@ -241,6 +241,9 @@ export { createSdkCommandRunner, type SdkCommandRunner } from "./commands";
  */
 export { observeSdkModelChanges } from "./model-changes";
 
+/** Per-model thinking capability for `model.available` (2026-10-31 UI plan). */
+export { supportedThinkingLevels, thinkingByModel } from "./model-thinking";
+
 /** Model scope (`enabledModels`): resolution and one-model star toggles. */
 export {
   createSdkModelScope,

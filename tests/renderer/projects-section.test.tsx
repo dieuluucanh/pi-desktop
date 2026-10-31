@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
@@ -86,6 +86,38 @@ beforeEach(() => {
 });
 
 describe("ProjectsSection", () => {
+  it("opens the new-project dialog from the + menu", async () => {
+    installBridge();
+    const user = userEvent.setup();
+    render(<ProjectsSection />);
+
+    expect(screen.getByRole("button", { name: "Open project folder" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    await user.click(await screen.findByRole("menuitem", { name: /new project/i }));
+    expect(
+      await screen.findByRole("dialog", { name: "Create a blank project" }),
+    ).toBeInTheDocument();
+    // Close it before the test ends: a live Radix dialog leaves a body
+    // pointer-events/aria-hidden lock that would poison the next test.
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("opens the clone dialog from the + menu", async () => {
+    installBridge();
+    const user = userEvent.setup();
+    render(<ProjectsSection />);
+
+    // Keyboard-open the menu: a preceding Radix dialog can leave a pointer
+    // lock that swallows the trigger's pointerdown in jsdom (see the setup
+    // shims note); the keyboard path is the same menu and is deterministic.
+    screen.getByRole("button", { name: "New project" }).focus();
+    await user.keyboard("{Enter}");
+    await user.click(await screen.findByRole("menuitem", { name: /clone repository/i }));
+    expect(await screen.findByRole("dialog", { name: "Clone a repository" })).toBeInTheDocument();
+  });
+
   it("shows the empty state before any project is remembered", () => {
     installBridge();
     render(<ProjectsSection />);

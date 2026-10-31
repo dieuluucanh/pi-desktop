@@ -17,9 +17,11 @@ import {
   type CheckpointConfig,
 } from "./checkpoints";
 import { DEFAULT_ZOOM, clampZoomFactor } from "./zoom";
+import { sanitizeThemeColorPrefs, type ThemeColorPrefs } from "./themes";
 
 export const PREF_KEYS = [
   "theme",
+  "themeColors",
   "followSystemTheme",
   "zoomFactor",
   "sidebarCollapsed",
@@ -42,6 +44,12 @@ export type ThemeSetting = "dark" | "light" | "system";
 
 export interface UiPrefs {
   theme: ThemeSetting;
+  /**
+   * Per-theme chrome colour overrides (2026-10-31 theme plan). Keyed by the Pi
+   * theme name; values are `#rrggbb` and only the closed `THEME_COLOR_KEYS` set
+   * survives the sanitizer. App-owned: no Pi theme file is written.
+   */
+  themeColors: ThemeColorPrefs;
   /**
    * Follow the OS light/dark setting while using Pi's built-in themes. Off by
    * default: an explicit theme choice is the normal case. Enabling it activates
@@ -136,6 +144,7 @@ export const DEFAULT_SIDEBAR_WIDTH = 268;
 
 export const DEFAULT_PREFS: UiPrefs = {
   theme: "dark",
+  themeColors: {},
   followSystemTheme: false,
   zoomFactor: DEFAULT_ZOOM,
   sidebarCollapsed: false,
@@ -181,6 +190,7 @@ export function sanitizePrefs(input: unknown): UiPrefs {
   const theme = source.theme;
   return {
     theme: THEMES.includes(theme as ThemeSetting) ? (theme as ThemeSetting) : DEFAULT_PREFS.theme,
+    themeColors: sanitizeThemeColorPrefs(source.themeColors),
     // An older app-state.json may only have `theme: "system"`; that was the
     // follow-system choice before this key existed, so migrate it.
     followSystemTheme:

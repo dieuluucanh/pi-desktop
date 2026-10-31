@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   parseWorkflowStatus,
   statusLineText,
+  workflowBadgeClass,
   workflowBorderClass,
   workflowModeLabel,
   WORKFLOW_MODES,
@@ -172,6 +173,30 @@ describe("workflowBorderClass", () => {
       ),
     );
     expect([...classes].sort()).toEqual(["border-accent", "border-line", "border-warn"]);
+  });
+});
+
+describe("workflowBadgeClass", () => {
+  it("mirrors the border tone for the coloured modes", () => {
+    expect(workflowBadgeClass(parseWorkflowStatus("▶ build"))).toBe("text-accent");
+    expect(workflowBadgeClass(parseWorkflowStatus("⏸ plan"))).toBe("text-warn");
+    expect(workflowBadgeClass(parseWorkflowStatus("◦ commits:never"))).toBe("text-ink-faint");
+    expect(workflowBadgeClass(null)).toBe("text-ink-faint");
+  });
+
+  it("only ever returns a complete Tailwind utility", () => {
+    const classes = new Set(
+      [...WORKFLOW_MODES, null].map((mode) =>
+        workflowBadgeClass(
+          mode === null
+            ? null
+            : parseWorkflowStatus(
+                mode === "build" ? "▶ build" : mode === "plan" ? "⏸ plan" : "◦ 1/2",
+              ),
+        ),
+      ),
+    );
+    expect([...classes].sort()).toEqual(["text-accent", "text-ink-faint", "text-warn"]);
   });
 });
 

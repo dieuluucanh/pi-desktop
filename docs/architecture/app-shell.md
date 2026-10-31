@@ -6,36 +6,47 @@ steps must extend it rather than re-invent it.
 ## Regions
 
 ```text
-title bar        brand logo, active project, Open project…, New session
-sidebar          + New session · Open project… · Project · Sessions · Views
-tab strip        session tabs (empty until step 11) + the "+" action
+tab strip        session tabs (the topmost app row; the OS frame owns the window
+                 controls) + the "+" action
+sidebar          Projects (+ menu · open folder) · Sessions · Views
 main area        the active view (welcome | session | settings | extensions |
                  connections | skills | diagnostics)
-status bar       slim app-level facts only: build version · Pi profile ·
-                 bundled runtime · display zoom · transient hints · notifications
+status bar       active project path · build version · Pi profile · bundled
+                 runtime · display zoom · transient hints · notifications
 panel rail       docked at the right edge of a session: an always-visible 44 px
                  menu strip (Source Control · Checkpoints · Documents) beside one
                  resizable panel body; the strip's order is user-adjustable
-composer footer  session facts, bound to the prompt input: cwd (branch) · model ·
-                 thinking · context/tokens/cost, then one dim line of extension
-                 statuses (ctx.ui.setStatus), ANSI-coloured
+session footer   one responsive status rail under the composer: pwd (branch) ·
+                 tokens/cost/context · model • thinking · extension statuses
+                 (ctx.ui.setStatus) · single-line extension widgets; an extension
+                 ctx.ui.setFooter() replaces the whole footer
 overlays         command palette (Ctrl+K), toast host
 ```
 
 The sidebar and the tab strip are fixed parts of the frame: step 11 fills the tab
-strip, step 10 fills the project section — neither re-lays-out the window.
+strip, step 10 fills the project section — neither re-lays-out the window. The
+in-app title bar was removed in the 2026-10-31 minimal-session-ui pass; the brand
+mark survives in the welcome/onboarding views and the OS window title is set by
+`app:set-title`.
 
-**Two status surfaces, one job each (2026-10-19 UI rework).** The status bar is
-app-level and mounted on every view; it never carries session facts. Everything
-session-scoped lives in `ComposerFooter`, under the prompt input, the way
-terminal Pi binds its footer to the editor. Extension statuses
-(`ctx.ui.setStatus`) render in that footer's dim second line — for example the
-Office bridge's `office: Excel attached (bridge :38617)` — not in the status bar.
-The footer is rendered as a **sibling of the editor branch**, not inside
-`<Composer>`, so its facts and mode chip survive when an extension shows a
-non-overlay `ctx.ui.custom()` UI and `<TuiSurface>` replaces the composer. An
-extension's `ctx.ui.setEditorComponent()` is recorded but never mounted: the
-native composer is always the editor (2026-10-26 plan).
+**Two surfaces, one job each (2026-10-31 minimal-session-ui).** The status bar is
+app-level and mounted on every view; it never carries session facts. It shows the
+active project path on the left and the app facts on the right. Everything
+session-scoped lives in `SessionFooter`, under the composer, the way terminal Pi
+binds its footer to the editor: `pwd (branch)`, the token/cost/context facts,
+`model • thinking`, the extension statuses (`ctx.ui.setStatus`) — for example the
+Office bridge's `office: Excel attached (bridge :38617)` or pi-lens'
+`pi-lens-lsp` line — and single-line component widgets. They share one
+`flex-wrap` rail (2026-10-31 UI plan), so a wide window uses one row and a narrow
+one wraps instead of always stacking three rows; long items truncate and keep
+the full value in `title`. An extension's `ctx.ui.setFooter()` **replaces** that
+built-in footer rather than stacking above it; the custom footer then owns the
+statuses, exactly as Pi hands its factory a `FooterDataProvider`. The built-in
+footer renders as a **sibling of the editor branch**, not inside `<Composer>`, so
+it survives when an extension shows a non-overlay `ctx.ui.custom()` UI and
+`<TuiSurface>` replaces the composer. An extension's
+`ctx.ui.setEditorComponent()` is recorded but never mounted: the native composer
+is always the editor (2026-10-26 plan).
 
 **Right-click is the platform's editing menu.** Electron ships no default
 context menu, so the app builds one from `src/main/context-menu.ts` and attaches
@@ -56,6 +67,16 @@ accelerators. The Electron zoom roles were removed because `zoomIn` binds
 not work". The factor is re-applied on `did-finish-load` because Chromium keeps
 a per-origin zoom map.
 
+**The chrome palette is app-owned and high-contrast (2026-10-31).** The active
+Pi theme still supplies accent and status hues, but the Desktop owns the neutral
+surfaces and separators: `APP_CHROME_SWATCHES` (in `src/shared/themes.ts`) is
+mirrored by `src/renderer/src/styles/tokens.css`, and `applyChromeTheme` maps
+all 13 chrome tokens (`canvas`, `surface`, `raised`, `sunken`, `line`,
+`line-strong`, `ink`, `ink-muted`, `ink-faint`, accent, ok, warn, danger). Dark
+is deliberately high-contrast; tests guard the separator contrast and the
+`tokens.css` values. Per-theme overrides live in `prefs.themeColors` and are
+edited in Skills → Themes; they never write a Pi theme file.
+
 **Extension interactions live in the session column (2026-10-26).**
 `ctx.ui.select/confirm/input/editor` render as an inline `ExtensionDialogDock`
 in the composer region, not as a Radix modal: the transcript stays visible and
@@ -67,7 +88,9 @@ overlay floats inside the column with no dim backdrop. While either owns the
 keyboard, clicking the transcript re-focuses it and a floating overlay makes the
 composer `inert`. Component-factory widgets (`ctx.ui.setWidget(key, factory)`)
 render as read-only TUI frames above/below the editor dock, next to the
-existing string-array widget strip. The TUI grid is measured from this column,
+existing string-array widget strip. A component frame with exactly one line is
+rendered as a footer column instead of its own strip (2026-10-31 UI plan);
+multi-line frames keep Pi's placement. The TUI grid is measured from this column,
 never from the surface's own rendered frame (`src/renderer/src/tui/use-tui-viewport.ts`).
 
 **The workflow mode is shown as text, not just colour.** The composer's textarea
@@ -75,12 +98,15 @@ border reflects the Workflow extension's mode (`Plan` → warn, `Build` → acce
 decoded from its status text by `src/shared/workflow-mode.ts`; an unrecognised
 value degrades to the neutral border rather than guessing. The desktop names
 exactly the extension's three modes (Default/Plan/Build): the Plannotator
-`reviewing in browser` phrase is a Plan sub-state, so the mode chip reads the
-mode — `Plan` — never the sub-state (2026-10-20 startup-tab-cycle plan). Because colour alone is
-not an indicator, the mode is also named: a badge on the composer's top edge and a
-`mode: …` chip in the footer, both exposed through `role="status"`. Every
-recognised mode has a label, including `Default`. The badge renders at every
-window width — it used to be hidden below the `sm` breakpoint.
+`reviewing in browser` phrase is a Plan sub-state, so the composer label reads
+the mode — `Plan` — never the sub-state (2026-10-20 startup-tab-cycle plan).
+Because colour alone is not an indicator, the mode is also named in the
+composer's top-right corner, exposed through `role="status"`. Every
+recognised mode has a label, including `Default`; Plan/Build use the same
+`text-warn`/`text-accent` tone as the border, and Default uses the readable
+faint ink. The label renders at every
+window width — it used to be hidden below the `sm` breakpoint — and there is no
+duplicate `mode: …` chip in the footer (2026-10-31 minimal-session-ui).
 
 **The composer says where the cursor is (2026-10-21).** The textarea's caret
 carries the app's accent colour, and the composer's status row spells the
@@ -99,13 +125,15 @@ items replace their whole prefix verbatim, command names keep the trailing
 space, and Enter on a command-name suggestion runs it in one keystroke while an
 argument suggestion only fills.
 
-**The session header is one cluster (2026-10-21).** The title, the status badge
-and the restart action are the left group; the controls on the right are one
-row of equally-weighted ghost buttons — model, thinking level, the context ring,
-a vertical rule, the documents panel, the linked reviews and `Stop`. The title
-truncates and the hints clip, so the row never wraps. Tool-card detail is not a
-header control: Ctrl+O (or each card's chevron) is the one expand-all switch
-(2026-10-30 copy plan removed the Normal/Verbose/Summary menu).
+**The session column is transcript-first (2026-10-31 minimal-session-ui).** There
+is no session header any more: the tab strip owns the title (with rename in its
+menu), the status dot and the linked review tabs; the composer owns Stop and the
+compact model/thinking/context controls in the blank space above Send; the error
+banner owns Restart; a stopped session wakes on typing. The view keeps only an
+`sr-only` `<h1>` for the accessible name, so the freed rows go to the transcript.
+Tool-card detail is still not a header control: Ctrl+O (or each card's chevron)
+is the one expand-all switch (2026-10-30 copy plan removed the
+Normal/Verbose/Summary menu).
 
 **Global CSS lives in `@layer base`.** Tailwind v4 emits its own rules into
 cascade layers, and in CSS an _unlayered_ rule beats every layered one regardless
@@ -472,9 +500,10 @@ and the renderer all read it, so a budget change is one edit.
 - `tests/styles-layering.test.ts` — the global stylesheet stays inside
   `@layer base` (an unlayered rule beats Tailwind's utilities), and the
   `@source inline(...)` list matches every class `workflowBorderClass` returns.
-- `tests/renderer/composer-footer.test.tsx` — the composer-bound session footer:
-  cwd/branch/model/thinking and the context budget, the ANSI-coloured extension
-  status line, and the `mode: …` chip for every recognised mode.
+- `tests/renderer/session-footer.test.tsx` — the Pi-shaped session footer:
+  pwd/branch and the token/cost/context line, `model • thinking`, the
+  ANSI-coloured extension status line, and no `mode:` chip (the composer names
+  the mode now).
 - `tests/renderer/composer.test.tsx` — Enter vs Shift+Enter, IME safety, the
   one-Send streaming model (Enter steers, Alt+Enter queues a follow-up), the hint
   row, the workflow mode border/badge (always visible, announced, focus ring does

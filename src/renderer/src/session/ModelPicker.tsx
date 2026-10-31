@@ -105,6 +105,15 @@ export function ModelPicker({
         >
           {active ? <Check className="size-3 shrink-0" aria-hidden /> : <span className="size-3" />}
           <span className="truncate">{entry.label}</span>
+          {entry.supportedThinkingLevels && entry.supportedThinkingLevels.length > 0 ? (
+            <span
+              className="max-w-24 shrink-0 truncate text-[10px] text-ink-faint"
+              data-supported-thinking={entry.key}
+              title={`Supports thinking: ${entry.supportedThinkingLevels.join(", ")}`}
+            >
+              {entry.supportedThinkingLevels.join("/")}
+            </span>
+          ) : null}
           {entry.thinkingLevel ? (
             <span className="shrink-0 text-[10px] text-ink-faint">{entry.thinkingLevel}</span>
           ) : null}

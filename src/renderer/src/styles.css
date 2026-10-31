@@ -29,7 +29,7 @@
  * function's return values.
  */
 @source "../../../shared";
-@source inline("border-line border-accent border-warn");
+@source inline("border-line border-accent border-warn text-accent text-warn text-ink-faint");
 
 @layer base {
   * {

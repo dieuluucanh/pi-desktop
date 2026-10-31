@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
@@ -147,6 +147,28 @@ describe("SkillsView", () => {
         params: expect.objectContaining({ key: "theme", value: "light" }),
       }),
     );
+  });
+
+  it("edits the active theme's separator colour and resets it", async () => {
+    render(<SkillsView />);
+
+    const line = await screen.findByTestId("theme-color-line");
+    fireEvent.change(line, { target: { value: "#123456" } });
+
+    await waitFor(() =>
+      expect(useAppStore.getState().prefs.themeColors.dark?.line).toBe("#123456"),
+    );
+    expect(document.documentElement.style.getPropertyValue("--color-line")).toBe("#123456");
+
+    await userEvent.click(screen.getByTestId("theme-colors-reset"));
+    await waitFor(() => expect(useAppStore.getState().prefs.themeColors.dark).toBeUndefined());
+    expect(document.documentElement.style.getPropertyValue("--color-line")).toBe("#4e5b79");
+  });
+
+  it("shows colour controls only for the active theme", () => {
+    render(<SkillsView />);
+    // The fixture's dark card is active; light is an inactive preview.
+    expect(document.querySelectorAll("[data-testid^='theme-color-']")).toHaveLength(13);
   });
 
   it("toggles follow-system appearance", async () => {

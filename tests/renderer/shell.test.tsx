@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../src/renderer/src/App";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
@@ -31,8 +31,8 @@ beforeEach(() => {
 describe("app shell", () => {
   it("renders the sidebar navigation instead of placeholder tabs", async () => {
     render(<App />);
-    // Two surfaces own this action: the sidebar's primary button and the title
-    // bar. Both must exist — the point is that the action is present at all.
+    // The welcome view and the tab strip own this action; the old title-bar copy
+    // was removed in minimal-session-ui step 1 (the sidebar CTA goes in step 2).
     expect((await screen.findAllByRole("button", { name: /new session/i })).length).toBeGreaterThan(
       0,
     );
@@ -47,10 +47,24 @@ describe("app shell", () => {
     expect(screen.queryByRole("button", { name: /pi for office/i })).toBeNull();
   });
 
+  it("has no sidebar copies of New session or Open project", async () => {
+    render(<App />);
+    await screen.findByText(/the desktop ui for the pi coding agent/i);
+
+    // The tab strip owns New session and the Projects header owns the project
+    // actions (minimal-session-ui step 2).
+    const sidebar = screen.getByLabelText("Navigation");
+    expect(within(sidebar).queryByRole("button", { name: /new session/i })).toBeNull();
+    expect(within(sidebar).queryByRole("button", { name: "Open project…" })).toBeNull();
+  });
+
   it("shows the welcome state with no project open", async () => {
     render(<App />);
     expect(await screen.findByText(/the desktop ui for the pi coding agent/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /open project folder/i })).toBeInTheDocument();
+    // The welcome view and the Projects header both offer an open-folder action.
+    expect(screen.getAllByRole("button", { name: /open project folder/i }).length).toBeGreaterThan(
+      0,
+    );
   });
 
   it("never shows the old scaffold placeholder copy", async () => {

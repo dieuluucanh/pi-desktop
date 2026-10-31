@@ -62,6 +62,7 @@ import {
   listAllSessions,
   observeSdkModelChanges,
   renameStoredSession,
+  thinkingByModel,
   VERSION,
 } from "./sdk";
 
@@ -220,6 +221,9 @@ function createCore(options: {
     // are announced only on the extension runner; refresh the snapshot from
     // that broadcast so the header/footer follow the live session.
     observeModelChanges: observeSdkModelChanges,
+    // Per-model thinking capabilities for the model picker preview (2026-10-31
+    // UI plan). The SDK call stays in `src/host/sdk/model-thinking.ts`.
+    describeModelThinking: thinkingByModel,
     // Resolve and rewrite the model scope (`enabledModels`) for the live scope
     // methods. The session-creation resolution lives in `createSdkSessionRuntime`.
     modelScope: createSdkModelScope(),

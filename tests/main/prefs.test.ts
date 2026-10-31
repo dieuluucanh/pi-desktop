@@ -38,6 +38,7 @@ describe("sanitizePrefs", () => {
         "sidebarWidth",
         "telemetryEnabled",
         "theme",
+        "themeColors",
         "zoomFactor",
       ].sort(),
     );
@@ -114,6 +115,28 @@ describe("sanitizePrefs", () => {
       DEFAULT_PREFS.sidebarWidth,
     );
     expect(sanitizePrefs({ sidebarWidth: 300.6 }).sidebarWidth).toBe(301);
+  });
+
+  it("sanitizes per-theme colour overrides", () => {
+    expect(sanitizePrefs({}).themeColors).toEqual({});
+    const result = sanitizePrefs({
+      themeColors: {
+        dark: { line: "#AABBCC", accent: "#123456", nope: "#ffffff", bad: "red" },
+        light: { surface: "#fff" },
+        "": { line: "#000000" },
+        empty: { line: "bogus" },
+      },
+    });
+    expect(result.themeColors).toEqual({
+      dark: { line: "#aabbcc", accent: "#123456" },
+    });
+  });
+
+  it("bounds the number of themed override maps", () => {
+    const themeColors = Object.fromEntries(
+      Array.from({ length: 40 }, (_, index) => [`theme-${index}`, { line: "#112233" }]),
+    );
+    expect(Object.keys(sanitizePrefs({ themeColors }).themeColors)).toHaveLength(32);
   });
 
   it("accepts every documented theme", () => {
