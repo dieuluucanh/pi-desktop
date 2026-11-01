@@ -86,13 +86,18 @@ Nothing fails silently.
   diff), and group-level _Stage all_ / _Unstage all_. A discard of a tracked file
   is a `git checkout --`; a discard of an **untracked** file moves it to the OS
   trash, not to oblivion.
-- **History** lists commits, newest first, with _Load more_. Clicking one opens
-  its diff. The list reloads itself when the repository moves — a new commit, a
-  fetch, a push or a branch switch — so _Refresh_ is only for forcing a re-read.
-  The branch and tag chips are git's own decorations: `origin/main` appears on a
-  commit only when the upstream actually points at it, never on an unpushed tip.
-  Remote-tracking refs are highlighted in cyan, so the upstream stands out from
-  the accent-coloured current branch and the neutral tags.
+- **History** lists commits, newest first, with _Load more_. Each commit is one
+  line: its message, then the refs it carries at the right. A local branch and
+  its matching remote-tracking branch fold into one chip — `main` with a cloud —
+  and a ref that exists only on a remote reads as a cloud plus the branch name,
+  in cyan; tags stay neutral. Hover a row for the whole message (subject and
+  body), every raw ref, the author, the absolute and relative date and the full
+  sha, with _Copy hash_ and _Copy message_; the message is selectable, so
+  <kbd>Ctrl/Cmd</kbd>+<kbd>C</kbd> works too. Clicking a row opens its diff. The
+  list reloads itself when the repository moves — a new commit, a fetch, a push or
+  a branch switch — so _Refresh_ is only for forcing a re-read. `origin/main`
+  appears on a commit only when the upstream actually points at it, never on an
+  unpushed tip.
 - **Stashes** (collapsed until you open it, or until you use _Stash changes_)
   lists what is parked, with _Restore_ and _Drop_.
   **Hunk staging.** The diff viewer renders each hunk with _Stage hunk_ (for a

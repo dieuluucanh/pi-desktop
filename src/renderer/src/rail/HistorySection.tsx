@@ -2,24 +2,16 @@
  * The History section (git-checkpoint plan step 15).
  *
  * One page of commits (30, the same window main defaults to), a *Load more*
- * cursor, and a click that opens the commit's diff in the shared viewer. The
- * row carries the four facts a person needs to identify a commit: subject,
- * author, relative time and short sha — plus the branch/tag chips when the
- * commit carries them.
+ * cursor, and a click that opens the commit's diff in the shared viewer. Each
+ * row is one line — subject and refs — while the hover card carries the author,
+ * time, full sha and the whole message.
  */
 
 import { useEffect, useState } from "react";
-import { GitCommit } from "lucide-react";
 import { gitUnavailableMessage } from "../../../shared/git";
-import { Badge } from "../ui/badge";
 import { useAppStore } from "../state/app-store";
-import {
-  absoluteTime,
-  commitChipTone,
-  commitChips,
-  historyKey,
-  relativeTime,
-} from "./history-view";
+import { CommitRow } from "./CommitRow";
+import { historyKey } from "./history-view";
 import { RailBlockHeader } from "./RailBlockHeader";
 
 export interface HistorySectionProps {
@@ -95,46 +87,14 @@ export function HistorySection({ projectPath }: HistorySectionProps) {
       ) : (
         <ul className="flex flex-col">
           {entries.map((entry) => (
-            <li key={entry.sha}>
-              <button
-                type="button"
-                className="flex w-full flex-col gap-0.5 px-3 py-1 text-left text-[11px] hover:bg-raised/50"
-                data-testid={`commit-${entry.shortSha}`}
-                title={absoluteTime(entry.at)}
-                onClick={() => void openGitDiff(projectPath, { commit: entry.sha })}
-              >
-                <span className="flex items-center gap-1">
-                  <GitCommit className="size-3 shrink-0 text-ink-faint" aria-hidden />
-                  <span
-                    className="min-w-0 flex-1 truncate font-medium text-ink"
-                    title={entry.subject}
-                  >
-                    {entry.subject || "(no message)"}
-                  </span>
-                </span>
-                <span className="flex items-center gap-1 pl-4 text-ink-faint">
-                  <span className="font-mono">{entry.shortSha}</span>
-                  <span className="min-w-0 flex-1 truncate">{entry.author}</span>
-                  <span className="shrink-0">{relativeTime(entry.at, now)}</span>
-                </span>
-                {commitChips(entry).length > 0 ? (
-                  <span className="flex flex-wrap gap-1 pl-4">
-                    {commitChips(entry).map((chip) => (
-                      <Badge
-                        key={chip}
-                        tone={commitChipTone(
-                          chip,
-                          snapshot.repo?.branch,
-                          snapshot.repo?.remotes ?? [],
-                        )}
-                      >
-                        {chip}
-                      </Badge>
-                    ))}
-                  </span>
-                ) : null}
-              </button>
-            </li>
+            <CommitRow
+              key={entry.sha}
+              entry={entry}
+              branch={repo?.branch ?? null}
+              remotes={repo?.remotes ?? []}
+              now={now}
+              onOpen={(sha) => void openGitDiff(projectPath, { commit: sha })}
+            />
           ))}
         </ul>
       )}

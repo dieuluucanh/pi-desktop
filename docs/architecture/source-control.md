@@ -276,10 +276,13 @@ A log page is keyed to the repo state it was read for:
 that key with `GitLogPage.key` and reloads page one when it differs; `seq`
 increments per request and a response whose `seq` was superseded is dropped, so a
 slow read cannot overwrite a newer state or a manual refresh. The key excludes
-`fetchedAt` and the stash list, so ordinary polls do not refetch the log. The
-chips are `%D` verbatim (minus `*/HEAD` symbolic aliases): `origin/main` appears
-on a commit only when git decorates it there, which is what stops an unpushed tip
-from being labelled as pushed.
+`fetchedAt` and the stash list, so ordinary polls do not refetch the log. The row
+folds a local branch and its matching remote-tracking refs into one chip
+(`main`, plus a cloud when `origin/main` or another remote points there); a
+remote-only ref reads as a cloud plus the leaf (`☁ main`). Every raw `%D` name
+(minus symbolic remote-HEAD aliases) is listed in the hover card. `origin/main`
+appears on a commit only when git decorates it there, which is what stops an
+unpushed tip from being labelled as pushed.
 
 ## Scope: folder, session, app
 
@@ -307,6 +310,17 @@ lists. A clean tree renders no paragraph: the count already says 0. The
 **Commit History** block has the same shape (title, loaded-commit count, refresh)
 and reloads page one rather than the current cursor; it also reloads itself when
 the repo-state key moves (see _History freshness_).
+
+**History rows are one line** (2026-11-01 commit-history plan). A row is the
+commit icon, the subject (`flex-1 truncate`) and the refs right-aligned at a fixed
+`h-6`; at most two chips show (`COMMIT_ROW_CHIP_LIMIT`), then `+N`. The raw refs,
+author, absolute and relative date, full sha and the whole message
+(`GitCommitEntry.subject` + `body`, from `%s` + `%b`) live in a `ui/hover-card`
+(Radix HoverCard) portaled to the body and opened on the left, so the block's
+scroller cannot clip it and its text stays selectable. The card offers _Copy
+hash_ and _Copy message_ and closes on <kbd>Esc</kbd> or when the row opens its
+diff. `title` is intentionally absent from the row, so there is no second hover
+surface.
 
 The **commit box** keeps only the message, the meta row and the button. A
 blocking condition (nothing staged, no message, no git identity, an over-long

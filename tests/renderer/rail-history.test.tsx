@@ -1,11 +1,14 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HistorySection, HISTORY_PAGE_SIZE } from "../../src/renderer/src/rail/HistorySection";
 import {
   absoluteTime,
+  COMMIT_ROW_CHIP_LIMIT,
   commitChipTone,
-  commitChips,
+  commitRefs,
+  commitRowChips,
+  fullCommitMessage,
   historyKey,
   relativeTime,
 } from "../../src/renderer/src/rail/history-view";
@@ -30,6 +33,7 @@ function commit(overrides: Partial<GitCommitEntry> = {}): GitCommitEntry {
     sha: "a".repeat(40),
     shortSha: "aaaaaaa",
     subject: "feat: add the rail",
+    body: "",
     author: "Ada",
     at: NOW - 5 * 60_000,
     refs: [],
@@ -89,8 +93,18 @@ function seed(
   });
 }
 
+const originalClipboard = navigator.clipboard;
+
 beforeEach(() => {
   seed();
+});
+
+afterEach(() => {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: originalClipboard,
+  });
+  vi.restoreAllMocks();
 });
 
 describe("relative time", () => {
@@ -115,27 +129,141 @@ describe("relative time", () => {
   });
 });
 
-describe("commit chips", () => {
-  it("does not invent an upstream for an unpushed head", () => {
-    // The reported bug: `%D` said `HEAD -> main` (ahead 1), but the rail showed
-    // `origin/main` on a commit the upstream does not point at.
-    const entry = commit({ refs: ["main"], head: true });
-    expect(commitChips(entry)).toEqual(["main"]);
-  });
-
-  it("keeps the upstream git reported on the commit it points at", () => {
-    const entry = commit({ refs: ["main", "origin/main"], head: true });
-    expect(commitChips(entry)).toEqual(["main", "origin/main"]);
+describe("commit refs", () => {
+  it("keeps every decoration for the hover card", () => {
+    const entry = commit({ refs: ["a", "b", "c", "d", "e"] });
+    expect(commitRefs(entry)).toEqual(["a", "b", "c", "d", "e"]);
   });
 
   it("drops a symbolic remote HEAD", () => {
     const entry = commit({ refs: ["main", "origin/main", "origin/HEAD"] });
-    expect(commitChips(entry)).toEqual(["main", "origin/main"]);
+    expect(commitRefs(entry)).toEqual(["main", "origin/main"]);
   });
 
-  it("caps the chips", () => {
-    const entry = commit({ refs: ["a", "b", "c", "d", "e"] });
-    expect(commitChips(entry)).toHaveLength(4);
+  it("does not invent an upstream for an unpushed head", () => {
+    // The reported bug: `%D` said `HEAD -> main` (ahead 1), but the rail showed
+    // `origin/main` on a commit the upstream does not point at.
+    const entry = commit({ refs: ["main"], head: true });
+    expect(commitRefs(entry)).toEqual(["main"]);
+    expect(commitRowChips(entry, "main", ["origin"])).toEqual({
+      chips: [{ key: "local:main", label: "main", remotes: [], local: true, tone: "accent" }],
+      hidden: 0,
+    });
+  });
+});
+
+describe("row chips", () => {
+  it("folds a local branch and its remote-tracking ref into one chip", () => {
+    const entry = commit({ refs: ["main", "origin/main"], head: true });
+    expect(commitRowChips(entry, "main", ["origin"])).toEqual({
+      chips: [
+        {
+          key: "local:main",
+          label: "main",
+          remotes: ["origin/main"],
+          local: true,
+          tone: "accent",
+        },
+      ],
+      hidden: 0,
+    });
+  });
+
+  it("shows a remote-only ref as an info chip", () => {
+    expect(commitRowChips(commit({ refs: ["origin/main"] }), "main", ["origin"])).toEqual({
+      chips: [
+        {
+          key: "remote:main",
+          label: "main",
+          remotes: ["origin/main"],
+          local: false,
+          tone: "info",
+        },
+      ],
+      hidden: 0,
+    });
+  });
+
+  it("puts the current branch first and keeps tags neutral", () => {
+    const entry = commit({ refs: ["v1.0", "main", "origin/main"] });
+    expect(commitRowChips(entry, "main", ["origin"])).toEqual({
+      chips: [
+        {
+          key: "local:main",
+          label: "main",
+          remotes: ["origin/main"],
+          local: true,
+          tone: "accent",
+        },
+        { key: "local:v1.0", label: "v1.0", remotes: [], local: true, tone: "neutral" },
+      ],
+      hidden: 0,
+    });
+  });
+
+  it("folds another local branch with its remote", () => {
+    expect(commitRowChips(commit({ refs: ["dev", "origin/dev"] }), "main", ["origin"])).toEqual({
+      chips: [
+        {
+          key: "local:dev",
+          label: "dev",
+          remotes: ["origin/dev"],
+          local: true,
+          tone: "neutral",
+        },
+      ],
+      hidden: 0,
+    });
+  });
+
+  it("folds several remotes with the same leaf", () => {
+    const entry = commit({ refs: ["main", "origin/main", "upstream/main"] });
+    expect(commitRowChips(entry, "main", ["origin", "upstream"])).toEqual({
+      chips: [
+        {
+          key: "local:main",
+          label: "main",
+          remotes: ["origin/main", "upstream/main"],
+          local: true,
+          tone: "accent",
+        },
+      ],
+      hidden: 0,
+    });
+  });
+
+  it("does not treat a tag with a slash as a remote ref", () => {
+    expect(commitRowChips(commit({ refs: ["release/v1"] }), "main", ["origin"])).toEqual({
+      chips: [
+        {
+          key: "local:release/v1",
+          label: "release/v1",
+          remotes: [],
+          local: true,
+          tone: "neutral",
+        },
+      ],
+      hidden: 0,
+    });
+  });
+
+  it("caps the row and counts the rest", () => {
+    const entry = commit({ refs: ["main", "v1.0", "v2.0", "feat/x"] });
+    const { chips, hidden } = commitRowChips(entry, "main", ["origin"]);
+    expect(chips).toHaveLength(COMMIT_ROW_CHIP_LIMIT);
+    expect(hidden).toBe(2);
+  });
+});
+
+describe("the full commit message", () => {
+  it("joins the subject and body with a blank line", () => {
+    expect(fullCommitMessage(commit({ subject: "feat: x", body: "Body" }))).toBe("feat: x\n\nBody");
+  });
+
+  it("falls back to whichever part exists", () => {
+    expect(fullCommitMessage(commit({ subject: "feat: x", body: "" }))).toBe("feat: x");
+    expect(fullCommitMessage(commit({ subject: "", body: "Body" }))).toBe("Body");
+    expect(fullCommitMessage(commit({ subject: "", body: "" }))).toBe("");
   });
 });
 
@@ -161,60 +289,152 @@ describe("chip tones", () => {
 });
 
 describe("the log list", () => {
-  it("shows the subject, sha, author and relative time", () => {
+  it("draws one compact line with the subject and sr-only metadata", () => {
     render(<HistorySection projectPath={PROJECT} />);
     const row = screen.getByTestId("commit-aaaaaaa");
-    expect(row).toHaveTextContent("feat: add the rail");
-    expect(row).toHaveTextContent("aaaaaaa");
-    expect(row).toHaveTextContent("Ada");
-    expect(row).toHaveTextContent(/ago|just now/);
+
+    expect(row.className).toContain("h-6");
+    expect(row.className).toContain("items-center");
+    expect(row.className).not.toContain("flex-col");
+    expect(row).not.toHaveAttribute("title");
+    expect(screen.getByTestId("commit-subject")).toHaveTextContent("feat: add the rail");
+
+    // The hash, author and exact time are still in the accessible name.
+    expect(row).toHaveTextContent("Commit aaaaaaa by Ada");
+    expect(row).not.toHaveTextContent("5m ago");
   });
 
-  it("shows branch chips", () => {
+  it("folds the local branch and its origin into one cloud chip", () => {
     seed({ entries: [commit({ refs: ["main", "origin/main", "v1.0"], head: true })] });
     render(<HistorySection projectPath={PROJECT} />);
     const row = screen.getByTestId("commit-aaaaaaa");
-    expect(row).toHaveTextContent("main");
-    expect(row).toHaveTextContent("origin/main");
 
-    // The upstream is easy to spot; the current branch and tags keep their own tones.
-    expect(screen.getByText("main")).toHaveClass("text-accent");
-    expect(screen.getByText("origin/main")).toHaveClass("text-info");
-    expect(screen.getByText("v1.0")).toHaveClass("text-ink-muted");
+    const branch = screen.getByTestId("commit-ref-main");
+    expect(branch).toHaveTextContent("main");
+    expect(branch).toHaveClass("text-accent");
+    // The cloud is its own colour, even inside an accent chip.
+    expect(screen.getByTestId("commit-ref-cloud-main")).toHaveClass("text-info");
+    // The raw `origin/main` label became a cloud; it lives in the card now.
+    expect(within(row).queryByText("origin/main")).not.toBeInTheDocument();
+    expect(screen.getByTestId("commit-ref-v1.0")).toHaveClass("text-ink-muted");
+  });
+
+  it("shows a remote-only ref as a leading cloud in the info tone", () => {
+    seed({ entries: [commit({ refs: ["origin/main"] })] });
+    render(<HistorySection projectPath={PROJECT} />);
+
+    const chip = screen.getByTestId("commit-ref-main");
+    expect(chip).toHaveClass("text-info");
+    expect(screen.getByTestId("commit-ref-cloud-main")).toHaveClass("text-info");
   });
 
   it("does not label an unpushed tip with the upstream", () => {
     seed({ entries: [commit({ refs: ["main"], head: true })] });
     render(<HistorySection projectPath={PROJECT} />);
     const row = screen.getByTestId("commit-aaaaaaa");
-    expect(row).toHaveTextContent("main");
-    expect(row).not.toHaveTextContent("origin/main");
+
+    expect(screen.getByTestId("commit-ref-main")).toHaveTextContent("main");
+    expect(screen.queryByTestId("commit-ref-cloud-main")).not.toBeInTheDocument();
+    expect(within(row).queryByText("origin/main")).not.toBeInTheDocument();
   });
 
-  it("puts the exact time in the row's title", () => {
+  it("keeps the full metadata in the hover card", async () => {
+    const sha = "b".repeat(40);
+    seed({
+      entries: [
+        commit({
+          sha,
+          shortSha: "bbbbbbb",
+          body: "Body line one\nBody line two",
+          refs: ["main", "origin/main", "v1.0"],
+        }),
+      ],
+    });
+    render(<HistorySection projectPath={PROJECT} />);
+
+    await userEvent.hover(screen.getByTestId("commit-bbbbbbb"));
+    const card = await screen.findByTestId("commit-hover-bbbbbbb", {}, { timeout: 3_000 });
+
+    const message = within(card).getByTestId("commit-message-bbbbbbb");
+    expect(message).toHaveTextContent("feat: add the rail");
+    expect(message).toHaveTextContent("Body line one");
+    expect(within(card).getByText("Ada")).toBeInTheDocument();
+    expect(within(card).getByTestId("commit-hover-sha-bbbbbbb")).toHaveTextContent(sha);
+    expect(within(card).getByTestId("commit-hover-ref-origin/main")).toHaveClass("text-info");
+  });
+
+  it("opens the card on keyboard focus and closes it on Escape", async () => {
+    render(<HistorySection projectPath={PROJECT} />);
+    screen.getByTestId("commit-aaaaaaa").focus();
+
+    expect(
+      await screen.findByTestId("commit-hover-aaaaaaa", {}, { timeout: 3_000 }),
+    ).toBeInTheDocument();
+
+    await userEvent.keyboard("{Escape}");
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("commit-hover-aaaaaaa")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("copies the hash from the card", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    render(<HistorySection projectPath={PROJECT} />);
+
+    await userEvent.hover(screen.getByTestId("commit-aaaaaaa"));
+    const card = await screen.findByTestId("commit-hover-aaaaaaa", {}, { timeout: 3_000 });
+    await userEvent.click(within(card).getByTestId("commit-copy-hash-aaaaaaa"));
+
+    expect(writeText).toHaveBeenCalledWith("a".repeat(40));
+  });
+
+  it("caps the row at two chips and counts the rest", async () => {
+    seed({ entries: [commit({ refs: ["main", "v1.0", "v2.0", "feat/x", "v3.0"] })] });
     render(<HistorySection projectPath={PROJECT} />);
     const row = screen.getByTestId("commit-aaaaaaa");
-    expect(row).toHaveAttribute("title", new Date(NOW - 5 * 60_000).toLocaleString());
+
+    expect(within(row).getByTestId("commit-ref-main")).toBeInTheDocument();
+    expect(within(row).getByTestId("commit-ref-v1.0")).toBeInTheDocument();
+    expect(within(row).queryByTestId("commit-ref-v2.0")).not.toBeInTheDocument();
+    expect(within(row).getByTestId("commit-ref-overflow")).toHaveTextContent("+3");
+
+    await userEvent.hover(row);
+    const card = await screen.findByTestId("commit-hover-aaaaaaa", {}, { timeout: 3_000 });
+    expect(within(card).getByTestId("commit-hover-ref-v3.0")).toBeInTheDocument();
   });
 
-  it("opens the commit diff on click", async () => {
+  it("opens the commit diff on click and closes the card", async () => {
     const sha = "b".repeat(40);
     seed({ entries: [commit({ sha, shortSha: "bbbbbbb" })] });
     render(<HistorySection projectPath={PROJECT} />);
+    const row = screen.getByTestId("commit-bbbbbbb");
 
-    await userEvent.click(screen.getByTestId("commit-bbbbbbb"));
+    await userEvent.hover(row);
+    expect(
+      await screen.findByTestId("commit-hover-bbbbbbb", {}, { timeout: 3_000 }),
+    ).toBeInTheDocument();
+
+    await userEvent.click(row);
 
     await waitFor(() =>
       expect(handles.gitCalls.find((call) => call.kind === "diff")?.payload).toEqual({
         commit: sha,
       }),
     );
+    await waitFor(() =>
+      expect(screen.queryByTestId("commit-hover-bbbbbbb")).not.toBeInTheDocument(),
+    );
   });
 
   it("falls back to a placeholder for an empty subject", () => {
     seed({ entries: [commit({ subject: "" })] });
     render(<HistorySection projectPath={PROJECT} />);
-    expect(screen.getByTestId("commit-aaaaaaa")).toHaveTextContent("(no message)");
+    expect(screen.getByTestId("commit-subject")).toHaveTextContent("(no message)");
   });
 });
 

@@ -673,12 +673,18 @@ describe("safety and ordering", () => {
 });
 
 describe("readLog", () => {
-  it("parses records, decorations and HEAD", async () => {
-    const record = (sha: string, subject: string, refs: string, seconds: string) =>
-      `${sha}\u0000${sha.slice(0, 7)}\u0000${subject}\u0000Ada\u0000${seconds}\u0000${refs}\u001e`;
+  it("parses records, decorations, the body and HEAD", async () => {
+    const record = (sha: string, subject: string, body: string, refs: string, seconds: string) =>
+      `${sha}\u0000${sha.slice(0, 7)}\u0000${subject}\u0000Ada\u0000${seconds}\u0000${refs}\u0000${body}\u001e`;
     const stdout = [
-      record("a".repeat(40), "feat: newest", "HEAD -> main, origin/main, tag: v1", "1700000000"),
-      record("b".repeat(40), "fix: older", "", "1600000000"),
+      record(
+        "a".repeat(40),
+        "feat: newest",
+        "Body line one\nBody line two\n",
+        "HEAD -> main, origin/main, tag: v1",
+        "1700000000",
+      ),
+      record("b".repeat(40), "fix: older", "", "", "1600000000"),
     ].join("\n");
     const runner = createFakeGitRunner([{ args: ["log"], stdout }]);
     const entries = await readLog(runner, ROOT, { limit: 30, skip: 0 });
@@ -687,6 +693,7 @@ describe("readLog", () => {
       sha: "a".repeat(40),
       shortSha: "aaaaaaa",
       subject: "feat: newest",
+      body: "Body line one\nBody line two",
       author: "Ada",
       at: 1_700_000_000_000,
       refs: ["main", "origin/main", "v1"],
@@ -694,6 +701,7 @@ describe("readLog", () => {
     });
     expect(entries[1]?.head).toBe(false);
     expect(entries[1]?.refs).toEqual([]);
+    expect(entries[1]?.body).toBe("");
   });
 
   it("passes the page window and the path to git", async () => {

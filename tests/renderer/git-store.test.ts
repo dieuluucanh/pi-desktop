@@ -436,6 +436,7 @@ describe("commit log", () => {
     sha: sha.repeat(40).slice(0, 40),
     shortSha: sha.repeat(7).slice(0, 7),
     subject: `commit ${sha}`,
+    body: "",
     author: "Ada",
     at: 1_700_000_000_000,
     refs: [],

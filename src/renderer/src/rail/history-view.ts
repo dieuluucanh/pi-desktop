@@ -12,7 +12,7 @@ import type { GitCommitEntry, GitRepoInfo } from "../../../shared/git";
 /**
  * A compact relative time: `just now`, `5m ago`, `3h ago`, `2d ago`, `3w ago`,
  * `4mo ago`, `2y ago`. Deliberately terse — the rail is 320 px wide and the
- * exact timestamp is in the row's `title`.
+ * exact timestamp is in the row's hover card.
  */
 export function relativeTime(at: number, now: number): string {
   if (!Number.isFinite(at) || at <= 0) return "unknown";
@@ -32,13 +32,26 @@ export function relativeTime(at: number, now: number): string {
 }
 
 /**
- * The chips a commit row shows: the branch/tag names `%D` reported. The upstream
- * is already among them on the commit it points at — inventing it for HEAD would
- * label an unpushed commit as `origin/main`. `origin/HEAD` is a symbolic alias,
- * not a branch the user acts on, so it is dropped.
+ * Every branch/tag name `%D` reported, minus symbolic remote-HEAD aliases
+ * (`origin/HEAD`). Uncapped: the hover card lists them all (`parseRefs` already
+ * bounds `%D` at 12).
  */
-export function commitChips(entry: GitCommitEntry): string[] {
-  return entry.refs.filter((ref) => !/\/HEAD$/.test(ref)).slice(0, 4);
+export function commitRefs(entry: GitCommitEntry): string[] {
+  return entry.refs.filter((ref) => !/\/HEAD$/.test(ref));
+}
+
+/** A ref is remote only when a configured remote names it or prefixes it. */
+function isRemoteRef(ref: string, remotes: readonly string[]): boolean {
+  return remoteLeaf(ref, remotes) !== null;
+}
+
+/** The branch leaf after a remote name (`origin/main` → `main`), or null. */
+function remoteLeaf(ref: string, remotes: readonly string[]): string | null {
+  for (const remote of remotes) {
+    if (ref === remote) return ref;
+    if (ref.startsWith(`${remote}/`)) return ref.slice(remote.length + 1);
+  }
+  return null;
 }
 
 /** The tones a commit chip can carry, matching the Badge primitive. */
@@ -59,8 +72,100 @@ export function commitChipTone(
   remotes: readonly string[],
 ): CommitChipTone {
   if (branch && chip === branch) return "accent";
-  if (remotes.some((remote) => chip === remote || chip.startsWith(`${remote}/`))) return "info";
+  if (isRemoteRef(chip, remotes)) return "info";
   return "neutral";
+}
+
+/**
+ * A one-line row chip after folding a local branch and its remote-tracking refs.
+ * `main` + `origin/main` is one `local:main` chip carrying the remote; a
+ * remote-only ref is a `remote:main` chip. The card still shows the raw refs.
+ */
+export interface CommitRowChip {
+  /** React key: `local:main` / `remote:main`. */
+  key: string;
+  /** The branch leaf or tag name shown in the chip. */
+  label: string;
+  /** Remote-tracking refs folded into this chip (`origin/main`, `upstream/main`). */
+  remotes: string[];
+  /** True when a local ref with this label is decorated on the commit. */
+  local: boolean;
+  tone: CommitChipTone;
+}
+
+/** How many chips the one-line row shows before a `+N` marker. */
+export const COMMIT_ROW_CHIP_LIMIT = 2;
+
+/**
+ * Folds a commit's decorations into the chips the one-line row can afford. The
+ * current branch leads; other refs keep git's order; `hidden` counts the chips
+ * the card still carries in full.
+ */
+export function commitRowChips(
+  entry: GitCommitEntry,
+  branch: string | null | undefined,
+  remotes: readonly string[],
+): { chips: CommitRowChip[]; hidden: number } {
+  const refs = [...new Set(commitRefs(entry))];
+  const remotesByLeaf = new Map<string, string[]>();
+  const localLabels = new Set<string>();
+
+  for (const ref of refs) {
+    const leaf = remoteLeaf(ref, remotes);
+    if (leaf === null) {
+      localLabels.add(ref);
+      continue;
+    }
+    const group = remotesByLeaf.get(leaf);
+    if (group) group.push(ref);
+    else remotesByLeaf.set(leaf, [ref]);
+  }
+
+  const chips: CommitRowChip[] = [];
+  const emittedRemotes = new Set<string>();
+  for (const ref of refs) {
+    const leaf = remoteLeaf(ref, remotes);
+    if (leaf === null) {
+      chips.push({
+        key: `local:${ref}`,
+        label: ref,
+        remotes: remotesByLeaf.get(ref) ?? [],
+        local: true,
+        tone: branch && ref === branch ? "accent" : "neutral",
+      });
+      continue;
+    }
+    // A local ref with the same leaf already carries this remote group.
+    if (localLabels.has(leaf) || emittedRemotes.has(leaf)) continue;
+    emittedRemotes.add(leaf);
+    chips.push({
+      key: `remote:${leaf}`,
+      label: leaf,
+      remotes: remotesByLeaf.get(leaf) ?? [ref],
+      local: false,
+      tone: "info",
+    });
+  }
+
+  const current = chips.findIndex((chip) => chip.local && chip.label === branch);
+  if (current > 0) {
+    const [chip] = chips.splice(current, 1);
+    if (chip) chips.unshift(chip);
+  }
+
+  const hidden = Math.max(0, chips.length - COMMIT_ROW_CHIP_LIMIT);
+  return { chips: chips.slice(0, COMMIT_ROW_CHIP_LIMIT), hidden };
+}
+
+/**
+ * The full message the card selects and copies: subject, a blank line, then the
+ * body when there is one. Both parts are trimmed; `""` when neither exists.
+ */
+export function fullCommitMessage(entry: GitCommitEntry): string {
+  const subject = entry.subject.trim();
+  const body = entry.body.trim();
+  if (subject.length === 0) return body;
+  return body.length === 0 ? subject : `${subject}\n\n${body}`;
 }
 
 /**
@@ -76,7 +181,7 @@ export function historyKey(repo: GitRepoInfo | undefined): string | null {
   );
 }
 
-/** The exact time for a row's `title`, in the user's locale. */
+/** The exact time for the hover card, in the user's locale. */
 export function absoluteTime(at: number): string {
   if (!Number.isFinite(at) || at <= 0) return "unknown";
   return new Date(at).toLocaleString();

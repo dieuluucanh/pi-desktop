@@ -116,6 +116,8 @@ export interface GitCommitEntry {
   shortSha: string;
   /** First line of the message. */
   subject: string;
+  /** Message body after the subject (`%b`), trailing whitespace trimmed; empty when none. */
+  body: string;
   /** Author name (never the email: the rail shows the account, not a credential). */
   author: string;
   /** Author time, epoch milliseconds. */

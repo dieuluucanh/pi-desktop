@@ -693,8 +693,10 @@ export async function readLog(
   options: { limit: number; skip: number; path?: string },
 ): Promise<GitCommitEntry[]> {
   // `%x00` between fields, `%x1e` between records: neither can occur in a
-  // subject, and both survive a subject that contains a pipe or a tab.
-  const format = "%H%x00%h%x00%s%x00%an%x00%ct%x00%D";
+  // subject or a body, and both survive a subject that contains a pipe or a tab.
+  // `%b` is last so an unexpected NUL in a body can only truncate that body, not
+  // shift the fields before it.
+  const format = "%H%x00%h%x00%s%x00%an%x00%ct%x00%D%x00%b";
   const args = [
     "log",
     `--max-count=${options.limit}`,
@@ -710,7 +712,7 @@ export async function readLog(
   for (const record of result.stdout.split("\u001e")) {
     const trimmed = record.replace(/^\r?\n/, "");
     if (trimmed.length === 0) continue;
-    const [sha = "", shortSha = "", subject = "", author = "", seconds = "", refs = ""] =
+    const [sha = "", shortSha = "", subject = "", author = "", seconds = "", refs = "", body = ""] =
       trimmed.split("\u0000");
     if (!/^[0-9a-f]{40}$/.test(sha)) continue;
     const at = Number.parseInt(seconds, 10);
@@ -718,6 +720,7 @@ export async function readLog(
       sha,
       shortSha,
       subject,
+      body: body.replace(/\s+$/, ""),
       author,
       at: Number.isFinite(at) ? at * 1000 : 0,
       refs: parseRefs(refs),
