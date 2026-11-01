@@ -20,7 +20,7 @@
  * block, a dirty-tree branch switch in this file, and Drop stash below.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle,
   ArrowDown,
@@ -39,6 +39,7 @@ import { Button } from "../ui/button";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { useAppStore } from "../state/app-store";
 import {
+  GIT_SYNC_SUCCESS_HIDE_MS,
   branchView,
   needsDirtyConfirmation,
   stashLabel,
@@ -306,6 +307,16 @@ export function GitSyncStatus({ projectPath }: GitPartProps) {
   const status = useAppStore((state) => state.gitSync[projectPath]);
   const clearGitSync = useAppStore((state) => state.clearGitSync);
   const runGitAction = useAppStore((state) => state.runGitAction);
+
+  // A successful network verb is a transient confirmation, not a state to keep.
+  // `status.at` anchors the four seconds to when the result was written, so a
+  // rail reopened later does not restart the window. Errors stay until dismissed.
+  useEffect(() => {
+    if (!status || status.phase !== "ok") return;
+    const remaining = Math.max(0, GIT_SYNC_SUCCESS_HIDE_MS - (Date.now() - status.at));
+    const timer = setTimeout(() => clearGitSync(projectPath), remaining);
+    return () => clearTimeout(timer);
+  }, [status, projectPath, clearGitSync]);
 
   if (!status) return null;
 

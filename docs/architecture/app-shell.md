@@ -71,8 +71,8 @@ a per-origin zoom map.
 Pi theme still supplies accent and status hues, but the Desktop owns the neutral
 surfaces and separators: `APP_CHROME_SWATCHES` (in `src/shared/themes.ts`) is
 mirrored by `src/renderer/src/styles/tokens.css`, and `applyChromeTheme` maps
-all 13 chrome tokens (`canvas`, `surface`, `raised`, `sunken`, `line`,
-`line-strong`, `ink`, `ink-muted`, `ink-faint`, accent, ok, warn, danger). Dark
+all 14 chrome tokens (`canvas`, `surface`, `raised`, `sunken`, `line`,
+`line-strong`, `ink`, `ink-muted`, `ink-faint`, accent, info, ok, warn, danger). Dark
 is deliberately high-contrast; tests guard the separator contrast and the
 `tokens.css` values. Per-theme overrides live in `prefs.themeColors` and are
 edited in Skills → Themes; they never write a Pi theme file.
@@ -123,6 +123,15 @@ the commit message. Past the cap the box scrolls. The session prompt no longer
 has a manual `resize-y` handle — the next keystroke would overwrite the drag —
 while the commit box keeps `resize-none`. The two-row floor comes from `rows=2`
 and the CSS minimum; no height is persisted.
+
+**The thinking picker shows the whole scale (2026-11-01).**
+`thinkingLevelOptions()` in `src/shared/thinking.ts` unions the canonical seven
+levels with any custom level the host reported, keeps canonical order and marks
+support. `ThinkingPicker` renders every row and disables the ones the current
+model does not expose, with a “not supported” marker and a tooltip naming the
+model; the enabled set follows the selected model. The model picker's per-model
+preview and the `/thinking` completion remain supported-only, because they are
+capability hints rather than the selector.
 
 **The composer completes three levels (2026-10-24).** `/` names a command;
 after the first space the same provider asks for the command's arguments

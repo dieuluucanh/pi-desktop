@@ -128,14 +128,14 @@ describe("sanitizePrefs", () => {
     expect(sanitizePrefs({}).themeColors).toEqual({});
     const result = sanitizePrefs({
       themeColors: {
-        dark: { line: "#AABBCC", accent: "#123456", nope: "#ffffff", bad: "red" },
+        dark: { line: "#AABBCC", accent: "#123456", info: "#ABCDEF", nope: "#ffffff", bad: "red" },
         light: { surface: "#fff" },
         "": { line: "#000000" },
         empty: { line: "bogus" },
       },
     });
     expect(result.themeColors).toEqual({
-      dark: { line: "#aabbcc", accent: "#123456" },
+      dark: { line: "#aabbcc", accent: "#123456", info: "#abcdef" },
     });
   });
 

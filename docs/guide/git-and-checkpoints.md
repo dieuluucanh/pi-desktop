@@ -36,10 +36,11 @@ The top block, one row at a time:
 - **A sync in progress, and its outcome** — the running verb shows a spinner and
   all three verbs are disabled while it runs. A status line directly under the
   branch row says _Pushing to origin/main…_, then _Pushed._ or the failure with
-  its fix; a failed line offers _Retry_ and every line can be dismissed. The
-  same outcome arrives as a notification, so it is visible even if the panel is
-  scrolled or another menu is open. A network call that runs past its timeout
-  says so ("git timed out after 120 s") rather than reporting an exit code.
+  its fix. A successful line hides itself after four seconds; a failed line stays
+  until you dismiss it and offers _Retry_. The same outcome arrives as a
+  notification, so it is visible even if the panel is scrolled or another menu
+  is open. A network call that runs past its timeout says so ("git timed out
+  after 120 s") rather than reporting an exit code.
 - **The commit box** — a message that grows up to ten rem and then scrolls,
   <kbd>Ctrl/Cmd</kbd>+<kbd>Enter</kbd> to commit, the counter and the identity it
   will use (hover it for the config file it came from), and a <kbd>⋯</kbd> menu holding

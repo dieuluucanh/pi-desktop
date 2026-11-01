@@ -167,10 +167,27 @@ describe("SkillsView", () => {
     expect(document.documentElement.style.getPropertyValue("--color-line")).toBe("#4e5b79");
   });
 
+  it("edits and resets the info colour", async () => {
+    render(<SkillsView />);
+
+    const info = await screen.findByTestId("theme-color-info");
+    expect(info).toHaveValue("#7dcfff");
+    fireEvent.change(info, { target: { value: "#123456" } });
+
+    await waitFor(() =>
+      expect(useAppStore.getState().prefs.themeColors.dark?.info).toBe("#123456"),
+    );
+    expect(document.documentElement.style.getPropertyValue("--color-info")).toBe("#123456");
+
+    await userEvent.click(screen.getByTestId("theme-colors-reset"));
+    await waitFor(() => expect(useAppStore.getState().prefs.themeColors.dark).toBeUndefined());
+    expect(document.documentElement.style.getPropertyValue("--color-info")).toBe("#7dcfff");
+  });
+
   it("shows colour controls only for the active theme", () => {
     render(<SkillsView />);
     // The fixture's dark card is active; light is an inactive preview.
-    expect(document.querySelectorAll("[data-testid^='theme-color-']")).toHaveLength(13);
+    expect(document.querySelectorAll("[data-testid^='theme-color-']")).toHaveLength(14);
   });
 
   it("toggles follow-system appearance", async () => {

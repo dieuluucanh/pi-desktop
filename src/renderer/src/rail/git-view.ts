@@ -98,6 +98,12 @@ export function syncAvailability(repo: GitRepoInfo | undefined): SyncAvailabilit
   };
 }
 
+/**
+ * How long a successful fetch/pull/push line stays before it hides itself.
+ * Errors never auto-dismiss; they keep their Retry and X controls.
+ */
+export const GIT_SYNC_SUCCESS_HIDE_MS = 4_000;
+
 /** One stash's line: its message, or git's default text. */
 export function stashLabel(stash: GitStashEntry): string {
   const subject = stash.subject.replace(/^WIP on /, "WIP on ").trim();

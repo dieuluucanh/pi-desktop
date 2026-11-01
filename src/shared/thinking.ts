@@ -58,6 +58,27 @@ export function thinkingFillLabel(level: string | null | undefined): string {
   return THINKING_FILL_LABELS[thinkingFillStep(level)];
 }
 
+/** One row of the thinking picker: a level and whether this model exposes it. */
+export interface ThinkingLevelOption {
+  level: string;
+  supported: boolean;
+}
+
+/**
+ * The picker's full scale: every canonical level plus any custom level the host
+ * reported, in canonical order and marked with whether the selected model
+ * supports it.
+ *
+ * Unsupported levels stay in the list so the user can see the whole vocabulary;
+ * the picker renders them disabled. `levels` is the host's per-model list, so
+ * the enabled set follows the selected model.
+ */
+export function thinkingLevelOptions(supportedLevels: readonly string[]): ThinkingLevelOption[] {
+  const supported = new Set(supportedLevels);
+  const levels = [...new Set([...THINKING_LEVELS, ...supportedLevels])];
+  return orderThinkingLevels(levels).map((level) => ({ level, supported: supported.has(level) }));
+}
+
 /** Canonical order; unknown levels keep their input order after the known ones. */
 export function orderThinkingLevels(levels: readonly string[]): string[] {
   const rank = (level: string): number => {

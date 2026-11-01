@@ -27,6 +27,7 @@ const FIELDS: ReadonlyArray<{ key: ThemeColorKey; label: string }> = [
   { key: "inkMuted", label: "Muted text" },
   { key: "inkFaint", label: "Faint text" },
   { key: "accent", label: "Accent" },
+  { key: "info", label: "Info" },
   { key: "ok", label: "Success" },
   { key: "warn", label: "Warning" },
   { key: "danger", label: "Error" },

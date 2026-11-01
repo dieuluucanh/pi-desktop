@@ -244,7 +244,10 @@ the IPC call, dedupes a second click on the same folder through a module-level
 in-flight map (the engine already serialises, but two clicks used to mean two
 pushes), and writes the terminal state plus a `sonner` toast. The rail renders
 that state in the sync row (`GitSyncStatus`), so the outcome is at the click
-site; the Changes block's banner remains the panel-wide record. A timed-out child
+site; the Changes block's banner remains the panel-wide record. An `ok` line is
+transient: `GitSyncStatus` hides it after `GIT_SYNC_SUCCESS_HIDE_MS` (4 s),
+measured from `GitSyncState.at`, so a rail reopened later does not restart the
+window. An `error` line stays until dismissed or retried. A timed-out child
 is classified as `timeout` (with the duration in the message) instead of
 `unknown`/"git exited with code 1": `failed(result: GitResult)` is the one
 constructor, so `timedOut` cannot be dropped by a call site again. When a

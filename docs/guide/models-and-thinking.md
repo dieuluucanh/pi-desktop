@@ -73,10 +73,13 @@ remains the only persisted scope state.
 ## Thinking level
 
 `/thinking`, the composer's brain icon, or `Ctrl/Cmd+Alt+T` cycles the level. The
-list is clamped to `getAvailableThinkingLevels()` for the current model, so you
-can never select a level the model does not support; the picker names the model
-and sorts the levels canonically. A model without auth shows a single “off/low”
-set and a sign-in route.
+picker shows the full seven-level scale — `off`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, `max` — plus any custom level the host reports. Levels the
+selected model does not expose are shown disabled and marked “not supported”, so
+the whole vocabulary is visible without the app pretending an unsupported level
+will take effect; switching models updates the enabled set. The picker names the
+model and sorts the levels canonically. A model without auth shows a single
+“off/low” set and a sign-in route.
 
 The brain icon has four fill states plus an empty `off` outline:
 

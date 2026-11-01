@@ -140,6 +140,8 @@ describe("themeCssVariables", () => {
     expect(variables["--color-canvas"]).toBe(APP_CHROME_SWATCHES.dark.canvas);
     expect(variables["--color-line"]).toBe(APP_CHROME_SWATCHES.dark.line);
     expect(variables["--color-accent"]).toBe("#a798d7");
+    // `info` is app-owned (Pi themes have no info foreground) and must be applied.
+    expect(variables["--color-info"]).toBe(APP_CHROME_SWATCHES.dark.info);
     expect(THEME_CHROME_VARIABLES).toEqual(
       THEME_COLOR_KEYS.map((key) =>
         key === "lineStrong"
@@ -166,18 +168,27 @@ describe("themeCssVariables", () => {
         accent: "#ff0000",
       },
     };
-    const resolved = resolvedChromeSwatches(custom, { line: "#123456" });
+    const resolved = resolvedChromeSwatches(custom, { line: "#123456", info: "#654321" });
     expect(resolved.canvas).toBe("#111111");
     expect(resolved.surface).toBe("#222222");
     expect(resolved.ink).toBe("#eeeeee");
     expect(resolved.line).toBe("#123456");
     expect(resolved.lineStrong).toBe(APP_CHROME_SWATCHES.dark.lineStrong);
+    // A custom Pi theme still gets the app default unless the user overrides it.
+    expect(resolved.info).toBe("#654321");
   });
 
   it("guards the dark separator contrast", () => {
     const dark = APP_CHROME_SWATCHES.dark;
     expect(contrastRatio(dark.line, dark.surface)).toBeGreaterThanOrEqual(2.5);
     expect(contrastRatio(dark.lineStrong, dark.surface)).toBeGreaterThanOrEqual(3);
+  });
+
+  it("keeps the info colour readable in both variants", () => {
+    for (const variant of ["dark", "light"] as const) {
+      const palette = APP_CHROME_SWATCHES[variant];
+      expect(contrastRatio(palette.info, palette.surface)).toBeGreaterThanOrEqual(3);
+    }
   });
 });
 

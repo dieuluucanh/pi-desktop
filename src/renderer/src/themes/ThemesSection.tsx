@@ -196,7 +196,16 @@ export function ThemesSection() {
   );
 }
 
-const PREVIEW_KEYS = ["canvas", "surface", "line", "accent", "ink", "warn", "danger"] as const;
+const PREVIEW_KEYS = [
+  "canvas",
+  "surface",
+  "line",
+  "accent",
+  "info",
+  "ink",
+  "warn",
+  "danger",
+] as const;
 
 function Swatches({ swatches }: { swatches: Record<string, string> }) {
   const entries = PREVIEW_KEYS.flatMap((key) => {

@@ -1,12 +1,13 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   GitBranchRow,
   GitSyncNote,
   GitSyncStatus,
   StashList,
 } from "../../src/renderer/src/rail/GitSection";
+import { GIT_SYNC_SUCCESS_HIDE_MS } from "../../src/renderer/src/rail/git-view";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import {
   emptyGitSnapshot,
@@ -120,6 +121,10 @@ function actions() {
 
 beforeEach(() => {
   seed(snapshot());
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("branch state", () => {
@@ -269,6 +274,52 @@ describe("sync", () => {
     await userEvent.click(screen.getByRole("button", { name: "Push to origin/main" }));
     const line = await screen.findByTestId("git-sync-status");
     await userEvent.click(within(line).getByRole("button", { name: "Dismiss sync status" }));
+    expect(screen.queryByTestId("git-sync-status")).not.toBeInTheDocument();
+  });
+});
+
+describe("sync status lifetime", () => {
+  function seedStatus(phase: "ok" | "error", at = Date.now()): void {
+    seed(snapshot());
+    useAppStore.setState({
+      gitSync: {
+        [PROJECT]: {
+          action: { kind: "push" },
+          phase,
+          message: phase === "ok" ? "Pushed." : "Push failed.",
+          at,
+        },
+      },
+    });
+  }
+
+  it("hides a successful line after four seconds", () => {
+    vi.useFakeTimers();
+    seedStatus("ok");
+    renderGit();
+
+    expect(screen.getByTestId("git-sync-status")).toHaveTextContent("Pushed.");
+    act(() => vi.advanceTimersByTime(GIT_SYNC_SUCCESS_HIDE_MS - 1));
+    expect(screen.getByTestId("git-sync-status")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.queryByTestId("git-sync-status")).not.toBeInTheDocument();
+  });
+
+  it("keeps a failure until it is dismissed", () => {
+    vi.useFakeTimers();
+    seedStatus("error");
+    renderGit();
+
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(screen.getByTestId("git-sync-status")).toHaveTextContent("Push failed.");
+  });
+
+  it("does not restart the window for a stale success on remount", () => {
+    vi.useFakeTimers();
+    seedStatus("ok", Date.now() - GIT_SYNC_SUCCESS_HIDE_MS - 1);
+    renderGit();
+
+    act(() => vi.advanceTimersByTime(1));
     expect(screen.queryByTestId("git-sync-status")).not.toBeInTheDocument();
   });
 });

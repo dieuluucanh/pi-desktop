@@ -8,6 +8,7 @@ import {
   THINKING_LEVELS,
   thinkingFillLabel,
   thinkingFillStep,
+  thinkingLevelOptions,
   thinkingLevelTitle,
 } from "../../src/shared/thinking";
 
@@ -57,6 +58,40 @@ describe("thinking vocabulary", () => {
       "custom-b",
     ]);
     expect(orderThinkingLevels([])).toEqual([]);
+  });
+
+  it("returns the full scale with support flags per model", () => {
+    expect(thinkingLevelOptions([])).toEqual(
+      THINKING_LEVELS.map((level) => ({ level, supported: false })),
+    );
+
+    expect(thinkingLevelOptions(["off", "high"])).toEqual([
+      { level: "off", supported: true },
+      { level: "minimal", supported: false },
+      { level: "low", supported: false },
+      { level: "medium", supported: false },
+      { level: "high", supported: true },
+      { level: "xhigh", supported: false },
+      { level: "max", supported: false },
+    ]);
+
+    // The host order is irrelevant; canonical order wins.
+    expect(thinkingLevelOptions(["max", "low", "off"])).toEqual([
+      { level: "off", supported: true },
+      { level: "minimal", supported: false },
+      { level: "low", supported: true },
+      { level: "medium", supported: false },
+      { level: "high", supported: false },
+      { level: "xhigh", supported: false },
+      { level: "max", supported: true },
+    ]);
+  });
+
+  it("keeps a custom host level after the canonical scale, enabled", () => {
+    expect(thinkingLevelOptions(["off", "ultra", "off"]).slice(-2)).toEqual([
+      { level: "max", supported: false },
+      { level: "ultra", supported: true },
+    ]);
   });
 
   it("builds the composer tooltip with the exact level and model set", () => {

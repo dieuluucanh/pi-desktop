@@ -24,8 +24,8 @@ Themes are listed as built-in, user or project. Each row shows:
 - an **Import `.json`** action for a user/project theme file;
 - the row is a **radio** — clicking an inactive row applies that theme. The active
   row also shows the **chrome colour editor**: Canvas, Surface, Raised/Sunken,
-  Separator, Strong separator, Text/Muted/Faint, Accent, Success, Warning and
-  Error, each a native colour picker with its hex value.
+  Separator, Strong separator, Text/Muted/Faint, Accent, Info, Success, Warning
+  and Error, each a native colour picker with its hex value.
 
 The editor reuses the same palette as `src/renderer/src/styles/tokens.css`. Dark
 is a deliberately high-contrast palette: separators and muted text are lighter
