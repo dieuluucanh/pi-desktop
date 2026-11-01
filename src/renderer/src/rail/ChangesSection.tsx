@@ -57,7 +57,7 @@ function FileRow({
   projectPath: string;
   onDiscard: (file: GitFileEntry) => void;
 }) {
-  const performGitAction = useAppStore((state) => state.performGitAction);
+  const runGitAction = useAppStore((state) => state.runGitAction);
   const openGitDiff = useAppStore((state) => state.openGitDiff);
   const untracked = isUntracked(file);
   const renamed = renameLabel(file);
@@ -98,7 +98,7 @@ function FileRow({
           aria-label={staged ? `Unstage ${file.path}` : `Stage ${file.path}`}
           title={staged ? "Unstage" : "Stage"}
           onClick={() =>
-            void performGitAction(projectPath, {
+            void runGitAction(projectPath, {
               kind: staged ? "unstage" : "stage",
               paths: [file.path],
             })
@@ -214,7 +214,7 @@ export function ChangesSection({ projectPath }: ChangesSectionProps) {
   const snapshot = useAppStore((state) => state.git[projectPath]);
   const gitError = useAppStore((state) => state.gitErrors[projectPath] ?? null);
   const clearGitError = useAppStore((state) => state.clearGitError);
-  const performGitAction = useAppStore((state) => state.performGitAction);
+  const runGitAction = useAppStore((state) => state.runGitAction);
   const refreshGit = useAppStore((state) => state.refreshGit);
   // Collapse is persisted (`prefs.rail.collapsed`), so a folded group stays
   // folded across a relaunch — and Staged/Changes fold independently.
@@ -226,14 +226,14 @@ export function ChangesSection({ projectPath }: ChangesSectionProps) {
   const empty = emptyStateFor(snapshot, snapshot?.reason);
 
   const stageAll = (): void => {
-    void performGitAction(projectPath, {
+    void runGitAction(projectPath, {
       kind: "stage",
       paths: groups.changed.map((file) => file.path),
     });
   };
 
   const unstageAll = (): void => {
-    void performGitAction(projectPath, {
+    void runGitAction(projectPath, {
       kind: "unstage",
       paths: groups.staged.map((file) => file.path),
     });
@@ -243,7 +243,7 @@ export function ChangesSection({ projectPath }: ChangesSectionProps) {
     const file = discardTarget;
     setDiscardTarget(null);
     if (!file) return;
-    void performGitAction(projectPath, {
+    void runGitAction(projectPath, {
       kind: "discard",
       paths: [file.path],
       untracked: isUntracked(file),
@@ -301,7 +301,7 @@ export function ChangesSection({ projectPath }: ChangesSectionProps) {
                 size="sm"
                 variant="secondary"
                 className="mt-2"
-                onClick={() => void performGitAction(projectPath, { kind: "init" })}
+                onClick={() => void runGitAction(projectPath, { kind: "init" })}
               >
                 Initialize repository
               </Button>

@@ -60,6 +60,8 @@ is warmed in the background so the first session is fast.
 The composer is a plain text area with Pi’s autocomplete contract:
 
 - `Enter` sends, `Shift+Enter` inserts a newline; IME composition is respected.
+- The box grows with your text up to about nine lines, then scrolls; it has no
+  manual resize handle.
 - While the agent is streaming, Enter **steers** the current turn. `Ctrl+Q` /
   `Alt+Enter` queue a **follow-up** instead. Queued messages appear as pending
   rows above the composer labelled **Steering** / **Follow-up**; `Alt+Up`

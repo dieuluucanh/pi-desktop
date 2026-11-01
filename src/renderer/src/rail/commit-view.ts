@@ -41,34 +41,36 @@ export function commitReadiness(
   return { canCommit: true, reason: null };
 }
 
-/** The identity line, with the config level it came from. */
+/**
+ * The identity line, with the config level it came from.
+ *
+ * The level is a tooltip, not a badge: the row in a 200–320 px column has room
+ * for one line, and the source is only interesting while hovering it.
+ */
 export interface IdentitySummary {
   /** `Ada Lovelace <ada@example.com>` */
   label: string;
-  /** `this repo`, `global`, `system` or `unknown`. */
-  sourceLabel: string;
-  /** True when this repository's own config supplied it. */
-  local: boolean;
+  /** Where the identity was configured, for the row's `title`. */
+  sourceNote: string;
 }
 
 export function identitySummary(identity: GitIdentity): IdentitySummary {
   return {
     label: `${identity.name} <${identity.email}>`,
-    sourceLabel: identitySourceLabel(identity.source),
-    local: identity.source === "repo",
+    sourceNote: identitySourceNote(identity.source),
   };
 }
 
-export function identitySourceLabel(source: GitIdentity["source"]): string {
+export function identitySourceNote(source: GitIdentity["source"]): string {
   switch (source) {
     case "repo":
-      return "this repo";
+      return "identity set in this repository's git config";
     case "global":
-      return "global";
+      return "identity set in your global git config";
     case "system":
-      return "system";
+      return "identity set in the system git config";
     default:
-      return "unknown";
+      return "identity source unknown";
   }
 }
 

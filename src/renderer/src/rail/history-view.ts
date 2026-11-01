@@ -41,6 +41,28 @@ export function commitChips(entry: GitCommitEntry): string[] {
   return entry.refs.filter((ref) => !/\/HEAD$/.test(ref)).slice(0, 4);
 }
 
+/** The tones a commit chip can carry, matching the Badge primitive. */
+export type CommitChipTone = "accent" | "info" | "neutral";
+
+/**
+ * How a chip is coloured: the current branch keeps the accent, a
+ * remote-tracking ref (`origin/main`) gets the info tone, and anything else —
+ * a tag or another local branch — stays neutral.
+ *
+ * A chip is a remote ref only when it is one of the repository's remotes or
+ * starts with `<remote>/`. Splitting on the first slash would mislabel a tag
+ * such as `release/v1`, which is why the remote list is consulted instead.
+ */
+export function commitChipTone(
+  chip: string,
+  branch: string | null | undefined,
+  remotes: readonly string[],
+): CommitChipTone {
+  if (branch && chip === branch) return "accent";
+  if (remotes.some((remote) => chip === remote || chip.startsWith(`${remote}/`))) return "info";
+  return "neutral";
+}
+
 /**
  * The repo facts a History page depends on. A change in any of them can move a
  * decoration (`origin/main`), the branch tip or the paging offsets, so the page

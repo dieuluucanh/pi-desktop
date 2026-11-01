@@ -61,8 +61,6 @@ function seed(overrides: Partial<GitDiff> = {}, loading = false): void {
     prefs: { ...DEFAULT_PREFS, drafts: {} },
     gitDiff: { projectPath: PROJECT, request: { path: "src/a.ts" }, diff: diff(overrides) },
     gitDiffLoading: loading,
-    gitConsentGranted: true,
-    gitConsentPrompt: null,
     gitErrors: {},
   });
 }
@@ -204,16 +202,5 @@ describe("hunk staging", () => {
     render(<DiffDialog />);
     expect(screen.queryByRole("button", { name: /Stage hunk/i })).not.toBeInTheDocument();
     expect(screen.getByText("Commit")).toBeInTheDocument();
-  });
-
-  it("respects the write-consent gate", async () => {
-    seed();
-    useAppStore.setState({ gitConsentGranted: false });
-    render(<DiffDialog />);
-
-    await userEvent.click(screen.getByRole("button", { name: "Stage hunk 1 of src/a.ts" }));
-
-    expect(useAppStore.getState().gitConsentPrompt).not.toBeNull();
-    expect(handles.gitCalls.some((call) => call.kind === "action")).toBe(false);
   });
 });

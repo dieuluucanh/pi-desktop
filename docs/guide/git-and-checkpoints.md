@@ -40,12 +40,14 @@ The top block, one row at a time:
   same outcome arrives as a notification, so it is visible even if the panel is
   scrolled or another menu is open. A network call that runs past its timeout
   says so ("git timed out after 120 s") rather than reporting an exit code.
-- **The commit box** — a message, <kbd>Ctrl/Cmd</kbd>+<kbd>Enter</kbd> to commit,
-  the counter and the identity it will use, and a <kbd>⋯</kbd> menu holding
+- **The commit box** — a message that grows up to ten rem and then scrolls,
+  <kbd>Ctrl/Cmd</kbd>+<kbd>Enter</kbd> to commit, the counter and the identity it
+  will use (hover it for the config file it came from), and a <kbd>⋯</kbd> menu holding
   _Amend last commit_ (which prefills the previous message) plus _Change_ /
   _Set identity_.
 - **Stashes** — collapsed by default, with the count and _Stash changes_ still
-  visible in the header. Open it for _Restore_ and _Drop_.
+  visible in the header. Open it for _Restore_ and _Drop_; dropping asks first,
+  since the entry is deleted.
 
 _Staged Changes_, _Changes_ and _Stashes_ each fold away when you click their
 header, and the fold is remembered. _Stage all_ / _Unstage all_ are separate
@@ -88,15 +90,22 @@ Nothing fails silently.
   fetch, a push or a branch switch — so _Refresh_ is only for forcing a re-read.
   The branch and tag chips are git's own decorations: `origin/main` appears on a
   commit only when the upstream actually points at it, never on an unpushed tip.
+  Remote-tracking refs are highlighted in cyan, so the upstream stands out from
+  the accent-coloured current branch and the neutral tags.
 - **Stashes** (collapsed until you open it, or until you use _Stash changes_)
   lists what is parked, with _Restore_ and _Drop_.
   **Hunk staging.** The diff viewer renders each hunk with _Stage hunk_ (for a
   working file) or _Unstage hunk_ (for a staged one). A binary file shows one
   "binary file changed" row with _Reveal in file manager_.
 
-**Consent.** Mutating git commands are gated once per session: staging, committing,
-discarding, branching and stashing ask the first time and remember the answer.
-Network operations are always explicit named buttons and never run on a timer.
+**Writes run directly.** Like VS Code, the button you press is the intent:
+staging, unstaging, committing, stashing, creating or switching branches and
+staging a hunk all act immediately. Destructive actions keep their own
+confirmation instead — _Discard_ names the file (and moves an untracked file to
+the system trash), _Drop_ asks before deleting a stash entry, and switching
+branches with a dirty tree confirms first. Writing your git identity to
+`.git/config` still requires the form's own checkbox. Network operations remain
+explicit named buttons and never run on a timer.
 
 **Authentication is git's.** `GIT_TERMINAL_PROMPT=0` means a missing credential
 fails immediately with git's own message plus a hint, instead of a hidden prompt

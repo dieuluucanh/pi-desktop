@@ -97,8 +97,6 @@ beforeEach(() => {
     gitErrors: {},
     // These cases exercise the section's own behaviour; the consent gate has its
     // own test in `rail-git.test.tsx`.
-    gitConsentGranted: true,
-    gitConsentPrompt: null,
   });
 });
 

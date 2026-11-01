@@ -8,7 +8,6 @@ import {
   gitStatusTone,
   hasStagedChanges,
   isFullSha,
-  isMutatingGitAction,
   isNetworkGitAction,
   isSafeRepoPath,
   MAX_STATUS_PATHS,
@@ -22,7 +21,6 @@ import {
   sanitizeRemoteName,
   sanitizeStashIndex,
   GIT_ACTION_KINDS,
-  GIT_MUTATING_ACTIONS,
   GIT_NETWORK_ACTIONS,
 } from "../../src/shared/git";
 
@@ -421,20 +419,14 @@ describe("emptyGitSnapshot", () => {
 });
 
 describe("action classification", () => {
-  it("splits mutating, network and read-only actions", () => {
-    expect(isMutatingGitAction("commit")).toBe(true);
-    expect(isMutatingGitAction("stage")).toBe(true);
-    expect(isMutatingGitAction("pull")).toBe(false);
+  it("marks only the network verbs", () => {
     expect(isNetworkGitAction("pull")).toBe(true);
     expect(isNetworkGitAction("push")).toBe(true);
     expect(isNetworkGitAction("fetch")).toBe(true);
     expect(isNetworkGitAction("commit")).toBe(false);
-    // No action is both: the consent gate and the network gate never overlap.
-    for (const kind of GIT_MUTATING_ACTIONS) {
-      expect(GIT_NETWORK_ACTIONS.includes(kind), `${kind} cannot be mutating and network`).toBe(
-        false,
-      );
-    }
+    expect(isNetworkGitAction("stage")).toBe(false);
+    // The list is the one source for the sync UI and the lifecycle feedback.
+    expect([...GIT_NETWORK_ACTIONS].sort()).toEqual(["fetch", "pull", "push"]);
   });
 });
 

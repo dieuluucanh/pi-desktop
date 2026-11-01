@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Paperclip, Send, Square, X } from "lucide-react";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
+import { PROMPT_MAX_HEIGHT_PX, useAutoGrowTextarea } from "../ui/auto-grow";
 import { fileToAttachment, isImageFile, type ImageAttachment } from "./image-attachment";
 import { lostPasteIds, shouldCollapsePaste } from "./paste-markers";
 import { useAppStore } from "../state/app-store";
@@ -240,6 +241,9 @@ export function Composer({
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // The prompt grows with its content up to a fixed cap, then scrolls. A manual
+  // resize would be overwritten by the next keystroke, so the handle is gone.
+  useAutoGrowTextarea(textareaRef, draft, PROMPT_MAX_HEIGHT_PX);
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -526,7 +530,7 @@ export function Composer({
               // ring is painted outside the border, so the mode colour stays
               // readable while the composer is focused. This replaces the global
               // `:focus-visible` outline, which used to cover it in blue.
-              "max-h-48 min-h-16 w-full resize-y rounded-sm border bg-sunken px-2 py-1.5 font-mono text-sm outline-none focus-visible:ring-2 focus-visible:ring-line-strong placeholder:text-ink-faint disabled:opacity-60",
+              "min-h-16 w-full overflow-y-auto rounded-sm border bg-sunken px-2 py-1.5 font-mono text-sm outline-none focus-visible:ring-2 focus-visible:ring-line-strong placeholder:text-ink-faint disabled:opacity-60",
               // The caret is the app's own accent colour, and a selection is
               // tinted with it, so the cursor is never lost in a dark buffer
               // (plan step 1).

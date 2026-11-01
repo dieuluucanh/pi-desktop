@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CommitBox } from "../../src/renderer/src/rail/CommitBox";
 import {
   commitReadiness,
-  identitySourceLabel,
+  identitySourceNote,
   identitySummary,
   messageCount,
   primaryActionLabel,
@@ -97,8 +97,6 @@ function seed(value: GitSnapshot, headMessage: string | null = null): void {
     git: { [PROJECT]: value },
     gitErrors: {},
     // Consent is granted so these cases test the box, not the gate.
-    gitConsentGranted: true,
-    gitConsentPrompt: null,
   });
 }
 
@@ -160,15 +158,14 @@ describe("readiness", () => {
 });
 
 describe("identity summary", () => {
-  it("labels the person and the config level", () => {
+  it("labels the person and keeps the config level for the tooltip", () => {
     expect(identitySummary({ name: "Ada", email: "ada@example.com", source: "repo" })).toEqual({
       label: "Ada <ada@example.com>",
-      sourceLabel: "this repo",
-      local: true,
+      sourceNote: "identity set in this repository's git config",
     });
-    expect(identitySourceLabel("global")).toBe("global");
-    expect(identitySourceLabel("system")).toBe("system");
-    expect(identitySourceLabel("unknown")).toBe("unknown");
+    expect(identitySourceNote("global")).toBe("identity set in your global git config");
+    expect(identitySourceNote("system")).toBe("identity set in the system git config");
+    expect(identitySourceNote("unknown")).toBe("identity source unknown");
   });
 });
 
@@ -241,8 +238,6 @@ describe("committing", () => {
       prefs: { ...DEFAULT_PREFS, drafts: {} },
       git: { [PROJECT]: STAGED },
       gitErrors: {},
-      gitConsentGranted: true,
-      gitConsentPrompt: null,
     });
     render(<CommitBox projectPath={PROJECT} />);
 
@@ -443,12 +438,17 @@ describe("the compact composer", () => {
     await userEvent.click(screen.getByRole("button", { name: "Commit options" }));
   }
 
-  it("is two rows tall and does not resize", () => {
+  it("starts at two rows, grows to its cap, and does not resize", () => {
     render(<CommitBox projectPath={PROJECT} />);
     const textarea = screen.getByLabelText("Commit message");
     expect(textarea).toHaveAttribute("rows", "2");
-    // A free-resizing box would push the button out of a 500 px block.
-    expect(textarea).toHaveClass("resize-none");
+    // A free-resizing box would fight the auto-grow and push the button away.
+    expect(textarea).toHaveClass("resize-none", "overflow-y-auto");
+    expect(textarea.style.maxHeight).toBe("160px");
+
+    Object.defineProperty(textarea, "scrollHeight", { value: 500, configurable: true });
+    fireEvent.change(textarea, { target: { value: "line\n".repeat(20) } });
+    expect(textarea.style.height).toBe("160px");
   });
 
   it("keeps the counter and the identity on one meta row", () => {
@@ -458,7 +458,13 @@ describe("the compact composer", () => {
     // Same parent: one row, not two stacked lines.
     expect(counter.parentElement).toBe(identity.parentElement);
     expect(identity).toHaveTextContent("Ada <ada@example.com>");
-    expect(identity).toHaveAttribute("title", "Ada <ada@example.com>");
+    expect(identity).toHaveAttribute(
+      "title",
+      "Ada <ada@example.com> — identity set in your global git config",
+    );
+    // The old constant source badge is gone; the level lives in the title.
+    expect(screen.queryByText("this repo")).toBeNull();
+    expect(screen.queryByText("global")).toBeNull();
   });
 
   it("truncates a long identity but keeps the whole text in the title", () => {
@@ -473,8 +479,11 @@ describe("the compact composer", () => {
     );
     render(<CommitBox projectPath={PROJECT} />);
     const identity = screen.getByTestId("commit-identity");
-    expect(identity).toHaveAttribute("title", "A Very Long Name <a.long@example.com>");
-    // The visible span is the truncating one, so the badge never gets pushed out.
+    expect(identity).toHaveAttribute(
+      "title",
+      "A Very Long Name <a.long@example.com> — identity set in this repository's git config",
+    );
+    // The visible span is the truncating one, so a long name cannot overflow.
     expect(identity.querySelector(".truncate")).not.toBeNull();
   });
 

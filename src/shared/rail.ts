@@ -112,7 +112,12 @@ export type RailCollapsedGroup = keyof RailCollapsedPrefs;
 /** Which boundary a block splitter moves. */
 export type RailSplitEdge = "top" | "middle";
 
-export const MIN_RAIL_WIDTH = 260;
+/**
+ * The panel body's minimum width. It matches the sidebar's minimum
+ * (`MIN_SIDEBAR_WIDTH`), so both columns can be narrowed to the same size; the
+ * rail's 44 px strip is additional chrome.
+ */
+export const MIN_RAIL_WIDTH = 200;
 export const MAX_RAIL_WIDTH = 560;
 export const DEFAULT_RAIL_WIDTH = 320;
 

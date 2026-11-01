@@ -115,6 +115,15 @@ the completion engine already tracks (`caretRef`), so the readout and the
 providers can never disagree; `src/renderer/src/session/caret.ts` turns the
 offset into the line/column pair.
 
+**Both composers grow with their content (2026-11-01).** The session prompt and
+the Source Control commit message use one shared `useAutoGrowTextarea` hook
+(`src/renderer/src/ui/auto-grow.ts`): it measures `scrollHeight` plus the border
+and writes an explicit height, capped at 192 px for the prompt and 160 px for
+the commit message. Past the cap the box scrolls. The session prompt no longer
+has a manual `resize-y` handle — the next keystroke would overwrite the drag —
+while the commit box keeps `resize-none`. The two-row floor comes from `rows=2`
+and the CSS minimum; no height is persisted.
+
 **The composer completes three levels (2026-10-24).** `/` names a command;
 after the first space the same provider asks for the command's arguments
 (extension hooks via `commands.complete`, app completers for `/model`,
@@ -148,6 +157,13 @@ renderer's Tailwind scan root, so `styles.css` also declares them with
 
 ## View model
 
+- **Product views scroll the full main area (2026-11-01).** Settings,
+  Extensions, Connections, Skills and Diagnostics render through
+  `src/renderer/src/views/ViewShell.tsx`: a full-width `h-full overflow-y-auto`
+  outer element (scrollbar at the far-right edge, wheel works over the gutters)
+  around a centred `mx-auto w-full min-h-full max-w-4xl/3xl` content column. The
+  inner column keeps the old readable width; the outer element is the only
+  scroller. Welcome is unchanged.
 - `src/renderer/src/state/app-store.ts` (zustand) owns `view`, `project`, `prefs`,
   `paletteOpen`, `info` and a one-line `hint`.
 - Views are keyed in `src/renderer/src/App.tsx` (`VIEWS`) and rendered one at a
@@ -188,6 +204,8 @@ renderer's Tailwind scan root, so `styles.css` also declares them with
   beside one resizable panel body. Clicking an entry expands its body, clicking
   the active entry collapses it back to the strip, and the strip's order is
   user-adjustable by dragging an entry (there is no per-entry reorder menu).
+  The panel body clamps to 200 px at its narrowest — the same floor as the
+  sidebar — while the 44 px strip remains additional chrome.
   `prefs.rail` persists `{ open, activeMenu, width, order, split, collapsed }`;
   the strip is never unmounted, which is what makes it the stable entry point
   (the old header button
@@ -326,12 +344,13 @@ src/renderer/src/rail/*       the docked panel rail: RightRail (host), RailStrip
                              (SourceControlPanel, CheckpointsSection, DocumentsSection)
                              and their dialogs
 src/renderer/src/views/*       Welcome, Session, Settings, Extensions, Connections,
-                               Skills, Diagnostics
+                               Skills, Diagnostics; ViewShell is the five product
+                               views' full-width scroller + centred column
 src/renderer/src/office/*      OfficeIntegrationCard, the Documents section body + the unchanged wizard panel
 src/renderer/src/web/*         WebTabView chrome, the URL/navigation dialogs, overlay detect
 src/renderer/src/session/*     Transcript, Composer, OfficeToolCard, …
 src/renderer/src/ui/*          Button, Badge, Kbd, Separator, Dialog, DropdownMenu,
-                               ScrollArea, Switch, Toaster
+                               ScrollArea, Switch, Toaster, the auto-grow textarea hook
 src/renderer/src/styles/*      tokens.css (Tailwind + theme tokens), office-panel.css
 ```
 

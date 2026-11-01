@@ -392,6 +392,35 @@ describe("workflow mode border", () => {
   });
 });
 
+describe("auto-growing height", () => {
+  function promptBox(): HTMLTextAreaElement {
+    return screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+  }
+
+  it("grows to its cap and shrinks with the draft", () => {
+    const { props, rerender } = renderComposer();
+    const box = promptBox();
+    Object.defineProperty(box, "scrollHeight", { value: 400, configurable: true });
+
+    rerender(<Composer {...props} draft={"line\n".repeat(20)} />);
+    expect(box.style.height).toBe("192px");
+    expect(box.style.maxHeight).toBe("192px");
+
+    Object.defineProperty(box, "scrollHeight", { value: 42, configurable: true });
+    rerender(<Composer {...props} draft="short" />);
+    expect(box.style.height).toBe("42px");
+  });
+
+  it("keeps the two-row floor and drops the manual handle", () => {
+    renderComposer();
+    const box = promptBox();
+    expect(box).toHaveAttribute("rows", "2");
+    expect(box).toHaveClass("min-h-16", "overflow-y-auto");
+    expect(box).not.toHaveClass("resize-y");
+    expect(box).not.toHaveClass("max-h-48");
+  });
+});
+
 describe("extension shortcut dispatch (Tab)", () => {
   function promptBox(): HTMLElement {
     return screen.getByLabelText("Prompt");

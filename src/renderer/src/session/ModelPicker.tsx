@@ -26,6 +26,7 @@ import { cn } from "../ui/cn";
 import {
   filterModels,
   groupByProvider,
+  qualifiedModelLabel,
   toAuthBadge,
   withScopedFirst,
   type ModelCatalogEntry,
@@ -87,7 +88,7 @@ export function ModelPicker({
     (provider) => !toAuthBadge(auth[provider]).configured,
   );
 
-  function renderEntry(entry: ModelCatalogEntry) {
+  function renderEntry(entry: ModelCatalogEntry, options: { showProvider?: boolean } = {}) {
     const active = entry.key === currentKey;
     const isScoped = scopedSet.has(entry.key.toLowerCase());
     return (
@@ -96,7 +97,9 @@ export function ModelPicker({
           type="button"
           role="option"
           aria-selected={active}
+          aria-label={qualifiedModelLabel(entry)}
           data-model-key={entry.key}
+          title={qualifiedModelLabel(entry)}
           onClick={() => onPick(entry, { persist: true })}
           className={cn(
             "flex flex-1 items-center gap-2 rounded-sm px-2 py-1 text-left text-xs",
@@ -104,6 +107,14 @@ export function ModelPicker({
           )}
         >
           {active ? <Check className="size-3 shrink-0" aria-hidden /> : <span className="size-3" />}
+          {options.showProvider ? (
+            <span
+              className="max-w-24 shrink-0 truncate font-mono text-[10px] text-ink-faint"
+              data-model-provider={entry.provider}
+            >
+              {entry.provider} /
+            </span>
+          ) : null}
           <span className="truncate">{entry.label}</span>
           {entry.supportedThinkingLevels && entry.supportedThinkingLevels.length > 0 ? (
             <span
@@ -120,7 +131,11 @@ export function ModelPicker({
         </button>
         <button
           type="button"
-          aria-label={isScoped ? `Remove ${entry.label} from scope` : `Add ${entry.label} to scope`}
+          aria-label={
+            isScoped
+              ? `Remove ${qualifiedModelLabel(entry)} from scope`
+              : `Add ${qualifiedModelLabel(entry)} to scope`
+          }
           aria-pressed={isScoped}
           disabled={scopeBusyKey === entry.key}
           onClick={() => onToggleScope(entry)}
@@ -173,7 +188,7 @@ export function ModelPicker({
               <h3 className="px-2 pb-1 text-[10px] uppercase tracking-wide text-ink-faint">
                 Scoped ({scopedEntries.length})
               </h3>
-              {scopedEntries.map(renderEntry)}
+              {scopedEntries.map((entry) => renderEntry(entry, { showProvider: true }))}
             </section>
           ) : null}
 
@@ -202,7 +217,7 @@ export function ModelPicker({
                   </Button>
                 )}
               </h3>
-              {group.models.map(renderEntry)}
+              {group.models.map((entry) => renderEntry(entry))}
             </section>
           ))}
 

@@ -107,6 +107,8 @@ describe("extensions view", () => {
       method === "settings.get" ? settingsSnapshot() : resourcesSnapshot(),
     );
     render(<ExtensionsView />);
+    expect(screen.getByTestId("view-scroll")).toHaveClass("overflow-y-auto");
+    expect(screen.getByTestId("view-content")).toHaveClass("max-w-4xl");
     expect(screen.getByRole("heading", { name: "Integrations" })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Pi for Office" })).toBeInTheDocument();
     const card = screen.getByTestId("office-integration-card");

@@ -59,7 +59,6 @@ function seed(value: GitSnapshot, split = DEFAULT_RAIL_SPLIT): void {
     git: { [PROJECT]: value },
     gitErrors: {},
     gitLog: {},
-    gitConsentGranted: true,
   });
 }
 
@@ -114,6 +113,17 @@ describe("the three blocks", () => {
     expect(within(history).queryByTestId("changes-section")).not.toBeInTheDocument();
   });
 
+  it("has no divider between the commit box and Stashes", () => {
+    render(<SourceControlPanel projectPath={PROJECT} />);
+    const commit = screen.getByTestId("commit-box");
+    const stashes = screen.getByTestId("git-stashes-section");
+
+    // Adjacent siblings: the old `border-t` wrapper is gone.
+    expect(commit.nextElementSibling).toBe(stashes);
+    expect(stashes.parentElement).toBe(screen.getByTestId("source-control-block"));
+    expect(stashes).not.toHaveClass("border-t");
+  });
+
   it("names the panel for tests and for assistive technology", () => {
     render(<SourceControlPanel projectPath={PROJECT} />);
     const panel = screen.getByTestId("source-control-panel");
@@ -132,7 +142,11 @@ describe("scrolling", () => {
   it("has exactly three scroll containers, and they are siblings", () => {
     render(<SourceControlPanel projectPath={PROJECT} />);
     const panel = screen.getByTestId("source-control-panel");
-    const scrollers = Array.from(panel.querySelectorAll(".overflow-y-auto"));
+    // Only the three blocks: the auto-growing commit textarea is its own
+    // scroller, but it must not count as a block-level one.
+    const scrollers = Array.from(panel.children).filter((node) =>
+      node.classList.contains("overflow-y-auto"),
+    );
 
     expect(scrollers).toHaveLength(3);
     // No nesting: each block scrolls its own content only.

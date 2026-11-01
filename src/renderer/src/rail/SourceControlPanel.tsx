@@ -72,9 +72,8 @@ export function SourceControlPanel({ projectPath }: SourceControlPanelProps) {
         <GitSyncStatus projectPath={projectPath} />
         <GitSyncNote projectPath={projectPath} />
         <CommitBox projectPath={projectPath} />
-        <div className="border-t border-line">
-          <StashList projectPath={projectPath} />
-        </div>
+        {/* No divider here: spacing alone separates the commit button from Stashes. */}
+        <StashList projectPath={projectPath} />
       </div>
 
       <BlockSplitter

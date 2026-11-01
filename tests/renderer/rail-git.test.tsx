@@ -24,8 +24,8 @@ import { installBridge } from "./fixtures";
  * The Git section (git-checkpoint plan step 13).
  *
  * Branch state, the three sync verbs with the ref they would act on, the branch
- * menu, stashes — and the write-consent gate, which must ask exactly once per
- * session and never intercept fetch/pull/push.
+ * menu, and stashes. Writes run directly now; the only confirmation here is
+ * Drop stash, which deletes the entry.
  */
 
 const PROJECT = "/work/app";
@@ -77,7 +77,6 @@ let handles: ReturnType<typeof installBridge>;
 function seed(
   value: GitSnapshot,
   options: {
-    consented?: boolean;
     branches?: string[];
     action?: GitActionResult | ((action: GitAction) => Promise<GitActionResult>);
   } = {},
@@ -92,8 +91,6 @@ function seed(
     git: { [PROJECT]: value },
     gitErrors: {},
     gitBranches: {},
-    gitConsentGranted: options.consented ?? true,
-    gitConsentPrompt: null,
   });
 }
 
@@ -209,13 +206,11 @@ describe("sync", () => {
     ]);
   });
 
-  it("never asks for consent before a network verb", async () => {
-    seed(snapshot(), { consented: false });
+  it("runs a network verb directly", async () => {
     renderGit();
 
     await userEvent.click(screen.getByRole("button", { name: "Push to origin/main" }));
 
-    expect(useAppStore.getState().gitConsentPrompt).toBeNull();
     expect(actions()).toEqual([{ kind: "push" }]);
   });
 
@@ -388,7 +383,7 @@ describe("stashes", () => {
     expect(useAppStore.getState().prefs.rail.collapsed.stashes).toBe(true);
   });
 
-  it("lists, restores and drops a stash", async () => {
+  it("lists and restores a stash", async () => {
     seed(snapshot({ stashes: [STASH] }));
     renderGit();
     await expand();
@@ -396,12 +391,38 @@ describe("stashes", () => {
     expect(screen.getByTestId("stash-0")).toHaveTextContent("WIP on main: work in progress");
 
     await userEvent.click(screen.getByRole("button", { name: "Restore stash@{0}" }));
+
+    expect(actions()).toEqual([{ kind: "stash-pop", index: 0 }]);
+  });
+
+  it("confirms before dropping a stash", async () => {
+    seed(snapshot({ stashes: [STASH] }));
+    renderGit();
+    await expand();
+
     await userEvent.click(screen.getByRole("button", { name: "Drop stash@{0}" }));
 
-    expect(actions()).toEqual([
-      { kind: "stash-pop", index: 0 },
-      { kind: "stash-drop", index: 0 },
-    ]);
+    // Nothing is deleted until the confirmation names the stash.
+    expect(actions()).toEqual([]);
+    expect(screen.getByTestId("confirm-dialog")).toHaveTextContent(
+      "Drop WIP on main: work in progress?",
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Drop stash" }));
+
+    expect(actions()).toEqual([{ kind: "stash-drop", index: 0 }]);
+  });
+
+  it("keeps the stash when the drop confirmation is cancelled", async () => {
+    seed(snapshot({ stashes: [STASH] }));
+    renderGit();
+    await expand();
+
+    await userEvent.click(screen.getByRole("button", { name: "Drop stash@{0}" }));
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByTestId("confirm-dialog")).toBeNull();
+    expect(actions()).toEqual([]);
   });
 
   it("stashes the working tree without expanding the list", async () => {
@@ -419,47 +440,6 @@ describe("stashes", () => {
     seed(snapshot({ changed: [] }));
     renderGit();
     expect(screen.getByRole("button", { name: "Stash changes" })).toBeDisabled();
-  });
-});
-
-describe("write consent", () => {
-  it("asks once and does not dispatch before the answer", async () => {
-    seed(snapshot({ changed: [CHANGED] }), { consented: false });
-    renderGit();
-
-    await userEvent.click(screen.getByRole("button", { name: "Stash changes" }));
-
-    expect(actions()).toEqual([]);
-    expect(useAppStore.getState().gitConsentPrompt).toEqual({
-      projectPath: PROJECT,
-      action: { kind: "stash-push", message: null },
-    });
-  });
-
-  it("runs the waiting write when consent is confirmed, and remembers", async () => {
-    seed(snapshot({ stashes: [STASH], changed: [CHANGED] }), { consented: false });
-    renderGit();
-
-    await userEvent.click(screen.getByRole("button", { name: "Stash changes" }));
-    await useAppStore.getState().confirmGitConsent();
-
-    expect(useAppStore.getState().gitConsentGranted).toBe(true);
-    expect(actions()).toEqual([{ kind: "stash-push", message: null }]);
-
-    // The next write runs without a prompt.
-    await userEvent.click(screen.getByTestId("git-stashes-toggle"));
-    await userEvent.click(screen.getByRole("button", { name: "Restore stash@{0}" }));
-    expect(useAppStore.getState().gitConsentPrompt).toBeNull();
-  });
-
-  it("drops the pending write when the user declines", () => {
-    seed(snapshot(), { consented: false });
-    useAppStore.setState({
-      gitConsentPrompt: { projectPath: PROJECT, action: { kind: "init" } },
-    });
-    useAppStore.getState().cancelGitConsent();
-    expect(useAppStore.getState().gitConsentPrompt).toBeNull();
-    expect(useAppStore.getState().gitConsentGranted).toBe(false);
   });
 });
 

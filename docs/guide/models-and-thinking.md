@@ -44,7 +44,9 @@ list as _Settings → Model scope_. It is the set used by `Ctrl/Cmd+Alt+↓/↑`
 cycling and by extension model pickers such as `/profile` and `/role`, so one
 star controls all of them:
 
-- **starred** — in scope; the dialog lists these first under **Scoped**;
+- **starred** — in scope; the dialog lists these first under **Scoped**, each
+  row prefixed with its provider (e.g. `anthropic / Sonnet 4.5`) so two
+  providers exposing the same model name stay distinguishable;
 - **no stars** — no scope is configured, so every available model is usable and
   cycling covers all of them (the dialog says so);
 - **changing it** writes `enabledModels` immediately and applies it to every open

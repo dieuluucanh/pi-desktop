@@ -11,6 +11,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { Separator } from "../ui/separator";
+import { ViewShell } from "./ViewShell";
 import {
   canAddKey,
   canSignIn,
@@ -73,7 +74,7 @@ export function ConnectionsView() {
   const selected = providers.find((provider) => provider.id === selectedId) ?? null;
 
   return (
-    <div className="mx-auto flex h-full max-w-4xl flex-col gap-4 overflow-y-auto px-8 py-6">
+    <ViewShell width="standard" gap={4}>
       <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold">Connections</h1>
@@ -230,7 +231,7 @@ export function ConnectionsView() {
           }}
         />
       ) : null}
-    </div>
+    </ViewShell>
   );
 }
 

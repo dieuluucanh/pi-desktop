@@ -71,19 +71,6 @@ function initRepo(projectDir: string): void {
 }
 
 /**
- * Grants the one-time git write consent if the dialog appears.
- *
- * Every mutating git command (stage, commit, discard, stash…) asks once per
- * session whether the app may write to the repository. The dialog is modal over
- * the panel, so any test that stages a file must answer it or the click lands on
- * a disabled surface and times out.
- */
-async function grantGitConsent(current: FakeApp): Promise<void> {
-  const allow = current.window.getByRole("button", { name: /allow and continue/i });
-  if (await allow.isVisible().catch(() => false)) await allow.click();
-}
-
-/**
  * Opens the panel on one menu.
  *
  * The strip is always mounted now, so there is no "Panel" button to click and no
@@ -132,10 +119,10 @@ test.describe("source control", () => {
     const row = app.window.getByTestId("change-row-README.md");
     await expect(row).toBeVisible({ timeout: 20_000 });
 
-    // Stage it, then commit through the rail's own box.
+    // Stage it, then commit through the rail's own box. Writes run directly:
+    // there is no session-wide consent dialog to answer.
     await row.getByRole("button", { name: /^stage /i }).click();
-    // The first mutating command asks once whether the app may write here.
-    await grantGitConsent(app);
+    await expect(app.window.getByRole("button", { name: /allow and continue/i })).toHaveCount(0);
     // The file moved from the Changes group into Staged Changes.
     await expect(
       app.window.getByTestId("changes-group-staged").getByTestId("change-row-README.md"),
@@ -235,9 +222,8 @@ test.describe("source control", () => {
     // The untracked case is worded as the trash, never as a delete.
     await expect(dialog).toContainText(/trash/i);
     await dialog.getByRole("button", { name: /move to trash/i }).click();
-    // Confirming the discard is the first mutating command here, so *now* the
-    // one-time write consent asks — after the app's own confirmation, not before.
-    await grantGitConsent(app);
+    // The discard dialog was its own confirmation; no second (session) gate follows.
+    await expect(app.window.getByRole("button", { name: /allow and continue/i })).toHaveCount(0);
 
     // Two honest outcomes, and neither one is a silent delete:
     //  - the OS trash accepted the file, so it is gone from the work tree;

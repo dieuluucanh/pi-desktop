@@ -220,7 +220,6 @@ import {
   type RailSplitPrefs,
 } from "../../../shared/rail";
 import {
-  isMutatingGitAction,
   isNetworkGitAction,
   sanitizeGitSnapshot,
   syncVerbLabel,
@@ -1034,22 +1033,6 @@ export interface AppStateShape {
   /** Dismisses one folder's sync status line. */
   clearGitSync: (projectPath: string) => void;
 
-  /**
-   * One consent per session for mutating git writes (plan D13). Staging,
-   * committing, discarding, branching and stashing all run through
-   * {@link performGitAction}, which asks once and then remembers.
-   */
-  gitConsentGranted: boolean;
-  /** The write waiting for that consent, or null when nothing is pending. */
-  gitConsentPrompt: { projectPath: string; action: GitAction } | null;
-  /**
-   * Runs an action, asking for consent first when it mutates the repository.
-   * Resolves null when the action was gated and is waiting for that consent.
-   */
-  performGitAction: (projectPath: string, action: GitAction) => Promise<GitActionResult | null>;
-  /** Grants the session's consent and runs the waiting write. */
-  confirmGitConsent: () => Promise<void>;
-  cancelGitConsent: () => void;
   /** Local branch names per folder, for the checkout menu. */
   gitBranches: Record<string, string[]>;
   loadGitBranches: (projectPath: string) => Promise<void>;
@@ -1790,8 +1773,6 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   gitDiff: null,
   gitDiffLoading: false,
   gitLog: {},
-  gitConsentGranted: false,
-  gitConsentPrompt: null,
   gitBranches: {},
   checkpoints: {},
   checkpointsError: null,
@@ -5061,27 +5042,6 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     delete next[projectPath];
     set({ gitSync: next });
   },
-
-  performGitAction: async (projectPath, action) => {
-    // Reads never reach this method, so gating here means exactly "writes".
-    if (isMutatingGitAction(action.kind) && !get().gitConsentGranted) {
-      set({ gitConsentPrompt: { projectPath, action } });
-      // Null (not a failure): the caller must not treat this as a refusal and
-      // must not carry on as if the write had happened.
-      return null;
-    }
-    return get().runGitAction(projectPath, action);
-  },
-
-  confirmGitConsent: async () => {
-    const prompt = get().gitConsentPrompt;
-    // Grant first: the write itself must not be able to leave the app asking
-    // the same question again.
-    set({ gitConsentGranted: true, gitConsentPrompt: null });
-    if (prompt) await get().runGitAction(prompt.projectPath, prompt.action);
-  },
-
-  cancelGitConsent: () => set({ gitConsentPrompt: null }),
 
   loadGitBranches: async (projectPath) => {
     const api = bridge()?.git;

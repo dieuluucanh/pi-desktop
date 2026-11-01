@@ -307,29 +307,12 @@ export const GIT_ACTION_KINDS: readonly GitActionKind[] = [
   "init",
 ] as const;
 
-/** The actions that write to the repository (as opposed to read it). */
-export const GIT_MUTATING_ACTIONS: readonly GitActionKind[] = [
-  "stage",
-  "unstage",
-  "stage-hunk",
-  "unstage-hunk",
-  "discard",
-  "commit",
-  "set-identity",
-  "stash-push",
-  "stash-pop",
-  "stash-drop",
-  "checkout-branch",
-  "create-branch",
-  "init",
-] as const;
-
-/** The actions that reach the network. Always an explicit button (plan D13). */
+/**
+ * The actions that reach the network. Always an explicit button, and the only
+ * group that gets network lifecycle feedback; local writes run directly and
+ * rely on their own per-action confirmations where they are destructive.
+ */
 export const GIT_NETWORK_ACTIONS: readonly GitActionKind[] = ["fetch", "pull", "push"] as const;
-
-export function isMutatingGitAction(kind: GitActionKind): boolean {
-  return GIT_MUTATING_ACTIONS.includes(kind);
-}
 
 export function isNetworkGitAction(kind: GitActionKind): boolean {
   return GIT_NETWORK_ACTIONS.includes(kind);

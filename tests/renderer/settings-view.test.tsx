@@ -67,6 +67,8 @@ describe("SettingsView", () => {
     stubRequest();
     render(<SettingsView />);
 
+    expect(screen.getByTestId("view-scroll")).toHaveClass("overflow-y-auto");
+    expect(screen.getByTestId("view-content")).toHaveClass("max-w-4xl");
     await waitFor(() =>
       expect(screen.getByTestId("settings-group-compaction")).toBeInTheDocument(),
     );

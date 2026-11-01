@@ -28,6 +28,7 @@ import {
 } from "../settings/SourceControlSettings";
 import { NotificationsSettingsCard } from "../settings/NotificationsSettings";
 import { setSidebarWidth } from "../state/sidebar-width";
+import { ViewShell } from "./ViewShell";
 
 /**
  * Settings (plan step 12).
@@ -151,7 +152,7 @@ export function SettingsView() {
   }, [rawDraft]);
 
   return (
-    <div className="mx-auto flex h-full max-w-4xl flex-col gap-5 overflow-y-auto px-8 py-6">
+    <ViewShell width="standard" gap={5}>
       <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold">Settings</h1>
@@ -514,7 +515,7 @@ export function SettingsView() {
           </div>
         </DialogContent>
       </Dialog>
-    </div>
+    </ViewShell>
   );
 }
 

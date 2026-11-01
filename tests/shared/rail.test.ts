@@ -24,7 +24,12 @@ import {
   sanitizeRailPrefs,
   type RailMenuId,
 } from "../../src/shared/rail";
-import { DEFAULT_PREFS, mergePrefs, sanitizePrefs } from "../../src/shared/prefs";
+import {
+  DEFAULT_PREFS,
+  MIN_SIDEBAR_WIDTH,
+  mergePrefs,
+  sanitizePrefs,
+} from "../../src/shared/prefs";
 
 /**
  * The docked panel rail's preference model.
@@ -38,8 +43,14 @@ import { DEFAULT_PREFS, mergePrefs, sanitizePrefs } from "../../src/shared/prefs
  */
 
 describe("clampRailWidth", () => {
+  it("matches the sidebar's minimum width", () => {
+    // Both columns use the same floor; the rail's strip is extra chrome.
+    expect(MIN_RAIL_WIDTH).toBe(MIN_SIDEBAR_WIDTH);
+  });
+
   it("clamps into the supported range", () => {
     expect(clampRailWidth(0)).toBe(MIN_RAIL_WIDTH);
+    expect(clampRailWidth(MIN_RAIL_WIDTH - 1)).toBe(MIN_RAIL_WIDTH);
     expect(clampRailWidth(10_000)).toBe(MAX_RAIL_WIDTH);
     expect(clampRailWidth(320)).toBe(320);
     expect(clampRailWidth(400.6)).toBe(401);

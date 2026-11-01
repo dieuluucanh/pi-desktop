@@ -79,6 +79,8 @@ describe("ConnectionsView", () => {
     stubRequest();
     render(<ConnectionsView />);
 
+    expect(screen.getByTestId("view-scroll")).toHaveClass("overflow-y-auto");
+    expect(screen.getByTestId("view-content")).toHaveClass("max-w-4xl");
     await waitFor(() => expect(screen.getByTestId("group-subscription")).toBeInTheDocument());
     expect(screen.getByTestId("group-apiKey")).toBeInTheDocument();
     expect(screen.getByTestId("group-local")).toBeInTheDocument();

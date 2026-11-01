@@ -4,6 +4,7 @@ import { formatBytes, formatDuration } from "../../../shared/performance";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { useAppStore } from "../state/app-store";
+import { ViewShell } from "./ViewShell";
 
 /**
  * Diagnostics (plan step 22): the evidence a support request needs.
@@ -88,7 +89,7 @@ export function DiagnosticsView() {
     : [];
 
   return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col gap-6 overflow-y-auto px-8 py-6">
+    <ViewShell width="narrow" gap={6}>
       <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold">Diagnostics</h1>
@@ -356,6 +357,6 @@ export function DiagnosticsView() {
       ) : (
         <p className="text-sm text-ink-muted">Reading diagnostics…</p>
       )}
-    </div>
+    </ViewShell>
   );
 }

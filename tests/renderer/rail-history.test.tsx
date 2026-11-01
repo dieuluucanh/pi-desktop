@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { HistorySection, HISTORY_PAGE_SIZE } from "../../src/renderer/src/rail/HistorySection";
 import {
   absoluteTime,
+  commitChipTone,
   commitChips,
   historyKey,
   relativeTime,
@@ -84,8 +85,6 @@ function seed(
         seq: 0,
       },
     },
-    gitConsentGranted: true,
-    gitConsentPrompt: null,
     gitErrors: {},
   });
 }
@@ -140,6 +139,27 @@ describe("commit chips", () => {
   });
 });
 
+describe("chip tones", () => {
+  it("accents the current branch", () => {
+    expect(commitChipTone("main", "main", ["origin"])).toBe("accent");
+  });
+
+  it("highlights a remote-tracking ref", () => {
+    expect(commitChipTone("origin/main", "main", ["origin"])).toBe("info");
+    expect(commitChipTone("upstream/feature", "main", ["origin", "upstream"])).toBe("info");
+  });
+
+  it("leaves tags and other local branches neutral", () => {
+    expect(commitChipTone("v1.0", "main", ["origin"])).toBe("neutral");
+    expect(commitChipTone("feat/other", "main", ["origin"])).toBe("neutral");
+  });
+
+  it("does not call a tag with a slash a remote ref", () => {
+    // `release/v1` starts with a slash segment, but `release` is not a remote.
+    expect(commitChipTone("release/v1", "main", ["origin"])).toBe("neutral");
+  });
+});
+
 describe("the log list", () => {
   it("shows the subject, sha, author and relative time", () => {
     render(<HistorySection projectPath={PROJECT} />);
@@ -151,10 +171,16 @@ describe("the log list", () => {
   });
 
   it("shows branch chips", () => {
-    seed({ entries: [commit({ refs: ["main", "origin/main"], head: true })] });
+    seed({ entries: [commit({ refs: ["main", "origin/main", "v1.0"], head: true })] });
     render(<HistorySection projectPath={PROJECT} />);
-    expect(screen.getByTestId("commit-aaaaaaa")).toHaveTextContent("main");
-    expect(screen.getByTestId("commit-aaaaaaa")).toHaveTextContent("origin/main");
+    const row = screen.getByTestId("commit-aaaaaaa");
+    expect(row).toHaveTextContent("main");
+    expect(row).toHaveTextContent("origin/main");
+
+    // The upstream is easy to spot; the current branch and tags keep their own tones.
+    expect(screen.getByText("main")).toHaveClass("text-accent");
+    expect(screen.getByText("origin/main")).toHaveClass("text-info");
+    expect(screen.getByText("v1.0")).toHaveClass("text-ink-muted");
   });
 
   it("does not label an unpushed tip with the upstream", () => {

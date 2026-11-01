@@ -14,6 +14,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Separator } from "../ui/separator";
 import { Switch } from "../ui/switch";
+import { ViewShell } from "./ViewShell";
 
 /**
  * Extensions hub (plan step 13).
@@ -129,7 +130,7 @@ export function ExtensionsView() {
   };
 
   return (
-    <div className="mx-auto flex h-full max-w-4xl flex-col gap-5 overflow-y-auto px-8 py-6">
+    <ViewShell width="standard" gap={5}>
       <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold">Extensions</h1>
@@ -309,7 +310,7 @@ export function ExtensionsView() {
       </section>
 
       <ExtensionCapabilitiesDialog open={capabilitiesOpen} onOpenChange={setCapabilitiesOpen} />
-    </div>
+    </ViewShell>
   );
 }
 

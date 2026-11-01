@@ -15,9 +15,9 @@
  *    action stays enabled while collapsed, because that is the action you reach
  *    for when you have edits you do not want to commit.
  *
- * Fetch/pull/push never go through the write-consent dialog: they are explicit
- * buttons that name their target (`origin/main`), and the plan treats that as
- * their consent. Everything that rewrites the folder does go through it.
+ * Writes run directly: the button the user pressed is the intent, as in VS Code.
+ * Destructive actions own their confirmation instead — discard in the Changes
+ * block, a dirty-tree branch switch in this file, and Drop stash below.
  */
 
 import { useState } from "react";
@@ -33,7 +33,7 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
-import { syncProgressLabel } from "../../../shared/git";
+import { syncProgressLabel, type GitStashEntry } from "../../../shared/git";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { ConfirmDialog } from "../ui/confirm-dialog";
@@ -65,7 +65,7 @@ export function GitBranchRow({ projectPath }: GitPartProps) {
   const snapshot = useAppStore((state) => state.git[projectPath]);
   const branches = useAppStore((state) => state.gitBranches[projectPath] ?? EMPTY_BRANCHES);
   const loadGitBranches = useAppStore((state) => state.loadGitBranches);
-  const performGitAction = useAppStore((state) => state.performGitAction);
+  const runGitAction = useAppStore((state) => state.runGitAction);
 
   const [pendingBranch, setPendingBranch] = useState<string | null>(null);
   const [branchesOpen, setBranchesOpen] = useState(false);
@@ -85,7 +85,7 @@ export function GitBranchRow({ projectPath }: GitPartProps) {
       setPendingBranch(branch);
       return;
     }
-    void performGitAction(projectPath, { kind: "checkout-branch", branch });
+    void runGitAction(projectPath, { kind: "checkout-branch", branch });
   };
 
   const createBranch = (): void => {
@@ -93,7 +93,7 @@ export function GitBranchRow({ projectPath }: GitPartProps) {
     if (branch.length === 0) return;
     setCreating(false);
     setNewBranch("");
-    void performGitAction(projectPath, { kind: "create-branch", branch });
+    void runGitAction(projectPath, { kind: "create-branch", branch });
   };
 
   return (
@@ -204,7 +204,7 @@ export function GitBranchRow({ projectPath }: GitPartProps) {
           onConfirm={() => {
             const branch = pendingBranch;
             setPendingBranch(null);
-            void performGitAction(projectPath, { kind: "checkout-branch", branch });
+            void runGitAction(projectPath, { kind: "checkout-branch", branch });
           }}
           onCancel={() => setPendingBranch(null)}
         />
@@ -225,7 +225,7 @@ export function GitBranchRow({ projectPath }: GitPartProps) {
 export function GitSyncButtons({ projectPath }: GitPartProps) {
   const snapshot = useAppStore((state) => state.git[projectPath]);
   const syncState = useAppStore((state) => state.gitSync[projectPath]);
-  const performGitAction = useAppStore((state) => state.performGitAction);
+  const runGitAction = useAppStore((state) => state.runGitAction);
 
   const repo = snapshot?.repo;
   if (!snapshot?.available || !repo) return null;
@@ -244,9 +244,7 @@ export function GitSyncButtons({ projectPath }: GitPartProps) {
         aria-label={remote ? `Fetch from ${remote}` : "Fetch"}
         title={sync.fetch ? (remote ? `Fetch from ${remote}` : "Fetch") : (sync.reason ?? "Fetch")}
         disabled={!sync.fetch || running}
-        onClick={() =>
-          void performGitAction(projectPath, { kind: "fetch", remote: remote ?? null })
-        }
+        onClick={() => void runGitAction(projectPath, { kind: "fetch", remote: remote ?? null })}
       >
         {runningKind === "fetch" ? (
           <Loader2
@@ -264,7 +262,7 @@ export function GitSyncButtons({ projectPath }: GitPartProps) {
         aria-label={target ? `Pull from ${target}` : "Pull"}
         title={sync.pull ? (target ? `Pull from ${target}` : "Pull") : (sync.reason ?? "Pull")}
         disabled={!sync.pull || running}
-        onClick={() => void performGitAction(projectPath, { kind: "pull" })}
+        onClick={() => void runGitAction(projectPath, { kind: "pull" })}
       >
         {runningKind === "pull" ? (
           <Loader2
@@ -282,7 +280,7 @@ export function GitSyncButtons({ projectPath }: GitPartProps) {
         aria-label={target ? `Push to ${target}` : "Push"}
         title={sync.push ? (target ? `Push to ${target}` : "Push") : (sync.reason ?? "Push")}
         disabled={!sync.push || running}
-        onClick={() => void performGitAction(projectPath, { kind: "push" })}
+        onClick={() => void runGitAction(projectPath, { kind: "push" })}
       >
         {runningKind === "push" ? (
           <Loader2
@@ -307,7 +305,7 @@ export function GitSyncStatus({ projectPath }: GitPartProps) {
   const snapshot = useAppStore((state) => state.git[projectPath]);
   const status = useAppStore((state) => state.gitSync[projectPath]);
   const clearGitSync = useAppStore((state) => state.clearGitSync);
-  const performGitAction = useAppStore((state) => state.performGitAction);
+  const runGitAction = useAppStore((state) => state.runGitAction);
 
   if (!status) return null;
 
@@ -349,7 +347,7 @@ export function GitSyncStatus({ projectPath }: GitPartProps) {
         <button
           type="button"
           className="shrink-0 underline hover:text-ink"
-          onClick={() => void performGitAction(projectPath, status.action)}
+          onClick={() => void runGitAction(projectPath, status.action)}
         >
           Retry
         </button>
@@ -393,9 +391,12 @@ export function GitSyncNote({ projectPath }: GitPartProps) {
  */
 export function StashList({ projectPath }: GitPartProps) {
   const snapshot = useAppStore((state) => state.git[projectPath]);
-  const performGitAction = useAppStore((state) => state.performGitAction);
+  const runGitAction = useAppStore((state) => state.runGitAction);
   const collapsed = useAppStore((state) => state.prefs.rail.collapsed.stashes);
   const setSourceControlCollapsed = useAppStore((state) => state.setSourceControlCollapsed);
+  // Dropping a stash deletes the entry; it is the one stash verb that needs a
+  // confirmation now that writes are no longer gated per session.
+  const [dropTarget, setDropTarget] = useState<GitStashEntry | null>(null);
 
   if (!snapshot?.available) return null;
 
@@ -403,7 +404,7 @@ export function StashList({ projectPath }: GitPartProps) {
   const listId = "git-stashes-body";
 
   return (
-    <div className="flex flex-col gap-1 px-3 py-1" data-testid="git-stashes-section">
+    <div className="flex flex-col gap-1 px-3 pt-1.5 pb-1" data-testid="git-stashes-section">
       <div className="flex items-center gap-2">
         <button
           type="button"
@@ -427,7 +428,7 @@ export function StashList({ projectPath }: GitPartProps) {
           // button says so rather than failing after the click.
           disabled={snapshot.changed.length === 0}
           title={snapshot.changed.length === 0 ? "Nothing to stash" : "Stash changes"}
-          onClick={() => void performGitAction(projectPath, { kind: "stash-push", message: null })}
+          onClick={() => void runGitAction(projectPath, { kind: "stash-push", message: null })}
         >
           Stash changes
         </button>
@@ -453,7 +454,7 @@ export function StashList({ projectPath }: GitPartProps) {
                 className="text-ink-faint hover:text-ink"
                 aria-label={`Restore ${stash.ref}`}
                 onClick={() =>
-                  void performGitAction(projectPath, { kind: "stash-pop", index: stash.index })
+                  void runGitAction(projectPath, { kind: "stash-pop", index: stash.index })
                 }
               >
                 Restore
@@ -462,9 +463,7 @@ export function StashList({ projectPath }: GitPartProps) {
                 type="button"
                 className="text-ink-faint hover:text-danger"
                 aria-label={`Drop ${stash.ref}`}
-                onClick={() =>
-                  void performGitAction(projectPath, { kind: "stash-drop", index: stash.index })
-                }
+                onClick={() => setDropTarget(stash)}
               >
                 Drop
               </button>
@@ -472,6 +471,22 @@ export function StashList({ projectPath }: GitPartProps) {
           ))}
         </ul>
       )}
+
+      {dropTarget ? (
+        <ConfirmDialog
+          open
+          tone="danger"
+          title={`Drop ${stashLabel(dropTarget)}?`}
+          description="The stash entry is deleted. Restore it first if you might need these changes."
+          confirmLabel="Drop stash"
+          onConfirm={() => {
+            const stash = dropTarget;
+            setDropTarget(null);
+            void runGitAction(projectPath, { kind: "stash-drop", index: stash.index });
+          }}
+          onCancel={() => setDropTarget(null)}
+        />
+      ) : null}
     </div>
   );
 }

@@ -13,7 +13,13 @@ import { GitCommit } from "lucide-react";
 import { gitUnavailableMessage } from "../../../shared/git";
 import { Badge } from "../ui/badge";
 import { useAppStore } from "../state/app-store";
-import { absoluteTime, commitChips, historyKey, relativeTime } from "./history-view";
+import {
+  absoluteTime,
+  commitChipTone,
+  commitChips,
+  historyKey,
+  relativeTime,
+} from "./history-view";
 import { RailBlockHeader } from "./RailBlockHeader";
 
 export interface HistorySectionProps {
@@ -116,7 +122,11 @@ export function HistorySection({ projectPath }: HistorySectionProps) {
                     {commitChips(entry).map((chip) => (
                       <Badge
                         key={chip}
-                        tone={chip === snapshot.repo?.branch ? "accent" : "neutral"}
+                        tone={commitChipTone(
+                          chip,
+                          snapshot.repo?.branch,
+                          snapshot.repo?.remotes ?? [],
+                        )}
                       >
                         {chip}
                       </Badge>

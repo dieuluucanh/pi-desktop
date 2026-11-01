@@ -6,7 +6,7 @@
  * occasionally, the identity almost never.
  *
  * ```text
- *  ┌ 2-row textarea ────────────────────┐
+ *  ┌ textarea, grows to 10 rem ─────────┐
  *  │ 0 / 20000 · Ada <ada@…> [global] ⋯ │  meta row
  *  │ [ Commit ]                         │  full width
  *  └────────────────────────────────────┘
@@ -31,8 +31,8 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Ellipsis } from "lucide-react";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { COMMIT_MESSAGE_MAX_HEIGHT_PX, useAutoGrowTextarea } from "../ui/auto-grow";
 import { RailMenuItem } from "./RailMenuItem";
 import { useAppStore } from "../state/app-store";
 import {
@@ -50,10 +50,14 @@ export interface CommitBoxProps {
 
 export function CommitBox({ projectPath }: CommitBoxProps) {
   const snapshot = useAppStore((state) => state.git[projectPath]);
-  const performGitAction = useAppStore((state) => state.performGitAction);
+  const runGitAction = useAppStore((state) => state.runGitAction);
   const loadHeadCommitMessage = useAppStore((state) => state.loadHeadCommitMessage);
 
   const [message, setMessage] = useState("");
+  const messageRef = useRef<HTMLTextAreaElement | null>(null);
+  // The message grows with its content up to a cap, then scrolls. The box is
+  // still non-resizable: a drag would be overwritten by the next keystroke.
+  useAutoGrowTextarea(messageRef, message, COMMIT_MESSAGE_MAX_HEIGHT_PX);
   const [amend, setAmend] = useState(false);
   const [busy, setBusy] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
@@ -104,16 +108,15 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
     try {
       // The label promised to stage first when nothing was staged yet.
       if (snapshot.staged.length === 0 && snapshot.changed.length > 0) {
-        const staged = await performGitAction(projectPath, {
+        const staged = await runGitAction(projectPath, {
           kind: "stage",
           paths: snapshot.changed.map((file) => file.path),
         });
-        // Null means the write is waiting for consent: stop here rather than
-        // committing a half-applied intention.
-        if (staged === null || !staged.ok) return;
+        // A failed stage must not be followed by a commit of the old index.
+        if (!staged.ok) return;
       }
-      const result = await performGitAction(projectPath, { kind: "commit", message, amend });
-      if (result?.ok) {
+      const result = await runGitAction(projectPath, { kind: "commit", message, amend });
+      if (result.ok) {
         // A committed message belongs to the commit, not to the next one.
         setMessage("");
         setAmend(false);
@@ -135,12 +138,12 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
     if (!consent || busy) return;
     setBusy(true);
     try {
-      const result = await performGitAction(projectPath, {
+      const result = await runGitAction(projectPath, {
         kind: "set-identity",
         name: name.trim(),
         email: email.trim(),
       });
-      if (result?.ok) {
+      if (result.ok) {
         setIdentityOpen(false);
         setConsent(false);
       }
@@ -152,6 +155,7 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
   return (
     <div className="flex flex-col gap-1.5 px-3 pt-2" data-testid="commit-box">
       <textarea
+        ref={messageRef}
         aria-label="Commit message"
         placeholder="Commit message"
         rows={2}
@@ -168,7 +172,7 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
             event.currentTarget.blur();
           }
         }}
-        className="w-full resize-none rounded-sm border border-line bg-sunken px-2 py-1 text-xs text-ink outline-none focus:border-accent"
+        className="w-full resize-none overflow-y-auto rounded-sm border border-line bg-sunken px-2 py-1 text-xs text-ink outline-none focus:border-accent"
       />
 
       {/* Meta row: how long the message is, who it is attributed to, options. */}
@@ -180,10 +184,9 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
           <span
             className="flex min-w-0 flex-1 items-center gap-1"
             data-testid="commit-identity"
-            title={summary.label}
+            title={`${summary.label} — ${summary.sourceNote}`}
           >
             <span className="min-w-0 flex-1 truncate">{summary.label}</span>
-            <Badge tone={summary.local ? "accent" : "neutral"}>{summary.sourceLabel}</Badge>
           </span>
         ) : (
           <span className="min-w-0 flex-1 truncate" data-testid="commit-identity">

@@ -251,6 +251,21 @@ constructor, so `timedOut` cannot be dropped by a call site again. When a
 `--set-upstream` retry fails, the retry's own stderr is what gets classified and
 reported — repeating `no_upstream` would tell the user to do what just failed.
 
+## Writes are direct (2026-11-01)
+
+There is no session-wide write-consent gate. `runGitAction` is the one write
+entry point, and the rail's buttons call it directly: staging, unstaging,
+committing, stashing, branch creation/switching and hunk staging all act on the
+click. The earlier `GitConsentDialog`/`gitConsentGranted` pair was renderer-only
+and session-only anyway — the IPC handler never checked it — so it added a
+prompt without adding a boundary.
+
+Destructive actions own their confirmation instead. `Discard` uses the shared
+`ConfirmDialog` and names the file; `Drop` in the stash list asks before
+deleting the entry; a branch switch with a dirty tree asks first; and the
+identity form keeps its explicit `.git/config` checkbox. Network verbs were
+already outside the old gate and remain explicit, target-named buttons.
+
 ## History freshness
 
 A log page is keyed to the repo state it was read for:

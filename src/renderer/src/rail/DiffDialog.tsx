@@ -58,7 +58,7 @@ function HunkLines({ file, hunkIndex }: { file: GitDiffFile; hunkIndex: number }
 
 function Hunk({ file, hunkIndex }: { file: GitDiffFile; hunkIndex: number }) {
   const state = useAppStore((s) => s.gitDiff);
-  const performGitAction = useAppStore((s) => s.performGitAction);
+  const runGitAction = useAppStore((s) => s.runGitAction);
   const openGitDiff = useAppStore((s) => s.openGitDiff);
 
   const hunk = file.hunks[hunkIndex];
@@ -67,14 +67,14 @@ function Hunk({ file, hunkIndex }: { file: GitDiffFile; hunkIndex: number }) {
   const readOnly = state.diff.scope === "commit";
 
   const apply = async (): Promise<void> => {
-    const result = await performGitAction(state.projectPath, {
+    const result = await runGitAction(state.projectPath, {
       kind: staged ? "unstage-hunk" : "stage-hunk",
       path: file.path,
       patch: buildHunkPatch(file, hunk),
     });
     // Re-read the same side so the viewer reflects the new index instead of
     // showing a hunk that is no longer there.
-    if (result?.ok) await openGitDiff(state.projectPath, state.request);
+    if (result.ok) await openGitDiff(state.projectPath, state.request);
   };
 
   return (

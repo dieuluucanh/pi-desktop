@@ -7,7 +7,7 @@
  * stays layout and the wording is testable.
  */
 
-import type { GitActionKind, GitRepoInfo, GitSnapshot, GitStashEntry } from "../../../shared/git";
+import type { GitRepoInfo, GitSnapshot, GitStashEntry } from "../../../shared/git";
 
 /** What the branch line says, and the numbers beside it. */
 export interface BranchView {
@@ -108,33 +108,4 @@ export function stashLabel(stash: GitStashEntry): string {
 export function needsDirtyConfirmation(snapshot: GitSnapshot | undefined): boolean {
   if (!snapshot?.available) return false;
   return snapshot.changed.length > 0 || snapshot.staged.length > 0;
-}
-
-/**
- * What a mutating action will do, in the consent dialog's words. Every mutating
- * kind is listed so a new one cannot slip through with no explanation.
- */
-const MUTATING_LABELS: Record<string, string> = {
-  stage: "stage files (add them to the next commit)",
-  unstage: "unstage files (keep their edits in the working tree)",
-  "stage-hunk": "stage one hunk",
-  "unstage-hunk": "unstage one hunk",
-  discard: "discard changes (this rewrites files in your folder)",
-  commit: "create a commit in this repository",
-  "set-identity": "write your name and email to this repository's git config",
-  "stash-push": "stash the working tree",
-  "stash-pop": "restore a stash into the working tree",
-  "stash-drop": "delete a stash entry",
-  "checkout-branch": "switch branches (this rewrites files in your folder)",
-  "create-branch": "create a branch and switch to it",
-  init: "initialise a git repository in this folder",
-};
-
-export function mutatingActionLabel(kind: GitActionKind): string {
-  return MUTATING_LABELS[kind] ?? "modify this repository";
-}
-
-/** Which buttons the consent dialog's copy should mention. */
-export function consentScopeNote(): string {
-  return "You will not be asked again this session. Fetch, pull and push are always separate buttons.";
 }

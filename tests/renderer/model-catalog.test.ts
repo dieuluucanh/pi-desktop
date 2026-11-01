@@ -7,6 +7,7 @@ import {
   formatTokens,
   groupByProvider,
   modelKeyOf,
+  qualifiedModelLabel,
   ringFraction,
   thinkingLevelsOf,
   toAuthBadge,
@@ -81,6 +82,17 @@ describe("the catalog", () => {
     expect(groups[0]?.auth.configured).toBe(true);
     expect(groups[1]?.auth.configured).toBe(false);
     expect(groups[0]?.models.map((entry) => entry.key)).toEqual(["alpha/b", "alpha/c"]);
+  });
+
+  it("qualifies a label with its provider", () => {
+    const [entry] = toCatalog([
+      { id: "claude-sonnet-4-5", provider: "anthropic", name: "Sonnet 4.5" },
+    ]);
+    expect(qualifiedModelLabel(entry!)).toBe("anthropic / Sonnet 4.5");
+
+    // A missing `name` falls back to the id, and the provider still qualifies it.
+    const [bare] = toCatalog([{ id: "x", provider: "p" }]);
+    expect(qualifiedModelLabel(bare!)).toBe("p / x");
   });
 
   it("matches a search against the label and the provider/id key", () => {

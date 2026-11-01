@@ -103,6 +103,8 @@ describe("DiagnosticsView", () => {
     installBridge({ diagnostics: snapshot() });
     render(<DiagnosticsView />);
 
+    expect(screen.getByTestId("view-scroll")).toHaveClass("overflow-y-auto");
+    expect(screen.getByTestId("view-content")).toHaveClass("max-w-3xl");
     expect(await screen.findByTestId("diagnostics-hosts")).toBeInTheDocument();
     expect(screen.getByText(/pid 4242/)).toBeInTheDocument();
     expect(screen.getByText(/resumed session/)).toBeInTheDocument();

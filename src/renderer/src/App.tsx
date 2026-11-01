@@ -30,7 +30,6 @@ import { ExtensionsView } from "./views/ExtensionsView";
 import { SessionView } from "./views/SessionView";
 import { WebNavigationDialog } from "./web/WebNavigationDialog";
 import { WebUrlDialog } from "./web/WebUrlDialog";
-import { GitConsentDialog } from "./rail/GitConsentDialog";
 import { MuteNotificationDialog } from "./extension-ui/MuteNotificationDialog";
 import { DiffDialog } from "./rail/DiffDialog";
 import { SettingsView } from "./views/SettingsView";
@@ -315,7 +314,6 @@ export function App() {
       <TrustDialog />
       <WebNavigationDialog />
       <WebUrlDialog />
-      <GitConsentDialog />
       <DiffDialog />
       <MuteNotificationDialog />
       <ShortcutsHelp />

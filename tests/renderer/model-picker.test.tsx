@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ModelPicker } from "../../src/renderer/src/session/ModelPicker";
@@ -121,7 +121,7 @@ describe("ModelPicker", () => {
   it("toggles a model in the scope from the star", async () => {
     const user = userEvent.setup();
     const { onToggleScope } = renderPicker();
-    await user.click(screen.getByRole("button", { name: "Add GPT-5 to scope" }));
+    await user.click(screen.getByRole("button", { name: "Add openai / GPT-5 to scope" }));
     expect(onToggleScope).toHaveBeenCalledWith(CATALOG[1]);
   });
 
@@ -139,7 +139,32 @@ describe("ModelPicker", () => {
 
   it("disables the star while that model's scope write is in flight", () => {
     renderPicker({ scoped: ["openai/gpt-5"], scopeBusyKey: "openai/gpt-5" });
-    expect(screen.getByRole("button", { name: "Remove GPT-5 from scope" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove openai / GPT-5 from scope" })).toBeDisabled();
+  });
+
+  it("prefixes scoped rows when two providers share a model name", () => {
+    const entries = toCatalog([
+      { id: "kimi", provider: "moonshotai", name: "Kimi" },
+      { id: "kimi", provider: "synthetic", name: "Kimi" },
+    ]);
+    renderPicker({ entries, scoped: ["moonshotai/kimi", "synthetic/kimi"] });
+
+    const list = screen.getByTestId("model-list");
+    const options = within(list).getAllByRole("option", { name: /Kimi/ });
+    expect(options).toHaveLength(2);
+    expect(options[0]).toHaveAccessibleName("moonshotai / Kimi");
+    expect(options[1]).toHaveAccessibleName("synthetic / Kimi");
+    // The visible prefix is what disambiguates the rows.
+    expect(within(list).getByText("moonshotai /")).toHaveAttribute(
+      "data-model-provider",
+      "moonshotai",
+    );
+    expect(within(list).getByText("synthetic /")).toHaveAttribute(
+      "data-model-provider",
+      "synthetic",
+    );
+    // Provider groups keep their heading, so their rows stay uncluttered.
+    expect(within(list).queryByText("anthropic /")).toBeNull();
   });
 
   it("shows a picker-scoped error when one is set, and none otherwise", () => {

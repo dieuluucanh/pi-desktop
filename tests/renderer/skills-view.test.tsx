@@ -123,6 +123,8 @@ beforeEach(() => {
 describe("SkillsView", () => {
   it("lists skills with run, templates with argument hints, and themes", async () => {
     render(<SkillsView />);
+    expect(screen.getByTestId("view-scroll")).toHaveClass("overflow-y-auto");
+    expect(screen.getByTestId("view-content")).toHaveClass("max-w-3xl");
     expect(await screen.findByText("Reviews code")).toBeInTheDocument();
     expect(screen.getByText("<path>")).toBeInTheDocument();
     expect(screen.getAllByText("dark").length).toBeGreaterThan(0);

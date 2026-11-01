@@ -158,6 +158,15 @@ export function authFor(
   return toAuthBadge(auth[provider]);
 }
 
+/**
+ * `provider / Label` — the unambiguous name a scoped row shows and the star's
+ * accessible name uses. Two providers can expose the same model name, so the
+ * bare label is not enough outside a provider group (which has its own heading).
+ */
+export function qualifiedModelLabel(entry: ModelCatalogEntry): string {
+  return `${entry.provider} / ${entry.label}`;
+}
+
 /** Groups by provider, alphabetically, each with its own auth badge. */
 export function groupByProvider(
   entries: readonly ModelCatalogEntry[],
