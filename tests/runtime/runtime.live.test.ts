@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { resolveAppRuntime } from "../../src/main/runtime/environment";
+import { SERVICE_ENV } from "../../src/shared/host-protocol";
 import {
   meetsMinimumNodeVersion,
   runtimeTarget,
@@ -34,10 +35,31 @@ const lock = JSON.parse(readFileSync(join(runtimeRoot, "node.lock.json"), "utf8"
 };
 
 const target = runtimeTarget(process.platform, process.arch);
+
+/**
+ * The app injects `PI_DESKTOP_*` into every child it spawns (this suite can be
+ * run from inside Pi Desktop). These checks are about the runtime on disk and a
+ * clean machine, so both resolution and spawning start from the app's variables
+ * removed. The load-bearing one is `PI_DESKTOP_HOST_MODE=service`: inherited,
+ * the host bundle starts the JSONL service loop instead of the CLI, so
+ * `pi --version` exits 0 with no output.
+ */
+function withoutAppEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const clean: NodeJS.ProcessEnv = { ...env };
+  delete clean.PI_DESKTOP_NODE;
+  delete clean.PI_DESKTOP_NPM_CLI;
+  delete clean.PI_DESKTOP_RUNTIME_DIR;
+  delete clean.PI_DESKTOP_HOST_ENTRY;
+  delete clean[SERVICE_ENV];
+  delete clean.PI_DESKTOP_SESSION_ID;
+  return clean;
+}
+
 const resolution = resolveAppRuntime({
   isPackaged: false,
   resourcesPath: runtimeRoot,
   appRoot: repoRoot,
+  env: withoutAppEnv(process.env),
 });
 
 /**
@@ -56,10 +78,7 @@ const runtimeRequired = process.env.PI_DESKTOP_REQUIRE_RUNTIME === "1";
 
 /** A PATH containing only the shim directory: no system node, no system npm. */
 function strippedEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, PATH: resolution.binDir };
-  delete env.PI_DESKTOP_NODE;
-  delete env.PI_DESKTOP_HOST_ENTRY;
-  return env;
+  return { ...withoutAppEnv(process.env), PATH: resolution.binDir };
 }
 
 interface ShimResult {
@@ -193,6 +212,7 @@ describe.skipIf(!runtimeReady)("resolved runtime (live)", () => {
       const result = spawnSync(resolution.nodePath ?? "", [resolution.piHostPath, "--version"], {
         encoding: "utf8",
         timeout: SPAWN_TIMEOUT_MS,
+        env: strippedEnv(),
       });
 
       expect(result.status).toBe(0);
