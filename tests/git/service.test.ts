@@ -470,35 +470,84 @@ describe("action argv", () => {
     expect(runner.calls.find((call) => call.args[0] === "push")?.args).toEqual(["push"]);
   });
 
+  it("reports a timed-out fetch as a timeout, not an exit code", async () => {
+    const { service } = serviceWith(
+      repoSpecs({
+        fetch: { args: ["fetch"], code: 1, timedOut: true, durationMs: 120_000, stderr: "" },
+      }),
+    );
+    const result = await service.action(ROOT, { kind: "fetch", remote: null });
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe("timeout");
+    expect(result.error?.message).toBe("git timed out after 120 s.");
+    expect(result.error?.fix).toMatch(/did not answer in time/i);
+  });
+
+  it("reports a timed-out push as a timeout", async () => {
+    const { service } = serviceWith(
+      repoSpecs({
+        push: { args: ["push"], code: 1, timedOut: true, durationMs: 120_000, stderr: "" },
+      }),
+    );
+    const result = await service.action(ROOT, { kind: "push" });
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe("timeout");
+  });
+
   it("sets the upstream when the first push has none", async () => {
-    let attempts = 0;
-    const runner = createFakeGitRunner([
+    const { runner, service } = serviceWith([
       ...repoSpecs(),
       {
         args: ["push"],
         exact: true,
-        get stderr() {
-          attempts += 1;
-          return "";
-        },
-        // The first exact push fails with no upstream; the second form succeeds.
         code: 1,
+        stderr: "fatal: The current branch main has no upstream branch.",
+      },
+      { args: ["push", "--set-upstream"], stdout: "" },
+    ]);
+    const result = await service.action(ROOT, { kind: "push" });
+    expect(result.ok).toBe(true);
+    expect(result.message).toBe("Pushed main to origin and set the upstream.");
+    expect(
+      runner.calls.find((call) => call.args[0] === "push" && call.args[1] === "--set-upstream")
+        ?.args,
+    ).toEqual(["push", "--set-upstream", "origin", "main"]);
+  });
+
+  it("reports the retry's error, not the stale no-upstream advice", async () => {
+    const { service } = serviceWith([
+      ...repoSpecs(),
+      {
+        args: ["push"],
+        exact: true,
+        code: 1,
+        stderr: "fatal: The current branch main has no upstream branch.",
+      },
+      {
+        args: ["push", "--set-upstream"],
+        code: 128,
+        stderr: "fatal: Authentication failed for 'https://example.com/r.git'",
       },
     ]);
-    const service = createGitService({ runner, now: () => 1_000 });
     const result = await service.action(ROOT, { kind: "push" });
-    // Either the retry succeeded (a `push --set-upstream` call was made) or the
-    // classified failure was returned; both are honest, and what matters is that
-    // the retry form was attempted with the branch name.
-    const retry = runner.calls.find(
-      (call) => call.args[0] === "push" && call.args[1] === "--set-upstream",
-    );
-    if (result.ok) {
-      expect(retry?.args).toEqual(["push", "--set-upstream", "origin", "main"]);
-    } else {
-      expect(result.error).toBeDefined();
-    }
-    expect(attempts).toBeGreaterThanOrEqual(0);
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe("auth_required");
+  });
+
+  it("keeps the no-upstream failure when the retry says nothing useful", async () => {
+    const { service } = serviceWith([
+      ...repoSpecs(),
+      {
+        args: ["push"],
+        exact: true,
+        code: 1,
+        stderr: "fatal: The current branch main has no upstream branch.",
+      },
+      { args: ["push", "--set-upstream"], code: 1, stderr: "" },
+    ]);
+    const result = await service.action(ROOT, { kind: "push" });
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe("no_upstream");
   });
 
   it("surfaces an auth failure with the delegate-to-git fix", async () => {

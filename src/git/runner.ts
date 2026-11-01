@@ -245,6 +245,8 @@ export interface FakeGitSpec {
   code?: number;
   missing?: boolean;
   timedOut?: boolean;
+  /** How long the fake call "ran"; used to assert the timeout message. */
+  durationMs?: number;
 }
 
 export interface FakeGitCall {
@@ -301,7 +303,7 @@ export function createFakeGitRunner(specs: readonly FakeGitSpec[]): GitRunner & 
         stderr: spec.stderr ?? "",
         missing: spec.missing ?? false,
         timedOut: spec.timedOut ?? false,
-        durationMs: 0,
+        durationMs: spec.durationMs ?? 0,
       });
     },
   };

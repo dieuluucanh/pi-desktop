@@ -7,7 +7,7 @@
  * fixed clock instead of the wall clock.
  */
 
-import type { GitCommitEntry } from "../../../shared/git";
+import type { GitCommitEntry, GitRepoInfo } from "../../../shared/git";
 
 /**
  * A compact relative time: `just now`, `5m ago`, `3h ago`, `2d ago`, `3w ago`,
@@ -32,13 +32,26 @@ export function relativeTime(at: number, now: number): string {
 }
 
 /**
- * The chips a commit row shows: the branch/tag names `%D` reported, with the
- * upstream already present among them when the commit is the branch tip.
+ * The chips a commit row shows: the branch/tag names `%D` reported. The upstream
+ * is already among them on the commit it points at — inventing it for HEAD would
+ * label an unpushed commit as `origin/main`. `origin/HEAD` is a symbolic alias,
+ * not a branch the user acts on, so it is dropped.
  */
-export function commitChips(entry: GitCommitEntry, upstream: string | null): string[] {
-  const chips = [...entry.refs];
-  if (entry.head && upstream && !chips.includes(upstream)) chips.push(upstream);
-  return chips.slice(0, 4);
+export function commitChips(entry: GitCommitEntry): string[] {
+  return entry.refs.filter((ref) => !/\/HEAD$/.test(ref)).slice(0, 4);
+}
+
+/**
+ * The repo facts a History page depends on. A change in any of them can move a
+ * decoration (`origin/main`), the branch tip or the paging offsets, so the page
+ * is re-read. `fetchedAt` and the stash list are deliberately absent: neither
+ * changes what the log says.
+ */
+export function historyKey(repo: GitRepoInfo | undefined): string | null {
+  if (!repo) return null;
+  return [repo.branch ?? "", repo.head ?? "", repo.upstream ?? "", repo.ahead, repo.behind].join(
+    "|",
+  );
 }
 
 /** The exact time for a row's `title`, in the user's locale. */

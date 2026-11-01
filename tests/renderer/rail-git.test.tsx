@@ -1,10 +1,17 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
-import { GitBranchRow, GitSyncNote, StashList } from "../../src/renderer/src/rail/GitSection";
+import {
+  GitBranchRow,
+  GitSyncNote,
+  GitSyncStatus,
+  StashList,
+} from "../../src/renderer/src/rail/GitSection";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import {
   emptyGitSnapshot,
+  type GitAction,
+  type GitActionResult,
   type GitFileEntry,
   type GitRepoInfo,
   type GitSnapshot,
@@ -69,13 +76,21 @@ let handles: ReturnType<typeof installBridge>;
 
 function seed(
   value: GitSnapshot,
-  options: { consented?: boolean; branches?: string[] } = {},
+  options: {
+    consented?: boolean;
+    branches?: string[];
+    action?: GitActionResult | ((action: GitAction) => Promise<GitActionResult>);
+  } = {},
 ): void {
-  handles = installBridge({ git: value, branches: options.branches ?? ["main", "feat/x"] });
+  handles = installBridge({
+    git: value,
+    branches: options.branches ?? ["main", "feat/x"],
+    ...(options.action ? { gitAction: options.action } : {}),
+  });
   useAppStore.setState({
     prefs: { ...DEFAULT_PREFS, drafts: {} },
     git: { [PROJECT]: value },
-    gitError: null,
+    gitErrors: {},
     gitBranches: {},
     gitConsentGranted: options.consented ?? true,
     gitConsentPrompt: null,
@@ -91,6 +106,7 @@ function renderGit(): void {
   render(
     <>
       <GitBranchRow projectPath={PROJECT} />
+      <GitSyncStatus projectPath={PROJECT} />
       <GitSyncNote projectPath={PROJECT} />
       <StashList projectPath={PROJECT} />
     </>,
@@ -187,7 +203,7 @@ describe("sync", () => {
     await userEvent.click(screen.getByRole("button", { name: "Push to origin/main" }));
 
     expect(actions()).toEqual([
-      { kind: "fetch", remote: null },
+      { kind: "fetch", remote: "origin" },
       { kind: "pull" },
       { kind: "push" },
     ]);
@@ -201,6 +217,64 @@ describe("sync", () => {
 
     expect(useAppStore.getState().gitConsentPrompt).toBeNull();
     expect(actions()).toEqual([{ kind: "push" }]);
+  });
+
+  it("shows a spinner and disables every verb while a network action runs", async () => {
+    let resolveAction!: (value: GitActionResult) => void;
+    const pending = new Promise<GitActionResult>((done) => {
+      resolveAction = done;
+    });
+    seed(snapshot(), { action: () => pending });
+    renderGit();
+
+    await userEvent.click(screen.getByRole("button", { name: "Push to origin/main" }));
+
+    expect(screen.getByTestId("git-sync")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByTestId("git-sync-spinner-push")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Fetch from origin" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Pull from origin/main" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Push to origin/main" })).toBeDisabled();
+    expect(screen.getByTestId("git-sync-status")).toHaveTextContent("Pushing to origin/main…");
+
+    resolveAction({ ok: true, message: "Pushed." });
+    await waitFor(() =>
+      expect(screen.queryByTestId("git-sync-spinner-push")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Push to origin/main" })).toBeEnabled();
+    expect(screen.getByTestId("git-sync-status")).toHaveTextContent("Pushed.");
+  });
+
+  it("shows a failure with a Retry that replays the action", async () => {
+    seed(snapshot(), {
+      action: {
+        ok: false,
+        error: {
+          code: "auth_required",
+          message: "Authentication failed",
+          fix: "Prime the credential helper.",
+          recoverable: true,
+        },
+      },
+    });
+    renderGit();
+
+    await userEvent.click(screen.getByRole("button", { name: "Push to origin/main" }));
+    const line = await screen.findByTestId("git-sync-status");
+    expect(line).toHaveAttribute("role", "alert");
+    expect(line).toHaveTextContent("Authentication failed Prime the credential helper.");
+
+    await userEvent.click(within(line).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(actions()).toEqual([{ kind: "push" }, { kind: "push" }]));
+  });
+
+  it("dismisses the status line", async () => {
+    seed(snapshot(), { action: { ok: true, message: "Pushed." } });
+    renderGit();
+
+    await userEvent.click(screen.getByRole("button", { name: "Push to origin/main" }));
+    const line = await screen.findByTestId("git-sync-status");
+    await userEvent.click(within(line).getByRole("button", { name: "Dismiss sync status" }));
+    expect(screen.queryByTestId("git-sync-status")).not.toBeInTheDocument();
   });
 });
 

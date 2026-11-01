@@ -55,7 +55,7 @@ function snapshot(overrides: Partial<GitSnapshot> = {}): GitSnapshot {
 function seed(value: GitSnapshot, gitError: string | null = null): void {
   useAppStore.setState({
     git: { [PROJECT]: value },
-    gitError,
+    gitErrors: gitError ? { [PROJECT]: gitError } : {},
   });
 }
 
@@ -94,7 +94,7 @@ beforeEach(() => {
   useAppStore.setState({
     prefs: { ...DEFAULT_PREFS, drafts: {} },
     git: {},
-    gitError: null,
+    gitErrors: {},
     // These cases exercise the section's own behaviour; the consent gate has its
     // own test in `rail-git.test.tsx`.
     gitConsentGranted: true,

@@ -221,7 +221,9 @@ import {
 } from "../../../shared/rail";
 import {
   isMutatingGitAction,
+  isNetworkGitAction,
   sanitizeGitSnapshot,
+  syncVerbLabel,
   type GitAction,
   type GitActionResult,
   type GitCommitEntry,
@@ -360,13 +362,89 @@ export interface GitLogPage {
   loading: boolean;
   /** True when the last page filled the window, so "Load more" is useful. */
   hasMore: boolean;
+  /**
+   * The repo state (`historyKey`) this page was read for. A different live key
+   * invalidates the page: the branch tip, the upstream or the divergence moved.
+   */
+  key: string | null;
+  /** Request sequence, so a superseded read cannot overwrite a newer one. */
+  seq: number;
+}
+
+/** The phase of the last network action in one folder. */
+export type GitSyncPhase = "running" | "ok" | "error";
+
+/** The rail's view of one network action, per folder. */
+export interface GitSyncState {
+  /** The exact action, so Retry can replay it (including a fetch's remote). */
+  action: GitAction;
+  phase: GitSyncPhase;
+  /** The engine's success text, or `message + " " + fix` for a failure. */
+  message: string;
+  /** When the state was written; unique per action, so effects can key on it. */
+  at: number;
 }
 
 /** Most project folders whose snapshot the store keeps. */
 export const MAX_GIT_SNAPSHOTS = 5;
 /** One commit-log page (mirrors the main-process default). */
 export const GIT_LOG_PAGE_SIZE = 30;
-const EMPTY_GIT_LOG_PAGE: GitLogPage = { entries: [], loading: false, hasMore: false };
+const EMPTY_GIT_LOG_PAGE: GitLogPage = {
+  entries: [],
+  loading: false,
+  hasMore: false,
+  key: null,
+  seq: 0,
+};
+
+/**
+ * Trims a per-folder map to the same bound as the snapshot map. Insertion order
+ * is the recency order here: writing a folder re-inserts its key, so the first
+ * key is the one that has not been touched for longest.
+ */
+function boundByRecent<T>(map: Record<string, T>): Record<string, T> {
+  const keys = Object.keys(map);
+  if (keys.length <= MAX_GIT_SNAPSHOTS) return map;
+  const next = { ...map };
+  for (const stale of keys.slice(0, keys.length - MAX_GIT_SNAPSHOTS)) delete next[stale];
+  return next;
+}
+
+/** One rail line: git's own message plus the fix, when there is one. */
+function gitErrorMessage(error: { message: string; fix?: string }): string {
+  return error.fix ? `${error.message} ${error.fix}` : error.message;
+}
+
+/** Sets (or clears, with null) one folder's rail error, keeping the map bounded. */
+function withGitError(
+  current: Record<string, string>,
+  projectPath: string,
+  message: string | null,
+): Record<string, string> {
+  const next = { ...current };
+  if (message === null) delete next[projectPath];
+  else next[projectPath] = message;
+  return boundByRecent(next);
+}
+
+/**
+ * Network actions in flight, per folder. A second click while one is running
+ * returns the same promise: the engine already serialises, but two clicks would
+ * otherwise mean two pushes.
+ */
+const gitActionInFlight = new Map<string, Promise<GitActionResult>>();
+
+/** Writes one folder's sync state, moving it to the recent end of the map. */
+function withGitSync(
+  current: Record<string, GitSyncState>,
+  projectPath: string,
+  state: GitSyncState,
+): Record<string, GitSyncState> {
+  const next = { ...current };
+  delete next[projectPath];
+  next[projectPath] = state;
+  return boundByRecent(next);
+}
 
 export interface BlobState {
   status: "loading" | "ready" | "error";
@@ -908,8 +986,14 @@ export interface AppStateShape {
    * (`MAX_GIT_SNAPSHOTS`) so a long app session cannot grow it without limit.
    */
   git: Record<string, GitSnapshot>;
-  /** A failed git operation worth showing in the rail (cleared on success). */
-  gitError: string | null;
+  /**
+   * The last failed git operation per folder, ready to render (cleared by a
+   * success, a dismiss, or opening that folder's diff). Keyed by folder so the
+   * rail never shows one project's failure while another is selected.
+   */
+  gitErrors: Record<string, string>;
+  /** The last network action per folder: running, succeeded, or failed. */
+  gitSync: Record<string, GitSyncState>;
   /** The folder whose snapshot main is polling, or null when none is. */
   gitWatched: string | null;
   /** The diff open in the viewer, with the request that produced it. */
@@ -935,15 +1019,20 @@ export interface AppStateShape {
   openGitDiff: (projectPath: string, request: GitDiffRequest) => Promise<void>;
   closeGitDiff: () => void;
   /** Loads (or appends to) a folder's commit log. */
-  loadGitLog: (projectPath: string, options?: { more?: boolean }) => Promise<void>;
+  loadGitLog: (
+    projectPath: string,
+    options?: { more?: boolean; key?: string | null },
+  ) => Promise<void>;
   /**
    * HEAD's complete commit message, for the amend box. Resolves null when there
    * is no commit yet; the box then leaves the message empty rather than
    * inventing one.
    */
   loadHeadCommitMessage: (projectPath: string) => Promise<string | null>;
-  /** Dismisses the rail's error line. */
-  clearGitError: () => void;
+  /** Dismisses one folder's rail error line. */
+  clearGitError: (projectPath: string) => void;
+  /** Dismisses one folder's sync status line. */
+  clearGitSync: (projectPath: string) => void;
 
   /**
    * One consent per session for mutating git writes (plan D13). Staging,
@@ -1695,7 +1784,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   update: null,
   blobs: {},
   git: {},
-  gitError: null,
+  gitErrors: {},
+  gitSync: {},
   gitWatched: null,
   gitDiff: null,
   gitDiffLoading: false,
@@ -4782,11 +4872,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
     set({
       git: next,
-      gitError: parsed.error
-        ? parsed.error.fix
-          ? `${parsed.error.message} ${parsed.error.fix}`
-          : parsed.error.message
-        : get().gitError,
+      gitErrors: parsed.error
+        ? withGitError(get().gitErrors, parsed.projectPath, gitErrorMessage(parsed.error))
+        : get().gitErrors,
     });
   },
 
@@ -4817,9 +4905,50 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   runGitAction: async (projectPath, action) => {
+    const network = isNetworkGitAction(action.kind);
+    // One network action per folder: a second click joins the one in flight
+    // instead of queueing a second push behind it.
+    if (network) {
+      const running = gitActionInFlight.get(projectPath);
+      if (running) return running;
+    }
+
+    const writeSync = (phase: GitSyncPhase, message: string): void => {
+      set({
+        gitSync: withGitSync(get().gitSync, projectPath, {
+          action,
+          phase,
+          message,
+          at: Date.now(),
+        }),
+      });
+    };
+
+    // The terminal outcome in one place: the folder's error line, the sync
+    // status for network verbs, and the toast that survives a scrolled panel.
+    const finish = (result: GitActionResult): void => {
+      if (result.ok) {
+        const message = result.message ?? `${syncVerbLabel(action.kind)} finished.`;
+        set({ gitErrors: withGitError(get().gitErrors, projectPath, null) });
+        if (network) {
+          writeSync("ok", message);
+          toast.success(message);
+        }
+        return;
+      }
+      const message = result.error
+        ? gitErrorMessage(result.error)
+        : `${syncVerbLabel(action.kind)} failed.`;
+      set({ gitErrors: withGitError(get().gitErrors, projectPath, message) });
+      if (network) {
+        writeSync("error", message);
+        toast.error(`${syncVerbLabel(action.kind)} failed: ${message}`);
+      }
+    };
+
     const api = bridge()?.git;
     if (!api) {
-      return {
+      const result: GitActionResult = {
         ok: false,
         error: {
           code: "not_a_repo",
@@ -4827,42 +4956,50 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
           recoverable: false,
         },
       };
-    }
-    try {
-      const result = await api.action(projectPath, action);
-      if (result.ok) {
-        set({ gitError: null });
-        // main pushes a refreshed snapshot for a *watched* folder; an explicit
-        // read keeps an unwatched one (a background project) honest too. A
-        // commit changes HEAD, so refresh an already-mounted log page as well;
-        // otherwise History shows the pre-action commits until a manual Refresh.
-        await get().refreshGit(projectPath);
-        if (get().gitLog[projectPath]) await get().loadGitLog(projectPath);
-      } else if (result.error) {
-        set({
-          gitError: result.error.fix
-            ? `${result.error.message} ${result.error.fix}`
-            : result.error.message,
-        });
-      }
+      finish(result);
       return result;
-    } catch (error) {
-      get().noteFailure(error);
-      return {
-        ok: false,
-        error: {
-          code: "unknown",
-          message: error instanceof Error ? error.message : String(error),
-          recoverable: true,
-        },
-      };
     }
+
+    // Clear the previous failure and announce the new attempt before the call:
+    // a stale red line (or a dead button) while a fresh action runs is the same
+    // lie as no line at all.
+    set({ gitErrors: withGitError(get().gitErrors, projectPath, null) });
+    if (network) writeSync("running", "");
+
+    const work = (async (): Promise<GitActionResult> => {
+      try {
+        const result = await api.action(projectPath, action);
+        finish(result);
+        if (result.ok) {
+          // main pushes a refreshed snapshot for a *watched* folder; an explicit
+          // read keeps an unwatched one (a background project) honest too. The
+          // History page keys on the repo state, so it reloads itself when this
+          // snapshot moves HEAD, the upstream or the divergence.
+          await get().refreshGit(projectPath);
+        }
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        get().noteFailure(error);
+        const result: GitActionResult = {
+          ok: false,
+          error: { code: "unknown", message, recoverable: true },
+        };
+        finish(result);
+        return result;
+      } finally {
+        if (network) gitActionInFlight.delete(projectPath);
+      }
+    })();
+
+    if (network) gitActionInFlight.set(projectPath, work);
+    return work;
   },
 
   openGitDiff: async (projectPath, request) => {
     const api = bridge()?.git;
     if (!api) return;
-    set({ gitDiffLoading: true, gitError: null });
+    set({ gitDiffLoading: true, gitErrors: withGitError(get().gitErrors, projectPath, null) });
     try {
       const diff = await api.diff(projectPath, request);
       set({ gitDiff: { projectPath, request, diff }, gitDiffLoading: false });
@@ -4879,12 +5016,21 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (!api) return;
     const page = get().gitLog[projectPath] ?? EMPTY_GIT_LOG_PAGE;
     const more = options.more === true && page.entries.length > 0;
-    set({ gitLog: { ...get().gitLog, [projectPath]: { ...page, loading: true } } });
+    // The key is written when the request *starts*: the History effect compares
+    // it to the live repo state, and writing it only on success would let a
+    // re-render start a second read for the same state.
+    const key = options.key !== undefined ? options.key : page.key;
+    const seq = page.seq + 1;
+    set({ gitLog: { ...get().gitLog, [projectPath]: { ...page, loading: true, key, seq } } });
     try {
       const entries = await api.log(projectPath, {
         limit: GIT_LOG_PAGE_SIZE,
         ...(more ? { skip: page.entries.length } : {}),
       });
+      // A newer state (or a newer manual refresh) has already replaced this
+      // request; its response would have the wrong offsets or decorations.
+      const current = get().gitLog[projectPath];
+      if (!current || current.seq !== seq) return;
       set({
         gitLog: {
           ...get().gitLog,
@@ -4892,16 +5038,29 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
             entries: more ? [...page.entries, ...entries] : entries,
             loading: false,
             hasMore: entries.length >= GIT_LOG_PAGE_SIZE,
+            key,
+            seq,
           },
         },
       });
     } catch (error) {
-      set({ gitLog: { ...get().gitLog, [projectPath]: { ...page, loading: false } } });
+      const current = get().gitLog[projectPath];
+      if (current?.seq === seq) {
+        set({ gitLog: { ...get().gitLog, [projectPath]: { ...page, loading: false, key, seq } } });
+      }
       get().noteFailure(error);
     }
   },
 
-  clearGitError: () => set({ gitError: null }),
+  clearGitError: (projectPath) => {
+    set({ gitErrors: withGitError(get().gitErrors, projectPath, null) });
+  },
+
+  clearGitSync: (projectPath) => {
+    const next = { ...get().gitSync };
+    delete next[projectPath];
+    set({ gitSync: next });
+  },
 
   performGitAction: async (projectPath, action) => {
     // Reads never reach this method, so gating here means exactly "writes".

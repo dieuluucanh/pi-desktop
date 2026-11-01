@@ -232,7 +232,18 @@ export async function readStatus(
   runner: GitRunner,
   root: string,
   options: { timeoutMs?: number } = {},
-): Promise<ParsedStatus & { ok: boolean; stderr: string; missing: boolean }> {
+): Promise<
+  ParsedStatus & {
+    ok: boolean;
+    stderr: string;
+    missing: boolean;
+    /** The child's exit code, so a caller can classify without re-running. */
+    code: number;
+    /** True when the runner killed the child at its timeout. */
+    timedOut: boolean;
+    durationMs: number;
+  }
+> {
   const result = await runner.run(
     root,
     ["status", "--porcelain=v2", "--branch", "-z", "--ignore-submodules=dirty"],
@@ -248,6 +259,9 @@ export async function readStatus(
       ok: false,
       stderr: result.stderr,
       missing: result.missing,
+      code: result.code,
+      timedOut: result.timedOut,
+      durationMs: result.durationMs,
     };
   }
   return {
@@ -255,6 +269,9 @@ export async function readStatus(
     ok: true,
     stderr: "",
     missing: false,
+    code: 0,
+    timedOut: false,
+    durationMs: result.durationMs,
   };
 }
 

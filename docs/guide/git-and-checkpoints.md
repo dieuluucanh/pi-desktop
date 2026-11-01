@@ -33,6 +33,13 @@ The top block, one row at a time:
   or _no commits yet_), `↑n ↓n` beside it, then Fetch, Pull and Push as icons.
   Their tooltip names the target. A line appears underneath **only** when
   something is unavailable ("no upstream", "no remote is configured").
+- **A sync in progress, and its outcome** — the running verb shows a spinner and
+  all three verbs are disabled while it runs. A status line directly under the
+  branch row says _Pushing to origin/main…_, then _Pushed._ or the failure with
+  its fix; a failed line offers _Retry_ and every line can be dismissed. The
+  same outcome arrives as a notification, so it is visible even if the panel is
+  scrolled or another menu is open. A network call that runs past its timeout
+  says so ("git timed out after 120 s") rather than reporting an exit code.
 - **The commit box** — a message, <kbd>Ctrl/Cmd</kbd>+<kbd>Enter</kbd> to commit,
   the counter and the identity it will use, and a <kbd>⋯</kbd> menu holding
   _Amend last commit_ (which prefills the previous message) plus _Change_ /
@@ -53,7 +60,7 @@ count says 0, so nothing spends two rows explaining an empty list.
 The rail is scoped to the **project you selected** in the sidebar, not to
 the tab that happens to be on screen. Selecting a project jumps to its most
 recently active open session; selecting a session selects its project. The panel
-header's tooltip names the folder.
+header shows the folder's name beside the menu title; hover it for the full path.
 
 _Commit_ stays pressable even when something is missing. It explains what (stage
 something, write a message, set a git identity) only when you press it, as a
@@ -77,7 +84,10 @@ Nothing fails silently.
   is a `git checkout --`; a discard of an **untracked** file moves it to the OS
   trash, not to oblivion.
 - **History** lists commits, newest first, with _Load more_. Clicking one opens
-  its diff.
+  its diff. The list reloads itself when the repository moves — a new commit, a
+  fetch, a push or a branch switch — so _Refresh_ is only for forcing a re-read.
+  The branch and tag chips are git's own decorations: `origin/main` appears on a
+  commit only when the upstream actually points at it, never on an unpushed tip.
 - **Stashes** (collapsed until you open it, or until you use _Stash changes_)
   lists what is parked, with _Restore_ and _Drop_.
   **Hunk staging.** The diff viewer renders each hunk with _Stage hunk_ (for a

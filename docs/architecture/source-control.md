@@ -234,12 +234,43 @@ to cost four rows in a column that also has to show changed files — while
 _Stash changes_ stays outside the fold, because stashing is what you do while
 looking at a change.
 
+## Network actions: one status, one toast
+
+`fetch`/`pull`/`push` are the only actions with a visible lifecycle. The
+renderer keeps `gitSync[folder]` (`running` → `ok`/`error`, plus the exact
+`GitAction` so _Retry_ replays it) and `gitErrors[folder]`; both are keyed by
+folder and bounded like the snapshot map. `runGitAction` writes `running` before
+the IPC call, dedupes a second click on the same folder through a module-level
+in-flight map (the engine already serialises, but two clicks used to mean two
+pushes), and writes the terminal state plus a `sonner` toast. The rail renders
+that state in the sync row (`GitSyncStatus`), so the outcome is at the click
+site; the Changes block's banner remains the panel-wide record. A timed-out child
+is classified as `timeout` (with the duration in the message) instead of
+`unknown`/"git exited with code 1": `failed(result: GitResult)` is the one
+constructor, so `timedOut` cannot be dropped by a call site again. When a
+`--set-upstream` retry fails, the retry's own stderr is what gets classified and
+reported — repeating `no_upstream` would tell the user to do what just failed.
+
+## History freshness
+
+A log page is keyed to the repo state it was read for:
+`historyKey = branch|head|upstream|ahead|behind`. The History section compares
+that key with `GitLogPage.key` and reloads page one when it differs; `seq`
+increments per request and a response whose `seq` was superseded is dropped, so a
+slow read cannot overwrite a newer state or a manual refresh. The key excludes
+`fetchedAt` and the stash list, so ordinary polls do not refetch the log. The
+chips are `%D` verbatim (minus `*/HEAD` symbolic aliases): `origin/main` appears
+on a commit only when git decorates it there, which is what stops an unpushed tip
+from being labelled as pushed.
+
 ## Scope: folder, session, app
 
-The three rail menus act on two scopes, and the panel header names the folder it
-is showing in its `title`. There is no per-menu scope row (2026-10-30
+The three rail menus act on two scopes, and the panel header shows the folder it
+is acting on: `projectFolderName(scopeTitle)` beside the menu title, with the full
+path as the header's `title`. There is no per-menu scope row (2026-10-30
 project-scoped rail plan): the rail is app chrome scoped to the **selected
-project**, so the panel and the sidebar cannot disagree.
+project**, so the panel and the sidebar cannot disagree, and the menu bodies stay
+folder-free — the header is the one answer to "which folder?".
 
 | Menu           | Scope                     | Where the truth lives                                | How to switch                                                            |
 | -------------- | ------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -256,7 +287,8 @@ The **Changes** block opens with its pinned header — the title, the combined f
 count, and an icon-only _Refresh changes_ button — followed by the two collapsible
 lists. A clean tree renders no paragraph: the count already says 0. The
 **Commit History** block has the same shape (title, loaded-commit count, refresh)
-and reloads page one rather than the current cursor.
+and reloads page one rather than the current cursor; it also reloads itself when
+the repo-state key moves (see _History freshness_).
 
 The **commit box** keeps only the message, the meta row and the button. A
 blocking condition (nothing staged, no message, no git identity, an over-long

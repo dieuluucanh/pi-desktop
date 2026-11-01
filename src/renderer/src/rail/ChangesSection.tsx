@@ -212,7 +212,7 @@ function Group({
 
 export function ChangesSection({ projectPath }: ChangesSectionProps) {
   const snapshot = useAppStore((state) => state.git[projectPath]);
-  const gitError = useAppStore((state) => state.gitError);
+  const gitError = useAppStore((state) => state.gitErrors[projectPath] ?? null);
   const clearGitError = useAppStore((state) => state.clearGitError);
   const performGitAction = useAppStore((state) => state.performGitAction);
   const refreshGit = useAppStore((state) => state.refreshGit);
@@ -285,7 +285,7 @@ export function ChangesSection({ projectPath }: ChangesSectionProps) {
               type="button"
               className="shrink-0 text-danger/80 hover:text-danger"
               aria-label="Dismiss git error"
-              onClick={clearGitError}
+              onClick={() => clearGitError(projectPath)}
             >
               <X className="size-3" aria-hidden />
             </button>

@@ -2,7 +2,12 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { HistorySection, HISTORY_PAGE_SIZE } from "../../src/renderer/src/rail/HistorySection";
-import { absoluteTime, commitChips, relativeTime } from "../../src/renderer/src/rail/history-view";
+import {
+  absoluteTime,
+  commitChips,
+  historyKey,
+  relativeTime,
+} from "../../src/renderer/src/rail/history-view";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { emptyGitSnapshot, type GitCommitEntry, type GitSnapshot } from "../../src/shared/git";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
@@ -62,22 +67,26 @@ function seed(
     entries?: GitCommitEntry[];
     hasMore?: boolean;
     loading?: boolean;
+    key?: string | null;
   } = {},
 ): void {
+  const snap = options.snapshot ?? snapshot();
   handles = installBridge({ gitLog: options.entries ?? [commit()] });
   useAppStore.setState({
     prefs: { ...DEFAULT_PREFS, drafts: {} },
-    git: { [PROJECT]: options.snapshot ?? snapshot() },
+    git: { [PROJECT]: snap },
     gitLog: {
       [PROJECT]: {
         entries: options.entries ?? [commit()],
         loading: options.loading ?? false,
         hasMore: options.hasMore ?? false,
+        key: options.key === undefined ? historyKey(snap.repo) : options.key,
+        seq: 0,
       },
     },
     gitConsentGranted: true,
     gitConsentPrompt: null,
-    gitError: null,
+    gitErrors: {},
   });
 }
 
@@ -108,19 +117,26 @@ describe("relative time", () => {
 });
 
 describe("commit chips", () => {
-  it("keeps the refs and adds the upstream to the head commit", () => {
+  it("does not invent an upstream for an unpushed head", () => {
+    // The reported bug: `%D` said `HEAD -> main` (ahead 1), but the rail showed
+    // `origin/main` on a commit the upstream does not point at.
     const entry = commit({ refs: ["main"], head: true });
-    expect(commitChips(entry, "origin/main")).toEqual(["main", "origin/main"]);
+    expect(commitChips(entry)).toEqual(["main"]);
   });
 
-  it("does not duplicate an upstream already in the refs", () => {
+  it("keeps the upstream git reported on the commit it points at", () => {
     const entry = commit({ refs: ["main", "origin/main"], head: true });
-    expect(commitChips(entry, "origin/main")).toEqual(["main", "origin/main"]);
+    expect(commitChips(entry)).toEqual(["main", "origin/main"]);
+  });
+
+  it("drops a symbolic remote HEAD", () => {
+    const entry = commit({ refs: ["main", "origin/main", "origin/HEAD"] });
+    expect(commitChips(entry)).toEqual(["main", "origin/main"]);
   });
 
   it("caps the chips", () => {
     const entry = commit({ refs: ["a", "b", "c", "d", "e"] });
-    expect(commitChips(entry, null)).toHaveLength(4);
+    expect(commitChips(entry)).toHaveLength(4);
   });
 });
 
@@ -135,10 +151,18 @@ describe("the log list", () => {
   });
 
   it("shows branch chips", () => {
-    seed({ entries: [commit({ refs: ["main"], head: true })] });
+    seed({ entries: [commit({ refs: ["main", "origin/main"], head: true })] });
     render(<HistorySection projectPath={PROJECT} />);
     expect(screen.getByTestId("commit-aaaaaaa")).toHaveTextContent("main");
     expect(screen.getByTestId("commit-aaaaaaa")).toHaveTextContent("origin/main");
+  });
+
+  it("does not label an unpushed tip with the upstream", () => {
+    seed({ entries: [commit({ refs: ["main"], head: true })] });
+    render(<HistorySection projectPath={PROJECT} />);
+    const row = screen.getByTestId("commit-aaaaaaa");
+    expect(row).toHaveTextContent("main");
+    expect(row).not.toHaveTextContent("origin/main");
   });
 
   it("puts the exact time in the row's title", () => {
@@ -165,6 +189,51 @@ describe("the log list", () => {
     seed({ entries: [commit({ subject: "" })] });
     render(<HistorySection projectPath={PROJECT} />);
     expect(screen.getByTestId("commit-aaaaaaa")).toHaveTextContent("(no message)");
+  });
+});
+
+describe("freshness", () => {
+  it("does not refetch a page that is current for the repo state", () => {
+    seed({ entries: [commit()] });
+    render(<HistorySection projectPath={PROJECT} />);
+    expect(handles.gitCalls.filter((call) => call.kind === "log")).toHaveLength(0);
+  });
+
+  it("reloads the first page when HEAD moves", async () => {
+    seed({ entries: [commit()] });
+    const { rerender } = render(<HistorySection projectPath={PROJECT} />);
+    useAppStore.setState({
+      git: { [PROJECT]: snapshot({ repo: { ...snapshot().repo!, head: "bbbbbbb" } }) },
+    });
+    rerender(<HistorySection projectPath={PROJECT} />);
+    await waitFor(() =>
+      expect(handles.gitCalls.find((call) => call.kind === "log")?.payload).toEqual({
+        limit: HISTORY_PAGE_SIZE,
+      }),
+    );
+  });
+
+  it("reloads when a push changes the divergence", async () => {
+    seed({
+      snapshot: snapshot({ repo: { ...snapshot().repo!, ahead: 1 } }),
+      entries: [commit()],
+    });
+    const { rerender } = render(<HistorySection projectPath={PROJECT} />);
+    useAppStore.setState({
+      git: { [PROJECT]: snapshot({ repo: { ...snapshot().repo!, ahead: 0 } }) },
+    });
+    rerender(<HistorySection projectPath={PROJECT} />);
+    await waitFor(() => expect(handles.gitCalls.some((call) => call.kind === "log")).toBe(true));
+  });
+
+  it("reloads a page that was read for an older state", async () => {
+    seed({ entries: [commit()], key: "stale" });
+    render(<HistorySection projectPath={PROJECT} />);
+    await waitFor(() =>
+      expect(handles.gitCalls.find((call) => call.kind === "log")?.payload).toEqual({
+        limit: HISTORY_PAGE_SIZE,
+      }),
+    );
   });
 });
 

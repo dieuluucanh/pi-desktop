@@ -72,13 +72,16 @@ function menus(scopeTitle?: string): RailMenuSpec[] {
 }
 
 describe("the folder is named by the panel header, not by a row", () => {
-  it("puts the folder in the header's title", () => {
+  it("shows the folder in the header and the full path in its title", () => {
     installBridge();
     openRail();
     render(<RightRail menus={menus(PROJECT)} />);
 
     const heading = screen.getByRole("heading", { name: "Source Control" });
     expect(heading).toHaveAttribute("title", PROJECT);
+    const folder = screen.getByTestId("rail-scope-folder");
+    expect(folder).toHaveTextContent("danone-hcm");
+    expect(folder).toHaveAttribute("title", PROJECT);
   });
 
   it("carries the title on every menu that declares one", () => {
@@ -92,6 +95,8 @@ describe("the folder is named by the panel header, not by a row", () => {
     openRail("documents");
     render(<RightRail menus={menus(PROJECT)} />);
     expect(screen.getByRole("heading", { name: "Documents" })).not.toHaveAttribute("title");
+    // Documents is app-wide: no folder, so no folder span either.
+    expect(screen.queryByTestId("rail-scope-folder")).not.toBeInTheDocument();
   });
 
   it("spends no row on a scope line any more", () => {

@@ -57,7 +57,7 @@ function seed(value: GitSnapshot, split = DEFAULT_RAIL_SPLIT): void {
       rail: { ...DEFAULT_PREFS.rail, split: { ...split } },
     },
     git: { [PROJECT]: value },
-    gitError: null,
+    gitErrors: {},
     gitLog: {},
     gitConsentGranted: true,
   });

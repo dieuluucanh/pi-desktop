@@ -248,6 +248,25 @@ describe("classifyGitFailure", () => {
     expect(error.message).toBe("git exited with code 3");
   });
 
+  it("names a timeout before any stderr pattern", () => {
+    const error = classifyGitFailure({
+      stderr: "fatal: Authentication failed for 'https://x'",
+      code: 1,
+      timedOut: true,
+      durationMs: 120_000,
+    });
+    expect(error.code).toBe("timeout");
+    expect(error.message).toBe("git timed out after 120 s.");
+    expect(error.fix).toMatch(/did not answer in time/i);
+    expect(error.recoverable).toBe(true);
+  });
+
+  it("still says it timed out when the duration is unknown", () => {
+    const error = classifyGitFailure({ timedOut: true });
+    expect(error.code).toBe("timeout");
+    expect(error.message).toBe("git timed out before it answered.");
+  });
+
   it("strips git's level prefixes and skips hint lines", () => {
     expect(firstGitLine("hint: see git help\nfatal: real problem\n")).toBe("real problem");
     expect(firstGitLine("error: bad thing")).toBe("bad thing");

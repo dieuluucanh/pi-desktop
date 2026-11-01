@@ -129,6 +129,7 @@ describe("the scope the rail uses", () => {
 
     // The header names the project folder, not the tab's cwd.
     expect(screen.getByRole("heading", { name: "Source Control" })).toHaveAttribute("title", APP);
+    expect(screen.getByTestId("rail-scope-folder")).toHaveTextContent("app");
   });
 
   it("falls back to the session's folder when no project is selected", () => {
@@ -139,6 +140,7 @@ describe("the scope the rail uses", () => {
     render(<ProjectRail />);
 
     expect(screen.getByRole("heading", { name: "Source Control" })).toHaveAttribute("title", OTHER);
+    expect(screen.getByTestId("rail-scope-folder")).toHaveTextContent("other");
   });
 
   it("never scopes to a web tab's cwd", () => {

@@ -21,7 +21,19 @@
  */
 
 import { useState } from "react";
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, GitBranch, RefreshCw } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  GitBranch,
+  Loader2,
+  RefreshCw,
+  X,
+} from "lucide-react";
+import { syncProgressLabel } from "../../../shared/git";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { ConfirmDialog } from "../ui/confirm-dialog";
@@ -212,6 +224,7 @@ export function GitBranchRow({ projectPath }: GitPartProps) {
  */
 export function GitSyncButtons({ projectPath }: GitPartProps) {
   const snapshot = useAppStore((state) => state.git[projectPath]);
+  const syncState = useAppStore((state) => state.gitSync[projectPath]);
   const performGitAction = useAppStore((state) => state.performGitAction);
 
   const repo = snapshot?.repo;
@@ -220,39 +233,137 @@ export function GitSyncButtons({ projectPath }: GitPartProps) {
   const target = syncTarget(repo);
   const sync = syncAvailability(repo);
   const remote = target?.split("/")[0];
+  const running = syncState?.phase === "running";
+  const runningKind = running ? syncState.action.kind : null;
 
   return (
-    <div className="flex shrink-0 items-center gap-0.5" data-testid="git-sync">
+    <div className="flex shrink-0 items-center gap-0.5" data-testid="git-sync" aria-busy={running}>
       <Button
         size="icon-sm"
         variant="ghost"
         aria-label={remote ? `Fetch from ${remote}` : "Fetch"}
         title={sync.fetch ? (remote ? `Fetch from ${remote}` : "Fetch") : (sync.reason ?? "Fetch")}
-        disabled={!sync.fetch}
-        onClick={() => void performGitAction(projectPath, { kind: "fetch", remote: null })}
+        disabled={!sync.fetch || running}
+        onClick={() =>
+          void performGitAction(projectPath, { kind: "fetch", remote: remote ?? null })
+        }
       >
-        <ArrowDown className="size-3" aria-hidden />
+        {runningKind === "fetch" ? (
+          <Loader2
+            className="size-3 animate-spin"
+            aria-hidden
+            data-testid="git-sync-spinner-fetch"
+          />
+        ) : (
+          <ArrowDown className="size-3" aria-hidden />
+        )}
       </Button>
       <Button
         size="icon-sm"
         variant="ghost"
         aria-label={target ? `Pull from ${target}` : "Pull"}
         title={sync.pull ? (target ? `Pull from ${target}` : "Pull") : (sync.reason ?? "Pull")}
-        disabled={!sync.pull}
+        disabled={!sync.pull || running}
         onClick={() => void performGitAction(projectPath, { kind: "pull" })}
       >
-        <RefreshCw className="size-3" aria-hidden />
+        {runningKind === "pull" ? (
+          <Loader2
+            className="size-3 animate-spin"
+            aria-hidden
+            data-testid="git-sync-spinner-pull"
+          />
+        ) : (
+          <RefreshCw className="size-3" aria-hidden />
+        )}
       </Button>
       <Button
         size="icon-sm"
         variant="ghost"
         aria-label={target ? `Push to ${target}` : "Push"}
         title={sync.push ? (target ? `Push to ${target}` : "Push") : (sync.reason ?? "Push")}
-        disabled={!sync.push}
+        disabled={!sync.push || running}
         onClick={() => void performGitAction(projectPath, { kind: "push" })}
       >
-        <ArrowUp className="size-3" aria-hidden />
+        {runningKind === "push" ? (
+          <Loader2
+            className="size-3 animate-spin"
+            aria-hidden
+            data-testid="git-sync-spinner-push"
+          />
+        ) : (
+          <ArrowUp className="size-3" aria-hidden />
+        )}
       </Button>
+    </div>
+  );
+}
+
+/**
+ * The outcome of the last network action, directly under the buttons that
+ * produced it. The Changes block's banner stays the panel-wide record; this line
+ * is the answer at the click site, and it is keyed by folder like the status.
+ */
+export function GitSyncStatus({ projectPath }: GitPartProps) {
+  const snapshot = useAppStore((state) => state.git[projectPath]);
+  const status = useAppStore((state) => state.gitSync[projectPath]);
+  const clearGitSync = useAppStore((state) => state.clearGitSync);
+  const performGitAction = useAppStore((state) => state.performGitAction);
+
+  if (!status) return null;
+
+  const target = syncTarget(snapshot?.repo);
+  const remote = target?.split("/")[0];
+  const running = status.phase === "running";
+  // Fetch names the remote it talks to; pull and push name the tracking ref.
+  const where =
+    status.action.kind === "fetch"
+      ? remote
+        ? ` from ${remote}`
+        : ""
+      : target
+        ? ` ${status.action.kind === "push" ? "to" : "from"} ${target}`
+        : "";
+  const tone =
+    status.phase === "error"
+      ? "border-danger/40 bg-danger/10 text-danger"
+      : "border-line bg-raised/40 text-ink-muted";
+
+  return (
+    <div
+      className={`mx-3 mb-1 flex items-start gap-2 rounded-sm border px-2 py-1 text-[11px] ${tone}`}
+      role={status.phase === "error" ? "alert" : "status"}
+      data-testid="git-sync-status"
+      data-phase={status.phase}
+    >
+      {running ? (
+        <Loader2 className="mt-0.5 size-3 shrink-0 animate-spin" aria-hidden />
+      ) : status.phase === "ok" ? (
+        <Check className="mt-0.5 size-3 shrink-0 text-accent" aria-hidden />
+      ) : (
+        <AlertTriangle className="mt-0.5 size-3 shrink-0" aria-hidden />
+      )}
+      <span className="min-w-0 flex-1">
+        {running ? `${syncProgressLabel(status.action.kind)}${where}…` : status.message}
+      </span>
+      {status.phase === "error" ? (
+        <button
+          type="button"
+          className="shrink-0 underline hover:text-ink"
+          onClick={() => void performGitAction(projectPath, status.action)}
+        >
+          Retry
+        </button>
+      ) : null}
+      {running ? null : (
+        <button
+          type="button"
+          className="shrink-0 opacity-70 hover:opacity-100"
+          aria-label="Dismiss sync status"
+          onClick={() => clearGitSync(projectPath)}
+        >
+          <X className="size-3" aria-hidden />
+        </button>
+      )}
     </div>
   );
 }

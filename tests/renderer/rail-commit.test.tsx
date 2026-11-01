@@ -95,7 +95,7 @@ function seed(value: GitSnapshot, headMessage: string | null = null): void {
   useAppStore.setState({
     prefs: { ...DEFAULT_PREFS, drafts: {} },
     git: { [PROJECT]: value },
-    gitError: null,
+    gitErrors: {},
     // Consent is granted so these cases test the box, not the gate.
     gitConsentGranted: true,
     gitConsentPrompt: null,
@@ -240,7 +240,7 @@ describe("committing", () => {
     useAppStore.setState({
       prefs: { ...DEFAULT_PREFS, drafts: {} },
       git: { [PROJECT]: STAGED },
-      gitError: null,
+      gitErrors: {},
       gitConsentGranted: true,
       gitConsentPrompt: null,
     });
@@ -249,7 +249,7 @@ describe("committing", () => {
     await userEvent.type(screen.getByLabelText("Commit message"), "feat: x");
     await userEvent.click(screen.getByRole("button", { name: "Commit" }));
 
-    await waitFor(() => expect(useAppStore.getState().gitError).toMatch(/index\.lock/));
+    await waitFor(() => expect(useAppStore.getState().gitErrors[PROJECT]).toMatch(/index\.lock/));
     // The text is the user's work, not the failed attempt's.
     expect(screen.getByLabelText("Commit message")).toHaveValue("feat: x");
   });

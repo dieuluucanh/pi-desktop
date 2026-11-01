@@ -260,13 +260,15 @@ describe("panel rail ownership", () => {
     // Source Control and Checkpoints used to pin a scope row naming the folder
     // and offering *Go to project*. The rail is now app chrome scoped to the
     // selected project (2026-10-30 plan), so the folder belongs in the panel
-    // header's `title` and nowhere else: a per-body row would be a second answer
-    // to "which folder is this?".
+    // header (its short name, full path in the title) and nowhere else: a
+    // per-body row would be a second answer to "which folder is this?".
+    // `rail-scope-folder` is the header's own span; the old row's test id was
+    // exactly `rail-scope`.
     const files = await rendererFiles();
     const offenders: string[] = [];
     for (const file of files) {
       const text = await readFile(file, "utf8");
-      if (text.includes("Go to project") || text.includes('data-testid="rail-scope')) {
+      if (text.includes("Go to project") || text.includes('data-testid="rail-scope"')) {
         offenders.push(relative(repoRoot, file).replace(/\\/g, "/"));
       }
     }
@@ -282,6 +284,10 @@ describe("panel rail ownership", () => {
     );
     expect(host).toContain("scopeTitle?: string");
     expect(host).toMatch(/<h2[^>]*title=\{spec\.scopeTitle\}/);
+    // The folder is visible, not tooltip-only: the header shows its short name
+    // and keeps the full path in the title.
+    expect(host).toContain('data-testid="rail-scope-folder"');
+    expect(host).toContain("projectFolderName(spec.scopeTitle)");
   });
 
   it("keeps host controls in one place", async () => {

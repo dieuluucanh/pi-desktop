@@ -63,7 +63,7 @@ function seed(overrides: Partial<GitDiff> = {}, loading = false): void {
     gitDiffLoading: loading,
     gitConsentGranted: true,
     gitConsentPrompt: null,
-    gitError: null,
+    gitErrors: {},
   });
 }
 

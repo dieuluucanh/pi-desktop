@@ -39,7 +39,7 @@ import { useAppStore } from "../state/app-store";
 import { BlockSplitter } from "./BlockSplitter";
 import { ChangesSection } from "./ChangesSection";
 import { CommitBox } from "./CommitBox";
-import { GitBranchRow, GitSyncNote, StashList } from "./GitSection";
+import { GitBranchRow, GitSyncNote, GitSyncStatus, StashList } from "./GitSection";
 import { HistorySection } from "./HistorySection";
 import { blockFlex, blockTestId } from "./source-control-view";
 
@@ -69,6 +69,7 @@ export function SourceControlPanel({ projectPath }: SourceControlPanelProps) {
         data-testid={blockTestId("source-control")}
       >
         <GitBranchRow projectPath={projectPath} />
+        <GitSyncStatus projectPath={projectPath} />
         <GitSyncNote projectPath={projectPath} />
         <CommitBox projectPath={projectPath} />
         <div className="border-t border-line">

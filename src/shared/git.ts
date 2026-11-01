@@ -335,6 +335,34 @@ export function isNetworkGitAction(kind: GitActionKind): boolean {
   return GIT_NETWORK_ACTIONS.includes(kind);
 }
 
+/** The verb as a label for a toast: "Fetch" | "Pull" | "Push". */
+export function syncVerbLabel(kind: GitActionKind): string {
+  switch (kind) {
+    case "fetch":
+      return "Fetch";
+    case "pull":
+      return "Pull";
+    case "push":
+      return "Push";
+    default:
+      return "Git";
+  }
+}
+
+/** The verb in progress, for the rail's status line: "Fetching" | "Pulling" | "Pushing". */
+export function syncProgressLabel(kind: GitActionKind): string {
+  switch (kind) {
+    case "fetch":
+      return "Fetching";
+    case "pull":
+      return "Pulling";
+    case "push":
+      return "Pushing";
+    default:
+      return "Running";
+  }
+}
+
 /* --------------------------------------------------------------- failures */
 
 /**
@@ -356,6 +384,7 @@ export type GitFailureCode =
   | "pathspec"
   | "apply_failed"
   | "too_large"
+  | "timeout"
   | "spawn_failed"
   | "permission"
   | "bad_request"
@@ -438,6 +467,8 @@ const FIX_BY_CODE: Partial<Record<GitFailureCode, string>> = {
   pathspec: "The file changed on disk. Refresh the rail and try again.",
   apply_failed: "The file changed since the diff was read. Refresh and retry.",
   too_large: "The diff is too large to render here. Use your editor or a terminal for this file.",
+  timeout:
+    "Git did not answer in time. Check the network connection and the credential helper, then retry. A push or fetch that needs an interactive prompt cannot complete here.",
   spawn_failed: "The git process could not start. Check that it is installed and executable.",
 };
 
@@ -454,6 +485,7 @@ const RECOVERABLE: ReadonlySet<GitFailureCode> = new Set<GitFailureCode>([
   "pathspec",
   "apply_failed",
   "too_large",
+  "timeout",
   "not_a_repo",
   "unknown",
 ]);
@@ -473,13 +505,18 @@ export function firstGitLine(text: string | undefined): string {
 
 /**
  * Turns a failed git invocation into a named failure. `missing` (the executable
- * itself was absent) short-circuits to `git_missing` so a platform-specific
- * spawn error never has to be guessed from text.
+ * itself was absent) and `timedOut` (the runner killed the child) short-circuit
+ * to their own codes, so a platform-specific spawn error or a partial stderr
+ * line never has to be guessed from text.
  */
 export function classifyGitFailure(input: {
   stderr?: string | undefined;
   code?: number | undefined;
   missing?: boolean | undefined;
+  /** The runner killed the child at its timeout. */
+  timedOut?: boolean | undefined;
+  /** How long the call ran, for a truthful timeout message. */
+  durationMs?: number | undefined;
 }): GitOperationError {
   if (input.missing === true) {
     return {
@@ -487,6 +524,23 @@ export function classifyGitFailure(input: {
       message: "Git is not installed, or it is not on this app's PATH.",
       fix: FIX_BY_CODE.git_missing as string,
       recoverable: false,
+    };
+  }
+  // Before the stderr patterns: a killed child can leave a partial line that
+  // matches an unrelated family, and "timed out" is the truth the user needs.
+  if (input.timedOut === true) {
+    const seconds =
+      input.durationMs !== undefined && Number.isFinite(input.durationMs)
+        ? Math.max(1, Math.round(input.durationMs / 1000))
+        : null;
+    return {
+      code: "timeout",
+      message:
+        seconds === null
+          ? "git timed out before it answered."
+          : `git timed out after ${seconds} s.`,
+      fix: FIX_BY_CODE.timeout as string,
+      recoverable: true,
     };
   }
   const text = input.stderr ?? "";

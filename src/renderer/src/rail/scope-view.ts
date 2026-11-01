@@ -7,8 +7,8 @@
  * was on screen, so the panel had to tell the user which folder it meant and
  * offer a way back. Since the rail is now app chrome scoped to the **selected
  * project** (2026-10-30 project-scoped rail plan), the row is gone: the panel and
- * the sidebar always agree, and the full path lives in the panel header's
- * `title`.
+ * the sidebar always agree, and the panel header names the folder (its short
+ * name, with the full path as the header's `title`).
  *
  * What remains here is the one piece the Documents note still needs: a folder's
  * short display name.

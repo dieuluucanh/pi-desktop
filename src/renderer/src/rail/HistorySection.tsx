@@ -13,7 +13,7 @@ import { GitCommit } from "lucide-react";
 import { gitUnavailableMessage } from "../../../shared/git";
 import { Badge } from "../ui/badge";
 import { useAppStore } from "../state/app-store";
-import { absoluteTime, commitChips, relativeTime } from "./history-view";
+import { absoluteTime, commitChips, historyKey, relativeTime } from "./history-view";
 import { RailBlockHeader } from "./RailBlockHeader";
 
 export interface HistorySectionProps {
@@ -36,10 +36,16 @@ export function HistorySection({ projectPath }: HistorySectionProps) {
   const [now] = useState(() => Date.now());
 
   // The section only mounts while it is expanded, so mounting is the signal to
-  // load the first page. `page` guards against a refetch on every render.
+  // load the first page. The page is keyed to the repo state it was read for:
+  // a new commit, fetch, push or branch switch changes the key and the list
+  // reloads itself, including after the section was unmounted.
+  const repo = snapshot?.repo;
+  const key = historyKey(repo);
+  const loadedKey = page?.key ?? null;
   useEffect(() => {
-    if (!page) void loadGitLog(projectPath);
-  }, [page, projectPath, loadGitLog]);
+    if (snapshot?.available !== true || key === null || loadedKey === key) return;
+    void loadGitLog(projectPath, { key });
+  }, [snapshot?.available, key, loadedKey, projectPath, loadGitLog]);
 
   const available = snapshot?.available === true;
   const entries = page?.entries ?? [];
@@ -58,7 +64,7 @@ export function HistorySection({ projectPath }: HistorySectionProps) {
         {...(count === undefined ? {} : { count, countTestId: "history-count" })}
         {...(available
           ? {
-              onRefresh: () => void loadGitLog(projectPath),
+              onRefresh: () => void loadGitLog(projectPath, { key }),
               refreshLabel: "Refresh commit history",
             }
           : {})}
@@ -105,9 +111,9 @@ export function HistorySection({ projectPath }: HistorySectionProps) {
                   <span className="min-w-0 flex-1 truncate">{entry.author}</span>
                   <span className="shrink-0">{relativeTime(entry.at, now)}</span>
                 </span>
-                {commitChips(entry, snapshot.repo?.upstream ?? null).length > 0 ? (
+                {commitChips(entry).length > 0 ? (
                   <span className="flex flex-wrap gap-1 pl-4">
-                    {commitChips(entry, snapshot.repo?.upstream ?? null).map((chip) => (
+                    {commitChips(entry).map((chip) => (
                       <Badge
                         key={chip}
                         tone={chip === snapshot.repo?.branch ? "accent" : "neutral"}

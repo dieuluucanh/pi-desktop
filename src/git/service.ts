@@ -37,6 +37,7 @@ import {
   GIT_NETWORK_TIMEOUT_MS,
   GIT_STATUS_TIMEOUT_MS,
   GIT_WRITE_TIMEOUT_MS,
+  type GitResult,
   type GitRunner,
 } from "./runner";
 import { readStashes, readStatus } from "./status";
@@ -92,8 +93,17 @@ export interface GitService {
 export const DEFAULT_GIT_MEMO_MS = 1_000;
 
 /** The outcome of a raw git call, already classified. */
-function failed(stderr: string, code: number, missing = false): GitActionResult {
-  return { ok: false, error: classifyGitFailure({ stderr, code, missing }) };
+function failed(result: GitResult): GitActionResult {
+  return {
+    ok: false,
+    error: classifyGitFailure({
+      stderr: result.stderr,
+      code: result.code,
+      missing: result.missing,
+      timedOut: result.timedOut,
+      durationMs: result.durationMs,
+    }),
+  };
 }
 
 function ok(message?: string): GitActionResult {
@@ -144,7 +154,10 @@ export function createGitService(deps: GitServiceDeps): GitService {
       // half-written index) is reported as unavailable with git's own words.
       const error = classifyGitFailure({
         stderr: status.stderr,
+        code: status.code,
         missing: status.missing,
+        timedOut: status.timedOut,
+        durationMs: status.durationMs,
       });
       return {
         projectPath,
@@ -263,7 +276,7 @@ export function createGitService(deps: GitServiceDeps): GitService {
           timeoutMs: GIT_WRITE_TIMEOUT_MS,
         });
         if (result.code !== 0 || result.missing) {
-          return failed(result.stderr, result.code, result.missing);
+          return failed(result);
         }
         return ok(
           action.paths.length === 1
@@ -290,11 +303,13 @@ export function createGitService(deps: GitServiceDeps): GitService {
           timeoutMs: GIT_WRITE_TIMEOUT_MS,
         });
         if (fallback.code !== 0 || fallback.missing) {
-          return failed(
-            result.stderr || fallback.stderr,
-            result.code || fallback.code,
-            result.missing,
-          );
+          return failed({
+            ...result,
+            stderr: result.stderr || fallback.stderr,
+            code: result.code || fallback.code,
+            missing: result.missing || fallback.missing,
+            timedOut: result.timedOut || fallback.timedOut,
+          });
         }
         return ok();
       }
@@ -324,7 +339,7 @@ export function createGitService(deps: GitServiceDeps): GitService {
             timeoutMs: GIT_WRITE_TIMEOUT_MS,
           });
           if (result.code !== 0 || result.missing) {
-            return failed(result.stderr, result.code, result.missing);
+            return failed(result);
           }
         }
         if (untracked.length > 0) {
@@ -375,7 +390,7 @@ export function createGitService(deps: GitServiceDeps): GitService {
           timeoutMs: GIT_WRITE_TIMEOUT_MS,
         });
         if (result.code !== 0 || result.missing) {
-          return failed(result.stderr || result.stdout, result.code, result.missing);
+          return failed({ ...result, stderr: result.stderr || result.stdout });
         }
         const firstLine = action.message.split("\n")[0] ?? "";
         return ok(action.amend ? "Amended the last commit." : `Committed: ${firstLine}`);
@@ -391,7 +406,7 @@ export function createGitService(deps: GitServiceDeps): GitService {
             timeoutMs: GIT_WRITE_TIMEOUT_MS,
           });
           if (result.code !== 0 || result.missing) {
-            return failed(result.stderr, result.code, result.missing);
+            return failed(result);
           }
         }
         return ok(`This repository now commits as ${action.name} <${action.email}>.`);
@@ -404,7 +419,7 @@ export function createGitService(deps: GitServiceDeps): GitService {
         if (result.code !== 0 || result.missing) {
           // "No local changes to save" exits 0 in modern git; a real failure is
           // anything else.
-          return failed(result.stderr, result.code, result.missing);
+          return failed(result);
         }
         return ok("Stashed the working tree.");
       }
@@ -417,7 +432,7 @@ export function createGitService(deps: GitServiceDeps): GitService {
           { timeoutMs: GIT_WRITE_TIMEOUT_MS },
         );
         if (result.code !== 0 || result.missing) {
-          return failed(result.stderr, result.code, result.missing);
+          return failed(result);
         }
         return ok(action.kind === "stash-pop" ? "Restored the stash." : "Dropped the stash.");
       }
@@ -439,7 +454,7 @@ export function createGitService(deps: GitServiceDeps): GitService {
           timeoutMs: GIT_WRITE_TIMEOUT_MS,
         });
         if (result.code !== 0 || result.missing) {
-          return failed(result.stderr, result.code, result.missing);
+          return failed(result);
         }
         return ok(`Switched to ${branch}.`);
       }
@@ -460,7 +475,7 @@ export function createGitService(deps: GitServiceDeps): GitService {
           timeoutMs: GIT_WRITE_TIMEOUT_MS,
         });
         if (result.code !== 0 || result.missing) {
-          return failed(result.stderr, result.code, result.missing);
+          return failed(result);
         }
         return ok(`Created and switched to ${branch}.`);
       }
@@ -469,7 +484,7 @@ export function createGitService(deps: GitServiceDeps): GitService {
         const args = ["fetch", ...(action.remote ? [action.remote] : [])];
         const result = await deps.runner.run(root, args, { timeoutMs: GIT_NETWORK_TIMEOUT_MS });
         if (result.code !== 0 || result.missing) {
-          return failed(result.stderr, result.code, result.missing);
+          return failed(result);
         }
         return ok("Fetched.");
       }
@@ -480,7 +495,7 @@ export function createGitService(deps: GitServiceDeps): GitService {
           env: { GIT_EDITOR: ":" },
         });
         if (result.code !== 0 || result.missing) {
-          return failed(result.stderr, result.code, result.missing);
+          return failed(result);
         }
         return ok("Pulled.");
       }
@@ -488,7 +503,12 @@ export function createGitService(deps: GitServiceDeps): GitService {
       case "push": {
         const result = await deps.runner.run(root, ["push"], { timeoutMs: GIT_NETWORK_TIMEOUT_MS });
         if (result.code === 0 && !result.missing) return ok("Pushed.");
-        const failure = classifyGitFailure({ stderr: result.stderr, code: result.code });
+        const failure = classifyGitFailure({
+          stderr: result.stderr,
+          code: result.code,
+          timedOut: result.timedOut,
+          durationMs: result.durationMs,
+        });
         // The very first push of a new branch has no upstream; git says so and
         // the fix is a single well-known flag, so offer it rather than making the
         // user read a wall of hint text.
@@ -503,6 +523,16 @@ export function createGitService(deps: GitServiceDeps): GitService {
             if (pushed.code === 0 && !pushed.missing) {
               return ok(`Pushed ${branch} to ${remote} and set the upstream.`);
             }
+            // The retry is the actionable failure now: reporting the original
+            // `no_upstream` again would tell the user to do what just failed.
+            const retry = classifyGitFailure({
+              stderr: pushed.stderr,
+              code: pushed.code,
+              missing: pushed.missing,
+              timedOut: pushed.timedOut,
+              durationMs: pushed.durationMs,
+            });
+            if (retry.code !== "unknown") return { ok: false, error: retry };
           }
         }
         return { ok: false, error: failure };

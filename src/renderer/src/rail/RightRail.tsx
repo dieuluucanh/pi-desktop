@@ -32,6 +32,7 @@ import {
   type RailMenuId,
 } from "../../../shared/rail";
 import { RailStrip } from "./RailStrip";
+import { projectFolderName } from "./scope-view";
 
 /** One menu to render: its id, an optional count badge, its body and its scroll model. */
 export interface RailMenuSpec {
@@ -50,13 +51,14 @@ export interface RailMenuSpec {
    * long-scrolling body (Checkpoints) cannot carry it away.
    *
    * Source Control and Checkpoints no longer pin a row (2026-10-30
-   * project-scoped rail plan): their folder is named by `scopeTitle` on the
-   * header instead, because the rail is always the selected project.
+   * project-scoped rail plan): their folder is named in the header from
+   * `scopeTitle` instead, because the rail is always the selected project.
    */
   scope?: ReactNode;
   /**
-   * The folder this menu acts on, shown as the panel header's `title` so the full
-   * path stays discoverable without spending a row on it.
+   * The folder this menu acts on. Its short name is shown in the panel header
+   * (the full path is the header's `title`), so the user can see which project
+   * the menu's actions belong to without hovering.
    */
   scopeTitle?: string;
   content: ReactNode;
@@ -167,9 +169,18 @@ export function RightRail({ menus }: RightRailProps) {
           />
 
           <header className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2">
-            <h2 className="text-xs font-semibold" title={spec.scopeTitle}>
+            <h2 className="shrink-0 text-xs font-semibold" title={spec.scopeTitle}>
               {RAIL_MENU_LABELS[spec.id]}
             </h2>
+            {spec.scopeTitle ? (
+              <span
+                className="min-w-0 truncate font-mono text-[10px] text-ink-faint"
+                title={spec.scopeTitle}
+                data-testid="rail-scope-folder"
+              >
+                {projectFolderName(spec.scopeTitle)}
+              </span>
+            ) : null}
             <button
               type="button"
               className="ml-auto text-ink-faint hover:text-ink"

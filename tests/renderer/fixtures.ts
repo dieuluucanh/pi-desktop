@@ -16,6 +16,7 @@ import type { UiPrefs } from "../../src/shared/prefs";
 import { initialUpdateState, type UpdateState } from "../../src/shared/updates";
 import {
   emptyGitSnapshot,
+  type GitAction,
   type GitActionResult,
   type GitCommitEntry,
   type GitDiff,
@@ -130,7 +131,7 @@ export interface BridgeOptions {
   git?: GitSnapshot;
   gitDiff?: GitDiff;
   gitLog?: GitCommitEntry[];
-  gitAction?: GitActionResult;
+  gitAction?: GitActionResult | ((action: GitAction) => Promise<GitActionResult>);
   /** HEAD's commit message the amend box prefills from. */
   headMessage?: string | null;
   /** Local branch names the checkout menu offers. */
@@ -199,7 +200,8 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
     truncated: false,
   };
   const gitLogValue: GitCommitEntry[] = options.gitLog ?? [];
-  const gitActionResult: GitActionResult = options.gitAction ?? { ok: true };
+  const gitActionResult: GitActionResult | ((action: GitAction) => Promise<GitActionResult>) =
+    options.gitAction ?? { ok: true };
   const gitHeadMessage: string | null = options.headMessage ?? null;
   const gitBranches: string[] = options.branches ?? [];
 
@@ -415,7 +417,7 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
       },
       action: async (projectPath, action) => {
         gitCalls.push({ kind: "action", projectPath, payload: action });
-        return gitActionResult;
+        return typeof gitActionResult === "function" ? gitActionResult(action) : gitActionResult;
       },
       diff: async (projectPath, request) => {
         gitCalls.push({ kind: "diff", projectPath, payload: request });
