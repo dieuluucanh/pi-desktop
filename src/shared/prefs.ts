@@ -10,6 +10,11 @@
 import { DEFAULT_PROFILE_MODE, sanitizeProfileMode, type ProfileMode } from "./profile";
 import { sanitizeDesktopKeybindings, type DesktopKeybindings } from "./desktop-keymap";
 import { sanitizePromptOrigins } from "./prompt-origin";
+import {
+  DEFAULT_NOTIFICATION_PREFS,
+  sanitizeNotificationPrefs,
+  type NotificationPrefs,
+} from "./notifications";
 import { DEFAULT_RAIL_PREFS, mergeRailPrefs, sanitizeRailPrefs, type RailPrefs } from "./rail";
 import {
   DEFAULT_CHECKPOINT_CONFIG,
@@ -32,6 +37,7 @@ export const PREF_KEYS = [
   "profileMode",
   "onboardingCompletedAt",
   "desktopKeybindings",
+  "notifications",
   "showExpandedPrompts",
   "promptOrigins",
   "rail",
@@ -102,6 +108,12 @@ export interface UiPrefs {
    */
   desktopKeybindings: DesktopKeybindings;
   /**
+   * Muted extension notifications (`ctx.ui.notify`). The archive keeps every
+   * arrival; these rules only hide a matching notification from the transcript
+   * and suppress its toast until the user unmutes it (2026-10-31 UI plan).
+   */
+  notifications: NotificationPrefs;
+  /**
    * Whether the transcript shows the expanded body of a command prompt — a
    * prompt template, a `/skill:*` command, or a user message injected by an
    * extension command such as `/commit` — by default (2026-10-26
@@ -155,6 +167,9 @@ export const DEFAULT_PREFS: UiPrefs = {
   profileMode: DEFAULT_PROFILE_MODE,
   onboardingCompletedAt: null,
   desktopKeybindings: {},
+  // A fresh array so a caller mutating one prefs value cannot mutate the
+  // module-level default.
+  notifications: { ...DEFAULT_NOTIFICATION_PREFS, muted: [] },
   showExpandedPrompts: false,
   promptOrigins: {},
   // A fresh object *and* a fresh order array (not the shared default) so a
@@ -167,7 +182,8 @@ export const DEFAULT_PREFS: UiPrefs = {
 
 const THEMES: readonly ThemeSetting[] = ["dark", "light", "system"];
 
-function clampWidth(value: number): number {
+/** Clamps a sidebar width to the supported drag range (rounds to whole px). */
+export function clampSidebarWidth(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_SIDEBAR_WIDTH;
   return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, Math.round(value)));
 }
@@ -204,7 +220,7 @@ export function sanitizePrefs(input: unknown): UiPrefs {
         : DEFAULT_PREFS.sidebarCollapsed,
     sidebarWidth:
       typeof source.sidebarWidth === "number"
-        ? clampWidth(source.sidebarWidth)
+        ? clampSidebarWidth(source.sidebarWidth)
         : DEFAULT_PREFS.sidebarWidth,
     drafts: sanitizeDrafts(source.drafts),
     // A missing value is off: an older app-state.json (or a fresh profile) must
@@ -222,6 +238,7 @@ export function sanitizePrefs(input: unknown): UiPrefs {
         ? Math.floor(source.onboardingCompletedAt)
         : null,
     desktopKeybindings: sanitizeDesktopKeybindings(source.desktopKeybindings),
+    notifications: sanitizeNotificationPrefs(source.notifications),
     // Missing means off: a fresh app-state.json must not reveal command
     // prompts by omission (the plan's default).
     showExpandedPrompts:
@@ -251,7 +268,14 @@ export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
     "checkpoints" in source
       ? sanitizeCheckpointConfig({ ...current.checkpoints, ...asRecord(source.checkpoints) })
       : current.checkpoints;
-  return sanitizePrefs({ ...current, ...source, rail, checkpoints });
+  // The mute list is nested too: a patch that only mentions `notifications`
+  // must not let the sanitizer replace the current rules with an empty list
+  // unless it actually supplied a `muted` array.
+  const notifications =
+    "notifications" in source
+      ? sanitizeNotificationPrefs({ ...current.notifications, ...asRecord(source.notifications) })
+      : current.notifications;
+  return sanitizePrefs({ ...current, ...source, rail, checkpoints, notifications });
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
@@ -104,6 +104,13 @@ describe("ProjectsSection", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
+  it("collapses the sidebar from the Projects header", async () => {
+    installBridge();
+    render(<ProjectsSection />);
+    await userEvent.click(screen.getByRole("button", { name: "Hide sidebar" }));
+    expect(useAppStore.getState().prefs.sidebarCollapsed).toBe(true);
+  });
+
   it("opens the clone dialog from the + menu", async () => {
     installBridge();
     const user = userEvent.setup();
@@ -142,6 +149,32 @@ describe("ProjectsSection", () => {
     expect(screen.getByText(/sessions\\--C--work-pi-desktop--/)).toBeInTheDocument();
     expect(screen.getByText("Fix the sidebar")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /new session here/i })).toBeInTheDocument();
+  });
+
+  it("opens the session lifecycle menu and renames inline", async () => {
+    installBridge({ projects: [record(PATH)], activeProject: PATH });
+    useAppStore.setState({
+      projects: [record(PATH)],
+      project: { path: PATH, name: "pi-desktop" },
+      projectInspections: { [PATH]: inspection() },
+      tabs: [tab("idle")],
+      activeTabId: "tab-1",
+    });
+    const duplicate = vi.spyOn(useAppStore.getState(), "duplicateTab").mockResolvedValue(undefined);
+    const rename = vi.spyOn(useAppStore.getState(), "renameSession").mockResolvedValue(undefined);
+    render(<ProjectsSection />);
+
+    const trigger = screen.getByRole("button", { name: "Session actions for Fix the sidebar" });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    await userEvent.click(await screen.findByText("Duplicate in this project"));
+    expect(duplicate).toHaveBeenCalledWith("tab-1");
+
+    fireEvent.doubleClick(screen.getByText("Fix the sidebar"));
+    const input = screen.getByRole("textbox", { name: "Rename Fix the sidebar" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "Renamed{Enter}");
+    expect(rename).toHaveBeenCalledWith("tab-1", "Renamed");
   });
 
   it("shows the trust state and asks when it needs a decision", async () => {

@@ -67,7 +67,10 @@ describe("session chrome", () => {
       "aria-label",
       "Thinking level",
     );
-    expect(within(tools).getByTestId("context-ring")).toBeInTheDocument();
+    expect(within(tools).getByTestId("context-ring")).toHaveClass("size-7");
+    expect(within(tools).getByRole("button", { name: "Change model" })).toHaveClass("h-7", "w-7");
+    expect(within(tools).getByTestId("composer-thinking")).toHaveClass("h-7", "w-7");
+    expect(tools).toHaveClass("h-7");
   });
 
   it("shows the thinking level as a brain icon, not a text label", () => {

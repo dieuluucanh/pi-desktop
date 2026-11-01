@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { SettingsScope } from "../../../shared/settings-schema";
 import { formatZoomPercent } from "../../../shared/zoom";
+import { MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH } from "../../../shared/prefs";
 import {
   getSettingsValue,
   groupSettingsFields,
@@ -25,6 +26,8 @@ import {
   CheckpointsSettingsCard,
   SourceControlSettingsCard,
 } from "../settings/SourceControlSettings";
+import { NotificationsSettingsCard } from "../settings/NotificationsSettings";
+import { setSidebarWidth } from "../state/sidebar-width";
 
 /**
  * Settings (plan step 12).
@@ -271,16 +274,16 @@ export function SettingsView() {
             <Button
               size="sm"
               variant="ghost"
-              disabled={prefs.sidebarWidth <= 200}
-              onClick={() => setPrefs({ sidebarWidth: Math.max(200, prefs.sidebarWidth - 24) })}
+              disabled={prefs.sidebarWidth <= MIN_SIDEBAR_WIDTH}
+              onClick={() => setSidebarWidth(prefs.sidebarWidth - 24)}
             >
               Narrower
             </Button>
             <Button
               size="sm"
               variant="ghost"
-              disabled={prefs.sidebarWidth >= 520}
-              onClick={() => setPrefs({ sidebarWidth: Math.min(520, prefs.sidebarWidth + 24) })}
+              disabled={prefs.sidebarWidth >= MAX_SIDEBAR_WIDTH}
+              onClick={() => setSidebarWidth(prefs.sidebarWidth + 24)}
             >
               Wider
             </Button>
@@ -314,6 +317,7 @@ export function SettingsView() {
       */}
       <SourceControlSettingsCard />
       <CheckpointsSettingsCard />
+      <NotificationsSettingsCard />
 
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold">Pi settings</h2>

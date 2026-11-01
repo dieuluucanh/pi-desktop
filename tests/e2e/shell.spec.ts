@@ -119,3 +119,17 @@ test("@smoke the first run asks about telemetry and defaults it off", async () =
   await expect(window.getByRole("button", { name: "Open project folder…" })).toBeVisible();
   await expect(window.getByTestId("onboarding-wizard")).toBeHidden();
 });
+
+test("collapses and reopens the sidebar from the header and tab strip", async () => {
+  launched = await launchApp({ settings: { theme: "dark" } });
+  const { window } = launched;
+  await expect(window.getByLabel("Navigation")).toBeVisible();
+
+  await window.getByRole("button", { name: "Hide sidebar" }).click();
+  await expect(window.getByLabel("Navigation")).toHaveCount(0);
+  const show = window.getByRole("button", { name: "Show sidebar" });
+  await expect(show).toBeVisible();
+
+  await show.click();
+  await expect(window.getByLabel("Navigation")).toBeVisible();
+});

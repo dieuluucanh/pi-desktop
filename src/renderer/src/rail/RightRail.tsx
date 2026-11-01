@@ -25,7 +25,6 @@ import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNod
 import { X } from "lucide-react";
 import { useAppStore } from "../state/app-store";
 import {
-  RAIL_MENU_IDS,
   RAIL_MENU_LABELS,
   clampRailWidth,
   moveRailMenu,
@@ -124,10 +123,18 @@ export function RightRail({ menus }: RightRailProps) {
 
   return (
     <aside
-      className="relative flex shrink-0 border-l border-line bg-surface"
+      className="relative flex shrink-0 bg-surface"
       aria-label="Panels"
       data-testid="right-rail"
     >
+      {/* The sticky block headers (`z-10`) create composited layers that can
+          paint over a parent `border-l`; a dedicated overlay above them keeps
+          the rail's left separator continuous at every scroll position. */}
+      <span
+        aria-hidden
+        data-testid="rail-separator"
+        className="pointer-events-none absolute inset-y-0 left-0 z-20 w-px bg-line"
+      />
       {expanded && spec ? (
         <section
           className="relative flex min-h-0 flex-col border-r border-line bg-surface"
@@ -194,7 +201,6 @@ export function RightRail({ menus }: RightRailProps) {
         onMove={(id, to) =>
           useAppStore.getState().setRailMenuOrder(moveRailMenu(rail.order, id, to))
         }
-        onResetOrder={() => useAppStore.getState().setRailMenuOrder([...RAIL_MENU_IDS])}
       />
     </aside>
   );

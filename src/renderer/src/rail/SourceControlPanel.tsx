@@ -33,8 +33,8 @@
  *    `setRailSplit`.
  */
 
-import { useRef } from "react";
-import { DEFAULT_RAIL_SPLIT } from "../../../shared/rail";
+import { useRef, useState } from "react";
+import { DEFAULT_RAIL_SPLIT, type RailSplitPrefs } from "../../../shared/rail";
 import { useAppStore } from "../state/app-store";
 import { BlockSplitter } from "./BlockSplitter";
 import { ChangesSection } from "./ChangesSection";
@@ -54,7 +54,11 @@ export function SourceControlPanel({ projectPath }: SourceControlPanelProps) {
 
   // The drag math needs the body's real height, which only the DOM knows.
   const bodyRef = useRef<HTMLDivElement | null>(null);
-  const flex = blockFlex(split);
+  // While a splitter is dragged, the blocks render from this preview instead of
+  // the persisted split. The store is written once on release (D2).
+  const [previewSplit, setPreviewSplit] = useState<RailSplitPrefs | null>(null);
+  const shownSplit = previewSplit ?? split;
+  const flex = blockFlex(shownSplit);
 
   return (
     <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col" data-testid="source-control-panel">
@@ -77,8 +81,15 @@ export function SourceControlPanel({ projectPath }: SourceControlPanelProps) {
         split={split}
         containerRef={bodyRef}
         label="Resize Source Control and Changes"
-        onChange={setRailSplit}
-        onReset={() => setRailSplit(DEFAULT_RAIL_SPLIT)}
+        onChange={(next) => {
+          setPreviewSplit(null);
+          setRailSplit(next);
+        }}
+        onPreview={setPreviewSplit}
+        onReset={() => {
+          setPreviewSplit(null);
+          setRailSplit(DEFAULT_RAIL_SPLIT);
+        }}
       />
 
       {/* Block 2: the working tree. */}
@@ -95,8 +106,15 @@ export function SourceControlPanel({ projectPath }: SourceControlPanelProps) {
         split={split}
         containerRef={bodyRef}
         label="Resize Changes and Commit History"
-        onChange={setRailSplit}
-        onReset={() => setRailSplit(DEFAULT_RAIL_SPLIT)}
+        onChange={(next) => {
+          setPreviewSplit(null);
+          setRailSplit(next);
+        }}
+        onPreview={setPreviewSplit}
+        onReset={() => {
+          setPreviewSplit(null);
+          setRailSplit(DEFAULT_RAIL_SPLIT);
+        }}
       />
 
       {/* Block 3: the log. */}

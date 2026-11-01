@@ -209,8 +209,10 @@ describe("dragging a splitter", () => {
 
     fireEvent.pointerDown(handle, { pointerId: 1, clientY: 100 });
     fireEvent.pointerMove(handle, { pointerId: 1, clientY: 130 });
-    // Nothing is written mid-drag: the display follows local state.
+    // Nothing is written mid-drag, but the preview already moved the blocks.
     expect(setRailSplit).not.toHaveBeenCalled();
+    expect(flexOf("source-control-block")).toBeCloseTo(0.34 + 30 / 500, 6);
+    expect(flexOf("changes-block")).toBeCloseTo(0.4 - 30 / 500, 6);
     fireEvent.pointerUp(handle, { pointerId: 1, clientY: 130 });
 
     expect(setRailSplit).toHaveBeenCalledTimes(1);

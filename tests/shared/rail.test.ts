@@ -171,49 +171,29 @@ describe("resolveActiveMenu", () => {
 describe("moveRailMenu", () => {
   const order = [...RAIL_MENU_IDS];
 
-  it("moves one step in each direction", () => {
-    expect(moveRailMenu(order, "checkpoints", "up")).toEqual([
-      "checkpoints",
-      "source-control",
-      "documents",
-    ]);
-    expect(moveRailMenu(order, "source-control", "down")).toEqual([
-      "checkpoints",
-      "source-control",
-      "documents",
-    ]);
-  });
-
-  it("moves to the top", () => {
-    expect(moveRailMenu(order, "documents", "top")).toEqual([
-      "documents",
-      "source-control",
-      "checkpoints",
-    ]);
-  });
-
-  it("clamps at both ends instead of wrapping", () => {
-    expect(moveRailMenu(order, "source-control", "up")).toEqual(order);
-    expect(moveRailMenu(order, "documents", "down")).toEqual(order);
-  });
-
-  it("accepts a drop index", () => {
+  it("moves an entry to a drop index", () => {
     expect(moveRailMenu(order, "documents", 0)).toEqual([
       "documents",
       "source-control",
       "checkpoints",
     ]);
-    expect(moveRailMenu(order, "source-control", 99)).toEqual([
+    expect(moveRailMenu(order, "source-control", 1)).toEqual([
       "checkpoints",
-      "documents",
       "source-control",
+      "documents",
     ]);
   });
 
-  it("is a no-op for an unknown id and never mutates the input", () => {
+  it("clamps the index at both ends instead of wrapping", () => {
+    expect(moveRailMenu(order, "source-control", -2)).toEqual(order);
+    expect(moveRailMenu(order, "documents", 99)).toEqual(order);
+  });
+
+  it("is a no-op for an unknown id or the entry's own index, and never mutates the input", () => {
     const input = [...order];
-    expect(moveRailMenu(input, "git" as never, "up")).toEqual(order);
-    expect(moveRailMenu(input, "documents", "top")).toEqual([
+    expect(moveRailMenu(input, "git" as never, 0)).toEqual(order);
+    expect(moveRailMenu(input, "checkpoints", 1)).toEqual(order);
+    expect(moveRailMenu(input, "documents", 0)).toEqual([
       "documents",
       "source-control",
       "checkpoints",

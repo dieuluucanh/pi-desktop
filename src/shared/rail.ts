@@ -353,25 +353,19 @@ export function resolveActiveMenu(
   return { menus, menu: first, isFallback: true };
 }
 
-/** Where a reorder can send an entry. */
-export type RailMenuMove = "up" | "down" | "top";
-
 /**
- * Reorders one strip entry. Used by drag-and-drop (as an index) and by the
- * per-entry menu, so both paths agree on bounds and on unknown ids.
+ * Moves one strip entry to `toIndex` (clamped). Used by drag-and-drop, so the
+ * strip and the persisted order agree on bounds and on unknown ids.
  */
 export function moveRailMenu(
   order: readonly RailMenuId[],
   id: RailMenuId,
-  to: RailMenuMove | number,
+  toIndex: number,
 ): RailMenuId[] {
   const next = [...order];
   const from = next.indexOf(id);
   if (from === -1) return next;
-  let target: number;
-  if (typeof to === "number") target = Math.round(to);
-  else if (to === "top") target = 0;
-  else target = from + (to === "up" ? -1 : 1);
+  let target = Math.round(toIndex);
   if (target < 0) target = 0;
   if (target > next.length - 1) target = next.length - 1;
   if (target === from) return next;

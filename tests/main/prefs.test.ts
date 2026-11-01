@@ -5,6 +5,7 @@ import {
   MAX_DRAFT_TABS,
   MAX_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
+  clampSidebarWidth,
   mergePrefs,
   sanitizeDrafts,
   sanitizePrefs,
@@ -12,6 +13,7 @@ import {
 import { hashPromptText } from "../../src/shared/prompt-origin";
 import { MIN_SCAN_INTERVAL_MS } from "../../src/shared/checkpoints";
 import { DEFAULT_RAIL_WIDTH, MAX_RAIL_WIDTH, MIN_RAIL_WIDTH } from "../../src/shared/rail";
+import { muteRuleFor } from "../../src/shared/notifications";
 
 describe("sanitizePrefs", () => {
   it("returns defaults for non-objects", () => {
@@ -28,6 +30,7 @@ describe("sanitizePrefs", () => {
         "desktopKeybindings",
         "drafts",
         "followSystemTheme",
+        "notifications",
         "onboardingCompletedAt",
         "privacyAcknowledged",
         "profileMode",
@@ -109,6 +112,10 @@ describe("sanitizePrefs", () => {
   });
 
   it("clamps the sidebar width to the supported range", () => {
+    expect(clampSidebarWidth(10)).toBe(MIN_SIDEBAR_WIDTH);
+    expect(clampSidebarWidth(9_999)).toBe(MAX_SIDEBAR_WIDTH);
+    expect(clampSidebarWidth(300.6)).toBe(301);
+    expect(clampSidebarWidth(Number.NaN)).toBe(DEFAULT_PREFS.sidebarWidth);
     expect(sanitizePrefs({ sidebarWidth: 10 }).sidebarWidth).toBe(MIN_SIDEBAR_WIDTH);
     expect(sanitizePrefs({ sidebarWidth: 9_999 }).sidebarWidth).toBe(MAX_SIDEBAR_WIDTH);
     expect(sanitizePrefs({ sidebarWidth: Number.NaN }).sidebarWidth).toBe(
@@ -160,6 +167,50 @@ describe("mergePrefs", () => {
 
   it("survives a non-object patch", () => {
     expect(mergePrefs(DEFAULT_PREFS, null)).toEqual(DEFAULT_PREFS);
+  });
+
+  it("preserves the notification mutes unless the patch replaces the list", () => {
+    const rule = muteRuleFor({ message: "Installed", type: "warning" }, "exact", 1);
+    const current = sanitizePrefs({ notifications: { muted: [rule] } });
+    expect(current.notifications.muted).toHaveLength(1);
+
+    // A theme patch must not wipe the mute list.
+    const themed = mergePrefs(current, { theme: "light" });
+    expect(themed.notifications.muted).toHaveLength(1);
+
+    // An empty notifications patch also leaves the list alone.
+    expect(mergePrefs(current, { notifications: {} }).notifications.muted).toHaveLength(1);
+
+    // Supplying `muted` replaces it (the store always sends the whole list).
+    expect(mergePrefs(current, { notifications: { muted: [] } }).notifications.muted).toHaveLength(
+      0,
+    );
+  });
+});
+
+describe("notification preferences", () => {
+  it("defaults to no muted rules and uses a fresh array", () => {
+    expect(sanitizePrefs({}).notifications).toEqual({ muted: [] });
+    const prefs = sanitizePrefs({});
+    prefs.notifications.muted.push(muteRuleFor({ message: "x", type: "info" }, "exact"));
+    expect(DEFAULT_PREFS.notifications.muted).toHaveLength(0);
+    expect(sanitizePrefs({}).notifications.muted).toHaveLength(0);
+  });
+
+  it("keeps a valid rule and drops malformed ones", () => {
+    const rule = muteRuleFor({ message: "Installed workflow", type: "info" }, "exact", 7);
+    const result = sanitizePrefs({
+      notifications: {
+        muted: [rule, { scope: "exact", type: "warning" }, { scope: "nope", type: "info" }],
+      },
+    });
+    expect(result.notifications.muted).toHaveLength(1);
+    expect(result.notifications.muted[0]).toMatchObject({
+      type: "info",
+      value: "installed workflow",
+      sample: "Installed workflow",
+      createdAt: 7,
+    });
   });
 });
 

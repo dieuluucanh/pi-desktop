@@ -26,6 +26,16 @@ import { normalizeScopePatterns, scopeKeys, scopeStarKeys } from "../../../share
 import { mostRecentTabForFolder, sameFolder } from "../../../shared/rail-scope";
 import type { CustomProviderInput, CustomProviderSummary } from "../../../shared/custom-providers";
 import {
+  isNotificationMuted,
+  muteRuleFor,
+  normalizeNotificationText,
+  removeMuteRule,
+  removeMutesForNotification,
+  shouldCollapseNotification,
+  withMuteRule,
+  type NotificationMuteScope,
+} from "../../../shared/notifications";
+import {
   findSettingsField,
   getSettingsValue,
   mergeSettingsScopes,
@@ -121,6 +131,7 @@ import {
   type ResourcesSnapshot,
 } from "../../../shared/resources";
 import type { RecommendedPackage } from "../../../shared/recommended-packages";
+import { notifyToast } from "../extension-ui/notify-toast";
 import {
   emptyIntegrationsState,
   officeBridgePackageSource,
@@ -288,11 +299,16 @@ function purgeClosedTabDialogs(openTabs: ReadonlySet<string>): void {
   for (const dialog of useAppStore.getState().extensionDialogs) {
     if (!openTabs.has(dialog.tabId)) clearExtensionDialogTimer(dialog.id);
   }
-  useAppStore.setState({
-    extensionDialogs: useAppStore
-      .getState()
-      .extensionDialogs.filter((dialog) => openTabs.has(dialog.tabId)),
-  });
+  useAppStore.setState((state) => ({
+    extensionDialogs: state.extensionDialogs.filter((dialog) => openTabs.has(dialog.tabId)),
+    // A closed tab's repeat window is meaningless; a future tab id must not
+    // inherit it. Keys start with `<tabId>\u0000`.
+    notificationCooldowns: Object.fromEntries(
+      Object.entries(state.notificationCooldowns).filter(([key]) =>
+        openTabs.has(key.slice(0, key.indexOf("\u0000"))),
+      ),
+    ),
+  }));
 }
 
 /** In-flight ensures, so focus + click + first keystroke share one activation. */
@@ -1113,6 +1129,14 @@ export interface AppStateShape {
   extensionDialogs: ExtensionDialogRequest[];
   /** Notification history (the toast centre's backing list). */
   extensionNotifications: ExtensionNotification[];
+  /** The notification the Mute dialog is configuring, or null. */
+  muteTarget: ExtensionNotification | null;
+  /**
+   * Last time an identical notification was seen per tab, keyed by
+   * `tabId\u0000type\u0000normalizedMessage`. Ephemeral: it only decides whether a
+   * repeated toast is suppressed; the history keeps every arrival.
+   */
+  notificationCooldowns: Record<string, number>;
   /** Fetches `oi.state` for a tab (called on activation). */
   loadExtensionUi: (tabId: string) => Promise<void>;
   /** Applies one `oi.*` host event (dialog, notification, state, theme, shutdown). */
@@ -1123,6 +1147,17 @@ export interface AppStateShape {
     answer: { value?: string; confirmed?: boolean; cancelled?: boolean },
   ) => Promise<void>;
   clearExtensionNotifications: () => void;
+  /** Opens/closes the Mute dialog for one notification. */
+  openMuteDialog: (notification: ExtensionNotification) => void;
+  closeMuteDialog: () => void;
+  /** Saves an exact/template/type mute rule and closes the dialog. */
+  muteNotification: (notification: ExtensionNotification, scope: NotificationMuteScope) => void;
+  /** Removes every rule that silences this notification (history Unmute). */
+  unmuteNotification: (notification: ExtensionNotification) => void;
+  /** Removes one persisted rule by id (Settings card). */
+  unmuteNotificationRule: (ruleId: string) => void;
+  /** Removes every muted notification rule (Settings card). */
+  unmuteAllNotifications: () => void;
   /** Mirrors the composer text back to the host for `ctx.ui.getEditorText()`. */
   reportEditorText: (tabId: string, text: string) => void;
   /** Runs extension autocomplete providers in the host (plan step 16). */
@@ -1460,13 +1495,9 @@ const EXTENSION_UI_EVENTS = new Set<string>([
   TUI_STATE_EVENT,
 ]);
 
-/**
- * Warnings and errors get transient attention; info output already lands in the
- * transcript (Pi parity). The history panel keeps every notification.
- */
-function notifyToast(message: string, type: ExtensionNotification["type"]): void {
-  if (type === "error") toast.error(message);
-  else if (type === "warning") toast.warning(message);
+/** The per-tab identity used to suppress a repeated toast. */
+function notificationCooldownKey(tabId: string, notification: ExtensionNotification): string {
+  return `${tabId}\u0000${notification.type}\u0000${normalizeNotificationText(notification.message)}`;
 }
 
 /** Records one executed send in the draft history, exactly once. */
@@ -1695,6 +1726,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   extensionUi: {},
   extensionDialogs: [],
   extensionNotifications: [],
+  muteTarget: null,
+  notificationCooldowns: {},
   tuiSurfaces: {},
   toolsExpanded: {},
 
@@ -2428,10 +2461,17 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (entry.event === EXTENSION_UI_NOTIFY_EVENT) {
       const notification = parseExtensionNotification(entry.payload, tabId);
       if (!notification) return;
+      const key = notificationCooldownKey(tabId, notification);
+      const now = Date.now();
+      const muted = isNotificationMuted(notification, get().prefs.notifications);
+      const collapsed = shouldCollapseNotification(get().notificationCooldowns[key], now);
       set({
         extensionNotifications: [notification, ...get().extensionNotifications].slice(0, 100),
+        notificationCooldowns: { ...get().notificationCooldowns, [key]: now },
       });
-      notifyToast(notification.message, notification.type);
+      if (!muted && !collapsed) {
+        notifyToast(notification, () => get().openMuteDialog(notification));
+      }
       // Plannotator notifies its review URL, so the URL arriving in a
       // notification is the signal to open it in an in-app tab (plan step 21)
       // instead of handing it to the system browser.
@@ -2468,6 +2508,35 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   clearExtensionNotifications: () => set({ extensionNotifications: [] }),
+
+  openMuteDialog: (notification) => set({ muteTarget: notification }),
+  closeMuteDialog: () => set({ muteTarget: null }),
+
+  muteNotification: (notification, scope) => {
+    const prefs = get().prefs.notifications;
+    const next = withMuteRule(prefs, muteRuleFor(notification, scope));
+    get().setPrefs({ notifications: next });
+    set({ muteTarget: null });
+  },
+
+  unmuteNotification: (notification) => {
+    const prefs = get().prefs.notifications;
+    const next = removeMutesForNotification(prefs, notification);
+    if (next.muted.length === prefs.muted.length) return;
+    get().setPrefs({ notifications: next });
+  },
+
+  unmuteNotificationRule: (ruleId) => {
+    const prefs = get().prefs.notifications;
+    const next = removeMuteRule(prefs, ruleId);
+    if (next.muted.length === prefs.muted.length) return;
+    get().setPrefs({ notifications: next });
+  },
+
+  unmuteAllNotifications: () => {
+    if (get().prefs.notifications.muted.length === 0) return;
+    get().setPrefs({ notifications: { muted: [] } });
+  },
 
   reportEditorText: (tabId, text) => {
     const request = bridge()?.sessions?.request({
@@ -4764,8 +4833,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       if (result.ok) {
         set({ gitError: null });
         // main pushes a refreshed snapshot for a *watched* folder; an explicit
-        // read keeps an unwatched one (a background project) honest too.
+        // read keeps an unwatched one (a background project) honest too. A
+        // commit changes HEAD, so refresh an already-mounted log page as well;
+        // otherwise History shows the pre-action commits until a manual Refresh.
         await get().refreshGit(projectPath);
+        if (get().gitLog[projectPath]) await get().loadGitLog(projectPath);
       } else if (result.error) {
         set({
           gitError: result.error.fix

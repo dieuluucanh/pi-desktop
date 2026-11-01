@@ -627,6 +627,21 @@ const NOTICE_SEVERITY: Record<string, TranscriptNotice["severity"]> = {
   extension_error: "error",
 };
 
+/** True when this transcript already carries the same extension notification. */
+function hasNotificationNotice(
+  state: TranscriptState,
+  severity: TranscriptNotice["severity"],
+  text: string,
+): boolean {
+  return state.items.some(
+    (item) =>
+      item.kind === "notice" &&
+      item.notice.event === "oi.notify" &&
+      item.notice.severity === severity &&
+      item.notice.text === text,
+  );
+}
+
 /** One `ctx.ui.notify` payload as a transcript notice, or null when malformed. */
 function notificationNotice(
   payload: unknown,
@@ -930,7 +945,12 @@ export function reduceSessionEvents(
         // full multi-line message; the notification archive/toast path is
         // handled separately by the store.
         const notice = notificationNotice(payload);
-        if (notice) next = appendNotice(next, "oi.notify", notice.severity, notice.text);
+        // The workflow (and other extensions) can re-emit the same advisory on
+        // every mode switch. Keep one row per distinct message; the history
+        // archive still records every arrival (see app-store).
+        if (notice && !hasNotificationNotice(next, notice.severity, notice.text)) {
+          next = appendNotice(next, "oi.notify", notice.severity, notice.text);
+        }
         break;
       }
 

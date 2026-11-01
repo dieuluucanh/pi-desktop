@@ -107,7 +107,11 @@ describe("streaming delivery", () => {
   it("offers one Send button and no steer/follow-up toggles", () => {
     renderComposer({ running: true });
 
-    expect(screen.getByRole("button", { name: /^send$/i })).toBeInTheDocument();
+    const send = screen.getByRole("button", { name: /^send$/i });
+    expect(send).toHaveClass("h-7", "w-7");
+    expect(send.textContent).toBe("");
+    expect(screen.getByRole("button", { name: "Attach image" })).toHaveClass("h-7", "w-7");
+    expect(screen.getByRole("button", { name: "Stop" })).toHaveClass("h-7", "w-7");
     expect(screen.queryByRole("button", { name: "steer mode" })).toBeNull();
     expect(screen.queryByRole("button", { name: "follow-up mode" })).toBeNull();
     expect(screen.getByText(/Alt\+Enter queues a follow-up/)).toBeInTheDocument();

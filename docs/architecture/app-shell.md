@@ -187,9 +187,10 @@ renderer's Tailwind scan root, so `styles.css` also declares them with
   always-visible 44 px menu **strip** — Source Control, Checkpoints, Documents —
   beside one resizable panel body. Clicking an entry expands its body, clicking
   the active entry collapses it back to the strip, and the strip's order is
-  user-adjustable (drag, or the per-entry reorder list). `prefs.rail` persists
-  `{ open, activeMenu, width, order, split, collapsed }`; the strip is never
-  unmounted, which is what makes it the stable entry point (the old header button
+  user-adjustable by dragging an entry (there is no per-entry reorder menu).
+  `prefs.rail` persists `{ open, activeMenu, width, order, split, collapsed }`;
+  the strip is never unmounted, which is what makes it the stable entry point
+  (the old header button
   was gated on the Office bridge and so came and went). A menu this session does
   not have — Documents with no `/health` — is resolved at render time to the first
   available menu without rewriting the user's choice.
@@ -693,3 +694,17 @@ provider, and `package.json` carries the `repository` URL so the builder and the
 updater agree. `tests/packaging/builder-config.test.ts` pins the targets,
 resources, unpack list, feed and the runtime artifacts each target needs; the
 installers themselves are verified on a clean machine (step 27).
+
+## Fixed footer, aligned composer, resizable sidebar (2026-10-31)
+
+- The session footer is a fixed **40 px** (two-line) scroll viewport. Plan/Build
+  status columns and inline widgets wrap and scroll inside it, so switching modes
+  no longer changes the composer/transcript height.
+- Composer controls (model, thinking, context, attach, Stop, Send) share the
+  28 × 28 `icon-md` size. The tools row is at the top of the textarea's height and
+  the action row at the bottom; Send/Stop are icon-only with accessible names.
+- The sidebar has a resize handle on its right edge (local preview, one prefs
+  write on release, 200–520 px) and a collapse button in the Projects header.
+  When collapsed, a Show-sidebar button sits at the far left of the tab strip.
+- Sidebar session rows reuse the tab lifecycle menu and support double-click
+  inline rename (Enter/blur commits, Escape cancels).

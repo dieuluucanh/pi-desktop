@@ -31,6 +31,7 @@ import { SessionView } from "./views/SessionView";
 import { WebNavigationDialog } from "./web/WebNavigationDialog";
 import { WebUrlDialog } from "./web/WebUrlDialog";
 import { GitConsentDialog } from "./rail/GitConsentDialog";
+import { MuteNotificationDialog } from "./extension-ui/MuteNotificationDialog";
 import { DiffDialog } from "./rail/DiffDialog";
 import { SettingsView } from "./views/SettingsView";
 import { SkillsView } from "./views/SkillsView";
@@ -316,6 +317,7 @@ export function App() {
       <WebUrlDialog />
       <GitConsentDialog />
       <DiffDialog />
+      <MuteNotificationDialog />
       <ShortcutsHelp />
       <ShortcutDispatcher />
       <Toaster theme={theme} />

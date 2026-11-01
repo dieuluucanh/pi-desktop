@@ -81,3 +81,8 @@ behaviour:
 
 - [Providers and auth](providers-and-auth.md) · [Extensions and packages](extensions-and-packages.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)
+
+**Notifications.** Settings → Notifications lists mute rules created from a
+notification's gear or from the notification history. Each rule can be unmuted
+individually, or use **Unmute all**. Muted notifications stay in the history
+(marked `muted`) but disappear from the transcript and stop toasting.

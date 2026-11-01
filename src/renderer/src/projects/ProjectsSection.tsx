@@ -8,6 +8,7 @@ import {
   FolderOpen,
   FolderPlus,
   GitBranch,
+  PanelLeftClose,
   Plus,
   RefreshCw,
   Terminal,
@@ -22,6 +23,8 @@ import {
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
 import { Switch } from "../ui/switch";
+import { InlineRename } from "../ui/inline-rename";
+import { TabMenu } from "../layout/TabMenu";
 import { useAppStore } from "../state/app-store";
 import { openProjectAction } from "../menu-actions";
 import { CloneProjectDialog, CreateProjectDialog } from "./ProjectDialogs";
@@ -59,6 +62,7 @@ export function ProjectsSection() {
   const activePath = useAppStore((state) => state.project?.path ?? null);
   const tabs = useAppStore((state) => state.tabs);
   const projectsLoaded = useAppStore((state) => state.projectsLoaded);
+  const toggleSidebar = useAppStore((state) => state.toggleSidebar);
   // Both dialogs already exist for the welcome view; the Projects header is the
   // in-workspace entry point (minimal-session-ui step 2).
   const [createOpen, setCreateOpen] = useState(false);
@@ -96,6 +100,15 @@ export function ProjectsSection() {
             onClick={() => void openProjectAction()}
           >
             <FolderOpen className="size-3.5" aria-hidden />
+          </Button>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label="Hide sidebar"
+            title="Hide sidebar (Ctrl+B)"
+            onClick={toggleSidebar}
+          >
+            <PanelLeftClose className="size-3.5" aria-hidden />
           </Button>
         </div>
       </div>
@@ -346,20 +359,48 @@ function ProjectGroup({
 function SessionRow({ session }: { session: TabRecord }) {
   const activeTabId = useAppStore((state) => state.activeTabId);
   const activateTab = useAppStore((state) => state.activateTab);
+  const renameSession = useAppStore((state) => state.renameSession);
+  const [renaming, setRenaming] = useState(false);
   return (
-    <button
-      type="button"
-      className={`flex items-center gap-1.5 rounded-xs px-1 py-0.5 text-left text-xs ${
+    <div
+      className={`group flex items-center gap-1.5 rounded-xs px-1 py-0.5 text-left text-xs ${
         session.id === activeTabId ? "bg-surface text-ink" : "text-ink-muted hover:text-ink"
       }`}
-      onClick={() => void activateTab(session.id)}
-      title={session.sessionFile ?? session.title}
+      data-testid={`sidebar-session-${session.id}`}
     >
-      <Badge tone={STATUS_TONE[session.status]} className="px-1 py-0 leading-3">
+      <Badge tone={STATUS_TONE[session.status]} className="shrink-0 px-1 py-0 leading-3">
         {session.status === "running" ? "●" : "○"}
       </Badge>
-      <span className="min-w-0 flex-1 truncate">{session.title}</span>
-    </button>
+      {renaming ? (
+        <InlineRename
+          value={session.title}
+          ariaLabel={`Rename ${session.title}`}
+          className="min-w-0 flex-1"
+          onCommit={(name) => {
+            setRenaming(false);
+            void renameSession(session.id, name);
+          }}
+          onCancel={() => setRenaming(false)}
+        />
+      ) : (
+        <button
+          type="button"
+          className="min-w-0 flex-1 truncate text-left"
+          onClick={() => void activateTab(session.id)}
+          onDoubleClick={() => setRenaming(true)}
+          title={session.sessionFile ?? session.title}
+        >
+          {session.title}
+        </button>
+      )}
+      <TabMenu
+        tab={session}
+        onRename={() => setRenaming(true)}
+        align="end"
+        triggerLabel={`Session actions for ${session.title}`}
+        triggerClassName="opacity-0 group-hover:opacity-100 focus:opacity-100"
+      />
+    </div>
   );
 }
 

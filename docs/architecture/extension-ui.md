@@ -313,3 +313,17 @@ auto-spaced one.
   `getAvailableProviderCount()` is `0` (`src/host/sdk/tui-surface.ts`). Fixing
   that needs a host-side branch watcher and a provider count; the built-in
   footer is unaffected (2026-10-31 minimal-session-ui).
+
+## Notification muting (2026-10-31)
+
+`ctx.ui.notify` has no extension/source field, so mute rules are derived from the
+message: **exact text**, a **template** signature (numbers, quoted values,
+`provider/model` refs and thinking-level words become `*`), or the whole
+**type**. The gear on a warning/error toast (and on a history row) opens the Mute
+dialog; Settings → Notifications lists the rules with Unmute/Unmute all.
+
+A muted notification is **not deleted**: it stays in the history, is marked
+`muted`, and is hidden from the transcript and future toasts. Identical
+`oi.notify` messages are deduped in the transcript and their toasts are
+suppressed per tab for five minutes, so an extension that re-emits the same
+advisory on every state change cannot flood either surface.

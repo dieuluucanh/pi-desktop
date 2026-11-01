@@ -351,3 +351,13 @@ to the defaults for that read; the next explicit prefs change replaces it.
   **redacts an identity email** — the rail shows `Name <email>`, the bundle shows
   `Name <***@***>`. Every other redaction pattern in `redactSecrets` is key- or
   prefix-shaped and would never match a bare address.
+
+## Rail separator and live splitter (2026-10-31)
+
+The rail's left separator is a dedicated `z-20`, pointer-events-none overlay
+rather than the aside's `border-l`; sticky block headers (`z-10`/`z-[9]`) can no
+longer paint over it while scrolling. The two block splitters report an
+`onPreview` split while the pointer moves, and `SourceControlPanel` renders the
+three blocks from that preview. The persisted `prefs.rail.split` is still written
+exactly once on release; keyboard nudges and double-click reset write
+immediately.

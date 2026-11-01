@@ -121,6 +121,22 @@ describe("BlockSplitter", () => {
     expect(1 - next.top - next.middle).toBeCloseTo(0.26, 6);
   });
 
+  it("previews the in-flight split and clears it on release", () => {
+    const onPreview = vi.fn();
+    const { onChange } = renderSplitter({ onPreview });
+    const handle = splitter();
+    stubPointerCapture(handle);
+    fireEvent.pointerDown(handle, { pointerId: 1, clientY: 100 });
+    fireEvent.pointerMove(handle, { pointerId: 1, clientY: 130 });
+    const preview = onPreview.mock.calls.at(-1)?.[0] as RailSplitPrefs;
+    expect(preview.top).toBeCloseTo(0.34 + 30 / BODY, 6);
+    expect(onChange).not.toHaveBeenCalled();
+
+    fireEvent.pointerUp(handle, { pointerId: 1, clientY: 130 });
+    expect(onPreview).toHaveBeenLastCalledWith(null);
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
   it("stops the drag where the neighbour's px floor begins", () => {
     const { onChange } = renderSplitter();
     const handle = splitter();

@@ -16,6 +16,7 @@ import { isOfficeTool, officeToolSummary } from "./office-tool-card";
 import { useMarkdownTransform } from "./useMarkdownTransform";
 import { useAppStore } from "../state/app-store";
 import { matchesBinding } from "../shortcuts/dom-keys";
+import { isNotificationMuted } from "../../../shared/notifications";
 import { resolveDesktopKeymap } from "../../../shared/desktop-keymap";
 import { isBlobRef } from "../../../shared/host-protocol";
 import type { OfficeDocumentPane } from "../../../shared/office-documents";
@@ -322,6 +323,15 @@ function NoticeView({
   onAbort?: () => void;
   running?: boolean;
 }) {
+  const notifications = useAppStore((state) => state.prefs.notifications);
+  // A muted extension notification stays in the history archive, but it must
+  // not take a row in the transcript. The hook runs before this early return.
+  if (
+    notice.event === "oi.notify" &&
+    isNotificationMuted({ message: notice.text, type: notice.severity }, notifications)
+  ) {
+    return null;
+  }
   const tone =
     notice.severity === "error" ? "danger" : notice.severity === "warning" ? "warn" : "neutral";
   return (

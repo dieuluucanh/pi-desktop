@@ -44,6 +44,12 @@ export interface BlockSplitterProps {
   label: string;
   /** Called **once** per gesture — on pointer release, per key press, on reset. */
   onChange: (split: RailSplitPrefs) => void;
+  /**
+   * Called with the in-flight split while dragging (and `null` when the gesture
+   * ends). The owner renders from this so the blocks follow the pointer without
+   * persisting per pixel.
+   */
+  onPreview?: (split: RailSplitPrefs | null) => void;
   /** Double-click: restore the default split. */
   onReset: () => void;
 }
@@ -61,6 +67,7 @@ export function BlockSplitter({
   containerRef,
   label,
   onChange,
+  onPreview,
   onReset,
 }: BlockSplitterProps): React.JSX.Element {
   // The in-flight drag: the split at pointer-down plus the pointer's origin. A
@@ -77,6 +84,7 @@ export function BlockSplitter({
   const trackDrag = (next: RailSplitPrefs | null): void => {
     dragSplitRef.current = next;
     setDragSplit(next);
+    onPreview?.(next);
   };
 
   const containerHeight = (): number => containerRef.current?.clientHeight ?? 0;

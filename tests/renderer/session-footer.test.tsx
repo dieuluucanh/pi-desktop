@@ -150,11 +150,29 @@ describe("SessionFooter", () => {
     const footer = screen.getByTestId("session-footer");
     expect(footer.className).toContain("flex-wrap");
     expect(footer.className).not.toContain("flex-col");
+    // A fixed, two-line viewport: mode-dependent statuses scroll instead of
+    // changing the composer/footer height (2026-10-31 UI plan).
+    expect(footer.className).toContain("h-10");
+    expect(footer.className).toContain("overflow-y-auto");
+    expect(footer.className).toContain("overflow-x-hidden");
     // pwd, stats/context, statuses and model are direct columns of the rail.
     expect(screen.getByTestId("session-footer-pwd").parentElement).toBe(footer);
     expect(screen.getByTestId("session-footer-statuses").parentElement).toBe(footer);
     expect(screen.getByTestId("session-footer-model").parentElement).toBe(footer);
     expect(screen.getByTestId("extension-status-pi-lens-lsp").className).toContain("max-w-[48ch]");
+  });
+
+  it("keeps every overflowing status in the scrollable rail", () => {
+    const statuses = Object.fromEntries(
+      Array.from({ length: 8 }, (_, index) => [`status-${index}`, `value ${index}`]),
+    );
+    render(<SessionFooter facts={{}} statuses={statuses} />);
+    const footer = screen.getByTestId("session-footer");
+    expect(footer.className).toContain("h-10");
+    expect(footer.className).toContain("overflow-y-auto");
+    for (let index = 0; index < 8; index += 1) {
+      expect(screen.getByTestId(`extension-status-status-${index}`)).toBeInTheDocument();
+    }
   });
 
   it("renders single-line widgets inline and counts them as content", () => {

@@ -198,6 +198,10 @@ test.describe("source control", () => {
     await app.window.mouse.move(handle!.x + handle!.width / 2, handle!.y + handle!.height / 2);
     await app.window.mouse.down();
     await app.window.mouse.move(handle!.x + handle!.width / 2, handle!.y + 80, { steps: 8 });
+    // The blocks follow the pointer *before* release (2026-10-31 UI plan).
+    const during = await top.boundingBox();
+    expect(during).not.toBeNull();
+    expect(during!.height).toBeGreaterThan(before!.height);
     await app.window.mouse.up();
 
     const after = await top.boundingBox();

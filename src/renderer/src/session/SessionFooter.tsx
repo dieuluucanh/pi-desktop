@@ -67,7 +67,7 @@ export function SessionFooter({
     <div
       data-testid="session-footer"
       className={cn(
-        "mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-ink-faint",
+        "mt-1 flex h-10 min-w-0 flex-wrap items-start gap-x-3 gap-y-0.5 overflow-y-auto overflow-x-hidden pr-1 text-[11px] text-ink-faint",
         className,
       )}
     >

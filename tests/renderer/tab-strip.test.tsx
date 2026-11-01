@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { TabRecord } from "../../src/shared/session-ipc";
@@ -103,6 +104,15 @@ describe("TabStrip", () => {
     );
   });
 
+  it("shows the sidebar expand control only while the sidebar is collapsed", async () => {
+    installBridge();
+    expect(screen.queryByRole("button", { name: "Show sidebar" })).toBeNull();
+    useAppStore.setState({ prefs: { ...DEFAULT_PREFS, sidebarCollapsed: true } });
+    render(<TabStrip />);
+    await userEvent.click(screen.getByRole("button", { name: "Show sidebar" }));
+    expect(useAppStore.getState().prefs.sidebarCollapsed).toBe(false);
+  });
+
   it("activates a tab when clicked", () => {
     const { bridge } = installBridge();
     const activate = vi.fn(async () => ({ tabs: [], activeTabId: "tab-2" }));
@@ -152,16 +162,32 @@ describe("TabStrip", () => {
 
     await waitFor(() => expect(closeOthers).toHaveBeenCalledWith("tab-1"));
   });
+
+  it("renames a tab inline by double-click", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async () => ({ name: "Renamed" }));
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+    render(<TabStrip />);
+
+    fireEvent.doubleClick(screen.getByRole("tab", { name: /pi-desktop/ }));
+    const input = screen.getByRole("textbox", { name: "Rename pi-desktop" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "Renamed{Enter}");
+
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({ method: "session.rename", params: { name: "Renamed" } }),
+    );
+    expect(screen.queryByRole("textbox", { name: /Rename pi-desktop/ })).toBeNull();
+  });
 });
 
 /**
- * Radix opens a dropdown on a *mouse* pointerdown; jsdom has no real pointer, so
- * the test dispatches the event Radix actually listens for rather than a click.
+ * Open the lifecycle menu through its keyboard path. jsdom's synthetic
+ * pointerdown can be swallowed by a previous test's focus/pointer state; the
+ * trigger's Enter path is the same Radix menu and is deterministic.
  */
 function openTabMenu(title: string): void {
-  fireEvent.pointerDown(screen.getByRole("button", { name: `Actions for ${title}` }), {
-    pointerType: "mouse",
-    button: 0,
-    ctrlKey: false,
-  });
+  const trigger = screen.getByRole("button", { name: `Actions for ${title}` });
+  trigger.focus();
+  fireEvent.keyDown(trigger, { key: "Enter" });
 }

@@ -8,9 +8,8 @@ strip. <kbd>Ctrl/Cmd</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd> (rebindable in Settings
 Shortcuts) toggles the panel, and Go → Source Control / Checkpoints / Documents
 opens a specific menu.
 
-The strip's order is yours: drag an entry, or use its reorder list (_Move up_,
-_Move down_, _Move to top_, _Reset order_). The order, the last menu you opened and
-the panel's width are remembered per app.
+The strip's order is yours: drag an entry to a new position. The order, the last
+menu you opened and the panel's width are remembered per app.
 
 ## The Source Control menu
 

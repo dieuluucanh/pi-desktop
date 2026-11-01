@@ -57,6 +57,16 @@ describe("the strip", () => {
     }
   });
 
+  it("paints the left separator above the sticky panel headers", () => {
+    setRail({ open: true, activeMenu: "source-control" });
+    render(<RightRail menus={menus()} />);
+    const separator = screen.getByTestId("rail-separator");
+    expect(separator).toHaveClass("z-20", "bg-line", "w-px", "pointer-events-none");
+    expect(separator.parentElement).toBe(screen.getByTestId("right-rail"));
+    // The panel's own scroll container/header remain below the overlay.
+    expect(screen.getByTestId("rail-panel")).toBeInTheDocument();
+  });
+
   it("renders nothing at all when no menu is supplied", () => {
     render(<RightRail menus={[]} />);
     expect(screen.queryByTestId("right-rail")).not.toBeInTheDocument();
@@ -357,7 +367,7 @@ describe("scrolling model", () => {
 describe("keyboard focus of a collapsed strip", () => {
   it("reaches every entry without the panel being open", () => {
     render(<RightRail menus={menus()} />);
-    // Scoped to the entries themselves: each one also renders a reorder trigger.
+    // Scoped to the entries themselves: the strip renders nothing else focusable.
     const entries = [
       ...screen.getByTestId("rail-strip").querySelectorAll<HTMLElement>("[data-rail-menu]"),
     ];

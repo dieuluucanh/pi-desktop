@@ -239,6 +239,7 @@ export function Composer({
   toolsSlot,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -497,7 +498,7 @@ export function Composer({
         />
       ) : null}
 
-      <div className="flex items-end gap-2">
+      <div className="flex items-stretch gap-2">
         <div data-testid="composer-input" className="relative min-w-0 flex-1">
           <textarea
             ref={textareaRef}
@@ -772,39 +773,52 @@ export function Composer({
           ) : null}
         </div>
 
-        <div className="flex flex-col items-stretch gap-1">
+        <div className="flex flex-col self-stretch gap-1">
           {toolsSlot ? (
-            <div data-testid="composer-tools" className="flex items-center justify-end gap-0.5">
+            <div data-testid="composer-tools" className="flex h-7 items-center justify-end gap-1">
               {toolsSlot}
             </div>
           ) : null}
-          <div className="flex gap-1">
+          <div className="mt-auto flex h-7 items-center gap-1">
             <Button
-              size="sm"
+              size="icon-md"
               variant="primary"
+              aria-label="Send"
               disabled={!enabled || busy}
               onClick={() => void submit()}
               title={running ? "Enter steers · Alt+Enter queues a follow-up" : "Enter"}
             >
-              <Send className="size-3.5" aria-hidden />
-              Send
+              <Send className="size-4" aria-hidden />
             </Button>
             {running ? (
-              <Button size="sm" variant="danger" onClick={onStop} title="Esc">
-                <Square className="size-3.5" aria-hidden />
-                Stop
+              <Button
+                size="icon-md"
+                variant="danger"
+                aria-label="Stop"
+                onClick={onStop}
+                title="Esc"
+              >
+                <Square className="size-4" aria-hidden />
               </Button>
             ) : null}
-            <label className="flex cursor-pointer items-center px-1 text-ink-faint hover:text-ink">
-              <Paperclip className="size-3.5" aria-hidden />
-              <input
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={(event) => void addFiles([...(event.target.files ?? [])])}
-              />
-            </label>
+            <Button
+              size="icon-md"
+              variant="ghost"
+              aria-label="Attach image"
+              title="Attach image"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Paperclip className="size-4" aria-hidden />
+            </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              data-testid="composer-attach-input"
+              onChange={(event) => void addFiles([...(event.target.files ?? [])])}
+            />
           </div>
         </div>
       </div>

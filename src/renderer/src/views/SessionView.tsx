@@ -428,7 +428,7 @@ export function SessionView() {
                 toolsSlot={
                   <>
                     <Button
-                      size="icon-sm"
+                      size="icon-md"
                       variant="ghost"
                       data-testid="composer-model"
                       aria-label="Change model"
@@ -442,10 +442,10 @@ export function SessionView() {
                         void loadModels(active.id);
                       }}
                     >
-                      <Cpu className="size-3.5" aria-hidden />
+                      <Cpu className="size-4" aria-hidden />
                     </Button>
                     <Button
-                      size="icon-sm"
+                      size="icon-md"
                       variant="ghost"
                       data-testid="composer-thinking"
                       aria-label={
