@@ -78,6 +78,27 @@ describe("ShortcutDispatcher app.tools.expand", () => {
     fireEvent.keyDown(window, { key: "o", ctrlKey: true });
     expect(useAppStore.getState().toolsExpanded[TAB]).toBeUndefined();
   });
+
+  it("leaves Pi's editor actions alone inside CodeMirror", () => {
+    const openExternal = vi.fn(async () => undefined);
+    useAppStore.setState({ openExternalEditor: openExternal });
+    render(<ShortcutDispatcher />);
+
+    const root = document.createElement("div");
+    root.className = "cm-editor";
+    const content = document.createElement("div");
+    content.contentEditable = "true";
+    root.appendChild(content);
+    document.body.appendChild(root);
+
+    fireEvent.keyDown(content, { key: "o", ctrlKey: true });
+    expect(useAppStore.getState().toolsExpanded[TAB]).toBeUndefined();
+
+    fireEvent.keyDown(content, { key: "g", ctrlKey: true });
+    expect(openExternal).not.toHaveBeenCalled();
+
+    root.remove();
+  });
 });
 
 describe("ShortcutDispatcher app.message.copy (plan step 12)", () => {

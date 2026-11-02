@@ -12,9 +12,9 @@ import { installBridge, type BridgeHandles } from "./fixtures";
  * The rail is project-scoped, so the two selections the user has — the sidebar's
  * project and the tab strip's session — must move together:
  *
- *  - clicking a **project** jumps to its most recently active *open* tab, or
- *    clears the active tab when the folder has none (main never resumes a saved
- *    session on its own);
+ *  - clicking a **project** jumps to its most recently active *open session*
+ *    tab, or clears the active tab when the folder has none (main never resumes
+ *    a saved session on its own);
  *  - clicking a **session** selects that session's project.
  */
 
@@ -121,6 +121,19 @@ describe("selecting a project", () => {
     useAppStore.setState({
       tabs: [tab("s", APP, 10), tab("w", APP, 500, "web")],
       activeTabId: "w",
+    });
+
+    await useAppStore.getState().activateProject(APP);
+
+    expect(calls.activate).toEqual(["s"]);
+  });
+
+  it("never picks an editor tab, even when it is the most recent", async () => {
+    const handles = installBridge({ projects: [record(APP)], activeProject: APP });
+    const calls = sessionCalls(handles);
+    useAppStore.setState({
+      tabs: [tab("s", APP, 10), tab("e", APP, 500, "editor")],
+      activeTabId: "e",
     });
 
     await useAppStore.getState().activateProject(APP);

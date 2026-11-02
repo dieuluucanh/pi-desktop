@@ -44,6 +44,13 @@ export function isHostBackedTab(kind: TabKind): boolean {
   return kind === "session" || kind === "office";
 }
 
+/** A tab kind that belongs in the session surfaces (everything but a file tab). */
+export type SessionTabKind = Exclude<TabKind, "editor">;
+
+export function isSessionTabKind(kind: TabKind): kind is SessionTabKind {
+  return kind !== "editor";
+}
+
 /** A narrows to an editor record with a validated file path. */
 export function isEditorTab(tab: TabRecord): tab is TabRecord & { filePath: string } {
   return tab.kind === "editor" && typeof tab.filePath === "string";
@@ -77,6 +84,19 @@ export interface TabRecord {
   sessionTabId?: string | null;
   /** Last failure, surfaced inline in the tab instead of only in a log. */
   error?: string;
+}
+
+/** A tab that the session strip, sidebar and project activation may show. */
+export type SessionTab = TabRecord & { kind: SessionTabKind };
+
+/**
+ * True for a tab that belongs in the session surfaces. A file tab is an editor
+ * view, not a session, even though it shares the persisted tab list. The test is
+ * `kind`, not `filePath`, so a malformed editor record cannot leak into a
+ * session list.
+ */
+export function isSessionTab(tab: TabRecord): tab is SessionTab {
+  return isSessionTabKind(tab.kind);
 }
 
 export type SessionTabsEnvelope = { tabs: TabRecord[]; activeTabId: string | null };

@@ -14,7 +14,16 @@ others.
 - **Close others**, **duplicate** (a fresh session in the same project), rename,
   reorder (drag) and an overflow menu with fork/clone/export live on the tab.
 
-Sessions are grouped by project in the sidebar; a running tab shows a status dot.
+Editor and web documents have their own tab rows. Sessions, the Office host and
+web tabs stay in the top strip; file tabs appear in a second strip directly
+under it, only while a file is open. Both rows share one active tab and both
+scroll horizontally with the mouse wheel. The active tab is revealed when the
+selection changes; a manual scroll position is kept across window switches and
+tab status updates.
+
+Sessions are grouped by project in the sidebar; the group lists the same tabs as
+the top strip (file tabs stay in the editor strip), and a running tab shows a
+status dot.
 
 ## Resuming and the session browser
 

@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  isSessionTab,
   isTabKind,
   sanitizeTabRecord,
   sanitizeTabs,
   SESSION_STATUS_LABEL,
   sessionTitle,
   TAB_KINDS,
+  type TabRecord,
 } from "../../src/shared/session-ipc";
 
 /**
@@ -78,6 +80,34 @@ describe("sanitizeTabRecord", () => {
     expect(sanitizeTabRecord({ id: "t", kind: "session", cwd: "" })).toBeNull();
     expect(sanitizeTabRecord({ kind: "session", cwd: "C:\\x" })).toBeNull();
     expect(sanitizeTabRecord(null)).toBeNull();
+  });
+});
+
+describe("isSessionTab", () => {
+  function record(kind: TabRecord["kind"]): TabRecord {
+    return {
+      id: `tab-${kind}`,
+      kind,
+      cwd: "C:\\work\\app",
+      title: kind,
+      sessionFile: null,
+      status: "idle",
+      createdAt: 1,
+      lastActiveAt: 1,
+      model: null,
+      ...(kind === "editor" ? { filePath: "a.ts" } : {}),
+    };
+  }
+
+  it("keeps every non-editor kind in the session surfaces", () => {
+    expect(isSessionTab(record("session"))).toBe(true);
+    expect(isSessionTab(record("office"))).toBe(true);
+    expect(isSessionTab(record("web"))).toBe(true);
+    expect(isSessionTab(record("editor"))).toBe(false);
+  });
+
+  it("excludes an editor tab by kind, even without a valid file path", () => {
+    expect(isSessionTab({ ...record("editor"), filePath: null })).toBe(false);
   });
 });
 

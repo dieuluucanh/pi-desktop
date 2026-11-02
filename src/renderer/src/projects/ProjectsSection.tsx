@@ -34,7 +34,12 @@ import type {
   ProjectRecord,
   ProjectTrustStatus,
 } from "../../../shared/projects";
-import type { TabRecord, TabStatus } from "../../../shared/session-ipc";
+import {
+  isSessionTab,
+  type SessionTab,
+  type TabRecord,
+  type TabStatus,
+} from "../../../shared/session-ipc";
 
 /**
  * The sidebar's project section (plan step 10, IA per D-A4).
@@ -56,6 +61,11 @@ const STATUS_TONE: Record<TabStatus, "neutral" | "accent" | "ok" | "warn" | "dan
   failed: "danger",
   stopped: "neutral",
 };
+
+/** The session rows a project group shows: every open tab except file tabs. */
+function projectSessionTabs(tabs: readonly TabRecord[], projectPath: string): SessionTab[] {
+  return tabs.filter((tab): tab is SessionTab => isSessionTab(tab) && tab.cwd === projectPath);
+}
 
 export function ProjectsSection() {
   const projects = useAppStore((state) => state.projects);
@@ -127,7 +137,7 @@ export function ProjectsSection() {
             index={index}
             total={projects.length}
             active={project.path === activePath}
-            sessions={tabs.filter((tab) => tab.cwd === project.path)}
+            sessionTabs={projectSessionTabs(tabs, project.path)}
           />
         ))
       )}
@@ -143,13 +153,13 @@ function ProjectGroup({
   index,
   total,
   active,
-  sessions,
+  sessionTabs,
 }: {
   project: ProjectRecord;
   index: number;
   total: number;
   active: boolean;
-  sessions: TabRecord[];
+  sessionTabs: SessionTab[];
 }) {
   // The active project expands by default, but an explicit toggle wins (no
   // effect-driven setState, which would cascade renders).
@@ -171,7 +181,7 @@ function ProjectGroup({
     if (expanded && !inspection && !inspectionError) void inspectProject(project.path);
   }, [expanded, inspection, inspectionError, inspectProject, project.path]);
 
-  const running = sessions.some((tab) => tab.status === "running");
+  const running = sessionTabs.some((tab) => tab.status === "running");
 
   return (
     <div
@@ -331,7 +341,7 @@ function ProjectGroup({
           </div>
 
           <div className="flex flex-col gap-0.5">
-            {sessions.map((session) => (
+            {sessionTabs.map((session) => (
               <SessionRow key={session.id} session={session} />
             ))}
             <Button
@@ -356,7 +366,7 @@ function ProjectGroup({
   );
 }
 
-function SessionRow({ session }: { session: TabRecord }) {
+function SessionRow({ session }: { session: SessionTab }) {
   const activeTabId = useAppStore((state) => state.activeTabId);
   const activateTab = useAppStore((state) => state.activateTab);
   const renameSession = useAppStore((state) => state.renameSession);

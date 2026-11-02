@@ -16,6 +16,7 @@ import {
   highlightActiveLineGutter,
   keymap,
   lineNumbers,
+  type KeyBinding,
   type ViewUpdate,
 } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
@@ -44,6 +45,10 @@ export interface EditorStateInput {
   wordWrap: boolean;
   tabSize: number;
   onUpdate?: (update: ViewUpdate) => void;
+  /** `Mod-s` inside the editor surface (the editor view owns this chord). */
+  onSave?: () => void;
+  /** `Shift-Alt-f` inside the editor surface. */
+  onFormat?: () => void;
 }
 
 export function createEditorState(input: EditorStateInput): {
@@ -57,6 +62,31 @@ export function createEditorState(input: EditorStateInput): {
     tabSize: new Compartment(),
   };
 
+  // Editor-local keys come before CodeMirror's defaults, so `Mod-s` cannot be
+  // shadowed by a future default binding. They are only installed when the host
+  // component supplies a callback (an embedded state stays inert otherwise).
+  const editorKeys: KeyBinding[] = [];
+  const save = input.onSave;
+  if (save) {
+    editorKeys.push({
+      key: "Mod-s",
+      run: () => {
+        save();
+        return true;
+      },
+    });
+  }
+  const format = input.onFormat;
+  if (format) {
+    editorKeys.push({
+      key: "Shift-Alt-f",
+      run: () => {
+        format();
+        return true;
+      },
+    });
+  }
+
   const extensions: Extension[] = [
     lineNumbers(),
     highlightActiveLineGutter(),
@@ -69,7 +99,14 @@ export function createEditorState(input: EditorStateInput): {
     indentOnInput(),
     bracketMatching(),
     syntaxHighlighting(editorHighlightStyle),
-    keymap.of([...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, indentWithTab]),
+    keymap.of([
+      ...editorKeys,
+      ...defaultKeymap,
+      ...searchKeymap,
+      ...historyKeymap,
+      ...foldKeymap,
+      indentWithTab,
+    ]),
     EditorState.allowMultipleSelections.of(true),
     EditorState.readOnly.of(input.readOnly),
     EditorView.editable.of(!input.readOnly),

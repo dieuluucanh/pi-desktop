@@ -27,11 +27,15 @@ The sidebar shows, per project:
 - a **trust** badge;
 - a `.pi/` summary (which of settings/extensions/skills/prompts/themes exist);
 - whether `AGENTS.md` is present;
-- the session directory Pi will use.
+- the session directory Pi will use;
+- the open session tabs for the project (file tabs are listed only in the editor
+  tab strip).
 
 Actions: reveal in the file manager, open an external terminal, copy the path,
 and **Use project settings** (a per-project switch), plus **Edit JSON…** for the
-advanced project document. The switch defaults to **off** (shared global
+advanced project document. Clicking the project name activates the project and
+focuses its most recently active session tab, never a file tab. The switch
+defaults to **off** (shared global
 settings). Turning it on makes model, scope, thinking, theme, package and
 extension writes in this project target `.pi/settings.json`; turning it off
 saves the project document to app state, empties it, and the project uses global

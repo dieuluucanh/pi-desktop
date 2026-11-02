@@ -1,5 +1,6 @@
 import { Command } from "cmdk";
 import { useAppStore, type AppView } from "../state/app-store";
+import { useEditorStore } from "../editor/editor-store";
 import { newSessionAction, openProjectAction } from "../menu-actions";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { Kbd } from "../ui/kbd";
@@ -47,6 +48,22 @@ export function CommandPalette() {
     }
     closePalette();
     action(tabId);
+  };
+
+  // Editor commands are only meaningful with an editor tab on screen; the
+  // palette explains the requirement instead of saving/formatting nothing.
+  const runEditor = (action: (tabId: string) => void): void => {
+    const state = useAppStore.getState();
+    const tab = state.activeTabId
+      ? state.tabs.find((entry) => entry.id === state.activeTabId)
+      : undefined;
+    if (!tab || tab.kind !== "editor") {
+      closePalette();
+      setHint("Open a file first — that action applies to the editor.");
+      return;
+    }
+    closePalette();
+    action(tab.id);
   };
 
   return (
@@ -99,6 +116,16 @@ export function CommandPalette() {
               <PaletteItem
                 label="Open URL in a tab…"
                 onSelect={() => run(() => useAppStore.getState().openWebUrlDialog())}
+              />
+              <PaletteItem
+                label="Save file"
+                shortcut="Ctrl+S"
+                onSelect={() => runEditor((tabId) => void useEditorStore.getState().save(tabId))}
+              />
+              <PaletteItem
+                label="Format document"
+                shortcut="Shift+Alt+F"
+                onSelect={() => runEditor((tabId) => void useEditorStore.getState().format(tabId))}
               />
               <PaletteItem
                 label="Browse sessions…"

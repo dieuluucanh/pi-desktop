@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { resolveKeybindings } from "../../../shared/keybindings";
 import { useAppStore } from "../state/app-store";
-import { isEditableTarget, matchShortcut, matchesBinding } from "./dom-keys";
+import { isEditableTarget, isEditorSurfaceTarget, matchShortcut, matchesBinding } from "./dom-keys";
 
 /**
  * Dispatches extension-registered shortcuts (plan step 15) and the app's own
@@ -31,10 +31,13 @@ export function ShortcutDispatcher() {
       if (event.defaultPrevented) return;
       const state = useAppStore.getState();
       if (state.shortcutsHelpOpen || state.paletteOpen) return;
+      // CodeMirror owns its own keys. Pi's editor/composer actions below are
+      // meant for the transcript side and must not fire while a file is edited.
+      const inCodeEditor = isEditorSurfaceTarget(event.target);
 
       // `Ctrl+G` (Pi's `app.editor.external`) opens the expanded editor even
       // while the composer owns the keyboard — that is where the draft is.
-      if (state.activeTabId) {
+      if (!inCodeEditor && state.activeTabId) {
         const editorKeys =
           state.keybindings?.effective["app.editor.external"] ?? DEFAULT_EXTERNAL_EDITOR_KEYS;
         if (editorKeys.length > 0 && matchesBinding(event, editorKeys)) {
@@ -46,7 +49,7 @@ export function ShortcutDispatcher() {
 
       // The app's own binding resolves through the same effective table as an
       // extension shortcut, so a remap in Settings is honoured.
-      if (state.activeTabId) {
+      if (!inCodeEditor && state.activeTabId) {
         const keys = state.keybindings?.effective["app.tools.expand"] ?? DEFAULT_EXPAND_KEYS;
         if (keys.length > 0 && matchesBinding(event, keys)) {
           event.preventDefault();

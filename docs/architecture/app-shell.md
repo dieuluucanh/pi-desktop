@@ -8,6 +8,8 @@ steps must extend it rather than re-invent it.
 ```text
 tab strip        session tabs (the topmost app row; the OS frame owns the window
                  controls) + the "+" action
+editor tab strip editor tabs in a second row under the session strip; it
+                 renders only while at least one file is open
 sidebar          Projects (+ menu · open folder) · Sessions · Views
 main area        the active view (welcome | session | settings | extensions |
                  connections | skills | diagnostics)
@@ -28,6 +30,20 @@ strip, step 10 fills the project section — neither re-lays-out the window. The
 in-app title bar was removed in the 2026-10-31 minimal-session-ui pass; the brand
 mark survives in the welcome/onboarding views and the OS window title is set by
 `app:set-title`.
+
+**Two tab rows, one workbench (2026-11-02 editor-tabs plan).** Sessions, the
+Office host and web tabs stay in the top strip. File tabs get their own row
+directly beneath it, still inside `<main>`, so the sidebar and the panel rail
+bound both rows. The editor row renders nothing until a file is open, and both
+rows share one `activeTabId`: clicking a file replaces the main view rather than
+creating a second pane. Both rows scroll horizontally with the mouse wheel, reveal the active tab when
+the selection changes, and keep the user's manual scroll position across window
+focus and tab updates. The tab-strip horizontal scrollbar is 2 px (the app
+default is 10 px); the strips reset `scrollbar-width`/`scrollbar-color` to
+`auto` so the WebKit pixel size is not overridden by the standard properties,
+with the native thin bar as the fallback. The sidebar's project groups list only
+the session row's tabs (sessions, the Office host and web tabs); file tabs are
+never repeated there and live only in the editor row.
 
 **Two surfaces, one job each (2026-10-31 minimal-session-ui).** The status bar is
 app-level and mounted on every view; it never carries session facts. It shows the

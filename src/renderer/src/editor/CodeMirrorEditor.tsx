@@ -56,6 +56,8 @@ export function CodeMirrorEditor(props: CodeMirrorEditorProps): React.JSX.Elemen
       wordWrap: props.wordWrap,
       tabSize: props.tabSize,
       onUpdate,
+      onSave: () => void useEditorStore.getState().save(props.tabId),
+      onFormat: () => void useEditorStore.getState().format(props.tabId),
     });
     compartmentsRef.current = created.compartments;
     const view = new EditorView({ state: created.state, parent: hostRef.current });

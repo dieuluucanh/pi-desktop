@@ -17,9 +17,11 @@
  * renderer and the tests share one definition.
  */
 
+import { isSessionTabKind, type TabKind } from "./session-ipc";
+
 /** The minimum a caller must know about a tab to scope the rail. */
 export interface RailScopeTab {
-  kind: string;
+  kind: TabKind;
   cwd: string;
   lastActiveAt: number;
 }
@@ -80,21 +82,23 @@ export function railScopeFolder(input: RailScopeInput): string | null {
 }
 
 /**
- * The most recently active tab in a folder, or null when the folder has no tab.
+ * The most recently active **session** tab in a folder, or null when the folder
+ * has no session tab. A `web` tab (a review overlay) and an `editor` tab (a file
+ * view) are not sessions, so neither can be the target of a project click.
  *
  * Only **open** tabs count. A saved session on disk is a different thing: it has
  * no host, no working tree and no transcript until it is resumed, so jumping into
  * it would silently create a tab from a sidebar click. The Session Browser is the
  * explicit way to resume from disk (`continueMostRecent`).
  */
-export function mostRecentTabForFolder<T extends RailScopeTab>(
+export function mostRecentSessionTabForFolder<T extends RailScopeTab>(
   tabs: readonly T[],
   folder: string | null | undefined,
 ): T | null {
   if (!folder) return null;
   let best: T | null = null;
   for (const tab of tabs) {
-    if (tab.kind === "web") continue;
+    if (tab.kind === "web" || !isSessionTabKind(tab.kind)) continue;
     if (!sameFolder(tab.cwd, folder)) continue;
     if (!best || tab.lastActiveAt > best.lastActiveAt) best = tab;
   }

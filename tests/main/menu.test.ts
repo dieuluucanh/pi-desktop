@@ -74,6 +74,18 @@ describe("menuTemplate", () => {
     expect(accelerators).not.toContain("CmdOrCtrl+O");
   });
 
+  it("keeps editor Save/Format menu items out of the accelerator table", () => {
+    const { template } = build();
+    const items = allItems(template);
+    for (const id of ["save-editor", "format-editor"] as const) {
+      const item = items.find((entry) => entry.id === id);
+      expect(item?.label, id).toBeTruthy();
+      // The editor owns Mod-s / Shift-Alt-F locally. A menu accelerator would
+      // fire before the renderer and swallow Pi's selector-local Ctrl+S.
+      expect(item?.accelerator, id).toBeUndefined();
+    }
+  });
+
   it("binds app zoom to Ctrl+= / Ctrl+- / Ctrl+0, not Electron's roles", () => {
     const { template } = build();
     const items = allItems(template);

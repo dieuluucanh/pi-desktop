@@ -18,7 +18,9 @@ import { Separator } from "../ui/separator";
 const DESKTOP_SHORTCUTS: Array<{ keys: string[]; action: string }> = [
   { keys: ["Ctrl/⌘", "N"], action: "New session" },
   { keys: ["Ctrl/⌘", "W"], action: "Close session tab" },
-  { keys: ["Ctrl/⌘", "Tab"], action: "Next / previous session tab" },
+  { keys: ["Ctrl/⌘", "Tab"], action: "Next / previous tab" },
+  { keys: ["Ctrl/⌘", "S"], action: "Save file (editor)" },
+  { keys: ["Shift", "Alt", "F"], action: "Format document (editor)" },
   { keys: ["Ctrl/⌘", "K"], action: "Command palette" },
   { keys: ["Ctrl/⌘", "B"], action: "Toggle sidebar" },
   { keys: ["Ctrl/⌘", "="], action: "Zoom in" },

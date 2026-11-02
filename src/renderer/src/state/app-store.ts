@@ -23,7 +23,7 @@ import {
   type ProviderSummary,
 } from "../../../shared/providers";
 import { normalizeScopePatterns, scopeKeys, scopeStarKeys } from "../../../shared/model-scope";
-import { mostRecentTabForFolder, sameFolder } from "../../../shared/rail-scope";
+import { mostRecentSessionTabForFolder, sameFolder } from "../../../shared/rail-scope";
 import type { CustomProviderInput, CustomProviderSummary } from "../../../shared/custom-providers";
 import {
   isNotificationMuted,
@@ -58,6 +58,7 @@ import type {
 } from "../../../shared/settings";
 import {
   CONTROL_TAB_ID,
+  isHostBackedTab,
   type CreateTabInput,
   type SessionEventEnvelope,
   type SessionEventEntry,
@@ -1935,7 +1936,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   focusProjectSession: async (path) => {
-    const tab = mostRecentTabForFolder(get().tabs, path);
+    const tab = mostRecentSessionTabForFolder(get().tabs, path);
     if (tab) {
       await get().activateTab(tab.id);
       return;
@@ -5539,11 +5540,21 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (!api?.sessions) return;
     set({ activeTabId: tabId, view: "session" });
     const tab = get().tabs.find((entry) => entry.id === tabId);
-    if (tab?.kind === "web") return;
+    if (!tab || tab.kind === "web") return;
     // The rail and the sidebar follow the session that is on screen (2026-10-30
     // project-scoped rail plan): clicking a session in another project also
     // selects that project. Fire-and-forget so waking the host is not delayed.
-    if (tab) void get().selectProjectForCwd(tab.cwd);
+    void get().selectProjectForCwd(tab.cwd);
+    // An editor tab has no host. It still tells main which tab is active (so the
+    // selection survives a push/relaunch), but skips the host-only refreshes.
+    if (!isHostBackedTab(tab.kind)) {
+      try {
+        get().applyTabs(await api.sessions.activate(tabId));
+      } catch (error) {
+        get().noteFailure(error);
+      }
+      return;
+    }
     // Switching tabs always re-checks; the ensure refreshes extension UI, the
     // TUI surface, shortcuts and the command cache after the host is awake.
     await get().ensureSession(tabId, { force: true });
@@ -5552,7 +5563,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   ensureSession: async (tabId, options = {}) => {
     const api = bridge();
     const tab = get().tabs.find((entry) => entry.id === tabId);
-    if (!api?.sessions || !tab || tab.kind === "web") return false;
+    if (!api?.sessions || !tab || !isHostBackedTab(tab.kind)) return false;
     // A crashed/failed tab needs the explicit Restart action (or the banner),
     // not an accidental spawn from a keystroke.
     if (tab.status === "crashed" || tab.status === "failed") return false;
@@ -5602,7 +5613,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
     const activeId = get().activeTabId;
     const active = activeId ? get().tabs.find((tab) => tab.id === activeId) : undefined;
-    if (activeId && active && active.kind !== "web") {
+    if (activeId && active && isHostBackedTab(active.kind)) {
       await get().ensureSession(activeId, { force: true });
     }
   },

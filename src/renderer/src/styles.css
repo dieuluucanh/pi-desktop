@@ -78,4 +78,24 @@
     background-clip: content-box;
     background-color: var(--color-line-strong);
   }
+
+  /*
+   * Tab strips: 2 px horizontal bars (the app default is 10 px). Chromium 121+
+   * gives `scrollbar-width`/`scrollbar-color` precedence over
+   * `::-webkit-scrollbar`, so reset both to `auto` on the strip; without this
+   * the pixel rule is inert and the native thin bar is painted instead.
+   */
+  .tab-strip-scrollbar {
+    scrollbar-width: auto;
+    scrollbar-color: auto;
+  }
+
+  .tab-strip-scrollbar::-webkit-scrollbar {
+    width: 2px;
+    height: 2px;
+  }
+
+  .tab-strip-scrollbar::-webkit-scrollbar-thumb {
+    border: 0;
+  }
 }

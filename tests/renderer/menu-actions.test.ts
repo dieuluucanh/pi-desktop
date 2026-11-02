@@ -6,6 +6,8 @@ import {
   openProjectAction,
 } from "../../src/renderer/src/menu-actions";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
+import type { TabRecord } from "../../src/shared/session-ipc";
+import { useEditorStore } from "../../src/renderer/src/editor/editor-store";
 import { documentsViewFixture, installBridge } from "./fixtures";
 
 /**
@@ -16,6 +18,10 @@ import { documentsViewFixture, installBridge } from "./fixtures";
 
 beforeEach(() => {
   installBridge();
+  // Editor metadata and the non-reactive buffer registry outlive a test; clear
+  // both so a save/format test cannot see the previous case's file.
+  useEditorStore.getState().clearExcept(new Set());
+  useEditorStore.setState({ pendingClose: null });
   useAppStore.setState({
     view: "welcome",
     settingsFocus: null,
@@ -216,5 +222,84 @@ describe("handleMenuCommand", () => {
     useAppStore.setState({ shortcutsHelpOpen: false });
     handleMenuCommand("shortcuts");
     expect(useAppStore.getState().shortcutsHelpOpen).toBe(true);
+  });
+});
+
+/**
+ * Editor menu commands (2026-11-02 plan step 2). Save/Format are editor-local
+ * chords plus no-accelerator menu items; the handler must act on the active
+ * editor tab and explain the requirement when a session tab is on screen.
+ */
+const WORK = "C:\\work\\pi-desktop";
+
+function editorTab(): TabRecord {
+  return {
+    id: "editor-1",
+    kind: "editor",
+    cwd: WORK,
+    title: "a.ts",
+    sessionFile: null,
+    status: "idle",
+    createdAt: 1,
+    lastActiveAt: 1,
+    model: null,
+    filePath: "a.ts",
+  };
+}
+
+describe("editor menu commands", () => {
+  async function seedEditor(): Promise<{
+    writeFile: ReturnType<typeof vi.fn>;
+    format: ReturnType<typeof vi.fn>;
+  }> {
+    const { bridge } = installBridge();
+    const writeFile = vi.fn(async () => ({
+      ok: true as const,
+      value: { path: `${WORK}\\a.ts`, relativePath: "a.ts", size: 8, mtimeMs: 2, bytes: 8 },
+    }));
+    const format = vi.fn(async () => ({ ok: true as const, value: { text: "let a = 1;\n" } }));
+    const readFile = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        path: `${WORK}\\a.ts`,
+        relativePath: "a.ts",
+        kind: "text" as const,
+        text: "let a=1;",
+        bytes: 8,
+        size: 8,
+        mtimeMs: 1,
+        truncated: false,
+        eol: "lf" as const,
+        bom: false,
+        encoding: "utf8" as const,
+      },
+    }));
+    (bridge.workspace as unknown as { readFile: unknown }).readFile = readFile;
+    (bridge.workspace as unknown as { writeFile: unknown }).writeFile = writeFile;
+    (bridge.workspace as unknown as { format: unknown }).format = format;
+    useAppStore.setState({ tabs: [editorTab()], activeTabId: "editor-1", hint: null });
+    await useEditorStore.getState().load("editor-1");
+    return { writeFile, format };
+  }
+
+  it("saves the active editor tab", async () => {
+    const { writeFile } = await seedEditor();
+    handleMenuCommand("save-editor");
+    await vi.waitFor(() => expect(writeFile).toHaveBeenCalledTimes(1));
+  });
+
+  it("formats the active editor tab", async () => {
+    const { format } = await seedEditor();
+    handleMenuCommand("format-editor");
+    await vi.waitFor(() => expect(format).toHaveBeenCalledTimes(1));
+  });
+
+  it("explains the requirement when no editor is active", () => {
+    useAppStore.setState({ tabs: [], activeTabId: null, hint: null });
+    handleMenuCommand("save-editor");
+    expect(useAppStore.getState().hint).toMatch(/open a file/i);
+    useAppStore.setState({ hint: null });
+    handleMenuCommand("format-editor");
+    expect(useAppStore.getState().hint).toMatch(/open a file/i);
   });
 });

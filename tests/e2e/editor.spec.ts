@@ -49,15 +49,40 @@ test("@smoke explorer opens a file in an editor tab and saves it", async () => {
   await expect(window.getByTestId("editor-tab-view")).toBeVisible();
   await expect(window.locator(".cm-editor")).toBeVisible();
 
+  // Editor tabs have their own row under the session row (2026-11-02 plan);
+  // the file must not appear in the session strip.
+  const editorStrip = window.getByTestId("editor-tab-strip");
+  await expect(editorStrip).toBeVisible();
+  await expect(editorStrip.getByRole("tab", { name: /app\.ts/ })).toBeVisible();
+  await expect(window.getByTestId("session-tab-strip")).toBeVisible();
+  await expect(
+    window.getByTestId("session-tab-strip").getByRole("tab", { name: /app\.ts/ }),
+  ).toHaveCount(0);
+
   await window.locator(".cm-content").click();
   await window.keyboard.press("Control+End");
   await window.keyboard.type("// edited in the app");
   await expect(window.getByText("Unsaved")).toBeVisible();
-  await window.getByTestId("editor-save").click();
 
+  // Ctrl/Cmd+S is owned by the editor surface (CodeMirror + the view
+  // container), not by an Electron accelerator.
+  const saveKey = process.platform === "darwin" ? "Meta+s" : "Control+s";
+  await window.locator(".cm-content").press(saveKey);
+  await expect(window.getByText("Unsaved")).toHaveCount(0);
   await expect
     .poll(() => readFileSync(join(app!.projectDir, "app.ts"), "utf8"), { timeout: 15_000 })
     .toContain("// edited in the app");
+
+  // The no-accelerator File menu path works too.
+  await window.locator(".cm-content").press("Control+End");
+  await window.keyboard.press("Enter");
+  await window.keyboard.type("// saved from the menu");
+  await expect(window.getByText("Unsaved")).toBeVisible();
+  await app.menuCommand("save-editor");
+  await expect(window.getByText("Unsaved")).toHaveCount(0);
+  await expect
+    .poll(() => readFileSync(join(app!.projectDir, "app.ts"), "utf8"), { timeout: 15_000 })
+    .toContain("// saved from the menu");
 });
 
 test("quick open finds a file and opens an editor tab", async () => {
@@ -75,6 +100,7 @@ test("quick open finds a file and opens an editor tab", async () => {
   await window.getByText("app.ts").last().click();
   await expect(window.getByTestId("editor-tab-view")).toBeVisible();
   await expect(window.locator(".cm-editor")).toBeVisible();
+  await expect(window.getByTestId("editor-tab-strip")).toBeVisible();
 });
 
 test("@smoke explorer search finds deep and ignored files; drag inserts a mention", async () => {

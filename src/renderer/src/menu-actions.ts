@@ -64,6 +64,20 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
         module.useQuickOpen.getState().openDialog(),
       );
       return;
+    case "save-editor":
+    case "format-editor": {
+      const tabId = store.activeTabId;
+      const tab = tabId ? store.tabs.find((entry) => entry.id === tabId) : undefined;
+      if (!tab || tab.kind !== "editor") {
+        store.setHint(
+          command === "save-editor" ? "Open a file to save it." : "Open a file to format it.",
+        );
+        return;
+      }
+      if (command === "save-editor") void useEditorStore.getState().save(tab.id);
+      else void useEditorStore.getState().format(tab.id);
+      return;
+    }
     case "open-web-url":
       // The manual "Open URL in a tab" action (plan step 21); the dialog is the
       // one place a URL is typed, so localhost UIs never need a terminal.

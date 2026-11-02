@@ -41,6 +41,11 @@ const FILE_ITEMS: readonly ItemSpec[] = [
   // the renderer ever sees it.
   { command: "open-project", label: "Open Project…", accelerator: "CmdOrCtrl+Shift+O" },
   { command: "open-file", label: "Open File…", accelerator: "CmdOrCtrl+P" },
+  // Save/Format deliberately have no accelerator: the editor owns Mod-s and
+  // Shift-Alt-F locally, and a menu accelerator would be consumed before the
+  // renderer (swallowing Pi's selector/TUI Ctrl+S).
+  { command: "save-editor", label: "Save File" },
+  { command: "format-editor", label: "Format Document" },
   { command: "open-web-url", label: "Open URL in Tab…" },
   { command: "close-session", label: "Close Session", accelerator: "CmdOrCtrl+W" },
   { command: "view-sessions", label: "Sessions…", accelerator: "CmdOrCtrl+Alt+O" },
@@ -51,8 +56,8 @@ const VIEW_ITEMS: readonly ItemSpec[] = [
   { command: "command-palette", label: "Command Palette…", accelerator: "CmdOrCtrl+K" },
   { command: "toggle-sidebar", label: "Toggle Sidebar", accelerator: "CmdOrCtrl+B" },
   { command: "toggle-rail", label: "Toggle Panel", accelerator: "CmdOrCtrl+Shift+G" },
-  { command: "next-tab", label: "Next Session Tab", accelerator: "Ctrl+Tab" },
-  { command: "previous-tab", label: "Previous Session Tab", accelerator: "Ctrl+Shift+Tab" },
+  { command: "next-tab", label: "Next Tab", accelerator: "Ctrl+Tab" },
+  { command: "previous-tab", label: "Previous Tab", accelerator: "Ctrl+Shift+Tab" },
   // `CmdOrCtrl+=` is the chord users expect (Ctrl+= on Windows/Linux, Cmd+= on
   // macOS). Electron's `role: "zoomIn"` binds `Plus` instead, i.e. Shift+=,
   // which is why the old menu zoom appeared broken (electron#40674).

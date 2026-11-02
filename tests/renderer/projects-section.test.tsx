@@ -61,6 +61,26 @@ function tab(status: TabRecord["status"]): TabRecord {
   };
 }
 
+function editorTab(): TabRecord {
+  return {
+    ...tab("idle"),
+    id: "editor-1",
+    kind: "editor",
+    title: "a.ts",
+    filePath: "a.ts",
+    sessionFile: null,
+  };
+}
+
+function officeTab(): TabRecord {
+  return {
+    ...tab("idle"),
+    id: "office-1",
+    kind: "office",
+    title: "Excel",
+  };
+}
+
 function resetStore(): void {
   useAppStore.setState({
     view: "welcome",
@@ -148,6 +168,24 @@ describe("ProjectsSection", () => {
     expect(screen.getByText("AGENTS.md")).toBeInTheDocument();
     expect(screen.getByText(/sessions\\--C--work-pi-desktop--/)).toBeInTheDocument();
     expect(screen.getByText("Fix the sidebar")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /new session here/i })).toBeInTheDocument();
+  });
+
+  it("lists session and Office tabs but not editor tabs under a project", () => {
+    installBridge({ projects: [record(PATH)], activeProject: PATH });
+    useAppStore.setState({
+      projects: [record(PATH)],
+      project: { path: PATH, name: "pi-desktop" },
+      projectInspections: { [PATH]: inspection() },
+      tabs: [tab("idle"), officeTab(), editorTab()],
+    });
+
+    render(<ProjectsSection />);
+
+    expect(screen.getByText("Fix the sidebar")).toBeInTheDocument();
+    expect(screen.getByText("Excel")).toBeInTheDocument();
+    expect(screen.queryByText("a.ts")).toBeNull();
+    expect(screen.queryByTestId("sidebar-session-editor-1")).toBeNull();
     expect(screen.getByRole("button", { name: /new session here/i })).toBeInTheDocument();
   });
 

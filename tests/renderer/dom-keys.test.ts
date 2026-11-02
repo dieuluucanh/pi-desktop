@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   domKeyId,
   isEditableTarget,
+  isEditorSurfaceTarget,
   matchShortcut,
   matchesBinding,
 } from "../../src/renderer/src/shortcuts/dom-keys";
@@ -67,5 +68,23 @@ describe("isEditableTarget", () => {
     expect(isEditableTarget(input)).toBe(true);
     expect(isEditableTarget(div)).toBe(false);
     expect(isEditableTarget(null)).toBe(false);
+  });
+});
+
+describe("isEditorSurfaceTarget", () => {
+  it("detects any event inside a CodeMirror surface", () => {
+    const root = document.createElement("div");
+    root.className = "cm-editor";
+    const content = document.createElement("div");
+    content.contentEditable = "true";
+    root.appendChild(content);
+    document.body.appendChild(root);
+
+    expect(isEditorSurfaceTarget(content)).toBe(true);
+    expect(isEditorSurfaceTarget(root)).toBe(true);
+    expect(isEditorSurfaceTarget(document.createElement("div"))).toBe(false);
+    expect(isEditorSurfaceTarget(null)).toBe(false);
+
+    root.remove();
   });
 });

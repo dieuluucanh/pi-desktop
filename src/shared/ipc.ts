@@ -264,6 +264,11 @@ export const MENU_COMMANDS = [
   "new-session",
   "open-project",
   "open-file",
+  // Editor surface (2026-11-02 plan). Menu items only: Save/Format are
+  // editor-local chords, so no accelerator is registered here (a menu
+  // accelerator fires before the renderer and would swallow Pi's own Ctrl+S).
+  "save-editor",
+  "format-editor",
   "open-web-url",
   "close-session",
   "view-sessions",

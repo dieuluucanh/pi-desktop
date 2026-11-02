@@ -114,3 +114,27 @@ describe("workflow border class contract", () => {
     expect([...new Set(returned)].sort()).toEqual([...new Set(declared)].sort());
   });
 });
+
+/**
+ * Tab-strip scrollbar contract (2026-11-02 plan step 3). The strips ask for a
+ * 2 px bar. Chromium 121+ lets the standard `scrollbar-width`/`scrollbar-color`
+ * properties override `::-webkit-scrollbar`, so the strip must reset both to
+ * `auto`; without that reset the pixel size is inert. A 2 px track also needs a
+ * zero-width thumb ring, or the global 2 px ring would leave no visible thumb.
+ */
+describe("tab-strip scrollbar", () => {
+  const css = stripComments(readFileSync(STYLES_CSS, "utf8"));
+
+  it("resets the standard properties so the pixel size is effective", () => {
+    const rule = /\.tab-strip-scrollbar\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(rule).toMatch(/scrollbar-width:\s*auto;/);
+    expect(rule).toMatch(/scrollbar-color:\s*auto;/);
+  });
+
+  it("is two pixels with a full-width thumb", () => {
+    expect(css).toMatch(
+      /\.tab-strip-scrollbar::-webkit-scrollbar\s*\{[^}]*width:\s*2px;[^}]*height:\s*2px;/,
+    );
+    expect(css).toMatch(/\.tab-strip-scrollbar::-webkit-scrollbar-thumb\s*\{[^}]*border:\s*0;/);
+  });
+});

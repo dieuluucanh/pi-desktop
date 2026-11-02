@@ -18,9 +18,13 @@ drag-to-chat extended 2026-11-02. See
   The hidden/ignored toggles change the backend flags, so `.pi/plans` is
   searchable when both are on and excluded when `Show ignored` is off.
 - **Editor tabs** are ordinary tabs with `kind: "editor"` and a
-  project-relative `filePath`. They have no Pi host. The strip shows a
-  `FileCode2` glyph, a language chip (`TS`, `JSON`, `MD`, …) and a dirty dot;
-  session tabs keep their status dot, web tabs their globe.
+  project-relative `filePath`. They have no Pi host. They live in their own row
+  under the session strip (rendered only while a file is open), so a file never
+  competes with a running session for the same strip. The chip shows the
+  language badge (`TS`, `JSON`, `MD`, …) and a dirty dot; session tabs keep
+  their status dot, web tabs their globe. The row has no redundant “Editors”
+  label because the separate row and badge already identify it. Both rows share
+  the same active tab: clicking a file replaces the main view.
 - **Quick open** (`Ctrl+P`, File → Open File…) searches the flat,
   gitignore-aware file list.
 - **Diff** keeps the existing viewer and adds a fullscreen toggle.
@@ -119,6 +123,26 @@ backups. The main-process quit handshake is the remaining hardening item.
 user-configured native command → bundled Prettier → `not_configured`.
 `.editorconfig` supplies tab width/EOL. Format-on-save is a preference (UI
 surface still pending).
+
+## Keyboard
+
+- `Ctrl/Cmd+S` saves the active file. CodeMirror owns the chord while the code
+  surface has focus; `EditorTabView` has a container-level fallback for the
+  toolbar and any other part of the view. A repeated press reuses the in-flight
+  write instead of sending two writes with the same baseline.
+- `Shift+Alt+F` formats the active file (same two layers).
+- File → Save File / Format Document and the command palette entries have **no**
+  Electron accelerator. A menu accelerator fires before the renderer and would
+  swallow Pi's selector/TUI-local `Ctrl+S` (`app.thinking.save`,
+  `app.models.save`, `app.session.toggleSort`).
+- Pi's composer-oriented actions (`Ctrl+O` expand tools, `Ctrl+G` external
+  editor) are ignored while the event originates inside `.cm-editor`.
+- Both tab rows scroll horizontally with the mouse wheel; `Ctrl/Cmd+wheel`
+  remains pinch-zoom. The active tab is revealed when the selection changes;
+  the user's manual scroll position survives status/title updates and window
+  focus, and native browser focus scrolling covers keyboard traversal. The
+  tab-strip horizontal scrollbar is 2 px; the strips reset
+  `scrollbar-width`/`scrollbar-color` so the WebKit pixel size applies.
 
 ## Limits / non-goals
 

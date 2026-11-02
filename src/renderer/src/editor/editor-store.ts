@@ -75,6 +75,8 @@ interface EditorStore {
 
 const backupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const backupRuns = new Set<Promise<unknown>>();
+/** In-flight saves, so a repeated Ctrl+S writes once and keeps one baseline. */
+const saveRuns = new Map<string, Promise<boolean>>();
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -267,62 +269,85 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }));
   },
 
-  async save(tabId, options = {}) {
-    const buffer = getBuffer(tabId);
-    const meta = get().meta[tabId];
-    if (!buffer || !meta || meta.readOnly) return false;
-    const api = window.pi;
-    if (!api?.workspace) return false;
-    const result = await api.workspace.writeFile({
-      projectPath: buffer.projectPath,
-      path: buffer.path,
-      text: buffer.text,
-      eol: buffer.eol,
-      bom: buffer.bom,
-      expectedMtimeMs: buffer.baselineMtimeMs,
-      ...(options.force ? { force: true } : {}),
-    });
-    if (!result.ok) {
-      set((state) => ({
-        meta: {
-          ...state.meta,
-          [tabId]: {
-            ...meta,
-            error: failureMessage(result),
-            externalChange:
-              result.error.code === "conflict"
-                ? (result.error.current ?? null)
-                : meta.externalChange,
+  save(tabId, options = {}) {
+    // Ctrl+S is repeatable: a second press while the first write is in flight
+    // reuses that promise. Two writes would both send the old baseline, and the
+    // second would then look like an external change (a false conflict).
+    const running = saveRuns.get(tabId);
+    if (running) return running;
+
+    const run = (async (): Promise<boolean> => {
+      const buffer = getBuffer(tabId);
+      const meta = get().meta[tabId];
+      if (!buffer || !meta || meta.readOnly || meta.binary) return false;
+      const api = window.pi;
+      if (!api?.workspace) return false;
+      try {
+        const result = await api.workspace.writeFile({
+          projectPath: buffer.projectPath,
+          path: buffer.path,
+          text: buffer.text,
+          eol: buffer.eol,
+          bom: buffer.bom,
+          expectedMtimeMs: buffer.baselineMtimeMs,
+          ...(options.force ? { force: true } : {}),
+        });
+        if (!result.ok) {
+          set((state) => ({
+            meta: {
+              ...state.meta,
+              [tabId]: {
+                ...meta,
+                error: failureMessage(result),
+                externalChange:
+                  result.error.code === "conflict"
+                    ? (result.error.current ?? null)
+                    : meta.externalChange,
+              },
+            },
+          }));
+          return false;
+        }
+        updateBufferBaseline(tabId, result.value.mtimeMs);
+        await api.workspace.deleteBackup(tabId).catch(() => undefined);
+        set((state) => ({
+          meta: {
+            ...state.meta,
+            [tabId]: {
+              ...meta,
+              dirty: false,
+              error: null,
+              externalChange: null,
+              recovered: false,
+              mtimeMs: result.value.mtimeMs,
+              size: result.value.size,
+            },
           },
-        },
-      }));
-      return false;
-    }
-    updateBufferBaseline(tabId, result.value.mtimeMs);
-    await api.workspace.deleteBackup(tabId).catch(() => undefined);
-    set((state) => ({
-      meta: {
-        ...state.meta,
-        [tabId]: {
-          ...meta,
-          dirty: false,
-          error: null,
-          externalChange: null,
-          recovered: false,
-          mtimeMs: result.value.mtimeMs,
-          size: result.value.size,
-        },
-      },
-    }));
-    void useAppStore.getState().loadGit(buffer.projectPath);
-    return true;
+        }));
+        void useAppStore.getState().loadGit(buffer.projectPath);
+        return true;
+      } catch (error) {
+        set((state) => ({
+          meta: { ...state.meta, [tabId]: { ...meta, error: errorMessage(error) } },
+        }));
+        return false;
+      }
+    })();
+
+    saveRuns.set(tabId, run);
+    void run
+      .finally(() => {
+        if (saveRuns.get(tabId) === run) saveRuns.delete(tabId);
+      })
+      .catch(() => undefined);
+    return run;
   },
 
   async format(tabId) {
     const buffer = getBuffer(tabId);
     const meta = get().meta[tabId];
     const api = window.pi;
-    if (!buffer || !meta || !api?.workspace) return false;
+    if (!buffer || !meta || meta.readOnly || meta.binary || !api?.workspace) return false;
     const result = await api.workspace.format({
       projectPath: buffer.projectPath,
       path: buffer.path,

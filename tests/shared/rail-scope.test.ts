@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   documentScopeNote,
-  mostRecentTabForFolder,
+  mostRecentSessionTabForFolder,
   railScopeFolder,
   sameFolder,
 } from "../../src/shared/rail-scope";
+import type { TabKind } from "../../src/shared/session-ipc";
 
 /**
  * The rail's scope model.
@@ -15,7 +16,7 @@ import {
  * would show up as the wrong project's changes in the rail.
  */
 
-const tab = (id: string, cwd: string, lastActiveAt: number, kind = "session") => ({
+const tab = (id: string, cwd: string, lastActiveAt: number, kind: TabKind = "session") => ({
   id,
   kind,
   cwd,
@@ -71,7 +72,7 @@ describe("sameFolder", () => {
   });
 });
 
-describe("mostRecentTabForFolder", () => {
+describe("mostRecentSessionTabForFolder", () => {
   const tabs = [
     tab("a1", "C:/work/a", 10),
     tab("a2", "C:/work/a/", 40),
@@ -79,28 +80,33 @@ describe("mostRecentTabForFolder", () => {
     tab("w1", "C:/work/a", 500, "web"),
   ];
 
-  it("returns the most recently active tab in the folder", () => {
-    expect(mostRecentTabForFolder(tabs, "C:/work/a")?.id).toBe("a2");
+  it("returns the most recently active session tab in the folder", () => {
+    expect(mostRecentSessionTabForFolder(tabs, "C:/work/a")?.id).toBe("a2");
   });
 
   it("never selects a web tab, even when it is the most recent", () => {
-    const found = mostRecentTabForFolder(tabs, "C:/work/a");
+    const found = mostRecentSessionTabForFolder(tabs, "C:/work/a");
     expect(found?.kind).not.toBe("web");
   });
 
+  it("never selects an editor tab, even when it is the most recent", () => {
+    const withEditor = [...tabs, tab("e1", "C:/work/a", 900, "editor")];
+    expect(mostRecentSessionTabForFolder(withEditor, "C:/work/a")?.id).toBe("a2");
+  });
+
   it("returns null for a folder with no open tab", () => {
-    expect(mostRecentTabForFolder(tabs, "C:/work/c")).toBeNull();
-    expect(mostRecentTabForFolder(tabs, null)).toBeNull();
-    expect(mostRecentTabForFolder(tabs, "")).toBeNull();
+    expect(mostRecentSessionTabForFolder(tabs, "C:/work/c")).toBeNull();
+    expect(mostRecentSessionTabForFolder(tabs, null)).toBeNull();
+    expect(mostRecentSessionTabForFolder(tabs, "")).toBeNull();
   });
 
   it("compares folders tolerantly, so a differently-spelled path still matches", () => {
-    expect(mostRecentTabForFolder(tabs, "c:\\work\\A\\")?.id).toBe("a2");
+    expect(mostRecentSessionTabForFolder(tabs, "c:\\work\\A\\")?.id).toBe("a2");
   });
 
   it("keeps the first tab when activity timestamps tie", () => {
     const tied = [tab("first", "C:/work/a", 5), tab("second", "C:/work/a", 5)];
-    expect(mostRecentTabForFolder(tied, "C:/work/a")?.id).toBe("first");
+    expect(mostRecentSessionTabForFolder(tied, "C:/work/a")?.id).toBe("first");
   });
 });
 

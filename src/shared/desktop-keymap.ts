@@ -68,14 +68,14 @@ export const DESKTOP_ACTIONS: readonly DesktopActionDefinition[] = [
   },
   {
     id: "session.nextTab",
-    label: "Next session tab",
+    label: "Next tab",
     scope: "menu",
     defaults: ["ctrl+tab"],
     menu: true,
   },
   {
     id: "session.previousTab",
-    label: "Previous session tab",
+    label: "Previous tab",
     scope: "menu",
     defaults: ["ctrl+shift+tab"],
     menu: true,

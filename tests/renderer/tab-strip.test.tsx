@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { TabRecord } from "../../src/shared/session-ipc";
-import { TabStrip } from "../../src/renderer/src/layout/TabStrip";
+import { SessionTabStrip } from "../../src/renderer/src/layout/SessionTabStrip";
 import { tabMenuItems } from "../../src/renderer/src/layout/tab-menu";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { installBridge } from "./fixtures";
@@ -86,10 +86,10 @@ describe("tabMenuItems", () => {
   });
 });
 
-describe("TabStrip", () => {
+describe("SessionTabStrip", () => {
   it("renders a tab per session and shows its status", () => {
     installBridge();
-    render(<TabStrip />);
+    render(<SessionTabStrip />);
 
     expect(screen.getByRole("tab", { name: /pi-desktop/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /second/ })).toBeInTheDocument();
@@ -104,11 +104,31 @@ describe("TabStrip", () => {
     );
   });
 
+  it("keeps editor tabs out of the session strip", () => {
+    installBridge();
+    useAppStore.setState({
+      tabs: [
+        tab(),
+        tab({
+          id: "editor-1",
+          kind: "editor",
+          title: "a.ts",
+          filePath: "a.ts",
+          sessionFile: null,
+        }),
+      ],
+    });
+    render(<SessionTabStrip />);
+
+    expect(screen.queryByTestId("tab-editor-1")).toBeNull();
+    expect(screen.getByRole("tab", { name: /pi-desktop/ })).toBeInTheDocument();
+  });
+
   it("shows the sidebar expand control only while the sidebar is collapsed", async () => {
     installBridge();
     expect(screen.queryByRole("button", { name: "Show sidebar" })).toBeNull();
     useAppStore.setState({ prefs: { ...DEFAULT_PREFS, sidebarCollapsed: true } });
-    render(<TabStrip />);
+    render(<SessionTabStrip />);
     await userEvent.click(screen.getByRole("button", { name: "Show sidebar" }));
     expect(useAppStore.getState().prefs.sidebarCollapsed).toBe(false);
   });
@@ -118,7 +138,7 @@ describe("TabStrip", () => {
     const activate = vi.fn(async () => ({ tabs: [], activeTabId: "tab-2" }));
     (bridge.sessions as unknown as { activate: unknown }).activate = activate;
 
-    render(<TabStrip />);
+    render(<SessionTabStrip />);
     fireEvent.click(screen.getByRole("tab", { name: /second/ }));
 
     expect(activate).toHaveBeenCalledWith("tab-2");
@@ -129,7 +149,7 @@ describe("TabStrip", () => {
     const close = vi.fn(async () => ({ tabs: [], activeTabId: null }));
     (bridge.sessions as unknown as { close: unknown }).close = close;
 
-    render(<TabStrip />);
+    render(<SessionTabStrip />);
     fireEvent.click(screen.getByRole("button", { name: "Close pi-desktop" }));
 
     expect(close).toHaveBeenCalledWith("tab-1");
@@ -140,7 +160,7 @@ describe("TabStrip", () => {
     const reorder = vi.fn(async () => ({ tabs: [], activeTabId: null }));
     (bridge.sessions as unknown as { reorder: unknown }).reorder = reorder;
 
-    render(<TabStrip />);
+    render(<SessionTabStrip />);
     const first = screen.getByTestId("tab-tab-1");
     const second = screen.getByTestId("tab-tab-2");
     fireEvent.dragStart(first);
@@ -155,7 +175,7 @@ describe("TabStrip", () => {
     const closeOthers = vi.fn(async () => ({ tabs: [tab()], activeTabId: "tab-1" }));
     (bridge.sessions as unknown as { closeOthers: unknown }).closeOthers = closeOthers;
 
-    render(<TabStrip />);
+    render(<SessionTabStrip />);
     openTabMenu("pi-desktop");
     await waitFor(() => expect(screen.getByText("Close others")).toBeInTheDocument());
     fireEvent.click(screen.getByText("Close others"));
@@ -167,7 +187,7 @@ describe("TabStrip", () => {
     const { bridge } = installBridge();
     const request = vi.fn(async () => ({ name: "Renamed" }));
     (bridge.sessions as unknown as { request: unknown }).request = request;
-    render(<TabStrip />);
+    render(<SessionTabStrip />);
 
     fireEvent.doubleClick(screen.getByRole("tab", { name: /pi-desktop/ }));
     const input = screen.getByRole("textbox", { name: "Rename pi-desktop" });
