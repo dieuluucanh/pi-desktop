@@ -54,6 +54,13 @@ it matters, a workaround that ships today.
 
 - Sign and notarize Windows/macOS artefacts, then publish a real GitHub Release
   feed so the updater's download → restart → install path is exercised end to end.
+- **Publish the update manifests.** `release-linux.yml` currently uploads only
+  `.deb`/`.AppImage` and creates a _draft_ release; it must also upload
+  `latest-linux*.yml` and create a non-draft release on an explicit tag. Add a
+  Windows/macOS release workflow with `--publish always`. Until then installed
+  builds show the benign “No published release” state in **Settings → About &
+  updates**, and locally packaged builds are stamped `local` and skip automatic
+  checks.
 - Run the step-27 acceptance matrix on a clean Windows VM with real providers and
   a real Office install, and record the results with the release.
 - Install the Linux `.deb` and AppImage on a real desktop (launcher entry, window

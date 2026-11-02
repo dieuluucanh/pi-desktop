@@ -23,6 +23,24 @@ import {
 } from "./checkpoints";
 import { DEFAULT_ZOOM, clampZoomFactor } from "./zoom";
 import { sanitizeThemeColorPrefs, type ThemeColorPrefs } from "./themes";
+import {
+  DEFAULT_EDITOR_PREFS,
+  mergeEditorPrefs,
+  sanitizeEditorPrefs,
+  type EditorPrefs,
+} from "./editor-prefs";
+import {
+  DEFAULT_EXPLORER_PREFS,
+  mergeExplorerPrefs,
+  sanitizeExplorerPrefs,
+  type ExplorerPrefs,
+} from "./explorer-prefs";
+import {
+  DEFAULT_UPDATE_PREFS,
+  mergeUpdatePrefs,
+  sanitizeUpdatePrefs,
+  type UpdatePrefs,
+} from "./updates";
 
 export const PREF_KEYS = [
   "theme",
@@ -41,7 +59,10 @@ export const PREF_KEYS = [
   "showExpandedPrompts",
   "promptOrigins",
   "rail",
+  "editor",
+  "explorer",
   "checkpoints",
+  "updates",
 ] as const;
 
 export type PrefKey = (typeof PREF_KEYS)[number];
@@ -135,6 +156,10 @@ export interface UiPrefs {
    * the layout the user left, including a reordered strip.
    */
   rail: RailPrefs;
+  /** Desktop editor preferences (font, wrap, format-on-save, formatters). */
+  editor: EditorPrefs;
+  /** File-explorer view preferences (hidden/ignored visibility, sort order). */
+  explorer: ExplorerPrefs;
   /**
    * Folder checkpoints (git-checkpoint plan D19): **the** source of the
    * checkpoint settings. Main projects this object to
@@ -144,6 +169,13 @@ export interface UiPrefs {
    * that drift.
    */
   checkpoints: CheckpointConfig;
+  /**
+   * The updater's app preferences: whether the background check runs after
+   * launch, and the offered version whose status-bar chip was dismissed. The
+   * build channel and support gate decide whether `autoCheck` can take effect;
+   * see `src/shared/updates.ts`.
+   */
+  updates: UpdatePrefs;
 }
 
 /** Longest draft kept per tab, and how many tabs may hold one. */
@@ -175,9 +207,12 @@ export const DEFAULT_PREFS: UiPrefs = {
   // A fresh object *and* a fresh order array (not the shared default) so a
   // caller mutating one prefs value cannot mutate the module-level default.
   rail: { ...DEFAULT_RAIL_PREFS, order: [...DEFAULT_RAIL_PREFS.order] },
+  editor: { ...DEFAULT_EDITOR_PREFS, formatters: {} },
+  explorer: { ...DEFAULT_EXPLORER_PREFS },
   // A fresh object for the same reason as `rail`: a caller mutating one prefs
   // value must not mutate the module-level default (nor the shared config).
   checkpoints: { ...DEFAULT_CHECKPOINT_CONFIG, exclude: [] },
+  updates: { ...DEFAULT_UPDATE_PREFS },
 };
 
 const THEMES: readonly ThemeSetting[] = ["dark", "light", "system"];
@@ -247,11 +282,18 @@ export function sanitizePrefs(input: unknown): UiPrefs {
     // An older `app-state.json` has no `rail`; the sanitizer supplies the
     // defaults, so the migration needs no version bump.
     rail: sanitizeRailPrefs(source.rail),
+    // New in 2026-11: an older app-state.json has neither block; the sanitizer
+    // supplies the defaults, so no version bump is needed.
+    editor: sanitizeEditorPrefs(source.editor),
+    explorer: sanitizeExplorerPrefs(source.explorer),
     // Checkpoints are **on by default** (D14); the caps are what make that
     // defensible, so an older app-state.json without the key gets the defaults
     // rather than an off switch it never asked for. Unknown keys are dropped by
     // the shared sanitizer, which clamps every number.
     checkpoints: sanitizeCheckpointConfig(source.checkpoints),
+    // Automatic update checks are on by default; the build channel/support gate
+    // still decide whether they can run (local and dev builds stay off).
+    updates: sanitizeUpdatePrefs(source.updates),
   };
 }
 
@@ -261,6 +303,12 @@ export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
   // `rail` is the one nested preference: a spread would let a `{ open: true }`
   // patch wipe the width and the section state, so it merges one level deeper.
   const rail = "rail" in source ? mergeRailPrefs(current.rail, source.rail) : current.rail;
+  // Editor formatters are the one nested field in the editor block: a font-size
+  // patch must not drop configured commands.
+  const editor =
+    "editor" in source ? mergeEditorPrefs(current.editor, source.editor) : current.editor;
+  const explorer =
+    "explorer" in source ? mergeExplorerPrefs(current.explorer, source.explorer) : current.explorer;
   // `checkpoints` is flat, but it must not lose keys present in the patch's
   // absence: a `{ checkpoints: { enabled: false } }` patch keeps the retention
   // values the user set earlier. The sanitizer fills the rest.
@@ -275,7 +323,20 @@ export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
     "notifications" in source
       ? sanitizeNotificationPrefs({ ...current.notifications, ...asRecord(source.notifications) })
       : current.notifications;
-  return sanitizePrefs({ ...current, ...source, rail, checkpoints, notifications });
+  // The updater prefs are nested too: turning automatic checks off must not
+  // drop a per-version dismissal.
+  const updates =
+    "updates" in source ? mergeUpdatePrefs(current.updates, source.updates) : current.updates;
+  return sanitizePrefs({
+    ...current,
+    ...source,
+    rail,
+    editor,
+    explorer,
+    checkpoints,
+    notifications,
+    updates,
+  });
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

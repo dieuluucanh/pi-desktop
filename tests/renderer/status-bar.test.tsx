@@ -14,7 +14,13 @@ import { appInfoFixture, installBridge } from "./fixtures";
 
 beforeEach(() => {
   installBridge();
-  useAppStore.setState({ prefs: { ...DEFAULT_PREFS }, info: null, project: null, hint: null });
+  useAppStore.setState({
+    prefs: { ...DEFAULT_PREFS },
+    info: null,
+    project: null,
+    hint: null,
+    update: null,
+  });
 });
 
 describe("status bar project path", () => {

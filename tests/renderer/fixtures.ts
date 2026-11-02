@@ -46,6 +46,10 @@ export function appInfoFixture(overrides: Partial<AppInfo> = {}): AppInfo {
     platform: "win32",
     arch: "x64",
     isDev: true,
+    buildChannel: "dev",
+    buildVersion: null,
+    buildCommit: null,
+    builtAt: null,
     safeMode: false,
     piOffline: false,
     userDataDir: "C:\\state",
@@ -393,6 +397,10 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
         updateCalls.push("download");
         return updateState;
       },
+      clearProblem: async () => {
+        updateCalls.push("clearProblem");
+        return updateState;
+      },
       install: async () => {
         updateCalls.push("install");
         return true;
@@ -458,6 +466,57 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
         return () => checkpointListeners.delete(listener);
       },
     },
+    workspace: {
+      listDirectory: async () => ({
+        ok: true as const,
+        value: { root: "", path: "", entries: [], truncated: false },
+      }),
+      listFiles: async () => ({
+        ok: true as const,
+        value: { root: "", files: [], truncated: false },
+      }),
+      searchFiles: async (input) => ({
+        ok: true as const,
+        value: {
+          root: input.projectPath,
+          query: input.query,
+          matches: [],
+          truncated: false,
+          scanned: 0,
+        },
+      }),
+      readFile: async () => ({
+        ok: false as const,
+        error: { code: "not_found" as const, message: "no file" },
+      }),
+      stat: async () => ({
+        ok: false as const,
+        error: { code: "not_found" as const, message: "no file" },
+      }),
+      writeFile: async () => ({
+        ok: false as const,
+        error: { code: "bad_request" as const, message: "not implemented" },
+      }),
+      reveal: async () => ({ ok: true as const, value: true }),
+      editorConfig: async () => ({
+        ok: true as const,
+        value: {
+          indentStyle: "space" as const,
+          indentSize: 2,
+          tabWidth: 2,
+          endOfLine: "lf" as const,
+          insertFinalNewline: true,
+          trimTrailingWhitespace: true,
+        },
+      }),
+      readBackup: async () => ({ ok: true as const, value: null }),
+      writeBackup: async () => ({ ok: true as const, value: true }),
+      deleteBackup: async () => ({ ok: true as const, value: true }),
+      format: async () => ({
+        ok: false as const,
+        error: { code: "not_configured" as const, message: "no formatter" },
+      }),
+    },
   };
 
   (window as unknown as { pi: PiDesktopBridge }).pi = bridge;
@@ -508,6 +567,10 @@ function diagnosticsSnapshot(info: AppInfo): DiagnosticsSnapshot {
       platform: info.platform,
       arch: info.arch,
       isDev: info.isDev,
+      buildChannel: info.buildChannel,
+      buildVersion: info.buildVersion,
+      buildCommit: info.buildCommit,
+      builtAt: info.builtAt,
       safeMode: info.safeMode,
     },
     runtime: {

@@ -121,6 +121,9 @@ export function renderDiagnosticsBundle(snapshot: DiagnosticsSnapshot, officeTex
   lines.push(
     `os: ${snapshot.app.platform} ${snapshot.app.arch}${snapshot.app.isDev ? " (development)" : ""}`,
   );
+  lines.push(
+    `build: ${snapshot.app.buildChannel} · v${snapshot.app.buildVersion ?? "unknown"} · ${snapshot.app.buildCommit ?? "unknown"} · ${snapshot.app.builtAt ?? "unknown"}`,
+  );
   lines.push(`safe mode: ${snapshot.safeMode ? "yes" : "no"}`);
   lines.push(`pi offline: ${isOfflineEnv(snapshot.environment.PI_OFFLINE) ? "yes" : "no"}`);
   lines.push("");
@@ -255,6 +258,10 @@ export function createDiagnosticsService(deps: DiagnosticsServiceDeps): Diagnost
         platform: info.platform,
         arch: info.arch,
         isDev: info.isDev,
+        buildChannel: info.buildChannel,
+        buildVersion: info.buildVersion,
+        buildCommit: info.buildCommit,
+        builtAt: info.builtAt,
         safeMode: info.safeMode,
       },
       runtime: {

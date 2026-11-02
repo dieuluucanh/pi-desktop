@@ -38,8 +38,8 @@ import {
   type KeybindingPort,
 } from "./keybindings";
 import { buildResourcesSnapshot } from "./resources";
-import type { FileListing } from "./file-listing";
-import type { WorkspaceReadResult } from "./workspace-files";
+import type { FileListing } from "../workspace/file-listing";
+import type { WorkspaceReadResult } from "../workspace/workspace-files";
 import type { HostHandler } from "./service";
 
 /**

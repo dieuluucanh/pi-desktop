@@ -21,6 +21,9 @@ const CORE_DIRS = [
   // checkpoint extension), so neither may reach for Electron.
   "src/git",
   "src/checkpoints",
+  // The pure workspace engines (file listing, path containment, content) are
+  // shared by main and the host; neither may reach for Electron.
+  "src/workspace",
 ] as const;
 /** Electron-free *modules* that live outside those directories (plan step 3/23/28). */
 const CORE_FILES = [

@@ -23,6 +23,8 @@ export const HOST_RSS_RESTART_BYTES = 1_536 * 1024 * 1024;
 export const MAX_HOSTS = 8;
 /** Open tabs (the session service cap, plan step 3). */
 export const MAX_TABS = 8;
+/** Editor tabs have no host, so they get their own, larger cap. */
+export const MAX_EDITOR_TABS = 16;
 /** How long a host with no traffic is kept before it is recycled. */
 export const IDLE_HOST_TIMEOUT_MS = 15 * 60_000;
 /** Streaming-delta batching window (plan step 3; tuned in plan step 24). */
@@ -205,8 +207,12 @@ export function capacity(used: number, limit: number): Capacity {
  * The user-facing backpressure sentence. One wording, so the tab strip, the
  * create-session error and Diagnostics never disagree about what happened.
  */
-export function capacityMessage(kind: "hosts" | "tabs", limit: number): string {
-  return kind === "hosts"
-    ? `Pi Desktop keeps at most ${limit} host processes running at once. Close a session tab to make room.`
-    : `Pi Desktop keeps at most ${limit} session tabs open at once. Close a tab to open another.`;
+export function capacityMessage(kind: "hosts" | "tabs" | "editors", limit: number): string {
+  if (kind === "hosts") {
+    return `Pi Desktop keeps at most ${limit} host processes running at once. Close a session tab to make room.`;
+  }
+  if (kind === "editors") {
+    return `Pi Desktop keeps at most ${limit} editor tabs open at once. Close a file tab to open another.`;
+  }
+  return `Pi Desktop keeps at most ${limit} session tabs open at once. Close a tab to open another.`;
 }

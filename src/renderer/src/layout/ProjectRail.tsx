@@ -23,6 +23,7 @@ import { useEffect } from "react";
 import { useAppStore } from "../state/app-store";
 import { RightRail, type RailMenuSpec } from "../rail/RightRail";
 import { SourceControlPanel } from "../rail/SourceControlPanel";
+import { ExplorerSection } from "../rail/ExplorerSection";
 import { CheckpointsSection } from "../rail/CheckpointsSection";
 import { DocumentsSection } from "../rail/DocumentsSection";
 import { DocumentsScope } from "../rail/DocumentsScope";
@@ -85,6 +86,12 @@ export function ProjectRail(): React.JSX.Element | null {
     officeTab !== null;
 
   const menus: RailMenuSpec[] = [
+    {
+      id: "explorer",
+      scroll: "self",
+      scopeTitle: folder,
+      content: <ExplorerSection projectPath={folder} />,
+    },
     {
       id: "source-control",
       count: (snapshot?.staged.length ?? 0) + (snapshot?.changed.length ?? 0),

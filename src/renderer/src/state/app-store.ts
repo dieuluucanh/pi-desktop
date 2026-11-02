@@ -210,7 +210,7 @@ import {
 import { orderThinkingLevels } from "../../../shared/thinking";
 import { classifyFailure, isOfflineError } from "../../../shared/diagnostics";
 import type { DiagnosticsSnapshot } from "../../../shared/diagnostics";
-import { sanitizeUpdateState, type UpdateState } from "../../../shared/updates";
+import { describeUpdate, sanitizeUpdateState, type UpdateState } from "../../../shared/updates";
 import {
   clampRailSplit,
   clampRailWidth,
@@ -591,6 +591,11 @@ export interface AppStateShape {
   /** Opens the Extensions hub on the Integrations card. */
   focusIntegrations: () => void;
   clearExtensionsFocus: () => void;
+  /** The Settings section to reveal after navigation (About & updates). */
+  settingsFocus: "updates" | null;
+  /** Opens Settings on the About & updates card, optionally starting a check. */
+  openUpdateSettings: (options?: { check?: boolean }) => void;
+  clearSettingsFocus: () => void;
   openPalette: () => void;
   closePalette: () => void;
   togglePalette: () => void;
@@ -925,6 +930,10 @@ export interface AppStateShape {
   checkForUpdates: () => Promise<void>;
   downloadUpdate: () => Promise<void>;
   installUpdate: () => Promise<void>;
+  /** Clears a no-feed/error notice without discarding an offer or download. */
+  clearUpdateProblem: () => Promise<void>;
+  /** Hides the status-bar chip for the currently offered version. */
+  dismissUpdateNotification: () => void;
   /**
    * Bodies of spilled large payloads, fetched on demand and cached by blob path
    * (plan step 24). A 50 MB tool result never crosses the event frame; it is
@@ -1666,6 +1675,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   onboardingStep: null,
   paletteOpen: false,
   extensionsFocus: null,
+  settingsFocus: null,
   info: null,
   mainOutdated: null,
   hint: null,
@@ -1808,9 +1818,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       hint: null,
       // A `/login` focus belongs to the Connections visit that created it.
       ...(view === "connections" ? {} : { connectionsFocus: null }),
+      // A menu-targeted Settings section is consumed by SettingsView.
+      ...(view === "settings" ? {} : { settingsFocus: null }),
     }),
   focusIntegrations: () => set({ view: "extensions", extensionsFocus: "integrations", hint: null }),
   clearExtensionsFocus: () => set({ extensionsFocus: null }),
+  openUpdateSettings: (options) => {
+    set({ view: "settings", settingsFocus: "updates", hint: null });
+    if (options?.check) void get().checkForUpdates();
+  },
+  clearSettingsFocus: () => set({ settingsFocus: null }),
   openPalette: () => set({ paletteOpen: true }),
   closePalette: () => set({ paletteOpen: false }),
   togglePalette: () => set({ paletteOpen: !get().paletteOpen }),
@@ -4588,7 +4605,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       set({ update: sanitizeUpdateState(await api.updates.get()) });
     } catch {
       // An updater that cannot be reached is not a user-visible failure: the
-      // banner simply stays absent.
+      // status chip simply stays absent and Settings explains the state.
     }
   },
 
@@ -4599,13 +4616,20 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (!api?.updates) return;
     try {
       const next = sanitizeUpdateState(await api.updates.check());
-      set({ update: next });
-      // A finished check is feedback even when there is nothing to install; the
-      // banner only carries the actionable phases.
-      if (next.phase === "up-to-date") set({ hint: "Pi Desktop is up to date." });
-      else if (next.phase === "unsupported")
-        set({ hint: "Updates are checked in installed builds only." });
-      else if (next.phase === "error") set({ hint: next.error ?? "The update check failed." });
+      // A finished check is feedback even when there is nothing to install. The
+      // status chip carries available/downloaded; everything else is a short
+      // dismissible status-bar hint.
+      if (next.phase === "up-to-date") {
+        set({ update: next, hint: "Pi Desktop is up to date." });
+      } else if (
+        next.phase === "unsupported" ||
+        next.phase === "no-feed" ||
+        next.phase === "error"
+      ) {
+        set({ update: next, hint: describeUpdate(next) });
+      } else {
+        set({ update: next, hint: null });
+      }
     } catch (error) {
       get().noteFailure(error);
     }
@@ -4631,6 +4655,24 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     } catch (error) {
       get().noteFailure(error);
     }
+  },
+
+  clearUpdateProblem: async () => {
+    const api = bridge();
+    if (!api?.updates) return;
+    try {
+      set({ update: sanitizeUpdateState(await api.updates.clearProblem()), hint: null });
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  dismissUpdateNotification: () => {
+    const { update, prefs } = get();
+    const version = update?.version;
+    if (!version || (update.phase !== "available" && update.phase !== "downloaded")) return;
+    get().setPrefs({ updates: { ...prefs.updates, dismissedVersion: version } });
+    set({ hint: null });
   },
 
   // ---- Onboarding (plan step 26) ----

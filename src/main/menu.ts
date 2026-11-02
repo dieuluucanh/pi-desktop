@@ -40,6 +40,7 @@ const FILE_ITEMS: readonly ItemSpec[] = [
   // Shift+O; otherwise the menu accelerator would swallow the expand key before
   // the renderer ever sees it.
   { command: "open-project", label: "Open Project…", accelerator: "CmdOrCtrl+Shift+O" },
+  { command: "open-file", label: "Open File…", accelerator: "CmdOrCtrl+P" },
   { command: "open-web-url", label: "Open URL in Tab…" },
   { command: "close-session", label: "Close Session", accelerator: "CmdOrCtrl+W" },
   { command: "view-sessions", label: "Sessions…", accelerator: "CmdOrCtrl+Alt+O" },
@@ -70,6 +71,7 @@ const SESSION_ITEMS: readonly ItemSpec[] = [
 ];
 
 const GO_ITEMS: readonly ItemSpec[] = [
+  { command: "view-explorer", label: "Explorer", accelerator: "CmdOrCtrl+Shift+E" },
   { command: "view-source-control", label: "Source Control" },
   { command: "view-checkpoints", label: "Checkpoints" },
   { command: "view-documents", label: "Documents" },
@@ -81,8 +83,8 @@ const GO_ITEMS: readonly ItemSpec[] = [
 
 const HELP_ITEMS: readonly ItemSpec[] = [
   { command: "shortcuts", label: "Keyboard Shortcuts", accelerator: "CmdOrCtrl+/" },
-  // The renderer runs the check and shows the result in the banner (plan step 26);
-  // a menu accelerator here would only duplicate the banner's own button.
+  // Opens Settings → About & updates and starts a check. A menu accelerator
+  // here would only duplicate the status chip's own affordance.
   { command: "check-updates", label: "Check for Updates…" },
 ];
 
@@ -192,7 +194,17 @@ export function menuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
         label: "Pi Documentation",
         click: () => onOpenExternal(DOCS_URL),
       },
-      ...(isMac ? [] : ([{ label: `About ${appName}`, role: "about" }] as const)),
+      // macOS keeps the platform-native About panel; Windows/Linux get the
+      // richer in-app card, which also carries the updater controls.
+      ...(isMac
+        ? []
+        : [
+            {
+              id: "view-about",
+              label: `About ${appName}`,
+              click: () => onCommand("view-about"),
+            },
+          ]),
     ],
   });
 

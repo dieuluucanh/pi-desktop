@@ -1,9 +1,11 @@
 import { useState } from "react";
-import { Globe, PanelLeftOpen, Plus, X } from "lucide-react";
+import { FileCode2, Globe, PanelLeftOpen, Plus, X } from "lucide-react";
 import { Button } from "../ui/button";
 import { InlineRename } from "../ui/inline-rename";
 import { newSessionAction } from "../menu-actions";
 import { useAppStore } from "../state/app-store";
+import { useEditorStore } from "../editor/editor-store";
+import { languageBadge, languageIdForPath } from "../../../shared/languages";
 import { TabMenu } from "./TabMenu";
 import { SESSION_STATUS_LABEL, type TabStatus } from "../../../shared/session-ipc";
 
@@ -32,11 +34,11 @@ export function TabStrip() {
   const tabs = useAppStore((state) => state.tabs);
   const activeTabId = useAppStore((state) => state.activeTabId);
   const activateTab = useAppStore((state) => state.activateTab);
-  const closeTab = useAppStore((state) => state.closeTab);
   const project = useAppStore((state) => state.project);
   const collapsed = useAppStore((state) => state.prefs.sidebarCollapsed);
   const toggleSidebar = useAppStore((state) => state.toggleSidebar);
   const renameSession = useAppStore((state) => state.renameSession);
+  const editorMeta = useEditorStore((state) => state.meta);
   const [dragId, setDragId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
 
@@ -60,6 +62,7 @@ export function TabStrip() {
       >
         {tabs.map((tab, index) => {
           const active = tab.id === activeTabId;
+          const dirty = tab.kind === "editor" && editorMeta[tab.id]?.dirty === true;
           return (
             <div
               key={tab.id}
@@ -80,6 +83,8 @@ export function TabStrip() {
                 active ? "border-line-strong bg-surface" : "border-transparent bg-transparent"
               } ${dragId === tab.id ? "opacity-60" : ""}`}
               data-testid={`tab-${tab.id}`}
+              data-tab-kind={tab.kind}
+              data-dirty={dirty ? "true" : undefined}
             >
               {renamingId === tab.id ? (
                 <InlineRename
@@ -98,11 +103,25 @@ export function TabStrip() {
                   role="tab"
                   aria-selected={active}
                   onClick={() => void activateTab(tab.id)}
-                  onDoubleClick={() => setRenamingId(tab.id)}
-                  title={tab.error ?? `${tab.cwd} · ${SESSION_STATUS_LABEL[tab.status]}`}
+                  onDoubleClick={() => {
+                    if (tab.kind !== "editor") setRenamingId(tab.id);
+                  }}
+                  title={
+                    tab.kind === "editor"
+                      ? `${tab.filePath ?? tab.title}${dirty ? " · unsaved" : ""}`
+                      : `${tab.error ?? `${tab.cwd} · ${SESSION_STATUS_LABEL[tab.status]}`}`
+                  }
                   className="flex items-center gap-2"
                 >
-                  {tab.kind === "web" ? (
+                  {tab.kind === "editor" ? (
+                    <span className="flex items-center gap-1" aria-hidden>
+                      <FileCode2 className="size-3 shrink-0 text-ink-faint" />
+                      <span className="rounded-xs border border-line px-1 font-mono text-[9px] uppercase text-ink-muted">
+                        {languageBadge(languageIdForPath(tab.filePath ?? ""))}
+                      </span>
+                      {dirty ? <span className="size-1.5 rounded-full bg-warn" /> : null}
+                    </span>
+                  ) : tab.kind === "web" ? (
                     <Globe className="size-3 shrink-0 text-ink-faint" aria-hidden />
                   ) : (
                     <span
@@ -111,7 +130,7 @@ export function TabStrip() {
                       data-status={tab.status}
                     />
                   )}
-                  <span className="max-w-48 truncate">{tab.title}</span>
+                  <span className={`max-w-48 truncate ${dirty ? "italic" : ""}`}>{tab.title}</span>
                 </button>
               )}
 
@@ -120,7 +139,7 @@ export function TabStrip() {
               <button
                 type="button"
                 aria-label={`Close ${tab.title}`}
-                onClick={() => void closeTab(tab.id)}
+                onClick={() => void useEditorStore.getState().requestClose(tab.id)}
                 className="text-ink-faint hover:text-ink"
               >
                 <X className="size-3" aria-hidden />

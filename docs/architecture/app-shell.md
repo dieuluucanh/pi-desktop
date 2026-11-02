@@ -691,13 +691,22 @@ value so the UI can tell the stored choice from the running one.
 **Updates.** `src/main/updater.ts` is the Electron-free policy; the only module
 that imports `electron-updater` is `src/main/electron-updater.ts`, reduced to an
 `UpdatePort`. `autoDownload` is **off** — a check reports and the user chooses.
-Events reduce into `UpdateState` (`src/shared/updates.ts`), pushed over
-`updates:state`; the renderer reads `updates.get` on start and shows an
-`UpdateBanner` for the actionable phases (available → Download, downloading →
-progress, downloaded → Restart & install, error → Retry). A finished check with
-nothing to install reports in the status bar instead of leaving a banner.
-`Help → Check for Updates…` runs one on demand; installed builds also check ~10 s
-after launch (skipped when `PI_OFFLINE`). A dev build reports `supported: false`.
+`resolveUpdateSupport` gates the updater by dev/safe mode/`PI_OFFLINE`/port, and
+`<resources>/build-info.json` (written by the `afterPack` hook) records whether
+the package is a **local** build or a **release** CI build. Local, dev, offline
+and safe-mode launches never auto-check; a manual check is still allowed.
+
+Events reduce into `UpdateState` (`src/shared/updates.ts`), whose phases include
+the benign `no-feed` state for an unpublished build/feed. `prefs.updates` carries
+`autoCheck` and the per-version `dismissedVersion`. The renderer shows only a
+compact status-bar chip for available → **Update vX**, downloading → **Updating
+N%** and downloaded → **Restart to update**; a new version re-notifies after a
+dismissal. Every other outcome — up to date, no feed, an error — lives in
+**Settings → About & updates**, with the raw updater text under Technical
+details. `Help → Check for Updates…` opens that card and checks; on Windows and
+Linux `Help → About Pi Desktop` opens the same card, while macOS keeps its native
+About panel. Automatic failures stay silent; a manual failure is a dismissible
+status hint plus the card. There is no full-width update banner.
 
 **Packaging.** `electron-builder.yml` targets Windows NSIS + portable, macOS
 dmg/zip on arm64 + x64, and Linux AppImage/deb on x64 + arm64. The bundled

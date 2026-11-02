@@ -16,7 +16,7 @@ import {
 
 describe("tab kinds", () => {
   it("knows session, office and web", () => {
-    expect(TAB_KINDS).toEqual(["session", "office", "web"]);
+    expect(TAB_KINDS).toEqual(["session", "office", "web", "editor"]);
     expect(isTabKind("web")).toBe(true);
     expect(isTabKind("popup")).toBe(false);
   });

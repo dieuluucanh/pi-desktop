@@ -41,6 +41,7 @@ interface Recording {
   gitCalls: { kind: string; arg?: unknown }[];
   checkpointCalls: { kind: string; arg?: unknown }[];
   officeCalls: { kind: string; tabId?: string; takeover?: boolean }[];
+  workspaceCalls: { kind: string; input?: unknown }[];
 }
 
 const OPEN_PROJECT = "/work/app";
@@ -149,6 +150,7 @@ async function register(recording: Recording): Promise<void> {
       check: async () => ({}) as never,
       download: async () => ({}) as never,
       install: () => true,
+      clearProblem: () => ({}) as never,
     },
     git: {
       // The real allowlist function under test, not a stub.
@@ -192,6 +194,66 @@ async function register(recording: Recording): Promise<void> {
         return { ok: true };
       },
     },
+    workspace: {
+      resolveProjectPath: async (value) => requireProjectPath(knownProjects, value),
+      listDirectory: async (input) => ({
+        ok: true as const,
+        value: {
+          root: input.projectPath,
+          path: input.path,
+          entries: [],
+          truncated: false,
+        },
+      }),
+      listFiles: async (input) => ({
+        ok: true as const,
+        value: { root: input.projectPath, files: [], truncated: false },
+      }),
+      searchFiles: async (input) => {
+        recording.workspaceCalls.push({ kind: "search", input });
+        return {
+          ok: true as const,
+          value: {
+            root: input.projectPath,
+            query: input.query,
+            matches: [],
+            truncated: false,
+            scanned: 0,
+          },
+        };
+      },
+      readFile: async () => ({
+        ok: false as const,
+        error: { code: "not_found" as const, message: "no file" },
+      }),
+      stat: async () => ({
+        ok: false as const,
+        error: { code: "not_found" as const, message: "no file" },
+      }),
+      writeFile: async () => ({
+        ok: false as const,
+        error: { code: "bad_request" as const, message: "not implemented" },
+      }),
+      reveal: async () => ({ ok: true as const, value: true }),
+      editorConfig: async () => ({
+        ok: true as const,
+        value: {
+          indentStyle: "space" as const,
+          indentSize: 2,
+          tabWidth: 2,
+          endOfLine: "lf" as const,
+          insertFinalNewline: true,
+          trimTrailingWhitespace: true,
+        },
+      }),
+      readBackup: async () => ({ ok: true as const, value: null }),
+      writeBackup: async () => ({ ok: true as const, value: true }),
+      deleteBackup: async () => ({ ok: true as const, value: true }),
+      format: async () => ({
+        ok: false as const,
+        error: { code: "not_configured" as const, message: "no formatter" },
+      }),
+    },
   };
   registerIpcHandlers(deps);
 }
@@ -207,7 +269,7 @@ let recording: Recording;
 
 beforeEach(async () => {
   handlers.clear();
-  recording = { gitCalls: [], checkpointCalls: [], officeCalls: [] };
+  recording = { gitCalls: [], checkpointCalls: [], officeCalls: [], workspaceCalls: [] };
   await register(recording);
 });
 
@@ -372,5 +434,56 @@ describe("checkpoint action validation", () => {
     const action = recording.checkpointCalls[0]?.arg as CheckpointAction;
     expect(action.kind).toBe("create");
     expect((action as { label?: string }).label?.length).toBe(300);
+  });
+});
+
+describe("workspace search channel", () => {
+  it("resolves the project and forwards the search options", async () => {
+    await invoke(IPC.workspaceSearchFiles, {
+      projectPath: OPEN_PROJECT,
+      query: "2026-11-01",
+      includeHidden: true,
+      includeIgnored: true,
+      limit: 25,
+    });
+    expect(recording.workspaceCalls).toEqual([
+      {
+        kind: "search",
+        input: {
+          projectPath: OPEN_PROJECT,
+          query: "2026-11-01",
+          includeHidden: true,
+          includeIgnored: true,
+          limit: 25,
+        },
+      },
+    ]);
+  });
+
+  it("defaults the flags when they are omitted", async () => {
+    await invoke(IPC.workspaceSearchFiles, { projectPath: OPEN_PROJECT, query: "app" });
+    expect(recording.workspaceCalls[0]?.input).toEqual({
+      projectPath: OPEN_PROJECT,
+      query: "app",
+    });
+  });
+
+  it("refuses a missing query or an unknown folder", async () => {
+    await expect(invoke(IPC.workspaceSearchFiles, { projectPath: OPEN_PROJECT })).rejects.toThrow(
+      /search query/,
+    );
+    await expect(
+      invoke(IPC.workspaceSearchFiles, { projectPath: "/etc", query: "app" }),
+    ).rejects.toThrow(/not an open project/);
+    expect(recording.workspaceCalls).toEqual([]);
+  });
+
+  it("refuses an oversized query", async () => {
+    await expect(
+      invoke(IPC.workspaceSearchFiles, {
+        projectPath: OPEN_PROJECT,
+        query: "x".repeat(513),
+      }),
+    ).rejects.toThrow(/too long/);
   });
 });

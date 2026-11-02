@@ -18,6 +18,7 @@ import {
   MoreHorizontal,
   Pencil,
   RefreshCw,
+  Save,
 } from "lucide-react";
 
 import {
@@ -30,8 +31,9 @@ import {
 } from "../ui/dropdown-menu";
 import { cn } from "../ui/cn";
 import { useAppStore } from "../state/app-store";
+import { useEditorStore } from "../editor/editor-store";
+import { isEditorTab, type TabRecord } from "../../../shared/session-ipc";
 import { copyToClipboard } from "../web/clipboard";
-import type { TabRecord } from "../../../shared/session-ipc";
 import { tabMenuItems, type TabMenuActionId } from "./tab-menu";
 
 function TabMenuIcon({ id }: { id: TabMenuActionId }) {
@@ -49,6 +51,10 @@ function TabMenuIcon({ id }: { id: TabMenuActionId }) {
       return <Download className="size-3.5" aria-hidden />;
     case "reveal":
       return <FolderOpen className="size-3.5" aria-hidden />;
+    case "save":
+      return <Save className="size-3.5" aria-hidden />;
+    case "copy-path":
+      return <Copy className="size-3.5" aria-hidden />;
     case "reload":
       return <RefreshCw className="size-3.5" aria-hidden />;
     case "copy-url":
@@ -99,7 +105,20 @@ export function TabMenu({
         void store.exportSessionHtml(tab.id);
         return;
       case "reveal":
-        void store.revealSessionFile(tab.id);
+        if (isEditorTab(tab) && tab.filePath) {
+          void window.pi?.workspace.reveal({ projectPath: tab.cwd, path: tab.filePath });
+        } else {
+          void store.revealSessionFile(tab.id);
+        }
+        return;
+      case "save":
+        void useEditorStore.getState().save(tab.id);
+        return;
+      case "copy-path":
+        if (isEditorTab(tab) && tab.filePath) {
+          copyToClipboard(tab.filePath);
+          store.setHint("Path copied.");
+        }
         return;
       case "reload":
         store.webCommand(tab.id, { command: "reload" });
@@ -114,7 +133,7 @@ export function TabMenu({
         if (tab.url) void window.pi?.openExternal(tab.url);
         return;
       case "close":
-        void store.closeTab(tab.id);
+        useEditorStore.getState().requestClose(tab.id);
         return;
       case "close-others":
         void store.closeOtherTabs(tab.id);

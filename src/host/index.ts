@@ -28,8 +28,8 @@ import {
   createNodeSettingsFileIo,
   createNodeWorkspaceFileIo,
 } from "./file-io";
-import { listWorkspaceFiles } from "./file-listing";
-import { readWorkspaceFile, writeWorkspaceFile } from "./workspace-files";
+import { listWorkspaceFiles } from "../workspace/file-listing";
+import { readWorkspaceFile, writeWorkspaceFile } from "../workspace/workspace-files";
 import { inspectProject } from "./project-inspect";
 import { createProjectTrust } from "./project-trust";
 import { createProviderLoginHandlers } from "./provider-login";

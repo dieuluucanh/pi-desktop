@@ -16,6 +16,8 @@ export interface AfterPackContext {
   appOutDir: string;
   packager: {
     projectDir: string;
+    /** electron-builder's app metadata; the hook reads `version`. */
+    appInfo?: { version?: string };
     /** `<appOutDir>/resources` on every platform this app ships for. */
     getResourcesDir(appOutDir: string): string;
   };
@@ -27,5 +29,35 @@ export interface AfterPackContext {
  */
 export function pruneForeignRuntimes(nodeDir: string, target: string): string[];
 
-/** Prunes foreign runtimes, then rewrites the packaged runtime shims. */
+/** The file the hook writes and the app reads. */
+export const BUILD_INFO_FILE: string;
+
+/** `local` for a workstation build, `release` for GitHub Actions. */
+export type BuildChannel = "local" | "release";
+
+/** Decides the channel from `PI_BUILD_CHANNEL` / `GITHUB_ACTIONS`. */
+export function buildChannelFromEnv(env?: Record<string, string | undefined>): BuildChannel;
+
+export interface BuildInfoDocument {
+  channel: BuildChannel | "unknown";
+  version: string | null;
+  commit: string | null;
+  builtAt: string | null;
+}
+
+/** The JSON document written into `resources/build-info.json`. */
+export function buildInfoDocument(input: {
+  version?: unknown;
+  channel?: unknown;
+  commit?: unknown;
+  builtAt?: unknown;
+}): BuildInfoDocument;
+
+/** Writes the provenance file and returns its path. */
+export function writeBuildInfo(
+  resourcesDir: string,
+  info: Parameters<typeof buildInfoDocument>[0],
+): string;
+
+/** Prunes foreign runtimes, stamps build provenance, then rewrites the shims. */
 export default function afterPack(context: AfterPackContext): Promise<void>;

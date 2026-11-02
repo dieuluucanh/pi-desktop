@@ -103,10 +103,12 @@ parallel across projects. See [Sessions and tabs](sessions-and-tabs.md).
 
 ## Updates
 
-Installed builds check GitHub Releases shortly after launch and show a banner
-when a newer version is available: **Download**, then **Restart & install**.
-`Help → Check for Updates…` runs a check on demand. Development builds have no
-update feed and say so.
+Release builds check GitHub Releases shortly after launch. A newer version
+appears as a small **Update vX** chip in the status bar; the full status,
+**Download** and **Restart & install** live in **Settings → About & updates**.
+`Help → Check for Updates…` opens that card and runs a check on demand. Locally
+built packages skip automatic checks and flag themselves as local builds;
+development builds report that updates are checked in installed builds only.
 
 ## Where your data lives
 

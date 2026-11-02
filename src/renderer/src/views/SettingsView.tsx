@@ -27,6 +27,7 @@ import {
   SourceControlSettingsCard,
 } from "../settings/SourceControlSettings";
 import { NotificationsSettingsCard } from "../settings/NotificationsSettings";
+import { UpdateSettingsCard } from "../settings/UpdateSettingsCard";
 import { setSidebarWidth } from "../state/sidebar-width";
 import { ViewShell } from "./ViewShell";
 
@@ -70,6 +71,18 @@ export function SettingsView() {
   const settingsExternalEdit = useAppStore((state) => state.settingsExternalEdit);
   const loadSettings = useAppStore((state) => state.loadSettings);
   const setSetting = useAppStore((state) => state.setSetting);
+  const settingsFocus = useAppStore((state) => state.settingsFocus);
+  const clearSettingsFocus = useAppStore((state) => state.clearSettingsFocus);
+  const updateCardRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    // The Help menu routes here (`check-updates` / `view-about`): scroll to the
+    // card and consume the target so a later unrelated Settings visit starts at
+    // the top.
+    if (settingsFocus !== "updates") return;
+    updateCardRef.current?.scrollIntoView?.({ block: "start" });
+    clearSettingsFocus();
+  }, [settingsFocus, clearSettingsFocus]);
   const writeRawSettings = useAppStore((state) => state.writeRawSettings);
   const reloadSettings = useAppStore((state) => state.reloadSettings);
   const checkExternalSettingsEdit = useAppStore((state) => state.checkExternalSettingsEdit);
@@ -384,6 +397,10 @@ export function SettingsView() {
           </dd>
         </dl>
       </section>
+
+      <div ref={updateCardRef}>
+        <UpdateSettingsCard />
+      </div>
 
       <Dialog open={rawOpen} onOpenChange={setRawOpen}>
         <DialogContent data-testid="settings-raw-dialog">

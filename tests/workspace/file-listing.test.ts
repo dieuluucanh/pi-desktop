@@ -8,7 +8,7 @@ import {
   listWorkspaceFiles,
   type DirectoryEntry,
   type FileListingIo,
-} from "../../src/host/file-listing";
+} from "../../src/workspace/file-listing";
 import { createNodeFileListingIo } from "../../src/host/file-io";
 
 /**
@@ -21,7 +21,7 @@ import { createNodeFileListingIo } from "../../src/host/file-io";
 /** An in-memory tree: keys are relative paths, values are file contents. */
 function fakeIo(
   files: Record<string, string>,
-  options: { gitOutput?: string | null } = {},
+  options: { gitOutput?: string | null; gitCalls?: string[][] } = {},
 ): FileListingIo {
   const directories = new Map<string, Map<string, boolean>>();
   const ensure = (dir: string): Map<string, boolean> => {
@@ -59,7 +59,14 @@ function fakeIo(
     async readTextFile(target: string): Promise<string | null> {
       return files[relativeOf(target)] ?? null;
     },
-    ...(options.gitOutput === undefined ? {} : { runGit: async () => options.gitOutput ?? null }),
+    ...(options.gitOutput === undefined
+      ? {}
+      : {
+          runGit: async (_root: string, args: readonly string[]) => {
+            options.gitCalls?.push([...args]);
+            return options.gitOutput ?? null;
+          },
+        }),
   };
 }
 
@@ -128,6 +135,37 @@ describe("walk (no git)", () => {
     expect(result.files).toHaveLength(DEFAULT_FILE_LIMIT);
     expect(result.truncated).toBe(true);
   });
+
+  it("honours includeIgnored without reading the ignore rules", async () => {
+    const io = fakeIo({
+      ".gitignore": ".pi/\nsecret.txt\n",
+      ".pi/plans/2026-11-01-note.md": "",
+      "secret.txt": "",
+      "src/app.ts": "",
+    });
+
+    const withoutIgnored = await listWorkspaceFiles(io, "/root");
+    expect(withoutIgnored.files).toEqual([".gitignore", "src/app.ts"]);
+
+    const withIgnored = await listWorkspaceFiles(io, "/root", { includeIgnored: true });
+    expect(withIgnored.files).toEqual([
+      ".gitignore",
+      ".pi/plans/2026-11-01-note.md",
+      "secret.txt",
+      "src/app.ts",
+    ]);
+  });
+
+  it("honours includeHidden", async () => {
+    const io = fakeIo({
+      ".env": "",
+      ".github/workflows/ci.yml": "",
+      ".gitignore": "",
+      "src/app.ts": "",
+    });
+    const result = await listWorkspaceFiles(io, "/root", { includeHidden: false });
+    expect(result.files).toEqual(["src/app.ts"]);
+  });
 });
 
 describe("git fast path", () => {
@@ -139,6 +177,38 @@ describe("git fast path", () => {
     const result = await listWorkspaceFiles(io, "/root");
     expect(result.files).toEqual(["README.md", "src/app.ts"]);
     expect(result.truncated).toBe(false);
+  });
+
+  it("asks git for a bounded, always-ignored listing", async () => {
+    const gitCalls: string[][] = [];
+    const io = fakeIo({}, { gitOutput: "src/app.ts\0", gitCalls });
+    await listWorkspaceFiles(io, "/root");
+    expect(gitCalls).toHaveLength(1);
+    expect(gitCalls[0]).toEqual([
+      "ls-files",
+      "-co",
+      "-z",
+      "--exclude-standard",
+      "--exclude=node_modules",
+      "--exclude=.git",
+    ]);
+  });
+
+  it("filters hidden files from the git listing", async () => {
+    const io = fakeIo({}, { gitOutput: ".env\0.github/workflows/ci.yml\0src/app.ts\0" });
+    const result = await listWorkspaceFiles(io, "/root", { includeHidden: false });
+    expect(result.files).toEqual(["src/app.ts"]);
+  });
+
+  it("does not use git when ignored files are requested", async () => {
+    const gitCalls: string[][] = [];
+    const io = fakeIo(
+      { ".gitignore": ".pi/\n", ".pi/plans/note.md": "", "src/app.ts": "" },
+      { gitOutput: "src/app.ts\0", gitCalls },
+    );
+    const result = await listWorkspaceFiles(io, "/root", { includeIgnored: true });
+    expect(gitCalls).toHaveLength(0);
+    expect(result.files).toContain(".pi/plans/note.md");
   });
 
   it("falls back to the walk when git answers null (no repo, no git)", async () => {

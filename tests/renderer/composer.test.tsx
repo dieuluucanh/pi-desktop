@@ -1,10 +1,17 @@
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { Composer, isSendKey } from "../../src/renderer/src/session/Composer";
 import type { ImageAttachment } from "../../src/renderer/src/session/image-attachment";
 import type { CompletionProvider } from "../../src/renderer/src/completion/types";
+import { useAppStore } from "../../src/renderer/src/state/app-store";
+import {
+  WORKSPACE_PATH_DRAG_MIME,
+  WORKSPACE_PATH_DRAG_VERSION,
+  serializeWorkspaceDrag,
+  type WorkspaceDragPayload,
+} from "../../src/shared/workspace-drag";
 /**
  * The composer (plan step 6). The behaviours worth pinning are the ones that
  * silently lose a user's work or send at the wrong moment: Enter vs Shift+Enter,
@@ -678,5 +685,142 @@ describe("session tools slot (minimal-session-ui step 4)", () => {
   it("adds no row when the view supplies no tools", () => {
     renderComposer();
     expect(screen.queryByTestId("composer-tools")).toBeNull();
+  });
+});
+
+function workspacePayload(overrides: Partial<WorkspaceDragPayload> = {}): WorkspaceDragPayload {
+  return {
+    version: WORKSPACE_PATH_DRAG_VERSION,
+    projectPath: "C:/work/app",
+    path: "src/app.ts",
+    kind: "file",
+    ...overrides,
+  };
+}
+
+function fakeDropTransfer(payload?: WorkspaceDragPayload, files: File[] = []) {
+  const data = new Map<string, string>();
+  if (payload) {
+    data.set(WORKSPACE_PATH_DRAG_MIME, serializeWorkspaceDrag(payload));
+    data.set("text/plain", payload.path);
+  }
+  const types = [...data.keys(), ...(files.length > 0 ? ["Files"] : [])];
+  return {
+    types,
+    files,
+    dropEffect: "none",
+    effectAllowed: "none",
+    getData: (type: string) => data.get(type) ?? "",
+    setData: (type: string, value: string) => data.set(type, value),
+  };
+}
+
+describe("workspace drops", () => {
+  it("inserts an @mention at the caret", () => {
+    const onDraftChange = vi.fn();
+    renderComposer({
+      draft: "look at ",
+      onDraftChange,
+      workspaceRoot: "C:/work/app",
+    });
+    const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    box.setSelectionRange(box.value.length, box.value.length);
+
+    fireEvent.drop(screen.getByTestId("composer-drop"), {
+      dataTransfer: fakeDropTransfer(workspacePayload()),
+    });
+
+    expect(onDraftChange).toHaveBeenCalledWith("look at @src/app.ts ");
+  });
+
+  it("quotes a path with spaces and appends at the end", () => {
+    const onDraftChange = vi.fn();
+    renderComposer({ draft: "", onDraftChange, workspaceRoot: "C:/work/app" });
+
+    fireEvent.drop(screen.getByTestId("composer-drop"), {
+      dataTransfer: fakeDropTransfer(workspacePayload({ path: "my file.ts" })),
+    });
+
+    expect(onDraftChange).toHaveBeenCalledWith('@"my file.ts" ');
+  });
+
+  it("keeps the directory slash", () => {
+    const onDraftChange = vi.fn();
+    renderComposer({ draft: "", onDraftChange, workspaceRoot: "C:/work/app" });
+
+    fireEvent.drop(screen.getByTestId("composer-drop"), {
+      dataTransfer: fakeDropTransfer(workspacePayload({ path: "src", kind: "directory" })),
+    });
+
+    expect(onDraftChange).toHaveBeenCalledWith("@src/ ");
+  });
+
+  it("refuses a file from a different folder", () => {
+    const onDraftChange = vi.fn();
+    useAppStore.setState({ hint: null });
+    renderComposer({ draft: "", onDraftChange, workspaceRoot: "C:/other" });
+
+    fireEvent.drop(screen.getByTestId("composer-drop"), {
+      dataTransfer: fakeDropTransfer(workspacePayload()),
+    });
+
+    expect(onDraftChange).not.toHaveBeenCalled();
+    expect(useAppStore.getState().hint).toMatch(/different folder/);
+  });
+
+  it("still accepts an image drop", async () => {
+    renderComposer({ draft: "look" });
+    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+
+    fireEvent.drop(screen.getByTestId("composer-drop"), {
+      dataTransfer: fakeDropTransfer(undefined, [file]),
+    });
+
+    expect(await screen.findByTestId("attachments")).toBeInTheDocument();
+  });
+
+  it("does not highlight for an in-app tab drag", () => {
+    renderComposer();
+    const drop = screen.getByTestId("composer-drop");
+
+    fireEvent.dragOver(drop, { dataTransfer: { types: ["text/plain"], files: [] } });
+    expect(drop.className).not.toContain("ring-accent");
+
+    fireEvent.dragOver(drop, {
+      dataTransfer: { types: [WORKSPACE_PATH_DRAG_MIME], files: [] },
+    });
+    expect(drop.className).toContain("ring-accent");
+  });
+
+  it("ignores a drop while the session cannot accept prompts", () => {
+    const onDraftChange = vi.fn();
+    useAppStore.setState({ hint: null });
+    renderComposer({
+      enabled: false,
+      onDraftChange,
+      workspaceRoot: "C:/work/app",
+    });
+
+    fireEvent.drop(screen.getByTestId("composer-drop"), {
+      dataTransfer: fakeDropTransfer(workspacePayload()),
+    });
+
+    expect(onDraftChange).not.toHaveBeenCalled();
+    expect(useAppStore.getState().hint).toMatch(/cannot accept prompts/);
+  });
+
+  it("inserts a mention request from the session pane", async () => {
+    const onDraftChange = vi.fn();
+    const onMentionHandled = vi.fn();
+    renderComposer({
+      draft: "review ",
+      onDraftChange,
+      onMentionHandled,
+      workspaceRoot: "C:/work/app",
+      mentionRequest: { id: 4, tabId: "tab-1", path: "src/a.ts", kind: "file" },
+    });
+
+    await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith("review @src/a.ts "));
+    expect(onMentionHandled).toHaveBeenCalledWith(4);
   });
 });

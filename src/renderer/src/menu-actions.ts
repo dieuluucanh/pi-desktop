@@ -6,6 +6,7 @@ import {
   zoomOut as previousZoomLevel,
 } from "../../shared/zoom";
 import { useAppStore } from "./state/app-store";
+import { useEditorStore } from "./editor/editor-store";
 
 /**
  * Menu-command handling (plan step 1).
@@ -58,13 +59,19 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "open-project":
       void openProjectAction(deps);
       return;
+    case "open-file":
+      void import("./files/quick-open-store").then((module) =>
+        module.useQuickOpen.getState().openDialog(),
+      );
+      return;
     case "open-web-url":
       // The manual "Open URL in a tab" action (plan step 21); the dialog is the
       // one place a URL is typed, so localhost UIs never need a terminal.
       store.openWebUrlDialog();
       return;
     case "close-session":
-      void store.closeActiveTab();
+      if (store.activeTabId) useEditorStore.getState().requestClose(store.activeTabId);
+      else void store.closeActiveTab();
       return;
     case "view-sessions":
       void store.openSessionBrowser();
@@ -142,6 +149,9 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "zoom-reset":
       store.setPrefs({ zoomFactor: DEFAULT_ZOOM });
       return;
+    case "view-explorer":
+      store.openRailMenu("explorer");
+      return;
     case "view-source-control":
       // Opens the panel on Source Control without toggling it.
       store.openRailMenu("source-control");
@@ -186,9 +196,13 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
       store.setShortcutsHelpOpen(true);
       return;
     case "check-updates":
-      // Runs a real check (plan step 26); the banner shows the outcome and, in a
-      // dev build, says that only installed builds have a feed.
-      void store.checkForUpdates();
+      // Opens the durable About & updates card and starts a check; the status
+      // bar then carries available/downloading/downloaded, and the card carries
+      // every outcome including a missing published feed.
+      store.openUpdateSettings({ check: true });
+      return;
+    case "view-about":
+      store.openUpdateSettings();
       return;
     default: {
       // Exhaustive today: every MenuCommand is handled above, so `command` is

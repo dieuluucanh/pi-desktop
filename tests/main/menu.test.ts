@@ -123,6 +123,20 @@ describe("menuTemplate", () => {
     expect(onOpenExternal).toHaveBeenCalledTimes(1);
   });
 
+  it("routes About to the in-app card on Windows/Linux and keeps the native panel on macOS", () => {
+    const winHelp = build(false).template.find((item) => item.label === "Help");
+    const winItems = (winHelp?.submenu as MenuItemConstructorOptions[]) ?? [];
+    expect(winItems.some((item) => item.id === "view-about")).toBe(true);
+    expect(winItems.some((item) => item.role === "about")).toBe(false);
+
+    const mac = build(true).template;
+    const macHelp = mac.find((item) => item.label === "Help");
+    const macItems = (macHelp?.submenu as MenuItemConstructorOptions[]) ?? [];
+    expect(macItems.some((item) => item.id === "view-about")).toBe(false);
+    const macAppItems = (mac[0]?.submenu as MenuItemConstructorOptions[]) ?? [];
+    expect(macAppItems.some((item) => item.role === "about")).toBe(true);
+  });
+
   it("adds the macOS application menu only on darwin", () => {
     const mac = build(true).template;
     const win = build(false).template;

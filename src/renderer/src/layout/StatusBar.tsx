@@ -1,7 +1,8 @@
-import { Minus, Plus } from "lucide-react";
+import { Minus, Plus, X } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { useAppStore } from "../state/app-store";
 import { NotificationCenter } from "../extension-ui/NotificationCenter";
+import { UpdateStatusButton } from "../updates/UpdateStatusButton";
 import { formatZoomPercent } from "../../../shared/zoom";
 import { compactPath, tildePath } from "../../../shared/paths";
 
@@ -43,6 +44,7 @@ export function StatusBar() {
   const info = useAppStore((state) => state.info);
   const project = useAppStore((state) => state.project);
   const hint = useAppStore((state) => state.hint);
+  const setHint = useAppStore((state) => state.setHint);
   const zoomFactor = useAppStore((state) => state.prefs.zoomFactor);
   const zoomIn = useAppStore((state) => state.zoomIn);
   const zoomOut = useAppStore((state) => state.zoomOut);
@@ -97,6 +99,7 @@ export function StatusBar() {
             <Plus className="size-3" aria-hidden />
           </button>
         </div>
+        <UpdateStatusButton />
         {info ? (
           <span data-testid="status-version" title={`Pi Desktop ${info.version}`}>
             v{info.version}
@@ -121,7 +124,20 @@ export function StatusBar() {
           runtime: {info?.runtimeSource ?? "unavailable"}
           {info?.runtimeNodeVersion ? ` · node ${info.runtimeNodeVersion}` : ""}
         </span>
-        {hint ? <Badge tone="accent">{hint}</Badge> : null}
+        {hint ? (
+          <span className="flex items-center gap-1" data-testid="status-hint">
+            <Badge tone="accent">{hint}</Badge>
+            <button
+              type="button"
+              className="rounded-xs p-0.5 hover:bg-raised hover:text-ink"
+              aria-label="Dismiss status message"
+              title="Dismiss status message"
+              onClick={() => setHint(null)}
+            >
+              <X className="size-3" aria-hidden />
+            </button>
+          </span>
+        ) : null}
         <NotificationCenter />
       </div>
     </footer>

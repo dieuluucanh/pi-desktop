@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { globToRegexSource, isIgnored, parseGitignore } from "../../src/host/gitignore";
+import { globToRegexSource, isIgnored, parseGitignore } from "../../src/workspace/gitignore";
 
 /**
  * The gitignore matcher behind `@` completion (plan step 7). Each case mirrors a

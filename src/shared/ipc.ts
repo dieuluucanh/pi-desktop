@@ -17,6 +17,7 @@ import type {
 import type { CheckpointAction, CheckpointActionResult, CheckpointState } from "./checkpoints";
 import type { HostMethod } from "./host-protocol";
 import type { UpdateState } from "./updates";
+import type { BuildChannel } from "./build-info";
 import type {
   CloneProjectInput,
   CreateProjectInput,
@@ -40,6 +41,21 @@ import type {
   WebTabBounds,
   WebTabState,
 } from "./web-tabs";
+import type {
+  EditorBackup,
+  ResolvedEditorConfig,
+  WorkspaceFileContent,
+  WorkspaceFileList,
+  WorkspaceListing,
+  WorkspaceResult,
+  WorkspaceSearchRequest,
+  WorkspaceSearchResult,
+  WorkspaceStat,
+  WorkspaceWriteInput,
+  WorkspaceWriteResult,
+  WorkspaceFormatRequest,
+  WorkspaceFormatResult,
+} from "./workspace";
 
 /**
  * The IPC surface between the Electron main process and the renderer.
@@ -180,6 +196,8 @@ export const IPC = {
   updatesCheck: "updates:check",
   updatesDownload: "updates:download",
   updatesInstall: "updates:install",
+  /** Clears a recorded update problem (a no-feed notice or a failed check). */
+  updatesClearProblem: "updates:clear-problem",
   /** Main → renderer: the updater's state changed. */
   updatesState: "updates:state",
 
@@ -218,6 +236,25 @@ export const IPC = {
   checkpointsAction: "checkpoints:action",
   /** Main → renderer: a project's checkpoint state changed. */
   checkpointsPushed: "checkpoints:state",
+
+  /**
+   * Workspace file access for the explorer and editor (2026-11-01 plan). The
+   * renderer names a project folder (main resolves it against the open-project
+   * allowlist) and a project-relative POSIX path; main applies the realpath
+   * containment guard and answers with a `WorkspaceResult` envelope.
+   */
+  workspaceListDirectory: "workspace:list-directory",
+  workspaceListFiles: "workspace:list-files",
+  workspaceSearchFiles: "workspace:search-files",
+  workspaceReadFile: "workspace:read-file",
+  workspaceStat: "workspace:stat",
+  workspaceWriteFile: "workspace:write-file",
+  workspaceReveal: "workspace:reveal",
+  workspaceEditorConfig: "workspace:editor-config",
+  workspaceReadBackup: "workspace:read-backup",
+  workspaceWriteBackup: "workspace:write-backup",
+  workspaceDeleteBackup: "workspace:delete-backup",
+  workspaceFormat: "workspace:format",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -226,6 +263,7 @@ export type IpcChannel = (typeof IPC)[keyof typeof IPC];
 export const MENU_COMMANDS = [
   "new-session",
   "open-project",
+  "open-file",
   "open-web-url",
   "close-session",
   "view-sessions",
@@ -242,6 +280,8 @@ export const MENU_COMMANDS = [
   "shortcuts",
   // Updates (plan step 26).
   "check-updates",
+  /** Opens the Settings About & updates card (non-macOS About item). */
+  "view-about",
   // Session history (plan step 11).
   "session-tree",
   "session-fork",
@@ -254,6 +294,7 @@ export const MENU_COMMANDS = [
   // The docked panel rail: one toggle for the panel body plus the commands that
   // open it on a specific menu.
   "toggle-rail",
+  "view-explorer",
   "view-source-control",
   "view-checkpoints",
   "view-documents",
@@ -280,6 +321,18 @@ export interface AppInfo {
   platform: string;
   arch: string;
   isDev: boolean;
+  /**
+   * Build provenance from `<resources>/build-info.json` (written by the
+   * electron-builder `afterPack` hook). `local` builds skip automatic update
+   * checks; `unknown` is a packaged build without a readable provenance file.
+   */
+  buildChannel: BuildChannel;
+  /** The version recorded at pack time (normally `version` above). */
+  buildVersion: string | null;
+  /** Short git commit, when the build host had a checkout. */
+  buildCommit: string | null;
+  /** ISO timestamp of the packaging run. */
+  builtAt: string | null;
   safeMode: boolean;
   /** True when `PI_OFFLINE` disables Pi's startup network calls (plan step 22). */
   piOffline: boolean;
@@ -524,6 +577,8 @@ export interface UpdatesBridge {
   download(): Promise<UpdateState>;
   /** Quits and installs a downloaded update; false when none is ready. */
   install(): Promise<boolean>;
+  /** Clears a no-feed/error notice without discarding an offer or download. */
+  clearProblem(): Promise<UpdateState>;
   /** Main → renderer: the updater's state changed. */
   onState(listener: (state: UpdateState) => void): () => void;
 }
@@ -580,6 +635,38 @@ export interface CheckpointsBridge {
   onState(listener: (state: CheckpointState) => void): () => void;
 }
 
+/**
+ * Workspace file access (2026-11-01 plan). Every method returns an envelope:
+ * expected failures (conflict, forbidden, not_found) travel as data because
+ * Electron's IPC boundary drops custom Error fields.
+ */
+export interface WorkspaceBridge {
+  listDirectory(input: {
+    projectPath: string;
+    path: string;
+  }): Promise<WorkspaceResult<WorkspaceListing>>;
+  listFiles(input: {
+    projectPath: string;
+    limit?: number;
+  }): Promise<WorkspaceResult<WorkspaceFileList>>;
+  searchFiles(input: WorkspaceSearchRequest): Promise<WorkspaceResult<WorkspaceSearchResult>>;
+  readFile(input: {
+    projectPath: string;
+    path: string;
+  }): Promise<WorkspaceResult<WorkspaceFileContent>>;
+  stat(input: { projectPath: string; path: string }): Promise<WorkspaceResult<WorkspaceStat>>;
+  writeFile(input: WorkspaceWriteInput): Promise<WorkspaceResult<WorkspaceWriteResult>>;
+  reveal(input: { projectPath: string; path: string }): Promise<WorkspaceResult<boolean>>;
+  editorConfig(input: {
+    projectPath: string;
+    path: string;
+  }): Promise<WorkspaceResult<ResolvedEditorConfig>>;
+  readBackup(tabId: string): Promise<WorkspaceResult<EditorBackup | null>>;
+  writeBackup(backup: EditorBackup): Promise<WorkspaceResult<boolean>>;
+  deleteBackup(tabId: string): Promise<WorkspaceResult<boolean>>;
+  format(request: WorkspaceFormatRequest): Promise<WorkspaceResult<WorkspaceFormatResult>>;
+}
+
 /** The complete API exposed to the renderer as `window.pi`. */
 export interface PiDesktopBridge {
   getAppInfo(): Promise<AppInfo>;
@@ -605,4 +692,5 @@ export interface PiDesktopBridge {
   updates: UpdatesBridge;
   git: GitBridge;
   checkpoints: CheckpointsBridge;
+  workspace: WorkspaceBridge;
 }

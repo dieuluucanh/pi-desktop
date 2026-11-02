@@ -61,9 +61,13 @@ project resources load, and why safe mode exists. The app itself is isolated:
 sandboxed renderer, strict CSP, allowlisted IPC, web tabs without a preload.
 
 **How do I get a newer version?**
-Installed builds check GitHub Releases after launch and show an update banner;
-`Help → Check for Updates…` checks on demand. Package installs are separate: the
-app updates its own code, the package manager updates extensions.
+Release builds check GitHub Releases once after launch. An available version
+appears as a small **Update vX** chip in the status bar; the full status,
+**Download** and **Restart & install** live in **Settings → About & updates**.
+`Help → Check for Updates…` opens that card and checks on demand. Locally built
+packages are not on the update feed: automatic checks are off and the card says
+so. Package installs are separate: the app updates its own code, the package
+manager updates extensions.
 
 **Is it translated?**
 Not yet (i18n is backlog). The UI is English in v0.3.0.

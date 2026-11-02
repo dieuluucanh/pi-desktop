@@ -39,6 +39,23 @@ import type { DiagnosticsSaveResult } from "../shared/ipc";
 import type { UpdateState } from "../shared/updates";
 import { isTrustAnswer } from "../shared/projects";
 import type { OfficeBridgeControlResult, OfficeStopResult } from "../shared/office-bridge";
+import type {
+  EditorBackup,
+  ResolvedEditorConfig,
+  WorkspaceFileContent,
+  WorkspaceFileList,
+  WorkspaceListing,
+  WorkspaceResult,
+  WorkspaceSearchRequest,
+  WorkspaceSearchResult,
+  WorkspaceStat,
+  WorkspaceWriteInput,
+  WorkspaceWriteResult,
+  WorkspaceFormatRequest,
+  WorkspaceFormatResult,
+} from "../shared/workspace";
+import { sanitizeEditorBackup } from "../workspace/backup";
+import { MAX_WORKSPACE_SEARCH_QUERY_LENGTH, isWorkspaceRelativePath } from "../shared/workspace";
 import {
   parseGitAction,
   parseGitDiffRequest,
@@ -178,6 +195,7 @@ export interface IpcDependencies {
     check(): Promise<UpdateState>;
     download(): Promise<UpdateState>;
     install(): boolean;
+    clearProblem(): UpdateState;
   };
   /** Source control (git-checkpoint plan step 7). */
   git: {
@@ -204,6 +222,34 @@ export interface IpcDependencies {
     refresh(projectPath: string): Promise<CheckpointState>;
     action(projectPath: string, action: CheckpointAction): Promise<CheckpointActionResult>;
   };
+  /** Workspace file access for the explorer and editor (2026-11-01 plan). */
+  workspace: {
+    resolveProjectPath(value: unknown): Promise<string>;
+    listDirectory(input: {
+      projectPath: string;
+      path: string;
+    }): Promise<WorkspaceResult<WorkspaceListing>>;
+    listFiles(input: {
+      projectPath: string;
+      limit?: number;
+    }): Promise<WorkspaceResult<WorkspaceFileList>>;
+    searchFiles(input: WorkspaceSearchRequest): Promise<WorkspaceResult<WorkspaceSearchResult>>;
+    readFile(input: {
+      projectPath: string;
+      path: string;
+    }): Promise<WorkspaceResult<WorkspaceFileContent>>;
+    stat(input: { projectPath: string; path: string }): Promise<WorkspaceResult<WorkspaceStat>>;
+    writeFile(input: WorkspaceWriteInput): Promise<WorkspaceResult<WorkspaceWriteResult>>;
+    reveal(input: { projectPath: string; path: string }): Promise<WorkspaceResult<boolean>>;
+    editorConfig(input: {
+      projectPath: string;
+      path: string;
+    }): Promise<WorkspaceResult<ResolvedEditorConfig>>;
+    readBackup(tabId: string): Promise<WorkspaceResult<EditorBackup | null>>;
+    writeBackup(backup: EditorBackup): Promise<WorkspaceResult<boolean>>;
+    deleteBackup(tabId: string): Promise<WorkspaceResult<boolean>>;
+    format(input: WorkspaceFormatRequest): Promise<WorkspaceResult<WorkspaceFormatResult>>;
+  };
 }
 
 const MAX_TITLE_LENGTH = 200;
@@ -217,6 +263,67 @@ export function broadcastToWindows(channel: string, payload: unknown): void {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function parseWorkspacePath(
+  value: unknown,
+  allowEmpty = false,
+): { projectPath: string; path: string } {
+  const record = asRecord(value);
+  const projectPath = record.projectPath;
+  if (typeof projectPath !== "string" || projectPath.length === 0) {
+    throw new Error("workspace: a project folder is required");
+  }
+  const path = record.path;
+  if (typeof path !== "string" || (!allowEmpty && path.length === 0)) {
+    throw new Error("workspace: a project-relative path is required");
+  }
+  return { projectPath, path };
+}
+
+function parseWorkspaceWrite(value: unknown): WorkspaceWriteInput {
+  const record = asRecord(value);
+  const base = parseWorkspacePath(record);
+  if (typeof record.text !== "string") {
+    throw new Error("workspace: write text is required");
+  }
+  const input: WorkspaceWriteInput = { ...base, text: record.text };
+  if (record.eol === "lf" || record.eol === "crlf") input.eol = record.eol;
+  if (typeof record.bom === "boolean") input.bom = record.bom;
+  if (record.expectedMtimeMs === null) input.expectedMtimeMs = null;
+  else if (typeof record.expectedMtimeMs === "number" && Number.isFinite(record.expectedMtimeMs)) {
+    input.expectedMtimeMs = record.expectedMtimeMs;
+  }
+  if (typeof record.force === "boolean") input.force = record.force;
+  return input;
+}
+
+function parseWorkspaceSearch(value: unknown): WorkspaceSearchRequest {
+  const record = asRecord(value);
+  const projectPath = record.projectPath;
+  if (typeof projectPath !== "string" || projectPath.length === 0) {
+    throw new Error("workspace: a project folder is required");
+  }
+  if (typeof record.query !== "string") {
+    throw new Error("workspace: a search query is required");
+  }
+  if (record.query.length > MAX_WORKSPACE_SEARCH_QUERY_LENGTH) {
+    throw new Error("workspace: the search query is too long");
+  }
+  const request: WorkspaceSearchRequest = { projectPath, query: record.query };
+  if (typeof record.includeHidden === "boolean") request.includeHidden = record.includeHidden;
+  if (typeof record.includeIgnored === "boolean") request.includeIgnored = record.includeIgnored;
+  if (typeof record.limit === "number" && Number.isFinite(record.limit) && record.limit > 0) {
+    request.limit = record.limit;
+  }
+  return request;
+}
+
+function parseWorkspaceTabId(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("workspace: a tab id is required");
+  }
+  return value;
 }
 
 /**
@@ -312,6 +419,12 @@ function parseCreateTab(value: unknown): CreateTabInput {
   }
   const input: CreateTabInput = { cwd };
   if (isTabKind(kind)) input.kind = kind;
+  if (kind === "editor") {
+    if (typeof record.filePath !== "string" || !isWorkspaceRelativePath(record.filePath)) {
+      throw new Error("session: an editor tab requires a project-relative file");
+    }
+    input.filePath = record.filePath;
+  }
   if (typeof record.sessionFile === "string" && record.sessionFile.length > 0) {
     input.sessionFile = record.sessionFile;
   }
@@ -472,6 +585,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.updatesCheck, () => deps.updates.check());
   ipcMain.handle(IPC.updatesDownload, () => deps.updates.download());
   ipcMain.handle(IPC.updatesInstall, () => deps.updates.install());
+  ipcMain.handle(IPC.updatesClearProblem, () => deps.updates.clearProblem());
 
   // Source control (git-checkpoint plan step 7). Every handler resolves the
   // folder against the allowlist first, so git only ever runs in a folder the
@@ -521,6 +635,77 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     const parsed = parseCheckpointAction(action);
     if (!parsed) throw new Error("checkpoints: unsupported action");
     return deps.checkpoints.action(path, parsed);
+  });
+
+  // Workspace file access (2026-11-01 plan). The folder allowlist is applied
+  // before the service sees the request; the service then applies the realpath
+  // containment guard and returns a result envelope.
+  ipcMain.handle(IPC.workspaceListDirectory, async (_event, input: unknown) => {
+    const request = parseWorkspacePath(input, true);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.listDirectory({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceListFiles, async (_event, input: unknown) => {
+    const record = asRecord(input);
+    const projectPath = await deps.workspace.resolveProjectPath(record.projectPath);
+    const limit =
+      typeof record.limit === "number" && Number.isFinite(record.limit) ? record.limit : undefined;
+    return deps.workspace.listFiles({ projectPath, ...(limit === undefined ? {} : { limit }) });
+  });
+  ipcMain.handle(IPC.workspaceSearchFiles, async (_event, input: unknown) => {
+    const request = parseWorkspaceSearch(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.searchFiles({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceReadFile, async (_event, input: unknown) => {
+    const request = parseWorkspacePath(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.readFile({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceStat, async (_event, input: unknown) => {
+    const request = parseWorkspacePath(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.stat({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceWriteFile, async (_event, input: unknown) => {
+    const request = parseWorkspaceWrite(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.writeFile({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceReveal, async (_event, input: unknown) => {
+    const request = parseWorkspacePath(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.reveal({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceEditorConfig, async (_event, input: unknown) => {
+    const request = parseWorkspacePath(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.editorConfig({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceReadBackup, (_event, tabId: unknown) =>
+    deps.workspace.readBackup(parseWorkspaceTabId(tabId)),
+  );
+  ipcMain.handle(IPC.workspaceWriteBackup, (_event, value: unknown) => {
+    const backup = sanitizeEditorBackup(value);
+    if (!backup) throw new Error("workspace: invalid editor backup");
+    return deps.workspace.writeBackup(backup);
+  });
+  ipcMain.handle(IPC.workspaceDeleteBackup, (_event, tabId: unknown) =>
+    deps.workspace.deleteBackup(parseWorkspaceTabId(tabId)),
+  );
+  ipcMain.handle(IPC.workspaceFormat, async (_event, value: unknown) => {
+    const record = asRecord(value);
+    const base = parseWorkspacePath(record);
+    if (typeof record.languageId !== "string" || typeof record.text !== "string") {
+      throw new Error("workspace: format requires a language and text");
+    }
+    const projectPath = await deps.workspace.resolveProjectPath(base.projectPath);
+    return deps.workspace.format({
+      ...base,
+      projectPath,
+      languageId: record.languageId,
+      text: record.text,
+    });
   });
 }
 

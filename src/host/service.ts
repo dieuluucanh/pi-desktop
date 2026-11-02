@@ -15,7 +15,7 @@ import {
   type HostRequestFrame,
   type HostRole,
 } from "../shared/host-protocol";
-import { isPathInside } from "./path-guard";
+import { isPathInside } from "../workspace/path-guard";
 import type { HostMemoryMetrics } from "../shared/performance";
 
 /**

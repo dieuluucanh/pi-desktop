@@ -9,6 +9,12 @@ import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { EMPTY_EXTENSION_UI } from "../../src/shared/extension-ui";
 import { EMPTY_TUI_SURFACE } from "../../src/shared/tui-surface";
 import { documentsViewFixture, installBridge } from "./fixtures";
+import {
+  WORKSPACE_PATH_DRAG_MIME,
+  WORKSPACE_PATH_DRAG_VERSION,
+  serializeWorkspaceDrag,
+  type WorkspaceDragPayload,
+} from "../../src/shared/workspace-drag";
 
 /**
  * The session view's chrome (plan step 6).
@@ -19,6 +25,28 @@ import { documentsViewFixture, installBridge } from "./fixtures";
  */
 
 const TAB = "tab-1";
+
+function fakeWorkspaceDrop(
+  overrides: Partial<WorkspaceDragPayload> = {},
+  types: string[] = [WORKSPACE_PATH_DRAG_MIME],
+) {
+  const payload: WorkspaceDragPayload = {
+    version: WORKSPACE_PATH_DRAG_VERSION,
+    projectPath: "C:/work/app",
+    path: "src/notes.md",
+    kind: "file",
+    ...overrides,
+  };
+  return {
+    types,
+    files: [] as File[],
+    dropEffect: "none",
+    effectAllowed: "none",
+    getData: (type: string) =>
+      type === WORKSPACE_PATH_DRAG_MIME ? serializeWorkspaceDrag(payload) : "",
+    setData: () => undefined,
+  };
+}
 
 function resetStore(): void {
   installBridge();
@@ -319,5 +347,54 @@ describe("# document completion follows the host session", () => {
     // nothing rather than a document this session cannot serve.
     await waitFor(() => expect(screen.queryByTestId("completion-overlay")).not.toBeInTheDocument());
     expect(screen.queryByText("#Book1.xlsx")).not.toBeInTheDocument();
+  });
+});
+
+describe("workspace drops on the session pane", () => {
+  it("inserts a mention when a file is dropped on the transcript", async () => {
+    render(<SessionView />);
+
+    fireEvent.drop(screen.getByTestId("session-view"), {
+      dataTransfer: fakeWorkspaceDrop(),
+    });
+
+    await waitFor(() =>
+      expect(useAppStore.getState().prefs.drafts[TAB]).toContain("@src/notes.md"),
+    );
+  });
+
+  it("shows and clears the drop overlay", async () => {
+    render(<SessionView />);
+    const view = screen.getByTestId("session-view");
+
+    fireEvent.dragEnter(view, { dataTransfer: fakeWorkspaceDrop() });
+    expect(screen.getByText(/Drop to mention this file/)).toBeInTheDocument();
+
+    fireEvent.dragLeave(view, { dataTransfer: fakeWorkspaceDrop() });
+    await waitFor(() =>
+      expect(screen.queryByText(/Drop to mention this file/)).not.toBeInTheDocument(),
+    );
+  });
+
+  it("refuses a file from a different project", () => {
+    render(<SessionView />);
+    useAppStore.setState({ hint: null });
+
+    fireEvent.drop(screen.getByTestId("session-view"), {
+      dataTransfer: fakeWorkspaceDrop({ projectPath: "C:/other" }),
+    });
+
+    expect(useAppStore.getState().prefs.drafts[TAB] ?? "").toBe("");
+    expect(useAppStore.getState().hint).toMatch(/different folder/);
+  });
+
+  it("ignores an in-app text drag", () => {
+    render(<SessionView />);
+    const view = screen.getByTestId("session-view");
+
+    fireEvent.dragEnter(view, {
+      dataTransfer: fakeWorkspaceDrop({}, ["text/plain"]),
+    });
+    expect(screen.queryByText(/Drop to mention this file/)).not.toBeInTheDocument();
   });
 });

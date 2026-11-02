@@ -6,6 +6,10 @@ import { PROMPT_MAX_HEIGHT_PX, useAutoGrowTextarea } from "../ui/auto-grow";
 import { fileToAttachment, isImageFile, type ImageAttachment } from "./image-attachment";
 import { lostPasteIds, shouldCollapsePaste } from "./paste-markers";
 import { useAppStore } from "../state/app-store";
+import { sameFolder } from "../../../shared/rail-scope";
+import type { WorkspaceEntryKind } from "../../../shared/workspace";
+import { insertWorkspaceMention, workspaceMention } from "../../../shared/workspace-drag";
+import { isExternalFileDrag, isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
 import {
   parseWorkflowStatus,
   statusLineText,
@@ -67,6 +71,17 @@ export interface ComposerProps {
   onClearQueue: () => void;
   /** `clearQueue` and put the queued text back in the draft (Alt+Up, plan step 9). */
   onRestoreQueue: () => void;
+  /** The session workspace root, used to validate a dropped path. */
+  workspaceRoot?: string | null;
+  /** A mention dropped somewhere in the session pane, to insert at the caret. */
+  mentionRequest?: {
+    id: number;
+    tabId: string;
+    path: string;
+    kind: WorkspaceEntryKind;
+  } | null;
+  /** Called after a mention request has been inserted (or refused). */
+  onMentionHandled?: (id: number) => void;
   /** The `workflow` extension status, decoded into a composer border colour. */
   workflowStatus?: string | null;
   /**
@@ -229,6 +244,9 @@ export function Composer({
   extensionShortcuts,
   onInvokeShortcut,
   onRequestShortcuts,
+  workspaceRoot,
+  mentionRequest,
+  onMentionHandled,
   onDraftChange,
   onSend,
   onStop,
@@ -259,6 +277,11 @@ export function Composer({
   const [caret, setCaret] = useState<CaretPosition>({ line: 1, column: 1 });
   const completionAbortRef = useRef<AbortController | null>(null);
   const completionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A mention insertion updates the controlled draft and then needs to put the
+  // DOM caret after the new text. The ref survives the React commit; the effect
+  // below applies it once the textarea carries the new value.
+  const pendingCaretRef = useRef<{ text: string; caret: number } | null>(null);
+  const handledMentionRef = useRef<number | null>(null);
 
   const queued = [...queue.steering, ...queue.followUp];
   const bashMode = draft.trimStart().startsWith("!");
@@ -396,6 +419,22 @@ export function Composer({
     if (node && node.value === draft) syncCaret(node);
   }, [draft, syncCaret]);
 
+  const applyPendingCaret = useCallback(() => {
+    const pending = pendingCaretRef.current;
+    if (!pending) return;
+    const node = textareaRef.current;
+    if (!node || node.value !== pending.text) return;
+    pendingCaretRef.current = null;
+    node.focus();
+    node.setSelectionRange(pending.caret, pending.caret);
+    caretRef.current = pending.caret;
+    setCaret(caretPosition(node.value, pending.caret));
+  }, []);
+
+  useEffect(() => {
+    applyPendingCaret();
+  }, [draft, applyPendingCaret]);
+
   // Clicking the transcript background is an explicit "talk to this session"
   // gesture; the view increments the token instead of reaching into the DOM.
   useEffect(() => {
@@ -447,21 +486,70 @@ export function Composer({
     if (added.length > 0) setAttachments((current) => [...current, ...added]);
   }, []);
 
+  const insertMention = useCallback(
+    (path: string, kind: WorkspaceEntryKind): boolean => {
+      const node = textareaRef.current;
+      if (!node || !enabled) return false;
+      const focused = document.activeElement === node;
+      const start = focused ? (node.selectionStart ?? node.value.length) : node.value.length;
+      const end = focused ? (node.selectionEnd ?? start) : start;
+      const next = insertWorkspaceMention(node.value, start, end, workspaceMention(path, kind));
+      pendingCaretRef.current = { text: next.text, caret: next.caret };
+      onDraftChange(next.text);
+      // The effect above normally applies the caret after the controlled value
+      // commits; the microtask covers a parent that does not re-render.
+      queueMicrotask(applyPendingCaret);
+      return true;
+    },
+    [applyPendingCaret, enabled, onDraftChange],
+  );
+
+  useEffect(() => {
+    if (!mentionRequest || mentionRequest.tabId !== tabId) return;
+    if (handledMentionRef.current === mentionRequest.id) return;
+    handledMentionRef.current = mentionRequest.id;
+    insertMention(mentionRequest.path, mentionRequest.kind);
+    onMentionHandled?.(mentionRequest.id);
+  }, [insertMention, mentionRequest, onMentionHandled, tabId]);
+
   return (
     <div
+      data-testid="composer-drop"
       className={cn(
         "relative shrink-0 border-t border-line bg-surface px-3 py-2",
         dragging && "ring-1 ring-accent",
       )}
       onDragOver={(event) => {
+        if (!isWorkspaceDrag(event.dataTransfer) && !isExternalFileDrag(event.dataTransfer)) {
+          return;
+        }
         event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
         setDragging(true);
       }}
-      onDragLeave={() => setDragging(false)}
+      onDragLeave={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        setDragging(false);
+      }}
       onDrop={(event) => {
+        const payload = readWorkspaceDrop(event.dataTransfer);
+        if (payload) {
+          event.preventDefault();
+          setDragging(false);
+          if (!enabled) {
+            useAppStore.getState().setHint("This session cannot accept prompts right now.");
+            return;
+          }
+          if (workspaceRoot && !sameFolder(payload.projectPath, workspaceRoot)) {
+            useAppStore.getState().setHint("That file belongs to a different folder.");
+            return;
+          }
+          insertMention(payload.path, payload.kind);
+          return;
+        }
         event.preventDefault();
         setDragging(false);
-        void addFiles([...event.dataTransfer.files]);
+        if (enabled) void addFiles([...event.dataTransfer.files]);
       }}
     >
       {bashMode ? (

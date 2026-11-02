@@ -8,7 +8,7 @@ import {
   resolveInsideRoot,
   resolveRelativePath,
   type RealPathIo,
-} from "../../src/host/path-guard";
+} from "../../src/workspace/path-guard";
 
 /** A fake tree: every key is a path, its value is the path it resolves to. */
 function fakeIo(tree: Record<string, string>): RealPathIo {

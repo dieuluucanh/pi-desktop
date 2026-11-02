@@ -15,7 +15,6 @@ import { TuiWidgetStrip, TuiWidgetInline } from "../tui/TuiWidgetStrip";
 import { splitSingleLineFrames } from "../../../shared/tui-surface";
 import { isDockedOverlay } from "../tui/tui-geometry";
 import { useTuiViewport } from "../tui/use-tui-viewport";
-import { WebTabView } from "../web/WebTabView";
 import { createCommandProvider } from "../completion/command-source";
 import { createDocumentProvider } from "../completion/document-source";
 import { createFileProvider } from "../completion/file-source";
@@ -29,6 +28,9 @@ import { ThinkingPicker } from "../session/ThinkingPicker";
 import { ThinkingLevelIcon } from "../session/ThinkingLevelIcon";
 import { thinkingLevelTitle } from "../../../shared/thinking";
 import { contextUsageOf, modelKeyOf, thinkingLevelsOf } from "../session/model-catalog";
+import { sameFolder } from "../../../shared/rail-scope";
+import type { WorkspaceEntryKind } from "../../../shared/workspace";
+import { isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
 
 /**
  * Session view (plan step 5).
@@ -210,6 +212,15 @@ export function SessionView() {
 
   const active = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeId = active?.id ?? null;
+  const [mentionRequest, setMentionRequest] = useState<{
+    id: number;
+    tabId: string;
+    path: string;
+    kind: WorkspaceEntryKind;
+  } | null>(null);
+  const [dropActive, setDropActive] = useState(false);
+  const mentionSeq = useRef(0);
+  const dropDepth = useRef(0);
 
   // An extension dialog is per-tab and wins over the composer and a docked TUI
   // overlay: it is the newest interaction the extension is blocked on.
@@ -254,7 +265,6 @@ export function SessionView() {
   // session view no longer owns a scope of its own.
 
   if (!active) return <WelcomeView />;
-  if (active.kind === "web") return <WebTabView tab={active} />;
 
   const transcript = transcripts[active.id];
   const contextUsage = contextUsageOf(sessionStates[active.id]);
@@ -285,6 +295,60 @@ export function SessionView() {
   // transcript must give the keys back to it, never to the hidden (or inert)
   // composer — otherwise Tab/arrow keys silently stop reaching the extension.
   const surfaceOwnsKeyboard = tuiOwnsComposer || floatingOverlay || dialog !== null;
+  const composerUnavailable = surfaceOwnsKeyboard;
+
+  const resetDrop = (): void => {
+    dropDepth.current = 0;
+    setDropActive(false);
+  };
+
+  const onWorkspaceDragEnter = (event: React.DragEvent<HTMLDivElement>): void => {
+    if (!isWorkspaceDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    dropDepth.current += 1;
+    if (!composerUnavailable) setDropActive(true);
+  };
+
+  const onWorkspaceDragOver = (event: React.DragEvent<HTMLDivElement>): void => {
+    if (!isWorkspaceDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const onWorkspaceDragLeave = (event: React.DragEvent<HTMLDivElement>): void => {
+    if (!isWorkspaceDrag(event.dataTransfer)) return;
+    dropDepth.current = Math.max(0, dropDepth.current - 1);
+    if (dropDepth.current === 0) setDropActive(false);
+  };
+
+  const onWorkspaceDrop = (event: React.DragEvent<HTMLDivElement>): void => {
+    resetDrop();
+    // The composer handles a drop on its own surface and calls preventDefault;
+    // it still bubbles here so the overlay is cleared.
+    if (event.defaultPrevented) return;
+    const payload = readWorkspaceDrop(event.dataTransfer);
+    if (!payload) return;
+    event.preventDefault();
+    if (composerUnavailable) {
+      setHint("The composer is not available in this session right now.");
+      return;
+    }
+    if (active.status === "crashed" || active.status === "failed") {
+      setHint("This session cannot accept prompts right now.");
+      return;
+    }
+    if (!sameFolder(payload.projectPath, active.cwd)) {
+      setHint("That file belongs to a different folder.");
+      return;
+    }
+    mentionSeq.current += 1;
+    setMentionRequest({
+      id: mentionSeq.current,
+      tabId: active.id,
+      path: payload.path,
+      kind: payload.kind,
+    });
+  };
 
   // Ctrl+O is the only expand-all control: null leaves each card on its own
   // default, true/false is the explicit app-wide state (2026-10-30 copy plan).
@@ -298,11 +362,26 @@ export function SessionView() {
     : splitSingleLineFrames(belowWidgets);
 
   return (
-    <div className="relative flex h-full flex-col">
+    <div
+      data-testid="session-view"
+      className="relative flex h-full flex-col"
+      onDragEnter={onWorkspaceDragEnter}
+      onDragOver={onWorkspaceDragOver}
+      onDragLeave={onWorkspaceDragLeave}
+      onDrop={onWorkspaceDrop}
+    >
       {/* The tab strip carries the visible title, status and review tabs; the
           only heading this view needs is for assistive tech (minimal-session-ui
           step 4). */}
       <h1 className="sr-only">{active.title}</h1>
+
+      {dropActive && !composerUnavailable ? (
+        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-surface/70">
+          <p className="rounded-md border border-accent bg-surface px-3 py-2 text-xs text-ink shadow-lg">
+            Drop to mention this file in the prompt
+          </p>
+        </div>
+      ) : null}
 
       {active.error || active.status === "crashed" || active.status === "failed" ? (
         <div className="banner banner--error mx-4 mt-2 flex items-start justify-between gap-3">
@@ -461,6 +540,11 @@ export function SessionView() {
                 }
                 draft={drafts[active.id] ?? ""}
                 queue={transcript?.queue ?? { steering: [], followUp: [] }}
+                workspaceRoot={active.cwd}
+                mentionRequest={mentionRequest?.tabId === active.id ? mentionRequest : null}
+                onMentionHandled={(id) =>
+                  setMentionRequest((current) => (current?.id === id ? null : current))
+                }
                 workflowStatus={extensionUi?.statuses?.workflow ?? null}
                 extensionShortcuts={shortcuts.shortcuts}
                 onInvokeShortcut={(key) => void invokeShortcut(key)}

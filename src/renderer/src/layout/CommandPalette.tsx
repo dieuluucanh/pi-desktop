@@ -85,6 +85,18 @@ export function CommandPalette() {
                 onSelect={() => run(() => void openProjectAction())}
               />
               <PaletteItem
+                label="Go to file…"
+                shortcut="Ctrl+P"
+                onSelect={() =>
+                  run(
+                    () =>
+                      void import("../files/quick-open-store").then((module) =>
+                        module.useQuickOpen.getState().openDialog(),
+                      ),
+                  )
+                }
+              />
+              <PaletteItem
                 label="Open URL in a tab…"
                 onSelect={() => run(() => useAppStore.getState().openWebUrlDialog())}
               />

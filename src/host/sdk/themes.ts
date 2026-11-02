@@ -18,7 +18,7 @@ import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { colorToRgb, parseColor } from "@earendil-works/pi-tui";
 import { parseThemeDocument, type ThemeColorResolver } from "../../shared/themes";
 import type { ModelsFileIo } from "../custom-providers";
-import type { FileListingIo } from "../file-listing";
+import type { FileListingIo } from "../../workspace/file-listing";
 import type { LoadedTheme, ThemePort } from "../themes";
 
 export interface SdkThemePortOptions {

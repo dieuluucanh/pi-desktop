@@ -61,8 +61,10 @@ installer and portable `.exe` are the primary artefacts; macOS `.dmg`/`.zip`
 unsigned in v0.1.0, so SmartScreen/Gatekeeper will warn on first launch
 (instructions in the guide, including the Linux FUSE and apt notes).
 
-Installed builds check GitHub Releases after launch and show an update banner:
-**Download**, then **Restart & install**.
+Installed release builds check GitHub Releases in the background. When a newer
+version exists, the status bar shows a small **Update vX** chip; Download and
+**Restart & install** live in **Settings → About & updates**. Locally built
+packages are stamped `local`, skip automatic checks, and say so in that card.
 
 ## Develop
 

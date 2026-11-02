@@ -1,5 +1,9 @@
 import { useEffect, type ReactElement } from "react";
 import { CommandPalette } from "./layout/CommandPalette";
+import { QuickOpenDialog } from "./files/QuickOpenDialog";
+import { isExternalFileDrag } from "./files/workspace-drag";
+import { UnsavedCloseDialog } from "./layout/UnsavedCloseDialog";
+import { useEditorStore } from "./editor/editor-store";
 import { ProviderLoginDialog } from "./connections/ProviderLoginDialog";
 import { PackageConsentDialog } from "./extensions/PackageConsentDialog";
 import { PrivacyDialog } from "./privacy/PrivacyDialog";
@@ -8,7 +12,6 @@ import { Sidebar } from "./layout/Sidebar";
 import { ProjectRail } from "./layout/ProjectRail";
 import { StatusBar } from "./layout/StatusBar";
 import { TabStrip } from "./layout/TabStrip";
-import { UpdateBanner } from "./updates/UpdateBanner";
 import { handleMenuCommand } from "./menu-actions";
 import { useAppStore, type AppView } from "./state/app-store";
 import { systemThemeName, watchSystemTheme } from "./themes/system-theme";
@@ -27,7 +30,7 @@ import { ExpandedEditorDialog } from "./sessions/ExpandedEditorDialog";
 import { ConnectionsView } from "./views/ConnectionsView";
 import { DiagnosticsView } from "./views/DiagnosticsView";
 import { ExtensionsView } from "./views/ExtensionsView";
-import { SessionView } from "./views/SessionView";
+import { ActiveTabView } from "./views/ActiveTabView";
 import { WebNavigationDialog } from "./web/WebNavigationDialog";
 import { WebUrlDialog } from "./web/WebUrlDialog";
 import { MuteNotificationDialog } from "./extension-ui/MuteNotificationDialog";
@@ -45,12 +48,12 @@ import { WelcomeView } from "./views/WelcomeView";
  * shortcuts belong to the Electron menu (step 1) — the renderer only owns
  * palette-local keys, so nothing fires twice. The update offer is a slim
  * conditional row above the tab strip; it costs no height when there is
- * nothing to do (`UpdateBanner` returns null).
+ * nothing to do (the status bar has no update chip).
  */
 
 const VIEWS: Record<AppView, () => ReactElement> = {
   welcome: WelcomeView,
-  session: SessionView,
+  session: ActiveTabView,
   settings: SettingsView,
   extensions: ExtensionsView,
   connections: ConnectionsView,
@@ -87,6 +90,38 @@ export function App() {
     void loadProjects();
   }, [loadPrefs, loadProjects]);
 
+  // Best-effort hot-exit flush when the window is hidden or unloaded. The
+  // debounced backup already covers normal editing; this closes the gap for a
+  // quit that happens immediately after a keystroke.
+  useEffect(() => {
+    const flush = (): void => {
+      void useEditorStore.getState().flushBackups();
+    };
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("blur", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("blur", flush);
+    };
+  }, []);
+
+  // Dropping an OS file on the window must never navigate the renderer to
+  // `file://`. In-app tab/rail drags carry `text/plain` only, so this guard is
+  // deliberately limited to external `Files` drags.
+  useEffect(() => {
+    const guard = (event: DragEvent): void => {
+      if (event.dataTransfer && isExternalFileDrag(event.dataTransfer)) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener("dragover", guard);
+    window.addEventListener("drop", guard);
+    return () => {
+      window.removeEventListener("dragover", guard);
+      window.removeEventListener("drop", guard);
+    };
+  }, []);
+
   useEffect(() => {
     const api = window.pi;
     if (!api) return;
@@ -108,7 +143,7 @@ export function App() {
     // is idempotent and no-ops for the control host.
     void loadTabs().then(() => useAppStore.getState().loadShortcuts());
     // The updater's state (plan step 26): read once, then follow main's pushes
-    // so a check started from the menu or the banner updates everywhere.
+    // so a check started from the menu or the status chip updates everywhere.
     void loadUpdateState();
     const offUpdates = api.updates.onState((state) =>
       useAppStore.getState().applyUpdateState(state),
@@ -222,7 +257,6 @@ export function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <UpdateBanner />
       {bridgeMissing ? (
         <div className="banner banner--error m-3">
           The preload bridge is unavailable (window.pi is missing), so no command can reach the main
@@ -299,6 +333,8 @@ export function App() {
       </div>
       <StatusBar />
       <CommandPalette />
+      <QuickOpenDialog />
+      <UnsavedCloseDialog />
       <SessionBrowserDialog />
       <SessionTreeDialog />
       <SessionInfoDialog />

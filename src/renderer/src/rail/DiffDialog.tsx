@@ -10,7 +10,8 @@
  * (`shared/git-patch`), so `git apply --cached` sees exactly what git printed.
  */
 
-import { X } from "lucide-react";
+import { useState } from "react";
+import { Maximize2, Minimize2, X } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
@@ -132,6 +133,7 @@ export function DiffDialog() {
   const state = useAppStore((s) => s.gitDiff);
   const loading = useAppStore((s) => s.gitDiffLoading);
   const close = useAppStore((s) => s.closeGitDiff);
+  const [fullscreen, setFullscreen] = useState(false);
 
   if (!state && !loading) return null;
 
@@ -146,10 +148,31 @@ export function DiffDialog() {
         if (!open) close();
       }}
     >
-      <DialogContent aria-describedby={undefined} className="max-w-6xl" data-testid="diff-dialog">
+      <DialogContent
+        aria-describedby={undefined}
+        className={
+          fullscreen
+            ? "left-0 top-0 h-screen w-screen max-w-none translate-x-0 rounded-none border-0"
+            : "max-w-6xl"
+        }
+        data-fullscreen={fullscreen ? "true" : undefined}
+        data-testid="diff-dialog"
+      >
         <div className="flex items-center gap-2 px-4 pt-4">
           <DialogTitle className="min-w-0 flex-1 truncate px-0 pt-0">{title}</DialogTitle>
           {diff ? <Badge tone="neutral">{SCOPE_LABEL[diff.scope]}</Badge> : null}
+          <button
+            type="button"
+            className="text-ink-faint hover:text-ink"
+            aria-label={fullscreen ? "Exit fullscreen diff" : "Fullscreen diff"}
+            onClick={() => setFullscreen((value) => !value)}
+          >
+            {fullscreen ? (
+              <Minimize2 className="size-4" aria-hidden />
+            ) : (
+              <Maximize2 className="size-4" aria-hidden />
+            )}
+          </button>
           <button
             type="button"
             className="text-ink-faint hover:text-ink"

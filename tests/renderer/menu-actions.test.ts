@@ -18,6 +18,7 @@ beforeEach(() => {
   installBridge();
   useAppStore.setState({
     view: "welcome",
+    settingsFocus: null,
     project: null,
     projects: [],
     projectsLoaded: false,
@@ -93,6 +94,16 @@ describe("handleMenuCommand", () => {
       handleMenuCommand(command);
       expect(useAppStore.getState().view, command).toBe(view);
     }
+  });
+
+  it("routes Help's update and About items at the About & updates card", () => {
+    handleMenuCommand("view-about");
+    expect(useAppStore.getState().view).toBe("settings");
+    expect(useAppStore.getState().settingsFocus).toBe("updates");
+
+    handleMenuCommand("check-updates");
+    expect(useAppStore.getState().view).toBe("settings");
+    expect(useAppStore.getState().settingsFocus).toBe("updates");
   });
 
   it("routes the Integrations menu item at the Extensions hub's Integrations card", () => {

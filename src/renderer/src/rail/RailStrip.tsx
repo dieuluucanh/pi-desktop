@@ -21,12 +21,13 @@
  */
 
 import { useState, type DragEvent } from "react";
-import { Camera, FileStack, GitBranch } from "lucide-react";
+import { Camera, FileStack, FolderTree, GitBranch } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { RAIL_MENU_LABELS, type RailMenuId } from "../../../shared/rail";
 
 /** The icon for each menu. Sized by the caller's class so the strip stays 44 px. */
 const MENU_ICONS: Record<RailMenuId, typeof GitBranch> = {
+  explorer: FolderTree,
   "source-control": GitBranch,
   checkpoints: Camera,
   documents: FileStack,

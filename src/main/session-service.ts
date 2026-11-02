@@ -13,6 +13,7 @@ import type { TrustAnswer } from "../shared/projects";
 import {
   COALESCE_BYTES,
   COALESCE_MS,
+  MAX_EDITOR_TABS,
   MAX_HOSTS,
   MAX_TABS,
   capacity,
@@ -21,9 +22,12 @@ import {
   type HostMemoryMetrics,
 } from "../shared/performance";
 import { sanitizeWebUrl, webTabTitle } from "../shared/web-tabs";
+import { isWorkspaceRelativePath, workspaceBasename } from "../shared/workspace";
 import { PI_OFFICE_BRIDGE } from "../shared/office";
 import {
   CONTROL_TAB_ID,
+  isEditorTab,
+  isHostBackedTab,
   sanitizeTabs,
   sessionTitle,
   type CreateTabInput,
@@ -722,8 +726,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
   /** Process-start coalescer: one child per tab, never opens a session. */
   const ensureProcess = async (tab: TabRecord): Promise<SupervisorHostLike> => {
-    if (tab.kind === "web") {
-      throw new SessionServiceError("a web tab has no Pi host", "web_tab");
+    if (!isHostBackedTab(tab.kind)) {
+      throw new SessionServiceError(
+        tab.kind === "editor" ? "an editor tab has no Pi host" : "a web tab has no Pi host",
+        tab.kind === "editor" ? "editor_tab" : "web_tab",
+      );
     }
     const inFlight = starting.get(tab.id);
     if (inFlight) return inFlight;
@@ -792,8 +799,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    * and one open. `ready` is never returned before this settles.
    */
   const ensureSession = async (tab: TabRecord): Promise<SupervisorHostLike> => {
-    if (tab.kind === "web") {
-      throw new SessionServiceError("a web tab has no Pi host", "web_tab");
+    if (!isHostBackedTab(tab.kind)) {
+      throw new SessionServiceError(
+        tab.kind === "editor" ? "an editor tab has no Pi host" : "a web tab has no Pi host",
+        tab.kind === "editor" ? "editor_tab" : "web_tab",
+      );
     }
     const inFlight = opening.get(tab.id);
     if (inFlight) return inFlight;
@@ -919,7 +929,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     extensionErrors: () => [...extensionErrors],
     capacity: () => ({
       hosts: deps.supervisor.capacity?.() ?? capacity(hosts.size + (control ? 1 : 0), MAX_HOSTS),
-      tabs: capacity(tabs.size, maxTabs),
+      tabs: capacity([...tabs.values()].filter((tab) => isHostBackedTab(tab.kind)).length, maxTabs),
     }),
     coalesceStats: () => ({ ...coalesceStats }),
     diagnosticsHosts: () => {
@@ -958,11 +968,20 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       sessionReady.clear();
       generations.clear();
       recovering.clear();
-      for (const tab of sanitizeTabs(state.tabs).slice(0, maxTabs)) {
-        // Nothing is running yet after a relaunch: a restored tab is "stopped"
-        // until the user activates it (or `prewarmLast` does). A web tab has no
-        // host to stop, so it is idle from the start (plan step 21).
-        tabs.set(tab.id, { ...tab, status: tab.kind === "web" ? "idle" : "stopped" });
+      let hostTabs = 0;
+      let editorTabs = 0;
+      for (const tab of sanitizeTabs(state.tabs)) {
+        // Editor tabs have no host, so they get their own cap; session/office/web
+        // tabs keep the historical `MAX_TABS` budget. Nothing is running yet
+        // after a relaunch, so a restored tab is idle/stopped until activated.
+        if (isEditorTab(tab)) {
+          if (editorTabs >= MAX_EDITOR_TABS) continue;
+          editorTabs += 1;
+        } else {
+          if (hostTabs >= maxTabs) continue;
+          hostTabs += 1;
+        }
+        tabs.set(tab.id, { ...tab, status: isHostBackedTab(tab.kind) ? "stopped" : "idle" });
       }
       const persistedActive = typeof state.activeTabId === "string" ? state.activeTabId : null;
       activeId = persistedActive && tabs.has(persistedActive) ? persistedActive : null;
@@ -973,17 +992,26 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     async createTab(input) {
       if (disposed) throw new SessionServiceError("session service is disposed", "disposed");
       const kind = input.kind ?? "session";
+      const isEditor = kind === "editor";
       // A web tab carries a URL and needs no project folder; every other kind
-      // needs a session host and therefore a cwd.
+      // needs a cwd. An editor tab additionally needs a contained file path.
       const webUrl = kind === "web" ? sanitizeWebUrl(input.url) : null;
       if (kind === "web") {
         if (!webUrl) throw new SessionServiceError("createTab requires a web URL", "bad_request");
       } else if (typeof input.cwd !== "string" || input.cwd.length === 0) {
         throw new SessionServiceError("createTab requires a project folder", "bad_request");
       }
-      if (tabs.size >= maxTabs) {
+      const filePath = isEditor ? input.filePath : undefined;
+      if (isEditor && (!filePath || !isWorkspaceRelativePath(filePath))) {
+        throw new SessionServiceError("createTab requires a project-relative file", "bad_request");
+      }
+      const editorTabCount = [...tabs.values()].filter(isEditorTab).length;
+      const nonEditorTabCount = tabs.size - editorTabCount;
+      if (isEditor ? editorTabCount >= MAX_EDITOR_TABS : nonEditorTabCount >= maxTabs) {
         throw new SessionServiceError(
-          `session limit reached (${maxTabs}); close a tab first. ${capacityMessage("tabs", maxTabs)}`,
+          isEditor
+            ? `editor tab limit reached (${MAX_EDITOR_TABS}). ${capacityMessage("editors", MAX_EDITOR_TABS)}`
+            : `session limit reached (${maxTabs}); close a tab first. ${capacityMessage("tabs", maxTabs)}`,
           "too_many_tabs",
         );
       }
@@ -994,17 +1022,22 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         id,
         kind,
         cwd,
-        title: kind === "web" ? webTabTitle(webUrl) : sessionTitle(cwd),
+        title: isEditor
+          ? workspaceBasename(filePath!)
+          : kind === "web"
+            ? webTabTitle(webUrl)
+            : sessionTitle(cwd),
         sessionFile: input.sessionFile ?? null,
-        status: kind === "web" ? "idle" : "starting",
+        status: isHostBackedTab(kind) ? "starting" : "idle",
         createdAt: timestamp,
         lastActiveAt: timestamp,
         model: null,
         ...(kind === "web" ? { url: webUrl, sessionTabId: input.sessionTabId ?? null } : {}),
+        ...(isEditor ? { filePath } : {}),
       };
       tabs.set(id, tab);
       activeId = id;
-      if (kind !== "web" && (input.model || input.thinking || input.trust)) {
+      if (isHostBackedTab(kind) && (input.model || input.thinking || input.trust)) {
         createParams.set(id, {
           ...(input.model ? { model: input.model } : {}),
           ...(input.thinking ? { thinking: input.thinking } : {}),
@@ -1022,9 +1055,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       activeId = tabId;
       tab.lastActiveAt = now();
       publishTabs();
-      // A web tab has no host to start (plan step 21); main's web-tab manager
-      // reconciles the view from the tab table instead.
-      if (tab.kind !== "web") await ensureSession(tab);
+      // A web or editor tab has no host to start (plan step 7); main reconciles
+      // the web view from the tab table and the editor from its own buffer.
+      if (isHostBackedTab(tab.kind)) await ensureSession(tab);
       await persist();
       return envelope();
     },
@@ -1043,7 +1076,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     async reconcile() {
       for (const tab of tabs.values()) {
-        if (tab.kind === "web") continue;
+        if (!isHostBackedTab(tab.kind)) continue;
         if (opening.has(tab.id) || starting.has(tab.id)) {
           tab.status = "starting";
           continue;
@@ -1090,8 +1123,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       createParams.delete(tabId);
       tabs.delete(tabId);
       try {
-        // A web tab has no supervisor host to stop (plan step 21).
-        if (tab.kind !== "web") await deps.supervisor.stop(tabId);
+        // A web or editor tab has no supervisor host to stop (plan step 7).
+        if (isHostBackedTab(tab.kind)) await deps.supervisor.stop(tabId);
       } catch {
         // A host that is already gone is not an error for the user.
       }
@@ -1211,6 +1244,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         return host.request(method, params);
       }
       const tab = requireTab(tabId);
+      if (!isHostBackedTab(tab.kind)) {
+        throw new SessionServiceError(
+          tab.kind === "editor" ? "an editor tab has no Pi host" : "a web tab has no Pi host",
+          tab.kind === "editor" ? "editor_tab" : "web_tab",
+        );
+      }
       // Explicit session lifecycle commands bypass auto-open: the caller owns
       // the operation (trust retry, /new, fork). Only the process is ensured.
       if (SESSION_ESTABLISHING_METHODS.has(method)) {
@@ -1264,8 +1303,13 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     async restartTab(tabId) {
       const tab = requireTab(tabId);
-      if (tab.kind === "web") {
-        throw new SessionServiceError("a web tab has no Pi host to restart", "web_tab");
+      if (!isHostBackedTab(tab.kind)) {
+        throw new SessionServiceError(
+          tab.kind === "editor"
+            ? "an editor tab has no Pi host to restart"
+            : "a web tab has no Pi host to restart",
+          tab.kind === "editor" ? "editor_tab" : "web_tab",
+        );
       }
       // Let an in-flight stale recycle settle first; otherwise it could spawn a
       // host after this detach and leave two processes for one tab.
@@ -1280,7 +1324,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     async prewarmLast() {
       const tab = [...tabs.values()]
-        .filter((entry) => entry.kind !== "web")
+        .filter((entry) => isHostBackedTab(entry.kind))
         .sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
       if (!tab) return false;
       try {

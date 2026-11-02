@@ -25,6 +25,10 @@ function appInfo(overrides: Partial<AppInfo> = {}): AppInfo {
     platform: "win32",
     arch: "x64",
     isDev: false,
+    buildChannel: "release",
+    buildVersion: "0.0.1",
+    buildCommit: null,
+    builtAt: null,
     safeMode: false,
     piOffline: false,
     userDataDir: "C:\\state",
@@ -202,6 +206,7 @@ describe("renderDiagnosticsBundle", () => {
     expect(text).toContain("host_crash");
     expect(text).toContain("office wizard text");
     expect(text).toContain("safe mode: no");
+    expect(text).toContain("build: release · v0.0.1");
   });
 
   it("marks safe mode and PI_OFFLINE in the header", () => {

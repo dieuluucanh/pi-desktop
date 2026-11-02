@@ -48,15 +48,28 @@ export function createFileProvider(options: FileProviderOptions): CompletionProv
 
       const ranked = fuzzyFilter(snapshot.files, trigger.query, (file) => file);
       if (ranked.length === 0) return null;
-      return { items: ranked.slice(0, limit).map(toItem), prefix: trigger.prefix };
+      const atPrefix = trigger.prefix.startsWith("@");
+      return {
+        items: ranked.slice(0, limit).map((file) => (atPrefix ? toAtItem(file) : toItem(file))),
+        prefix: trigger.prefix,
+      };
     },
     applyCompletion: applyCompletionInPlace,
   };
 }
 
-/** Maps a workspace path to a suggestion: value is what gets inserted. */
+/** Maps a workspace path to a plain (forced Tab / shell) suggestion. */
 export function toItem(path: string): CompletionItem {
-  const value = toCompletionValue(path);
+  return toCompletionItem(path, false);
+}
+
+/** Maps a workspace path to an `@` suggestion (the value keeps the prefix). */
+export function toAtItem(path: string): CompletionItem {
+  return toCompletionItem(path, true);
+}
+
+function toCompletionItem(path: string, atPrefix: boolean): CompletionItem {
+  const value = toCompletionValue(path, atPrefix);
   return {
     value,
     label: path,
@@ -65,10 +78,13 @@ export function toItem(path: string): CompletionItem {
   };
 }
 
-/** A directory entry (trailing slash) keeps the token open so the user descends. */
-export function toCompletionValue(path: string): string {
-  if (path.endsWith("/")) return path;
-  return path;
+/**
+ * A directory entry (trailing slash) keeps the token open so the user descends.
+ * An `@` trigger keeps the `@` in the inserted value, matching Pi's own editor;
+ * a forced Tab on a plain path stays plain.
+ */
+export function toCompletionValue(path: string, atPrefix = false): string {
+  return `${atPrefix ? "@" : ""}${path}`;
 }
 
 function directoryOf(path: string): string {
@@ -112,5 +128,9 @@ export function suggestionsFromFiles(
 ): CompletionSuggestions | null {
   const ranked = fuzzyFilter(files, query, (file) => file);
   if (ranked.length === 0) return null;
-  return { items: ranked.slice(0, limit).map(toItem), prefix };
+  const atPrefix = prefix.startsWith("@");
+  return {
+    items: ranked.slice(0, limit).map((file) => (atPrefix ? toAtItem(file) : toItem(file))),
+    prefix,
+  };
 }

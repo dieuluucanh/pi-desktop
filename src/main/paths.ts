@@ -23,6 +23,8 @@ export interface AppPaths {
   logs: string;
   /** Spill area for oversized host frames (plan step 4). */
   blobCache: string;
+  /** Hot-exit editor backups (`<tabId>.json`). */
+  editorBackups: string;
   /** The shared Pi profile directory. */
   profileDir: string;
   /** Which profile strategy produced {@link profileDir} (plan step 26). */
@@ -103,6 +105,7 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     userData: input.userDataDir,
     logs: join(input.userDataDir, "logs"),
     blobCache: join(input.userDataDir, "blob-cache"),
+    editorBackups: join(input.userDataDir, "editor-backups"),
     appStateFile: join(input.userDataDir, "app-state.json"),
     profileDir: profileDirFor({
       mode: profileMode,

@@ -16,6 +16,8 @@ export type TabMenuActionId =
   | "clone"
   | "export"
   | "reveal"
+  | "save"
+  | "copy-path"
   | "close"
   | "close-others"
   // Web tabs (plan step 21).
@@ -32,6 +34,15 @@ export interface TabMenuAction {
 }
 
 export function tabMenuItems(kind: TabKind = "session"): readonly TabMenuAction[] {
+  if (kind === "editor") {
+    return [
+      { id: "save", label: "Save" },
+      { id: "copy-path", label: "Copy path" },
+      { id: "reveal", label: "Reveal in File Explorer", separated: true },
+      { id: "close", label: "Close", separated: true },
+      { id: "close-others", label: "Close others", destructive: true },
+    ];
+  }
   if (kind === "web") {
     // A web tab has no Pi session, so the lifecycle actions do not apply; the
     // chrome commands and closing are what remain.

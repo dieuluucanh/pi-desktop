@@ -186,9 +186,18 @@ the first write per run.
 
 ## Updates
 
-`Help → Check for Updates…` runs a check. Development builds have no feed and say
-so. A failed check shows a Retry in the banner; the error text is kept in the
-updater state.
+`Help → Check for Updates…` opens **Settings → About & updates** and runs a
+check. A released build checks once after launch; the status bar shows a small
+**Update vX** chip when a version is available, or **Restart to update** after a
+download. All outcomes live in the card: up to date, downloading, ready, error,
+and **no published release**.
+
+A locally built package (stamped `local` in `resources/build-info.json`) does not
+auto-check; a manual check only tells you whether a published release exists. A
+missing release is the neutral “No published release was found for this build”
+state, not a failure. Errors keep their raw message under **Technical details**
+and can be dismissed; automatic failures never open a banner. A development build
+reports that updates are checked in installed builds only.
 
 ## Logs and the support bundle
 

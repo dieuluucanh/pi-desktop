@@ -1,9 +1,16 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { pruneForeignRuntimes } from "../../scripts/electron-builder-after-pack.mjs";
+import {
+  BUILD_INFO_FILE,
+  buildChannelFromEnv,
+  buildInfoDocument,
+  pruneForeignRuntimes,
+  writeBuildInfo,
+} from "../../scripts/electron-builder-after-pack.mjs";
+import { BUILD_INFO_FILE as SHARED_BUILD_INFO_FILE } from "../../src/shared/build-info";
 
 /**
  * `extraResources` copies `resources/runtime` wholesale, so a checkout that has
@@ -53,5 +60,57 @@ describe("afterPack runtime pruning", () => {
 
     expect(pruneForeignRuntimes(nodeDir, "linux-x64")).toEqual([]);
     expect(readdirSync(nodeDir).sort()).toEqual(["README.md", "linux-x64", "node.lock.json"]);
+  });
+});
+
+describe("afterPack build provenance", () => {
+  it("uses the same file name as the app-side reader", () => {
+    expect(BUILD_INFO_FILE).toBe(SHARED_BUILD_INFO_FILE);
+  });
+
+  it("resolves the channel from explicit config, CI, or the local default", () => {
+    expect(buildChannelFromEnv({ PI_BUILD_CHANNEL: "release", GITHUB_ACTIONS: "false" })).toBe(
+      "release",
+    );
+    expect(buildChannelFromEnv({ PI_BUILD_CHANNEL: "local", GITHUB_ACTIONS: "true" })).toBe(
+      "local",
+    );
+    expect(buildChannelFromEnv({ GITHUB_ACTIONS: "true" })).toBe("release");
+    expect(buildChannelFromEnv({})).toBe("local");
+    expect(buildChannelFromEnv({ PI_BUILD_CHANNEL: "nightly" })).toBe("local");
+  });
+
+  it("normalises the document and writes readable JSON into resources", () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-build-info-"));
+    roots.push(root);
+
+    expect(
+      buildInfoDocument({
+        version: "0.3.0",
+        channel: "release",
+        commit: "abc123",
+        builtAt: "2026-11-01T00:00:00.000Z",
+      }),
+    ).toEqual({
+      channel: "release",
+      version: "0.3.0",
+      commit: "abc123",
+      builtAt: "2026-11-01T00:00:00.000Z",
+    });
+    expect(buildInfoDocument({ channel: "nightly" }).channel).toBe("unknown");
+
+    const target = writeBuildInfo(root, {
+      version: "0.3.0",
+      channel: "local",
+      commit: null,
+      builtAt: "2026-11-01T00:00:00.000Z",
+    });
+    expect(target).toBe(join(root, SHARED_BUILD_INFO_FILE));
+    expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({
+      channel: "local",
+      version: "0.3.0",
+      commit: null,
+      builtAt: "2026-11-01T00:00:00.000Z",
+    });
   });
 });

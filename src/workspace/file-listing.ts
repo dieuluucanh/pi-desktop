@@ -1,15 +1,19 @@
 /**
- * Workspace file listing for `@` completion and `files.list` (plan step 7).
+ * Workspace file listing for `@` completion, `files.list` and Explorer search.
  *
  * Two strategies, in order:
  *  1. `git ls-files -co --exclude-standard -z` when the runtime has git and the
  *     root is a repository: exact gitignore semantics, instant on large trees.
- *  2. A pruning walk with the `./gitignore` matcher for everything else
+ *  2. A pruning walk with the `.gitignore` matcher for everything else
  *     (including a repo with no git on `PATH`).
  *
  * Both paths skip `.git` and `node_modules` unconditionally — the same
  * exclusions Pi's own file tool passes to `fd` — cap the result, and report
  * `truncated` so the UI can say the list is partial instead of quietly lying.
+ *
+ * `includeIgnored` is deliberately backed by the walk only. `git ls-files -co`
+ * also returns ignored files, but a large build tree can exceed the runner's
+ * stdout cap; the walk can stop at the same file limit and report truncation.
  *
  * All filesystem access goes through `FileListingIo`, so the module is pure
  * enough to test against an in-memory tree (AGENTS.md rule 2).
@@ -34,6 +38,10 @@ export interface FileListingIo {
 export interface FileListingOptions {
   limit?: number;
   maxDepth?: number;
+  /** Include dotfiles/dot-directories (default true). */
+  includeHidden?: boolean;
+  /** Include git-ignored files (default false). */
+  includeIgnored?: boolean;
 }
 
 export interface FileListing {
@@ -57,11 +65,20 @@ export async function listWorkspaceFiles(
   options: FileListingOptions = {},
 ): Promise<FileListing> {
   const limit = clampLimit(options.limit);
-  const fromGit = await listFromGit(io, root, limit);
-  if (fromGit) return fromGit;
+  const includeHidden = options.includeHidden ?? true;
+  const includeIgnored = options.includeIgnored ?? false;
+
+  // Ignored-inclusive listings use the walk: git would emit every ignored file
+  // (including a huge build tree) before we could cap it.
+  if (!includeIgnored) {
+    const fromGit = await listFromGit(io, root, limit, includeHidden);
+    if (fromGit) return fromGit;
+  }
   return walkWorkspace(io, root, {
     limit,
     maxDepth: Math.max(1, options.maxDepth ?? MAX_WALK_DEPTH),
+    includeHidden,
+    includeIgnored,
   });
 }
 
@@ -70,15 +87,29 @@ async function listFromGit(
   io: FileListingIo,
   root: string,
   limit: number,
+  includeHidden: boolean,
 ): Promise<FileListing | null> {
   if (!io.runGit) return null;
-  const output = await io.runGit(root, ["ls-files", "-co", "--exclude-standard", "-z"]);
+  const args = [
+    "ls-files",
+    "-co",
+    "-z",
+    "--exclude-standard",
+    "--exclude=node_modules",
+    "--exclude=.git",
+  ];
+  const output = await io.runGit(root, args);
   if (output === null) return null;
 
   const files = output
     .split("\0")
     .map((entry) => entry.replace(/\\/g, "/").trim())
-    .filter((entry) => entry.length > 0 && !hasAlwaysIgnoredSegment(entry))
+    .filter(
+      (entry) =>
+        entry.length > 0 &&
+        !hasAlwaysIgnoredSegment(entry) &&
+        (includeHidden || !hasHiddenSegment(entry)),
+    )
     .sort(comparePaths);
 
   const truncated = files.length > limit;
@@ -94,13 +125,19 @@ interface WalkState {
 async function walkWorkspace(
   io: FileListingIo,
   root: string,
-  options: { limit: number; maxDepth: number },
+  options: { limit: number; maxDepth: number; includeHidden: boolean; includeIgnored: boolean },
 ): Promise<FileListing> {
   const files: string[] = [];
   let truncated = false;
   let directories = 0;
 
-  const queue: WalkState[] = [{ path: "", depth: 0, rules: await readIgnoreRules(io, root, "") }];
+  const queue: WalkState[] = [
+    {
+      path: "",
+      depth: 0,
+      rules: options.includeIgnored ? [] : await readIgnoreRules(io, root, ""),
+    },
+  ];
 
   while (queue.length > 0) {
     const current = queue.shift()!;
@@ -115,17 +152,19 @@ async function walkWorkspace(
     const entries = await io.readDirectory(directory);
     if (entries.length === 0) continue;
 
-    // A nested .gitignore adds to the rules inherited from its parents.
+    // A nested .gitignore adds to the rules inherited from its parents. An
+    // ignored-inclusive search skips the matcher entirely (and its file reads).
     const rules =
-      current.path.length === 0
+      options.includeIgnored || current.path.length === 0
         ? current.rules
         : [...current.rules, ...(await readIgnoreRules(io, root, current.path))];
 
     const ordered = [...entries].sort((left, right) => comparePaths(left.name, right.name));
     for (const entry of ordered) {
       if (hasAlwaysIgnoredSegment(entry.name)) continue;
+      if (!options.includeHidden && entry.name.startsWith(".")) continue;
       const path = current.path.length === 0 ? entry.name : `${current.path}/${entry.name}`;
-      if (isIgnored(rules, path, entry.directory)) continue;
+      if (!options.includeIgnored && isIgnored(rules, path, entry.directory)) continue;
 
       if (entry.directory) {
         if (current.depth + 1 <= options.maxDepth) {
@@ -162,6 +201,10 @@ async function readIgnoreRules(
 
 function hasAlwaysIgnoredSegment(path: string): boolean {
   return path.split("/").some((segment) => (ALWAYS_IGNORED as readonly string[]).includes(segment));
+}
+
+function hasHiddenSegment(path: string): boolean {
+  return path.split("/").some((segment) => segment.startsWith("."));
 }
 
 function clampLimit(limit: number | undefined): number {

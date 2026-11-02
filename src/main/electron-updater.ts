@@ -15,6 +15,8 @@ import type { UpdatePort } from "./updater";
 interface UpdaterLike {
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
+  /** electron-updater accepts any logger with info/warn/error methods. */
+  logger?: unknown;
   on(event: string, listener: (...args: unknown[]) => void): void;
   off(event: string, listener: (...args: unknown[]) => void): void;
   checkForUpdates(): Promise<unknown>;
@@ -114,6 +116,9 @@ export async function createElectronUpdatePort(): Promise<UpdatePort | null> {
   try {
     resolved.autoDownload = false;
     resolved.autoInstallOnAppQuit = true;
+    // A packaged launch has no visible stdout by default, but a terminal launch
+    // and the crash/log tooling can still see why a feed check failed.
+    resolved.logger = console;
   } catch {
     // A readonly stub in a test build is not a reason to drop the port.
   }

@@ -82,6 +82,11 @@ export function DiagnosticsView() {
     ? [
         ["App", `${info.name} ${info.version}`],
         ["Mode", info.isDev ? "development" : "packaged"],
+        [
+          "Build",
+          `${info.buildChannel ?? "unknown"}${info.buildCommit ? ` · ${info.buildCommit}` : ""}` +
+            `${info.buildVersion && info.buildVersion !== info.version ? ` · built as v${info.buildVersion}` : ""}`,
+        ],
         ["Electron", `${info.electron} (Chromium ${info.chrome})`],
         ["App node", info.node],
         ["Platform", `${info.platform}/${info.arch}`],

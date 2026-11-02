@@ -59,10 +59,20 @@ beforeEach(() => {
     settingsProjectTrusted: true,
     settingsMtimes: { global: null, project: null },
     settingsExternalEdit: false,
+    settingsFocus: null,
   });
 });
 
 describe("SettingsView", () => {
+  it("reveals the About & updates card when Settings is focused there", async () => {
+    stubRequest();
+    useAppStore.setState({ settingsFocus: "updates" });
+    render(<SettingsView />);
+
+    expect(screen.getByTestId("settings-updates")).toBeInTheDocument();
+    await waitFor(() => expect(useAppStore.getState().settingsFocus).toBeNull());
+  });
+
   it("renders every schema group with its fields", async () => {
     stubRequest();
     render(<SettingsView />);

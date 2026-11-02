@@ -87,6 +87,12 @@ export function RightRail({ menus }: RightRailProps) {
 
   const available = menus.map((menu) => menu.id);
   const resolved = resolveActiveMenu(rail.activeMenu, rail.order, available);
+  // Explorer is always presented first. It is kept out of the persisted order
+  // vocabulary so an older profile's three-menu order still validates; the
+  // display order is the one place the new first position is applied.
+  const displayMenus = resolved.menus.includes("explorer")
+    ? (["explorer", ...resolved.menus.filter((id) => id !== "explorer")] as RailMenuId[])
+    : resolved.menus;
   const activeMenu = resolved.menu;
   const spec = activeMenu ? menus.find((menu) => menu.id === activeMenu) : undefined;
 
@@ -204,7 +210,7 @@ export function RightRail({ menus }: RightRailProps) {
       ) : null}
 
       <RailStrip
-        menus={resolved.menus}
+        menus={displayMenus}
         counts={countsOf(menus)}
         activeMenu={activeMenu}
         expanded={expanded}

@@ -29,6 +29,8 @@ describe("sanitizePrefs", () => {
         "checkpoints",
         "desktopKeybindings",
         "drafts",
+        "editor",
+        "explorer",
         "followSystemTheme",
         "notifications",
         "onboardingCompletedAt",
@@ -42,6 +44,7 @@ describe("sanitizePrefs", () => {
         "telemetryEnabled",
         "theme",
         "themeColors",
+        "updates",
         "zoomFactor",
       ].sort(),
     );
@@ -146,6 +149,24 @@ describe("sanitizePrefs", () => {
     expect(Object.keys(sanitizePrefs({ themeColors }).themeColors)).toHaveLength(32);
   });
 
+  it("defaults automatic update checks on and accepts a per-version dismissal", () => {
+    expect(sanitizePrefs({}).updates).toEqual({ autoCheck: true, dismissedVersion: null });
+    expect(sanitizePrefs({ updates: { autoCheck: false } }).updates).toEqual({
+      autoCheck: false,
+      dismissedVersion: null,
+    });
+    expect(
+      sanitizePrefs({ updates: { autoCheck: "yes", dismissedVersion: " 0.4.0 " } }).updates,
+    ).toEqual({ autoCheck: true, dismissedVersion: "0.4.0" });
+    expect(
+      sanitizePrefs({ updates: { dismissedVersion: "" } }).updates.dismissedVersion,
+    ).toBeNull();
+    expect(
+      sanitizePrefs({ updates: { dismissedVersion: "x".repeat(500) } }).updates.dismissedVersion
+        ?.length,
+    ).toBe(201);
+  });
+
   it("accepts every documented theme", () => {
     for (const theme of ["dark", "light", "system"] as const) {
       expect(sanitizePrefs({ theme }).theme).toBe(theme);
@@ -167,6 +188,21 @@ describe("mergePrefs", () => {
 
   it("survives a non-object patch", () => {
     expect(mergePrefs(DEFAULT_PREFS, null)).toEqual(DEFAULT_PREFS);
+  });
+
+  it("preserves the update prefs unless the patch replaces a field", () => {
+    const current = sanitizePrefs({
+      updates: { autoCheck: true, dismissedVersion: "0.4.0" },
+    });
+    // A patch that only turns auto-check off must keep the dismissal.
+    const merged = mergePrefs(current, { updates: { autoCheck: false } });
+    expect(merged.updates).toEqual({ autoCheck: false, dismissedVersion: "0.4.0" });
+    // An unrelated patch must not touch the updater prefs at all.
+    expect(mergePrefs(current, { theme: "light" }).updates).toEqual(current.updates);
+    expect(mergePrefs(current, { updates: { dismissedVersion: null } }).updates).toEqual({
+      autoCheck: true,
+      dismissedVersion: null,
+    });
   });
 
   it("preserves the notification mutes unless the patch replaces the list", () => {

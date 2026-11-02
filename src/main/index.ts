@@ -71,6 +71,9 @@ import { createKillProcess, releasePort } from "./office/port-owner";
 import { checkBridgeHealth, createDefaultVerifyDeps } from "./office/verify";
 import { createGitPushService } from "./git-service";
 import { createCheckpointService } from "./checkpoint-service";
+import { createWorkspaceService } from "./workspace-service";
+import { createNodeWorkspaceIo } from "./workspace-io";
+import { formatWorkspaceText, runFormatterCommand } from "./editor-format";
 import { createCheckpointStore } from "../checkpoints/store";
 import {
   createNodeCheckpointConfigFs,
@@ -85,7 +88,13 @@ import { requireProjectPath } from "../shared/git";
 import { createDiagnosticsService } from "./diagnostics-service";
 import { createElectronUpdatePort } from "./electron-updater";
 import { createUpdateService, type UpdateService } from "./updater";
-import { initialUpdateState } from "../shared/updates";
+import { readBuildInfo } from "./build-info";
+import {
+  autoCheckAllowed,
+  initialUpdateState,
+  PI_DESKTOP_RELEASES_URL,
+  resolveUpdateSupport,
+} from "../shared/updates";
 import { officeEvidenceLine, type OfficeBridgeEnsureResult } from "../shared/office-setup";
 import { PI_OFFICE_BRIDGE } from "../shared/office";
 import { officeBridgeOwnerTab } from "../shared/office-documents";
@@ -175,6 +184,24 @@ const roots: AppRoots = resolveAppRoots({
   resourcesPath: process.resourcesPath,
   mainDir: currentDir,
 });
+
+/**
+ * Provenance written by electron-builder's `afterPack` hook. A locally
+ * packaged build is still a valid app, but it is not on the update feed: the
+ * capability decisions later in this file use `channel` to keep it quiet.
+ */
+const buildInfo = readBuildInfo({
+  isPackaged: app.isPackaged,
+  resourcesDir: roots.resourcesDir,
+  readTextFile: (file) => {
+    try {
+      return readFileSync(file, "utf8");
+    } catch {
+      return null;
+    }
+  },
+});
+
 const runtime: RuntimeResolution = resolveAppRuntime({
   isPackaged: app.isPackaged,
   resourcesPath: roots.resourcesDir,
@@ -443,6 +470,10 @@ function currentAppInfo(): AppInfo {
     platform: process.platform,
     arch: process.arch,
     isDev,
+    buildChannel: buildInfo.channel,
+    buildVersion: buildInfo.version,
+    buildCommit: buildInfo.commit,
+    builtAt: buildInfo.builtAt,
     safeMode,
     piOffline: isOfflineEnv(process.env.PI_OFFLINE),
     userDataDir: paths.userData,
@@ -963,6 +994,20 @@ const gitPush = createGitPushService({
 });
 
 /**
+ * The workspace file service behind the explorer and editor (2026-11-01
+ * plan). The IO adapter is the only Node/fs contact; the shell reveal is an
+ * injected port so the service stays Electron-free and unit-testable.
+ */
+const workspaceService = createWorkspaceService({
+  io: createNodeWorkspaceIo(),
+  backupsDir: paths.editorBackups,
+  reveal: (target) => {
+    shell.showItemInFolder(target);
+    return true;
+  },
+});
+
+/**
  * The folders a renderer may point git at: every open tab's cwd plus the
  * remembered projects. Rebuilt per request (a cheap set) so opening a project
  * makes it addressable without a restart, and closed so a renderer cannot name a
@@ -1102,15 +1147,54 @@ if (!app.requestSingleInstanceLock()) {
       );
     }
 
-    // Updates (plan step 26): only an installed build has a feed, and only the
-    // Electron adapter can answer whether `electron-updater` loaded at all.
-    const updateSupported = app.isPackaged;
-    const updatePort = updateSupported ? await createElectronUpdatePort() : null;
+    // Updates (plan step 26): only a packaged build can have a feed, the
+    // Electron adapter answers whether `electron-updater` loaded, and the build
+    // provenance decides whether this package is local or a released CI build.
+    const updateOffline = isOfflineEnv(process.env.PI_OFFLINE);
+    const updatePort =
+      app.isPackaged && !safeMode && !updateOffline ? await createElectronUpdatePort() : null;
+    const updateSupport = resolveUpdateSupport({
+      isPackaged: app.isPackaged,
+      safeMode,
+      offline: updateOffline,
+      portAvailable: updatePort !== null,
+    });
+    const bootstrapPrefs = (await appState.read()).prefs;
+    let autoCheckDone = false;
+    let lastAutoCheckPref = bootstrapPrefs.updates.autoCheck;
+    const cancelAutoCheck = (): void => {
+      if (updateCheckTimer) clearTimeout(updateCheckTimer);
+      updateCheckTimer = null;
+    };
+    const scheduleAutoCheck = (autoCheck: boolean): void => {
+      if (updateCheckTimer || autoCheckDone) return;
+      if (
+        !autoCheckAllowed({
+          support: updateSupport,
+          autoCheck,
+          buildChannel: buildInfo.channel,
+        })
+      ) {
+        return;
+      }
+      updateCheckTimer = setTimeout(() => {
+        updateCheckTimer = null;
+        autoCheckDone = true;
+        void updateService?.check({ automatic: true });
+      }, 10_000);
+    };
     updateService = createUpdateService({
       port: updatePort,
-      supported: updateSupported && updatePort !== null,
+      supported: updateSupport.supported,
+      unsupportedReason: updateSupport.reason,
+      currentVersion: app.getVersion(),
       onChange: (state) => broadcastToWindows(IPC.updatesState, state),
     });
+    const fallbackUpdateState = () =>
+      initialUpdateState(false, {
+        unsupportedReason: "updater-unavailable",
+        currentVersion: app.getVersion(),
+      });
 
     // Brand identity (plan step 28). On macOS the Dock icon comes from the
     // bundle's `.icns` once packaged, but a dev run has no bundle to read it
@@ -1126,6 +1210,7 @@ if (!app.requestSingleInstanceLock()) {
       applicationName: APP_NAME,
       applicationVersion: app.getVersion(),
       copyright: APP_COPYRIGHT,
+      website: PI_DESKTOP_RELEASES_URL,
       ...(process.platform === "darwin" ? {} : { applicationIcon: branding.png512 }),
     });
 
@@ -1248,6 +1333,18 @@ if (!app.requestSingleInstanceLock()) {
           if (patch && typeof patch === "object" && "zoomFactor" in patch) {
             applyZoom(prefs.zoomFactor);
           }
+          // Update checks follow the preference immediately. Turning it off
+          // cancels a pending startup timer; turning it on schedules one (but
+          // only for a supported, non-local build).
+          if (patch && typeof patch === "object" && "updates" in patch) {
+            if (!prefs.updates.autoCheck) {
+              cancelAutoCheck();
+            } else if (!lastAutoCheckPref) {
+              autoCheckDone = false;
+              scheduleAutoCheck(prefs.updates.autoCheck);
+            }
+            lastAutoCheckPref = prefs.updates.autoCheck;
+          }
           return prefs;
         },
       },
@@ -1316,11 +1413,16 @@ if (!app.requestSingleInstanceLock()) {
         record: (value: unknown) => diagnostics.recordReported(value),
       },
       updates: {
-        get: () => updateService?.state() ?? initialUpdateState(false),
-        check: async () => (updateService ? updateService.check() : initialUpdateState(false)),
-        download: async () =>
-          updateService ? updateService.download() : initialUpdateState(false),
+        get: () => updateService?.state() ?? fallbackUpdateState(),
+        check: async () => {
+          // A user gesture wins over the pending startup check.
+          cancelAutoCheck();
+          autoCheckDone = true;
+          return updateService ? updateService.check() : fallbackUpdateState();
+        },
+        download: async () => (updateService ? updateService.download() : fallbackUpdateState()),
         install: () => updateService?.install() ?? false,
+        clearProblem: () => updateService?.clearProblem() ?? fallbackUpdateState(),
       },
       officeDocuments: {
         get: () => officeDocuments.get(),
@@ -1343,6 +1445,47 @@ if (!app.requestSingleInstanceLock()) {
         get: (projectPath) => checkpointService.get(projectPath),
         refresh: (projectPath) => checkpointService.refresh(projectPath),
         action: (projectPath, action) => checkpointService.action(projectPath, action),
+      },
+      workspace: {
+        // One allowlist for git, checkpoints and the explorer: the folder must
+        // be an open tab's cwd or a remembered project.
+        resolveProjectPath: resolveGitProjectPath,
+        listDirectory: (input) => workspaceService.listDirectory(input),
+        listFiles: (input) => workspaceService.listFiles(input),
+        searchFiles: (input) => workspaceService.searchFiles(input),
+        readFile: (input) => workspaceService.readFile(input),
+        stat: (input) => workspaceService.stat(input),
+        writeFile: (input) => workspaceService.writeFile(input),
+        reveal: (input) => workspaceService.reveal(input),
+        editorConfig: (input) => workspaceService.editorConfig(input),
+        readBackup: (tabId) => workspaceService.readBackup(tabId),
+        writeBackup: (backup) => workspaceService.writeBackup(backup),
+        deleteBackup: (tabId) => workspaceService.deleteBackup(tabId),
+        format: async (input) => {
+          const prefs = (await appState.read()).prefs.editor;
+          const config = await workspaceService.editorConfig({
+            projectPath: input.projectPath,
+            path: input.path,
+          });
+          return formatWorkspaceText(input, {
+            policy: {
+              commandFormattersAllowed: async () => prefs.allowCommandFormatters,
+              commandFor: async (languageId) => prefs.formatters[languageId] ?? null,
+            },
+            editorConfig: async () =>
+              config.ok
+                ? config.value
+                : {
+                    indentStyle: "space",
+                    indentSize: 2,
+                    tabWidth: 2,
+                    endOfLine: "lf",
+                    insertFinalNewline: true,
+                    trimTrailingWhitespace: true,
+                  },
+            runCommand: runFormatterCommand,
+          });
+        },
       },
       web: {
         open: async (input) => {
@@ -1398,12 +1541,11 @@ if (!app.requestSingleInstanceLock()) {
     windowZoomFactor = clampZoomFactor(startupPrefs.zoomFactor);
     mainWindow = createWindow();
     applyZoom(windowZoomFactor);
-    // Check once, unobtrusively, in the background (plan step 26). A user can
-    // always ask from Help → Check for Updates; this is the "there is a newer
-    // build" path. Offline starts are skipped, and the timer is cleared on quit.
-    if (updateService && !isOfflineEnv(process.env.PI_OFFLINE)) {
-      updateCheckTimer = setTimeout(() => void updateService?.check(), 10_000);
-    }
+    // Check once, unobtrusively, in the background. A user can always ask from
+    // Help → Check for Updates; this is the "there is a newer build" path.
+    // Local/dev/offline/safe-mode builds are excluded by `autoCheckAllowed`,
+    // and the timer is cleared on quit.
+    scheduleAutoCheck(lastAutoCheckPref);
     // The registry poll is cheap (one loopback GET) and the panel must reflect a
     // bridge that a terminal Pi session owns, so it runs whenever the app does.
     // Safe mode starts with zero third-party code, so the poll stays off there.

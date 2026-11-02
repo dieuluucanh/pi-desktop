@@ -25,7 +25,7 @@
  */
 
 /** The rail's menus, in their canonical (default strip) order. */
-export type RailMenuId = "source-control" | "checkpoints" | "documents";
+export type RailMenuId = "explorer" | "source-control" | "checkpoints" | "documents";
 
 export const RAIL_MENU_IDS: readonly RailMenuId[] = [
   "source-control",
@@ -47,13 +47,15 @@ export const ALWAYS_AVAILABLE_RAIL_MENU_IDS: readonly RailMenuId[] = [
   "checkpoints",
 ] as const;
 
-/** True when a value is a known menu id. */
+/** True when a value is a known menu id. Explorer is a valid id even though it
+ * is not part of the persisted three-menu default order. */
 export function isRailMenuId(value: unknown): value is RailMenuId {
-  return typeof value === "string" && (RAIL_MENU_IDS as readonly string[]).includes(value);
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(RAIL_MENU_LABELS, value);
 }
 
 /** A menu's human label: the strip's tooltip and the panel's title. */
 export const RAIL_MENU_LABELS: Record<RailMenuId, string> = {
+  explorer: "Explorer",
   "source-control": "Source Control",
   checkpoints: "Checkpoints",
   documents: "Documents",

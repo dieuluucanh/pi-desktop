@@ -358,6 +358,11 @@ export interface DiagnosticsAppInfo {
   platform: string;
   arch: string;
   isDev: boolean;
+  /** Build provenance from `<resources>/build-info.json` (or `dev`/`unknown`). */
+  buildChannel: string;
+  buildVersion: string | null;
+  buildCommit: string | null;
+  builtAt: string | null;
   safeMode: boolean;
 }
 

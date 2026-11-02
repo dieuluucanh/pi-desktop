@@ -262,26 +262,26 @@ describe("file completion", () => {
   ];
   const provider = createFileProvider({ loadFiles: async () => ({ files, root: "/w" }) });
 
-  it("completes a real path after @", async () => {
+  it("completes a real path after @ and keeps the prefix", async () => {
     const result = await provider.getSuggestions(["look at @src/renderer/a"], 0, 23, {
       signal: signal(),
     });
     expect(result?.prefix).toBe("@src/renderer/a");
-    expect(result?.items[0]?.value).toBe("src/renderer/app.tsx");
+    expect(result?.items[0]?.value).toBe("@src/renderer/app.tsx");
     expect(result?.items[0]?.source).toBe("file");
     expect(result?.items[0]?.description).toBe("src/renderer");
   });
 
-  it("applies a suggestion by replacing only the typed prefix", () => {
+  it("applies an @ suggestion by replacing only the typed prefix", () => {
     const applied = applyCompletionInPlace(
       ["look at @src/renderer/a", ""],
       0,
       23,
-      { value: "src/renderer/app.tsx", label: "src/renderer/app.tsx" },
+      { value: "@src/renderer/app.tsx", label: "src/renderer/app.tsx" },
       "@src/renderer/a",
     );
-    expect(applied.lines[0]).toBe("look at src/renderer/app.tsx ");
-    expect(applied.cursorCol).toBe(29);
+    expect(applied.lines[0]).toBe("look at @src/renderer/app.tsx ");
+    expect(applied.cursorCol).toBe(30);
   });
 
   it("offers nothing for an absolute or home path, rather than the wrong files", async () => {
@@ -381,7 +381,7 @@ describe("the stack", () => {
     ).toBe("/help");
     expect(
       (await provider.getSuggestions(["@src"], 0, 4, { signal: signal() }))?.items[0]?.value,
-    ).toBe("src/app.ts");
+    ).toBe("@src/app.ts");
     expect(
       (await provider.getSuggestions(["#bo"], 0, 3, { signal: signal() }))?.items[0]?.value,
     ).toBe("#Book.xlsx");

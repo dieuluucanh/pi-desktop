@@ -10,7 +10,7 @@ import {
   readWorkspaceFile,
   writeWorkspaceFile,
   type WorkspaceFileIo,
-} from "../../src/host/workspace-files";
+} from "../../src/workspace/workspace-files";
 
 /** An in-memory workspace: `files` maps a resolved path to its text. */
 function memoryIo(

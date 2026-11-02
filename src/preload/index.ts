@@ -17,6 +17,7 @@ import {
   type WebBridge,
   type GitBridge,
   type CheckpointsBridge,
+  type WorkspaceBridge,
   type WebTabOpenInput,
   type WindowState,
 } from "../shared/ipc";
@@ -43,6 +44,21 @@ import type { OfficeBridgeControlResult, OfficeStopResult } from "../shared/offi
 import type { OfficeDocumentsView } from "../shared/office-documents";
 import type { DiagnosticsExport, DiagnosticsSnapshot } from "../shared/diagnostics";
 import type { UpdateState } from "../shared/updates";
+import type {
+  EditorBackup,
+  ResolvedEditorConfig,
+  WorkspaceFileContent,
+  WorkspaceFileList,
+  WorkspaceListing,
+  WorkspaceResult,
+  WorkspaceSearchRequest,
+  WorkspaceSearchResult,
+  WorkspaceStat,
+  WorkspaceWriteInput,
+  WorkspaceWriteResult,
+  WorkspaceFormatRequest,
+  WorkspaceFormatResult,
+} from "../shared/workspace";
 import type {
   WebCommand,
   WebNavigationDecision,
@@ -195,6 +211,7 @@ const updates: UpdatesBridge = {
   check: () => ipcRenderer.invoke(IPC.updatesCheck) as Promise<UpdateState>,
   download: () => ipcRenderer.invoke(IPC.updatesDownload) as Promise<UpdateState>,
   install: () => ipcRenderer.invoke(IPC.updatesInstall) as Promise<boolean>,
+  clearProblem: () => ipcRenderer.invoke(IPC.updatesClearProblem) as Promise<UpdateState>,
   onState: (listener: (state: UpdateState) => void) =>
     subscribe<UpdateState>(IPC.updatesState, listener),
 };
@@ -243,6 +260,50 @@ const checkpoints: CheckpointsBridge = {
     ) as Promise<CheckpointActionResult>,
   onState: (listener: (state: CheckpointState) => void) =>
     subscribe<CheckpointState>(IPC.checkpointsPushed, listener),
+};
+
+/** Workspace file access for the explorer and editor. */
+const workspace: WorkspaceBridge = {
+  listDirectory: (input) =>
+    ipcRenderer.invoke(IPC.workspaceListDirectory, input) as Promise<
+      WorkspaceResult<WorkspaceListing>
+    >,
+  listFiles: (input) =>
+    ipcRenderer.invoke(IPC.workspaceListFiles, input) as Promise<
+      WorkspaceResult<WorkspaceFileList>
+    >,
+  searchFiles: (input: WorkspaceSearchRequest) =>
+    ipcRenderer.invoke(IPC.workspaceSearchFiles, input) as Promise<
+      WorkspaceResult<WorkspaceSearchResult>
+    >,
+  readFile: (input) =>
+    ipcRenderer.invoke(IPC.workspaceReadFile, input) as Promise<
+      WorkspaceResult<WorkspaceFileContent>
+    >,
+  stat: (input) =>
+    ipcRenderer.invoke(IPC.workspaceStat, input) as Promise<WorkspaceResult<WorkspaceStat>>,
+  writeFile: (input: WorkspaceWriteInput) =>
+    ipcRenderer.invoke(IPC.workspaceWriteFile, input) as Promise<
+      WorkspaceResult<WorkspaceWriteResult>
+    >,
+  reveal: (input) =>
+    ipcRenderer.invoke(IPC.workspaceReveal, input) as Promise<WorkspaceResult<boolean>>,
+  editorConfig: (input) =>
+    ipcRenderer.invoke(IPC.workspaceEditorConfig, input) as Promise<
+      WorkspaceResult<ResolvedEditorConfig>
+    >,
+  readBackup: (tabId: string) =>
+    ipcRenderer.invoke(IPC.workspaceReadBackup, tabId) as Promise<
+      WorkspaceResult<EditorBackup | null>
+    >,
+  writeBackup: (backup: EditorBackup) =>
+    ipcRenderer.invoke(IPC.workspaceWriteBackup, backup) as Promise<WorkspaceResult<boolean>>,
+  deleteBackup: (tabId: string) =>
+    ipcRenderer.invoke(IPC.workspaceDeleteBackup, tabId) as Promise<WorkspaceResult<boolean>>,
+  format: (request: WorkspaceFormatRequest) =>
+    ipcRenderer.invoke(IPC.workspaceFormat, request) as Promise<
+      WorkspaceResult<WorkspaceFormatResult>
+    >,
 };
 
 const bridge: PiDesktopBridge = {
@@ -299,6 +360,7 @@ const bridge: PiDesktopBridge = {
   updates,
   git,
   checkpoints,
+  workspace,
 };
 
 contextBridge.exposeInMainWorld("pi", bridge);

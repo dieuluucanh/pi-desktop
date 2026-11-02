@@ -50,6 +50,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # only for the release steps, which are gated below
+    env:
+      # Stamps resources/build-info.json as a release-CI build. This is
+      # provenance only; publishing the update manifests remains the explicit
+      # follow-up recorded in docs/product/backlog.md.
+      PI_BUILD_CHANNEL: release
     steps:
       - uses: actions/checkout@v5
 

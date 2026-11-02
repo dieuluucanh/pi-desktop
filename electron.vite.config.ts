@@ -49,6 +49,10 @@ export default defineConfig({
       outDir: "out/main",
       rollupOptions: {
         input: { index: resolve("./src/main/index.ts") },
+        // Prettier is a Node package loaded on Format Document, not part of the
+        // app bundle. Externalizing it avoids shipping/bundling its large
+        // generated parser files and keeps the main bundle readable.
+        external: ["prettier", /^prettier\//],
         output: { format: "es", entryFileNames: "[name].mjs", chunkFileNames: "[name]-[hash].mjs" },
       },
     },
