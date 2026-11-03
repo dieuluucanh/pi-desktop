@@ -3,14 +3,16 @@
  *
  * One pure module owns the numbers the app measures itself against: the startup
  * budget, the per-host memory budget and restart threshold, the streaming-delta
- * coalescing window, and the live-host budget. Main, the host and the renderer
- * all read the same constants, so a budget change is one edit and the
- * Diagnostics view can label a measurement instead of guessing at it.
+ * coalescing window, the live-host target and the process ceiling. Main, the
+ * host and the renderer all read the same constants, so a budget change is one
+ * edit and the Diagnostics view can label a measurement instead of guessing at
+ * it.
  *
  * A tab is a resumable record; it does not reserve a process. The live-host
  * target below is the only resource budget: it is soft (parking idle sessions
  * first) and derived from total physical memory, so a session count can never
- * block the user.
+ * block the user. The process ceiling is the emergency backstop for the
+ * all-busy case, and it is derived from the same memory reading.
  *
  * Nothing here imports Electron or Node: it is shared by the main process, the
  * host process and the renderer, and is unit tested without any of them.
@@ -23,25 +25,35 @@ export const SESSION_READY_BUDGET_MS = 5_000;
 /** Soft per-host RSS budget the Diagnostics view colours against. */
 export const HOST_RSS_BUDGET_BYTES = 512 * 1024 * 1024;
 /** Hard per-host RSS threshold: an *idle* host over this is recycled. */
-export const HOST_RSS_RESTART_BYTES = 1_536 * 1024 * 1024;
+export const HOST_RSS_RESTART_BYTES = 1024 * 1024 * 1024;
 /**
  * Fallback live-host target when the OS total-memory reading is unavailable.
  * A target is soft: idle sessions sleep before a new host is spawned, and a
  * new session still opens when every live session is busy.
  */
-export const DEFAULT_LIVE_HOSTS = 8;
+export const DEFAULT_LIVE_HOSTS = 4;
 /** Never target fewer live hosts than this, even on a small machine. */
-export const MIN_LIVE_HOSTS = 4;
+export const MIN_LIVE_HOSTS = 2;
 /** Never target more live hosts than this, even on a huge machine. */
-export const MAX_LIVE_HOSTS = 32;
-/** Share of total physical memory reserved for Pi host processes. */
-export const LIVE_HOST_RAM_SHARE = 0.4;
+export const MAX_LIVE_HOSTS = 8;
 /**
- * Emergency process ceiling. This is a protocol/port sanity guard, not a
- * capacity policy and not a session limit; the soft target above is reached
- * first, and only an all-busy workload can grow past it.
+ * Share of total physical memory reserved for Pi host processes. The remaining
+ * 80 % belongs to Electron, Vite, VS Code, the terminal Pi and the OS; the
+ * previous 40 % assumed a 512 MB host that real sessions routinely exceed.
  */
-export const MAX_HOSTS_HARD_CEILING = 64;
+export const LIVE_HOST_RAM_SHARE = 0.2;
+/**
+ * Extra processes allowed beyond the soft target when every live session is
+ * busy (the target never blocks a new session on its own).
+ */
+export const HOST_PROCESS_HEADROOM = 2;
+/** Absolute upper bound for the memory-derived process ceiling. */
+export const MAX_HOST_PROCESSES = 10;
+/**
+ * Aggregate RSS share across all live hosts. When the last metrics samples add
+ * up past this, main parks idle hosts even if the live count is under target.
+ */
+export const HOST_RSS_TOTAL_SHARE = 0.5;
 /** How long a host with no traffic is kept before it is recycled. */
 export const IDLE_HOST_TIMEOUT_MS = 15 * 60_000;
 /** Streaming-delta batching window (plan step 3; tuned in plan step 24). */
@@ -87,7 +99,7 @@ export function formatDuration(ms: number | null | undefined): string {
   return `${(ms / 1_000).toFixed(1)} s`;
 }
 
-/** `512 MB`, `1.5 GB`, `—` when the value is unknown. */
+/** `512 MB`, `1 GB`, `—` when the value is unknown. */
 export function formatBytes(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined || !Number.isFinite(bytes)) return "—";
   if (bytes < 1_024) return `${Math.round(bytes)} B`;
@@ -142,9 +154,17 @@ export function liveHostBudget(totalMemoryBytes?: number | null): number {
   return Math.min(MAX_LIVE_HOSTS, Math.max(MIN_LIVE_HOSTS, byMemory));
 }
 
-/** The emergency-ceiling sentence; never presented as a session limit. */
+/** The memory-derived host-process ceiling: target + headroom, clamped. */
+export function hostProcessCeiling(totalMemoryBytes?: number | null): number {
+  return Math.min(
+    MAX_HOST_PROCESSES,
+    Math.max(MIN_LIVE_HOSTS, liveHostBudget(totalMemoryBytes) + HOST_PROCESS_HEADROOM),
+  );
+}
+
+/** The ceiling sentence; never presented as a session limit. */
 export function hostCeilingMessage(limit: number): string {
-  return `Pi Desktop reached its emergency ceiling of ${limit} host processes. Close a session that is no longer running.`;
+  return `Pi Desktop reached its memory-derived ceiling of ${limit} host processes. Wait for a running session to finish or close a session that is no longer running.`;
 }
 
 /** The plain startup report the Diagnostics view and the E2E perf test read. */
@@ -235,7 +255,7 @@ export function createStartupMetrics(options: { startedAt?: number } = {}): Star
   };
 }
 
-/** A used/limit pair for a hard ceiling (the supervisor's emergency process guard). */
+/** A used/limit pair for the memory-derived host-process ceiling. */
 export interface Capacity {
   used: number;
   limit: number;
@@ -252,8 +272,16 @@ export interface SessionCapacity {
   liveHosts: number;
   /** RAM-derived soft target for live host processes. */
   targetHosts: number;
+  /** Memory-derived hard process ceiling for the all-busy case. */
+  ceilingHosts: number;
   /** True when `liveHosts > targetHosts` (all parkable sessions were busy). */
   overTarget: boolean;
+  /** Sum of the last `host.metrics()` RSS samples across live hosts. */
+  hostRssBytes: number;
+  /** Aggregate host RSS budget; 0 disables the guard. */
+  hostRssLimitBytes: number;
+  /** True when `hostRssBytes > hostRssLimitBytes`. */
+  overMemory: boolean;
   /** Session and Office tabs that are open, including asleep ones. */
   openSessions: number;
   /** Host-backed tabs whose process is parked. */

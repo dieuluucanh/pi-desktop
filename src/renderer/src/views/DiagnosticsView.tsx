@@ -233,17 +233,25 @@ export function DiagnosticsView() {
           <section className="card flex flex-col gap-3" data-testid="diagnostics-hosts">
             <h2 className="text-sm font-semibold">Hosts</h2>
             <p className="text-xs text-ink-muted">
-              {snapshot.capacity.liveHosts}/{snapshot.capacity.targetHosts} live hosts ·{" "}
-              {snapshot.capacity.openSessions} open sessions ({snapshot.capacity.asleepSessions}{" "}
-              asleep) · {snapshot.capacity.editorTabs} editor tabs · per-host budget{" "}
+              {snapshot.capacity.liveHosts}/{snapshot.capacity.targetHosts} live hosts (ceiling{" "}
+              {snapshot.capacity.ceilingHosts}) · {snapshot.capacity.openSessions} open sessions (
+              {snapshot.capacity.asleepSessions} asleep) · {snapshot.capacity.editorTabs} editor
+              tabs · host RSS {formatBytes(snapshot.capacity.hostRssBytes)} /{" "}
+              {formatBytes(snapshot.capacity.hostRssLimitBytes)} · per-host budget{" "}
               {formatBytes(snapshot.memory.budgetBytes)} (recycle at{" "}
               {formatBytes(snapshot.memory.restartBytes)})
             </p>
             <p className="flex flex-wrap items-center gap-2 text-xs text-ink-muted">
               {snapshot.capacity.overTarget ? <Badge tone="warn">over target</Badge> : null}
+              {snapshot.capacity.overMemory ? <Badge tone="warn">over memory</Badge> : null}
               <span>
                 The live-session target is soft; inactive sessions sleep and wake on first use.
               </span>
+            </p>
+            <p className="text-xs text-ink-muted">
+              System memory {formatBytes(snapshot.memory.freeBytes)} free of{" "}
+              {formatBytes(snapshot.memory.totalBytes)} · {snapshot.web.tabs} web tabs ·{" "}
+              {snapshot.web.liveViews}/{snapshot.web.limit} live views
             </p>
             {snapshot.hosts.length === 0 ? (
               <p className="text-sm text-ink-muted">

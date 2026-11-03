@@ -8,6 +8,7 @@ import {
   type SupervisorHostLike,
   type SupervisorLike,
 } from "../../src/main/session-service";
+import type { HostMemoryMetrics } from "../../src/shared/performance";
 
 /**
  * The session service (plan step 3) drives everything the renderer sees, so it is
@@ -35,6 +36,7 @@ class FakeHost implements SupervisorHostLike {
   private readonly createdSessionFile: string | null;
   private readonly fail: { method: string; error: Error } | undefined;
   private readonly pinnedValue: boolean;
+  private readonly rssBytes: number;
 
   constructor(
     sessionId: string,
@@ -44,6 +46,7 @@ class FakeHost implements SupervisorHostLike {
       createdSessionFile?: string | null;
       fail?: { method: string; error: Error };
       pinned?: boolean;
+      rssBytes?: number;
     } = {},
   ) {
     this.sessionId = sessionId;
@@ -55,6 +58,7 @@ class FakeHost implements SupervisorHostLike {
         : options.createdSessionFile;
     this.fail = options.fail;
     this.pinnedValue = options.pinned ?? false;
+    this.rssBytes = options.rssBytes ?? 0;
   }
 
   status(): string {
@@ -63,6 +67,17 @@ class FakeHost implements SupervisorHostLike {
 
   pinned(): boolean {
     return this.pinnedValue;
+  }
+
+  metrics(): HostMemoryMetrics | null {
+    if (this.rssBytes <= 0) return null;
+    return {
+      rssBytes: this.rssBytes,
+      heapUsedBytes: this.rssBytes / 2,
+      heapTotalBytes: this.rssBytes,
+      uptimeMs: 1,
+      at: 1,
+    };
   }
 
   setStatus(status: string): void {
@@ -154,6 +169,10 @@ function createHarness(
     state?: Record<string, unknown> | ((spec: SpawnSpec) => Record<string, unknown>);
     /** Marks specific hosts as pinned (active tab § bridge owner § control). */
     pinnedFor?: (spec: SpawnSpec) => boolean;
+    /** Scripted RSS per host (used by the aggregate memory guard tests). */
+    rssBytes?: number | ((spec: SpawnSpec) => number);
+    /** Aggregate host RSS budget passed to the service. */
+    hostRssLimitBytes?: number;
     /** Controllable clock, so LRU can be tested without real time. */
     now?: () => number;
     /** The session snapshot's `sessionFile`, or null for a just-created session. */
@@ -198,6 +217,12 @@ function createHarness(
           : { createdSessionFile: options.createdSessionFile }),
         ...(options.fail ? { fail: options.fail } : {}),
         pinned: options.pinnedFor?.(spec) ?? false,
+        ...(options.rssBytes === undefined
+          ? {}
+          : {
+              rssBytes:
+                typeof options.rssBytes === "function" ? options.rssBytes(spec) : options.rssBytes,
+            }),
       });
       if (options.failCreate) {
         host.request = (method: HostMethod, params?: unknown) => {
@@ -238,6 +263,9 @@ function createHarness(
     newId: () => `tab-${++counter}`,
     ...(options.hostBuildId ? { hostBuildId: options.hostBuildId } : {}),
     ...(options.maxLiveHosts === undefined ? {} : { maxLiveHosts: options.maxLiveHosts }),
+    ...(options.hostRssLimitBytes === undefined
+      ? {}
+      : { hostRssLimitBytes: options.hostRssLimitBytes }),
     ...(options.releaseOfficePort ? { releaseOfficePort: options.releaseOfficePort } : {}),
     ...(options.ownPids ? { ownPids: options.ownPids } : {}),
     emit: (channel, payload) => pushes.push({ channel, payload }),
@@ -529,6 +557,65 @@ describe("live-host budget and LRU parking", () => {
 
     expect(harness.service.tabs().find((tab) => tab.id === "tab-1")?.status).toBe("idle");
     expect(harness.stopped).not.toContain("tab-1");
+    expect(harness.hosts.size).toBe(2);
+  });
+
+  it("reports aggregate host RSS, the ceiling and over-memory", async () => {
+    const harness = createHarness({
+      maxLiveHosts: 2,
+      hostRssLimitBytes: 1_000,
+      rssBytes: 600,
+    });
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    await harness.service.createTab({ cwd: "C:\\work\\two" });
+
+    const capacity = harness.service.capacity();
+    expect(capacity.hostRssBytes).toBe(1_200);
+    expect(capacity.hostRssLimitBytes).toBe(1_000);
+    expect(capacity.overMemory).toBe(true);
+    expect(capacity.ceilingHosts).toBe(2);
+  });
+
+  it("reclaims idle hosts when the aggregate RSS is over budget", async () => {
+    const clock = { value: 1_000 };
+    const harness = createHarness({
+      maxLiveHosts: 3,
+      hostRssLimitBytes: 1_000,
+      rssBytes: 400,
+      now: () => clock.value,
+    });
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\two" });
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\three" });
+
+    const capacity = await harness.service.reclaimHosts();
+
+    // The oldest inactive host is parked; the active tab and the other host stay.
+    expect(harness.stopped).toContain("tab-1");
+    expect(harness.hosts.has("tab-2")).toBe(true);
+    expect(harness.hosts.has("tab-3")).toBe(true);
+    expect(capacity.hostRssBytes).toBe(800);
+    expect(capacity.overMemory).toBe(false);
+  });
+
+  it("never reclaims the active or a pinned host even over budget", async () => {
+    const clock = { value: 1_000 };
+    const harness = createHarness({
+      maxLiveHosts: 2,
+      hostRssLimitBytes: 1,
+      rssBytes: 400,
+      pinnedFor: (spec) => spec.sessionId === "tab-1",
+      now: () => clock.value,
+    });
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\two" });
+
+    await harness.service.reclaimHosts();
+
+    expect(harness.stopped).toHaveLength(0);
     expect(harness.hosts.size).toBe(2);
   });
 });
@@ -843,7 +930,11 @@ describe("reliability and recovery (plan step 22)", () => {
     expect(caps).toEqual({
       liveHosts: 2,
       targetHosts: 2,
+      ceilingHosts: 2,
       overTarget: false,
+      hostRssBytes: 0,
+      hostRssLimitBytes: 0,
+      overMemory: false,
       openSessions: 1,
       asleepSessions: 0,
       editorTabs: 0,

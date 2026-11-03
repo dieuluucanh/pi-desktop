@@ -68,7 +68,9 @@ describe("new session", () => {
 
   it("does not ask for trust when a create fails for another reason", async () => {
     const create = vi.fn(async () => {
-      throw new Error("Pi Desktop reached its emergency ceiling of 64 host processes.");
+      throw new Error(
+        "Pi Desktop reached its memory-derived ceiling of 8 host processes. Wait for a running session to finish or close a session that is no longer running.",
+      );
     });
     (window.pi as unknown as { sessions: { create: unknown } }).sessions.create = create;
     await useAppStore.getState().openProject("C:\\work\\pi-desktop");
@@ -77,7 +79,7 @@ describe("new session", () => {
     await useAppStore.getState().createSessionTab();
 
     expect(prompt).not.toHaveBeenCalled();
-    expect(useAppStore.getState().hint).toMatch(/emergency ceiling/);
+    expect(useAppStore.getState().hint).toMatch(/memory-derived ceiling/);
   });
 
   it("still asks for trust when the failure is trust-related", async () => {

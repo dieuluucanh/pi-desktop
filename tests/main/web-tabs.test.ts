@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_LIVE_WEB_VIEWS,
   createWebTabManager,
   type WebViewEvent,
   type WebViewLike,
@@ -327,5 +328,75 @@ describe("createWebTabManager", () => {
     manager.sync(envelope([webTab("w1", "http://localhost:19432/review", "s1")], "w1"));
     expect(views.get("w1")!.loaded).toEqual(["http://localhost:19432/review"]);
     expect(manager.state("w1")?.sessionTabId).toBe("s1");
+  });
+
+  it("keeps only MAX_LIVE_WEB_VIEWS views and parks the rest", () => {
+    const { manager, views, closed } = harness();
+    const tabs = [
+      { ...webTab("w1", "http://localhost:1/"), lastActiveAt: 1 },
+      { ...webTab("w2", "http://localhost:2/"), lastActiveAt: 2 },
+      { ...webTab("w3", "http://localhost:3/"), lastActiveAt: 3 },
+      { ...webTab("w4", "http://localhost:4/"), lastActiveAt: 4 },
+      { ...webTab("w5", "http://localhost:5/"), lastActiveAt: 5 },
+    ];
+
+    manager.sync(envelope(tabs, "w5"));
+
+    expect(manager.liveViewCount()).toBe(MAX_LIVE_WEB_VIEWS);
+    expect(manager.webViewLimit()).toBe(MAX_LIVE_WEB_VIEWS);
+    expect(views.has("w5")).toBe(true);
+    expect(views.has("w1")).toBe(false);
+    expect(manager.states()).toHaveLength(4);
+
+    // Activating the never-created tab evicts the least-recent inactive view
+    // and keeps that tab's last metadata in the parked map.
+    manager.sync(envelope(tabs, "w1"));
+    expect(views.has("w1")).toBe(true);
+    expect(closed.has("w2")).toBe(true);
+    expect(manager.state("w2")).toMatchObject({ tabId: "w2", url: "http://localhost:2/" });
+    expect(manager.states()).toHaveLength(5);
+  });
+
+  it("recreates and reloads an evicted view when its tab is activated", () => {
+    const { manager, views, closed } = harness();
+    const tabs = [
+      { ...webTab("w1", "http://localhost:1/"), lastActiveAt: 1 },
+      { ...webTab("w2", "http://localhost:2/"), lastActiveAt: 2 },
+      { ...webTab("w3", "http://localhost:3/"), lastActiveAt: 3 },
+      { ...webTab("w4", "http://localhost:4/"), lastActiveAt: 4 },
+      { ...webTab("w5", "http://localhost:5/"), lastActiveAt: 5 },
+    ];
+    manager.sync(envelope(tabs, "w5"));
+    expect(views.has("w1")).toBe(false);
+
+    manager.sync(envelope(tabs, "w1"));
+
+    expect(views.has("w1")).toBe(true);
+    expect(views.get("w1")!.loaded).toContain("http://localhost:1/");
+    expect(closed.has("w2")).toBe(true);
+    expect(manager.liveViewCount()).toBe(MAX_LIVE_WEB_VIEWS);
+  });
+
+  it("drops a closed tab's parked state", () => {
+    const { manager } = harness();
+    const tabs = [
+      { ...webTab("w1", "http://localhost:1/"), lastActiveAt: 1 },
+      { ...webTab("w2", "http://localhost:2/"), lastActiveAt: 2 },
+      { ...webTab("w3", "http://localhost:3/"), lastActiveAt: 3 },
+      { ...webTab("w4", "http://localhost:4/"), lastActiveAt: 4 },
+      { ...webTab("w5", "http://localhost:5/"), lastActiveAt: 5 },
+    ];
+    manager.sync(envelope(tabs, "w5"));
+    manager.sync(envelope(tabs, "w1"));
+    expect(manager.state("w2")).not.toBeNull();
+
+    manager.sync(
+      envelope(
+        tabs.filter((tab) => tab.id !== "w2"),
+        "w1",
+      ),
+    );
+
+    expect(manager.state("w2")).toBeNull();
   });
 });

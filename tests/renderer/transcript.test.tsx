@@ -275,7 +275,23 @@ describe("transcript rendering", () => {
       contents: JSON.stringify({ content: [{ type: "text", text: "the whole 50 MB log" }] }),
     }));
     (handles.bridge.sessions as unknown as { request: unknown }).request = request;
-    useAppStore.setState({ blobs: {} });
+    useAppStore.setState({
+      tabs: [
+        {
+          id: "tab-1",
+          kind: "session",
+          cwd: "C:/work/app",
+          title: "app",
+          sessionFile: null,
+          status: "idle",
+          createdAt: 1,
+          lastActiveAt: 1,
+          model: null,
+        },
+      ],
+      activeTabId: "tab-1",
+      blobs: {},
+    });
 
     const items = reduceSessionEvents(createTranscriptState(), [
       {

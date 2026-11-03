@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAppStore } from "../../src/renderer/src/state/app-store";
+import {
+  MAX_RETAINED_BLOBS,
+  MAX_RETAINED_TRANSCRIPTS,
+} from "../../src/renderer/src/state/retention";
+import { createTranscriptState } from "../../src/renderer/src/session/session-events";
 import type { TabRecord } from "../../src/shared/session-ipc";
 import { installBridge } from "./fixtures";
 
@@ -114,5 +119,146 @@ describe("applyTabs", () => {
     useAppStore.getState().applyTabs({ tabs: [], activeTabId: null });
 
     expect(useAppStore.getState().webNavigationPrompt).toBeNull();
+  });
+
+  it("drops every per-tab cache when a tab closes", async () => {
+    const handles = installBridge();
+    const first = tab();
+    useAppStore.getState().applyTabs({ tabs: [first], activeTabId: first.id });
+    vi.spyOn(handles.bridge.sessions, "request").mockResolvedValue({ contents: "{}" });
+    await useAppStore.getState().loadBlob(first.id, { $blob: "C:/blobs/a.json", bytes: 1 });
+    useAppStore.setState({
+      transcripts: { [first.id]: { ...createTranscriptState(), hydrated: true } },
+      sessionStates: { [first.id]: { model: "test" } },
+      modelCatalog: { [first.id]: [] },
+      pasteBodies: { [first.id]: { 1: "large paste" } },
+    });
+    expect(useAppStore.getState().blobs["C:/blobs/a.json"]).toBeDefined();
+
+    useAppStore.getState().applyTabs({ tabs: [], activeTabId: null });
+
+    const state = useAppStore.getState();
+    expect(state.transcripts[first.id]).toBeUndefined();
+    expect(state.sessionStates[first.id]).toBeUndefined();
+    expect(state.modelCatalog[first.id]).toBeUndefined();
+    expect(state.pasteBodies[first.id]).toBeUndefined();
+    expect(state.blobs["C:/blobs/a.json"]).toBeUndefined();
+  });
+
+  it("keeps at most MAX_RETAINED_TRANSCRIPTS and rehydrates on activation", async () => {
+    const handles = installBridge();
+    const tabs = Array.from({ length: 6 }, (_, index) =>
+      tab({ id: `session-${index + 1}`, lastActiveAt: index + 1 }),
+    );
+    useAppStore.getState().applyTabs({ tabs, activeTabId: tabs[0]!.id });
+    useAppStore.setState({
+      transcripts: Object.fromEntries(
+        tabs.map((entry) => [entry.id, { ...createTranscriptState(), hydrated: true }]),
+      ),
+    });
+
+    useAppStore.getState().applyTabs({ tabs, activeTabId: tabs[5]!.id });
+
+    const hydrated = Object.values(useAppStore.getState().transcripts).filter(
+      (transcript) => transcript.hydrated,
+    );
+    expect(hydrated).toHaveLength(MAX_RETAINED_TRANSCRIPTS);
+    expect(useAppStore.getState().transcripts["session-6"]?.hydrated).toBe(true);
+
+    const request = vi
+      .spyOn(handles.bridge.sessions, "request")
+      .mockResolvedValue({ messages: [] });
+    await useAppStore.getState().activateTab("session-1");
+
+    expect(useAppStore.getState().transcripts["session-1"]?.hydrated).toBe(true);
+    expect(request).toHaveBeenCalledWith({ tabId: "session-1", method: "messages.get" });
+  });
+
+  it("never evicts a running transcript", () => {
+    const running = tab({ id: "session-running", status: "running", lastActiveAt: 1 });
+    const tabs = [running];
+    for (let index = 0; index < 6; index += 1) {
+      tabs.push(tab({ id: `session-${index}`, lastActiveAt: index + 2 }));
+    }
+    useAppStore.getState().applyTabs({ tabs, activeTabId: tabs.at(-1)!.id });
+    useAppStore.setState({
+      transcripts: Object.fromEntries(
+        tabs.map((entry) => [entry.id, { ...createTranscriptState(), hydrated: true }]),
+      ),
+    });
+
+    useAppStore.getState().applyTabs({ tabs, activeTabId: tabs.at(-1)!.id });
+
+    expect(useAppStore.getState().transcripts["session-running"]?.hydrated).toBe(true);
+  });
+
+  it("ignores a late event batch for a closed tab", () => {
+    const first = tab();
+    useAppStore.getState().applyTabs({ tabs: [first], activeTabId: first.id });
+    useAppStore.getState().applyTabs({ tabs: [], activeTabId: null });
+
+    useAppStore.getState().applySessionEvents({
+      tabId: first.id,
+      seq: 1,
+      events: [
+        {
+          event: "message_start",
+          payload: { message: { role: "assistant", content: "late" } },
+        },
+      ],
+    });
+
+    expect(useAppStore.getState().transcripts[first.id]).toBeUndefined();
+  });
+
+  it("does not reintroduce a closed transcript while trimming the cache", () => {
+    const tabs = Array.from({ length: 6 }, (_, index) =>
+      tab({ id: `session-${index + 1}`, lastActiveAt: index + 1 }),
+    );
+    useAppStore.getState().applyTabs({ tabs, activeTabId: tabs[0]!.id });
+    useAppStore.setState({
+      transcripts: Object.fromEntries(
+        tabs.map((entry) => [entry.id, { ...createTranscriptState(), hydrated: true }]),
+      ),
+    });
+
+    useAppStore.getState().applyTabs({ tabs: tabs.slice(0, 5), activeTabId: tabs[0]!.id });
+
+    expect(useAppStore.getState().transcripts["session-6"]).toBeUndefined();
+  });
+
+  it("does not resurrect a transcript when messages.get resolves after close", async () => {
+    const handles = installBridge();
+    const first = tab();
+    useAppStore.getState().applyTabs({ tabs: [first], activeTabId: first.id });
+    let resolve: ((value: { messages: unknown[] }) => void) | undefined;
+    vi.spyOn(handles.bridge.sessions, "request").mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+
+    const pending = useAppStore.getState().hydrateTranscript(first.id);
+    useAppStore.getState().applyTabs({ tabs: [], activeTabId: null });
+    resolve?.({ messages: [] });
+    await pending;
+
+    expect(useAppStore.getState().transcripts[first.id]).toBeUndefined();
+  });
+
+  it("bounds the lazy blob cache", async () => {
+    const handles = installBridge();
+    const first = tab();
+    useAppStore.getState().applyTabs({ tabs: [first], activeTabId: first.id });
+    vi.spyOn(handles.bridge.sessions, "request").mockResolvedValue({ contents: "x" });
+
+    for (let index = 0; index < MAX_RETAINED_BLOBS + 3; index += 1) {
+      await useAppStore
+        .getState()
+        .loadBlob(first.id, { $blob: `C:/blobs/${index}.json`, bytes: 1 });
+    }
+
+    expect(Object.keys(useAppStore.getState().blobs)).toHaveLength(MAX_RETAINED_BLOBS);
   });
 });

@@ -136,7 +136,7 @@ export interface SupervisorLike {
   list(): SupervisorHostLike[];
   stop(sessionId: string): Promise<void>;
   stopAll(): Promise<void>;
-  /** Used/limit of the host cap (plan step 24). Optional for test doubles. */
+  /** Used/limit of the memory-derived host-process ceiling. Optional for test doubles. */
   capacity?(): { used: number; limit: number; atCapacity: boolean };
 }
 
@@ -172,6 +172,13 @@ export interface SessionServiceDeps {
    * and a new session still opens when every live session is busy.
    */
   maxLiveHosts?: number;
+  /**
+   * Aggregate host RSS budget, derived from total RAM by main. When the last
+   * `host.metrics()` samples add up past this, `makeRoom` and the periodic
+   * reclaim park idle hosts even while the live count is under target. 0 or
+   * absent disables the guard.
+   */
+  hostRssLimitBytes?: number;
   /**
    * Makes the Office bridge port free before a promoted host binds it
    * (2026-10-30 project-scoped rail plan). It terminates whatever listens on the
@@ -243,8 +250,14 @@ export interface SessionService {
   incidents(): Incident[];
   /** Which host is behind each tab, plus its log tail (plan step 22 Diagnostics). */
   diagnosticsHosts(): DiagnosticsHostInfo[];
-  /** Used/target of the soft live-host budget (plan step 24 backpressure). */
+  /** Used/target/ceiling of the live-host budget (plan step 24 backpressure). */
   capacity(): SessionCapacity;
+  /**
+   * Parks idle hosts until the live count and aggregate RSS are back under
+   * pressure (or no parkable candidate remains). Called by main's memory timer;
+   * never throws and never stops the active, Office, bridge-owner or busy host.
+   */
+  reclaimHosts(): Promise<SessionCapacity>;
   /** Measured delta-batching figures (plan step 24). */
   coalesceStats(): CoalesceStats;
   /** Bounded `extension_error` history across tabs (plan step 22 Diagnostics). */
@@ -359,6 +372,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   const coalesceMs = deps.coalesceMs ?? DEFAULT_COALESCE_MS;
   const coalesceBytes = deps.coalesceBytes ?? DEFAULT_COALESCE_BYTES;
   const maxLiveHosts = Math.max(1, deps.maxLiveHosts ?? DEFAULT_LIVE_HOSTS);
+  const maxHostRssBytes = Math.max(0, deps.hostRssLimitBytes ?? 0);
+
+  /** Sum of the last `host.metrics()` samples across live hosts. */
+  const hostRssBytes = (): number =>
+    deps.supervisor.list().reduce((sum, host) => sum + (host.metrics?.()?.rssBytes ?? 0), 0);
 
   const tabs = new Map<string, TabRecord>();
   const hosts = new Map<string, SupervisorHostLike>();
@@ -688,27 +706,37 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   };
 
   /**
-   * Parks idle hosts until the live count is back under the soft target. It is
-   * deliberately best effort: when every live session is busy the caller still
-   * starts its host, so a session count can never block the user.
+   * Parks idle hosts until the live count is back under the soft target and the
+   * aggregate host RSS is under its budget. It is deliberately best effort:
+   * when every live session is busy the caller still starts its host, so a
+   * session count can never block the user.
    */
   const makeRoom = async (exceptTabId: string): Promise<void> => {
-    if (deps.supervisor.list().length < maxLiveHosts) return;
-    const candidates = [...tabs.values()]
+    const overCount = (): boolean => deps.supervisor.list().length >= maxLiveHosts;
+    const overRss = (): boolean => maxHostRssBytes > 0 && hostRssBytes() > maxHostRssBytes;
+    if (!overCount() && !overRss()) return;
+    for (const tab of idleCandidates(exceptTabId)) {
+      if (!overCount() && !overRss()) break;
+      await parkTab(tab.id);
+    }
+  };
+
+  /**
+   * LRU candidates for parking, oldest `lastActiveAt` first. Excludes the active
+   * tab, Office hosts, pinned hosts (control/bridge/active), in-flight work,
+   * pending event batches and tabs used within `PARK_MIN_IDLE_MS`.
+   */
+  const idleCandidates = (exceptTabId: string | null): TabRecord[] => {
+    return [...tabs.values()]
       .filter((tab) => tab.id !== exceptTabId && tab.id !== activeId)
       .filter((tab) => isHostBackedTab(tab.kind) && tab.kind !== "office")
       .filter((tab) => hosts.has(tab.id))
       .filter((tab) => !starting.has(tab.id) && !opening.has(tab.id) && !recycling.has(tab.id))
       .filter((tab) => !pending.has(tab.id) && !timers.has(tab.id))
       .filter((tab) => now() - tab.lastActiveAt >= PARK_MIN_IDLE_MS)
+      .filter((tab) => hosts.get(tab.id)?.pinned?.() !== true)
+      .filter((tab) => hosts.get(tab.id)?.isIdle?.() !== false)
       .sort((left, right) => left.lastActiveAt - right.lastActiveAt);
-    for (const tab of candidates) {
-      if (deps.supervisor.list().length < maxLiveHosts) break;
-      const host = hosts.get(tab.id);
-      if (!host || host.pinned?.()) continue;
-      if (host.isIdle?.() === false) continue;
-      await parkTab(tab.id);
-    }
   };
 
   /** Serializes budget decisions: two starts must never park the same tab twice. */
@@ -1059,15 +1087,42 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     capacity: () => {
       const all = [...tabs.values()];
       const open = all.filter((tab) => isHostBackedTab(tab.kind));
-      const liveHosts = deps.supervisor.list().length;
+      const hosts = deps.supervisor.list();
+      const liveHosts = hosts.length;
+      const hostRssBytes = hosts.reduce((sum, host) => sum + (host.metrics?.()?.rssBytes ?? 0), 0);
+      const hostRssLimitBytes = Math.max(0, deps.hostRssLimitBytes ?? 0);
       return {
         liveHosts,
         targetHosts: maxLiveHosts,
+        ceilingHosts: deps.supervisor.capacity?.().limit ?? maxLiveHosts,
         overTarget: liveHosts > maxLiveHosts,
+        hostRssBytes,
+        hostRssLimitBytes,
+        overMemory: hostRssLimitBytes > 0 && hostRssBytes > hostRssLimitBytes,
         openSessions: open.length,
         asleepSessions: open.filter((tab) => tab.status === "stopped").length,
         editorTabs: all.filter(isEditorTab).length,
       };
+    },
+    reclaimHosts: async () => {
+      // Serialize with spawns: a reclaim must never park a host that a queued
+      // activation is about to reuse, and two reclaims must not park twice.
+      const run = slotQueue
+        .then(async () => {
+          const targetLive = activeId ? 2 : 1;
+          for (const tab of idleCandidates(null)) {
+            const live = deps.supervisor.list().length;
+            const rss = hostRssBytes();
+            const underCount = live <= targetLive;
+            const underRss = maxHostRssBytes === 0 || rss <= maxHostRssBytes;
+            if (underCount && underRss) break;
+            await parkTab(tab.id);
+          }
+        })
+        .catch(() => undefined);
+      slotQueue = run;
+      await run;
+      return service.capacity();
     },
     coalesceStats: () => ({ ...coalesceStats }),
     diagnosticsHosts: () => {
@@ -1244,6 +1299,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       if (!tab) return envelope();
       forgetHost(tabId);
       recycling.delete(tabId);
+      parking.delete(tabId);
+      sequences.delete(tabId);
+      generations.delete(tabId);
       createParams.delete(tabId);
       tabs.delete(tabId);
       try {

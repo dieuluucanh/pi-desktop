@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { totalmem } from "node:os";
+import { freemem, totalmem } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
   app,
@@ -117,9 +117,10 @@ import { isOfflineEnv, classifyFailure, type DiagnosticsGitInfo } from "../share
 import type { CheckpointState } from "../shared/checkpoints";
 import type { GitSnapshot } from "../shared/git";
 import {
+  HOST_RSS_TOTAL_SHARE,
   IDLE_HOST_TIMEOUT_MS,
-  MAX_HOSTS_HARD_CEILING,
   liveHostBudget,
+  hostProcessCeiling,
   createStartupMetrics,
 } from "../shared/performance";
 import type { DiagnosticsSaveResult } from "../shared/ipc";
@@ -313,7 +314,10 @@ const activeSessionId: { current: string | null } = { current: null };
  * app's lifetime; the control host is included in the count, and the value is
  * never a hard session limit (see `liveHostBudget`).
  */
-const liveHostTarget = liveHostBudget(totalmem());
+const totalMemory = totalmem();
+const liveHostTarget = liveHostBudget(totalMemory);
+const hostProcessLimit = hostProcessCeiling(totalMemory);
+const hostRssLimit = Math.round(totalMemory * HOST_RSS_TOTAL_SHARE);
 
 const hosts = runtime.nodePath
   ? createHostSupervisor({
@@ -335,15 +339,20 @@ const hosts = runtime.nodePath
       hostBuildId,
       // The soft target parks idle sessions before spawning; the hard ceiling is
       // only a protocol/port sanity guard, never a session limit.
-      maxHosts: MAX_HOSTS_HARD_CEILING,
+      maxHosts: hostProcessLimit,
       // Sleep a session after 15 minutes without real traffic. The active tab,
-      // the control host, an Office host and the bridge owner are protected.
+      // the control host, an Office host and the bridge owner are protected
+      // from *idle* sleep; the active tab is not protected from the RSS
+      // watchdog (see `isBridgeOwner`).
       idleTimeoutMs: IDLE_HOST_TIMEOUT_MS,
       isPinned: (sessionId) =>
         keepHostAlive(sessionId, {
           activeSessionId: activeSessionId.current,
           bridgeOwnerSessionId: bridgeOwnerSessionId.current(),
         }),
+      // The bridge owner keeps port 38617 alive; only it and the Office host
+      // are exempt from RSS recycling. The active tab is deliberately not.
+      isBridgeOwner: (sessionId) => bridgeOwnerSessionId.current() === sessionId,
     })
   : null;
 
@@ -408,6 +417,7 @@ const sessions: SessionService | null = hosts
       ],
       officeBridgePort: PI_OFFICE_BRIDGE.defaultPort,
       maxLiveHosts: liveHostTarget,
+      hostRssLimitBytes: hostRssLimit,
       emit: (channel, payload) => {
         broadcastToWindows(SESSION_CHANNELS[channel], payload);
         if (channel === "tabs") {
@@ -421,7 +431,22 @@ const sessions: SessionService | null = hosts
     })
   : null;
 
-/** The folder a new web tab reports (the active session's, else the home folder). */
+/**
+ * The aggregate memory guard. The pre-spawn `makeRoom` keeps the live count
+ * bounded; this tick catches the slower case (several moderately large hosts,
+ * or a host that grew after its last spawn) without waiting for the user to
+ * open another session. It is unref'd so it cannot hold the app open.
+ */
+const hostReclaimTimer: ReturnType<typeof setInterval> | null = sessions
+  ? setInterval(() => {
+      if (!sessions) return;
+      const capacity = sessions.capacity();
+      if (capacity.overTarget || capacity.overMemory) {
+        void sessions.reclaimHosts().catch(() => undefined);
+      }
+    }, 30_000)
+  : null;
+if (hostReclaimTimer) hostReclaimTimer.unref();
 function webTabCwd(explicit?: string): string {
   if (explicit && explicit.length > 0) return explicit;
   const active = sessions?.activeTabId();
@@ -1136,6 +1161,19 @@ const diagnostics = createDiagnosticsService({
     projects: [],
     runSnapshots: lastCheckpointState?.runSnapshots ?? false,
   }),
+  // Machine memory is a system fact, not a policy input (the target uses total
+  // RAM); it lets a support bundle distinguish host pressure from an app-wide
+  // shortfall. Electron's API is kilobytes; the os fallback is bytes.
+  systemMemory: () => {
+    const info = process.getSystemMemoryInfo?.();
+    if (info) return { totalBytes: info.total * 1024, freeBytes: info.free * 1024 };
+    return { totalBytes: totalmem(), freeBytes: freemem() };
+  },
+  web: () => ({
+    tabs: sessions?.tabs().filter((tab) => tab.kind === "web").length ?? 0,
+    liveViews: webTabs.liveViewCount(),
+    limit: webTabs.webViewLimit(),
+  }),
 });
 
 /** Asks where to save, then writes the already-redacted bundle. */
@@ -1667,6 +1705,7 @@ if (!app.requestSingleInstanceLock()) {
   const quitTeardown = createQuitTeardown({
     dispose: async () => {
       if (updateCheckTimer) clearTimeout(updateCheckTimer);
+      if (hostReclaimTimer) clearInterval(hostReclaimTimer);
       updateService?.dispose();
       officeDocuments.dispose();
       gitPush.dispose();

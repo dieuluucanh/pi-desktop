@@ -26,6 +26,7 @@ import { normalizeScopePatterns, scopeKeys, scopeStarKeys } from "../../../share
 import { mostRecentSessionTabForFolder, sameFolder } from "../../../shared/rail-scope";
 import type { WorkspaceEntryKind } from "../../../shared/workspace";
 import { workspaceMention } from "../../../shared/workspace-drag";
+import { MAX_BLOB_BYTES, MAX_RETAINED_BLOBS, MAX_RETAINED_TRANSCRIPTS } from "./retention";
 import type { CustomProviderInput, CustomProviderSummary } from "../../../shared/custom-providers";
 import {
   isNotificationMuted,
@@ -334,8 +335,129 @@ function purgeClosedTabDialogs(openTabs: ReadonlySet<string>): void {
   }));
 }
 
+/** Every per-tab record that is keyed by a tab id and must die with the tab. */
+const TAB_SCOPED_RECORDS = [
+  "transcripts",
+  "sessionStates",
+  "extensionUi",
+  "tuiSurfaces",
+  "toolsExpanded",
+  "staleHosts",
+  "thinkingLevels",
+  "completionCommands",
+  "completionFiles",
+  "modelCatalog",
+  "providerAuth",
+  "modelScope",
+  "modelScopePatterns",
+  "modelScopeTarget",
+  "modelScopeBusy",
+  "draftHistory",
+  "historyIndex",
+  "pasteBodies",
+] as const;
+
+/** Drops every per-tab cache entry for a tab that is no longer open. */
+function pruneClosedTabRecords(
+  state: AppStateShape,
+  ids: ReadonlySet<string>,
+): Partial<AppStateShape> | null {
+  const patch: Record<string, unknown> = {};
+  let changed = false;
+  for (const key of TAB_SCOPED_RECORDS) {
+    const current = state[key] as unknown as Record<string, unknown>;
+    const next = Object.fromEntries(Object.entries(current).filter(([tabId]) => ids.has(tabId)));
+    if (Object.keys(next).length !== Object.keys(current).length) {
+      patch[key] = next;
+      changed = true;
+    }
+  }
+  const blobs = Object.fromEntries(
+    Object.entries(state.blobs).filter(
+      ([, blob]) => blob.tabId === undefined || ids.has(blob.tabId),
+    ),
+  );
+  if (Object.keys(blobs).length !== Object.keys(state.blobs).length) {
+    patch.blobs = blobs;
+    changed = true;
+  }
+  return changed ? (patch as Partial<AppStateShape>) : null;
+}
+
+/**
+ * Keeps the active transcript and a few recent ones. Pinned tabs are evicted
+ * only after every unpinned candidate, and a running/starting tab is never
+ * touched. An evicted transcript is reset, not deleted, so `hydrated:false`
+ * tells the activation path to fetch history again.
+ */
+function boundTranscripts(
+  currentTranscripts: AppStateShape["transcripts"],
+  tabs: readonly TabRecord[],
+  activeTabId: string | null,
+): Partial<AppStateShape> | null {
+  const keep = new Set<string>();
+  if (activeTabId) keep.add(activeTabId);
+  const candidates = tabs
+    .filter((tab) => tab.id !== activeTabId)
+    .filter((tab) => tab.status !== "running" && tab.status !== "starting")
+    .filter((tab) => {
+      const transcript = currentTranscripts[tab.id];
+      return transcript !== undefined && (transcript.hydrated || transcript.items.length > 0);
+    })
+    .sort((left, right) => {
+      const leftPinned = left.pinned === true ? 1 : 0;
+      const rightPinned = right.pinned === true ? 1 : 0;
+      if (leftPinned !== rightPinned) return leftPinned - rightPinned;
+      return left.lastActiveAt - right.lastActiveAt;
+    });
+  let retained = keep.size + candidates.length;
+  if (retained <= MAX_RETAINED_TRANSCRIPTS) return null;
+
+  const transcripts = { ...currentTranscripts };
+  let changed = false;
+  for (const tab of candidates) {
+    if (retained <= MAX_RETAINED_TRANSCRIPTS) break;
+    transcripts[tab.id] = createTranscriptState();
+    transcriptHydrating.delete(tab.id);
+    sessionEnsuring.delete(tab.id);
+    retained -= 1;
+    changed = true;
+  }
+  return changed ? { transcripts } : null;
+}
+
+/** Caps the lazy tool-result cache by entry count and approximate size. */
+function boundBlobs(blobs: Record<string, BlobState>): Record<string, BlobState> {
+  let total = Object.values(blobs).reduce((sum, blob) => sum + (blob.bytes ?? 0), 0);
+  if (Object.keys(blobs).length <= MAX_RETAINED_BLOBS && total <= MAX_BLOB_BYTES) {
+    return blobs;
+  }
+  const next = { ...blobs };
+  for (const [path, blob] of Object.entries(blobs)) {
+    if (Object.keys(next).length <= MAX_RETAINED_BLOBS && total <= MAX_BLOB_BYTES) break;
+    // Keep the last entry even when it alone exceeds the byte budget: dropping
+    // it would make the card refetch on every render. The entry cap still
+    // bounds the number of such outliers.
+    if (Object.keys(next).length <= 1) break;
+    // Never drop an in-flight read; the next completion will trim again.
+    if (blob.status === "loading") continue;
+    delete next[path];
+    total -= blob.bytes ?? 0;
+  }
+  return next;
+}
+
 /** In-flight ensures, so focus + click + first keystroke share one activation. */
 const sessionEnsuring = new Map<string, Promise<boolean>>();
+/**
+ * Tab ids observed closed this run. A late event batch can arrive after the tab
+ * table push; without this set it would recreate the transcript/cache that
+ * `applyTabs` just pruned. Bounded so churn cannot grow it. The set is cleared
+ * for an id as soon as it appears in a tab table again (ids are unique, but the
+ * guard keeps tests and a future re-import honest).
+ */
+const closedTabIds = new Set<string>();
+const MAX_CLOSED_TAB_IDS = 100;
 /**
  * In-flight transcript hydrations. A restored tab mounts and then receives its
  * first state frame; without this guard both effects call `messages.get` and
@@ -472,6 +594,10 @@ export interface BlobState {
   /** The raw spilled JSON, present once `ready`. */
   contents?: string;
   error?: string;
+  /** The tab that requested it, so a closed tab's cache entries can be pruned. */
+  tabId?: string;
+  /** UTF-16 length of `contents`, for the cache byte guard. */
+  bytes?: number;
 }
 
 export interface AppStateShape {
@@ -2347,6 +2473,33 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return before && sameTabRecord(before, next) ? before : next;
     });
     const ids = new Set(tabs.map((tab) => tab.id));
+    const closedIds: string[] = [];
+    for (const tab of state.tabs) {
+      if (ids.has(tab.id)) continue;
+      closedTabIds.add(tab.id);
+      closedIds.push(tab.id);
+      sessionEnsuredAt.delete(tab.id);
+      sessionEnsuring.delete(tab.id);
+      transcriptHydrating.delete(tab.id);
+    }
+    for (const id of ids) closedTabIds.delete(id);
+    while (closedTabIds.size > MAX_CLOSED_TAB_IDS) {
+      const oldest = closedTabIds.values().next().value;
+      if (oldest === undefined) break;
+      closedTabIds.delete(oldest);
+    }
+    const removed = closedIds.length > 0;
+    // Unlimited tabs must not mean unbounded per-tab caches. Prune every record
+    // for a closed tab and keep the transcript cache bounded by recency.
+    const pruned = pruneClosedTabRecords(state, ids);
+    const bounded = boundTranscripts(
+      pruned?.transcripts ?? state.transcripts,
+      tabs,
+      envelope.activeTabId,
+    );
+    const hasCachePatch = pruned !== null || bounded !== null;
+    const cachePatch: Partial<AppStateShape> = { ...(pruned ?? {}), ...(bounded ?? {}) };
+    if (removed) purgeClosedTabDialogs(ids);
     const prompt = state.webNavigationPrompt;
     const unchanged =
       envelope.activeTabId === state.activeTabId &&
@@ -2364,7 +2517,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         sessionEnsuredAt.delete(tab.id);
       }
     }
-    if (unchanged) return;
+    if (unchanged && !hasCachePatch) return;
     // Web-tab state and any pending navigation belong to a tab that still
     // exists; a closed tab must not leave a stale native view or dialog behind.
     const webTabStates = Object.fromEntries(
@@ -2374,6 +2527,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       tabs,
       activeTabId: envelope.activeTabId,
       webTabStates,
+      ...cachePatch,
       ...(prompt && !ids.has(prompt.tabId) ? { webNavigationPrompt: null } : {}),
     });
   },
@@ -2383,6 +2537,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // are provider-login progress and prompts (plan step 9).
     if (envelope.tabId === CONTROL_TAB_ID) {
       for (const entry of envelope.events) get().applyControlEvent(entry);
+      return;
+    }
+    // A late batch for a just-closed tab must not recreate its caches. If the id
+    // is open again (a test or a future re-import uses setState directly), the
+    // current table wins over the closed-tab marker.
+    if (closedTabIds.has(envelope.tabId) && !get().tabs.some((tab) => tab.id === envelope.tabId)) {
       return;
     }
     if (envelope.events.some((entry) => entry.event === "session.recovered")) {
@@ -2521,6 +2681,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         const result = (await api.sessions.request({ tabId, method: "messages.get" })) as {
           messages?: unknown[];
         };
+        // The tab may have been closed while the read was in flight.
+        if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
         const base = get().transcripts[tabId] ?? createTranscriptState();
         set({
           transcripts: {
@@ -2533,6 +2695,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         // effort — but a failed read must not be cached as "no history": after a
         // relaunch the host may still be starting, and the view retries hydration
         // when the tab status changes (plan step 25).
+        if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
         const base = get().transcripts[tabId] ?? createTranscriptState();
         set({
           transcripts: { ...get().transcripts, [tabId]: { ...base, hydrated: false } },
@@ -4849,14 +5012,14 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   loadBlob: async (tabId, ref) => {
     const path = ref.$blob;
     if (get().blobs[path]) return;
-    set((state) => ({ blobs: { ...state.blobs, [path]: { status: "loading" } } }));
+    set((state) => ({ blobs: { ...state.blobs, [path]: { status: "loading", tabId } } }));
     const api = bridge();
     if (!api?.sessions) {
       set((state) => ({
-        blobs: {
+        blobs: boundBlobs({
           ...state.blobs,
-          [path]: { status: "error", error: "Sessions are unavailable." },
-        },
+          [path]: { status: "error", error: "Sessions are unavailable.", tabId },
+        }),
       }));
       return;
     }
@@ -4866,19 +5029,25 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         method: "host.blobs.read",
         params: { path },
       })) as { contents?: unknown } | null;
+      // A closed tab's loading entry was already pruned; do not resurrect it.
+      if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
       const contents = typeof result?.contents === "string" ? result.contents : null;
       set((state) => ({
-        blobs: {
+        blobs: boundBlobs({
           ...state.blobs,
           [path]:
             contents === null
-              ? { status: "error", error: "The spilled result is no longer on disk." }
-              : { status: "ready", contents },
-        },
+              ? { status: "error", error: "The spilled result is no longer on disk.", tabId }
+              : { status: "ready", contents, tabId, bytes: contents.length },
+        }),
       }));
     } catch (error) {
+      if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
       set((state) => ({
-        blobs: { ...state.blobs, [path]: { status: "error", error: errorMessage(error) } },
+        blobs: boundBlobs({
+          ...state.blobs,
+          [path]: { status: "error", error: errorMessage(error), tabId },
+        }),
       }));
     }
   },
@@ -5664,6 +5833,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // Switching tabs always re-checks; the ensure refreshes extension UI, the
     // TUI surface, shortcuts and the command cache after the host is awake.
     await get().ensureSession(tabId, { force: true });
+    // An evicted transcript is reset to `hydrated:false`; fetch it again now
+    // rather than waiting for a status change that may never happen.
+    const transcript = get().transcripts[tabId];
+    if (!transcript || !transcript.hydrated) void get().hydrateTranscript(tabId);
   },
 
   ensureSession: async (tabId, options = {}) => {

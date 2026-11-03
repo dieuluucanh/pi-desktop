@@ -411,7 +411,15 @@ export interface DiagnosticsSnapshot {
   /** Live-host budget and open-tab counts (plan step 24 backpressure). */
   capacity: SessionCapacity;
   /** The per-host memory budget and restart threshold, for the RSS readout. */
-  memory: { budgetBytes: number; restartBytes: number };
+  memory: {
+    budgetBytes: number;
+    restartBytes: number;
+    /** Machine total/free memory, when the host can report it. */
+    totalBytes: number | null;
+    freeBytes: number | null;
+  };
+  /** Live web renderers (the tab records stay unlimited). */
+  web: { tabs: number; liveViews: number; limit: number };
   incidents: Incident[];
   extensionErrors: DiagnosticsExtensionError[];
   office: DiagnosticsOfficeInfo;

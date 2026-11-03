@@ -4,6 +4,7 @@ import { normalize } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   HostTimeoutError,
+  MAX_HOST_LOG_LINES,
   OFFICE_BRIDGE_PORT,
   createHostSupervisor,
   type HostSpawner,
@@ -16,7 +17,7 @@ import {
   type HostRequestFrame,
   type HostResponseFrame,
 } from "../../src/shared/host-protocol";
-import { MAX_HOSTS_HARD_CEILING } from "../../src/shared/performance";
+import { hostProcessCeiling } from "../../src/shared/performance";
 
 /**
  * Supervisor tests against a scripted fake host process: correlation, timeouts,
@@ -147,6 +148,7 @@ function harness(
     idleTimeoutMs?: number;
     maxRestarts?: number;
     isPinned?: (sessionId: string) => boolean;
+    isBridgeOwner?: (sessionId: string) => boolean;
   } = {},
 ) {
   const spawned: FakeHost[] = [];
@@ -175,7 +177,7 @@ function harness(
     spawner,
     fs,
     requestTimeoutMs: 1_000,
-    maxHosts: options.maxHosts ?? MAX_HOSTS_HARD_CEILING,
+    maxHosts: options.maxHosts ?? hostProcessCeiling(),
     idleTimeoutMs: options.idleTimeoutMs ?? 0,
     ...(options.maxRestarts === undefined ? {} : { maxRestarts: options.maxRestarts }),
     memoryPollMs: options.memoryPollMs ?? 0,
@@ -184,6 +186,7 @@ function harness(
     telemetryEnabled: options.telemetryEnabled ?? false,
     ...(options.hostBuildId ? { hostBuildId: options.hostBuildId } : {}),
     ...(options.isPinned ? { isPinned: options.isPinned } : {}),
+    ...(options.isBridgeOwner ? { isBridgeOwner: options.isBridgeOwner } : {}),
   });
 
   return { supervisor, spawned, spawnCalls, fs };
@@ -257,8 +260,24 @@ describe("host supervisor startup", () => {
     await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
 
     await expect(supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") })).rejects.toThrow(
-      /emergency ceiling of 1 host processes/,
+      /memory-derived ceiling of 1 host processes/,
     );
+  });
+
+  it("stops a child whose handshake never completes", async () => {
+    const { supervisor, spawned } = harness({ behaviours: [{ silent: ["host.hello"] }] });
+
+    await expect(
+      supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") }),
+    ).rejects.toBeInstanceOf(HostTimeoutError);
+
+    expect(spawned[0]?.killed).toBe(true);
+    expect(supervisor.list()).toHaveLength(0);
+
+    // The failed child must not block a later, healthy spawn for the same id.
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(host.status()).toBe("ready");
+    expect(spawned).toHaveLength(2);
   });
 });
 
@@ -452,6 +471,18 @@ describe("host supervisor shutdown", () => {
     await expect(host.restart("crash")).rejects.toThrow(/shutting down/);
   });
 
+  it("stops the replacement when a restart handshake fails", async () => {
+    const { supervisor, spawned } = harness({
+      behaviours: [{}, { silent: ["host.hello"] }],
+    });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    await expect(host.restart("test")).rejects.toBeInstanceOf(HostTimeoutError);
+
+    expect(spawned[1]?.killed).toBe(true);
+    expect(host.status()).toBe("failed");
+  });
+
   it("does not restart a crashed host once it has been stopped (plan step 27)", async () => {
     const { supervisor, spawned } = harness();
     const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
@@ -471,6 +502,22 @@ describe("host supervisor shutdown", () => {
     const logFile = [...fs.files.keys()].find((file) => file.endsWith("s1.log"));
     expect(logFile, "a log file per session").toBeDefined();
     expect(fs.files.get(logFile ?? "") ?? "").toContain("spawned");
+  });
+
+  it("bounds the in-memory and on-disk log", async () => {
+    const { supervisor, spawned, fs } = harness();
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    for (let index = 0; index < MAX_HOST_LOG_LINES + 250; index += 1) {
+      spawned[0]?.stderr.write(`stderr line ${index}\n`);
+    }
+
+    const lines = host.logs();
+    expect(lines.length).toBeLessThanOrEqual(MAX_HOST_LOG_LINES);
+    expect(lines.at(-1)).toContain(`stderr line ${MAX_HOST_LOG_LINES + 249}`);
+
+    const logFile = [...fs.files.keys()].find((file) => file.endsWith("s1.log"));
+    expect((fs.files.get(logFile ?? "") ?? "").length).toBeLessThanOrEqual(64_000);
   });
 });
 
@@ -658,6 +705,7 @@ describe("host supervisor resource guardrails (plan step 24)", () => {
     const { supervisor, spawned } = harness({
       memoryPollMs: 5,
       maxRssBytes: 1_000,
+      isPinned: () => true,
       behaviours: [
         {
           answer: (request) =>
@@ -674,6 +722,35 @@ describe("host supervisor resource guardrails (plan step 24)", () => {
                 : undefined,
         },
       ],
+    });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(supervisor.get("s1")?.status()).toBe("ready");
+    expect(spawned[0]?.killed).toBe(false);
+  });
+
+  it("recycles a pinned active host when it is idle and over the RSS threshold", async () => {
+    const { supervisor, spawned } = harness({
+      memoryPollMs: 5,
+      maxRssBytes: 1_000,
+      isPinned: () => true,
+      behaviours: [{ answer: metricsAnswer(5_000) }],
+    });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    await vi.waitFor(() => {
+      expect(supervisor.get("s1")).toBeUndefined();
+    });
+    expect(spawned[0]?.killed).toBe(true);
+  });
+
+  it("never RSS-recycles the Office bridge owner even when it is over the threshold", async () => {
+    const { supervisor, spawned } = harness({
+      memoryPollMs: 5,
+      maxRssBytes: 1_000,
+      isBridgeOwner: () => true,
+      behaviours: [{ answer: metricsAnswer(5_000) }],
     });
     await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
 

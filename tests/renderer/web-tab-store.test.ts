@@ -238,7 +238,24 @@ describe("automatic loopback detection (plan step 21)", () => {
 
   it("opens a loopback URL found in a tool result", async () => {
     const handles = installBridge();
-    useAppStore.setState({ tabs: [], activeTabId: null, webTabStates: {}, transcripts: {} });
+    useAppStore.setState({
+      tabs: [
+        {
+          id: "s1",
+          kind: "session",
+          cwd: "C:/work/app",
+          title: "app",
+          sessionFile: "C:/profile/s1.jsonl",
+          status: "idle",
+          createdAt: 1,
+          lastActiveAt: 1,
+          model: null,
+        },
+      ],
+      activeTabId: "s1",
+      webTabStates: {},
+      transcripts: {},
+    });
 
     useAppStore.getState().applySessionEvents({
       tabId: "s1",

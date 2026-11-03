@@ -6,7 +6,6 @@ import {
   HOST_RSS_BUDGET_BYTES,
   HOST_RSS_RESTART_BYTES,
   LIVE_HOST_RAM_SHARE,
-  MAX_HOSTS_HARD_CEILING,
   MAX_LIVE_HOSTS,
   MIN_LIVE_HOSTS,
   SESSION_READY_BUDGET_MS,
@@ -19,6 +18,7 @@ import {
   formatBytes,
   formatDuration,
   hostCeilingMessage,
+  hostProcessCeiling,
   liveHostBudget,
   shouldRestartForMemory,
   worstBudgetStatus,
@@ -70,7 +70,7 @@ describe("formatting", () => {
     expect(formatBytes(512)).toBe("512 B");
     expect(formatBytes(1_024)).toBe("1 KB");
     expect(formatBytes(HOST_RSS_BUDGET_BYTES)).toBe("512 MB");
-    expect(formatBytes(HOST_RSS_RESTART_BYTES)).toBe("1.5 GB");
+    expect(formatBytes(HOST_RSS_RESTART_BYTES)).toBe("1 GB");
   });
 });
 
@@ -141,16 +141,24 @@ describe("live-host budget", () => {
   const gib = 1024 ** 3;
 
   it("derives a soft target from total physical memory", () => {
-    expect(LIVE_HOST_RAM_SHARE).toBe(0.4);
-    expect(liveHostBudget(8 * gib)).toBe(6);
-    expect(liveHostBudget(16 * gib)).toBe(12);
-    expect(liveHostBudget(32 * gib)).toBe(25);
+    expect(LIVE_HOST_RAM_SHARE).toBe(0.2);
+    expect(liveHostBudget(8 * gib)).toBe(3);
+    expect(liveHostBudget(16 * gib)).toBe(6);
+    expect(liveHostBudget(32 * gib)).toBe(8);
   });
 
   it("clamps small and huge machines to a sane range", () => {
     expect(liveHostBudget(1 * gib)).toBe(MIN_LIVE_HOSTS);
     expect(liveHostBudget(64 * gib)).toBe(MAX_LIVE_HOSTS);
-    expect(MAX_HOSTS_HARD_CEILING).toBeGreaterThan(MAX_LIVE_HOSTS);
+  });
+
+  it("derives the process ceiling from the same target", () => {
+    expect(hostProcessCeiling(8 * gib)).toBe(5);
+    expect(hostProcessCeiling(16 * gib)).toBe(8);
+    expect(hostProcessCeiling(32 * gib)).toBe(10);
+    expect(hostProcessCeiling(64 * gib)).toBe(10);
+    expect(hostProcessCeiling(1 * gib)).toBe(4);
+    expect(hostProcessCeiling()).toBe(6);
   });
 
   it("falls back to the default when the OS reading is unusable", () => {
@@ -161,9 +169,9 @@ describe("live-host budget", () => {
     expect(liveHostBudget(Number.NaN)).toBe(DEFAULT_LIVE_HOSTS);
   });
 
-  it("names the emergency ceiling without inventing a session limit", () => {
-    const message = hostCeilingMessage(64);
-    expect(message).toContain("emergency ceiling of 64 host processes");
+  it("names the memory-derived ceiling without inventing a session limit", () => {
+    const message = hostCeilingMessage(8);
+    expect(message).toContain("memory-derived ceiling of 8 host processes");
     expect(message).not.toMatch(/session tabs|close a tab/i);
   });
 });

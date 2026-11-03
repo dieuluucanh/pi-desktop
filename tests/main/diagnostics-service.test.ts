@@ -130,6 +130,29 @@ describe("snapshot", () => {
     expect(snapshot.office).toMatchObject({ available: true, protocolVersion: 3, panes: 1 });
   });
 
+  it("reports system memory and live web views from the injected providers", () => {
+    const service = createDiagnosticsService(
+      deps({
+        systemMemory: () => ({ totalBytes: 17_179_869_184, freeBytes: 8_589_934_592 }),
+        web: () => ({ tabs: 7, liveViews: 4, limit: 4 }),
+      }),
+    );
+    const snapshot = service.snapshot();
+
+    expect(snapshot.memory).toMatchObject({
+      totalBytes: 17_179_869_184,
+      freeBytes: 8_589_934_592,
+    });
+    expect(snapshot.web).toEqual({ tabs: 7, liveViews: 4, limit: 4 });
+  });
+
+  it("does not invent system or web facts when the providers are absent", () => {
+    const snapshot = createDiagnosticsService(deps()).snapshot();
+    expect(snapshot.memory.totalBytes).toBeNull();
+    expect(snapshot.memory.freeBytes).toBeNull();
+    expect(snapshot.web).toEqual({ tabs: 0, liveViews: 0, limit: 0 });
+  });
+
   it("samples only the allowlisted environment", () => {
     const service = createDiagnosticsService(deps());
     const snapshot = service.snapshot();

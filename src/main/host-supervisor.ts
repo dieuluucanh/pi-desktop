@@ -24,9 +24,9 @@ import { SESSION_ID_ENV, SERVICE_ENV, SERVICE_FLAG } from "../host/index";
 import {
   HOST_RSS_RESTART_BYTES,
   IDLE_HOST_TIMEOUT_MS,
-  MAX_HOSTS_HARD_CEILING,
   capacity,
   hostCeilingMessage,
+  hostProcessCeiling,
   shouldRestartForMemory,
   type Capacity,
   type HostMemoryMetrics,
@@ -191,11 +191,17 @@ export interface HostSupervisorOptions {
   /** How often to poll `host.metrics`; `0` disables polling (tests). */
   memoryPollMs?: number;
   /**
-   * A session that must not be idle-recycled right now (the Office bridge
-   * owner). Evaluated at every idle tick, so a bridge that moves between tabs
-   * pins the new owner without a restart.
+   * A session that must not be idle-recycled right now (the active tab, the
+   * control host or the Office bridge owner). Evaluated at every idle tick, so a
+   * bridge that moves between tabs pins the new owner without a restart.
    */
   isPinned?: (sessionId: string) => boolean;
+  /**
+   * The session hosting the on-demand Office bridge. Unlike `isPinned`, this is
+   * also exempt from the RSS watchdog: stopping it would drop port 38617 and any
+   * attached pane. The active tab is deliberately **not** offered this exemption.
+   */
+  isBridgeOwner?: (sessionId: string) => boolean;
   /**
    * Safe mode (plan step 22): passed to every child as `PI_DESKTOP_SAFE_MODE` so
    * the host loads no third-party resources and refuses package changes.
@@ -218,15 +224,22 @@ export interface HostSupervisor {
   stopAll(): Promise<void>;
   /** Ports currently owned by hosts. */
   allocatedPorts(): number[];
-  /** Used/limit of the emergency host-process ceiling (not a session limit). */
+  /** Used/limit of the memory-derived host-process ceiling (not a session limit). */
   capacity(): Capacity;
 }
 
 export const OFFICE_BRIDGE_PORT = 38617;
 export const FIRST_GENERAL_PORT = 38618;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-export const DEFAULT_MAX_HOSTS = MAX_HOSTS_HARD_CEILING;
+export const DEFAULT_MAX_HOSTS = hostProcessCeiling();
 export const DEFAULT_IDLE_TIMEOUT_MS = IDLE_HOST_TIMEOUT_MS;
+/**
+ * Hosts are long-lived and their stderr is untrusted; keep the in-memory log
+ * (and the file rewritten from it) bounded so a noisy host cannot grow main's
+ * heap. The last lines are the useful ones for Diagnostics.
+ */
+export const MAX_HOST_LOG_LINES = 200;
+export const MAX_HOST_LOG_CHARS = 64_000;
 export const DEFAULT_METRICS_POLL_MS = 15_000;
 export const RESTART_BACKOFF_MS = [0, 500, 2_000] as const;
 
@@ -408,6 +421,14 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     private appendLog(level: "info" | "error", message: string): void {
       const line = `${new Date(now()).toISOString()}  ${level.padEnd(5)}  ${message}\n`;
       this.logBuffer.push(line);
+      while (this.logBuffer.length > MAX_HOST_LOG_LINES) this.logBuffer.shift();
+      let chars = this.logBuffer.reduce((total, entry) => total + entry.length, 0);
+      while (this.logBuffer.length > 1 && chars > MAX_HOST_LOG_CHARS) {
+        const oldest = this.logBuffer[0];
+        if (oldest === undefined) break;
+        chars -= oldest.length;
+        this.logBuffer.shift();
+      }
       void fs.writeTextFile(join(options.logDir, `${this.sessionId}.log`), this.logBuffer.join(""));
     }
 
@@ -577,10 +598,22 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         this.rejectPending(`host restarted (${reason})`);
       }
       this.spawnChild();
-      const info = await this.handshake();
-      this.appendLog("info", `host restarted (${reason}) pid ${info.pids.pid}`);
-      this.emitter.emit("restarted", { reason, sessionId: this.sessionId });
-      return info;
+      try {
+        const info = await this.handshake();
+        this.appendLog("info", `host restarted (${reason}) pid ${info.pids.pid}`);
+        this.emitter.emit("restarted", { reason, sessionId: this.sessionId });
+        return info;
+      } catch (error) {
+        // The replacement never became ready. Leaving it alive would make it an
+        // invisible second host for this session (outside `hosts`, outside the
+        // ceiling, holding a port), so stop it before propagating the failure.
+        const child = this.child;
+        this.rejectPending(`host restart failed (${reason})`);
+        if (child) await this.terminateChild(child);
+        this.state = "failed";
+        this.emitter.emit("status", "failed");
+        throw error;
+      }
     }
 
     /**
@@ -653,6 +686,15 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       } catch {
         // A broken predicate must not keep a host alive forever; fail open to
         // the existing recycle behaviour.
+        return false;
+      }
+    }
+
+    /** The bridge owner keeps port 38617; the RSS watchdog must never stop it. */
+    private bridgeOwner(): boolean {
+      try {
+        return options.isBridgeOwner?.(this.sessionId) === true;
+      } catch {
         return false;
       }
     }
@@ -732,10 +774,13 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         // and the next interaction/ensure resumes from JSONL. This is the same
         // path as an idle recycle, so it cannot orphan a child or race a handshake.
         if (threshold > 0 && shouldRestartForMemory(sample, threshold) && this.pending.size === 0) {
-          // Never recycle the Office bridge owner or a pinned host, and never
-          // stop a session that is still working (a streaming turn has no
-          // pending request once its preflight ack has been consumed).
-          if (this.pinned() || this.officeHost) return;
+          // Never recycle the Office bridge owner or the Office host: stopping
+          // it would drop port 38617. The active tab is pinned for idle purposes
+          // but is deliberately NOT exempt here — it is the session most likely
+          // to hold a large transcript, and this watchdog is the only per-host
+          // guard against a leak. The busy probe below still protects a working
+          // session.
+          if (this.officeHost || this.bridgeOwner()) return;
           let busy: boolean;
           try {
             busy = isSessionBusyState(
@@ -855,6 +900,12 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       } catch (error) {
         hosts.delete(spec.sessionId);
         ports.delete(port);
+        // `start()` spawns before it handshakes. A failed handshake (timeout,
+        // protocol mismatch, slow cold start) would otherwise leave that child
+        // running forever, outside the host map and the ceiling. Stop it and
+        // dispose its listeners before reporting the failure.
+        await host.shutdown().catch(() => undefined);
+        host.disposeHere();
         throw error;
       }
       return host;

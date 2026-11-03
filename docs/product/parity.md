@@ -107,7 +107,7 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 | Profile choice (shared with terminal Pi vs app-private)                              | n/a                       | ✅ step 26 (shared is the default; the choice is applied before any host spawns, restart to change)                                                     |
 | Update notification + install                                                        | `pi` self-update          | 🚧 deferred (Phase G, steps 25-28): desktop app only today; Pi runtime + extension channels need the three-channel confirmation the plan requires       |
 | Installers (Windows NSIS + portable; macOS dmg/zip; Linux AppImage/deb, x64 + arm64) | ✅ (`npm i -g`)           | ✅ step 26 (unsigned; macOS/Linux beta; the clean-machine install and every not-yet-live row are listed in [releases/v0.3.0.md](../releases/v0.3.0.md)) |
-| Multi-session parallelism                                                            | multiple terminals        | ✅ step 11 (tabs, one host per session, 8-host cap with idle recycling)                                                                                 |
+| Multi-session parallelism                                                            | multiple terminals        | ✅ step 11 (unlimited tab records, one live host per awake session, memory-derived 2–8 host target with idle recycling)                                 |
 | Web UIs on localhost (e.g. Plannotator review pages)                                 | system browser            | ✅ step 21 (in-app isolated web tab)                                                                                                                    |
 | Windows / macOS / Linux                                                              | ✅                        | Windows first; macOS/Linux beta (D-A13)                                                                                                                 |
 
@@ -136,11 +136,11 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 
 ## Performance and resources
 
-| Capability                                      | Terminal Pi     | Pi Desktop                                                                                                                         |
-| ----------------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Startup to an interactive window (≤ 2.5 s)      | n/a             | ✅ step 24 (`createStartupMetrics`; Diagnostics shows it; `npm run e2e:perf` asserts it on CI)                                     |
-| Warm session ready (≤ 5 s)                      | n/a             | ✅ step 24 (only the last-used tab is pre-warmed; the mark stays `unknown` when there is nothing to warm)                          |
-| Streaming stays smooth (delta coalescing)       | ✅ (in-process) | ✅ step 24 (33 ms / 1 KB batches; `coalesceStats()` measured)                                                                      |
-| Very long sessions stay responsive              | ✅ (TUI)        | ✅ steps 5/24 (transcript virtualizes above 50 items; a 10k-item test bounds the DOM)                                              |
-| Huge tool results do not block the UI           | ✅ (TUI)        | ✅ step 24 (a response over 1 MB spills to a blob; a tool result is spilled in place and fetched only when its card is opened)     |
-| Many parallel sessions without unbounded memory | ✅ (terminals)  | ✅ steps 3/24 (host cap 8, idle recycling, per-host RSS in Diagnostics, RSS restart threshold with cooldown, backpressure message) |
+| Capability                                      | Terminal Pi     | Pi Desktop                                                                                                                                           |
+| ----------------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Startup to an interactive window (≤ 2.5 s)      | n/a             | ✅ step 24 (`createStartupMetrics`; Diagnostics shows it; `npm run e2e:perf` asserts it on CI)                                                       |
+| Warm session ready (≤ 5 s)                      | n/a             | ✅ step 24 (only the last-used tab is pre-warmed; the mark stays `unknown` when there is nothing to warm)                                            |
+| Streaming stays smooth (delta coalescing)       | ✅ (in-process) | ✅ step 24 (33 ms / 1 KB batches; `coalesceStats()` measured)                                                                                        |
+| Very long sessions stay responsive              | ✅ (TUI)        | ✅ steps 5/24 (transcript virtualizes above 50 items; a 10k-item test bounds the DOM)                                                                |
+| Huge tool results do not block the UI           | ✅ (TUI)        | ✅ step 24 (a response over 1 MB spills to a blob; a tool result is spilled in place and fetched only when its card is opened)                       |
+| Many parallel sessions without unbounded memory | ✅ (terminals)  | ✅ steps 3/24 (unlimited tabs; memory-derived live-host target/ceiling; 1 GB per-host RSS guard; 50 % aggregate host-RSS guard; four live web views) |

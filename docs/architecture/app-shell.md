@@ -512,23 +512,41 @@ and the renderer all read it, so a budget change is one edit.
   body through `host.blobs.read` only when the card is opened.
 - **Per-host memory.** Every host answers `host.metrics` with its own RSS (no
   OS-specific process query). The supervisor polls it, Diagnostics shows it
-  against the soft budget, and an idle host over the hard threshold is recycled
-  by **stopping** it (the same path as an idle recycle), not by restarting in
-  place. The session service drops a handle that reports `stopped`, so the next
-  interaction spawns a fresh process and resumes from JSONL. The 15-minute
-  time-based idle recycler is **on by default**; the active tab, the control
-  host, an Office host and the bridge owner are never recycled.
+  against the soft budget, and an idle host over the hard threshold (1 GB) is
+  recycled by **stopping** it (the same path as an idle recycle), not by
+  restarting in place. The session service drops a handle that reports
+  `stopped`, so the next interaction spawns a fresh process and resumes from
+  JSONL. The 15-minute time-based idle recycler is **on by default**. The active
+  tab, the control host, an Office host and the bridge owner are protected from
+  _idle_ sleep; the active tab is deliberately **not** exempt from the RSS
+  watchdog (it is the session most likely to hold a large transcript). Only the
+  Office host and the bridge owner are RSS-exempt, because stopping them drops
+  port 38617.
 - **Open tabs vs live hosts.** A tab is a resumable JSONL record, not a process,
   so session, Office, web and editor tabs are **unlimited**. The only resource
-  budget is live host processes: `liveHostBudget(totalMemory)` reserves 40% of
-  physical RAM at 512 MB per host, clamped to 4–32. Before a spawn the session
+  budget is live host processes: `liveHostBudget(totalMemory)` reserves 20% of
+  physical RAM at 512 MB per host, clamped to 2–8. Before a spawn the session
   service parks the least-recently-used **idle** host (status `stopped` shows as
   "asleep"); if every live session is busy the spawn still proceeds, so a
-  session count can never block the user. Diagnostics shows `live/target`,
-  open/asleep/editor counts and an over-target warn badge. The supervisor's
-  64-process ceiling is an emergency port/protocol guard, not a session limit.
-  Both idle and RSS recycling probe `state.get` first, so a streaming turn or a
-  long tool call is never stopped mid-work.
+  session count can never block the user. `hostProcessCeiling(totalMemory)` is
+  the memory-derived process ceiling (`target + 2`, 4–10). A 30-second
+  main-process tick parks idle hosts when the live count is over target or the
+  sum of host RSS is over 50% of physical RAM. Diagnostics shows
+  `live/target (ceiling)`, aggregate host RSS/limit, system free/total memory and
+  live web views, with over-target/over-memory warn badges. Both idle and RSS
+  recycling probe `state.get` first, so a streaming turn or a long tool call is
+  never stopped mid-work.
+- **Bounded live renderers and caches.** Unlimited web tabs are URL records; at
+  most four `WebContentsView`s stay live (active + three recent), and an evicted
+  view reloads its URL on activation. The renderer keeps at most four hydrated
+  transcripts and a bounded lazy blob cache; closed tabs lose every per-tab
+  cache immediately. These bounds are independent of the tab count, so opening
+  many tabs cannot grow Chromium or the renderer without limit.
+- **Host process lifetime.** A service host shuts down when its stdin pipe
+  closes, which is what happens when main exits (including an `electron-vite`
+  dev restart). A failed `start()` or `restart()` terminates the child it
+  spawned, and host logs are bounded in memory and on disk. Without these, each
+  dev restart could leave invisible hosts behind.
 
 ## Tests
 

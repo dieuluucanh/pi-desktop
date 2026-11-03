@@ -56,8 +56,28 @@ resource. The window shows a safe-mode banner.
   active tab; other tabs stay asleep until you interact with them.
 - **A tab that says `asleep`** has no running host. Clicking it, focusing the
   composer or typing wakes it; you do not need the Start session link.
-- The time-based 15-minute idle recycler is **not enabled by default**; the
-  high-RSS guardrail is. Both show up in the host log and Diagnostics.
+- The time-based 15-minute idle recycler is **on by default**; only inactive
+  tabs sleep (the active tab, the control host and the bridge owner are protected
+  from _idle_ sleep). The 1 GB RSS guardrail still applies to the active tab.
+  Both show up in the host log and Diagnostics.
+
+## The app's memory keeps growing, or a Pi terminal gets slow
+
+- Open **Diagnostics** first. The Hosts card reports `live/target (ceiling)`,
+  aggregate `host RSS / limit`, system free/total memory and live web views. A
+  warn badge (`over target` or `over memory`) names the pressure instead of
+  guessing.
+- **Live host target:** 20 % of physical RAM at 512 MB per host, clamped 2–8.
+  The ceiling is target + 2 (4–10). Opening more session tabs does not raise it;
+  idle sessions sleep and resume from JSONL.
+- **Web tabs:** unlimited as records, but at most four live renderers are kept.
+  Switching back to an old review reloads it.
+- **Dev mode:** an `electron-vite --watch` restart kills main; hosts now exit
+  when their stdin pipe closes. If you upgraded from an older build, any host
+  left from yesterday's run may still be alive — close the dev terminal (or use
+  Task Manager / `ps`) once, then restart.
+- If the machine is still tight, close pinned/background sessions you are not
+  using, or close the app and the dev terminal; the process tree goes with it.
 
 ## A session stopped responding
 

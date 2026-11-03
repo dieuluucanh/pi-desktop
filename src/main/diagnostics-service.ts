@@ -21,6 +21,7 @@ import {
   DEFAULT_LIVE_HOSTS,
   HOST_RSS_BUDGET_BYTES,
   HOST_RSS_RESTART_BYTES,
+  hostProcessCeiling,
   type SessionCapacity,
   type StartupReport,
 } from "../shared/performance";
@@ -63,6 +64,10 @@ export interface DiagnosticsServiceDeps {
   git?: () => DiagnosticsGitInfo;
   /** Folder checkpoints (git-checkpoint plan step 28). Optional for the same reason. */
   checkpoints?: () => DiagnosticsCheckpointInfo;
+  /** Machine memory, when main can read it (Electron's system memory API). */
+  systemMemory?: () => { totalBytes: number | null; freeBytes: number | null };
+  /** Live web renderers; the tab records themselves are unlimited. */
+  web?: () => { tabs: number; liveViews: number; limit: number };
   /** The environment to sample; only `DIAGNOSTIC_ENV_KEYS` are ever read. */
   env?: Record<string, string | undefined>;
   now?: () => number;
@@ -282,12 +287,21 @@ export function createDiagnosticsService(deps: DiagnosticsServiceDeps): Diagnost
       capacity: deps.sessions?.capacity?.() ?? {
         liveHosts: 0,
         targetHosts: DEFAULT_LIVE_HOSTS,
+        ceilingHosts: hostProcessCeiling(),
         overTarget: false,
+        hostRssBytes: 0,
+        hostRssLimitBytes: 0,
+        overMemory: false,
         openSessions: 0,
         asleepSessions: 0,
         editorTabs: 0,
       },
-      memory: { budgetBytes: HOST_RSS_BUDGET_BYTES, restartBytes: HOST_RSS_RESTART_BYTES },
+      memory: {
+        budgetBytes: HOST_RSS_BUDGET_BYTES,
+        restartBytes: HOST_RSS_RESTART_BYTES,
+        ...(deps.systemMemory?.() ?? { totalBytes: null, freeBytes: null }),
+      },
+      web: deps.web?.() ?? { tabs: 0, liveViews: 0, limit: 0 },
       incidents: [...mainIncidents, ...sessionIncidents]
         .sort((left, right) => right.at - left.at)
         .slice(0, DEFAULT_INCIDENT_LIMIT),

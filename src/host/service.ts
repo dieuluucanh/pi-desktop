@@ -132,6 +132,20 @@ export function createHostService(options: HostServiceOptions): HostService {
   const decoder = new JsonlFrameDecoder(options.maxFrameBytes);
   const handlers: Partial<Record<HostMethod, HostHandler>> = { ...options.handlers };
   let closed = false;
+  let shutdownStarted = false;
+
+  /**
+   * One teardown for both `host.shutdown` and a closed stdin pipe. The supervisor
+   * owns the pipe; if it ends (main crashed, was killed by `electron-vite` on a
+   * dev rebuild, or quit), the parent is gone and the host must not keep running
+   * as an orphan. `runService` resolves on this callback, and `hostMain` calls
+   * `process.exit(0)`.
+   */
+  const shutdown = (): void => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    options.onShutdown?.();
+  };
 
   const writeBlob =
     options.writeBlob ??
@@ -274,7 +288,7 @@ export function createHostService(options: HostServiceOptions): HostService {
   };
 
   handlers["host.shutdown"] = () => {
-    options.onShutdown?.();
+    shutdown();
     return { ok: true };
   };
 
@@ -319,6 +333,9 @@ export function createHostService(options: HostServiceOptions): HostService {
       };
       const onEnd = (): void => {
         closed = true;
+        // The parent died or closed the pipe: dispose now so the process can
+        // exit. Without this a dev main restart leaves the child running.
+        shutdown();
       };
       stdin.on("data", onData);
       stdin.on("end", onEnd);
