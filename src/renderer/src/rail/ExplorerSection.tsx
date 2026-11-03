@@ -154,7 +154,15 @@ export function ExplorerSection({ projectPath }: { projectPath: string }): React
         }
         return;
       case "delete":
-        if (target) setPendingDelete(target);
+        if (target) {
+          // Radix closes a context menu in a later commit than the item's
+          // onSelect, so a modal dialog opened in this same commit reads the
+          // menu's `pointer-events: none` as its "previous" body value and
+          // restores that on close — the whole window then ignores clicks
+          // (2026-11-03 plan step 4). The one-copy dependency override is the
+          // real fix; this keeps the overlap out of the reported flow too.
+          window.setTimeout(() => setPendingDelete(target), 0);
+        }
         return;
       case "reveal":
         if (target) void revealExplorerPath(projectPath, target.path);

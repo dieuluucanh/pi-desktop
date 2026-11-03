@@ -57,6 +57,29 @@ test("@smoke explorer creates a file from the context menu and project removal c
   ).toBeVisible();
   expect(existsSync(join(projectDir, "created.ts"))).toBe(true);
 
+  // Deleting through the row context menu is the flow that used to leave
+  // `pointer-events: none` on <body> when the confirm dialog took over the
+  // context menu's modal lock (2026-11-03 plan step 11).
+  await window
+    .getByTestId("explorer-row")
+    .filter({ hasText: "created.ts" })
+    .click({ button: "right" });
+  await window.getByRole("menuitem", { name: "Delete" }).click();
+  await expect(window.getByTestId("confirm-dialog")).toBeVisible();
+  await window.getByRole("button", { name: "Move to Recycle Bin" }).click();
+  await expect(window.getByTestId("confirm-dialog")).toHaveCount(0);
+
+  // The stuck lock is the freeze: assert the style *and* a real click, so the
+  // test cannot pass on a string alone.
+  await expect
+    .poll(() => window.evaluate(() => document.body.style.pointerEvents))
+    .not.toBe("none");
+  const zoomValue = window.getByRole("button", { name: "Reset zoom" });
+  const beforeZoom = await zoomValue.innerText();
+  await window.getByRole("button", { name: "Zoom out" }).click();
+  await expect(zoomValue).not.toHaveText(beforeZoom);
+  await expect(window.getByTestId("explorer-row").filter({ hasText: "created.ts" })).toHaveCount(0);
+
   // Removing the project closes every tab in it but keeps the folder.
   await window.getByRole("button", { name: /Remove E2E project and close its tabs/i }).click();
   await expect(window.getByTestId("editor-tab-strip")).toHaveCount(0);

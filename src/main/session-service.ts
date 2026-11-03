@@ -427,8 +427,20 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     activeTabId: activeId,
   });
 
-  const publishTabs = (): void => {
-    deps.emit("tabs", envelope());
+  /**
+   * The last table handed to the renderer. A state frame that did not change a
+   * rendered field (sessionFile/title/model/status) must not make the renderer
+   * process the whole tab table; `applyTabs` also reuses unchanged records
+   * (2026-11-03 plan step 10).
+   */
+  let lastPublishedTabs = "";
+
+  const publishTabs = (force = false): void => {
+    const next = envelope();
+    const signature = JSON.stringify(next);
+    if (!force && signature === lastPublishedTabs) return;
+    lastPublishedTabs = signature;
+    deps.emit("tabs", next);
   };
 
   const persist = async (): Promise<void> => {

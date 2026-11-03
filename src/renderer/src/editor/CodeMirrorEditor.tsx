@@ -3,6 +3,7 @@ import { EditorView, type ViewUpdate } from "@codemirror/view";
 
 import type { LanguageId } from "../../../shared/languages";
 import { useEditorStore } from "./editor-store";
+import { syncDocToView } from "./doc-sync";
 import { registerEditorView, unregisterEditorView } from "./editor-registry";
 import { languageExtension } from "./language-support";
 import { createEditorState, type EditorCompartments } from "./setup";
@@ -30,12 +31,19 @@ export function CodeMirrorEditor(props: CodeMirrorEditorProps): React.JSX.Elemen
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const compartmentsRef = useRef<EditorCompartments | null>(null);
+  /** Set while a host-driven document replacement dispatches its transaction. */
+  const suppressDocChangeRef = useRef(false);
 
   useEffect(() => {
     if (!hostRef.current) return;
     const onUpdate = (update: ViewUpdate): void => {
       const store = useEditorStore.getState();
-      if (update.docChanged) store.setText(props.tabId, update.state.doc.toString());
+      // A document replaced by a reload/format result is already in the buffer;
+      // treating its transaction as a user edit would mark the tab dirty and
+      // schedule a backup (2026-11-03 plan step 8).
+      if (update.docChanged && !suppressDocChangeRef.current) {
+        store.setText(props.tabId, update.state.doc.toString());
+      }
       if (update.selectionSet || update.docChanged) {
         const head = update.state.selection.main.head;
         const line = update.state.doc.lineAt(head);
@@ -74,6 +82,20 @@ export function CodeMirrorEditor(props: CodeMirrorEditorProps): React.JSX.Elemen
     // below through the compartments.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.tabId]);
+
+  // Replace the document in place when the buffer changes outside the editor
+  // (a reload, an external edit, a recovered backup). Remounting the view is
+  // what used to flash the screen and lose undo history.
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    suppressDocChangeRef.current = true;
+    try {
+      syncDocToView(view, props.doc);
+    } finally {
+      suppressDocChangeRef.current = false;
+    }
+  }, [props.doc]);
 
   useEffect(() => {
     const view = viewRef.current;

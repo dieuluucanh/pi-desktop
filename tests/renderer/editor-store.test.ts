@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useEditorStore } from "../../src/renderer/src/editor/editor-store";
+import { getBuffer, setBufferText } from "../../src/renderer/src/editor/buffer-registry";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import type { TabRecord } from "../../src/shared/session-ipc";
+import type { WorkspaceFileContent } from "../../src/shared/workspace";
 import { installBridge } from "./fixtures";
 
 /**
@@ -228,5 +230,153 @@ describe("editor tab retargeting and pruning", () => {
     expect(useEditorStore.getState().meta["editor-1"]).toBeDefined();
     expect(useEditorStore.getState().meta["editor-2"]).toBeUndefined();
     expect(deleteBackup).toHaveBeenCalledWith("editor-2");
+  });
+});
+
+/** One text file in the fixture workspace, with the fields the store reads. */
+function textFile(
+  text: string,
+  overrides: Partial<WorkspaceFileContent> = {},
+): { ok: true; value: WorkspaceFileContent } {
+  return {
+    ok: true as const,
+    value: {
+      path: `${WORK}\\a.ts`,
+      relativePath: "a.ts",
+      kind: "text",
+      text,
+      bytes: text.length,
+      size: text.length,
+      mtimeMs: 1,
+      truncated: false,
+      eol: "lf",
+      bom: false,
+      encoding: "utf8",
+      ...overrides,
+    },
+  };
+}
+
+function statFile(mtimeMs: number, size = 8) {
+  return {
+    ok: true as const,
+    value: {
+      path: `${WORK}\\a.ts`,
+      relativePath: "a.ts",
+      kind: "file" as const,
+      size,
+      mtimeMs,
+    },
+  };
+}
+
+/** The two shapes the load path has to handle from `workspace.readFile`. */
+type ReadResult =
+  | { ok: true; value: WorkspaceFileContent }
+  | { ok: false; error: { code: string; message: string } };
+
+/** Install the bridge and replace the workspace reads the load path uses. */
+function installWorkspace() {
+  const { bridge } = installBridge();
+  const workspace = bridge.workspace as unknown as Record<string, unknown>;
+  const readFile = vi.fn<() => Promise<ReadResult>>(async () => textFile("one"));
+  const readBackup = vi.fn(async () => ({ ok: true as const, value: null }));
+  const deleteBackup = vi.fn(async () => ({ ok: true as const, value: true }));
+  const stat = vi.fn(async () => statFile(1));
+  workspace.readFile = readFile;
+  workspace.readBackup = readBackup;
+  workspace.deleteBackup = deleteBackup;
+  workspace.stat = stat;
+  useAppStore.setState({ tabs: [editorTab()], activeTabId: TAB });
+  return { readFile, readBackup, deleteBackup, stat };
+}
+
+describe("editor load", () => {
+  it("coalesces concurrent reads for one tab", async () => {
+    const ws = installWorkspace();
+    let release: (() => void) | undefined;
+    ws.readFile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(textFile("one"));
+        }),
+    );
+
+    const first = useEditorStore.getState().load(TAB);
+    const second = useEditorStore.getState().load(TAB);
+
+    expect(second).toBe(first);
+    expect(ws.readFile).toHaveBeenCalledTimes(1);
+    release?.();
+    await Promise.all([first, second]);
+    expect(getBuffer(TAB)?.text).toBe("one");
+  });
+
+  it("never overwrites a dirty buffer with the disk copy", async () => {
+    const ws = installWorkspace();
+    await useEditorStore.getState().load(TAB);
+    const loaded = useEditorStore.getState().meta[TAB]!;
+    useEditorStore.setState({
+      meta: { ...useEditorStore.getState().meta, [TAB]: { ...loaded, dirty: true } },
+    });
+    setBufferText(TAB, "local edit");
+    ws.readFile.mockResolvedValue(textFile("disk changed", { mtimeMs: 9 }));
+    ws.stat.mockResolvedValue(statFile(9, 12));
+
+    await useEditorStore.getState().load(TAB);
+
+    expect(ws.readFile).toHaveBeenCalledTimes(1);
+    expect(getBuffer(TAB)?.text).toBe("local edit");
+    expect(useEditorStore.getState().meta[TAB]?.externalChange).toEqual({
+      mtimeMs: 9,
+      size: 12,
+    });
+  });
+
+  it("reports a refresh as loading without losing the buffer", async () => {
+    const ws = installWorkspace();
+    await useEditorStore.getState().load(TAB);
+    ws.readFile.mockResolvedValue(textFile("two", { mtimeMs: 2 }));
+
+    const run = useEditorStore.getState().load(TAB);
+    expect(useEditorStore.getState().meta[TAB]?.loading).toBe(true);
+    expect(getBuffer(TAB)?.text).toBe("one");
+    await run;
+
+    expect(getBuffer(TAB)?.text).toBe("two");
+    expect(useEditorStore.getState().meta[TAB]?.loading).toBe(false);
+  });
+
+  it("forces the disk copy over a dirty buffer and drops the backup", async () => {
+    const ws = installWorkspace();
+    await useEditorStore.getState().load(TAB);
+    const loaded = useEditorStore.getState().meta[TAB]!;
+    useEditorStore.setState({
+      meta: { ...useEditorStore.getState().meta, [TAB]: { ...loaded, dirty: true } },
+    });
+    setBufferText(TAB, "local edit");
+    ws.readFile.mockResolvedValue(textFile("disk", { mtimeMs: 7 }));
+
+    await useEditorStore.getState().load(TAB, { force: true });
+
+    expect(getBuffer(TAB)?.text).toBe("disk");
+    expect(useEditorStore.getState().meta[TAB]?.dirty).toBe(false);
+    expect(ws.deleteBackup).toHaveBeenCalledWith(TAB);
+    // A forced reload ignores the backup; only the first load read it.
+    expect(ws.readBackup).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the buffer when a refresh fails", async () => {
+    const ws = installWorkspace();
+    await useEditorStore.getState().load(TAB);
+    ws.readFile.mockResolvedValue({
+      ok: false as const,
+      error: { code: "not_found" as const, message: "gone" },
+    });
+
+    await useEditorStore.getState().load(TAB);
+
+    expect(getBuffer(TAB)?.text).toBe("one");
+    expect(useEditorStore.getState().meta[TAB]?.error).toBe("gone");
   });
 });

@@ -14,7 +14,15 @@ import "@testing-library/jest-dom/vitest";
  * menu in step 11). The shims are no-ops: the components only use them to keep
  * focus bookkeeping consistent, which the tests do not exercise.
  */
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // A live Radix dialog leaves a body pointer-events/aria-hidden lock that
+  // would poison every later test in the file. Clearing it here keeps a leaked
+  // lock from being reported by the wrong test (the delete regression asserts
+  // the invariant explicitly).
+  document.body.style.pointerEvents = "";
+  document.body.removeAttribute("data-scroll-locked");
+});
 
 if (!Element.prototype.hasPointerCapture) {
   // A real pointer-capture set: Radix's dismiss layer treats a pointerdown as

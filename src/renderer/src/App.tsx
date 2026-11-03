@@ -15,11 +15,13 @@ import { SessionTabStrip } from "./layout/SessionTabStrip";
 import { EditorTabStrip } from "./layout/EditorTabStrip";
 import { handleMenuCommand } from "./menu-actions";
 import { useAppStore, type AppView } from "./state/app-store";
+import { createFocusResync } from "./state/focus-resync";
 import { systemThemeName, watchSystemTheme } from "./themes/system-theme";
 import { OnboardingWizard } from "./onboarding/OnboardingWizard";
 import { ShortcutDispatcher } from "./shortcuts/ShortcutDispatcher";
 import { ShortcutsHelp } from "./shortcuts/ShortcutsHelp";
 import { Toaster } from "./ui/toaster";
+import { releaseStaleBodyPointerLock } from "./ui/body-pointer-lock";
 import { ForkDialog } from "./sessions/ForkDialog";
 import { SessionBrowserDialog } from "./sessions/SessionBrowser";
 import { SessionTreeDialog } from "./sessions/SessionTree";
@@ -201,18 +203,27 @@ export function App() {
 
   useEffect(() => {
     // A laptop that slept, or a window that was hidden, can miss main's tab
-    // pushes. Reconcile on the first real interaction with the window, then
-    // ensure the active session (which repairs a stopped/stale host).
-    const resync = (): void => {
+    // pushes. Alt+Tab emits both `focus` and `visibilitychange`; coalesce the
+    // burst into one reconcile (2026-11-03 plan step 9).
+    const resync = createFocusResync(() => {
       if (document.visibilityState === "hidden") return;
+      // A modal layer that unmounted without restoring the body lock leaves the
+      // renderer clickable-looking but inert; recovering on focus is the last
+      // chance to get the window back (see ui/body-pointer-lock.ts).
+      releaseStaleBodyPointerLock();
       void useAppStore.getState().resyncSessions();
       void useAppStore.getState().syncModelScopesFromDisk();
+    });
+    const request = (): void => {
+      if (document.visibilityState === "hidden") return;
+      resync.request();
     };
-    window.addEventListener("focus", resync);
-    document.addEventListener("visibilitychange", resync);
+    window.addEventListener("focus", request);
+    document.addEventListener("visibilitychange", request);
     return () => {
-      window.removeEventListener("focus", resync);
-      document.removeEventListener("visibilitychange", resync);
+      window.removeEventListener("focus", request);
+      document.removeEventListener("visibilitychange", request);
+      resync.cancel();
     };
   }, []);
 

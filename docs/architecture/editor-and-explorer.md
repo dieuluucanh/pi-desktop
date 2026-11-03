@@ -115,7 +115,30 @@ the prompt` while a workspace drag is over the pane. The composer handles a
 Dirty buffers are debounced to `<userData>/editor-backups/<tabId>.json`. On
 load, a backup whose text differs from disk is restored as dirty. Closing a
 dirty tab prompts Save / Discard / Cancel; `pagehide`/`blur` flush pending
-backups. The main-process quit handshake is the remaining hardening item.
+backups. The main-process quit handshake is the remaining hardening item. A
+tab-table publish never replaces a dirty buffer (see **Load and refresh**).
+
+## Load and refresh
+
+The tab table is metadata, not a file event. Main republishes it on state frames
+(including `message_end`) and the renderer's `applyTabs` reuses a record whose
+fields did not change, so a publish cannot re-read an open file.
+`EditorTabView` keys its effect on the tab **id**: a tab with no metadata loads
+once, and a remount (switching away and back) only runs the cheap `stat`.
+
+- `editor-store.load` coalesces concurrent reads per tab: the mount effect,
+  `openFileTab` and a tab-table publish share one promise.
+- Only the first load (no buffer) shows `Loading file…`. A refresh keeps the
+  mounted CodeMirror view and shows a small `Reloading…` chip; the new text is
+  applied by `editor/doc-sync.ts` as one transaction, so undo history, cursor
+  and scroll survive.
+- A dirty buffer is never overwritten by a background refresh: the store sets
+  `externalChange` and the existing "File changed on disk" banner offers
+  **Reload** (forced: replaces the doc and deletes the backup) or **Overwrite**.
+- The 4 s external-change poll skips a hidden window, a loading tab and an
+  in-flight read.
+- Main's `publishTabs` also skips the IPC emit when the envelope is identical to
+  the last one it sent.
 
 ## Formatting
 

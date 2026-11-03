@@ -77,7 +77,7 @@ interface EditorStore {
   requestCloseTabs(tabIds: readonly string[], reason: EditorCloseReason): Promise<boolean>;
   answerClose(decision: "save" | "discard" | "cancel"): Promise<void>;
   openFileTab(projectPath: string, path: string): Promise<boolean>;
-  load(tabId: string): Promise<void>;
+  load(tabId: string, options?: { force?: boolean }): Promise<void>;
   save(tabId: string, options?: { force?: boolean }): Promise<boolean>;
   discard(tabId: string): Promise<void>;
   format(tabId: string): Promise<boolean>;
@@ -102,6 +102,12 @@ const backupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const backupRuns = new Set<Promise<unknown>>();
 /** In-flight saves, so a repeated Ctrl+S writes once and keeps one baseline. */
 const saveRuns = new Map<string, Promise<boolean>>();
+/**
+ * In-flight reads, keyed by tab. A tab-table publish, the editor's mount effect
+ * and `openFileTab` all ask for the same file within one tick; one read answers
+ * all of them (2026-11-03 plan step 6).
+ */
+const loadRuns = new Map<string, Promise<void>>();
 /** Resolver for the currently displayed close prompt, if any. */
 let pendingCloseResolver: ((ok: boolean) => void) | null = null;
 
@@ -209,7 +215,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     );
     if (existing) {
       await app.activateTab(existing.id);
-      await get().load(existing.id);
+      // The editor view loads a tab that has never been read; one that was
+      // loaded before only needs the cheap external-change check on mount.
+      if (!getBuffer(existing.id) && !get().meta[existing.id]) await get().load(existing.id);
       return true;
     }
     const api = window.pi;
@@ -234,91 +242,191 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }
   },
 
-  async load(tabId) {
-    const tab = tabFor(tabId);
-    if (!tab || !isEditorTab(tab)) return;
-    const api = window.pi;
-    if (!api?.workspace) {
+  load(tabId, options = {}) {
+    const inFlight = loadRuns.get(tabId);
+    if (inFlight) {
+      // Not `async` on purpose: a repeated request must receive the *same*
+      // promise (the save path does the same), not an async wrapper.
+      if (!options.force) return inFlight;
+      return inFlight.catch(() => undefined).then(() => get().load(tabId, { force: true }));
+    }
+
+    const run = (async (): Promise<void> => {
+      const tab = tabFor(tabId);
+      if (!tab || !isEditorTab(tab)) return;
+      const api = window.pi;
+      if (!api?.workspace) {
+        set((state) => ({
+          meta: {
+            ...state.meta,
+            [tabId]: buildEditorMeta(tab.id, tab.cwd, tab.filePath, null, {
+              error: "The preload bridge is unavailable.",
+            }),
+          },
+        }));
+        return;
+      }
+
+      const currentBuffer = getBuffer(tabId);
+      const currentMeta = get().meta[tabId];
+      const firstLoad = currentBuffer === undefined;
+
+      // The user's unsaved text is never replaced by the on-disk copy. A
+      // background refresh only reports the newer mtime; the banner offers
+      // Reload (forced) or Overwrite. A tab-table publish can no longer reach
+      // this branch while the user is typing.
+      if (!firstLoad && currentMeta?.dirty && !options.force) {
+        const stat = await api.workspace
+          .stat({ projectPath: currentBuffer.projectPath, path: currentBuffer.path })
+          .catch(() => null);
+        if (stat?.ok && stat.value.kind === "file") {
+          const baseline = currentBuffer.baselineMtimeMs;
+          if (baseline === null || Math.abs(stat.value.mtimeMs - baseline) > 1) {
+            set((state) => ({
+              meta: {
+                ...state.meta,
+                [tabId]: {
+                  ...(state.meta[tabId] ?? currentMeta),
+                  externalChange: { mtimeMs: stat.value.mtimeMs, size: stat.value.size },
+                },
+              },
+            }));
+          }
+        }
+        return;
+      }
+
+      // The read is reported as `loading` either way. The view shows the full
+      // "Loading file…" surface only when there is no buffer yet, so a refresh
+      // keeps the mounted editor (undo history, cursor, scroll) and only shows
+      // the small "Reloading…" chip.
       set((state) => ({
         meta: {
           ...state.meta,
-          [tabId]: buildEditorMeta(tab.id, tab.cwd, tab.filePath, null, {
-            error: "The preload bridge is unavailable.",
-          }),
+          [tabId]: state.meta[tabId]
+            ? { ...state.meta[tabId], loading: true, error: null }
+            : buildEditorMeta(tab.id, tab.cwd, tab.filePath, null, { loading: true }),
         },
       }));
-      return;
-    }
-    set((state) => ({
-      meta: {
-        ...state.meta,
-        [tabId]: state.meta[tabId]
-          ? { ...state.meta[tabId], loading: true, error: null }
-          : buildEditorMeta(tab.id, tab.cwd, tab.filePath, null, { loading: true }),
-      },
-    }));
 
-    const [file, backup] = await Promise.all([
-      api.workspace.readFile({ projectPath: tab.cwd, path: tab.filePath }),
-      api.workspace.readBackup(tabId),
-    ]);
-    if (!file.ok) {
-      set((state) => ({
-        meta: {
-          ...state.meta,
-          [tabId]: buildEditorMeta(tab.id, tab.cwd, tab.filePath, null, {
-            error: failureMessage(file),
-          }),
-        },
-      }));
-      return;
-    }
-    const content = file.value;
-    const recovered =
-      backup.ok && backup.value !== null && backup.value.text !== (content.text ?? "")
-        ? backup.value
-        : null;
-    const text = recovered ? recovered.text : (content.text ?? "");
-    const readOnly =
-      content.kind !== "text" ||
-      content.truncated ||
-      content.size > MAX_EDITOR_WRITE_BYTES ||
-      (recovered === null && content.size > MAX_EDITOR_WRITE_BYTES);
+      const [file, backup] = await Promise.all([
+        api.workspace.readFile({ projectPath: tab.cwd, path: tab.filePath }),
+        options.force
+          ? Promise.resolve({ ok: true as const, value: null })
+          : api.workspace.readBackup(tabId),
+      ]);
+      // A close or rename while the read was in flight: the result belongs to a
+      // tab path that is no longer current, so drop it rather than resurrect a
+      // buffer (or overwrite a retargeted one).
+      const latest = tabFor(tabId);
+      if (
+        !latest ||
+        !isEditorTab(latest) ||
+        latest.cwd !== tab.cwd ||
+        latest.filePath !== tab.filePath
+      ) {
+        return;
+      }
+      if (!file.ok) {
+        const message = failureMessage(file);
+        set((state) => {
+          const existing = state.meta[tabId];
+          return {
+            meta: {
+              ...state.meta,
+              [tabId]: existing
+                ? { ...existing, loading: false, error: message }
+                : buildEditorMeta(tab.id, tab.cwd, tab.filePath, null, { error: message }),
+            },
+          };
+        });
+        return;
+      }
+      const content = file.value;
+      const recovered =
+        !options.force &&
+        backup.ok &&
+        backup.value !== null &&
+        backup.value.text !== (content.text ?? "")
+          ? backup.value
+          : null;
+      const text = recovered ? recovered.text : (content.text ?? "");
+      const readOnly =
+        content.kind !== "text" ||
+        content.truncated ||
+        content.size > MAX_EDITOR_WRITE_BYTES ||
+        (recovered === null && content.size > MAX_EDITOR_WRITE_BYTES);
 
-    putBuffer({
-      tabId,
-      projectPath: tab.cwd,
-      path: tab.filePath,
-      text,
-      baselineMtimeMs: content.mtimeMs,
-      eol: content.eol,
-      bom: content.bom,
-      readOnly,
-    });
-    set((state) => ({
-      meta: {
-        ...state.meta,
-        [tabId]: buildEditorMeta(tab.id, tab.cwd, tab.filePath, content, {
-          dirty: recovered !== null,
-          readOnly,
-          binary: content.kind === "binary",
-          encoding: content.encoding,
+      const unchanged =
+        currentBuffer !== undefined &&
+        currentBuffer.text === text &&
+        currentBuffer.eol === content.eol &&
+        currentBuffer.bom === content.bom &&
+        currentBuffer.readOnly === readOnly;
+      if (unchanged) {
+        // Touch the baseline so the 4 s poll stops reporting the same edit, but
+        // keep the buffer identity: the editor must not re-render the document.
+        updateBufferBaseline(tabId, content.mtimeMs);
+        updateBufferPath(tabId, tab.cwd, tab.filePath);
+      } else {
+        putBuffer({
+          tabId,
+          projectPath: tab.cwd,
+          path: tab.filePath,
+          text,
+          baselineMtimeMs: content.mtimeMs,
           eol: content.eol,
           bom: content.bom,
-          size: content.size,
-          mtimeMs: content.mtimeMs,
-          recovered: recovered !== null,
-          error:
-            content.kind === "text"
-              ? null
-              : content.kind === "binary"
-                ? "Binary file: preview is not available."
-                : content.kind === "too_large"
-                  ? "File is too large to edit."
-                  : "UTF-16 files are not editable; open it externally.",
-        }),
-      },
-    }));
+          readOnly,
+        });
+      }
+
+      if (options.force) {
+        // The user chose the disk copy; a stale recovery must not resurrect the
+        // text on the next mount.
+        await api.workspace.deleteBackup(tabId).catch(() => undefined);
+      }
+
+      set((state) => ({
+        meta: {
+          ...state.meta,
+          [tabId]: buildEditorMeta(tab.id, tab.cwd, tab.filePath, content, {
+            ...(options.force
+              ? {}
+              : {
+                  line: currentMeta?.line ?? 1,
+                  column: currentMeta?.column ?? 1,
+                  selectionLength: currentMeta?.selectionLength ?? 0,
+                }),
+            dirty: recovered !== null,
+            readOnly,
+            binary: content.kind === "binary",
+            encoding: content.encoding,
+            eol: content.eol,
+            bom: content.bom,
+            size: content.size,
+            mtimeMs: content.mtimeMs,
+            recovered: recovered !== null,
+            error:
+              content.kind === "text"
+                ? null
+                : content.kind === "binary"
+                  ? "Binary file: preview is not available."
+                  : content.kind === "too_large"
+                    ? "File is too large to edit."
+                    : "UTF-16 files are not editable; open it externally.",
+          }),
+        },
+      }));
+    })();
+
+    loadRuns.set(tabId, run);
+    void run
+      .finally(() => {
+        if (loadRuns.get(tabId) === run) loadRuns.delete(tabId);
+      })
+      .catch(() => undefined);
+    return run;
   },
 
   save(tabId, options = {}) {
@@ -535,6 +643,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const buffer = getBuffer(tabId);
     const meta = get().meta[tabId];
     if (!buffer || !meta || !window.pi?.workspace) return;
+    // A refresh in flight (or a hidden window) would only duplicate work; the
+    // read itself updates the baseline when it lands.
+    if (meta.loading || loadRuns.has(tabId)) return;
+    if (document.visibilityState === "hidden") return;
     const result = await window.pi.workspace.stat({
       projectPath: buffer.projectPath,
       path: buffer.path,
@@ -562,7 +674,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   async reload(tabId) {
-    await get().load(tabId);
+    await get().load(tabId, { force: true });
   },
 
   clearExcept(tabIds) {

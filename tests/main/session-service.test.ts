@@ -1818,3 +1818,40 @@ describe("pinned tabs and scoped close", () => {
     expect(harness.service.tabs().map((tab) => tab.id)).toEqual([first!.id, third!.id, second!.id]);
   });
 });
+
+describe("tab table publishing", () => {
+  const tabsPushes = (harness: ReturnType<typeof createHarness>): number =>
+    harness.pushes.filter((push) => push.channel === "tabs").length;
+
+  it("skips an identical state frame and emits on a rendered-field change", async () => {
+    const harness = createHarness();
+    await harness.service.createTab({ cwd: "C:/work/a" });
+
+    // The create handshake may leave the status one frame behind; settle it
+    // first so the count measures the dedupe, not the handshake.
+    harness.newest().emit("state", { streaming: false });
+    const before = tabsPushes(harness);
+
+    harness.newest().emit("state", { streaming: false });
+    expect(tabsPushes(harness)).toBe(before);
+
+    harness.newest().emit("state", { streaming: true });
+    expect(tabsPushes(harness)).toBe(before + 1);
+
+    harness.newest().emit("state", { streaming: true });
+    expect(tabsPushes(harness)).toBe(before + 1);
+  });
+
+  it("returns the current table even when no push is needed", async () => {
+    const harness = createHarness();
+    const created = await harness.service.createTab({ cwd: "C:/work/a" });
+    const id = created.tabs[0]!.id;
+
+    const envelope = await harness.service.activateTab(id);
+
+    // The returned envelope is the IPC answer; the dedupe only controls the
+    // push channel.
+    expect(envelope.activeTabId).toBe(id);
+    expect(envelope.tabs.map((tab) => tab.id)).toEqual([id]);
+  });
+});

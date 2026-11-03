@@ -299,6 +299,24 @@ function clearExtensionDialogTimer(id: string): void {
   extensionDialogTimers.delete(id);
 }
 
+/**
+ * Structural equality for tab records.
+ *
+ * `applyTabs` receives a deep copy of the whole table on every publish; reusing
+ * a record whose fields are unchanged is what keeps an open editor from
+ * re-reading its file when a background session produces a message. Compare the
+ * union of own keys so a new `TabRecord` field is always considered.
+ */
+function sameTabRecord(left: TabRecord, right: TabRecord): boolean {
+  const leftRecord = left as unknown as Record<string, unknown>;
+  const rightRecord = right as unknown as Record<string, unknown>;
+  const keys = new Set([...Object.keys(leftRecord), ...Object.keys(rightRecord)]);
+  for (const key of keys) {
+    if (!Object.is(leftRecord[key], rightRecord[key])) return false;
+  }
+  return true;
+}
+
 /** Drop every queued dialog whose tab is no longer open. */
 function purgeClosedTabDialogs(openTabs: ReadonlySet<string>): void {
   for (const dialog of useAppStore.getState().extensionDialogs) {
@@ -2317,24 +2335,43 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   applyTabs: (envelope) => {
-    const ids = new Set(envelope.tabs.map((tab) => tab.id));
+    const state = get();
+    // Main sends a deep copy of the whole table on every publish (including
+    // every session state frame). Reusing a record whose fields did not change
+    // keeps the editor's mount effect from re-reading the file just because a
+    // background session produced a message (2026-11-03 plan step 5). Compare
+    // the union of own keys so a future TabRecord field cannot be forgotten.
+    const previous = new Map(state.tabs.map((tab) => [tab.id, tab]));
+    const tabs = envelope.tabs.map((next) => {
+      const before = previous.get(next.id);
+      return before && sameTabRecord(before, next) ? before : next;
+    });
+    const ids = new Set(tabs.map((tab) => tab.id));
+    const prompt = state.webNavigationPrompt;
+    const unchanged =
+      envelope.activeTabId === state.activeTabId &&
+      tabs.length === state.tabs.length &&
+      tabs.every((tab, index) => tab === state.tabs[index]) &&
+      // A prompt for a tab that no longer exists must still be cleared even when
+      // the table itself did not move.
+      (prompt === null || ids.has(prompt.tabId));
     // A tab that went to sleep or errored must re-check on the next interaction;
     // a `ready` state change does not clear an in-flight ensure's timestamp.
-    const previousStatus = new Map(get().tabs.map((tab) => [tab.id, tab.status]));
+    const previousStatus = new Map(state.tabs.map((tab) => [tab.id, tab.status]));
     for (const tab of envelope.tabs) {
       if (previousStatus.get(tab.id) === tab.status) continue;
       if (tab.status === "stopped" || tab.status === "crashed" || tab.status === "failed") {
         sessionEnsuredAt.delete(tab.id);
       }
     }
+    if (unchanged) return;
     // Web-tab state and any pending navigation belong to a tab that still
     // exists; a closed tab must not leave a stale native view or dialog behind.
     const webTabStates = Object.fromEntries(
-      Object.entries(get().webTabStates).filter(([id]) => ids.has(id)),
+      Object.entries(state.webTabStates).filter(([id]) => ids.has(id)),
     );
-    const prompt = get().webNavigationPrompt;
     set({
-      tabs: envelope.tabs,
+      tabs,
       activeTabId: envelope.activeTabId,
       webTabStates,
       ...(prompt && !ids.has(prompt.tabId) ? { webNavigationPrompt: null } : {}),

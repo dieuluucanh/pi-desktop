@@ -19,7 +19,6 @@ import { Button } from "../ui/button";
  */
 export function EditorTabView({ tab }: { tab: TabRecord }): React.JSX.Element {
   const meta = useEditorStore((state) => state.meta[tab.id]);
-  const load = useEditorStore((state) => state.load);
   const save = useEditorStore((state) => state.save);
   const format = useEditorStore((state) => state.format);
   const checkExternal = useEditorStore((state) => state.checkExternalChange);
@@ -27,9 +26,17 @@ export function EditorTabView({ tab }: { tab: TabRecord }): React.JSX.Element {
   const wordWrap = useAppStore((state) => state.prefs.editor.wordWrap);
   const buffer = getBuffer(tab.id);
 
+  // Read the id once: the effect must key on the tab, never on the record's
+  // object identity (main sends fresh copies on every tab-table publish).
+  const tabId = tab.id;
   useEffect(() => {
-    if (isEditorTab(tab)) void load(tab.id);
-  }, [tab, load]);
+    // A tab with metadata was loaded before: remounting it (switching away and
+    // back) only needs the cheap stat, never another read of the file. A tab
+    // created by main but never opened has no metadata and does need the read.
+    const state = useEditorStore.getState();
+    if (!state.meta[tabId]) void state.load(tabId);
+    else void state.checkExternalChange(tabId);
+  }, [tabId]);
 
   useEffect(() => {
     const timer = setInterval(() => void checkExternal(tab.id), 4_000);
@@ -66,6 +73,11 @@ export function EditorTabView({ tab }: { tab: TabRecord }): React.JSX.Element {
         >
           {tab.filePath}
         </span>
+        {meta?.loading && buffer ? (
+          <span className="text-[10px] text-ink-faint" data-testid="editor-refreshing">
+            Reloading…
+          </span>
+        ) : null}
         {meta?.dirty ? <span className="text-[11px] text-warn">Unsaved</span> : null}
         <span className="text-[10px] text-ink-faint">
           {meta?.languageId ?? ""}
@@ -117,7 +129,7 @@ export function EditorTabView({ tab }: { tab: TabRecord }): React.JSX.Element {
         </div>
       ) : null}
 
-      {meta?.loading ? (
+      {meta?.loading && !buffer ? (
         <p className="p-4 text-xs text-ink-muted">Loading file…</p>
       ) : buffer ? (
         <div className="min-h-0 flex-1">

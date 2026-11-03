@@ -1,6 +1,7 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import type { ComponentPropsWithRef } from "react";
+import { useEffect, type ComponentPropsWithRef } from "react";
 import { cn } from "./cn";
+import { scheduleBodyPointerLockCheck } from "./body-pointer-lock";
 
 /**
  * Dialog primitives (plan step 1) — used by the command palette, later by
@@ -30,6 +31,13 @@ export function DialogContent({
   children,
   ...props
 }: ComponentPropsWithRef<typeof DialogPrimitive.Content>) {
+  // Radix restores the body pointer-events lock when its dismissable layer
+  // unmounts. If a duplicate copy of that package (or another library) left
+  // `pointer-events: none` behind, this is the last moment the app can repair
+  // it without the user losing the whole window. The check is a no-op while a
+  // dialog/menu/popover is still open.
+  useEffect(() => () => scheduleBodyPointerLockCheck(), []);
+
   return (
     <DialogPortal>
       <DialogOverlay />

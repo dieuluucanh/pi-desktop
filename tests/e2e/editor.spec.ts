@@ -64,6 +64,26 @@ test("@smoke explorer opens a file in an editor tab and saves it", async () => {
   await window.keyboard.type("// edited in the app");
   await expect(window.getByText("Unsaved")).toBeVisible();
 
+  // Switching away and back (the reported Alt+Tab shape) must not blank the
+  // editor or lose unsaved work (2026-11-03 plan step 11).
+  await window.getByTestId("session-tab-strip").getByRole("tab").first().click();
+  await editorStrip.getByRole("tab", { name: /app\.ts/ }).click();
+  await expect(window.getByText("Loading file…")).toHaveCount(0);
+  await expect(window.locator(".cm-content")).toContainText("// edited in the app");
+  await expect(window.getByText("Unsaved")).toBeVisible();
+
+  // A real window focus burst runs one reconcile; it must not re-read the file.
+  // (`globalThis` because the test's `window` variable is the Playwright Page.)
+  await window.evaluate(() => {
+    globalThis.dispatchEvent(new Event("focus"));
+    globalThis.document.dispatchEvent(new Event("visibilitychange"));
+    return true;
+  }, undefined);
+  await window.waitForTimeout(600);
+  await expect(window.getByText("Loading file…")).toHaveCount(0);
+  await expect(window.locator(".cm-content")).toContainText("// edited in the app");
+  await expect(window.getByText("Unsaved")).toBeVisible();
+
   // Ctrl/Cmd+S is owned by the editor surface (CodeMirror + the view
   // container), not by an Electron accelerator.
   const saveKey = process.platform === "darwin" ? "Meta+s" : "Control+s";

@@ -777,3 +777,27 @@ installers themselves are verified on a clean machine (step 27).
   When collapsed, a Show-sidebar button sits at the far left of the tab strip.
 - Sidebar session rows reuse the tab lifecycle menu and support double-click
   inline rename (Enter/blur commits, Escape cancels).
+
+## Modal layers and body locks (2026-11-03)
+
+Radix keeps the modal `pointer-events: none` lock in **module-level** state, so
+two installed copies of `@radix-ui/react-dismissable-layer` are two independent
+locks on one document. Opening a dialog from a context-menu item made the dialog
+record the menu's `"none"` as its previous value and restore it on close — the
+renderer kept running but ignored every click (radix-ui/primitives#3317,
+#3645).
+
+- **One copy.** `package.json` `overrides` pins the stateful packages
+  (`@radix-ui/react-dismissable-layer`, `@radix-ui/react-focus-guards`), and
+  `tests/architecture/radix-singletons.test.ts` fails if a nested copy of any
+  guarded package reappears. Add a new entry there when a dependency bump
+  introduces another singleton.
+- **Never stack a modal dialog on a closing modal menu.** The Explorer's Delete
+  action defers the confirm dialog by one task so the menu layer has released
+  the lock first (`ExplorerSection.tsx`).
+- **Recovery net.** `src/renderer/src/ui/body-pointer-lock.ts` clears a stale
+  `pointer-events: none` on the last dialog unmount and on window focus, but only
+  when no `[data-state="open"]` dialog/menu/popover exists.
+- **One reconcile per focus burst.** Alt+Tab emits both `focus` and
+  `visibilitychange`; `createFocusResync` coalesces the burst into one
+  `sessions.reconcile()`.
