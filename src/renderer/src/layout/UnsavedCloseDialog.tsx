@@ -11,12 +11,12 @@ import { useEditorStore } from "../editor/editor-store";
  * the buffer's only home.
  */
 export function UnsavedCloseDialog(): React.JSX.Element | null {
-  const tabId = useEditorStore((state) => state.pendingClose);
+  const pending = useEditorStore((state) => state.pendingClose);
   const meta = useEditorStore((state) =>
-    state.pendingClose ? state.meta[state.pendingClose] : undefined,
+    state.pendingClose ? state.meta[state.pendingClose.tabId] : undefined,
   );
   const answer = useEditorStore((state) => state.answerClose);
-  if (tabId === null) return null;
+  if (pending === null) return null;
   return (
     <Dialog
       open
@@ -28,6 +28,7 @@ export function UnsavedCloseDialog(): React.JSX.Element | null {
         <DialogTitle className="px-4 pt-4">Unsaved changes</DialogTitle>
         <DialogDescription className="px-4 pb-3">
           {meta?.path ?? "This file"} has changes that have not been saved.
+          {pending.remaining > 1 ? ` (1 of ${pending.remaining} files)` : ""}
         </DialogDescription>
         <div className="flex justify-end gap-2 border-t border-line px-4 py-3">
           <Button size="sm" variant="ghost" onClick={() => void answer("cancel")}>

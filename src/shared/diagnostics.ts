@@ -1,5 +1,5 @@
 import type { HostRole } from "./host-protocol";
-import type { Capacity, StartupReport } from "./performance";
+import type { SessionCapacity, StartupReport } from "./performance";
 
 /**
  * Reliability, recovery and diagnostics — the pure wire model (plan step 22).
@@ -408,8 +408,8 @@ export interface DiagnosticsSnapshot {
   runtime: DiagnosticsRuntimeInfo;
   paths: DiagnosticsPathsInfo;
   hosts: DiagnosticsHostInfo[];
-  /** Used/limit of the host and tab caps (plan step 24 backpressure). */
-  capacity: { hosts: Capacity; tabs: Capacity };
+  /** Live-host budget and open-tab counts (plan step 24 backpressure). */
+  capacity: SessionCapacity;
   /** The per-host memory budget and restart threshold, for the RSS readout. */
   memory: { budgetBytes: number; restartBytes: number };
   incidents: Incident[];

@@ -2,18 +2,24 @@ import { describe, expect, it } from "vitest";
 import {
   COALESCE_BYTES,
   COALESCE_MS,
+  DEFAULT_LIVE_HOSTS,
   HOST_RSS_BUDGET_BYTES,
   HOST_RSS_RESTART_BYTES,
+  LIVE_HOST_RAM_SHARE,
+  MAX_HOSTS_HARD_CEILING,
+  MAX_LIVE_HOSTS,
+  MIN_LIVE_HOSTS,
   SESSION_READY_BUDGET_MS,
   TRANSCRIPT_10K_ITEMS,
   TRANSCRIPT_VIRTUALIZE_THRESHOLD,
   WINDOW_INTERACTIVE_BUDGET_MS,
   capacity,
-  capacityMessage,
   checkBudget,
   createStartupMetrics,
   formatBytes,
   formatDuration,
+  hostCeilingMessage,
+  liveHostBudget,
   shouldRestartForMemory,
   worstBudgetStatus,
   type HostMemoryMetrics,
@@ -131,16 +137,42 @@ describe("memory thresholds", () => {
   });
 });
 
+describe("live-host budget", () => {
+  const gib = 1024 ** 3;
+
+  it("derives a soft target from total physical memory", () => {
+    expect(LIVE_HOST_RAM_SHARE).toBe(0.4);
+    expect(liveHostBudget(8 * gib)).toBe(6);
+    expect(liveHostBudget(16 * gib)).toBe(12);
+    expect(liveHostBudget(32 * gib)).toBe(25);
+  });
+
+  it("clamps small and huge machines to a sane range", () => {
+    expect(liveHostBudget(1 * gib)).toBe(MIN_LIVE_HOSTS);
+    expect(liveHostBudget(64 * gib)).toBe(MAX_LIVE_HOSTS);
+    expect(MAX_HOSTS_HARD_CEILING).toBeGreaterThan(MAX_LIVE_HOSTS);
+  });
+
+  it("falls back to the default when the OS reading is unusable", () => {
+    expect(liveHostBudget()).toBe(DEFAULT_LIVE_HOSTS);
+    expect(liveHostBudget(null)).toBe(DEFAULT_LIVE_HOSTS);
+    expect(liveHostBudget(0)).toBe(DEFAULT_LIVE_HOSTS);
+    expect(liveHostBudget(-1)).toBe(DEFAULT_LIVE_HOSTS);
+    expect(liveHostBudget(Number.NaN)).toBe(DEFAULT_LIVE_HOSTS);
+  });
+
+  it("names the emergency ceiling without inventing a session limit", () => {
+    const message = hostCeilingMessage(64);
+    expect(message).toContain("emergency ceiling of 64 host processes");
+    expect(message).not.toMatch(/session tabs|close a tab/i);
+  });
+});
+
 describe("capacity", () => {
-  it("reports when the cap is reached", () => {
+  it("reports when a hard ceiling is reached", () => {
     expect(capacity(2, 8)).toEqual({ used: 2, limit: 8, atCapacity: false });
     expect(capacity(8, 8).atCapacity).toBe(true);
     expect(capacity(9, 8).atCapacity).toBe(true);
-  });
-
-  it("has one user-facing sentence per limit", () => {
-    expect(capacityMessage("hosts", 8)).toContain("at most 8 host processes");
-    expect(capacityMessage("tabs", 8)).toContain("at most 8 session tabs");
   });
 });
 

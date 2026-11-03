@@ -40,10 +40,28 @@ export function isPathInside(root: string, candidate: string): boolean {
 }
 
 /**
- * Resolves a caller-supplied path against `root` and returns it only when it is
- * lexically contained. Absolute paths are honoured (then checked); relative ones
- * are resolved against the root. Returns null for an escape or an empty path.
+ * Resolves an existing entry for an operation that acts on the entry itself
+ * (rename, delete, copy, move). Unlike {@link resolveInsideRoot}, the final
+ * component is not realpath-resolved: a symlink that points outside the project
+ * is still a contained *entry* and may be renamed or deleted as a link.
+ *
+ * The parent must resolve inside the real root, so a symlinked ancestor cannot
+ * be used to escape. Returns the absolute target, or null when the lexical path
+ * or its parent escapes.
  */
+export async function resolveEntryInsideRoot(
+  io: RealPathIo,
+  root: string,
+  requested: unknown,
+): Promise<string | null> {
+  const target = resolveRelativePath(root, requested);
+  if (target === null) return null;
+  const realRoot = (await realpathNearest(io, resolve(root))) ?? resolve(root);
+  const realParent = await realpathNearest(io, dirname(target));
+  if (realParent === null || !isPathInside(realRoot, realParent)) return null;
+  return target;
+}
+
 export function resolveRelativePath(root: string, requested: unknown): string | null {
   if (typeof requested !== "string" || requested.trim().length === 0) return null;
   const target = isAbsolute(requested) ? resolve(requested) : resolve(root, requested);

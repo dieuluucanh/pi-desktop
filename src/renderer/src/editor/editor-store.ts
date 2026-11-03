@@ -9,14 +9,20 @@
 
 import { create } from "zustand";
 
-import { isEditorTab, type TabRecord } from "../../../shared/session-ipc";
+import {
+  isEditorTab,
+  type RetargetEditorTabsInput,
+  type TabRecord,
+} from "../../../shared/session-ipc";
 import {
   MAX_EDITOR_WRITE_BYTES,
+  isWorkspacePathWithin,
   type FileEncoding,
   type FileEol,
   type WorkspaceFileContent,
 } from "../../../shared/workspace";
 import { languageIdForPath, type LanguageId } from "../../../shared/languages";
+import { sameFolder } from "../../../shared/rail-scope";
 import { useAppStore } from "../state/app-store";
 import {
   getBuffer,
@@ -24,6 +30,7 @@ import {
   removeBuffer,
   setBufferText,
   updateBufferBaseline,
+  updateBufferPath,
 } from "./buffer-registry";
 import { editorView } from "./editor-registry";
 
@@ -49,11 +56,25 @@ export interface EditorMeta {
   recovered: boolean;
 }
 
+export type EditorCloseReason =
+  "close" | "close-others" | "close-all" | "delete" | "remove-project";
+
+export interface PendingEditorClose {
+  tabId: string;
+  /** Dirty tabs left in this batch, including this one. */
+  remaining: number;
+  reason: EditorCloseReason;
+}
+
 interface EditorStore {
   meta: Record<string, EditorMeta>;
   /** The tab a close prompt is waiting on, or null. */
-  pendingClose: string | null;
+  pendingClose: PendingEditorClose | null;
   requestClose(tabId: string): void;
+  /** Resolves every dirty tab in order; false means the user cancelled. */
+  resolveDirtyTabs(tabIds: readonly string[], reason: EditorCloseReason): Promise<boolean>;
+  /** Resolves dirty tabs, then closes all of them. */
+  requestCloseTabs(tabIds: readonly string[], reason: EditorCloseReason): Promise<boolean>;
   answerClose(decision: "save" | "discard" | "cancel"): Promise<void>;
   openFileTab(projectPath: string, path: string): Promise<boolean>;
   load(tabId: string): Promise<void>;
@@ -70,6 +91,10 @@ interface EditorStore {
   flushBackups(): Promise<void>;
   checkExternalChange(tabId: string): Promise<void>;
   reload(tabId: string): Promise<void>;
+  /** Keeps open editor tabs pointing at the right file after a rename/move. */
+  retargetEditorPaths(input: RetargetEditorTabsInput): string[];
+  /** Drops metadata/buffers/backups for tabs no longer in app state. */
+  prune(openTabIds: ReadonlySet<string>): Promise<void>;
   clearExcept(tabIds: ReadonlySet<string>): void;
 }
 
@@ -77,6 +102,8 @@ const backupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const backupRuns = new Set<Promise<unknown>>();
 /** In-flight saves, so a repeated Ctrl+S writes once and keeps one baseline. */
 const saveRuns = new Map<string, Promise<boolean>>();
+/** Resolver for the currently displayed close prompt, if any. */
+let pendingCloseResolver: ((ok: boolean) => void) | null = null;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -126,28 +153,53 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   pendingClose: null,
 
   requestClose(tabId) {
-    if (get().meta[tabId]?.dirty) {
-      set({ pendingClose: tabId });
-      return;
+    void (async () => {
+      const ok = await get().resolveDirtyTabs([tabId], "close");
+      if (ok) await useAppStore.getState().closeTab(tabId);
+    })();
+  },
+
+  async resolveDirtyTabs(tabIds, reason) {
+    if (pendingCloseResolver) return false;
+    const dirty = tabIds.filter((tabId) => get().meta[tabId]?.dirty === true);
+    for (let index = 0; index < dirty.length; index += 1) {
+      const tabId = dirty[index]!;
+      const ok = await new Promise<boolean>((resolve) => {
+        pendingCloseResolver = resolve;
+        set({
+          pendingClose: { tabId, remaining: dirty.length - index, reason },
+        });
+      });
+      if (!ok) return false;
     }
-    void useAppStore.getState().closeTab(tabId);
+    return true;
+  },
+
+  async requestCloseTabs(tabIds, reason) {
+    if (!(await get().resolveDirtyTabs(tabIds, reason))) return false;
+    for (const tabId of tabIds) await useAppStore.getState().closeTab(tabId);
+    return true;
   },
 
   async answerClose(decision) {
-    const tabId = get().pendingClose;
-    if (tabId === null) return;
+    const pending = get().pendingClose;
+    const resolve = pendingCloseResolver;
+    if (pending === null) return;
     if (decision === "cancel") {
+      pendingCloseResolver = null;
       set({ pendingClose: null });
+      resolve?.(false);
       return;
     }
     if (decision === "save") {
-      const saved = await get().save(tabId);
+      const saved = await get().save(pending.tabId);
       if (!saved) return;
     } else {
-      await get().discard(tabId);
+      await get().discard(pending.tabId);
     }
+    pendingCloseResolver = null;
     set({ pendingClose: null });
-    await useAppStore.getState().closeTab(tabId);
+    resolve?.(true);
   },
 
   async openFileTab(projectPath, path) {
@@ -381,6 +433,33 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     });
   },
 
+  retargetEditorPaths(input) {
+    const next = { ...get().meta };
+    const changed: string[] = [];
+    for (const [tabId, meta] of Object.entries(next)) {
+      if (!sameFolder(meta.projectPath, input.fromProjectPath)) continue;
+      if (!isWorkspacePathWithin(meta.path, input.fromPath, input.kind)) continue;
+      const suffix = input.kind === "file" ? "" : meta.path.slice(input.fromPath.length);
+      const path = `${input.toPath}${suffix}`;
+      next[tabId] = {
+        ...meta,
+        projectPath: input.toProjectPath,
+        path,
+        languageId: languageIdForPath(path),
+      };
+      updateBufferPath(tabId, input.toProjectPath, path);
+      changed.push(tabId);
+    }
+    if (changed.length > 0) set({ meta: next });
+    return changed;
+  },
+
+  async prune(openTabIds) {
+    for (const tabId of Object.keys(get().meta)) {
+      if (!openTabIds.has(tabId)) await get().discard(tabId);
+    }
+  },
+
   setDirty(tabId, dirty) {
     set((state) => {
       const meta = state.meta[tabId];
@@ -502,3 +581,19 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     });
   },
 }));
+
+/**
+ * The tab table is the authority on which editor tabs still exist. Pruning here
+ * (rather than in app-store) avoids a store import cycle and fixes close paths
+ * that do not go through the editor's own close prompt.
+ */
+let lastOpenTabIds: string | null = null;
+useAppStore.subscribe((state) => {
+  const ids = state.tabs
+    .map((tab) => tab.id)
+    .sort()
+    .join("\u0000");
+  if (ids === lastOpenTabIds) return;
+  lastOpenTabIds = ids;
+  void useEditorStore.getState().prune(new Set(state.tabs.map((tab) => tab.id)));
+});

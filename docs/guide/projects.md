@@ -16,7 +16,10 @@ window — is the unit of context.
   session.
 
 Projects can be reordered and removed from the sidebar; the recent list is
-stored in app state (`app-state.json`), never in Pi state.
+stored in app state (`app-state.json`), never in Pi state. Removing a project
+closes every tab in that folder (session, Office, web, editor and pinned), but
+does **not** delete the folder or Pi session files. A dirty editor tab prompts
+Save/Discard/Cancel first; Cancel aborts the removal.
 
 ## The project header
 

@@ -39,6 +39,14 @@ export function updateBufferBaseline(tabId: string, mtimeMs: number | null): voi
   if (buffer) buffer.baselineMtimeMs = mtimeMs;
 }
 
+/** Keeps a live buffer pointed at its file after a rename or move. */
+export function updateBufferPath(tabId: string, projectPath: string, path: string): void {
+  const buffer = buffers.get(tabId);
+  if (!buffer) return;
+  buffer.projectPath = projectPath;
+  buffer.path = path;
+}
+
 export function removeBuffer(tabId: string): void {
   buffers.delete(tabId);
 }

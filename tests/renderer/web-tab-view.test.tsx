@@ -73,8 +73,10 @@ describe("web tab menu", () => {
       "reload",
       "copy-url",
       "open-browser",
+      "pin",
       "close",
       "close-others",
+      "close-all",
     ]);
   });
 });

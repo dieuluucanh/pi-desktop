@@ -16,6 +16,7 @@ import {
   type HostRequestFrame,
   type HostResponseFrame,
 } from "../../src/shared/host-protocol";
+import { MAX_HOSTS_HARD_CEILING } from "../../src/shared/performance";
 
 /**
  * Supervisor tests against a scripted fake host process: correlation, timeouts,
@@ -174,7 +175,7 @@ function harness(
     spawner,
     fs,
     requestTimeoutMs: 1_000,
-    maxHosts: options.maxHosts ?? 8,
+    maxHosts: options.maxHosts ?? MAX_HOSTS_HARD_CEILING,
     idleTimeoutMs: options.idleTimeoutMs ?? 0,
     ...(options.maxRestarts === undefined ? {} : { maxRestarts: options.maxRestarts }),
     memoryPollMs: options.memoryPollMs ?? 0,
@@ -251,12 +252,12 @@ describe("host supervisor startup", () => {
     expect(supervisor.allocatedPorts()).toEqual([OFFICE_BRIDGE_PORT, 38618, 38619]);
   });
 
-  it("enforces the host cap with a readable error", async () => {
+  it("enforces the emergency host-process ceiling with a readable error", async () => {
     const { supervisor } = harness({ maxHosts: 1 });
     await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
 
     await expect(supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") })).rejects.toThrow(
-      /host limit reached \(1\)/,
+      /emergency ceiling of 1 host processes/,
     );
   });
 });
@@ -567,13 +568,40 @@ describe("host supervisor resource guardrails (plan step 24)", () => {
         }
       : undefined;
 
-  it("reports used/limit of the host cap", async () => {
+  it("reports used/limit of the emergency host-process ceiling", async () => {
     const { supervisor } = harness({ maxHosts: 2 });
     expect(supervisor.capacity()).toEqual({ used: 0, limit: 2, atCapacity: false });
     await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
     expect(supervisor.capacity()).toEqual({ used: 1, limit: 2, atCapacity: false });
     await supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
     expect(supervisor.capacity().atCapacity).toBe(true);
+  });
+
+  it("exposes parkability probes without leaking the child process", async () => {
+    let pinned = false;
+    const { supervisor } = harness({ isPinned: () => pinned });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    expect(host.pinned()).toBe(false);
+    expect(host.isIdle()).toBe(true);
+    pinned = true;
+    expect(host.pinned()).toBe(true);
+  });
+
+  it("does not idle-recycle a session that is still working", async () => {
+    const { supervisor, spawned } = harness({
+      idleTimeoutMs: 5,
+      behaviours: [
+        {
+          answer: (request) => (request.method === "state.get" ? { streaming: true } : undefined),
+        },
+      ],
+    });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(supervisor.get("s1")?.status()).toBe("ready");
+    expect(spawned[0]?.killed).toBe(false);
   });
 
   it("surfaces the host cap as a coded error, not a prose-only failure", async () => {
@@ -624,6 +652,51 @@ describe("host supervisor resource guardrails (plan step 24)", () => {
     expect(spawned).toHaveLength(2);
     expect(spawned[1]?.requests.map((request) => request.method)).toContain("host.hello");
     expect(spawned[1]?.requests.map((request) => request.method)).not.toContain("session.resume");
+  });
+
+  it("keeps a streaming host alive even when it is over the RSS threshold", async () => {
+    const { supervisor, spawned } = harness({
+      memoryPollMs: 5,
+      maxRssBytes: 1_000,
+      behaviours: [
+        {
+          answer: (request) =>
+            request.method === "host.metrics"
+              ? {
+                  rssBytes: 5_000,
+                  heapUsedBytes: 1,
+                  heapTotalBytes: 2,
+                  uptimeMs: 3,
+                  at: 4,
+                }
+              : request.method === "state.get"
+                ? { streaming: true }
+                : undefined,
+        },
+      ],
+    });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(supervisor.get("s1")?.status()).toBe("ready");
+    expect(spawned[0]?.killed).toBe(false);
+  });
+
+  it("never RSS-recycles the Office bridge owner", async () => {
+    const { supervisor, spawned } = harness({
+      memoryPollMs: 5,
+      maxRssBytes: 1_000,
+      behaviours: [{ answer: metricsAnswer(5_000) }],
+    });
+    await supervisor.start({
+      sessionId: "office",
+      cwd: normalize("C:/work"),
+      officeHost: true,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(supervisor.get("office")?.status()).toBe("ready");
+    expect(spawned[0]?.killed).toBe(false);
   });
 
   it("recycles an idle host and drops it from the supervisor so it can re-spawn", async () => {

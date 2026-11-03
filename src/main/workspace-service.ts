@@ -23,13 +23,20 @@ import {
   workspaceOk,
   type EditorBackup,
   type ResolvedEditorConfig,
+  type WorkspaceCreateInput,
+  type WorkspaceDeleteInput,
   type WorkspaceFileContent,
   type WorkspaceFileList,
   type WorkspaceListing,
+  type WorkspaceMutationResult,
+  type WorkspaceRenameInput,
   type WorkspaceResult,
   type WorkspaceSearchRequest,
   type WorkspaceSearchResult,
+  type WorkspaceSort,
   type WorkspaceStat,
+  type WorkspaceTransferInput,
+  type WorkspaceTransferResult,
   type WorkspaceWriteInput,
   type WorkspaceWriteResult,
 } from "../shared/workspace";
@@ -49,6 +56,13 @@ import {
 } from "../workspace/file-content";
 import { listWorkspaceFiles } from "../workspace/file-listing";
 import { searchWorkspaceFiles } from "../workspace/file-search";
+import {
+  WorkspaceMutationError,
+  createWorkspaceEntry,
+  deleteWorkspaceEntry,
+  renameWorkspaceEntry,
+  transferWorkspaceEntries,
+} from "../workspace/mutations";
 import { resolveInsideRoot } from "../workspace/path-guard";
 import { listWorkspaceDirectory, WorkspaceTreeError } from "../workspace/tree";
 import type { WorkspaceNodeIo } from "./workspace-io";
@@ -57,6 +71,7 @@ export interface WorkspaceService {
   listDirectory(input: {
     projectPath: string;
     path: string;
+    sort?: WorkspaceSort;
   }): Promise<WorkspaceResult<WorkspaceListing>>;
   listFiles(input: {
     projectPath: string;
@@ -69,6 +84,10 @@ export interface WorkspaceService {
   }): Promise<WorkspaceResult<WorkspaceFileContent>>;
   stat(input: { projectPath: string; path: string }): Promise<WorkspaceResult<WorkspaceStat>>;
   writeFile(input: WorkspaceWriteInput): Promise<WorkspaceResult<WorkspaceWriteResult>>;
+  create(input: WorkspaceCreateInput): Promise<WorkspaceResult<WorkspaceMutationResult>>;
+  rename(input: WorkspaceRenameInput): Promise<WorkspaceResult<WorkspaceMutationResult>>;
+  delete(input: WorkspaceDeleteInput): Promise<WorkspaceResult<WorkspaceMutationResult>>;
+  transfer(input: WorkspaceTransferInput): Promise<WorkspaceResult<WorkspaceTransferResult>>;
   reveal(input: { projectPath: string; path: string }): Promise<WorkspaceResult<boolean>>;
   editorConfig(input: {
     projectPath: string;
@@ -93,6 +112,9 @@ function toFailure(error: unknown): WorkspaceResult<never> {
   if (error instanceof WorkspaceTreeError) {
     return workspaceFailure(error.code, error.message);
   }
+  if (error instanceof WorkspaceMutationError) {
+    return workspaceFailure(error.code, error.message);
+  }
   if (error instanceof FileContentError) {
     return workspaceFailure(error.code, error.message, error.current);
   }
@@ -111,6 +133,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
       try {
         const listing = await listWorkspaceDirectory(deps.io, input.projectPath, input.path, {
           limit: MAX_DIRECTORY_ENTRIES,
+          ...(input.sort ? { sort: input.sort } : {}),
         });
         return workspaceOk(listing);
       } catch (error) {
@@ -172,6 +195,41 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
       try {
         const { projectPath, ...file } = input;
         return workspaceOk(await writeWorkspaceContent(deps.io, projectPath, file));
+      } catch (error) {
+        return toFailure(error);
+      }
+    },
+
+    async create(input) {
+      try {
+        const { projectPath, ...entry } = input;
+        return workspaceOk(await createWorkspaceEntry(deps.io, projectPath, entry));
+      } catch (error) {
+        return toFailure(error);
+      }
+    },
+
+    async rename(input) {
+      try {
+        const { projectPath, ...entry } = input;
+        return workspaceOk(await renameWorkspaceEntry(deps.io, projectPath, entry));
+      } catch (error) {
+        return toFailure(error);
+      }
+    },
+
+    async delete(input) {
+      try {
+        const { projectPath, ...entry } = input;
+        return workspaceOk(await deleteWorkspaceEntry(deps.io, projectPath, entry));
+      } catch (error) {
+        return toFailure(error);
+      }
+    },
+
+    async transfer(input) {
+      try {
+        return workspaceOk(await transferWorkspaceEntries(deps.io, input));
       } catch (error) {
         return toFailure(error);
       }

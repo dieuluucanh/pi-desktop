@@ -24,6 +24,8 @@ import {
 } from "../../../shared/providers";
 import { normalizeScopePatterns, scopeKeys, scopeStarKeys } from "../../../shared/model-scope";
 import { mostRecentSessionTabForFolder, sameFolder } from "../../../shared/rail-scope";
+import type { WorkspaceEntryKind } from "../../../shared/workspace";
+import { workspaceMention } from "../../../shared/workspace-drag";
 import type { CustomProviderInput, CustomProviderSummary } from "../../../shared/custom-providers";
 import {
   isNotificationMuted,
@@ -60,6 +62,7 @@ import {
   CONTROL_TAB_ID,
   isHostBackedTab,
   type CreateTabInput,
+  type RetargetEditorTabsInput,
   type SessionEventEnvelope,
   type SessionEventEntry,
   type SessionStateEnvelope,
@@ -644,7 +647,7 @@ export interface AppStateShape {
   focusProjectSession: (path: string) => Promise<void>;
   /** Clears the active tab without closing one (`session:deactivate`). */
   clearActiveTab: () => Promise<void>;
-  removeProject: (path: string) => Promise<void>;
+  removeProject: (path: string) => Promise<boolean>;
   reorderProject: (path: string, toIndex: number) => Promise<void>;
   updateProjectConfig: (path: string, patch: ProjectConfigPatch) => Promise<void>;
   /** Inspects a project folder through the control host (plan step 10). */
@@ -1299,8 +1302,20 @@ export interface AppStateShape {
   closeTab: (tabId: string) => Promise<void>;
   closeActiveTab: () => Promise<void>;
   cycleTab: (direction: 1 | -1) => Promise<void>;
-  /** Close every other tab, keeping `tabId` active (plan step 11). */
+  /** Close every other non-pinned tab of the same kind, keeping `tabId`. */
   closeOtherTabs: (tabId: string) => Promise<void>;
+  /** Close every non-pinned tab of one kind. */
+  closeAllTabs: (kind: TabKind) => Promise<void>;
+  /** Pin/unpin a tab; main keeps the pinned group first. */
+  setTabPinned: (tabId: string, pinned: boolean) => Promise<void>;
+  /** Retarget open editor tabs after a rename/move; returns the new table. */
+  retargetEditorTabs: (input: RetargetEditorTabsInput) => Promise<SessionTabsEnvelope | null>;
+  /** Append a workspace mention to a session in the same project, if any. */
+  addWorkspaceMention: (
+    projectPath: string,
+    path: string,
+    kind: WorkspaceEntryKind,
+  ) => Promise<boolean>;
   /** Move a tab within the strip; persisted by the session service. */
   moveTab: (tabId: string, toIndex: number) => Promise<void>;
   /** Open a fresh session in the same project as `tabId`. */
@@ -1507,6 +1522,14 @@ function bridge(): Window["pi"] | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Electron wraps a rejected `ipcRenderer.invoke` in this prefix. */
+const REMOTE_ERROR_PREFIX = /^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/;
+
+/** The message a user should read, without Electron's IPC wrapper. */
+function userFacingError(error: unknown): string {
+  return errorMessage(error).replace(REMOTE_ERROR_PREFIX, "");
 }
 
 /** One sentence for the toast and the transient hint. */
@@ -1959,12 +1982,53 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   removeProject: async (path) => {
     const api = bridge();
-    if (!api?.projects) return;
+    if (!api?.sessions || !api.projects) return false;
+    try {
+      // Close first so the tab table and the project list never disagree. Main
+      // also closes on removal as defense in depth, so this second close is a
+      // no-op for a caller that already did it.
+      get().applyTabs(await api.sessions.closeProject(path));
+    } catch (error) {
+      get().noteFailure(error);
+      return false;
+    }
     try {
       get().applyProjects(await api.projects.mutate({ action: "remove", path }));
     } catch (error) {
       get().noteFailure(error);
+      return false;
     }
+    set((state) => ({
+      projectInspections: Object.fromEntries(
+        Object.entries(state.projectInspections).filter(([key]) => !sameFolder(key, path)),
+      ),
+      projectInspectionErrors: Object.fromEntries(
+        Object.entries(state.projectInspectionErrors).filter(([key]) => !sameFolder(key, path)),
+      ),
+      sessionTrust: state.sessionTrust.filter((entry) => !sameFolder(entry, path)),
+    }));
+    return true;
+  },
+
+  addWorkspaceMention: async (projectPath, path, kind) => {
+    const active = get().tabs.find((tab) => tab.id === get().activeTabId);
+    const target =
+      active && isHostBackedTab(active.kind) && sameFolder(active.cwd, projectPath)
+        ? active
+        : mostRecentSessionTabForFolder(get().tabs, projectPath);
+    if (!target) {
+      get().setHint("Open a session in this project before adding a file to chat.");
+      return false;
+    }
+    if (get().activeTabId !== target.id) await get().activateTab(target.id);
+    const mention = workspaceMention(path, kind);
+    const draft = get().prefs.drafts[target.id] ?? "";
+    if (!draft.includes(mention)) {
+      const separator = draft.length === 0 || /\s$/.test(draft) ? "" : " ";
+      get().setDraft(target.id, `${draft}${separator}${mention} `);
+    }
+    get().setHint("Added to chat.");
+    return true;
   },
 
   reorderProject: async (path, toIndex) => {
@@ -2177,9 +2241,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   setHint: (hint) => set({ hint }),
 
   noteFailure: (error) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     set({
-      hint: message,
+      hint: userFacingError(error),
       ...(isOfflineError(message) ? { offlineNotice: message } : {}),
     });
     // Report to main so the failure shows up in Diagnostics (plan step 22).
@@ -5260,7 +5324,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       set({ view: "session", hint: null });
       return true;
     } catch (error) {
-      set({ hint: errorMessage(error) });
+      set({ hint: userFacingError(error) });
       return false;
     }
   },
@@ -5516,10 +5580,15 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       get().applyTabs(await api.sessions.create(input));
       set({ view: "session", hint: null });
     } catch (error) {
-      setHint(error instanceof Error ? error.message : String(error));
+      const message = userFacingError(error);
+      setHint(message);
       // The host emits `project_trust` before it refuses, so the prompt is usually
-      // already up; this is the fallback for a failure without the event.
-      if (!get().trustPrompt) await get().openTrustPrompt(project.path);
+      // already up; this is the fallback for a trust failure without the event.
+      // A spawn or emergency-ceiling failure must not ask the user to trust the
+      // project, which would be a misleading and irreversible-looking action.
+      if (/trust/i.test(message) && !get().trustPrompt) {
+        await get().openTrustPrompt(project.path);
+      }
     }
   },
 
@@ -5654,6 +5723,40 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       get().noteFailure(error);
     }
     purgeClosedTabDialogs(new Set(get().tabs.map((tab) => tab.id)));
+  },
+
+  closeAllTabs: async (kind) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      get().applyTabs(await api.sessions.closeAll(kind));
+    } catch (error) {
+      get().noteFailure(error);
+    }
+    purgeClosedTabDialogs(new Set(get().tabs.map((tab) => tab.id)));
+  },
+
+  setTabPinned: async (tabId, pinned) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      get().applyTabs(await api.sessions.setPinned(tabId, pinned));
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  retargetEditorTabs: async (input) => {
+    const api = bridge();
+    if (!api?.sessions) return null;
+    try {
+      const envelope = await api.sessions.retargetEditorTabs(input);
+      get().applyTabs(envelope);
+      return envelope;
+    } catch (error) {
+      get().noteFailure(error);
+      return null;
+    }
   },
 
   moveTab: async (tabId, toIndex) => {

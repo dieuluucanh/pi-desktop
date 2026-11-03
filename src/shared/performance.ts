@@ -3,9 +3,14 @@
  *
  * One pure module owns the numbers the app measures itself against: the startup
  * budget, the per-host memory budget and restart threshold, the streaming-delta
- * coalescing window, and the host/tab caps. Main, the host and the renderer all
- * read the same constants, so a budget change is one edit and the Diagnostics
- * view can label a measurement instead of guessing at it.
+ * coalescing window, and the live-host budget. Main, the host and the renderer
+ * all read the same constants, so a budget change is one edit and the
+ * Diagnostics view can label a measurement instead of guessing at it.
+ *
+ * A tab is a resumable record; it does not reserve a process. The live-host
+ * target below is the only resource budget: it is soft (parking idle sessions
+ * first) and derived from total physical memory, so a session count can never
+ * block the user.
  *
  * Nothing here imports Electron or Node: it is shared by the main process, the
  * host process and the renderer, and is unit tested without any of them.
@@ -19,12 +24,24 @@ export const SESSION_READY_BUDGET_MS = 5_000;
 export const HOST_RSS_BUDGET_BYTES = 512 * 1024 * 1024;
 /** Hard per-host RSS threshold: an *idle* host over this is recycled. */
 export const HOST_RSS_RESTART_BYTES = 1_536 * 1024 * 1024;
-/** Hosts kept running at once (the supervisor cap, plan step 3). */
-export const MAX_HOSTS = 8;
-/** Open tabs (the session service cap, plan step 3). */
-export const MAX_TABS = 8;
-/** Editor tabs have no host, so they get their own, larger cap. */
-export const MAX_EDITOR_TABS = 16;
+/**
+ * Fallback live-host target when the OS total-memory reading is unavailable.
+ * A target is soft: idle sessions sleep before a new host is spawned, and a
+ * new session still opens when every live session is busy.
+ */
+export const DEFAULT_LIVE_HOSTS = 8;
+/** Never target fewer live hosts than this, even on a small machine. */
+export const MIN_LIVE_HOSTS = 4;
+/** Never target more live hosts than this, even on a huge machine. */
+export const MAX_LIVE_HOSTS = 32;
+/** Share of total physical memory reserved for Pi host processes. */
+export const LIVE_HOST_RAM_SHARE = 0.4;
+/**
+ * Emergency process ceiling. This is a protocol/port sanity guard, not a
+ * capacity policy and not a session limit; the soft target above is reached
+ * first, and only an all-busy workload can grow past it.
+ */
+export const MAX_HOSTS_HARD_CEILING = 64;
 /** How long a host with no traffic is kept before it is recycled. */
 export const IDLE_HOST_TIMEOUT_MS = 15 * 60_000;
 /** Streaming-delta batching window (plan step 3; tuned in plan step 24). */
@@ -102,6 +119,32 @@ export function shouldRestartForMemory(
   thresholdBytes: number = HOST_RSS_RESTART_BYTES,
 ): boolean {
   return memory !== null && memory !== undefined && memory.rssBytes >= thresholdBytes;
+}
+
+/**
+ * The number of live host processes the app aims for on this machine.
+ *
+ * Total memory, not free memory: the value must be stable for the life of the
+ * app (a probe is not a budget that moves every second). The result is clamped
+ * to a small floor so a modest machine still multitasks and a high ceiling so a
+ * very large workstation does not spawn dozens of processes by default.
+ */
+export function liveHostBudget(totalMemoryBytes?: number | null): number {
+  if (
+    totalMemoryBytes === null ||
+    totalMemoryBytes === undefined ||
+    !Number.isFinite(totalMemoryBytes) ||
+    totalMemoryBytes <= 0
+  ) {
+    return DEFAULT_LIVE_HOSTS;
+  }
+  const byMemory = Math.floor((totalMemoryBytes * LIVE_HOST_RAM_SHARE) / HOST_RSS_BUDGET_BYTES);
+  return Math.min(MAX_LIVE_HOSTS, Math.max(MIN_LIVE_HOSTS, byMemory));
+}
+
+/** The emergency-ceiling sentence; never presented as a session limit. */
+export function hostCeilingMessage(limit: number): string {
+  return `Pi Desktop reached its emergency ceiling of ${limit} host processes. Close a session that is no longer running.`;
 }
 
 /** The plain startup report the Diagnostics view and the E2E perf test read. */
@@ -192,27 +235,33 @@ export function createStartupMetrics(options: { startedAt?: number } = {}): Star
   };
 }
 
-/** A used/limit pair plus the single phrase that names the limit, for the UI. */
+/** A used/limit pair for a hard ceiling (the supervisor's emergency process guard). */
 export interface Capacity {
   used: number;
   limit: number;
   atCapacity: boolean;
 }
 
-export function capacity(used: number, limit: number): Capacity {
-  return { used, limit, atCapacity: used >= limit };
+/**
+ * The session service's user-facing capacity readout. `targetHosts` is a soft
+ * budget, not a cap: `overTarget` means every live session was busy, so a new
+ * one started past the target instead of being rejected.
+ */
+export interface SessionCapacity {
+  /** Live host processes, including the control host. */
+  liveHosts: number;
+  /** RAM-derived soft target for live host processes. */
+  targetHosts: number;
+  /** True when `liveHosts > targetHosts` (all parkable sessions were busy). */
+  overTarget: boolean;
+  /** Session and Office tabs that are open, including asleep ones. */
+  openSessions: number;
+  /** Host-backed tabs whose process is parked. */
+  asleepSessions: number;
+  /** Open editor tabs; they hold no host. */
+  editorTabs: number;
 }
 
-/**
- * The user-facing backpressure sentence. One wording, so the tab strip, the
- * create-session error and Diagnostics never disagree about what happened.
- */
-export function capacityMessage(kind: "hosts" | "tabs" | "editors", limit: number): string {
-  if (kind === "hosts") {
-    return `Pi Desktop keeps at most ${limit} host processes running at once. Close a session tab to make room.`;
-  }
-  if (kind === "editors") {
-    return `Pi Desktop keeps at most ${limit} editor tabs open at once. Close a file tab to open another.`;
-  }
-  return `Pi Desktop keeps at most ${limit} session tabs open at once. Close a tab to open another.`;
+export function capacity(used: number, limit: number): Capacity {
+  return { used, limit, atCapacity: used >= limit };
 }

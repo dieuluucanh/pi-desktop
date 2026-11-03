@@ -42,6 +42,7 @@ interface Recording {
   checkpointCalls: { kind: string; arg?: unknown }[];
   officeCalls: { kind: string; tabId?: string; takeover?: boolean }[];
   workspaceCalls: { kind: string; input?: unknown }[];
+  sessionCalls: { kind: string; arg?: unknown }[];
 }
 
 const OPEN_PROJECT = "/work/app";
@@ -93,7 +94,26 @@ async function register(recording: Recording): Promise<void> {
       list: envelope,
       create: async () => envelope(),
       close: async () => envelope(),
-      closeOthers: async () => envelope(),
+      closeAll: async (kind) => {
+        recording.sessionCalls.push({ kind: "closeAll", arg: kind });
+        return envelope();
+      },
+      closeOthers: async (tabId) => {
+        recording.sessionCalls.push({ kind: "closeOthers", arg: tabId });
+        return envelope();
+      },
+      closeProject: async (cwd) => {
+        recording.sessionCalls.push({ kind: "closeProject", arg: cwd });
+        return envelope();
+      },
+      setPinned: async (tabId, pinned) => {
+        recording.sessionCalls.push({ kind: "setPinned", arg: { tabId, pinned } });
+        return envelope();
+      },
+      retargetEditorTabs: async (input) => {
+        recording.sessionCalls.push({ kind: "retargetEditorTabs", arg: input });
+        return envelope();
+      },
       reorder: async () => envelope(),
       promoteOfficeHost: async () => envelope(),
       activate: async () => envelope(),
@@ -234,6 +254,39 @@ async function register(recording: Recording): Promise<void> {
         ok: false as const,
         error: { code: "bad_request" as const, message: "not implemented" },
       }),
+      create: async (input) => {
+        recording.workspaceCalls.push({ kind: "create", input });
+        return {
+          ok: true as const,
+          value: { path: input.path, absolutePath: `/abs/${input.path}`, kind: input.kind },
+        };
+      },
+      rename: async (input) => {
+        recording.workspaceCalls.push({ kind: "rename", input });
+        return {
+          ok: true as const,
+          value: {
+            path: input.toPath,
+            absolutePath: `/abs/${input.toPath}`,
+            kind: "file" as const,
+            previousPath: input.path,
+          },
+        };
+      },
+      delete: async (input) => {
+        recording.workspaceCalls.push({ kind: "delete", input });
+        return {
+          ok: true as const,
+          value: { path: input.path, absolutePath: `/abs/${input.path}`, kind: "file" as const },
+        };
+      },
+      transfer: async (input) => {
+        recording.workspaceCalls.push({ kind: "transfer", input });
+        return {
+          ok: true as const,
+          value: { operation: input.operation, transferred: [] },
+        };
+      },
       reveal: async () => ({ ok: true as const, value: true }),
       editorConfig: async () => ({
         ok: true as const,
@@ -269,7 +322,13 @@ let recording: Recording;
 
 beforeEach(async () => {
   handlers.clear();
-  recording = { gitCalls: [], checkpointCalls: [], officeCalls: [], workspaceCalls: [] };
+  recording = {
+    gitCalls: [],
+    checkpointCalls: [],
+    officeCalls: [],
+    workspaceCalls: [],
+    sessionCalls: [],
+  };
   await register(recording);
 });
 
@@ -437,6 +496,53 @@ describe("checkpoint action validation", () => {
   });
 });
 
+describe("session tab lifecycle channels", () => {
+  it("forwards kind-scoped close, project close, pin and retarget", async () => {
+    await invoke(IPC.sessionCloseAll, "editor");
+    await invoke(IPC.sessionCloseProject, "/work/app/");
+    await invoke(IPC.sessionSetPinned, "t1", true);
+    await invoke(IPC.sessionRetargetEditor, {
+      fromProjectPath: "/work/app",
+      fromPath: "src",
+      toProjectPath: "/work/app",
+      toPath: "lib",
+      kind: "directory",
+    });
+
+    expect(recording.sessionCalls).toEqual([
+      { kind: "closeAll", arg: "editor" },
+      { kind: "closeProject", arg: "/work/app/" },
+      { kind: "setPinned", arg: { tabId: "t1", pinned: true } },
+      {
+        kind: "retargetEditorTabs",
+        arg: {
+          fromProjectPath: "/work/app",
+          fromPath: "src",
+          toProjectPath: "/work/app",
+          toPath: "lib",
+          kind: "directory",
+        },
+      },
+    ]);
+  });
+
+  it("rejects malformed session lifecycle input", async () => {
+    expect(() => invoke(IPC.sessionCloseAll, "popup")).toThrow(/unsupported tab kind/);
+    expect(() => invoke(IPC.sessionCloseProject, "  ")).toThrow(/project folder/);
+    expect(() => invoke(IPC.sessionSetPinned, "t1", "yes")).toThrow(/boolean/);
+    expect(() =>
+      invoke(IPC.sessionRetargetEditor, {
+        fromProjectPath: "/work/app",
+        fromPath: "../secret",
+        toProjectPath: "/work/app",
+        toPath: "lib",
+        kind: "file",
+      }),
+    ).toThrow(/project-relative/);
+    expect(recording.sessionCalls).toEqual([]);
+  });
+});
+
 describe("workspace search channel", () => {
   it("resolves the project and forwards the search options", async () => {
     await invoke(IPC.workspaceSearchFiles, {
@@ -485,5 +591,83 @@ describe("workspace search channel", () => {
         query: "x".repeat(513),
       }),
     ).rejects.toThrow(/too long/);
+  });
+});
+
+describe("workspace mutation channels", () => {
+  it("forwards create, rename and delete after resolving the project", async () => {
+    await invoke(IPC.workspaceCreate, {
+      projectPath: OPEN_PROJECT,
+      path: "src/new.ts",
+      kind: "file",
+    });
+    await invoke(IPC.workspaceRename, {
+      projectPath: OPEN_PROJECT,
+      path: "src/new.ts",
+      toPath: "src/renamed.ts",
+    });
+    await invoke(IPC.workspaceDelete, { projectPath: OPEN_PROJECT, path: "src/renamed.ts" });
+
+    expect(recording.workspaceCalls).toEqual([
+      {
+        kind: "create",
+        input: { projectPath: OPEN_PROJECT, path: "src/new.ts", kind: "file" },
+      },
+      {
+        kind: "rename",
+        input: { projectPath: OPEN_PROJECT, path: "src/new.ts", toPath: "src/renamed.ts" },
+      },
+      { kind: "delete", input: { projectPath: OPEN_PROJECT, path: "src/renamed.ts" } },
+    ]);
+  });
+
+  it("resolves both projects for a transfer", async () => {
+    await invoke(IPC.workspaceTransfer, {
+      sourceProjectPath: OPEN_PROJECT,
+      targetProjectPath: OPEN_PROJECT,
+      sources: ["a.ts"],
+      targetDirectory: "src",
+      operation: "copy",
+    });
+    expect(recording.workspaceCalls).toEqual([
+      {
+        kind: "transfer",
+        input: {
+          sourceProjectPath: OPEN_PROJECT,
+          targetProjectPath: OPEN_PROJECT,
+          sources: ["a.ts"],
+          targetDirectory: "src",
+          operation: "copy",
+        },
+      },
+    ]);
+  });
+
+  it("rejects malformed mutation input before reaching the service", async () => {
+    await expect(
+      invoke(IPC.workspaceCreate, { projectPath: OPEN_PROJECT, path: "a.ts", kind: "symlink" }),
+    ).rejects.toThrow(/file or a directory/);
+    await expect(
+      invoke(IPC.workspaceRename, { projectPath: OPEN_PROJECT, path: "a.ts" }),
+    ).rejects.toThrow(/new path/);
+    await expect(
+      invoke(IPC.workspaceTransfer, {
+        sourceProjectPath: OPEN_PROJECT,
+        targetProjectPath: OPEN_PROJECT,
+        sources: [],
+        targetDirectory: "",
+        operation: "copy",
+      }),
+    ).rejects.toThrow(/at least one/);
+    await expect(
+      invoke(IPC.workspaceTransfer, {
+        sourceProjectPath: OPEN_PROJECT,
+        targetProjectPath: "/etc",
+        sources: ["a.ts"],
+        targetDirectory: "",
+        operation: "move",
+      }),
+    ).rejects.toThrow(/not an open project/);
+    expect(recording.workspaceCalls).toEqual([]);
   });
 });

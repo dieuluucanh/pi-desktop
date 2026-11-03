@@ -13,28 +13,33 @@ import type { TrustAnswer } from "../shared/projects";
 import {
   COALESCE_BYTES,
   COALESCE_MS,
-  MAX_EDITOR_TABS,
-  MAX_HOSTS,
-  MAX_TABS,
-  capacity,
-  capacityMessage,
-  type Capacity,
+  DEFAULT_LIVE_HOSTS,
   type HostMemoryMetrics,
+  type SessionCapacity,
 } from "../shared/performance";
 import { sanitizeWebUrl, webTabTitle } from "../shared/web-tabs";
-import { isWorkspaceRelativePath, workspaceBasename } from "../shared/workspace";
+import {
+  isWorkspacePathWithin,
+  isWorkspaceRelativePath,
+  workspaceBasename,
+} from "../shared/workspace";
+import { sameFolder } from "../shared/rail-scope";
+import { moveTabWithinPinGroup, partitionPinnedTabs } from "../shared/tab-order";
 import { PI_OFFICE_BRIDGE } from "../shared/office";
 import {
   CONTROL_TAB_ID,
   isEditorTab,
   isHostBackedTab,
+  isSessionBusyState,
   sanitizeTabs,
   sessionTitle,
   type CreateTabInput,
+  type RetargetEditorTabsInput,
   type SessionEventEnvelope,
   type SessionEventEntry,
   type SessionStateEnvelope,
   type SessionTabsEnvelope,
+  type TabKind,
   type TabRecord,
   type TabStatus,
 } from "../shared/session-ipc";
@@ -57,7 +62,12 @@ import {
 export const CONTROL_HOST_ID = CONTROL_TAB_ID;
 export const DEFAULT_COALESCE_MS = COALESCE_MS;
 export const DEFAULT_COALESCE_BYTES = COALESCE_BYTES;
-export const DEFAULT_MAX_TABS = MAX_TABS;
+/**
+ * A tab used this recently is not a parking candidate even when it is idle:
+ * the user is probably still at its keyboard, and a prompt can arrive in the
+ * probe->stop window. All-busy overflow is preferred to a surprising sleep.
+ */
+const PARK_MIN_IDLE_MS = 5_000;
 
 /**
  * Measured shape of delta batching (plan step 24): how many renderer pushes a
@@ -105,6 +115,10 @@ export interface SupervisorHostLike {
   info?(): HostInfoLike | null;
   /** Last self-reported RSS sample (plan step 24). Optional for test doubles. */
   metrics?(): HostMemoryMetrics | null;
+  /** Whether the host is pinned by policy (bridge owner/active/control). */
+  pinned?(): boolean;
+  /** Whether the host is ready with no request in flight. */
+  isIdle?(): boolean;
   /** The tail of the host's own log (plan step 22). Optional for test doubles. */
   logs?(): string[];
   shutdown(): Promise<void>;
@@ -123,7 +137,7 @@ export interface SupervisorLike {
   stop(sessionId: string): Promise<void>;
   stopAll(): Promise<void>;
   /** Used/limit of the host cap (plan step 24). Optional for test doubles. */
-  capacity?(): Capacity;
+  capacity?(): { used: number; limit: number; atCapacity: boolean };
 }
 
 export interface SessionStoreLike {
@@ -152,7 +166,12 @@ export interface SessionServiceDeps {
   coalesceMs?: number;
   /** Flush a delta batch early once it grows past this many bytes. */
   coalesceBytes?: number;
-  maxTabs?: number;
+  /**
+   * Soft target for live host processes, derived from total RAM by main. This
+   * is not a session limit: idle sessions are parked before a new host starts,
+   * and a new session still opens when every live session is busy.
+   */
+  maxLiveHosts?: number;
   /**
    * Makes the Office bridge port free before a promoted host binds it
    * (2026-10-30 project-scoped rail plan). It terminates whatever listens on the
@@ -196,8 +215,16 @@ export interface SessionService {
    */
   reconcile(): Promise<SessionTabsEnvelope>;
   closeTab(tabId: string): Promise<SessionTabsEnvelope>;
-  /** Closes every tab except `tabId` (the tab strip's "close others", step 11). */
+  /** Closes every non-pinned tab of `kind` (session, office, web or editor). */
+  closeAll(kind: TabKind): Promise<SessionTabsEnvelope>;
+  /** Closes every other non-pinned tab of the same kind. */
   closeOthers(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Closes every tab in a project, including pinned tabs (project removal). */
+  closeForProject(cwd: string): Promise<SessionTabsEnvelope>;
+  /** Pins/unpins a tab and keeps the pinned group at the front. */
+  setPinned(tabId: string, pinned: boolean): Promise<SessionTabsEnvelope>;
+  /** Updates open editor tabs after a rename/move of their file or folder. */
+  retargetEditorTabs(input: RetargetEditorTabsInput): Promise<SessionTabsEnvelope>;
   /** Moves a tab to `toIndex`, persisted so the strip order survives a relaunch. */
   reorderTab(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
   /**
@@ -216,8 +243,8 @@ export interface SessionService {
   incidents(): Incident[];
   /** Which host is behind each tab, plus its log tail (plan step 22 Diagnostics). */
   diagnosticsHosts(): DiagnosticsHostInfo[];
-  /** Used/limit of the running host and tab caps (plan step 24 backpressure). */
-  capacity(): { hosts: Capacity; tabs: Capacity };
+  /** Used/target of the soft live-host budget (plan step 24 backpressure). */
+  capacity(): SessionCapacity;
   /** Measured delta-batching figures (plan step 24). */
   coalesceStats(): CoalesceStats;
   /** Bounded `extension_error` history across tabs (plan step 22 Diagnostics). */
@@ -331,7 +358,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   const newId = deps.newId ?? ((): string => `tab-${Math.random().toString(36).slice(2, 10)}`);
   const coalesceMs = deps.coalesceMs ?? DEFAULT_COALESCE_MS;
   const coalesceBytes = deps.coalesceBytes ?? DEFAULT_COALESCE_BYTES;
-  const maxTabs = deps.maxTabs ?? DEFAULT_MAX_TABS;
+  const maxLiveHosts = Math.max(1, deps.maxLiveHosts ?? DEFAULT_LIVE_HOSTS);
 
   const tabs = new Map<string, TabRecord>();
   const hosts = new Map<string, SupervisorHostLike>();
@@ -362,6 +389,10 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    * recycle, or they would stop each other's freshly spawned host.
    */
   const recycling = new Map<string, Promise<SupervisorHostLike>>();
+  /** In-flight parking, per tab: a wake waits for the stop to settle first. */
+  const parking = new Map<string, Promise<void>>();
+  /** Serialized budget decisions, so two starts cannot park the same tab twice. */
+  let slotQueue: Promise<void> = Promise.resolve();
   /** Per-tab `session.create` defaults (per-project model/thinking + trust, step 10). */
   const createParams = new Map<
     string,
@@ -566,18 +597,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   };
 
   /** Whether a `state.get` snapshot says the host must not be recycled. */
-  const hostIsBusy = (snapshot: unknown): boolean => {
-    const record = asRecord(snapshot);
-    const nonEmpty = (value: unknown): boolean => Array.isArray(value) && value.length > 0;
-    return (
-      record.streaming === true ||
-      record.compacting === true ||
-      record.retrying === true ||
-      (typeof record.pendingMessages === "number" && record.pendingMessages > 0) ||
-      nonEmpty(record.steering) ||
-      nonEmpty(record.followUp)
-    );
-  };
+  const hostIsBusy = (snapshot: unknown): boolean => isSessionBusyState(snapshot);
 
   /** Forgets a tab's handle/subscriptions without stopping the supervisor process. */
   const forgetHost = (tabId: string): void => {
@@ -613,6 +633,77 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       tab.status = "stopped";
       publishTabs();
     }
+  };
+
+  /**
+   * Parks one tab's process after proving it is idle. The generation bump in
+   * `detachHost` makes a late wake/open stop its own orphan rather than reviving
+   * the old process for the new owner.
+   */
+  const parkTab = async (tabId: string): Promise<void> => {
+    const existing = parking.get(tabId);
+    if (existing) return existing;
+    const run = (async (): Promise<void> => {
+      const tab = tabs.get(tabId);
+      if (!tab || !isHostBackedTab(tab.kind) || tab.kind === "office") return;
+      if (tabId === activeId) return;
+      if (starting.has(tabId) || opening.has(tabId) || recycling.has(tabId)) return;
+      if (pending.has(tabId) || timers.has(tabId)) return;
+      if (now() - tab.lastActiveAt < PARK_MIN_IDLE_MS) return;
+      const host = hosts.get(tabId);
+      if (!host || host.status() !== "ready" || host.pinned?.()) return;
+      if (host.isIdle?.() === false) return;
+      let snapshot: unknown;
+      try {
+        snapshot = await host.request("state.get", undefined, { timeoutMs: 1_500 });
+      } catch {
+        return;
+      }
+      if (isSessionBusyState(snapshot)) return;
+      // The probe yields; the user may have activated or written to the tab in
+      // the meantime. Only the post-probe state decides whether it can sleep.
+      if (tabId === activeId) return;
+      if (starting.has(tabId) || opening.has(tabId) || recycling.has(tabId)) return;
+      const record = asRecord(snapshot);
+      if (typeof record.sessionFile === "string") tab.sessionFile = record.sessionFile;
+      await detachHost(tabId);
+      await persist();
+    })().finally(() => {
+      if (parking.get(tabId) === run) parking.delete(tabId);
+    });
+    parking.set(tabId, run);
+    return run;
+  };
+
+  /**
+   * Parks idle hosts until the live count is back under the soft target. It is
+   * deliberately best effort: when every live session is busy the caller still
+   * starts its host, so a session count can never block the user.
+   */
+  const makeRoom = async (exceptTabId: string): Promise<void> => {
+    if (deps.supervisor.list().length < maxLiveHosts) return;
+    const candidates = [...tabs.values()]
+      .filter((tab) => tab.id !== exceptTabId && tab.id !== activeId)
+      .filter((tab) => isHostBackedTab(tab.kind) && tab.kind !== "office")
+      .filter((tab) => hosts.has(tab.id))
+      .filter((tab) => !starting.has(tab.id) && !opening.has(tab.id) && !recycling.has(tab.id))
+      .filter((tab) => !pending.has(tab.id) && !timers.has(tab.id))
+      .filter((tab) => now() - tab.lastActiveAt >= PARK_MIN_IDLE_MS)
+      .sort((left, right) => left.lastActiveAt - right.lastActiveAt);
+    for (const tab of candidates) {
+      if (deps.supervisor.list().length < maxLiveHosts) break;
+      const host = hosts.get(tab.id);
+      if (!host || host.pinned?.()) continue;
+      if (host.isIdle?.() === false) continue;
+      await parkTab(tab.id);
+    }
+  };
+
+  /** Serializes budget decisions: two starts must never park the same tab twice. */
+  const requestSlot = (exceptTabId: string): Promise<void> => {
+    const run = slotQueue.then(() => makeRoom(exceptTabId)).catch(() => undefined);
+    slotQueue = run;
+    return run;
   };
 
   const subscribe = (tab: TabRecord, host: SupervisorHostLike): void => {
@@ -706,13 +797,23 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   const startProcess = async (tab: TabRecord): Promise<SupervisorHostLike> => {
     setStatus(tab, "starting");
     const generation = generations.get(tab.id) ?? 0;
-    const host = await deps.supervisor.start({
-      sessionId: tab.id,
-      cwd: tab.cwd,
-      role: "session",
-      officeHost: tab.kind === "office",
-      sessionFile: tab.sessionFile,
-    });
+    let host: SupervisorHostLike;
+    try {
+      host = await deps.supervisor.start({
+        sessionId: tab.id,
+        cwd: tab.cwd,
+        role: "session",
+        officeHost: tab.kind === "office",
+        sessionFile: tab.sessionFile,
+      });
+    } catch (error) {
+      // A failed spawn must never leave a phantom `starting` tab. Keep the tab
+      // and its error so the user can read what happened and close/retry it; the
+      // trust retry path is a session.open failure below, not a spawn failure.
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(tab, "failed", message);
+      throw error;
+    }
     // `closeTab`/`dispose`/a newer detach may have run while the spawn was in
     // flight. Never publish a host over the replacement; stop the orphan.
     if (disposed || !tabs.has(tab.id) || (generations.get(tab.id) ?? 0) !== generation) {
@@ -734,9 +835,18 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     }
     const inFlight = starting.get(tab.id);
     if (inFlight) return inFlight;
+    // A wake must wait for an in-flight park to settle; otherwise it could spawn
+    // a second process while the old one is still shutting down.
+    const inPark = parking.get(tab.id);
+    if (inPark) await inPark;
     const existing = hosts.get(tab.id);
     if (existing && existing.status() === "ready") return existing;
     if (existing) await detachHost(tab.id);
+    const raced = starting.get(tab.id);
+    if (raced) return raced;
+    await requestSlot(tab.id);
+    const startedWhileQueued = starting.get(tab.id);
+    if (startedWhileQueued) return startedWhileQueued;
     const run = startProcess(tab);
     starting.set(tab.id, run);
     void run.then(
@@ -881,6 +991,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         control = null;
         pushEntries(CONTROL_TAB_ID, [{ event: "host.crashed", payload }]);
       }),
+      host.on("status", (status) => {
+        // The control host is pinned, so the idle reaper should never stop it;
+        // this is the safety net that keeps `controlHost()` from returning a
+        // dead handle if it ever does.
+        if (String(status) === "stopped") control = null;
+      }),
     );
   };
 
@@ -911,6 +1027,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   const service: SessionService = {
     async controlHost() {
       if (control) return control;
+      await requestSlot(CONTROL_HOST_ID);
       const host = await deps.supervisor.start({
         sessionId: CONTROL_HOST_ID,
         cwd: deps.controlCwd,
@@ -927,10 +1044,19 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     incidents: () => [...incidents],
     extensionErrors: () => [...extensionErrors],
-    capacity: () => ({
-      hosts: deps.supervisor.capacity?.() ?? capacity(hosts.size + (control ? 1 : 0), MAX_HOSTS),
-      tabs: capacity([...tabs.values()].filter((tab) => isHostBackedTab(tab.kind)).length, maxTabs),
-    }),
+    capacity: () => {
+      const all = [...tabs.values()];
+      const open = all.filter((tab) => isHostBackedTab(tab.kind));
+      const liveHosts = deps.supervisor.list().length;
+      return {
+        liveHosts,
+        targetHosts: maxLiveHosts,
+        overTarget: liveHosts > maxLiveHosts,
+        openSessions: open.length,
+        asleepSessions: open.filter((tab) => tab.status === "stopped").length,
+        editorTabs: all.filter(isEditorTab).length,
+      };
+    },
     coalesceStats: () => ({ ...coalesceStats }),
     diagnosticsHosts: () => {
       const rows: DiagnosticsHostInfo[] = [];
@@ -968,21 +1094,17 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       sessionReady.clear();
       generations.clear();
       recovering.clear();
-      let hostTabs = 0;
-      let editorTabs = 0;
       for (const tab of sanitizeTabs(state.tabs)) {
-        // Editor tabs have no host, so they get their own cap; session/office/web
-        // tabs keep the historical `MAX_TABS` budget. Nothing is running yet
-        // after a relaunch, so a restored tab is idle/stopped until activated.
-        if (isEditorTab(tab)) {
-          if (editorTabs >= MAX_EDITOR_TABS) continue;
-          editorTabs += 1;
-        } else {
-          if (hostTabs >= maxTabs) continue;
-          hostTabs += 1;
-        }
+        // A tab is a resumable record, not a process. Nothing is running yet
+        // after a relaunch, so a restored tab is idle/stopped until activated;
+        // the full table is restored, however many tabs the user keeps.
         tabs.set(tab.id, { ...tab, status: isHostBackedTab(tab.kind) ? "stopped" : "idle" });
       }
+      // Persisted order is authoritative, but an older profile may have a
+      // pinned tab below an unpinned one. Stable-partition once on restore.
+      const restored = partitionPinnedTabs([...tabs.values()]);
+      tabs.clear();
+      for (const tab of restored) tabs.set(tab.id, tab);
       const persistedActive = typeof state.activeTabId === "string" ? state.activeTabId : null;
       activeId = persistedActive && tabs.has(persistedActive) ? persistedActive : null;
       publishTabs();
@@ -1004,16 +1126,6 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       const filePath = isEditor ? input.filePath : undefined;
       if (isEditor && (!filePath || !isWorkspaceRelativePath(filePath))) {
         throw new SessionServiceError("createTab requires a project-relative file", "bad_request");
-      }
-      const editorTabCount = [...tabs.values()].filter(isEditorTab).length;
-      const nonEditorTabCount = tabs.size - editorTabCount;
-      if (isEditor ? editorTabCount >= MAX_EDITOR_TABS : nonEditorTabCount >= maxTabs) {
-        throw new SessionServiceError(
-          isEditor
-            ? `editor tab limit reached (${MAX_EDITOR_TABS}). ${capacityMessage("editors", MAX_EDITOR_TABS)}`
-            : `session limit reached (${maxTabs}); close a tab first. ${capacityMessage("tabs", maxTabs)}`,
-          "too_many_tabs",
-        );
       }
       const id = newId();
       const timestamp = now();
@@ -1138,28 +1250,67 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     },
 
     async closeOthers(tabId) {
-      if (!tabs.has(tabId)) return envelope();
-      for (const id of [...tabs.keys()]) {
-        if (id !== tabId) await service.closeTab(id);
+      const target = tabs.get(tabId);
+      if (!target) return envelope();
+      for (const [id, record] of [...tabs]) {
+        if (id !== tabId && record.kind === target.kind && record.pinned !== true) {
+          await service.closeTab(id);
+        }
       }
       return envelope();
     },
 
+    async closeAll(kind) {
+      for (const tab of [...tabs.values()]) {
+        if (tab.kind === kind && tab.pinned !== true) await service.closeTab(tab.id);
+      }
+      return envelope();
+    },
+
+    async closeForProject(cwd) {
+      for (const tab of [...tabs.values()]) {
+        if (sameFolder(tab.cwd, cwd)) await service.closeTab(tab.id);
+      }
+      return envelope();
+    },
+
+    async setPinned(tabId, pinned) {
+      const tab = requireTab(tabId);
+      if (pinned) tab.pinned = true;
+      else delete tab.pinned;
+      const ordered = partitionPinnedTabs([...tabs.values()]);
+      tabs.clear();
+      for (const record of ordered) tabs.set(record.id, record);
+      publishTabs();
+      await persist();
+      return envelope();
+    },
+
+    async retargetEditorTabs(input) {
+      for (const tab of tabs.values()) {
+        if (!isEditorTab(tab)) continue;
+        if (!sameFolder(tab.cwd, input.fromProjectPath)) continue;
+        if (!isWorkspacePathWithin(tab.filePath, input.fromPath, input.kind)) continue;
+        const suffix = input.kind === "file" ? "" : tab.filePath.slice(input.fromPath.length);
+        const nextPath = `${input.toPath}${suffix}`;
+        tab.cwd = input.toProjectPath;
+        tab.filePath = nextPath;
+        tab.title = workspaceBasename(nextPath);
+      }
+      publishTabs();
+      await persist();
+      return envelope();
+    },
+
     async reorderTab(tabId, toIndex) {
-      const order = [...tabs.keys()];
-      const from = order.indexOf(tabId);
-      if (from === -1) return envelope();
-      const target = Math.max(0, Math.min(order.length - 1, Math.floor(toIndex)));
-      if (target === from) return envelope();
-      order.splice(from, 1);
-      order.splice(target, 0, tabId);
+      const ordered = moveTabWithinPinGroup([...tabs.values()], tabId, toIndex);
+      if (ordered.map((tab) => tab.id).join("\0") === [...tabs.keys()].join("\0")) {
+        return envelope();
+      }
       // Rebuild the map in the new order: the tab table's insertion order *is*
       // the strip order, so this is the only place it is defined.
-      const entries = order
-        .map((id) => [id, tabs.get(id)] as const)
-        .filter((entry): entry is readonly [string, TabRecord] => entry[1] !== undefined);
       tabs.clear();
-      for (const [id, record] of entries) tabs.set(id, record);
+      for (const record of ordered) tabs.set(record.id, record);
       publishTabs();
       await persist();
       return envelope();
@@ -1244,6 +1395,10 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         return host.request(method, params);
       }
       const tab = requireTab(tabId);
+      // LRU is about real use, not merely an open tab: every user request keeps
+      // the session warm. Internal `state.get` probes call `host.request`
+      // directly, so they do not distort the ordering.
+      tab.lastActiveAt = now();
       if (!isHostBackedTab(tab.kind)) {
         throw new SessionServiceError(
           tab.kind === "editor" ? "an editor tab has no Pi host" : "a web tab has no Pi host",

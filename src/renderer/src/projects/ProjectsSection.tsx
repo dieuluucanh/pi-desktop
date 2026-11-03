@@ -29,6 +29,7 @@ import { useAppStore } from "../state/app-store";
 import { openProjectAction } from "../menu-actions";
 import { CloneProjectDialog, CreateProjectDialog } from "./ProjectDialogs";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
+import { removeProjectWithPrompt } from "./remove-project";
 import type {
   PiProjectResources,
   ProjectRecord,
@@ -171,7 +172,6 @@ function ProjectGroup({
   const trustPrompt = useAppStore((state) => state.trustPrompt);
   const activateProject = useAppStore((state) => state.activateProject);
   const inspectProject = useAppStore((state) => state.inspectProject);
-  const removeProject = useAppStore((state) => state.removeProject);
   const reorderProject = useAppStore((state) => state.reorderProject);
   const setProjectSettingsEnabled = useAppStore((state) => state.setProjectSettingsEnabled);
   const settingsBusy = useAppStore((state) => state.projectSettingsBusy[project.path] === true);
@@ -333,8 +333,8 @@ function ProjectGroup({
               </IconButton>
             ) : null}
             <IconButton
-              label={`Remove ${project.name} from the project list`}
-              onClick={() => void removeProject(project.path)}
+              label={`Remove ${project.name} and close its tabs`}
+              onClick={() => void removeProjectWithPrompt(project.path)}
             >
               <Trash2 className="size-3" aria-hidden />
             </IconButton>

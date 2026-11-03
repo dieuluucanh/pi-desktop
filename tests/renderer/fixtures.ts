@@ -239,7 +239,40 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
       list: async () => ({ tabs: [], activeTabId: null }),
       create: async () => ({ tabs: [], activeTabId: null }),
       close: async () => ({ tabs: [], activeTabId: null }),
+      closeAll: async (kind) => ({
+        tabs: useAppStore.getState().tabs.filter((tab) => tab.kind !== kind || tab.pinned === true),
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
       closeOthers: async () => ({ tabs: [], activeTabId: null }),
+      closeProject: async (cwd: string) => ({
+        tabs: useAppStore.getState().tabs.filter((tab) => tab.cwd !== cwd),
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
+      setPinned: async (tabId: string, pinned: boolean) => ({
+        tabs: useAppStore
+          .getState()
+          .tabs.map((tab) =>
+            tab.id === tabId
+              ? pinned
+                ? { ...tab, pinned: true }
+                : { ...tab, pinned: undefined }
+              : tab,
+          ),
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
+      retargetEditorTabs: async (input) => ({
+        tabs: useAppStore.getState().tabs.map((tab) => {
+          if (tab.kind !== "editor" || tab.cwd !== input.fromProjectPath || !tab.filePath) {
+            return tab;
+          }
+          if (tab.filePath !== input.fromPath && !tab.filePath.startsWith(`${input.fromPath}/`)) {
+            return tab;
+          }
+          const suffix = input.kind === "file" ? "" : tab.filePath.slice(input.fromPath.length);
+          return { ...tab, cwd: input.toProjectPath, filePath: `${input.toPath}${suffix}` };
+        }),
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
       reorder: async () => ({ tabs: [], activeTabId: null }),
       promoteOfficeHost: async () => ({ tabs: [], activeTabId: null }),
       // `activate` (and `deactivate`) must answer with the *current* tab table:
@@ -497,6 +530,22 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
         ok: false as const,
         error: { code: "bad_request" as const, message: "not implemented" },
       }),
+      create: async () => ({
+        ok: false as const,
+        error: { code: "bad_request" as const, message: "not implemented" },
+      }),
+      rename: async () => ({
+        ok: false as const,
+        error: { code: "bad_request" as const, message: "not implemented" },
+      }),
+      delete: async () => ({
+        ok: false as const,
+        error: { code: "bad_request" as const, message: "not implemented" },
+      }),
+      transfer: async () => ({
+        ok: false as const,
+        error: { code: "bad_request" as const, message: "not implemented" },
+      }),
       reveal: async () => ({ ok: true as const, value: true }),
       editorConfig: async () => ({
         ok: true as const,
@@ -591,8 +640,12 @@ function diagnosticsSnapshot(info: AppInfo): DiagnosticsSnapshot {
     },
     hosts: [],
     capacity: {
-      hosts: { used: 0, limit: 8, atCapacity: false },
-      tabs: { used: 0, limit: 8, atCapacity: false },
+      liveHosts: 0,
+      targetHosts: 12,
+      overTarget: false,
+      openSessions: 0,
+      asleepSessions: 0,
+      editorTabs: 0,
     },
     memory: { budgetBytes: 536_870_912, restartBytes: 1_610_612_736 },
     incidents: [],

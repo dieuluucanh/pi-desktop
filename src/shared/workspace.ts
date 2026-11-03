@@ -14,6 +14,11 @@
 
 export const MAX_WORKSPACE_PATH_LENGTH = 4_096;
 
+export const MAX_ENTRY_NAME_LENGTH = 255;
+export const MAX_TRANSFER_SOURCES = 100;
+export const MAX_TRANSFER_ENTRIES = 10_000;
+export const MAX_TRANSFER_BYTES = 2_000_000_000;
+
 export const MAX_DIRECTORY_ENTRIES = 2_000;
 export const MAX_QUICK_OPEN_FILES = 20_000;
 export const DEFAULT_WORKSPACE_SEARCH_LIMIT = 200;
@@ -211,6 +216,8 @@ export interface WorkspaceDirectoryRequest {
   projectPath: string;
   /** "" for the root. */
   path: string;
+  /** Display order; defaults to name. */
+  sort?: WorkspaceSort;
 }
 
 export interface WorkspaceListRequest {
@@ -238,6 +245,55 @@ export interface WorkspaceFormatRequest {
 export interface WorkspaceFormatResult {
   text: string;
   formatter: "prettier" | "command";
+}
+
+export interface WorkspaceCreateInput {
+  projectPath: string;
+  /** Project-relative path including the new entry's name. */
+  path: string;
+  kind: WorkspaceEntryKind;
+}
+
+export interface WorkspaceRenameInput {
+  projectPath: string;
+  /** Existing project-relative path. */
+  path: string;
+  /** New project-relative path; the parent must not change. */
+  toPath: string;
+}
+
+export interface WorkspaceDeleteInput {
+  projectPath: string;
+  path: string;
+}
+
+export interface WorkspaceTransferInput {
+  sourceProjectPath: string;
+  targetProjectPath: string;
+  /** Project-relative paths under the source project. */
+  sources: string[];
+  /** "" for the target project root. */
+  targetDirectory: string;
+  operation: "copy" | "move";
+}
+
+export interface WorkspaceMutationResult {
+  /** Project-relative path of the entry after the operation. */
+  path: string;
+  /** Absolute path, for diagnostics and reveal only. */
+  absolutePath: string;
+  kind: WorkspaceEntryKind;
+  /** Present on rename/move: the project-relative path before the operation. */
+  previousPath?: string;
+}
+
+export interface WorkspaceTransferResult {
+  operation: "copy" | "move";
+  transferred: Array<{
+    sourcePath: string;
+    targetPath: string;
+    kind: WorkspaceEntryKind;
+  }>;
 }
 
 /** True when a character is a C0/C1 control/format character we never accept. */
@@ -298,6 +354,58 @@ export function workspaceJoin(...parts: readonly string[]): string {
 /** True when two project-relative paths name the same entry. */
 export function sameWorkspacePath(left: string, right: string, caseInsensitive = false): boolean {
   return caseInsensitive ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
+const INVALID_ENTRY_CHARACTER = /[<>:"/\\|?*]/;
+
+/**
+ * True when a value can be used as one project entry name.
+ *
+ * The rules are stricter than the host platform on purpose: a project can be
+ * moved between Windows and POSIX, so names that Windows refuses are refused
+ * everywhere. Leading dots are allowed (`.env`, `.gitignore`); `.`/`..` and
+ * `.git` are not entry names.
+ */
+export function isWorkspaceEntryName(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  if (value.length === 0 || value.length > MAX_ENTRY_NAME_LENGTH) return false;
+  if (value === "." || value === "..") return false;
+  if (value.toLowerCase() === ".git") return false;
+  if (hasControlCharacter(value)) return false;
+  if (INVALID_ENTRY_CHARACTER.test(value)) return false;
+  if (/[. ]$/.test(value)) return false;
+  return !WINDOWS_RESERVED_NAME.test(value);
+}
+
+/** The absolute path of a project-relative entry, using the project's separators. */
+export function workspaceAbsolutePath(projectPath: string, relativePath: string): string {
+  const root = projectPath.replace(/[\\/]+$/, "");
+  const separator = projectPath.includes("\\") ? "\\" : "/";
+  return `${root}${separator}${relativePath.split("/").join(separator)}`;
+}
+
+/** A project-relative path rendered with the platform separators of its root. */
+export function workspaceDisplayRelativePath(projectPath: string, relativePath: string): string {
+  const separator = projectPath.includes("\\") ? "\\" : "/";
+  return relativePath.split("/").join(separator);
+}
+
+/**
+ * True when `path` is `prefix` (a file rename) or lives under it (a directory
+ * rename/delete). The prefix boundary is always a `/`, so `src/a` does not match
+ * `src/ab`.
+ */
+export function isWorkspacePathWithin(
+  path: string,
+  prefix: string,
+  kind: WorkspaceEntryKind,
+  caseInsensitive = false,
+): boolean {
+  const left = caseInsensitive ? path.toLowerCase() : path;
+  const right = caseInsensitive ? prefix.toLowerCase() : prefix;
+  if (kind === "file") return left === right;
+  return left === right || left.startsWith(`${right}/`);
 }
 
 /** Lower-case extension without the dot, or "" for a name without one. */

@@ -265,7 +265,7 @@ describe("ProjectsSection", () => {
 
     render(<ProjectsSection />);
     await userEvent.click(
-      screen.getByRole("button", { name: /remove pi-desktop from the project list/i }),
+      screen.getByRole("button", { name: /remove pi-desktop and close its tabs/i }),
     );
 
     expect(mutate).toHaveBeenCalledWith({ action: "remove", path: PATH });

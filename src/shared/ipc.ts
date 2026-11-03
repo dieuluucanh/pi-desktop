@@ -29,10 +29,12 @@ import type {
 } from "./projects";
 import type {
   CreateTabInput,
+  RetargetEditorTabsInput,
   SessionEventEnvelope,
   SessionRequestInput,
   SessionStateEnvelope,
   SessionTabsEnvelope,
+  TabKind,
 } from "./session-ipc";
 import type {
   WebCommand,
@@ -44,13 +46,20 @@ import type {
 import type {
   EditorBackup,
   ResolvedEditorConfig,
+  WorkspaceCreateInput,
+  WorkspaceDeleteInput,
   WorkspaceFileContent,
   WorkspaceFileList,
   WorkspaceListing,
+  WorkspaceMutationResult,
+  WorkspaceRenameInput,
   WorkspaceResult,
   WorkspaceSearchRequest,
   WorkspaceSearchResult,
+  WorkspaceSort,
   WorkspaceStat,
+  WorkspaceTransferInput,
+  WorkspaceTransferResult,
   WorkspaceWriteInput,
   WorkspaceWriteResult,
   WorkspaceFormatRequest,
@@ -100,8 +109,16 @@ export const IPC = {
   sessionTabs: "session:tabs",
   sessionCreate: "session:create",
   sessionClose: "session:close",
-  /** Closes every tab except one (plan step 11). */
+  /** Closes every non-pinned tab of one kind. */
+  sessionCloseAll: "session:close-all",
+  /** Closes every tab except one, scoped to the same kind. */
   sessionCloseOthers: "session:close-others",
+  /** Closes every tab in a project, including pinned tabs. */
+  sessionCloseProject: "session:close-project",
+  /** Pins/unpins a tab. */
+  sessionSetPinned: "session:set-pinned",
+  /** Retargets open editor tabs after a rename or move. */
+  sessionRetargetEditor: "session:retarget-editor",
   /** Moves a tab to a new index (plan step 11 drag-reorder). */
   sessionReorder: "session:reorder",
   /** Makes one tab the single Office host, owning the bridge port (plan step 20). */
@@ -249,6 +266,10 @@ export const IPC = {
   workspaceReadFile: "workspace:read-file",
   workspaceStat: "workspace:stat",
   workspaceWriteFile: "workspace:write-file",
+  workspaceCreate: "workspace:create",
+  workspaceRename: "workspace:rename",
+  workspaceDelete: "workspace:delete",
+  workspaceTransfer: "workspace:transfer",
   workspaceReveal: "workspace:reveal",
   workspaceEditorConfig: "workspace:editor-config",
   workspaceReadBackup: "workspace:read-backup",
@@ -380,8 +401,16 @@ export interface SessionsBridge {
   list(): Promise<SessionTabsEnvelope>;
   create(input: CreateTabInput): Promise<SessionTabsEnvelope>;
   close(tabId: string): Promise<SessionTabsEnvelope>;
-  /** Closes every tab except `tabId`, keeping that one active. */
+  /** Closes every non-pinned tab of `kind`. */
+  closeAll(kind: TabKind): Promise<SessionTabsEnvelope>;
+  /** Closes every other non-pinned tab of the same kind. */
   closeOthers(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Closes every tab in a project, including pinned tabs (project removal). */
+  closeProject(cwd: string): Promise<SessionTabsEnvelope>;
+  /** Pins/unpins a tab; the pinned group stays first. */
+  setPinned(tabId: string, pinned: boolean): Promise<SessionTabsEnvelope>;
+  /** Updates open editor tabs after a rename or move. */
+  retargetEditorTabs(input: RetargetEditorTabsInput): Promise<SessionTabsEnvelope>;
   /** Moves a tab within the strip; persisted so the order survives a relaunch. */
   reorder(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
   /** Makes this tab the single Office host (plan step 20), restarting its host. */
@@ -649,6 +678,7 @@ export interface WorkspaceBridge {
   listDirectory(input: {
     projectPath: string;
     path: string;
+    sort?: WorkspaceSort;
   }): Promise<WorkspaceResult<WorkspaceListing>>;
   listFiles(input: {
     projectPath: string;
@@ -661,6 +691,10 @@ export interface WorkspaceBridge {
   }): Promise<WorkspaceResult<WorkspaceFileContent>>;
   stat(input: { projectPath: string; path: string }): Promise<WorkspaceResult<WorkspaceStat>>;
   writeFile(input: WorkspaceWriteInput): Promise<WorkspaceResult<WorkspaceWriteResult>>;
+  create(input: WorkspaceCreateInput): Promise<WorkspaceResult<WorkspaceMutationResult>>;
+  rename(input: WorkspaceRenameInput): Promise<WorkspaceResult<WorkspaceMutationResult>>;
+  delete(input: WorkspaceDeleteInput): Promise<WorkspaceResult<WorkspaceMutationResult>>;
+  transfer(input: WorkspaceTransferInput): Promise<WorkspaceResult<WorkspaceTransferResult>>;
   reveal(input: { projectPath: string; path: string }): Promise<WorkspaceResult<boolean>>;
   editorConfig(input: {
     projectPath: string;

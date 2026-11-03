@@ -15,7 +15,9 @@ import {
   isControlTabId,
   isTabKind,
   type CreateTabInput,
+  type RetargetEditorTabsInput,
   type SessionTabsEnvelope,
+  type TabKind,
 } from "../shared/session-ipc";
 import { isOfficeSetupStepId } from "../shared/office-setup";
 import {
@@ -42,20 +44,31 @@ import type { OfficeBridgeControlResult, OfficeStopResult } from "../shared/offi
 import type {
   EditorBackup,
   ResolvedEditorConfig,
+  WorkspaceCreateInput,
+  WorkspaceDeleteInput,
   WorkspaceFileContent,
   WorkspaceFileList,
   WorkspaceListing,
+  WorkspaceMutationResult,
+  WorkspaceRenameInput,
   WorkspaceResult,
   WorkspaceSearchRequest,
   WorkspaceSearchResult,
+  WorkspaceSort,
   WorkspaceStat,
+  WorkspaceTransferInput,
+  WorkspaceTransferResult,
   WorkspaceWriteInput,
   WorkspaceWriteResult,
   WorkspaceFormatRequest,
   WorkspaceFormatResult,
 } from "../shared/workspace";
 import { sanitizeEditorBackup } from "../workspace/backup";
-import { MAX_WORKSPACE_SEARCH_QUERY_LENGTH, isWorkspaceRelativePath } from "../shared/workspace";
+import {
+  MAX_TRANSFER_SOURCES,
+  MAX_WORKSPACE_SEARCH_QUERY_LENGTH,
+  isWorkspaceRelativePath,
+} from "../shared/workspace";
 import {
   parseGitAction,
   parseGitDiffRequest,
@@ -99,7 +112,11 @@ export interface IpcSessionDeps {
   list(): SessionTabsEnvelope;
   create(input: CreateTabInput): Promise<SessionTabsEnvelope>;
   close(tabId: string): Promise<SessionTabsEnvelope>;
+  closeAll(kind: TabKind): Promise<SessionTabsEnvelope>;
   closeOthers(tabId: string): Promise<SessionTabsEnvelope>;
+  closeProject(cwd: string): Promise<SessionTabsEnvelope>;
+  setPinned(tabId: string, pinned: boolean): Promise<SessionTabsEnvelope>;
+  retargetEditorTabs(input: RetargetEditorTabsInput): Promise<SessionTabsEnvelope>;
   reorder(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
   /** Makes one tab the single Office host (plan step 20). */
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
@@ -240,6 +257,10 @@ export interface IpcDependencies {
     }): Promise<WorkspaceResult<WorkspaceFileContent>>;
     stat(input: { projectPath: string; path: string }): Promise<WorkspaceResult<WorkspaceStat>>;
     writeFile(input: WorkspaceWriteInput): Promise<WorkspaceResult<WorkspaceWriteResult>>;
+    create(input: WorkspaceCreateInput): Promise<WorkspaceResult<WorkspaceMutationResult>>;
+    rename(input: WorkspaceRenameInput): Promise<WorkspaceResult<WorkspaceMutationResult>>;
+    delete(input: WorkspaceDeleteInput): Promise<WorkspaceResult<WorkspaceMutationResult>>;
+    transfer(input: WorkspaceTransferInput): Promise<WorkspaceResult<WorkspaceTransferResult>>;
     reveal(input: { projectPath: string; path: string }): Promise<WorkspaceResult<boolean>>;
     editorConfig(input: {
       projectPath: string;
@@ -298,6 +319,78 @@ function parseWorkspaceWrite(value: unknown): WorkspaceWriteInput {
   return input;
 }
 
+const WORKSPACE_SORTS: readonly WorkspaceSort[] = ["name", "type", "modified"];
+
+function parseWorkspaceDirectory(value: unknown): {
+  projectPath: string;
+  path: string;
+  sort?: WorkspaceSort;
+} {
+  const record = asRecord(value);
+  const base = parseWorkspacePath(record, true);
+  const sort = record.sort;
+  if (sort === undefined) return base;
+  if (typeof sort !== "string" || !(WORKSPACE_SORTS as readonly string[]).includes(sort)) {
+    throw new Error("workspace: unsupported sort order");
+  }
+  return { ...base, sort: sort as WorkspaceSort };
+}
+
+function requireWorkspaceString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`workspace: ${label} is required`);
+  }
+  return value;
+}
+
+function parseWorkspaceCreate(value: unknown): WorkspaceCreateInput {
+  const record = asRecord(value);
+  const base = parseWorkspacePath(record);
+  if (record.kind !== "file" && record.kind !== "directory") {
+    throw new Error("workspace: a new entry must be a file or a directory");
+  }
+  return { ...base, kind: record.kind };
+}
+
+function parseWorkspaceRename(value: unknown): WorkspaceRenameInput {
+  const record = asRecord(value);
+  const base = parseWorkspacePath(record);
+  return {
+    ...base,
+    toPath: requireWorkspaceString(record.toPath, "the new path"),
+  };
+}
+
+function parseWorkspaceDelete(value: unknown): WorkspaceDeleteInput {
+  return parseWorkspacePath(value);
+}
+
+function parseWorkspaceTransfer(value: unknown): WorkspaceTransferInput {
+  const record = asRecord(value);
+  const sourceProjectPath = requireWorkspaceString(record.sourceProjectPath, "the source project");
+  const targetProjectPath = requireWorkspaceString(record.targetProjectPath, "the target project");
+  if (!Array.isArray(record.sources) || record.sources.length === 0) {
+    throw new Error("workspace: choose at least one entry to paste");
+  }
+  if (record.sources.length > MAX_TRANSFER_SOURCES) {
+    throw new Error(`workspace: paste supports at most ${MAX_TRANSFER_SOURCES} entries`);
+  }
+  const sources = record.sources.map((source) => requireWorkspaceString(source, "a source path"));
+  if (typeof record.targetDirectory !== "string") {
+    throw new Error("workspace: the target folder is required");
+  }
+  if (record.operation !== "copy" && record.operation !== "move") {
+    throw new Error("workspace: a transfer must be copy or move");
+  }
+  return {
+    sourceProjectPath,
+    targetProjectPath,
+    sources,
+    targetDirectory: record.targetDirectory,
+    operation: record.operation,
+  };
+}
+
 function parseWorkspaceSearch(value: unknown): WorkspaceSearchRequest {
   const record = asRecord(value);
   const projectPath = record.projectPath;
@@ -324,6 +417,33 @@ function parseWorkspaceTabId(value: unknown): string {
     throw new Error("workspace: a tab id is required");
   }
   return value;
+}
+
+function parseSessionKind(value: unknown): TabKind {
+  if (!isTabKind(value)) throw new Error(`session: unsupported tab kind ${String(value)}`);
+  return value;
+}
+
+function parseSessionString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`session: ${label} is required`);
+  }
+  return value;
+}
+
+function parseRetargetEditorTabs(value: unknown): RetargetEditorTabsInput {
+  const record = asRecord(value);
+  const fromProjectPath = parseSessionString(record.fromProjectPath, "the source project");
+  const toProjectPath = parseSessionString(record.toProjectPath, "the target project");
+  const fromPath = record.fromPath;
+  const toPath = record.toPath;
+  if (!isWorkspaceRelativePath(fromPath) || !isWorkspaceRelativePath(toPath)) {
+    throw new Error("session: editor paths must be project-relative");
+  }
+  if (record.kind !== "file" && record.kind !== "directory") {
+    throw new Error("session: editor retarget kind must be file or directory");
+  }
+  return { fromProjectPath, fromPath, toProjectPath, toPath, kind: record.kind };
 }
 
 /**
@@ -473,6 +593,19 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   );
   ipcMain.handle(IPC.sessionCloseOthers, (_event, tabId: unknown) =>
     deps.sessions.closeOthers(requireTabId(deps, tabId)),
+  );
+  ipcMain.handle(IPC.sessionCloseAll, (_event, kind: unknown) =>
+    deps.sessions.closeAll(parseSessionKind(kind)),
+  );
+  ipcMain.handle(IPC.sessionCloseProject, (_event, cwd: unknown) =>
+    deps.sessions.closeProject(parseSessionString(cwd, "a project folder")),
+  );
+  ipcMain.handle(IPC.sessionSetPinned, (_event, tabId: unknown, pinned: unknown) => {
+    if (typeof pinned !== "boolean") throw new Error("session: pinned must be a boolean");
+    return deps.sessions.setPinned(requireRealTabId(deps, tabId), pinned);
+  });
+  ipcMain.handle(IPC.sessionRetargetEditor, (_event, input: unknown) =>
+    deps.sessions.retargetEditorTabs(parseRetargetEditorTabs(input)),
   );
   ipcMain.handle(IPC.sessionReorder, (_event, tabId: unknown, toIndex: unknown) => {
     const id = requireTabId(deps, tabId);
@@ -641,7 +774,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   // before the service sees the request; the service then applies the realpath
   // containment guard and returns a result envelope.
   ipcMain.handle(IPC.workspaceListDirectory, async (_event, input: unknown) => {
-    const request = parseWorkspacePath(input, true);
+    const request = parseWorkspaceDirectory(input);
     const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
     return deps.workspace.listDirectory({ ...request, projectPath });
   });
@@ -671,6 +804,29 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     const request = parseWorkspaceWrite(input);
     const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
     return deps.workspace.writeFile({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceCreate, async (_event, input: unknown) => {
+    const request = parseWorkspaceCreate(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.create({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceRename, async (_event, input: unknown) => {
+    const request = parseWorkspaceRename(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.rename({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceDelete, async (_event, input: unknown) => {
+    const request = parseWorkspaceDelete(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.delete({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceTransfer, async (_event, input: unknown) => {
+    const request = parseWorkspaceTransfer(input);
+    const [sourceProjectPath, targetProjectPath] = await Promise.all([
+      deps.workspace.resolveProjectPath(request.sourceProjectPath),
+      deps.workspace.resolveProjectPath(request.targetProjectPath),
+    ]);
+    return deps.workspace.transfer({ ...request, sourceProjectPath, targetProjectPath });
   });
   ipcMain.handle(IPC.workspaceReveal, async (_event, input: unknown) => {
     const request = parseWorkspacePath(input);

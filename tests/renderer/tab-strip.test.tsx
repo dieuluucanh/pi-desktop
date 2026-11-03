@@ -68,8 +68,10 @@ describe("tabMenuItems", () => {
       "clone",
       "export",
       "reveal",
+      "pin",
       "close",
       "close-others",
+      "close-all",
     ]);
     expect(items.map((item) => item.label)).toEqual([
       "Rename…",
@@ -79,10 +81,29 @@ describe("tabMenuItems", () => {
       "Clone session",
       "Export to HTML",
       "Reveal session file",
+      "Pin",
       "Close",
       "Close others",
+      "Close all sessions",
     ]);
     expect(items.find((item) => item.id === "close-others")?.destructive).toBe(true);
+    expect(items.find((item) => item.id === "close-all")?.destructive).toBe(true);
+  });
+
+  it("offers absolute/relative paths, pin and kind-scoped close on editor tabs", () => {
+    const items = tabMenuItems("editor");
+    expect(items.map((item) => item.id)).toEqual([
+      "save",
+      "copy-absolute-path",
+      "copy-relative-path",
+      "reveal",
+      "pin",
+      "close",
+      "close-others",
+      "close-all",
+    ]);
+    expect(items.find((item) => item.id === "close-all")?.label).toBe("Close all editor tabs");
+    expect(tabMenuItems("editor", true).map((item) => item.id)).toContain("unpin");
   });
 });
 
@@ -144,7 +165,7 @@ describe("SessionTabStrip", () => {
     expect(activate).toHaveBeenCalledWith("tab-2");
   });
 
-  it("closes a tab from its X", () => {
+  it("closes a tab from its X", async () => {
     const { bridge } = installBridge();
     const close = vi.fn(async () => ({ tabs: [], activeTabId: null }));
     (bridge.sessions as unknown as { close: unknown }).close = close;
@@ -152,7 +173,7 @@ describe("SessionTabStrip", () => {
     render(<SessionTabStrip />);
     fireEvent.click(screen.getByRole("button", { name: "Close pi-desktop" }));
 
-    expect(close).toHaveBeenCalledWith("tab-1");
+    await waitFor(() => expect(close).toHaveBeenCalledWith("tab-1"));
   });
 
   it("reorders tabs by drag and drop", () => {

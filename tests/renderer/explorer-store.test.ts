@@ -213,3 +213,82 @@ describe("explorer search store", () => {
     expect(useExplorerStore.getState().trees[PROJECT]?.truncated[""]).toBe(true);
   });
 });
+
+describe("explorer cache invalidation", () => {
+  function seedTree() {
+    useExplorerStore.setState({
+      trees: {
+        [PROJECT]: {
+          root: PROJECT,
+          children: { "": [], src: [], "src/nested": [] },
+          expanded: { src: true, "src/nested": true },
+          loading: {},
+          truncated: { src: true },
+          error: null,
+        },
+      },
+      searches: {
+        [PROJECT]: {
+          query: "app",
+          status: "ready",
+          results: [],
+          truncated: false,
+          scanned: 0,
+          error: null,
+          requestId: 1,
+        },
+      },
+    });
+  }
+
+  it("forgets a project's tree and search state", () => {
+    seedTree();
+    useExplorerStore.getState().forgetProject(PROJECT);
+    expect(useExplorerStore.getState().trees[PROJECT]).toBeUndefined();
+    expect(useExplorerStore.getState().searches[PROJECT]).toBeUndefined();
+  });
+
+  it("removes deleted paths and their descendants", () => {
+    seedTree();
+    useExplorerStore.getState().applyDelete(PROJECT, ["src"]);
+    const tree = useExplorerStore.getState().trees[PROJECT];
+    expect(tree?.children.src).toBeUndefined();
+    expect(tree?.children["src/nested"]).toBeUndefined();
+    expect(tree?.children[""]).toEqual([]);
+    expect(tree?.expanded.src).toBeUndefined();
+    expect(tree?.truncated.src).toBeUndefined();
+  });
+
+  it("remaps a renamed folder's expanded and child keys", () => {
+    seedTree();
+    useExplorerStore.getState().applyRename(PROJECT, "src", "lib");
+    const tree = useExplorerStore.getState().trees[PROJECT];
+    expect(tree?.children.lib).toEqual([]);
+    expect(tree?.children["lib/nested"]).toEqual([]);
+    expect(tree?.expanded.lib).toBe(true);
+    expect(tree?.expanded["lib/nested"]).toBe(true);
+    expect(tree?.truncated.lib).toBe(true);
+  });
+
+  it("forwards the explorer sort preference", async () => {
+    const listDirectory = vi.fn(async () => ({
+      ok: true as const,
+      value: { root: PROJECT, path: "", entries: [], truncated: false },
+    }));
+    window.pi.workspace.listDirectory = listDirectory;
+    useAppStore.setState({
+      prefs: {
+        ...DEFAULT_PREFS,
+        explorer: { showHidden: true, showIgnored: true, sort: "modified" },
+      },
+    });
+
+    await useExplorerStore.getState().ensure(PROJECT);
+
+    expect(listDirectory).toHaveBeenCalledWith({
+      projectPath: PROJECT,
+      path: "",
+      sort: "modified",
+    });
+  });
+});

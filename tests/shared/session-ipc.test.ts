@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isSessionBusyState,
   isSessionTab,
   isTabKind,
   sanitizeTabRecord,
@@ -81,6 +82,17 @@ describe("sanitizeTabRecord", () => {
     expect(sanitizeTabRecord({ kind: "session", cwd: "C:\\x" })).toBeNull();
     expect(sanitizeTabRecord(null)).toBeNull();
   });
+
+  it("keeps a pinned tab pinned and drops a malformed flag", () => {
+    const pinned = sanitizeTabRecord({ id: "t", cwd: "C:\\x", pinned: true });
+    expect(pinned?.pinned).toBe(true);
+
+    const ordinary = sanitizeTabRecord({ id: "t", cwd: "C:\\x" });
+    expect(ordinary).not.toHaveProperty("pinned");
+
+    const malformed = sanitizeTabRecord({ id: "t", cwd: "C:\\x", pinned: "yes" });
+    expect(malformed).not.toHaveProperty("pinned");
+  });
 });
 
 describe("isSessionTab", () => {
@@ -141,5 +153,23 @@ describe("sessionTitle", () => {
   it("uses the last path segment", () => {
     expect(sessionTitle("C:\\work\\pi-desktop")).toBe("pi-desktop");
     expect(sessionTitle("/home/me/project/")).toBe("project");
+  });
+});
+
+describe("isSessionBusyState", () => {
+  it("treats every in-flight session state as busy", () => {
+    expect(isSessionBusyState({ streaming: true })).toBe(true);
+    expect(isSessionBusyState({ compacting: true })).toBe(true);
+    expect(isSessionBusyState({ retrying: true })).toBe(true);
+    expect(isSessionBusyState({ pendingMessages: 1 })).toBe(true);
+    expect(isSessionBusyState({ steering: ["use the other file"] })).toBe(true);
+    expect(isSessionBusyState({ followUp: ["then run the tests"] })).toBe(true);
+  });
+
+  it("keeps an idle session parkable", () => {
+    expect(isSessionBusyState({ streaming: false, pendingMessages: 0 })).toBe(false);
+    expect(isSessionBusyState({ steering: [], followUp: [] })).toBe(false);
+    expect(isSessionBusyState(null)).toBe(false);
+    expect(isSessionBusyState("working")).toBe(false);
   });
 });

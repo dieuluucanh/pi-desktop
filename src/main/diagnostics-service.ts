@@ -18,12 +18,10 @@ import {
 } from "../shared/diagnostics";
 import { redactSecrets } from "./office/troubleshoot";
 import {
+  DEFAULT_LIVE_HOSTS,
   HOST_RSS_BUDGET_BYTES,
   HOST_RSS_RESTART_BYTES,
-  MAX_HOSTS,
-  MAX_TABS,
-  capacity,
-  type Capacity,
+  type SessionCapacity,
   type StartupReport,
 } from "../shared/performance";
 
@@ -44,8 +42,8 @@ export interface DiagnosticsSessionProvider {
   hosts(): DiagnosticsHostInfo[];
   incidents(): Incident[];
   extensionErrors(): DiagnosticsExtensionError[];
-  /** Used/limit of the running caps (plan step 24). Optional for test doubles. */
-  capacity?(): { hosts: Capacity; tabs: Capacity };
+  /** Soft live-host budget readout (plan step 24). Optional for test doubles. */
+  capacity?(): SessionCapacity;
 }
 
 export interface DiagnosticsServiceDeps {
@@ -282,8 +280,12 @@ export function createDiagnosticsService(deps: DiagnosticsServiceDeps): Diagnost
       },
       hosts: deps.sessions?.hosts() ?? [],
       capacity: deps.sessions?.capacity?.() ?? {
-        hosts: capacity(0, MAX_HOSTS),
-        tabs: capacity(0, MAX_TABS),
+        liveHosts: 0,
+        targetHosts: DEFAULT_LIVE_HOSTS,
+        overTarget: false,
+        openSessions: 0,
+        asleepSessions: 0,
+        editorTabs: 0,
       },
       memory: { budgetBytes: HOST_RSS_BUDGET_BYTES, restartBytes: HOST_RSS_RESTART_BYTES },
       incidents: [...mainIncidents, ...sessionIncidents]

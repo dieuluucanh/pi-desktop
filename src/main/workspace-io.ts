@@ -7,7 +7,18 @@
  * `reveal` port.
  */
 
-import { mkdir, open, readFile, readdir, realpath, rm, stat, lstat } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+  lstat,
+} from "node:fs/promises";
 
 import { createNodeGitRunner } from "../git/runner";
 import type { TreeDirectoryEntry, TreeStat, WorkspaceTreeIo } from "../workspace/tree";
@@ -17,15 +28,27 @@ import type { FileContentIo } from "../workspace/file-content";
 export interface WorkspaceNodeIo extends WorkspaceTreeIo, FileContentIo {
   remove(target: string): Promise<boolean>;
   ensureDir(target: string): Promise<void>;
+  /** Creates one directory (not recursive); an existing directory is a failure. */
+  mkdir(target: string): Promise<void>;
+  rename(source: string, target: string): Promise<void>;
+  /** Recursive copy that refuses an existing target and never follows symlinks. */
+  copy(source: string, target: string): Promise<void>;
+  /** Moves the target to the OS Recycle Bin/Trash; false when unavailable. */
+  trash(target: string): Promise<boolean>;
   /** Base names in a directory; empty when it is missing. */
   listDirectoryNames(target: string): Promise<string[]>;
   runGit(root: string, args: readonly string[]): Promise<string | null>;
 }
 
+export interface CreateNodeWorkspaceIoOptions {
+  /** Electron's `shell.trashItem`, injected by `src/main/index.ts`. */
+  trash?: (target: string) => Promise<void> | void;
+}
+
 const GIT_TIMEOUT_MS = 4_000;
 const MAX_READ_BYTES = 8_000_000;
 
-export function createNodeWorkspaceIo(): WorkspaceNodeIo {
+export function createNodeWorkspaceIo(options: CreateNodeWorkspaceIoOptions = {}): WorkspaceNodeIo {
   const git = createNodeGitRunner();
 
   return {
@@ -123,6 +146,34 @@ export function createNodeWorkspaceIo(): WorkspaceNodeIo {
 
     async ensureDir(target) {
       await mkdir(target, { recursive: true });
+    },
+
+    async mkdir(target) {
+      await mkdir(target);
+    },
+
+    async rename(source, target) {
+      await rename(source, target);
+    },
+
+    async copy(source, target) {
+      await cp(source, target, {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+        dereference: false,
+        verbatimSymlinks: true,
+      });
+    },
+
+    async trash(target) {
+      if (!options.trash) return false;
+      try {
+        await options.trash(target);
+        return true;
+      } catch {
+        return false;
+      }
     },
 
     async listDirectoryNames(target) {

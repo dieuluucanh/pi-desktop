@@ -4,13 +4,20 @@ import {
   MAX_DIRECTORY_ENTRIES,
   MAX_EDITOR_READ_BYTES,
   MAX_EDITOR_WRITE_BYTES,
+  MAX_ENTRY_NAME_LENGTH,
   MAX_QUICK_OPEN_FILES,
+  MAX_TRANSFER_ENTRIES,
+  MAX_TRANSFER_SOURCES,
   MAX_WORKSPACE_PATH_LENGTH,
+  isWorkspaceEntryName,
+  isWorkspacePathWithin,
   isWorkspaceRelativePath,
   sameWorkspacePath,
   sortWorkspaceEntries,
+  workspaceAbsolutePath,
   workspaceBasename,
   workspaceDirname,
+  workspaceDisplayRelativePath,
   workspaceFailure,
   workspaceJoin,
   workspaceOk,
@@ -143,6 +150,9 @@ describe("caps and result envelopes", () => {
     expect(MAX_DIRECTORY_ENTRIES).toBeGreaterThan(0);
     expect(MAX_QUICK_OPEN_FILES).toBeGreaterThan(MAX_DIRECTORY_ENTRIES);
     expect(MAX_EDITOR_READ_BYTES).toBeGreaterThan(MAX_EDITOR_WRITE_BYTES);
+    expect(MAX_ENTRY_NAME_LENGTH).toBe(255);
+    expect(MAX_TRANSFER_SOURCES).toBeGreaterThan(1);
+    expect(MAX_TRANSFER_ENTRIES).toBeGreaterThan(MAX_TRANSFER_SOURCES);
   });
 
   it("builds ok and failure results", () => {
@@ -151,5 +161,61 @@ describe("caps and result envelopes", () => {
       ok: false,
       error: { code: "conflict", message: "changed", current: { mtimeMs: 2, size: 3 } },
     });
+  });
+});
+
+describe("entry names", () => {
+  it("accepts ordinary files, dotfiles and spaces", () => {
+    for (const name of ["app.ts", ".env", ".gitignore", "my file.md", "a.b", "..hidden"]) {
+      expect(isWorkspaceEntryName(name), name).toBe(true);
+    }
+  });
+
+  it("rejects traversal, separators, reserved and Windows-invalid names", () => {
+    for (const name of [
+      "",
+      ".",
+      "..",
+      ".git",
+      "a/b",
+      "a\\b",
+      "CON",
+      "con.txt",
+      "LPT9.log",
+      "a:b",
+      "a|b",
+      "a?b",
+      "a*b",
+      "a<b",
+      "a>b",
+      'a"b',
+      "trailing.",
+      "trailing ",
+      "nul\u0000byte",
+      "x".repeat(MAX_ENTRY_NAME_LENGTH + 1),
+    ]) {
+      expect(isWorkspaceEntryName(name), name).toBe(false);
+    }
+    expect(isWorkspaceEntryName(1)).toBe(false);
+  });
+});
+
+describe("absolute and display paths", () => {
+  it("joins Windows and POSIX roots with native separators", () => {
+    expect(workspaceAbsolutePath("C:\\work\\app", "src/app.ts")).toBe("C:\\work\\app\\src\\app.ts");
+    expect(workspaceAbsolutePath("/work/app/", "src/app.ts")).toBe("/work/app/src/app.ts");
+    expect(workspaceDisplayRelativePath("C:\\work\\app", "src/app.ts")).toBe("src\\app.ts");
+    expect(workspaceDisplayRelativePath("/work/app", "src/app.ts")).toBe("src/app.ts");
+  });
+});
+
+describe("isWorkspacePathWithin", () => {
+  it("matches a file exactly and a directory at a path boundary", () => {
+    expect(isWorkspacePathWithin("src/app.ts", "src/app.ts", "file")).toBe(true);
+    expect(isWorkspacePathWithin("src/app.ts", "src", "file")).toBe(false);
+    expect(isWorkspacePathWithin("src/app.ts", "src", "directory")).toBe(true);
+    expect(isWorkspacePathWithin("src/app.ts", "src", "directory", false)).toBe(true);
+    expect(isWorkspacePathWithin("src/app.ts", "src/a", "directory")).toBe(false);
+    expect(isWorkspacePathWithin("SRC/App.ts", "src/app.ts", "file", true)).toBe(true);
   });
 });

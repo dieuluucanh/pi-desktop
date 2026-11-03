@@ -24,21 +24,23 @@ import { SESSION_ID_ENV, SERVICE_ENV, SERVICE_FLAG } from "../host/index";
 import {
   HOST_RSS_RESTART_BYTES,
   IDLE_HOST_TIMEOUT_MS,
-  MAX_HOSTS,
+  MAX_HOSTS_HARD_CEILING,
   capacity,
-  capacityMessage,
+  hostCeilingMessage,
   shouldRestartForMemory,
   type Capacity,
   type HostMemoryMetrics,
 } from "../shared/performance";
+import { isSessionBusyState } from "../shared/session-ipc";
 
 /**
  * Supervises Pi host processes (plan step 4): one per session tab, spawned with
  * the bundled Node runtime, speaking JSONL over stdio.
  *
  * Responsibilities: request/response correlation with timeouts, per-host logs,
- * crash detection with backoff + `session.resume`, idle recycling, a host cap
- * and port allocation (38617 is reserved for the Office host, plan D10).
+ * crash detection with backoff + `session.resume`, idle recycling, an emergency
+ * host-process ceiling and port allocation (38617 is reserved for the Office
+ * host, plan D10).
  *
  * The spawn function and the filesystem port are injectable, so the whole thing
  * is unit testable without spawning real processes.
@@ -138,6 +140,10 @@ export interface HostHandle {
   logs(): string[];
   request(method: HostMethod, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
   on(event: string, listener: HostEventListener): () => void;
+  /** True when the injected policy says this host must stay alive. */
+  pinned(): boolean;
+  /** True when the host is ready and has no request in flight. */
+  isIdle(): boolean;
   restart(reason?: string): Promise<HostInfo>;
   shutdown(): Promise<void>;
 }
@@ -212,14 +218,14 @@ export interface HostSupervisor {
   stopAll(): Promise<void>;
   /** Ports currently owned by hosts. */
   allocatedPorts(): number[];
-  /** Used/limit of the running host cap, for the UI's backpressure message. */
+  /** Used/limit of the emergency host-process ceiling (not a session limit). */
   capacity(): Capacity;
 }
 
 export const OFFICE_BRIDGE_PORT = 38617;
 export const FIRST_GENERAL_PORT = 38618;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-export const DEFAULT_MAX_HOSTS = MAX_HOSTS;
+export const DEFAULT_MAX_HOSTS = MAX_HOSTS_HARD_CEILING;
 export const DEFAULT_IDLE_TIMEOUT_MS = IDLE_HOST_TIMEOUT_MS;
 export const DEFAULT_METRICS_POLL_MS = 15_000;
 export const RESTART_BACKOFF_MS = [0, 500, 2_000] as const;
@@ -249,16 +255,14 @@ export class HostNotRunningError extends Error {
 }
 
 /**
- * The host cap was hit. Carries a stable `code` so IPC can map it to the
- * backpressure sentence instead of matching prose (plan step 24).
+ * The emergency host-process ceiling was hit. Carries a stable `code` so IPC can
+ * map it to the ceiling sentence instead of matching prose.
  */
 export class HostLimitError extends Error {
   readonly code = "host_limit";
 
   constructor(limit: number) {
-    super(
-      `host limit reached (${limit}); close a session tab first. ${capacityMessage("hosts", limit)}`,
-    );
+    super(hostCeilingMessage(limit));
     this.name = "HostLimitError";
   }
 }
@@ -331,6 +335,11 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
 
     status(): HostStatus {
       return this.state;
+    }
+
+    /** Ready and with no request in flight; a cheap first parkability filter. */
+    isIdle(): boolean {
+      return this.state === "ready" && this.pending.size === 0;
     }
 
     info(): HostInfo | null {
@@ -638,7 +647,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       return info;
     }
 
-    private pinned(): boolean {
+    pinned(): boolean {
       try {
         return options.isPinned?.(this.sessionId) === true;
       } catch {
@@ -652,21 +661,41 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       const idleTimeoutMs = options.idleTimeoutMs;
       if (!idleTimeoutMs || idleTimeoutMs <= 0 || this.officeHost) return;
       if (this.idleTimer) clearTimeout(this.idleTimer);
-      this.idleTimer = setTimeout(() => {
-        const since = now() - this.lastActivityAt;
-        // Recycle only when nothing is in flight, the host has had no real
-        // traffic for the whole window, and no live bridge is pinned to it. The
-        // session service sees the `stopped` status, drops its stale handle and
-        // re-spawns on the next activation.
-        if (this.pending.size === 0 && since >= idleTimeoutMs && !this.pinned()) {
-          this.appendLog("info", `recycling idle host after ${Math.round(since / 1000)} s`);
-          this.onIdle?.();
-          return;
-        }
-        this.scheduleIdleCheck();
-      }, idleTimeoutMs);
+      this.idleTimer = setTimeout(() => void this.checkIdle(idleTimeoutMs), idleTimeoutMs);
       if (typeof this.idleTimer === "object" && this.idleTimer && "unref" in this.idleTimer)
         this.idleTimer.unref();
+    }
+
+    /**
+     * Recycles a host only after proving the session is not doing work. A long
+     * tool call can run for more than the idle window without emitting an event,
+     * so elapsed time alone is not evidence that the host is safe to stop.
+     */
+    private async checkIdle(idleTimeoutMs: number): Promise<void> {
+      const since = now() - this.lastActivityAt;
+      // Recycle only when nothing is in flight, the host has had no real
+      // traffic for the whole window, and no live bridge is pinned to it. The
+      // session service sees the `stopped` status, drops its stale handle and
+      // re-spawns on the next activation.
+      if (this.pending.size > 0 || since < idleTimeoutMs || this.pinned() || this.officeHost) {
+        this.scheduleIdleCheck();
+        return;
+      }
+      let busy: boolean;
+      try {
+        busy = isSessionBusyState(await this.request("state.get", undefined, { timeoutMs: 1_500 }));
+      } catch {
+        // A host that cannot answer the probe must not be killed from the idle
+        // path; the user can restart it and the RSS watchdog still applies.
+        busy = true;
+      }
+      if (busy) {
+        this.appendLog("info", "keeping host alive: the session is still working");
+        this.scheduleIdleCheck();
+        return;
+      }
+      this.appendLog("info", `recycling idle host after ${Math.round(since / 1000)} s`);
+      this.onIdle?.();
     }
 
     /** Polls `host.metrics` for the Diagnostics RSS readout and the restart cap. */
@@ -703,6 +732,22 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         // and the next interaction/ensure resumes from JSONL. This is the same
         // path as an idle recycle, so it cannot orphan a child or race a handshake.
         if (threshold > 0 && shouldRestartForMemory(sample, threshold) && this.pending.size === 0) {
+          // Never recycle the Office bridge owner or a pinned host, and never
+          // stop a session that is still working (a streaming turn has no
+          // pending request once its preflight ack has been consumed).
+          if (this.pinned() || this.officeHost) return;
+          let busy: boolean;
+          try {
+            busy = isSessionBusyState(
+              await this.request("state.get", undefined, { timeoutMs: 1_500 }),
+            );
+          } catch {
+            busy = true;
+          }
+          if (busy) {
+            this.appendLog("info", "keeping host alive: the session is still working");
+            return;
+          }
           const mb = (bytes: number): number => Math.round(bytes / (1024 * 1024));
           this.appendLog(
             "info",

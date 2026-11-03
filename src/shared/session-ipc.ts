@@ -10,7 +10,7 @@
 
 import type { TrustAnswer } from "./projects";
 import { sanitizeWebUrl, webTabTitle } from "./web-tabs";
-import { isWorkspaceRelativePath, workspaceBasename } from "./workspace";
+import { isWorkspaceRelativePath, workspaceBasename, type WorkspaceEntryKind } from "./workspace";
 
 /**
  * The address of the app-wide **control host** (plan D-A3) on the session
@@ -84,6 +84,20 @@ export interface TabRecord {
   sessionTabId?: string | null;
   /** Last failure, surfaced inline in the tab instead of only in a log. */
   error?: string;
+  /**
+   * Pinned tabs form a stable group at the front of the strip and are skipped by
+   * Close Others/Close All. Omitted for a normal, unpinned tab.
+   */
+  pinned?: boolean;
+}
+
+/** The path mapping used after a rename or move retargets open editor tabs. */
+export interface RetargetEditorTabsInput {
+  fromProjectPath: string;
+  fromPath: string;
+  toProjectPath: string;
+  toPath: string;
+  kind: WorkspaceEntryKind;
 }
 
 /** A tab that the session strip, sidebar and project activation may show. */
@@ -221,6 +235,7 @@ export function sanitizeTabRecord(value: unknown): TabRecord | null {
     ...(kind === "web" ? { url, sessionTabId: stringOrNull(source.sessionTabId) } : {}),
     ...(kind === "editor" ? { filePath } : {}),
     ...(typeof source.error === "string" ? { error: source.error } : {}),
+    ...(source.pinned === true ? { pinned: true } : {}),
   };
 }
 
@@ -233,6 +248,26 @@ export function sanitizeTabs(value: unknown): TabRecord[] {
     if (record) records.push(record);
   }
   return records;
+}
+
+/**
+ * Whether a `state.get` snapshot says the session is doing work and must not be
+ * parked or recycled. Shared by the session service (idle parking) and the
+ * supervisor (idle/RSS recycling) so the two can never disagree about what
+ * "busy" means.
+ */
+export function isSessionBusyState(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  const nonEmpty = (field: unknown): boolean => Array.isArray(field) && field.length > 0;
+  return (
+    record.streaming === true ||
+    record.compacting === true ||
+    record.retrying === true ||
+    (typeof record.pendingMessages === "number" && record.pendingMessages > 0) ||
+    nonEmpty(record.steering) ||
+    nonEmpty(record.followUp)
+  );
 }
 
 /** Display title for a tab: the last path segment of the project folder. */

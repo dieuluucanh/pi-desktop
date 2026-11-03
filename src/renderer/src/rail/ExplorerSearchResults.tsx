@@ -2,6 +2,8 @@ import type { WorkspaceSearchMatch } from "../../../shared/workspace";
 import { WORKSPACE_PATH_DRAG_VERSION } from "../../../shared/workspace-drag";
 import { writeWorkspaceDrag } from "../files/workspace-drag";
 import { EntryIcon } from "./ExplorerRow";
+import { ExplorerContextMenu } from "./ExplorerContextMenu";
+import type { ExplorerMenuActionId, ExplorerMenuTarget } from "./explorer-menu";
 import type { ExplorerSearchStatus } from "../files/explorer-store";
 
 export interface ExplorerSearchResultsProps {
@@ -13,6 +15,7 @@ export interface ExplorerSearchResultsProps {
   scanned: number;
   error: string | null;
   onOpen: (path: string) => void;
+  onAction: (id: ExplorerMenuActionId, target: ExplorerMenuTarget | null) => void;
 }
 
 /**
@@ -29,6 +32,7 @@ export function ExplorerSearchResults({
   scanned,
   error,
   onOpen,
+  onAction,
 }: ExplorerSearchResultsProps): React.JSX.Element {
   return (
     <div
@@ -50,31 +54,42 @@ export function ExplorerSearchResults({
         <div role="list">
           {results.map((match) => (
             <div key={match.path} role="listitem">
-              <button
-                type="button"
-                data-testid="explorer-result"
-                data-path={match.path}
-                title={match.path}
-                draggable
-                onDragStart={(event) => {
-                  writeWorkspaceDrag(event.dataTransfer, {
-                    version: WORKSPACE_PATH_DRAG_VERSION,
-                    projectPath,
-                    path: match.path,
-                    kind: "file",
-                  });
+              <ExplorerContextMenu
+                target={{
+                  kind: "file",
+                  path: match.path,
+                  name: match.name,
+                  outside: false,
                 }}
-                onClick={() => onOpen(match.path)}
-                className="flex h-6 w-full items-center gap-1 px-2 text-left text-xs hover:bg-raised/60"
+                onAction={onAction}
               >
-                <EntryIcon path={match.path} kind="file" />
-                <span className="min-w-0 flex-1 truncate text-ink">{match.name}</span>
-                {match.directory.length > 0 ? (
-                  <span className="max-w-[45%] shrink-0 truncate text-[10px] text-ink-faint">
-                    {match.directory}
-                  </span>
-                ) : null}
-              </button>
+                <button
+                  type="button"
+                  data-testid="explorer-result"
+                  data-path={match.path}
+                  title={match.path}
+                  draggable
+                  onContextMenu={(event) => event.stopPropagation()}
+                  onDragStart={(event) => {
+                    writeWorkspaceDrag(event.dataTransfer, {
+                      version: WORKSPACE_PATH_DRAG_VERSION,
+                      projectPath,
+                      path: match.path,
+                      kind: "file",
+                    });
+                  }}
+                  onClick={() => onOpen(match.path)}
+                  className="flex h-6 w-full items-center gap-1 px-2 text-left text-xs hover:bg-raised/60"
+                >
+                  <EntryIcon path={match.path} kind="file" />
+                  <span className="min-w-0 flex-1 truncate text-ink">{match.name}</span>
+                  {match.directory.length > 0 ? (
+                    <span className="max-w-[45%] shrink-0 truncate text-[10px] text-ink-faint">
+                      {match.directory}
+                    </span>
+                  ) : null}
+                </button>
+              </ExplorerContextMenu>
             </div>
           ))}
         </div>

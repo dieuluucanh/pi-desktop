@@ -21,6 +21,13 @@ scroll horizontally with the mouse wheel. The active tab is revealed when the
 selection changes; a manual scroll position is kept across window switches and
 tab status updates.
 
+Right-click a tab or use its **…** menu; both surfaces show the same actions.
+Editor tabs add Copy Path (absolute), Copy Relative Path, Pin/Unpin, Close,
+Close Others and Close All. Pinned tabs stay at the front, hide their X, survive
+a relaunch and are skipped by Close All/Close Others. Close All/Close Others are
+kind-scoped, so closing all sessions leaves editor, web and Office tabs open.
+Removing a project closes every tab in that project, including pinned tabs.
+
 Sessions are grouped by project in the sidebar; the group lists the same tabs as
 the top strip (file tabs stay in the editor strip), and a running tab shows a
 status dot.

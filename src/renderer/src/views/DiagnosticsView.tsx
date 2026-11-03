@@ -233,10 +233,17 @@ export function DiagnosticsView() {
           <section className="card flex flex-col gap-3" data-testid="diagnostics-hosts">
             <h2 className="text-sm font-semibold">Hosts</h2>
             <p className="text-xs text-ink-muted">
-              {snapshot.capacity.hosts.used}/{snapshot.capacity.hosts.limit} hosts ·{" "}
-              {snapshot.capacity.tabs.used}/{snapshot.capacity.tabs.limit} tabs · per-host budget{" "}
+              {snapshot.capacity.liveHosts}/{snapshot.capacity.targetHosts} live hosts ·{" "}
+              {snapshot.capacity.openSessions} open sessions ({snapshot.capacity.asleepSessions}{" "}
+              asleep) · {snapshot.capacity.editorTabs} editor tabs · per-host budget{" "}
               {formatBytes(snapshot.memory.budgetBytes)} (recycle at{" "}
               {formatBytes(snapshot.memory.restartBytes)})
+            </p>
+            <p className="flex flex-wrap items-center gap-2 text-xs text-ink-muted">
+              {snapshot.capacity.overTarget ? <Badge tone="warn">over target</Badge> : null}
+              <span>
+                The live-session target is soft; inactive sessions sleep and wake on first use.
+              </span>
             </p>
             {snapshot.hosts.length === 0 ? (
               <p className="text-sm text-ink-muted">

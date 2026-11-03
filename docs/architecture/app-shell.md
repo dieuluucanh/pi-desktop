@@ -516,10 +516,19 @@ and the renderer all read it, so a budget change is one edit.
   by **stopping** it (the same path as an idle recycle), not by restarting in
   place. The session service drops a handle that reports `stopped`, so the next
   interaction spawns a fresh process and resumes from JSONL. The 15-minute
-  time-based idle recycler remains opt-in (see the host protocol table).
-- **Caps and backpressure.** The supervisor enforces the host cap (8) and the
-  session service the tab cap (8); both raise a coded, user-facing sentence
-  (`capacityMessage`), and Diagnostics shows used/limit.
+  time-based idle recycler is **on by default**; the active tab, the control
+  host, an Office host and the bridge owner are never recycled.
+- **Open tabs vs live hosts.** A tab is a resumable JSONL record, not a process,
+  so session, Office, web and editor tabs are **unlimited**. The only resource
+  budget is live host processes: `liveHostBudget(totalMemory)` reserves 40% of
+  physical RAM at 512 MB per host, clamped to 4–32. Before a spawn the session
+  service parks the least-recently-used **idle** host (status `stopped` shows as
+  "asleep"); if every live session is busy the spawn still proceeds, so a
+  session count can never block the user. Diagnostics shows `live/target`,
+  open/asleep/editor counts and an over-target warn badge. The supervisor's
+  64-process ceiling is an emergency port/protocol guard, not a session limit.
+  Both idle and RSS recycling probe `state.get` first, so a streaming turn or a
+  long tool call is never stopped mid-work.
 
 ## Tests
 
@@ -530,11 +539,18 @@ and the renderer all read it, so a budget change is one edit.
 - `tests/main/diagnostics-service.test.ts` — snapshot shape, incident merge, the
   bundle structure, credential redaction and the allowlisted environment.
 - `tests/shared/performance.test.ts` — budget classification, the startup report,
-  the memory threshold, capacity and formatting (plan step 24).
-- `tests/main/host-supervisor.test.ts` — `host.metrics` polling, the RSS restart
-  cooldown, idle recycling and the coded host-cap error (plan step 24).
-- `tests/main/session-service.test.ts` — coalescing measurements, capacity and
-  the stopped-host handle drop (plan step 24).
+  the memory threshold, the RAM-derived live-host budget and formatting.
+- `tests/shared/session-ipc.test.ts` — tab sanitizing and the shared "is this
+  session busy?" predicate used by parking and recycling.
+- `tests/main/host-supervisor.test.ts` — `host.metrics` polling, busy-aware RSS
+  recycling, idle recycling/pinning and the coded emergency-ceiling error.
+- `tests/main/session-service.test.ts` — coalescing measurements, unbounded
+  restore, soft-budget capacity, LRU parking and wake, and the stopped-host
+  handle drop.
+- `tests/main/host-policy.test.ts` — control/active/bridge-owner protection for
+  the idle reaper.
+- `tests/renderer/session-tab-strip.test.tsx` — a strip with more than eight
+  session tabs; `editor-tab-strip.test.tsx` covers more than sixteen files.
 - `tests/host/service.test.ts` — in-place event spilling and `host.metrics`.
 - `tests/renderer/transcript.test.tsx` — 10k virtualization and the lazy blob
   fetch.

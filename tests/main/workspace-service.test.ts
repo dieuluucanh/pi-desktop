@@ -95,6 +95,36 @@ function fakeIo(initial: Record<string, FakeNode> = {}): WorkspaceNodeIo & {
     async ensureDir(target) {
       nodes.set(normalize(target), { kind: "directory", text: "", mtimeMs: 1, mode: 0o755 });
     },
+    async mkdir(target) {
+      const key = normalize(target);
+      if (nodes.has(key)) {
+        const error = new Error("exists");
+        (error as { code?: string }).code = "EEXIST";
+        throw error;
+      }
+      nodes.set(key, { kind: "directory", text: "", mtimeMs: 1, mode: 0o755 });
+    },
+    async rename(source, target) {
+      const from = normalize(source);
+      const to = normalize(target);
+      const node = nodes.get(from);
+      if (!node) throw new Error("missing");
+      nodes.delete(from);
+      nodes.set(to, node);
+    },
+    async copy(source, target) {
+      const from = normalize(source);
+      const node = nodes.get(from);
+      if (!node) throw new Error("missing");
+      nodes.set(normalize(target), { ...node });
+    },
+    async trash(target) {
+      const key = normalize(target);
+      for (const path of [...nodes.keys()]) {
+        if (path === key || path.startsWith(`${key}\\`)) nodes.delete(path);
+      }
+      return true;
+    },
     async listDirectoryNames(target) {
       return children(target);
     },
@@ -309,5 +339,70 @@ describe("workspace service", () => {
     const api = service(io);
     const huge = backup({ text: "x".repeat(4_100_000) });
     expect(await api.writeBackup(huge)).toMatchObject({ ok: false, error: { code: "too_large" } });
+  });
+
+  it("creates, renames, deletes and transfers through the envelope", async () => {
+    const io = fakeIo({
+      "/project": { kind: "directory", text: "", mtimeMs: 1, mode: 0o755 },
+      "/target": { kind: "directory", text: "", mtimeMs: 1, mode: 0o755 },
+      "/project/a.ts": { kind: "file", text: "a", mtimeMs: 1, mode: 0o644 },
+    });
+    const api = service(io);
+
+    const created = await api.create({ projectPath: "/project", path: "new.ts", kind: "file" });
+    expect(created).toMatchObject({ ok: true, value: { path: "new.ts", kind: "file" } });
+
+    const renamed = await api.rename({
+      projectPath: "/project",
+      path: "new.ts",
+      toPath: "renamed.ts",
+    });
+    expect(renamed).toMatchObject({ ok: true, value: { path: "renamed.ts", kind: "file" } });
+
+    const trashed = await api.delete({ projectPath: "/project", path: "renamed.ts" });
+    expect(trashed).toMatchObject({ ok: true, value: { path: "renamed.ts" } });
+
+    const moved = await api.transfer({
+      sourceProjectPath: "/project",
+      targetProjectPath: "/target",
+      sources: ["a.ts"],
+      targetDirectory: "",
+      operation: "copy",
+    });
+    expect(moved).toMatchObject({
+      ok: true,
+      value: { operation: "copy", transferred: [{ sourcePath: "a.ts", targetPath: "a.ts" }] },
+    });
+  });
+
+  it("maps mutation failures to the workspace envelope", async () => {
+    const io = fakeIo({
+      "/project": { kind: "directory", text: "", mtimeMs: 1, mode: 0o755 },
+      "/project/a.ts": { kind: "file", text: "a", mtimeMs: 1, mode: 0o644 },
+      "/project/b.ts": { kind: "file", text: "b", mtimeMs: 1, mode: 0o644 },
+    });
+    const api = service(io);
+    expect(await api.create({ projectPath: "/project", path: "a.ts", kind: "file" })).toMatchObject(
+      { ok: false, error: { code: "conflict" } },
+    );
+    expect(
+      await api.rename({ projectPath: "/project", path: "a.ts", toPath: "b.ts" }),
+    ).toMatchObject({ ok: false, error: { code: "conflict" } });
+  });
+
+  it("forwards the explorer sort order", async () => {
+    const io = fakeIo({
+      "/project": { kind: "directory", text: "", mtimeMs: 1, mode: 0o755 },
+      "/project/b.ts": { kind: "file", text: "b", mtimeMs: 1, mode: 0o644 },
+      "/project/a.ts": { kind: "file", text: "a", mtimeMs: 2, mode: 0o644 },
+    });
+    const result = await service(io).listDirectory({
+      projectPath: "/project",
+      path: "",
+      sort: "modified",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok)
+      expect(result.value.entries.map((entry) => entry.name)).toEqual(["a.ts", "b.ts"]);
   });
 });

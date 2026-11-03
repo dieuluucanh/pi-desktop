@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   isPathInside,
+  resolveEntryInsideRoot,
   resolveInsideRoot,
   resolveRelativePath,
   type RealPathIo,
@@ -177,5 +178,39 @@ describe("resolveInsideRoot (real filesystem)", () => {
     // The caller's own path is returned (so the relative display stays theirs),
     // and the real target it points at is verified to be inside the root.
     expect(await resolveInsideRoot(io, root, "alias.txt")).toBe(link);
+  });
+});
+
+describe("resolveEntryInsideRoot (link-safe)", () => {
+  const root = resolve("/tmp/workspace");
+  const outside = resolve("/tmp/outside");
+
+  it("returns the entry itself for a normal file", async () => {
+    const io = fakeIo({
+      [root]: root,
+      [join(root, "a.txt")]: join(root, "a.txt"),
+    });
+    expect(await resolveEntryInsideRoot(io, root, "a.txt")).toBe(join(root, "a.txt"));
+  });
+
+  it("accepts an outside-pointing symlink as a link", async () => {
+    const link = join(root, "escape.txt");
+    const io = fakeIo({
+      [root]: root,
+      [link]: join(outside, "secret.txt"),
+    });
+    // resolveInsideRoot follows the link and refuses it; the entry resolver
+    // stops at the link so delete/rename can act on the link itself.
+    expect(await resolveInsideRoot(io, root, "escape.txt")).toBeNull();
+    expect(await resolveEntryInsideRoot(io, root, "escape.txt")).toBe(link);
+  });
+
+  it("refuses a symlinked parent that escapes the root", async () => {
+    const escapedParent = join(root, "escape-dir");
+    const io = fakeIo({
+      [root]: root,
+      [escapedParent]: outside,
+    });
+    expect(await resolveEntryInsideRoot(io, root, "escape-dir/file.txt")).toBeNull();
   });
 });

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { totalmem } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
   app,
@@ -27,7 +28,12 @@ import type {
   ProjectActionInput,
   ProjectMutation,
 } from "../shared/projects";
-import type { CreateTabInput, SessionTabsEnvelope } from "../shared/session-ipc";
+import type {
+  CreateTabInput,
+  RetargetEditorTabsInput,
+  SessionTabsEnvelope,
+  TabKind,
+} from "../shared/session-ipc";
 import { CONTROL_TAB_ID } from "../shared/session-ipc";
 import { HOST_METHODS } from "../shared/host-protocol";
 import { menuAcceleratorsFor, resolveDesktopKeymap } from "../shared/desktop-keymap";
@@ -37,6 +43,7 @@ import { createAppStore } from "./app-store";
 import { createNodeFsPort } from "./fs-port";
 import { createHostBuildId } from "./host-build";
 import { createHostSupervisor } from "./host-supervisor";
+import { keepHostAlive } from "./host-policy";
 import { createQuitTeardown } from "./lifecycle";
 import {
   broadcastToWindows,
@@ -109,7 +116,12 @@ import {
 import { isOfflineEnv, classifyFailure, type DiagnosticsGitInfo } from "../shared/diagnostics";
 import type { CheckpointState } from "../shared/checkpoints";
 import type { GitSnapshot } from "../shared/git";
-import { createStartupMetrics } from "../shared/performance";
+import {
+  IDLE_HOST_TIMEOUT_MS,
+  MAX_HOSTS_HARD_CEILING,
+  liveHostBudget,
+  createStartupMetrics,
+} from "../shared/performance";
 import type { DiagnosticsSaveResult } from "../shared/ipc";
 import { resolveAppRuntime, type RuntimeResolution } from "./runtime";
 import { rendererWindowOptions, sanitizeExternalUrl } from "./security";
@@ -289,6 +301,20 @@ const bridgeOwnerSessionId: { current: () => string | null } = {
   current: () => null,
 };
 
+/**
+ * The active tab, read by the supervisor's idle check. A mutable holder avoids a
+ * forward reference to the session service (created just below) and is updated
+ * on every tab push.
+ */
+const activeSessionId: { current: string | null } = { current: null };
+
+/**
+ * The soft live-host target for this machine. Total memory is stable for the
+ * app's lifetime; the control host is included in the count, and the value is
+ * never a hard session limit (see `liveHostBudget`).
+ */
+const liveHostTarget = liveHostBudget(totalmem());
+
 const hosts = runtime.nodePath
   ? createHostSupervisor({
       nodePath: runtime.nodePath,
@@ -307,9 +333,17 @@ const hosts = runtime.nodePath
       // The running host reports this id in `host.hello`; a later rebuild makes
       // it differ from the file on disk (2026-10-24 stale-host plan).
       hostBuildId,
-      // A session hosting the on-demand bridge must survive the idle reaper,
-      // even when it is not the old `office` kind.
-      isPinned: (sessionId) => bridgeOwnerSessionId.current() === sessionId,
+      // The soft target parks idle sessions before spawning; the hard ceiling is
+      // only a protocol/port sanity guard, never a session limit.
+      maxHosts: MAX_HOSTS_HARD_CEILING,
+      // Sleep a session after 15 minutes without real traffic. The active tab,
+      // the control host, an Office host and the bridge owner are protected.
+      idleTimeoutMs: IDLE_HOST_TIMEOUT_MS,
+      isPinned: (sessionId) =>
+        keepHostAlive(sessionId, {
+          activeSessionId: activeSessionId.current,
+          bridgeOwnerSessionId: bridgeOwnerSessionId.current(),
+        }),
     })
   : null;
 
@@ -373,11 +407,16 @@ const sessions: SessionService | null = hosts
           .filter((pid): pid is number => typeof pid === "number"),
       ],
       officeBridgePort: PI_OFFICE_BRIDGE.defaultPort,
+      maxLiveHosts: liveHostTarget,
       emit: (channel, payload) => {
         broadcastToWindows(SESSION_CHANNELS[channel], payload);
-        // The tab table is the web-tab service's reconciliation input: a web tab
-        // opened, closed, reordered or restored is reflected in one place.
-        if (channel === "tabs") webTabs.sync(payload as SessionTabsEnvelope);
+        if (channel === "tabs") {
+          const envelope = payload as SessionTabsEnvelope;
+          activeSessionId.current = envelope.activeTabId;
+          // The tab table is the web-tab service's reconciliation input: a web
+          // tab opened, closed, reordered or restored is reflected in one place.
+          webTabs.sync(envelope);
+        }
       },
     })
   : null;
@@ -403,7 +442,12 @@ const sessionsIpc: IpcSessionDeps = {
   list: () => sessions?.envelope() ?? { tabs: [], activeTabId: null },
   create: (input: CreateTabInput) => requireSessions().createTab(input),
   close: (tabId: string) => requireSessions().closeTab(tabId),
+  closeAll: (kind: TabKind) => requireSessions().closeAll(kind),
   closeOthers: (tabId: string) => requireSessions().closeOthers(tabId),
+  closeProject: (cwd: string) => requireSessions().closeForProject(cwd),
+  setPinned: (tabId: string, pinned: boolean) => requireSessions().setPinned(tabId, pinned),
+  retargetEditorTabs: (input: RetargetEditorTabsInput) =>
+    requireSessions().retargetEditorTabs(input),
   reorder: (tabId: string, toIndex: number) => requireSessions().reorderTab(tabId, toIndex),
   promoteOfficeHost: async (tabId: string) => {
     const envelope = await requireSessions().promoteToOfficeHost(tabId);
@@ -999,7 +1043,11 @@ const gitPush = createGitPushService({
  * injected port so the service stays Electron-free and unit-testable.
  */
 const workspaceService = createWorkspaceService({
-  io: createNodeWorkspaceIo(),
+  io: createNodeWorkspaceIo({
+    trash: async (target) => {
+      await shell.trashItem(target);
+    },
+  }),
   backupsDir: paths.editorBackups,
   reveal: (target) => {
     shell.showItemInFolder(target);
@@ -1351,7 +1399,12 @@ if (!app.requestSingleInstanceLock()) {
       sessions: sessionsIpc,
       projects: {
         get: () => projectsService.snapshot(),
-        mutate: (input: ProjectMutation) => projectsService.mutate(input),
+        mutate: async (input: ProjectMutation) => {
+          // Defense in depth for requirement 3: even a caller that forgets to
+          // close the project's tabs first cannot leave orphan tabs behind.
+          if (input.action === "remove") await sessions?.closeForProject(input.path);
+          return projectsService.mutate(input);
+        },
         create: async (input: CreateProjectInput): Promise<ProjectOpResponse> => {
           const result = await projectOps.createBlank(input);
           if (!result.ok || !result.path)
@@ -1456,6 +1509,10 @@ if (!app.requestSingleInstanceLock()) {
         readFile: (input) => workspaceService.readFile(input),
         stat: (input) => workspaceService.stat(input),
         writeFile: (input) => workspaceService.writeFile(input),
+        create: (input) => workspaceService.create(input),
+        rename: (input) => workspaceService.rename(input),
+        delete: (input) => workspaceService.delete(input),
+        transfer: (input) => workspaceService.transfer(input),
         reveal: (input) => workspaceService.reveal(input),
         editorConfig: (input) => workspaceService.editorConfig(input),
         readBackup: (tabId) => workspaceService.readBackup(tabId),

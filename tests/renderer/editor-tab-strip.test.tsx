@@ -61,6 +61,18 @@ beforeEach(() => {
 });
 
 describe("EditorTabStrip", () => {
+  it("renders more than the old sixteen-tab cap", () => {
+    const tabs = Array.from({ length: 18 }, (_, index) =>
+      editor(`editor-${index}`, `file-${index}.ts`),
+    );
+    useAppStore.setState({ tabs, activeTabId: "editor-0" });
+
+    render(<EditorTabStrip />);
+
+    expect(screen.getAllByRole("tab")).toHaveLength(18);
+    expect(screen.getByTestId("tab-editor-17")).toBeInTheDocument();
+  });
+
   it("renders nothing while no file is open", () => {
     useAppStore.setState({ tabs: [tab()] });
     const { container } = render(<EditorTabStrip />);
@@ -130,6 +142,31 @@ describe("EditorTabStrip", () => {
 
     // editor-2 is at global index 3; the filtered local index would be 1.
     await waitFor(() => expect(reorder).toHaveBeenCalledWith("editor-1", 3));
+  });
+
+  it("marks a pinned tab and hides its close button", () => {
+    useAppStore.setState({
+      tabs: [{ ...editor("editor-1", "a.ts"), pinned: true }],
+      activeTabId: "editor-1",
+    });
+
+    render(<EditorTabStrip />);
+
+    expect(screen.getByTestId("tab-editor-1")).toHaveAttribute("data-pinned", "true");
+    expect(screen.queryByRole("button", { name: "Close a.ts" })).toBeNull();
+  });
+
+  it("opens the same actions from a right-click", async () => {
+    useAppStore.setState({
+      tabs: [editor("editor-1", "a.ts")],
+      activeTabId: "editor-1",
+    });
+
+    render(<EditorTabStrip />);
+    fireEvent.contextMenu(screen.getByTestId("tab-editor-1"));
+
+    expect(await screen.findByText("Close all editor tabs")).toBeInTheDocument();
+    expect(screen.getByText("Copy Relative Path")).toBeInTheDocument();
   });
 
   it("marks a dirty file tab", () => {

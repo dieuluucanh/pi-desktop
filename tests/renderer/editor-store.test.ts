@@ -37,6 +37,30 @@ const WRITE_RESULT = {
   value: { path: `${WORK}\\a.ts`, relativePath: "a.ts", size: 8, mtimeMs: 2, bytes: 8 },
 };
 
+function meta(tabId: string, path: string, dirty = false) {
+  return {
+    tabId,
+    projectPath: WORK,
+    path,
+    languageId: "typescript" as const,
+    loading: false,
+    error: null,
+    dirty,
+    readOnly: false,
+    binary: false,
+    encoding: "utf8" as const,
+    eol: "lf" as const,
+    bom: false,
+    size: 1,
+    mtimeMs: 1,
+    line: 1,
+    column: 1,
+    selectionLength: 0,
+    externalChange: null,
+    recovered: false,
+  };
+}
+
 async function seed(writeFile: ReturnType<typeof vi.fn>): Promise<void> {
   const { bridge } = installBridge();
   (bridge.workspace as unknown as { readFile: unknown }).readFile = vi.fn(async () => ({
@@ -116,5 +140,93 @@ describe("editor format guard", () => {
 
     await expect(useEditorStore.getState().format(TAB)).resolves.toBe(false);
     expect(format).not.toHaveBeenCalled();
+  });
+});
+
+describe("dirty batch resolution", () => {
+  it("prompts each dirty tab and cancels the rest", async () => {
+    installBridge();
+    useEditorStore.setState({
+      meta: {
+        "editor-1": meta("editor-1", "a.ts", true),
+        "editor-2": meta("editor-2", "b.ts", true),
+      },
+    });
+
+    const resolving = useEditorStore
+      .getState()
+      .resolveDirtyTabs(["editor-1", "editor-2"], "close-all");
+    await vi.waitFor(() => expect(useEditorStore.getState().pendingClose).not.toBeNull());
+    expect(useEditorStore.getState().pendingClose).toMatchObject({
+      tabId: "editor-1",
+      remaining: 2,
+      reason: "close-all",
+    });
+
+    await useEditorStore.getState().answerClose("discard");
+    await vi.waitFor(() =>
+      expect(useEditorStore.getState().pendingClose).toMatchObject({
+        tabId: "editor-2",
+        remaining: 1,
+      }),
+    );
+    await useEditorStore.getState().answerClose("cancel");
+
+    await expect(resolving).resolves.toBe(false);
+    expect(useEditorStore.getState().meta["editor-1"]).toBeUndefined();
+    expect(useEditorStore.getState().meta["editor-2"]).toBeDefined();
+  });
+
+  it("returns true immediately for clean tabs", async () => {
+    installBridge();
+    useEditorStore.setState({ meta: { "editor-1": meta("editor-1", "a.ts") } });
+    await expect(useEditorStore.getState().resolveDirtyTabs(["editor-1"], "close")).resolves.toBe(
+      true,
+    );
+    expect(useEditorStore.getState().meta["editor-1"]).toBeDefined();
+  });
+});
+
+describe("editor tab retargeting and pruning", () => {
+  it("retargets matching metadata and leaves unrelated tabs alone", () => {
+    useEditorStore.setState({
+      meta: {
+        "editor-1": meta("editor-1", "src/app.ts"),
+        "editor-2": meta("editor-2", "other.ts"),
+      },
+    });
+
+    const changed = useEditorStore.getState().retargetEditorPaths({
+      fromProjectPath: WORK,
+      fromPath: "src",
+      toProjectPath: WORK,
+      toPath: "lib",
+      kind: "directory",
+    });
+
+    expect(changed).toEqual(["editor-1"]);
+    expect(useEditorStore.getState().meta["editor-1"]).toMatchObject({
+      path: "lib/app.ts",
+      projectPath: WORK,
+    });
+    expect(useEditorStore.getState().meta["editor-2"]?.path).toBe("other.ts");
+  });
+
+  it("prunes metadata and deletes its backup for a closed tab", async () => {
+    const { bridge } = installBridge();
+    const deleteBackup = vi.fn(async () => ({ ok: true as const, value: true }));
+    (bridge.workspace as unknown as { deleteBackup: unknown }).deleteBackup = deleteBackup;
+    useEditorStore.setState({
+      meta: {
+        "editor-1": meta("editor-1", "a.ts"),
+        "editor-2": meta("editor-2", "b.ts"),
+      },
+    });
+
+    await useEditorStore.getState().prune(new Set(["editor-1"]));
+
+    expect(useEditorStore.getState().meta["editor-1"]).toBeDefined();
+    expect(useEditorStore.getState().meta["editor-2"]).toBeUndefined();
+    expect(deleteBackup).toHaveBeenCalledWith("editor-2");
   });
 });

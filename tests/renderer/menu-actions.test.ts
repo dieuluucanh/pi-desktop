@@ -65,6 +65,47 @@ describe("new session", () => {
     expect(create).toHaveBeenCalledWith({ cwd: "C:\\work\\pi-desktop" });
     expect(useAppStore.getState().view).toBe("session");
   });
+
+  it("does not ask for trust when a create fails for another reason", async () => {
+    const create = vi.fn(async () => {
+      throw new Error("Pi Desktop reached its emergency ceiling of 64 host processes.");
+    });
+    (window.pi as unknown as { sessions: { create: unknown } }).sessions.create = create;
+    await useAppStore.getState().openProject("C:\\work\\pi-desktop");
+    const prompt = vi.spyOn(useAppStore.getState(), "openTrustPrompt").mockResolvedValue(false);
+
+    await useAppStore.getState().createSessionTab();
+
+    expect(prompt).not.toHaveBeenCalled();
+    expect(useAppStore.getState().hint).toMatch(/emergency ceiling/);
+  });
+
+  it("still asks for trust when the failure is trust-related", async () => {
+    const create = vi.fn(async () => {
+      throw new Error("trust required for this project");
+    });
+    (window.pi as unknown as { sessions: { create: unknown } }).sessions.create = create;
+    await useAppStore.getState().openProject("C:\\work\\pi-desktop");
+    const prompt = vi.spyOn(useAppStore.getState(), "openTrustPrompt").mockResolvedValue(false);
+
+    await useAppStore.getState().createSessionTab();
+
+    expect(prompt).toHaveBeenCalledWith("C:\\work\\pi-desktop");
+  });
+
+  it("strips Electron's IPC wrapper from the hint", async () => {
+    const create = vi.fn(async () => {
+      throw new Error(
+        "Error invoking remote method 'session:create': Error: the project folder is missing",
+      );
+    });
+    (window.pi as unknown as { sessions: { create: unknown } }).sessions.create = create;
+    await useAppStore.getState().openProject("C:\\work\\pi-desktop");
+
+    await useAppStore.getState().createSessionTab();
+
+    expect(useAppStore.getState().hint).toBe("the project folder is missing");
+  });
 });
 
 describe("open project", () => {

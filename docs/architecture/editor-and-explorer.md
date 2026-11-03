@@ -144,11 +144,26 @@ surface still pending).
   tab-strip horizontal scrollbar is 2 px; the strips reset
   `scrollbar-width`/`scrollbar-color` so the WebKit pixel size applies.
 
+## File actions
+
+Right-click a file, folder, search result or the tree's blank area. Files expose
+Open, Add to Chat, Copy/Cut/Paste, Rename, Delete, Reveal, Copy Path and Copy
+Relative Path; folders add New File, New Folder and Add Folder to Chat. New
+entries use an inline row and a created file opens immediately. Delete is a
+recoverable move to the OS Recycle Bin/Trash; rename/move retarget open editor
+tabs, and a dirty buffer prompts Save/Discard/Cancel first.
+
+The renderer never receives a permanent-delete API. Main applies the same
+project allowlist and realpath guard used by read/write, and existing-source
+operations resolve the parent (not the final symlink) so a link can be renamed
+or deleted without following it. Copy/move stages through a hidden sibling and
+refuses collisions, `.git`, the project root and outside-pointing links.
+
 ## Limits / non-goals
 
-No file create/rename/delete, no LSP/IntelliSense, no debugger/terminal, no
-binary preview, no UTF-16 editing, no OS filesystem watcher (refresh on focus,
-save and an 8 s poll). Search is name/path-only (no content snippets), has no
-regex or paging, and deliberately never walks `node_modules`/`.git`. Drag is
-single-item: the Explorer has no multi-select, and an external OS file drop has
-no path bridge (use the Explorer tree or Quick Open).
+No LSP/IntelliSense, no debugger/terminal, no binary preview, no UTF-16 editing,
+no OS filesystem watcher (refresh on focus, save and an 8 s poll). Search is
+name/path-only (no content snippets), has no regex or paging, and deliberately
+never walks `node_modules`/`.git`. Drag and file operations are single-item: the
+Explorer has no multi-select, and an external OS file drop has no path bridge
+(use the Explorer tree or Quick Open).

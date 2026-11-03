@@ -34,10 +34,12 @@ import type {
 } from "../shared/projects";
 import type {
   CreateTabInput,
+  RetargetEditorTabsInput,
   SessionEventEnvelope,
   SessionRequestInput,
   SessionStateEnvelope,
   SessionTabsEnvelope,
+  TabKind,
 } from "../shared/session-ipc";
 import type { OfficeSetupStepId, OfficeSetupView } from "../shared/office-setup";
 import type { OfficeBridgeControlResult, OfficeStopResult } from "../shared/office-bridge";
@@ -47,13 +49,19 @@ import type { UpdateState } from "../shared/updates";
 import type {
   EditorBackup,
   ResolvedEditorConfig,
+  WorkspaceCreateInput,
+  WorkspaceDeleteInput,
   WorkspaceFileContent,
   WorkspaceFileList,
   WorkspaceListing,
+  WorkspaceMutationResult,
+  WorkspaceRenameInput,
   WorkspaceResult,
   WorkspaceSearchRequest,
   WorkspaceSearchResult,
   WorkspaceStat,
+  WorkspaceTransferInput,
+  WorkspaceTransferResult,
   WorkspaceWriteInput,
   WorkspaceWriteResult,
   WorkspaceFormatRequest,
@@ -102,8 +110,16 @@ const sessions: SessionsBridge = {
     ipcRenderer.invoke(IPC.sessionCreate, input) as Promise<SessionTabsEnvelope>,
   close: (tabId: string) =>
     ipcRenderer.invoke(IPC.sessionClose, tabId) as Promise<SessionTabsEnvelope>,
+  closeAll: (kind: TabKind) =>
+    ipcRenderer.invoke(IPC.sessionCloseAll, kind) as Promise<SessionTabsEnvelope>,
   closeOthers: (tabId: string) =>
     ipcRenderer.invoke(IPC.sessionCloseOthers, tabId) as Promise<SessionTabsEnvelope>,
+  closeProject: (cwd: string) =>
+    ipcRenderer.invoke(IPC.sessionCloseProject, cwd) as Promise<SessionTabsEnvelope>,
+  setPinned: (tabId: string, pinned: boolean) =>
+    ipcRenderer.invoke(IPC.sessionSetPinned, tabId, pinned) as Promise<SessionTabsEnvelope>,
+  retargetEditorTabs: (input: RetargetEditorTabsInput) =>
+    ipcRenderer.invoke(IPC.sessionRetargetEditor, input) as Promise<SessionTabsEnvelope>,
   reorder: (tabId: string, toIndex: number) =>
     ipcRenderer.invoke(IPC.sessionReorder, tabId, toIndex) as Promise<SessionTabsEnvelope>,
   promoteOfficeHost: (tabId: string) =>
@@ -285,6 +301,22 @@ const workspace: WorkspaceBridge = {
   writeFile: (input: WorkspaceWriteInput) =>
     ipcRenderer.invoke(IPC.workspaceWriteFile, input) as Promise<
       WorkspaceResult<WorkspaceWriteResult>
+    >,
+  create: (input: WorkspaceCreateInput) =>
+    ipcRenderer.invoke(IPC.workspaceCreate, input) as Promise<
+      WorkspaceResult<WorkspaceMutationResult>
+    >,
+  rename: (input: WorkspaceRenameInput) =>
+    ipcRenderer.invoke(IPC.workspaceRename, input) as Promise<
+      WorkspaceResult<WorkspaceMutationResult>
+    >,
+  delete: (input: WorkspaceDeleteInput) =>
+    ipcRenderer.invoke(IPC.workspaceDelete, input) as Promise<
+      WorkspaceResult<WorkspaceMutationResult>
+    >,
+  transfer: (input: WorkspaceTransferInput) =>
+    ipcRenderer.invoke(IPC.workspaceTransfer, input) as Promise<
+      WorkspaceResult<WorkspaceTransferResult>
     >,
   reveal: (input) =>
     ipcRenderer.invoke(IPC.workspaceReveal, input) as Promise<WorkspaceResult<boolean>>,
