@@ -66,6 +66,21 @@ const VIEW_ITEMS: readonly ItemSpec[] = [
   { command: "zoom-reset", label: "Actual Size", accelerator: "CmdOrCtrl+0" },
 ];
 
+/**
+ * The session view grid (2026-11-03 plan).
+ *
+ * Deliberately accelerator-free: the layout is chosen rarely, and a global chord
+ * would fire before the renderer (that space belongs to Pi's own keys).
+ */
+const LAYOUT_ITEMS: readonly ItemSpec[] = [
+  { command: "grid-toggle", label: "Toggle Grid / Single Tab" },
+  { command: "grid-single", label: "Layout: Single Tab" },
+  { command: "grid-two", label: "Layout: Two Columns" },
+  { command: "grid-three-left", label: "Layout: Three Panes (Left Tall)" },
+  { command: "grid-three-right", label: "Layout: Three Panes (Right Tall)" },
+  { command: "grid-four", label: "Layout: Four Panes" },
+];
+
 const SESSION_ITEMS: readonly ItemSpec[] = [
   { command: "session-tree", label: "Session History Tree…" },
   { command: "session-fork", label: "Fork From Message…" },
@@ -164,6 +179,9 @@ export function menuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
     label: "View",
     submenu: [
       ...toItems(VIEW_ITEMS, onCommand, accelerators),
+      { type: "separator" },
+      // The session view grid presets (2026-11-03 plan).
+      ...toItems(LAYOUT_ITEMS, onCommand, accelerators),
       { type: "separator" },
       ...toItems(SESSION_ITEMS, onCommand, accelerators),
       { type: "separator" },

@@ -33,7 +33,7 @@ import { ExpandedEditorDialog } from "./sessions/ExpandedEditorDialog";
 import { ConnectionsView } from "./views/ConnectionsView";
 import { DiagnosticsView } from "./views/DiagnosticsView";
 import { ExtensionsView } from "./views/ExtensionsView";
-import { ActiveTabView } from "./views/ActiveTabView";
+import { WorkspaceView } from "./views/WorkspaceView";
 import { WebNavigationDialog } from "./web/WebNavigationDialog";
 import { WebUrlDialog } from "./web/WebUrlDialog";
 import { MuteNotificationDialog } from "./extension-ui/MuteNotificationDialog";
@@ -56,7 +56,7 @@ import { WelcomeView } from "./views/WelcomeView";
 
 const VIEWS: Record<AppView, () => ReactElement> = {
   welcome: WelcomeView,
-  session: ActiveTabView,
+  session: WorkspaceView,
   settings: SettingsView,
   extensions: ExtensionsView,
   connections: ConnectionsView,

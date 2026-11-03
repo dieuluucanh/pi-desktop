@@ -618,6 +618,68 @@ describe("live-host budget and LRU parking", () => {
     expect(harness.stopped).toHaveLength(0);
     expect(harness.hosts.size).toBe(2);
   });
+
+  it("never parks a visible pane to make room for another session", async () => {
+    // The grid (2026-11-03 plan): a pane the user is watching must stay awake, so
+    // the LRU budget parks the *other* idle session instead.
+    const clock = { value: 1_000 };
+    const harness = createHarness({ maxLiveHosts: 2, now: () => clock.value });
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    advance(clock, 1_000);
+    await harness.service.createTab({ cwd: "C:\\work\\two" });
+    harness.service.setVisibleTabs(["tab-1"]);
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\three" });
+
+    expect(harness.stopped).toEqual(["tab-2"]);
+    expect(harness.hosts.has("tab-1")).toBe(true);
+    expect(harness.hosts.has("tab-3")).toBe(true);
+  });
+
+  it("reclaims around the visible panes instead of parking them", async () => {
+    const clock = { value: 1_000 };
+    const harness = createHarness({
+      maxLiveHosts: 3,
+      hostRssLimitBytes: 1_000,
+      rssBytes: 400,
+      now: () => clock.value,
+    });
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\two" });
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\three" });
+    harness.service.setVisibleTabs(["tab-1"]);
+
+    await harness.service.reclaimHosts();
+
+    expect(harness.stopped).toEqual(["tab-2"]);
+    expect(harness.hosts.has("tab-1")).toBe(true);
+  });
+
+  it("reports the visible panes and ignores ids that are not open", async () => {
+    const harness = createHarness();
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    expect(harness.service.capacity().visibleSessions).toBe(0);
+
+    // A close races the renderer push, so a stale id must be dropped quietly.
+    harness.service.setVisibleTabs(["tab-1", "ghost"]);
+    expect(harness.service.visibleTabIds()).toEqual(["tab-1"]);
+    expect(harness.service.capacity().visibleSessions).toBe(1);
+
+    harness.service.setVisibleTabs([]);
+    expect(harness.service.visibleTabIds()).toEqual([]);
+    expect(harness.service.capacity().visibleSessions).toBe(0);
+  });
+
+  it("bounds the visible set to the largest layout plus the focused tab", async () => {
+    const harness = createHarness({ maxLiveHosts: 8 });
+    for (let index = 0; index < 7; index += 1) {
+      await harness.service.createTab({ cwd: `C:\\work\\p${index}` });
+    }
+    harness.service.setVisibleTabs(["tab-1", "tab-2", "tab-3", "tab-4", "tab-5", "tab-6", "tab-7"]);
+    expect(harness.service.visibleTabIds()).toEqual(["tab-1", "tab-2", "tab-3", "tab-4", "tab-5"]);
+  });
 });
 
 describe("event batching", () => {
@@ -938,6 +1000,7 @@ describe("reliability and recovery (plan step 22)", () => {
       openSessions: 1,
       asleepSessions: 0,
       editorTabs: 0,
+      visibleSessions: 0,
     });
   });
 

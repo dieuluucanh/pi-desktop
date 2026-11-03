@@ -4,6 +4,7 @@ import type { TabRecord } from "../../../shared/session-ipc";
 import { useEditorStore } from "../editor/editor-store";
 import { useAppStore } from "../state/app-store";
 import { TabChip } from "./TabChip";
+import { writeTabDrag } from "./tab-drag";
 import { useTabStripScroll } from "./use-tab-scroll";
 
 /**
@@ -51,7 +52,12 @@ export function TabList({ tabs, label, empty }: TabListProps): React.JSX.Element
             setRenamingId(null);
             void renameSession(tab.id, name);
           }}
-          onDragStart={() => setDragId(tab.id)}
+          onDragStart={(event) => {
+            // Two consumers, one gesture: the strip reorders from `dragId`, and a
+            // grid pane accepts the typed payload (2026-11-03 plan).
+            writeTabDrag(event.dataTransfer, tab.id);
+            setDragId(tab.id);
+          }}
           onDragEnd={() => setDragId(null)}
           onDragOver={(event) => {
             if (dragId && dragId !== tab.id) event.preventDefault();

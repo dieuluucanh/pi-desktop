@@ -1,7 +1,7 @@
 import { Command } from "cmdk";
 import { useAppStore, type AppView } from "../state/app-store";
 import { useEditorStore } from "../editor/editor-store";
-import { newSessionAction, openProjectAction } from "../menu-actions";
+import { newSessionAction, openProjectAction, handleMenuCommand } from "../menu-actions";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { Kbd } from "../ui/kbd";
 
@@ -152,6 +152,32 @@ export function CommandPalette() {
                 label="Toggle sidebar"
                 shortcut="Ctrl+B"
                 onSelect={() => run(toggleSidebar)}
+              />
+              {/* Session view grid (2026-11-03 plan): the same five presets and
+                  the grid/single toggle the View menu offers. */}
+              <PaletteItem
+                label="Grid: single tab"
+                onSelect={() => run(() => useAppStore.getState().setGridLayout("single"))}
+              />
+              <PaletteItem
+                label="Grid: two columns"
+                onSelect={() => run(() => useAppStore.getState().setGridLayout("two"))}
+              />
+              <PaletteItem
+                label="Grid: three panes (left tall)"
+                onSelect={() => run(() => useAppStore.getState().setGridLayout("three-left"))}
+              />
+              <PaletteItem
+                label="Grid: three panes (right tall)"
+                onSelect={() => run(() => useAppStore.getState().setGridLayout("three-right"))}
+              />
+              <PaletteItem
+                label="Grid: four panes"
+                onSelect={() => run(() => useAppStore.getState().setGridLayout("four"))}
+              />
+              <PaletteItem
+                label="Toggle grid / single tab"
+                onSelect={() => run(() => handleMenuCommand("grid-toggle"))}
               />
               <PaletteItem
                 label="Show keyboard shortcuts"

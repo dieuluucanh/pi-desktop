@@ -13,32 +13,21 @@ import {
   serializeWorkspaceDrag,
   type WorkspaceDragPayload,
 } from "../../../shared/workspace-drag";
+import { hasDragType, type DragReader, type DragTypes, type DragWriter } from "../ui/drag-transfer";
 
-export interface DragTypes {
-  types: readonly string[] | DOMStringList;
-}
-
-export interface DragReader {
-  getData(type: string): string;
-}
-
-export interface DragWriter {
-  setData(type: string, data: string): void;
-  effectAllowed?: string;
-}
-
-function hasType(types: DragTypes["types"], wanted: string): boolean {
-  return Array.from(types).includes(wanted);
-}
+// The transfer shape (and its `hasDragType` helper) is shared with the tab drag
+// helpers in `layout/tab-drag.ts`; re-exported so callers of this module keep
+// one import.
+export type { DragReader, DragTypes, DragWriter };
 
 /** True when a drag carries the Explorer's typed workspace payload. */
 export function isWorkspaceDrag(dataTransfer: DragTypes): boolean {
-  return hasType(dataTransfer.types, WORKSPACE_PATH_DRAG_MIME);
+  return hasDragType(dataTransfer.types, WORKSPACE_PATH_DRAG_MIME);
 }
 
 /** True for an external OS file drag (the browser sets the `Files` type). */
 export function isExternalFileDrag(dataTransfer: DragTypes): boolean {
-  return hasType(dataTransfer.types, "Files");
+  return hasDragType(dataTransfer.types, "Files");
 }
 
 /** Reads and validates a workspace drag; never falls back to `text/plain`. */

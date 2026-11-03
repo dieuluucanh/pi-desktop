@@ -288,6 +288,12 @@ export interface SessionCapacity {
   asleepSessions: number;
   /** Open editor tabs; they hold no host. */
   editorTabs: number;
+  /**
+   * Tabs the renderer shows in a grid pane or the solo view (2026-11-03 grid
+   * plan). They are pinned against idle/LRU parking, so Diagnostics can explain
+   * why a small machine sits above its target with every session awake.
+   */
+  visibleSessions: number;
 }
 
 export function capacity(used: number, limit: number): Capacity {

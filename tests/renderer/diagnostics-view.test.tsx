@@ -42,6 +42,7 @@ function snapshot(overrides: Partial<DiagnosticsSnapshot> = {}): Partial<Diagnos
       openSessions: 1,
       asleepSessions: 0,
       editorTabs: 0,
+      visibleSessions: 0,
     },
     memory: {
       budgetBytes: 536_870_912,
@@ -150,6 +151,7 @@ describe("DiagnosticsView", () => {
           openSessions: 13,
           asleepSessions: 1,
           editorTabs: 2,
+          visibleSessions: 2,
         },
       }),
     });

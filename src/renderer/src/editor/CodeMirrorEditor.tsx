@@ -17,6 +17,12 @@ export interface CodeMirrorEditorProps {
   fontSize: number;
   wordWrap: boolean;
   tabSize: number;
+  /**
+   * Focus the editor when it mounts. False for a pane that is not the focused
+   * one: with several editor panes mounted (2026-11-03 grid plan) each mount
+   * calling `focus()` would steal the caret from the pane the user is typing in.
+   */
+  autoFocus?: boolean;
 }
 
 /**
@@ -71,7 +77,8 @@ export function CodeMirrorEditor(props: CodeMirrorEditorProps): React.JSX.Elemen
     const view = new EditorView({ state: created.state, parent: hostRef.current });
     viewRef.current = view;
     registerEditorView(props.tabId, view);
-    view.focus();
+    // Only the focused pane claims the caret (see `autoFocus`).
+    if (props.autoFocus !== false) view.focus();
     return () => {
       unregisterEditorView(props.tabId, view);
       view.destroy();

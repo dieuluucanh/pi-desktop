@@ -37,7 +37,12 @@ export interface TabChipProps {
   onStartRename: () => void;
   onCancelRename: () => void;
   onCommitRename: (name: string) => void;
-  onDragStart: () => void;
+  /**
+   * Starts a drag. The event is passed so the strip can also publish the typed
+   * `application/x-pi-tab` payload a grid pane accepts (2026-11-03 plan);
+   * reordering still works off the strip's own `dragId`.
+   */
+  onDragStart: (event: DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
   onDragOver: (event: DragEvent<HTMLDivElement>) => void;
   onDrop: (event: DragEvent<HTMLDivElement>) => void;

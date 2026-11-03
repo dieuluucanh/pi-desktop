@@ -24,6 +24,7 @@ import {
   workspaceBasename,
 } from "../shared/workspace";
 import { sameFolder } from "../shared/rail-scope";
+import { MAX_GRID_PANES } from "../shared/session-grid";
 import { moveTabWithinPinGroup, partitionPinnedTabs } from "../shared/tab-order";
 import { PI_OFFICE_BRIDGE } from "../shared/office";
 import {
@@ -204,6 +205,14 @@ export interface SessionService {
   controlHost(): Promise<SupervisorHostLike>;
   tabs(): TabRecord[];
   activeTabId(): string | null;
+  /**
+   * Declares which tabs the renderer currently shows (the grid's panes, or the
+   * solo tab). Advisory and cheap: it parks nothing and spawns nothing, it only
+   * tells the parking policy which hosts must stay warm.
+   */
+  setVisibleTabs(ids: readonly string[]): void;
+  /** The tabs the renderer last reported as visible (bounded). */
+  visibleTabIds(): string[];
   envelope(): SessionTabsEnvelope;
   restoreTabs(): Promise<SessionTabsEnvelope>;
   createTab(input: CreateTabInput): Promise<SessionTabsEnvelope>;
@@ -437,6 +446,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   let incidentCounter = 0;
 
   let activeId: string | null = null;
+  /**
+   * Tabs the renderer shows (2026-11-03 grid plan): the visible grid panes, or
+   * the single solo tab. Bounded by the largest layout, because it comes from a
+   * renderer push and is only ever a parking hint.
+   */
+  const visibleTabs = new Set<string>();
   let control: SupervisorHostLike | null = null;
   let disposed = false;
 
@@ -677,6 +692,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       const tab = tabs.get(tabId);
       if (!tab || !isHostBackedTab(tab.kind) || tab.kind === "office") return;
       if (tabId === activeId) return;
+      // A pane the user is watching must never go to sleep under them.
+      if (visibleTabs.has(tabId)) return;
       if (starting.has(tabId) || opening.has(tabId) || recycling.has(tabId)) return;
       if (pending.has(tabId) || timers.has(tabId)) return;
       if (now() - tab.lastActiveAt < PARK_MIN_IDLE_MS) return;
@@ -693,6 +710,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // The probe yields; the user may have activated or written to the tab in
       // the meantime. Only the post-probe state decides whether it can sleep.
       if (tabId === activeId) return;
+      if (visibleTabs.has(tabId)) return;
       if (starting.has(tabId) || opening.has(tabId) || recycling.has(tabId)) return;
       const record = asRecord(snapshot);
       if (typeof record.sessionFile === "string") tab.sessionFile = record.sessionFile;
@@ -723,12 +741,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
   /**
    * LRU candidates for parking, oldest `lastActiveAt` first. Excludes the active
-   * tab, Office hosts, pinned hosts (control/bridge/active), in-flight work,
-   * pending event batches and tabs used within `PARK_MIN_IDLE_MS`.
+   * tab, every visible pane, Office hosts, pinned hosts (control/bridge/active),
+   * in-flight work, pending event batches and tabs used within
+   * `PARK_MIN_IDLE_MS`.
    */
   const idleCandidates = (exceptTabId: string | null): TabRecord[] => {
     return [...tabs.values()]
       .filter((tab) => tab.id !== exceptTabId && tab.id !== activeId)
+      .filter((tab) => !visibleTabs.has(tab.id))
       .filter((tab) => isHostBackedTab(tab.kind) && tab.kind !== "office")
       .filter((tab) => hosts.has(tab.id))
       .filter((tab) => !starting.has(tab.id) && !opening.has(tab.id) && !recycling.has(tab.id))
@@ -1080,6 +1100,26 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     tabs: () => [...tabs.values()],
     activeTabId: () => activeId,
+
+    setVisibleTabs(ids) {
+      // Advisory and idempotent: an unknown or already-closed id is dropped (a
+      // close races this push), and the set is bounded because the renderer can
+      // be restarted against a stale `prefs.grid`.
+      const next = new Set<string>();
+      for (const id of ids) {
+        if (typeof id !== "string" || id.length === 0) continue;
+        if (!tabs.has(id)) continue;
+        next.add(id);
+        if (next.size >= MAX_GRID_PANES + 1) break;
+      }
+      const unchanged =
+        next.size === visibleTabs.size && [...next].every((id) => visibleTabs.has(id));
+      if (unchanged) return;
+      visibleTabs.clear();
+      for (const id of next) visibleTabs.add(id);
+    },
+
+    visibleTabIds: () => [...visibleTabs],
     envelope,
 
     incidents: () => [...incidents],
@@ -1102,6 +1142,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         openSessions: open.length,
         asleepSessions: open.filter((tab) => tab.status === "stopped").length,
         editorTabs: all.filter(isEditorTab).length,
+        visibleSessions: visibleTabs.size,
       };
     },
     reclaimHosts: async () => {
@@ -1109,7 +1150,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // activation is about to reuse, and two reclaims must not park twice.
       const run = slotQueue
         .then(async () => {
-          const targetLive = activeId ? 2 : 1;
+          // Every visible pane is un-parkable, so the floor is the panes plus
+          // the focused tab; a reclaimed app still keeps what the user sees.
+          const targetLive = Math.max(2, visibleTabs.size + (activeId ? 1 : 0));
           for (const tab of idleCandidates(null)) {
             const live = deps.supervisor.list().length;
             const rss = hostRssBytes();

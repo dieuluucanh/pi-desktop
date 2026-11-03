@@ -5,8 +5,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // lifecycle*, not the editor internals. The stub renders the doc so a refresh
 // can be observed without a real EditorView.
 vi.mock("../../src/renderer/src/editor/CodeMirrorEditor", () => ({
-  CodeMirrorEditor: ({ tabId, doc }: { tabId: string; doc: string }) => (
-    <div data-testid="cm-stub" data-tab={tabId} data-doc={doc} />
+  CodeMirrorEditor: ({
+    tabId,
+    doc,
+    autoFocus,
+  }: {
+    tabId: string;
+    doc: string;
+    autoFocus?: boolean;
+  }) => (
+    <div
+      data-testid="cm-stub"
+      data-tab={tabId}
+      data-doc={doc}
+      data-autofocus={autoFocus === false ? "false" : "true"}
+    />
   ),
 }));
 
@@ -160,6 +173,22 @@ describe("EditorTabView loading", () => {
     await screen.findByTestId("cm-stub");
     expect(screen.queryByText("Loading file…")).toBeNull();
     expect(getBuffer(TAB)?.text).toBe("one");
+  });
+
+  it("only focuses the editor when its tab is the active one", async () => {
+    const readFile = vi.fn(async () => textFile("one"));
+    const stat = vi.fn(async () => statFile(1));
+    workspaceMock(readFile, stat);
+    // A grid can mount several editors; a background pane must not steal the caret.
+    useAppStore.setState({ activeTabId: "editor-2" });
+
+    render(<EditorTabView tab={editorTab()} />);
+    expect(await screen.findByTestId("cm-stub")).toHaveAttribute("data-autofocus", "false");
+
+    act(() => useAppStore.setState({ activeTabId: TAB }));
+    await waitFor(() =>
+      expect(screen.getByTestId("cm-stub")).toHaveAttribute("data-autofocus", "true"),
+    );
   });
 
   it("keeps the editor mounted and shows Reloading… during a refresh", async () => {

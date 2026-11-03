@@ -21,8 +21,7 @@ scroll horizontally with the mouse wheel. The active tab is revealed when the
 selection changes; a manual scroll position is kept across window switches and
 tab status updates.
 
-Right-click a tab or use its **…** menu; both surfaces show the same actions.
-Editor tabs add Copy Path (absolute), Copy Relative Path, Pin/Unpin, Close,
+Right-click a tab or use its **…** menu; both surfaces show the same actions.Editor tabs add Copy Path (absolute), Copy Relative Path, Pin/Unpin, Close,
 Close Others and Close All. Pinned tabs stay at the front, hide their X, survive
 a relaunch and are skipped by Close All/Close Others. Close All/Close Others are
 kind-scoped, so closing all sessions leaves editor, web and Office tabs open.
@@ -31,6 +30,34 @@ Removing a project closes every tab in that project, including pinned tabs.
 Sessions are grouped by project in the sidebar; the group lists the same tabs as
 the top strip (file tabs stay in the editor strip), and a running tab shows a
 status dot.
+
+## Working with several sessions at once (grid)
+
+The window can show several tabs side by side. The grid replaces only the content
+area — the tab strips, the sidebar and the panel rail stay where they are.
+
+- **Choose a layout** with the layout button at the far right of the session tab
+  strip, from **View → Layout** in the menu, or from the command palette: single,
+  two columns, three panes (left tall), three panes (right tall), or four panes.
+- **Fill a pane** with its chevron: the list shows your open **session tabs**
+  grouped by project, then your open **editor tabs**, then **Browse saved
+  sessions…** to resume one straight into that pane.
+- **Drag a tab** from either tab strip (or a session in the sidebar) onto a pane.
+  Each tab can be in one pane only, so dropping a tab that another pane already
+  shows swaps the two panes.
+- **Click a pane** to focus it. The focused pane is the tab the menu, the palette,
+  model/thinking cycling and the panel rail act on, so the rail follows a pane in
+  another project.
+- **Grid and single run in parallel.** Clicking a tab that no pane holds shows it
+  full-size without forgetting the layout; clicking a tab that a pane holds
+  returns to the grid. **Show grid / Show single tab** in the layout menu toggles
+  the same way.
+- Closing a tab empties its pane (it shows “Pick a session”); the other panes and
+  the layout keep running. The layout and every pane assignment are remembered
+  across a relaunch.
+
+Every visible pane keeps its session awake. Sessions in panes you are not looking
+at still sleep after a long idle period, and wake on the next click or keystroke.
 
 ## Resuming and the session browser
 

@@ -57,12 +57,14 @@ const EMPTY_SCOPE: readonly string[] = [];
  * `office_*` call only that tab can serve. An empty list plus the Documents
  * scope row's explanation beats offering a document that cannot answer.
  */
-const documentMentionSource = {
+const documentMentionSource = (tabId: string) => ({
   list: () => {
     const state = useAppStore.getState();
-    return documentMentionsForHost(state.officeDocuments ?? [], state.tabs, state.activeTabId);
+    // Scoped to the pane's own tab: a `#` mention writes a prompt whose
+    // `office_*` call only that tab's host can serve.
+    return documentMentionsForHost(state.officeDocuments ?? [], state.tabs, tabId);
   },
-};
+});
 
 /**
  * The session-scoped facts line that used to summarize context usage moved to
@@ -71,11 +73,14 @@ const documentMentionSource = {
  * lives in `tests/renderer/composer-footer.test.tsx`.
  */
 
-export function SessionView() {
+export function SessionView({ tabId }: { tabId: string }) {
   const project = useAppStore((state) => state.project);
   const homeDir = useAppStore((state) => state.info?.homeDir ?? null);
   const tabs = useAppStore((state) => state.tabs);
-  const activeTabId = useAppStore((state) => state.activeTabId);
+  // The tab this surface renders. In the grid several `SessionView`s are mounted
+  // at once (2026-11-03 plan), so every per-tab read below uses the prop and the
+  // app-wide selection is only consulted where it genuinely means "focused".
+  const focusedTabId = useAppStore((state) => state.activeTabId);
   const sessionStates = useAppStore((state) => state.sessionStates);
   const transcripts = useAppStore((state) => state.transcripts);
   const ensureSession = useAppStore((state) => state.ensureSession);
@@ -96,6 +101,9 @@ export function SessionView() {
   const providerAuth = useAppStore((state) => state.providerAuth);
   const thinkingLevels = useAppStore((state) => state.thinkingLevels);
   const picker = useAppStore((state) => state.picker);
+  // Which tab the open picker belongs to: several panes can be mounted, so the
+  // dialog is gated on this tab rather than on `picker` alone.
+  const pickerTabId = useAppStore((state) => state.pickerTabId);
   const pickerError = useAppStore((state) => state.pickerError);
   const pickerSearch = useAppStore((state) => state.pickerSearch);
   const loadModels = useAppStore((state) => state.loadModels);
@@ -106,25 +114,13 @@ export function SessionView() {
   const closePicker = useAppStore((state) => state.closePicker);
   const setView = useAppStore((state) => state.setView);
   const setHint = useAppStore((state) => state.setHint);
-  const scopedModels = useAppStore((state) =>
-    activeTabId ? state.modelScope[activeTabId] : undefined,
-  );
-  const scopedPatterns = useAppStore((state) =>
-    activeTabId ? state.modelScopePatterns[activeTabId] : undefined,
-  );
-  const scopeTarget = useAppStore((state) =>
-    activeTabId ? state.modelScopeTarget[activeTabId] : undefined,
-  );
-  const scopeBusyKey = useAppStore((state) =>
-    activeTabId ? (state.modelScopeBusy[activeTabId] ?? null) : null,
-  );
-  const extensionUi = useAppStore((state) =>
-    activeTabId ? state.extensionUi[activeTabId] : undefined,
-  );
+  const scopedModels = useAppStore((state) => state.modelScope[tabId]);
+  const scopedPatterns = useAppStore((state) => state.modelScopePatterns[tabId]);
+  const scopeTarget = useAppStore((state) => state.modelScopeTarget[tabId]);
+  const scopeBusyKey = useAppStore((state) => state.modelScopeBusy[tabId] ?? null);
+  const extensionUi = useAppStore((state) => state.extensionUi[tabId]);
   const extensionDialogs = useAppStore((state) => state.extensionDialogs);
-  const toolsExpandedState = useAppStore((state) =>
-    activeTabId ? state.toolsExpanded[activeTabId] : undefined,
-  );
+  const toolsExpandedState = useAppStore((state) => state.toolsExpanded[tabId]);
   const toggleToolsExpanded = useAppStore((state) => state.toggleToolsExpanded);
   const resizeTuiSurface = useAppStore((state) => state.resizeTuiSurface);
   // The git branch shown in the composer footer comes from the project
@@ -139,9 +135,7 @@ export function SessionView() {
   const shortcuts = useAppStore((state) => state.shortcuts);
   const loadShortcuts = useAppStore((state) => state.loadShortcuts);
   const invokeShortcut = useAppStore((state) => state.invokeShortcut);
-  const tuiSurface = useAppStore((state) =>
-    activeTabId ? state.tuiSurfaces[activeTabId] : undefined,
-  );
+  const tuiSurface = useAppStore((state) => state.tuiSurfaces[tabId]);
   // Only the count drove a section header; the strip's badges now come from the
   // snapshot and the checkpoint store directly.
   const [composerFocusToken, setComposerFocusToken] = useState(0);
@@ -159,21 +153,19 @@ export function SessionView() {
     () => ({
       provider: createCompletionProvider({
         command: createCommandProvider({
-          loadCommands: () => loadCommands(activeTabId ?? ""),
+          loadCommands: () => loadCommands(tabId),
           completeCommand: (request) =>
-            completeCommandArguments(activeTabId ?? "", request.name, request.prefix),
+            completeCommandArguments(tabId, request.name, request.prefix),
           completeAppArgument: (request) =>
-            completeAppCommandArguments(activeTabId ?? "", request.name, request.prefix),
+            completeAppCommandArguments(tabId, request.name, request.prefix),
         }),
-        file: createFileProvider({ loadFiles: () => loadFiles(activeTabId ?? "") }),
-        shell: createShellProvider({ loadFiles: () => loadFiles(activeTabId ?? "") }),
-        document: createDocumentProvider(documentMentionSource),
-        extension: activeTabId
-          ? {
-              suggest: (request) => extensionCompletion(activeTabId, request),
-              apply: (request) => extensionApplyCompletion(activeTabId, request),
-            }
-          : null,
+        file: createFileProvider({ loadFiles: () => loadFiles(tabId) }),
+        shell: createShellProvider({ loadFiles: () => loadFiles(tabId) }),
+        document: createDocumentProvider(documentMentionSource(tabId)),
+        extension: {
+          suggest: (request) => extensionCompletion(tabId, request),
+          apply: (request) => extensionApplyCompletion(tabId, request),
+        },
       }),
       apply: async (
         item: CompletionItem,
@@ -183,8 +175,8 @@ export function SessionView() {
         // Only host-run extension-provider items need the remote apply. An
         // extension *command* item also carries source "extension" but is
         // applied locally, so provenance is the `remote` flag, not the source.
-        if (!activeTabId || item.remote !== true) return null;
-        return extensionApplyCompletion(activeTabId, {
+        if (!tabId || item.remote !== true) return null;
+        return extensionApplyCompletion(tabId, {
           lines: buffer.lines,
           cursorLine: buffer.line,
           cursorCol: buffer.col,
@@ -200,7 +192,7 @@ export function SessionView() {
       },
     }),
     [
-      activeTabId,
+      tabId,
       loadCommands,
       completeCommandArguments,
       completeAppCommandArguments,
@@ -210,7 +202,7 @@ export function SessionView() {
     ],
   );
 
-  const active = tabs.find((tab) => tab.id === activeTabId) ?? null;
+  const active = tabs.find((tab) => tab.id === tabId) ?? null;
   const activeId = active?.id ?? null;
   const [mentionRequest, setMentionRequest] = useState<{
     id: number;
@@ -257,8 +249,12 @@ export function SessionView() {
   // the host resumes. Cheap when the list is already loaded (the store's
   // idempotence guard returns early without a request).
   useEffect(() => {
-    if (activeId && active?.kind === "session") void loadShortcuts();
-  }, [activeId, active?.kind, active?.status, loadShortcuts]);
+    // Only the focused pane owns the global shortcut list; a background pane
+    // refreshes it the moment it gains focus.
+    if (activeId !== null && activeId === focusedTabId && active?.kind === "session") {
+      void loadShortcuts();
+    }
+  }, [activeId, focusedTabId, active?.kind, active?.status, loadShortcuts]);
 
   // Git polling and the checkpoint timeline are seeded by `ProjectRail` (the
   // rail follows the selected project, not this tab — 2026-10-30 plan), so the
@@ -517,7 +513,7 @@ export function SessionView() {
                           : "Choose a model"
                       }
                       onClick={() => {
-                        openPicker("model");
+                        openPicker("model", { tabId });
                         void loadModels(active.id);
                       }}
                     >
@@ -531,7 +527,7 @@ export function SessionView() {
                         thinkingLevel ? `Thinking level: ${thinkingLevel}` : "Thinking level"
                       }
                       title={thinkingLevelTitle(thinkingLevel, levels, modelLabel)}
-                      onClick={() => openPicker("thinking")}
+                      onClick={() => openPicker("thinking", { tabId })}
                     >
                       <ThinkingLevelIcon level={thinkingLevel} />
                     </Button>
@@ -644,7 +640,7 @@ export function SessionView() {
 
       <ModelPicker
         key={`${active.id}:${picker === "model" ? `open:${pickerSearch}` : "closed"}`}
-        open={picker === "model"}
+        open={picker === "model" && pickerTabId === tabId}
         entries={modelCatalog[active.id] ?? []}
         auth={providerAuth[active.id] ?? {}}
         currentKey={currentModelKey}
@@ -670,7 +666,7 @@ export function SessionView() {
       />
 
       <ThinkingPicker
-        open={picker === "thinking"}
+        open={picker === "thinking" && pickerTabId === tabId}
         levels={levels}
         current={thinkingLevel}
         modelLabel={modelLabel}

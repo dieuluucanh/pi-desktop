@@ -117,6 +117,9 @@ async function register(recording: Recording): Promise<void> {
       reorder: async () => envelope(),
       promoteOfficeHost: async () => envelope(),
       activate: async () => envelope(),
+      setVisibleTabs: (ids) => {
+        recording.sessionCalls.push({ kind: "setVisibleTabs", arg: [...ids] });
+      },
       deactivate: async () => envelope(),
       reconcile: async () => envelope(),
       restore: async () => envelope(),
@@ -547,6 +550,32 @@ describe("session tab lifecycle channels", () => {
       }),
     ).toThrow(/project-relative/);
     expect(recording.sessionCalls).toEqual([]);
+  });
+
+  it("forwards a visibility push, trimmed and de-duplicated", async () => {
+    // The grid's panes are a renderer fact, so the payload is advisory: the
+    // handler normalizes it instead of rejecting an odd shape.
+    await invoke(IPC.sessionSetVisible, [" t1 ", "t1", "t2"]);
+    expect(recording.sessionCalls).toEqual([{ kind: "setVisibleTabs", arg: ["t1", "t2"] }]);
+  });
+
+  it("treats a malformed visibility push as nothing visible", async () => {
+    await invoke(IPC.sessionSetVisible, "t1");
+    await invoke(IPC.sessionSetVisible, null);
+    await invoke(IPC.sessionSetVisible, [{ tabId: "t1" }, 42, "", "  "]);
+    expect(recording.sessionCalls).toEqual([
+      { kind: "setVisibleTabs", arg: [] },
+      { kind: "setVisibleTabs", arg: [] },
+      { kind: "setVisibleTabs", arg: [] },
+    ]);
+  });
+
+  it("bounds a visibility push to the largest layout plus the focused tab", async () => {
+    const ids = ["a", "b", "c", "d", "e", "f", "g"];
+    await invoke(IPC.sessionSetVisible, ids);
+    expect(recording.sessionCalls).toEqual([
+      { kind: "setVisibleTabs", arg: ["a", "b", "c", "d", "e"] },
+    ]);
   });
 });
 

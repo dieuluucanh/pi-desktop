@@ -24,7 +24,9 @@ drag-to-chat extended 2026-11-02. See
   language badge (`TS`, `JSON`, `MD`, …) and a dirty dot; session tabs keep
   their status dot, web tabs their globe. The row has no redundant “Editors”
   label because the separate row and badge already identify it. Both rows share
-  the same active tab: clicking a file replaces the main view.
+  the same active tab: clicking a file replaces the main view (or fills the
+  focused grid pane — see the session view grid in `app-shell.md`; one tab can be
+  visible in one pane only, because there is one CodeMirror view per tab id).
 - **Quick open** (`Ctrl+P`, File → Open File…) searches the flat,
   gitignore-aware file list.
 - **Diff** keeps the existing viewer and adds a fullscreen toggle.

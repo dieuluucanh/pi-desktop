@@ -15,7 +15,7 @@ import { Button } from "../ui/button";
  * One file in the main area.
  *
  * The tab strip owns the tab; this view owns the document surface. It is
- * lazy-loaded by `ActiveTabView`, so CodeMirror is not in the startup bundle.
+ * lazy-loaded by `TabSurface`, so CodeMirror is not in the startup bundle.
  */
 export function EditorTabView({ tab }: { tab: TabRecord }): React.JSX.Element {
   const meta = useEditorStore((state) => state.meta[tab.id]);
@@ -24,6 +24,8 @@ export function EditorTabView({ tab }: { tab: TabRecord }): React.JSX.Element {
   const checkExternal = useEditorStore((state) => state.checkExternalChange);
   const fontSize = useAppStore((state) => state.prefs.editor.fontSize);
   const wordWrap = useAppStore((state) => state.prefs.editor.wordWrap);
+  // A grid can mount several editors; only the focused pane takes the caret.
+  const activeTabId = useAppStore((state) => state.activeTabId);
   const buffer = getBuffer(tab.id);
 
   // Read the id once: the effect must key on the tab, never on the record's
@@ -141,6 +143,7 @@ export function EditorTabView({ tab }: { tab: TabRecord }): React.JSX.Element {
             fontSize={fontSize}
             wordWrap={wordWrap}
             tabSize={2}
+            autoFocus={tab.id === activeTabId}
           />
         </div>
       ) : (

@@ -344,6 +344,15 @@ const bridgeOwnerSessionId: { current: () => string | null } = {
 const activeSessionId: { current: string | null } = { current: null };
 
 /**
+ * The tabs the renderer shows — the grid's panes, or the single solo tab
+ * (2026-11-03 plan). A mutable holder for the same reason as `activeSessionId`:
+ * the supervisor is built before the session service exists. It is filled from
+ * the `session:set-visible` push, never from a tab-table publish, because panes
+ * are a renderer fact.
+ */
+const visibleSessionIds: { current: ReadonlySet<string> } = { current: new Set<string>() };
+
+/**
  * The soft live-host target for this machine. Total memory is stable for the
  * app's lifetime; the control host is included in the count, and the value is
  * never a hard session limit (see `liveHostBudget`).
@@ -382,6 +391,7 @@ const hosts = runtime.nodePath
       isPinned: (sessionId) =>
         keepHostAlive(sessionId, {
           activeSessionId: activeSessionId.current,
+          visibleSessionIds: visibleSessionIds.current,
           bridgeOwnerSessionId: bridgeOwnerSessionId.current(),
         }),
       // The bridge owner keeps port 38617 alive; only it and the Office host
@@ -516,6 +526,13 @@ const sessionsIpc: IpcSessionDeps = {
     return envelope;
   },
   activate: (tabId: string) => requireSessions().activateTab(tabId),
+  setVisibleTabs: (ids: readonly string[]) => {
+    // Mirror the push into the supervisor's holder before the service stores it:
+    // the idle reaper reads the holder on its own timer, so a visible pane must
+    // be protected even if the service call below is still in flight.
+    visibleSessionIds.current = new Set(ids);
+    requireSessions().setVisibleTabs(ids);
+  },
   deactivate: () => requireSessions().deactivate(),
   reconcile: () => requireSessions().reconcile(),
   restore: () => requireSessions().restoreTabs(),

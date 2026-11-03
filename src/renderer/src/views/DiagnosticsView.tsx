@@ -235,8 +235,9 @@ export function DiagnosticsView() {
             <p className="text-xs text-ink-muted">
               {snapshot.capacity.liveHosts}/{snapshot.capacity.targetHosts} live hosts (ceiling{" "}
               {snapshot.capacity.ceilingHosts}) · {snapshot.capacity.openSessions} open sessions (
-              {snapshot.capacity.asleepSessions} asleep) · {snapshot.capacity.editorTabs} editor
-              tabs · host RSS {formatBytes(snapshot.capacity.hostRssBytes)} /{" "}
+              {snapshot.capacity.asleepSessions} asleep) · {snapshot.capacity.visibleSessions}{" "}
+              visible panes · {snapshot.capacity.editorTabs} editor tabs · host RSS{" "}
+              {formatBytes(snapshot.capacity.hostRssBytes)} /{" "}
               {formatBytes(snapshot.capacity.hostRssLimitBytes)} · per-host budget{" "}
               {formatBytes(snapshot.memory.budgetBytes)} (recycle at{" "}
               {formatBytes(snapshot.memory.restartBytes)})
@@ -245,7 +246,8 @@ export function DiagnosticsView() {
               {snapshot.capacity.overTarget ? <Badge tone="warn">over target</Badge> : null}
               {snapshot.capacity.overMemory ? <Badge tone="warn">over memory</Badge> : null}
               <span>
-                The live-session target is soft; inactive sessions sleep and wake on first use.
+                The live-session target is soft; inactive sessions sleep and wake on first use. A
+                visible pane is never parked, so a grid can legitimately sit above its target.
               </span>
             </p>
             <p className="text-xs text-ink-muted">

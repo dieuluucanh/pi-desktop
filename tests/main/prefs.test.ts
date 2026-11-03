@@ -32,6 +32,7 @@ describe("sanitizePrefs", () => {
         "editor",
         "explorer",
         "followSystemTheme",
+        "grid",
         "notifications",
         "onboardingCompletedAt",
         "privacyAcknowledged",
@@ -57,6 +58,69 @@ describe("sanitizePrefs", () => {
     const result = sanitizePrefs({ favoriteModels: ["openai/gpt-5"], theme: "light" });
     expect(result).not.toHaveProperty("favoriteModels");
     expect(result.theme).toBe("light");
+  });
+
+  /**
+   * The session view grid (2026-11-03 plan step 3).
+   *
+   * `prefs.grid` is the one source of truth for the layout and the pane
+   * assignments, so the sanitizer must be total (a hand-edited app-state.json can
+   * say anything) and the merge must never let a `{ layout }` patch drop the
+   * panes it did not mention.
+   */
+  describe("grid", () => {
+    it("supplies the single-pane default for an older app-state.json", () => {
+      const prefs = sanitizePrefs({ theme: "light" });
+      expect(prefs.grid).toEqual({ layout: "single", panes: [null] });
+    });
+
+    it("falls back to single for an unknown layout", () => {
+      expect(sanitizePrefs({ grid: { layout: "nine", panes: ["a", "b"] } }).grid).toEqual({
+        layout: "single",
+        panes: ["a"],
+      });
+    });
+
+    it("pads and truncates the pane array against the layout", () => {
+      expect(sanitizePrefs({ grid: { layout: "four", panes: ["a"] } }).grid.panes).toEqual([
+        "a",
+        null,
+        null,
+        null,
+      ]);
+      expect(
+        sanitizePrefs({ grid: { layout: "two", panes: ["a", "b", "c", "d"] } }).grid.panes,
+      ).toEqual(["a", "b"]);
+    });
+
+    it("drops a duplicate pane assignment and a malformed slot", () => {
+      expect(
+        sanitizePrefs({ grid: { layout: "three-left", panes: ["a", "a", 42] } }).grid.panes,
+      ).toEqual(["a", null, null]);
+    });
+
+    it("accepts a garbage grid block without throwing", () => {
+      for (const value of [null, 42, "four", ["a"], { panes: "nope" }]) {
+        expect(sanitizePrefs({ grid: value }).grid).toEqual({ layout: "single", panes: [null] });
+      }
+    });
+
+    it("keeps the assignments when a patch only names the layout", () => {
+      const current = sanitizePrefs({ grid: { layout: "four", panes: ["a", "b", "c", "d"] } });
+      const next = mergePrefs(current, { grid: { layout: "two" } });
+      expect(next.grid).toEqual({ layout: "two", panes: ["a", "b"] });
+    });
+
+    it("keeps the layout when a patch only names the panes", () => {
+      const current = sanitizePrefs({ grid: { layout: "four", panes: [] } });
+      const next = mergePrefs(current, { grid: { panes: ["x", null, "y"] } });
+      expect(next.grid).toEqual({ layout: "four", panes: ["x", null, "y", null] });
+    });
+
+    it("leaves the block alone when the patch does not mention it", () => {
+      const current = sanitizePrefs({ grid: { layout: "three-right", panes: ["a", "b", "c"] } });
+      expect(mergePrefs(current, { theme: "light" }).grid).toEqual(current.grid);
+    });
   });
 
   it("defaults telemetry off and the privacy screen unanswered (plan step 23)", () => {

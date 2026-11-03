@@ -5,6 +5,7 @@ import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { ProjectInspection, ProjectRecord } from "../../src/shared/projects";
 import type { TabRecord } from "../../src/shared/session-ipc";
 import { ProjectsSection } from "../../src/renderer/src/projects/ProjectsSection";
+import { TAB_DRAG_MIME, TAB_DRAG_VERSION } from "../../src/shared/tab-drag";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { installBridge } from "./fixtures";
 
@@ -226,6 +227,40 @@ describe("ProjectsSection", () => {
     expect(screen.queryByText("a.ts")).toBeNull();
     expect(screen.queryByTestId("sidebar-session-editor-1")).toBeNull();
     expect(screen.getByRole("button", { name: /new session here/i })).toBeInTheDocument();
+  });
+
+  it("publishes the typed tab payload from a session row", () => {
+    // The sidebar row is a drag source for the grid panes, exactly like a strip
+    // chip (2026-11-03 plan).
+    installBridge({ projects: [record(PATH)], activeProject: PATH });
+    useAppStore.setState({
+      projects: [record(PATH)],
+      project: { path: PATH, name: "pi-desktop" },
+      projectInspections: { [PATH]: inspection() },
+      tabs: [tab("idle")],
+      activeTabId: "tab-1",
+    });
+    render(<ProjectsSection />);
+
+    const data = new Map<string, string>();
+    const transfer = {
+      types: [] as string[],
+      effectAllowed: "none",
+      setData(type: string, value: string): void {
+        data.set(type, value);
+        if (!this.types.includes(type)) this.types.push(type);
+      },
+      getData(type: string): string {
+        return data.get(type) ?? "";
+      },
+    };
+    const row = screen.getByTestId("sidebar-session-tab-1");
+    fireEvent.dragStart(row, { dataTransfer: transfer });
+
+    expect(transfer.getData(TAB_DRAG_MIME)).toBe(
+      JSON.stringify({ version: TAB_DRAG_VERSION, tabId: "tab-1" }),
+    );
+    expect(row).toHaveAttribute("draggable", "true");
   });
 
   it("opens the session lifecycle menu and renames inline", async () => {

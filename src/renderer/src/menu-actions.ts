@@ -1,4 +1,5 @@
 import type { MenuCommand } from "../../shared/ipc";
+import { gridMode } from "../../shared/session-grid";
 import { projectNameOf } from "../../shared/projects";
 import {
   DEFAULT_ZOOM,
@@ -152,6 +153,39 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "toggle-rail":
       store.toggleRail();
       return;
+    // Session view grid (2026-11-03 plan). The presets are fixed shapes, so each
+    // menu command maps to one `setGridLayout` call.
+    case "grid-single":
+      store.setGridLayout("single");
+      return;
+    case "grid-two":
+      store.setGridLayout("two");
+      return;
+    case "grid-three-left":
+      store.setGridLayout("three-left");
+      return;
+    case "grid-three-right":
+      store.setGridLayout("three-right");
+      return;
+    case "grid-four":
+      store.setGridLayout("four");
+      return;
+    case "grid-toggle": {
+      const { layout, panes } = store.prefs.grid;
+      if (layout === "single") {
+        store.setHint("Pick a multi-pane layout first — a single tab already fills the window.");
+        return;
+      }
+      const mode = gridMode({
+        layout,
+        panes,
+        solo: store.gridSolo,
+        activeTabId: store.activeTabId,
+      });
+      if (mode === "grid") store.showSolo();
+      else store.showGrid();
+      return;
+    }
     // Display zoom is applied by main from the persisted pref; the menu handler
     // only advances the level (2026-10-30 zoom plan).
     case "zoom-in":

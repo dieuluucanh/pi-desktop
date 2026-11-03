@@ -113,11 +113,14 @@ function isString(value: unknown): value is string {
 
 /**
  * A web tab is a URL record; a `WebContentsView` is a full Chromium renderer.
- * Keep four live views (active + three recent) so opening many reviews cannot
- * turn into one renderer process per tab. An evicted view's last state is kept
- * and the page reloads from its URL when the tab is activated again.
+ *
+ * Six live views: a grid can show four web panes at once (2026-11-03 plan), and a
+ * **visible** view is never evicted, so the bound must exceed the largest pane
+ * count or a fifth web tab could not be reached while four are on screen. An
+ * evicted view's last state is kept and the page reloads from its URL when it is
+ * shown again.
  */
-export const MAX_LIVE_WEB_VIEWS = 4;
+export const MAX_LIVE_WEB_VIEWS = 6;
 
 export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
   const now = deps.now ?? ((): number => Date.now());
@@ -133,7 +136,12 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
   };
 
   const applyVisibility = (managed: ManagedView): void => {
-    managed.view.setVisible(managed.visible && managed.tabId === activeTabId);
+    // Each pane reports its own rectangle, and the grid may show several at
+    // once, so the renderer's `visible` flag is authoritative. It used to be
+    // ANDed with `tabId === activeTabId`, which allowed exactly one web view on
+    // screen; a view the renderer has not reported yet stays hidden, so an
+    // unmounted tab can never become un-evictable.
+    managed.view.setVisible(managed.visible);
   };
 
   const applyBounds = (managed: ManagedView): void => {
@@ -222,9 +230,10 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
       view,
       state: parked ?? emptyWebTabState(tab.id, url, tab.sessionTabId ?? null),
       bounds: { x: 0, y: 0, width: 0, height: 0 },
-      // Until the renderer reports a rectangle the view is 0×0 anyway; treating
-      // the freshly created (active) tab as visible avoids a flash once bounds land.
-      visible: true,
+      // Hidden until the renderer reports a rectangle. A fresh view that claimed
+      // to be visible would paint at 0×0 (a flash) and, worse, could never be
+      // evicted because eviction only takes hidden views.
+      visible: false,
       detach: [],
     };
     parkedStates.delete(tab.id);
@@ -274,9 +283,17 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
           ? envelope.activeTabId
           : null;
 
-      const evictInactive = (): boolean => {
+      /**
+       * Parks the least-recently-active **hidden** view.
+       *
+       * Visibility is per pane now, so a visible view is on screen somewhere and
+       * must never be torn down under the user — even to make room for another
+       * tab. When every live view is visible, eviction simply stops and the extra
+       * tab stays parked (its URL is kept and it loads when first shown).
+       */
+      const evictHidden = (): boolean => {
         const victims = [...views.values()]
-          .filter((managed) => managed.tabId !== activeTabId)
+          .filter((managed) => !managed.visible && managed.tabId !== activeTabId)
           .sort(
             (left, right) =>
               (webTabs.get(left.tabId)?.lastActiveAt ?? 0) -
@@ -289,10 +306,10 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
       };
 
       // The active tab always gets a view. If the limit is reached, park the
-      // least-recently-active inactive one first (never the active tab).
+      // least-recently-active hidden view first (never a visible or active tab).
       const activeTab = activeTabId ? webTabs.get(activeTabId) : undefined;
       if (activeTab && !views.has(activeTab.id)) {
-        while (views.size >= MAX_LIVE_WEB_VIEWS && evictInactive()) {
+        while (views.size >= MAX_LIVE_WEB_VIEWS && evictHidden()) {
           // keep evicting until there is a slot or nothing else can go
         }
         if (views.size < MAX_LIVE_WEB_VIEWS) create(activeTab);
@@ -307,9 +324,9 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
         create(tab);
       }
 
-      // A limit change or a tab-list edit can leave an extra inactive view.
+      // A limit change or a tab-list edit can leave an extra hidden view.
       while (views.size > MAX_LIVE_WEB_VIEWS) {
-        if (!evictInactive()) break;
+        if (!evictHidden()) break;
       }
 
       for (const managed of views.values()) {

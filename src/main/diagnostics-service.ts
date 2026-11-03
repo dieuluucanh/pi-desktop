@@ -295,6 +295,7 @@ export function createDiagnosticsService(deps: DiagnosticsServiceDeps): Diagnost
         openSessions: 0,
         asleepSessions: 0,
         editorTabs: 0,
+        visibleSessions: 0,
       },
       memory: {
         budgetBytes: HOST_RSS_BUDGET_BYTES,

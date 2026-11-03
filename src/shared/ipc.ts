@@ -125,6 +125,12 @@ export const IPC = {
   sessionPromoteOffice: "session:promote-office",
   sessionActivate: "session:activate",
   /**
+   * Renderer → main: which tabs are on screen (the grid's panes, or the solo
+   * tab). Advisory — it parks and spawns nothing; it only tells the host policy
+   * which processes must not be idle-recycled (2026-11-03 grid plan).
+   */
+  sessionSetVisible: "session:set-visible",
+  /**
    * Clears the active tab without closing one (2026-10-30 project-scoped rail
    * plan): a selected project with no open session shows Welcome while the rail
    * keeps that project's scope.
@@ -322,6 +328,14 @@ export const MENU_COMMANDS = [
   // The docked panel rail: one toggle for the panel body plus the commands that
   // open it on a specific menu.
   "toggle-rail",
+  // Session view grid (2026-11-03 plan). No accelerators: the layout is chosen
+  // rarely, and a global chord would collide with Pi's own keys.
+  "grid-toggle",
+  "grid-single",
+  "grid-two",
+  "grid-three-left",
+  "grid-three-right",
+  "grid-four",
   "view-explorer",
   "view-source-control",
   "view-checkpoints",
@@ -418,6 +432,11 @@ export interface SessionsBridge {
   /** Makes this tab the single Office host (plan step 20), restarting its host. */
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
+  /**
+   * Declares the tabs the renderer currently shows. Advisory: unknown ids are
+   * ignored, nothing is parked or spawned, and no tab table is published.
+   */
+  setVisibleTabs(ids: readonly string[]): Promise<void>;
   /** Clears the active tab without closing or stopping any host. */
   deactivate(): Promise<SessionTabsEnvelope>;
   /** Makes the tab table truthful after sleep/resume or a lost host. */

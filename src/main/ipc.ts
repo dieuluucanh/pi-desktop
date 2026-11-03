@@ -121,6 +121,8 @@ export interface IpcSessionDeps {
   /** Makes one tab the single Office host (plan step 20). */
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Declares the tabs the renderer shows; advisory, parks and spawns nothing. */
+  setVisibleTabs(ids: readonly string[]): void;
   /** Clears the active tab without closing or stopping any host. */
   deactivate(): Promise<SessionTabsEnvelope>;
   /** Re-checks host/session readiness after suspend or a missed push. */
@@ -471,6 +473,30 @@ function requireRealTabId(deps: IpcDependencies, value: unknown): string {
   return id;
 }
 
+/**
+ * Components in a visibility push.
+ *
+ * `session:set-visible` is advisory (the renderer may be shutting down, or hold a
+ * stale `prefs.grid`), so a malformed payload is answered with "nothing is
+ * visible" rather than an exception. The bound matches the largest layout plus
+ * the focused tab; `visibleTabIds()` bounds again in the service.
+ */
+const MAX_VISIBLE_TAB_IDS = 5;
+
+function parseVisibleTabIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const id = entry.trim();
+    if (id.length === 0 || id.length > 128) continue;
+    if (ids.includes(id)) continue;
+    ids.push(id);
+    if (ids.length >= MAX_VISIBLE_TAB_IDS) break;
+  }
+  return ids;
+}
+
 /** Validates the project-panel settings toggle input. */
 function parseBridgeTabId(value: unknown): string {
   const tabId = typeof value === "string" ? value.trim() : "";
@@ -623,6 +649,11 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     deps.sessions.activate(requireTabId(deps, tabId)),
   );
   ipcMain.handle(IPC.sessionDeactivate, () => deps.sessions.deactivate());
+  ipcMain.handle(IPC.sessionSetVisible, (_event, ids: unknown) => {
+    // Advisory by design: a close or a drop races this push, so an unknown id or
+    // an odd shape must never surface as an error the user has to dismiss.
+    deps.sessions.setVisibleTabs(parseVisibleTabIds(ids));
+  });
   ipcMain.handle(IPC.sessionReconcile, () => deps.sessions.reconcile());
   ipcMain.handle(IPC.sessionRestart, (_event, tabId: unknown) =>
     deps.sessions.restart(requireTabId(deps, tabId)),

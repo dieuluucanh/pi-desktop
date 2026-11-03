@@ -6,6 +6,7 @@ import { isSessionTab } from "../../../shared/session-ipc";
 import { newSessionAction } from "../menu-actions";
 import { useAppStore } from "../state/app-store";
 import { Button } from "../ui/button";
+import { GridLayoutMenu } from "./GridLayoutMenu";
 import { TabList } from "./TabList";
 
 /**
@@ -45,16 +46,20 @@ export function SessionTabStrip(): React.JSX.Element {
         label="Session tabs"
         empty={project ? "No session open" : "No project open"}
       />
-      <Button
-        size="icon-sm"
-        variant="ghost"
-        className="ml-auto"
-        onClick={newSessionAction}
-        aria-label="New session"
-        title="New session (Ctrl+N)"
-      >
-        <Plus className="size-3.5" aria-hidden />
-      </Button>
+      <div className="ml-auto flex items-center gap-1">
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          onClick={newSessionAction}
+          aria-label="New session"
+          title="New session (Ctrl+N)"
+        >
+          <Plus className="size-3.5" aria-hidden />
+        </Button>
+        {/* Far right: the layout switcher (2026-11-03 plan). The `+` sits to its
+            left so the control cannot move as sessions are added. */}
+        <GridLayoutMenu />
+      </div>
     </div>
   );
 }

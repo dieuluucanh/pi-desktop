@@ -711,6 +711,7 @@ export function Transcript({
   toolsExpanded,
   onToggleToolsExpanded,
   followPaused = false,
+  active = true,
 }: {
   items: readonly TranscriptItem[];
   /** The session tab, so tool/message renderers can run in its host (step 18). */
@@ -724,6 +725,14 @@ export function Transcript({
   toolsExpanded?: boolean | null;
   /** Flips the app's expand-all state (`app.tools.expand`). */
   onToggleToolsExpanded?: () => void;
+  /**
+   * False for a transcript in a background grid pane (2026-11-03 plan).
+   *
+   * The find bar and jump-to-bottom are `window` listeners, so several mounted
+   * transcripts would all react to one keystroke. Only the focused pane's
+   * transcript claims them; a background pane's stays inert until it is clicked.
+   */
+  active?: boolean;
   /**
    * Suspends auto-follow while an overlay owns the user's attention (a picker or
    * dialog). Streaming continues; the viewport just stops chasing it.
@@ -862,6 +871,9 @@ export function Transcript({
   // `Ctrl+End` is terminal Pi's jump-to-bottom; it must never steal the chord
   // from a native editor (where it means "end of document").
   useEffect(() => {
+    // Only the focused pane owns the global chord: a grid mounts several
+    // transcripts, and each one listening would scroll all of them at once.
+    if (!active) return;
     const onKeyDown = (event: KeyboardEvent): void => {
       if (!event.ctrlKey || event.key !== "End") return;
       const target = event.target as HTMLElement | null;
@@ -871,7 +883,7 @@ export function Transcript({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [scrollToBottom]);
+  }, [scrollToBottom, active]);
 
   // ---- Transcript find (plan step 11) ----
   const [findOpen, setFindOpen] = useState(false);
@@ -910,6 +922,8 @@ export function Transcript({
     [findOverride],
   );
   useEffect(() => {
+    // Same rule as Ctrl+End: one find bar per keystroke, owned by the focused pane.
+    if (!active) return;
     const onKeyDown = (event: KeyboardEvent): void => {
       if (findKeys.length === 0) return;
       if (!matchesBinding(event, findKeys)) return;
@@ -920,7 +934,7 @@ export function Transcript({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [findKeys]);
+  }, [findKeys, active]);
 
   const activeItemId =
     activeMatch >= 0 ? (find.matches[activeMatch]?.itemId ?? undefined) : undefined;

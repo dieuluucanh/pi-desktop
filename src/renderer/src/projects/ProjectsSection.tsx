@@ -30,6 +30,7 @@ import { useAppStore } from "../state/app-store";
 import { openProjectAction } from "../menu-actions";
 import { CloneProjectDialog, CreateProjectDialog } from "./ProjectDialogs";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
+import { writeTabDrag } from "../layout/tab-drag";
 import { removeProjectWithPrompt } from "./remove-project";
 import type {
   PiProjectResources,
@@ -396,6 +397,11 @@ function SessionRow({ session }: { session: SessionTab }) {
         session.id === activeTabId ? "bg-surface text-ink" : "text-ink-muted hover:text-ink"
       }`}
       data-testid={`sidebar-session-${session.id}`}
+      data-tab-id={session.id}
+      // A session row is a drag source for the grid panes, exactly like a chip in
+      // the strip (2026-11-03 plan).
+      draggable
+      onDragStart={(event) => writeTabDrag(event.dataTransfer, session.id)}
     >
       <Badge tone={STATUS_TONE[session.status]} className="shrink-0 px-1 py-0 leading-3">
         {session.status === "running" ? "●" : "○"}

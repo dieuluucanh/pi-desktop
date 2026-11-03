@@ -7,11 +7,11 @@ installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
 `~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
-> **Status:** v0.3.0 development build (the core-first plan's steps 1–29 plus
-> the interface, source-control and session-first chrome work). The Windows
-> installer is the primary artefact; macOS and Linux are beta, and builds are
-> unsigned. Known limitations and the deferred backlog are recorded in
-> [docs/releases/v0.3.0.md](docs/releases/v0.3.0.md) and
+> **Status:** v0.4.0 development build (the core-first plan's steps 1–29 plus
+> the interface, source-control, session-first chrome and explorer/editor work).
+> The Windows installer is the primary artefact; macOS and Linux are beta, and
+> builds are unsigned. Known limitations and the deferred backlog are recorded in
+> [docs/releases/v0.4.0.md](docs/releases/v0.4.0.md) and
 > [docs/product/backlog.md](docs/product/backlog.md).
 >
 > **Pi for Office is an optional integration.** It installs from Extensions →
@@ -22,6 +22,10 @@ skills, themes and settings are managed through a UI, using the **same
 
 - **Projects and sessions** — open a folder, manage recents and trust, and run
   parallel sessions in tabs, each in its own Pi host process.
+- **File explorer and editor** — a project tree with hidden/ignored toggles,
+  project-wide name search and drag-to-chat mentions; CodeMirror editor tabs with
+  syntax highlighting, conflict-safe saves, hot-exit recovery and Format
+  Document.
 - **Chat** — streaming text that follows the cursor while pinned (scroll up for
   "Jump to latest"), thinking, one card per tool call with previews, diffs and
   result images, steering/follow-up with pending rows (`Alt+Up` restores them),
@@ -58,7 +62,7 @@ The feature-by-feature comparison with terminal Pi (including the explicit
 Download the installer for your platform from GitHub Releases. The Windows NSIS
 installer and portable `.exe` are the primary artefacts; macOS `.dmg`/`.zip`
 (arm64 + x64) and Linux AppImage/`.deb` (x64 + arm64) are beta. Builds are
-unsigned in v0.1.0, so SmartScreen/Gatekeeper will warn on first launch
+unsigned in v0.4.0, so SmartScreen/Gatekeeper will warn on first launch
 (instructions in the guide, including the Linux FUSE and apt notes).
 
 Installed release builds check GitHub Releases in the background. When a newer
@@ -113,7 +117,7 @@ docs/                product/parity + backlog, the user guide, releases and the 
   host protocol + RPC mapping, extension UI host + TUI surface, Office
   integration, runtime, pinned versions).
 - **Parity** — [docs/product/parity.md](docs/product/parity.md).
-- **Release notes** — [docs/releases/v0.3.0.md](docs/releases/v0.3.0.md)
+- **Release notes** — [docs/releases/v0.4.0.md](docs/releases/v0.4.0.md)
   (install table, known limitations, verification status).
 - **Backlog** — [docs/product/backlog.md](docs/product/backlog.md).
 - **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md) and

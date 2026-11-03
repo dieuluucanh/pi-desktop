@@ -152,6 +152,8 @@ export interface BridgeHandles {
   webCommands: Array<{ tabId: string; command: WebCommand }>;
   webBounds: Array<{ tabId: string; bounds: WebTabBounds }>;
   webDecisions: WebNavigationDecision[];
+  /** Every `session:set-visible` push, in order (2026-11-03 grid plan). */
+  visibleTabPushes: string[][];
   updateCalls: string[];
   /** Every git bridge call, in order, with its payload. */
   gitCalls: Array<{ kind: string; projectPath: string; payload?: unknown }>;
@@ -177,6 +179,7 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
   const webCommands: Array<{ tabId: string; command: WebCommand }> = [];
   const webBounds: Array<{ tabId: string; bounds: WebTabBounds }> = [];
   const webDecisions: WebNavigationDecision[] = [];
+  const visibleTabPushes: string[][] = [];
   const updateListeners = new Set<(state: UpdateState) => void>();
   const updateCalls: string[] = [];
   let updateState: UpdateState = options.update ?? initialUpdateState(false);
@@ -284,6 +287,11 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
         activeTabId: tabId,
       }),
       deactivate: async () => ({ tabs: useAppStore.getState().tabs, activeTabId: null }),
+      // Advisory pinning hint (2026-11-03 grid plan): recorded so a test can
+      // assert what the renderer told main was on screen.
+      setVisibleTabs: async (ids: readonly string[]) => {
+        visibleTabPushes.push([...ids]);
+      },
       reconcile: async () => ({ tabs: [], activeTabId: null }),
       restore: async () => ({ tabs: [], activeTabId: null }),
       restart: async () => ({ tabs: [], activeTabId: null }),
@@ -606,6 +614,7 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
     webCommands,
     webBounds,
     webDecisions,
+    visibleTabPushes,
     updateCalls,
     emitWebState: (state) => {
       for (const listener of webStateListeners) listener(state);
@@ -672,6 +681,7 @@ function diagnosticsSnapshot(info: AppInfo): DiagnosticsSnapshot {
       openSessions: 0,
       asleepSessions: 0,
       editorTabs: 0,
+      visibleSessions: 0,
     },
     memory: {
       budgetBytes: 536_870_912,

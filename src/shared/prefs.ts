@@ -8,6 +8,12 @@
  */
 
 import { DEFAULT_PROFILE_MODE, sanitizeProfileMode, type ProfileMode } from "./profile";
+import {
+  DEFAULT_GRID_PREFS,
+  mergeGridPrefs,
+  sanitizeGridPrefs,
+  type GridPrefs,
+} from "./session-grid";
 import { sanitizeDesktopKeybindings, type DesktopKeybindings } from "./desktop-keymap";
 import { sanitizePromptOrigins } from "./prompt-origin";
 import {
@@ -63,6 +69,7 @@ export const PREF_KEYS = [
   "explorer",
   "checkpoints",
   "updates",
+  "grid",
 ] as const;
 
 export type PrefKey = (typeof PREF_KEYS)[number];
@@ -176,6 +183,13 @@ export interface UiPrefs {
    * see `src/shared/updates.ts`.
    */
   updates: UpdatePrefs;
+  /**
+   * The session view grid (2026-11-03 plan): which preset shape the content area
+   * shows and which tab each pane holds. `panes` is indexed by pane and padded
+   * with `null`; a tab closed elsewhere is pruned to `null` by the store, never
+   * re-flowed. `layout: "single"` is today's one-tab view.
+   */
+  grid: GridPrefs;
 }
 
 /** Longest draft kept per tab, and how many tabs may hold one. */
@@ -213,6 +227,9 @@ export const DEFAULT_PREFS: UiPrefs = {
   // value must not mutate the module-level default (nor the shared config).
   checkpoints: { ...DEFAULT_CHECKPOINT_CONFIG, exclude: [] },
   updates: { ...DEFAULT_UPDATE_PREFS },
+  // A fresh `panes` array for the same reason as `rail.order`: the shared
+  // default's slot must never be mutated by a caller.
+  grid: { layout: DEFAULT_GRID_PREFS.layout, panes: [...DEFAULT_GRID_PREFS.panes] },
 };
 
 const THEMES: readonly ThemeSetting[] = ["dark", "light", "system"];
@@ -294,6 +311,10 @@ export function sanitizePrefs(input: unknown): UiPrefs {
     // Automatic update checks are on by default; the build channel/support gate
     // still decide whether they can run (local and dev builds stay off).
     updates: sanitizeUpdatePrefs(source.updates),
+    // The session view grid: which preset is on screen and which tab each pane
+    // holds. An older app-state.json has no block; the sanitizer supplies the
+    // single-pane default, so no migration is needed.
+    grid: sanitizeGridPrefs(source.grid),
   };
 }
 
@@ -327,6 +348,9 @@ export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
   // drop a per-version dismissal.
   const updates =
     "updates" in source ? mergeUpdatePrefs(current.updates, source.updates) : current.updates;
+  // `grid.panes` is a list, so a patch that names only the layout must keep the
+  // assignments (and vice versa); `mergeGridPrefs` owns that rule.
+  const grid = "grid" in source ? mergeGridPrefs(current.grid, source.grid) : current.grid;
   return sanitizePrefs({
     ...current,
     ...source,
@@ -336,6 +360,7 @@ export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
     checkpoints,
     notifications,
     updates,
+    grid,
   });
 }
 

@@ -46,6 +46,48 @@ with the native thin bar as the fallback. The sidebar's project groups list only
 the session row's tabs (sessions, the Office host and web tabs); file tabs are
 never repeated there and live only in the editor row.
 
+**Session view grid (2026-11-03 grid plan).** The content area — the `<section>`
+under both strips — can show several tabs at once. The tab strips, the sidebar
+and the panel rail stay global chrome; only the content area splits.
+
+- **Five presets**, no draggable splitters: `single`, `two` (two full-height
+  columns), `three-left` (left pane full height, right column split),
+  `three-right` (mirrored) and `four` (2×2). `shared/session-grid.ts` owns the
+  pane count and the CSS area of every pane, so the geometry is unit tested
+  without a DOM.
+- **A pane is one `TabRecord`** (`session`, `office`, `web` or `editor`, from any
+  project), rendered by `views/TabSurface.tsx` — the same kind dispatcher the
+  solo view uses. `editor-store`, `editor-registry` and the web-tab service are
+  keyed by tab id, so **one tab may be visible in one pane only**: assigning a tab
+  another pane already holds swaps the two slots (`assignGridPane`).
+- **The focused pane is `activeTabId`.** Clicking a pane activates its tab, which
+  is what menus, the palette, the rail scope and the window title already follow.
+  Several mounted `SessionView`s therefore each render their own tab; the two
+  `window` key listeners (find, jump-to-bottom) and the editor's mount focus are
+  gated on the focused tab.
+- **Solo mode.** `prefs.grid.layout` stays authoritative. Activating a tab that no
+  pane holds shows it full-size (`gridSolo`); activating a pane's tab returns to
+  the grid. `gridMode()` is the single decision, and it is why "grid and single
+  run in parallel" without losing the layout.
+- **Persistence.** `prefs.grid = { layout, panes }`; `applyTabs` clears a closed
+  tab's slot to `null` (never re-flows the layout) and writes prefs only when
+  something actually changed.
+- **Host pinning.** The renderer pushes the mounted pane tabs over
+  `session:set-visible`; main feeds them to `keepHostAlive`, excludes them from
+  `parkTab`/`idleCandidates` and raises `reclaimHosts`' floor. The per-host RSS
+  watchdog still applies, and panes wake lazily on first interaction, so a
+  four-pane layout never spawns four hosts by itself.
+- **Web panes.** A web view's visibility is now what its pane reports, not
+  `tabId === activeTabId`; eviction only ever takes a hidden view and
+  `MAX_LIVE_WEB_VIEWS` is 6 (four panes may each show one).
+
+Entry points: the layout switcher at the far right of the session strip
+(`layout/GridLayoutMenu.tsx`), View ▸ Layout in the menu, and the command palette.
+Each pane's chevron (`layout/PanePicker.tsx`) lists session tabs grouped by
+project, then editor tabs, then a route into the session browser; a tab can also
+be dragged from either strip or the sidebar onto a pane
+(`shared/tab-drag.ts`, MIME `application/x-pi-tab`).
+
 **Two surfaces, one job each (2026-10-31 minimal-session-ui).** The status bar is
 app-level and mounted on every view; it never carries session facts. It shows the
 active project path on the left and the app facts on the right. Everything

@@ -5,6 +5,7 @@ import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { TabRecord } from "../../src/shared/session-ipc";
 import { SessionTabStrip } from "../../src/renderer/src/layout/SessionTabStrip";
 import { tabMenuItems } from "../../src/renderer/src/layout/tab-menu";
+import { TAB_DRAG_MIME, TAB_DRAG_VERSION } from "../../src/shared/tab-drag";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { installBridge } from "./fixtures";
 
@@ -21,6 +22,22 @@ import { installBridge } from "./fixtures";
  */
 
 const WORK = "C:\\work\\pi-desktop";
+
+/** jsdom has no `DataTransfer`; the strip only needs these members. */
+function fakeTransfer() {
+  const data = new Map<string, string>();
+  return {
+    types: [] as string[],
+    effectAllowed: "none",
+    setData(type: string, value: string): void {
+      data.set(type, value);
+      if (!this.types.includes(type)) this.types.push(type);
+    },
+    getData(type: string): string {
+      return data.get(type) ?? "";
+    },
+  };
+}
 
 function tab(overrides: Partial<TabRecord> = {}): TabRecord {
   return {
@@ -189,6 +206,21 @@ describe("SessionTabStrip", () => {
     fireEvent.drop(second);
 
     expect(reorder).toHaveBeenCalledWith("tab-1", 1);
+  });
+
+  it("publishes the typed tab payload so a grid pane can accept the drag", () => {
+    // One gesture, two consumers (2026-11-03 grid plan): the strip reorders from
+    // its own `dragId`, and a pane reads this MIME on drop.
+    installBridge();
+    render(<SessionTabStrip />);
+
+    const transfer = fakeTransfer();
+    fireEvent.dragStart(screen.getByTestId("tab-tab-2"), { dataTransfer: transfer });
+
+    expect(transfer.getData(TAB_DRAG_MIME)).toBe(
+      JSON.stringify({ version: TAB_DRAG_VERSION, tabId: "tab-2" }),
+    );
+    expect(transfer.effectAllowed).toBe("move");
   });
 
   it("closes other tabs through the service", async () => {

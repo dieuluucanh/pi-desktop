@@ -9,6 +9,9 @@
 
 ## Releases
 
+- [`releases/v0.4.0.md`](releases/v0.4.0.md) — v0.4.0 release notes (file explorer,
+  editor tabs, tab actions, the memory-derived host budget and default projects), install
+  table, the known-limitations list and the verification status.
 - [`releases/v0.3.0.md`](releases/v0.3.0.md) — v0.3.0 release notes (session-first
   chrome, the interface pass, source-control feedback and one-line history), install table,
   the known-limitations list and the verification status.

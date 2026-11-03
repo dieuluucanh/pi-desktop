@@ -43,7 +43,7 @@ artefacts instead. To remove: `sudo apt remove pi-desktop`.
 
 > **Unsigned builds.** Windows SmartScreen and macOS Gatekeeper will warn on
 > first launch. Choose “More info → Run anyway” (Windows) or right-click → Open
-> (macOS). Code signing is tracked in the backlog, not in v0.3.0.
+> (macOS). Code signing is tracked in the backlog, not in v0.4.0.
 
 ## First launch
 
