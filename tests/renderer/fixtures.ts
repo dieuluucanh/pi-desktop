@@ -330,6 +330,28 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
         };
       },
       create: async () => ({ ok: false, path: null, error: "not configured", ...projectsState }),
+      createDefault: async () => {
+        // The one-click flow always lands in Documents/Pi-Desktop with a dated
+        // folder; tests assert the session opens against this path.
+        const path = "C:\\Users\\test\\Documents\\Pi-Desktop\\2026-11-03T10-15-42";
+        const record: ProjectRecord = {
+          path,
+          name: projectNameOf(path),
+          addedAt: 1,
+          lastOpenedAt: 1,
+        };
+        projectsState.projects = [
+          record,
+          ...projectsState.projects.filter((project) => project.path !== path),
+        ];
+        projectsState.activeProject = path;
+        return {
+          ok: true,
+          path,
+          projects: [...projectsState.projects],
+          activeProject: path,
+        };
+      },
       clone: async () => ({ ok: false, path: null, error: "not configured", ...projectsState }),
       action: async () => true,
       setSettings: async (input) => {

@@ -9,6 +9,7 @@ import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { installBridge } from "./fixtures";
 
 const PATH = "C:\\work\\pi-desktop";
+const DEFAULT_PATH = "C:\\Users\\test\\Documents\\Pi-Desktop\\2026-11-03T10-15-42";
 
 function record(path: string, overrides: Partial<ProjectRecord> = {}): ProjectRecord {
   return {
@@ -106,6 +107,40 @@ beforeEach(() => {
 });
 
 describe("ProjectsSection", () => {
+  it("offers the default project first in the + menu", async () => {
+    installBridge();
+    const user = userEvent.setup();
+    render(<ProjectsSection />);
+
+    screen.getByRole("button", { name: "New project" }).focus();
+    await user.keyboard("{Enter}");
+
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.map((item) => item.textContent?.trim())).toEqual([
+      "New default project",
+      "New project…",
+      "Clone repository…",
+    ]);
+  });
+
+  it("creates a default project and starts a session from the + menu", async () => {
+    const { bridge } = installBridge();
+    const createDefault = vi.spyOn(bridge.projects, "createDefault");
+    const createSession = vi.spyOn(bridge.sessions, "create");
+    const user = userEvent.setup();
+    render(<ProjectsSection />);
+
+    screen.getByRole("button", { name: "New project" }).focus();
+    await user.keyboard("{Enter}");
+    await user.click(await screen.findByRole("menuitem", { name: "New default project" }));
+
+    await waitFor(() => expect(createDefault).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ cwd: DEFAULT_PATH })),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it("opens the new-project dialog from the + menu", async () => {
     installBridge();
     const user = userEvent.setup();
@@ -113,7 +148,11 @@ describe("ProjectsSection", () => {
 
     expect(screen.getByRole("button", { name: "Open project folder" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "New project" }));
+    // Keyboard-open the menu: a preceding Radix menu/dialog can leave a pointer
+    // lock that swallows the trigger's pointerdown in jsdom (see the setup
+    // shims note); the keyboard path is the same menu and is deterministic.
+    screen.getByRole("button", { name: "New project" }).focus();
+    await user.keyboard("{Enter}");
     await user.click(await screen.findByRole("menuitem", { name: /new project/i }));
     expect(
       await screen.findByRole("dialog", { name: "Create a blank project" }),

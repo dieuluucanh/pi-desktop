@@ -8,6 +8,12 @@ window — is the unit of context.
 
 - **Open project folder…** — native folder picker. The folder is added to the
   sidebar’s recent list and becomes active.
+- **New default project** — one click creates a dated folder
+  (`2026-11-03T10-15-42`) inside your OS Documents folder’s `Pi-Desktop`
+  directory. `Pi-Desktop` is created on first use and reused afterwards; each
+  project gets its own timestamp folder, and the project becomes active with a
+  new session. No `git init` runs — use **Create blank project…** when you want
+  to choose the folder and the git option.
 - **Create blank project…** — creates the directory (and optionally runs
   `git init`; the app probes `git --version` before creating anything).
 - **Clone repository…** — validates the URL and clones with `git`, surfacing the

@@ -799,6 +799,8 @@ export interface AppStateShape {
   /** Enables/disables project-scoped settings and reloads the affected hosts. */
   setProjectSettingsEnabled: (path: string, enabled: boolean) => Promise<boolean>;
   createBlankProject: (input: CreateProjectInput) => Promise<boolean>;
+  /** One-click dated project in Documents/Pi-Desktop; false on failure. */
+  createDefaultProject: () => Promise<boolean>;
   cloneProject: (input: CloneProjectInput) => Promise<boolean>;
   /** Opens the user's home folder as a project and starts a session there. */
   quickSessionInHome: () => Promise<void>;
@@ -2291,6 +2293,28 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       get().applyProjects(result);
       if (!result.ok) {
         set({ hint: result.error ?? "the project could not be created" });
+        return false;
+      }
+      set({ view: "session", hint: null });
+      if (result.path) void get().inspectProject(result.path);
+      return true;
+    } catch (error) {
+      get().noteFailure(error);
+      return false;
+    }
+  },
+
+  createDefaultProject: async () => {
+    const api = bridge();
+    if (!api?.projects) {
+      set({ hint: "The preload bridge is unavailable." });
+      return false;
+    }
+    try {
+      const result = await api.projects.createDefault();
+      get().applyProjects(result);
+      if (!result.ok) {
+        set({ hint: result.error ?? "the default project could not be created" });
         return false;
       }
       set({ view: "session", hint: null });

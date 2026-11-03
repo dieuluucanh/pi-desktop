@@ -192,6 +192,7 @@ const projects: ProjectsBridge = {
     ipcRenderer.invoke(IPC.projectsMutate, input) as Promise<ProjectsSnapshot>,
   create: (input: CreateProjectInput) =>
     ipcRenderer.invoke(IPC.projectsCreate, input) as Promise<ProjectOpResponse>,
+  createDefault: () => ipcRenderer.invoke(IPC.projectsCreateDefault) as Promise<ProjectOpResponse>,
   clone: (input: CloneProjectInput) =>
     ipcRenderer.invoke(IPC.projectsClone, input) as Promise<ProjectOpResponse>,
   action: (input: ProjectActionInput) =>

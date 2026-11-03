@@ -89,7 +89,8 @@ reset, `Ctrl+Tab` next session, `Ctrl/Cmd+/` shortcuts, `Esc` stops the run.
 
 ## Your first session
 
-1. **Open project folder…** (or create a blank project / clone a repository).
+1. **Open project folder…** (or create a default project in
+   `Documents/Pi-Desktop` / a blank project / clone a repository).
    If the folder contains a `.pi/` directory, the app asks how you want to trust
    it — see [Projects](projects.md).
 2. A session tab opens in that folder. Type a prompt and press **Enter**

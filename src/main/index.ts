@@ -27,6 +27,7 @@ import type {
   CreateProjectInput,
   ProjectActionInput,
   ProjectMutation,
+  ProjectOpResult,
 } from "../shared/projects";
 import type {
   CreateTabInput,
@@ -270,6 +271,26 @@ const projectSettingsService = createProjectSettingsService({
 /** The app's integration record (plan step 19): consented installs, setup timestamps. */
 const integrationsService = createIntegrationsService({ store: appState });
 
+/**
+ * The OS Documents folder. Resolved lazily because this module builds
+ * `projectOps` before `whenReady`, and `app.getPath` is only reliable after it.
+ * Falls back to `<home>/Documents` when Electron cannot resolve the platform
+ * folder (a fresh Linux/XDG profile, for example).
+ */
+function documentsDirectory(): string | null {
+  try {
+    const documents = app.getPath("documents");
+    if (documents.trim().length > 0) return documents;
+  } catch {
+    // Fall through to the conventional location.
+  }
+  try {
+    return join(app.getPath("home"), "Documents");
+  } catch {
+    return null;
+  }
+}
+
 /** Create/clone/reveal/terminal/clipboard for projects (plan step 10). */
 const projectOps = createProjectOps({
   fs: createNodeFsPort(),
@@ -280,7 +301,20 @@ const projectOps = createProjectOps({
     clipboard.writeText(text);
     return true;
   },
+  documentsDir: documentsDirectory,
 });
+
+/**
+ * Persists a created project and makes it active. A failed op still returns the
+ * current list, so the caller can render the error without a second round trip.
+ */
+const finishProjectOp = async (result: ProjectOpResult): Promise<ProjectOpResponse> => {
+  if (!result.ok || !result.path) return { ...result, ...(await projectsService.snapshot()) };
+  return {
+    ...result,
+    ...(await projectsService.mutate({ action: "add", path: result.path })),
+  };
+};
 
 /** The IPC channel each session push channel maps to. */
 const SESSION_CHANNELS: Record<SessionEmitChannel, string> = {
@@ -1443,26 +1477,12 @@ if (!app.requestSingleInstanceLock()) {
           if (input.action === "remove") await sessions?.closeForProject(input.path);
           return projectsService.mutate(input);
         },
-        create: async (input: CreateProjectInput): Promise<ProjectOpResponse> => {
-          const result = await projectOps.createBlank(input);
-          if (!result.ok || !result.path)
-            return { ...result, ...(await projectsService.snapshot()) };
-          // A created project becomes the active one in the same step, so the
-          // caller can open a session without a second round trip.
-          return {
-            ...result,
-            ...(await projectsService.mutate({ action: "add", path: result.path })),
-          };
-        },
-        clone: async (input: CloneProjectInput): Promise<ProjectOpResponse> => {
-          const result = await projectOps.cloneRepo(input);
-          if (!result.ok || !result.path)
-            return { ...result, ...(await projectsService.snapshot()) };
-          return {
-            ...result,
-            ...(await projectsService.mutate({ action: "add", path: result.path })),
-          };
-        },
+        create: async (input: CreateProjectInput): Promise<ProjectOpResponse> =>
+          finishProjectOp(await projectOps.createBlank(input)),
+        createDefault: async (): Promise<ProjectOpResponse> =>
+          finishProjectOp(await projectOps.createDefault()),
+        clone: async (input: CloneProjectInput): Promise<ProjectOpResponse> =>
+          finishProjectOp(await projectOps.cloneRepo(input)),
         action: (input: ProjectActionInput) => projectOps.action(input.path, input.action),
         setSettings: (input) => projectSettingsService.setEnabled(input),
       },

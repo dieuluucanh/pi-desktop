@@ -149,6 +149,8 @@ export const IPC = {
   projectsGet: "projects:get",
   projectsMutate: "projects:mutate",
   projectsCreate: "projects:create",
+  /** Renderer → main: one-click dated project in `<Documents>/Pi-Desktop`. */
+  projectsCreateDefault: "projects:create-default",
   projectsClone: "projects:clone",
   projectsAction: "projects:action",
   /** Enables/disables project-scoped settings for one project. */
@@ -515,6 +517,8 @@ export interface ProjectsBridge {
   get(): Promise<ProjectsSnapshot>;
   mutate(input: ProjectMutation): Promise<ProjectsSnapshot>;
   create(input: CreateProjectInput): Promise<ProjectOpResponse>;
+  /** Creates the dated project inside the OS Documents folder (no git init). */
+  createDefault(): Promise<ProjectOpResponse>;
   clone(input: CloneProjectInput): Promise<ProjectOpResponse>;
   action(input: ProjectActionInput): Promise<boolean>;
   /** Snapshot/empty or restore the project's `.pi/settings.json`. */

@@ -128,6 +128,7 @@ async function register(recording: Recording): Promise<void> {
       get: async () => projects(),
       mutate: async () => projects(),
       create: async () => ({ ok: true }) as never,
+      createDefault: async () => ({ ok: true }) as never,
       clone: async () => ({ ok: true }) as never,
       action: async () => true,
       setSettings: async () => ({ ok: true }) as never,
@@ -356,6 +357,12 @@ describe("office bridge control channels", () => {
     expect(() => invoke(IPC.officeBridgeRestart, { tabId: "t1", takeover: "yes" })).toThrow(
       /takeover must be a boolean/,
     );
+  });
+});
+
+describe("default project channel", () => {
+  it("creates the dated project without renderer input", async () => {
+    await expect(invoke(IPC.projectsCreateDefault)).resolves.toEqual({ ok: true });
   });
 });
 

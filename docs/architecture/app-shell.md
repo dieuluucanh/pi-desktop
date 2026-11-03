@@ -10,7 +10,8 @@ tab strip        session tabs (the topmost app row; the OS frame owns the window
                  controls) + the "+" action
 editor tab strip editor tabs in a second row under the session strip; it
                  renders only while at least one file is open
-sidebar          Projects (+ menu · open folder) · Sessions · Views
+sidebar          Projects (+ menu: default · new · clone · open folder) ·
+                 Sessions · Views
 main area        the active view (welcome | session | settings | extensions |
                  connections | skills | diagnostics)
 status bar       active project path · build version · Pi profile · bundled

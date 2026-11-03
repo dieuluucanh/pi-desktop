@@ -128,6 +128,50 @@ describe("project list", () => {
   });
 });
 
+describe("default project", () => {
+  const DEFAULT_PATH = "C:\\Users\\test\\Documents\\Pi-Desktop\\2026-11-03T10-15-42";
+
+  it("creates the dated project, makes it active and switches to the session view", async () => {
+    const { bridge } = installBridge();
+    const createDefault = vi.spyOn(bridge.projects, "createDefault").mockResolvedValue({
+      ok: true,
+      path: DEFAULT_PATH,
+      projects: [record(DEFAULT_PATH)],
+      activeProject: DEFAULT_PATH,
+    });
+
+    const created = await useAppStore.getState().createDefaultProject();
+
+    expect(created).toBe(true);
+    expect(createDefault).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project).toEqual({
+      path: DEFAULT_PATH,
+      name: "2026-11-03T10-15-42",
+    });
+    expect(useAppStore.getState().projects.map((entry) => entry.path)).toEqual([DEFAULT_PATH]);
+    expect(useAppStore.getState().view).toBe("session");
+    expect(useAppStore.getState().hint).toBeNull();
+  });
+
+  it("keeps the current project and surfaces the error when creation fails", async () => {
+    const { bridge } = installBridge({ projects: [record(PATH)], activeProject: PATH });
+    await useAppStore.getState().loadProjects();
+    vi.spyOn(bridge.projects, "createDefault").mockResolvedValue({
+      ok: false,
+      path: null,
+      error: "the Documents folder is unavailable",
+      projects: [record(PATH)],
+      activeProject: PATH,
+    });
+
+    const created = await useAppStore.getState().createDefaultProject();
+
+    expect(created).toBe(false);
+    expect(useAppStore.getState().project?.path).toBe(PATH);
+    expect(useAppStore.getState().hint).toBe("the Documents folder is unavailable");
+  });
+});
+
 describe("project inspection", () => {
   it("caches a successful inspection and clears a previous error", async () => {
     const { bridge } = installBridge();

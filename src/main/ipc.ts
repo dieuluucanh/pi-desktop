@@ -166,6 +166,8 @@ export interface IpcDependencies {
     get(): Promise<ProjectsSnapshot>;
     mutate(input: ProjectMutation): Promise<ProjectsSnapshot>;
     create(input: CreateProjectInput): Promise<ProjectOpResponse>;
+    /** Creates the dated project in the OS Documents folder (no git init). */
+    createDefault(): Promise<ProjectOpResponse>;
     clone(input: CloneProjectInput): Promise<ProjectOpResponse>;
     action(input: ProjectActionInput): Promise<boolean>;
     setSettings(input: ProjectSettingsToggleInput): Promise<ProjectSettingsToggleResult>;
@@ -642,6 +644,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.projectsCreate, (_event, input: unknown) =>
     deps.projects.create(parseCreateProjectInput(input)),
   );
+  ipcMain.handle(IPC.projectsCreateDefault, () => deps.projects.createDefault());
   ipcMain.handle(IPC.projectsClone, (_event, input: unknown) =>
     deps.projects.clone(parseCloneProjectInput(input)),
   );

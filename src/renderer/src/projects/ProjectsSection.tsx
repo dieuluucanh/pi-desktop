@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  FolderClock,
   FolderOpen,
   FolderPlus,
   GitBranch,
@@ -78,6 +79,20 @@ export function ProjectsSection() {
   // in-workspace entry point (minimal-session-ui step 2).
   const [createOpen, setCreateOpen] = useState(false);
   const [cloneOpen, setCloneOpen] = useState(false);
+  const [defaultBusy, setDefaultBusy] = useState(false);
+
+  // One click, no dialog: create the dated folder in Documents/Pi-Desktop,
+  // make it active and open a session, exactly like the two dialogs do.
+  const createDefault = async (): Promise<void> => {
+    setDefaultBusy(true);
+    try {
+      if (await useAppStore.getState().createDefaultProject()) {
+        await useAppStore.getState().createSessionTab();
+      }
+    } finally {
+      setDefaultBusy(false);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-1 px-1" data-testid="projects-section">
@@ -93,6 +108,10 @@ export function ProjectsSection() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              <DropdownMenuItem disabled={defaultBusy} onSelect={() => void createDefault()}>
+                <FolderClock className="size-3.5" aria-hidden />
+                New default project
+              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setCreateOpen(true)}>
                 <FolderPlus className="size-3.5" aria-hidden />
                 New project…
