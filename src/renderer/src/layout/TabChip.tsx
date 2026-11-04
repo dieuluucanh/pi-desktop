@@ -5,15 +5,21 @@ import { SESSION_STATUS_LABEL, type TabRecord, type TabStatus } from "../../../s
 import { languageBadge, languageIdForPath } from "../../../shared/languages";
 import { useEditorStore } from "../editor/editor-store";
 import { InlineRename } from "../ui/inline-rename";
-import { TabContextMenu, TabMenu } from "./TabMenu";
+import { TabContextMenu } from "./TabMenu";
+import { openTabContextMenuFromKeyboard } from "./tab-menu-keyboard";
 
 /**
  * One tab chip, shared by the session and editor strips.
  *
  * The chip owns the visual identity of every kind — session status dot, web
  * globe, editor language badge + dirty dot — and the lifecycle controls
- * (context menu, close). Drag state and ordering belong to `TabList`, because
- * reordering is a property of the whole strip.
+ * (context menu, close). There is deliberately no per-chip overflow button:
+ * right-click opens the same menu, and `Shift+F10` / the Menu key opens it from
+ * the keyboard, so the title gets the width instead of sharing it with duplicate
+ * chrome.
+ *
+ * Drag state and ordering belong to `TabList`, because reordering is a property
+ * of the whole strip.
  *
  * The dirty flag is subscribed per chip instead of receiving the whole
  * `editorMeta` object, so a cursor move in one file does not re-render the strip.
@@ -75,6 +81,7 @@ export function TabChip({
         onDragEnd={onDragEnd}
         onDragOver={onDragOver}
         onDrop={onDrop}
+        onKeyDown={openTabContextMenuFromKeyboard}
         className={`flex h-7 items-center gap-1 rounded-sm border px-2 text-xs ${
           active ? "border-line-strong bg-surface" : "border-transparent bg-transparent"
         } ${dragging ? "opacity-60" : ""}`}
@@ -97,6 +104,7 @@ export function TabChip({
             type="button"
             role="tab"
             aria-selected={active}
+            aria-keyshortcuts="Shift+F10"
             onClick={onActivate}
             onDoubleClick={() => {
               if (tab.kind !== "editor") onStartRename();
@@ -128,8 +136,6 @@ export function TabChip({
             {pinned ? <Pin className="size-3 shrink-0 text-ink-faint" aria-hidden /> : null}
           </button>
         )}
-
-        <TabMenu tab={tab} onRename={onStartRename} />
 
         {pinned ? null : (
           <button

@@ -1,6 +1,8 @@
 /**
- * The per-tab lifecycle menu, shared by the tab strip and the sidebar session
- * list.
+ * The per-tab lifecycle menu: the right-click context menu for the strips, the
+ * “…” dropdown for the sidebar session list. The chip has no visible overflow
+ * button, so `Shift+F10` / the Menu key opens the same menu through
+ * `openTabContextMenuFromKeyboard`.
  *
  * The same item contract (`tabMenuItems`) and dispatcher feed both the “…”
  * dropdown and the right-click context menu, so the two surfaces cannot drift.

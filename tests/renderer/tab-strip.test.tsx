@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
@@ -15,7 +15,7 @@ import { installBridge } from "./fixtures";
  *
  * The strip is the session's cockpit: every lifecycle action (rename, duplicate,
  * clone, fork, export, reveal, close, close others) is reachable from a tab's
- * overflow menu, and tab reordering is persisted by the session service.
+ * right-click menu, and tab reordering is persisted by the session service.
  *
  * The menu's *contents* are asserted against the pure `tabMenuItems()` list so
  * the contract is pinned without opening a Radix menu in jsdom; one interaction
@@ -141,6 +141,10 @@ describe("SessionTabStrip", () => {
       "title",
       expect.stringContaining("ready"),
     );
+    expect(screen.getByRole("tab", { name: /pi-desktop/ })).toHaveAttribute(
+      "aria-keyshortcuts",
+      "Shift+F10",
+    );
   });
 
   it("keeps editor tabs out of the session strip", () => {
@@ -234,11 +238,95 @@ describe("SessionTabStrip", () => {
     (bridge.sessions as unknown as { closeOthers: unknown }).closeOthers = closeOthers;
 
     render(<SessionTabStrip />);
-    openTabMenu("pi-desktop");
+    fireEvent.contextMenu(screen.getByTestId("tab-tab-1"));
     await waitFor(() => expect(screen.getByText("Close others")).toBeInTheDocument());
     fireEvent.click(screen.getByText("Close others"));
 
     await waitFor(() => expect(closeOthers).toHaveBeenCalledWith("tab-1"));
+  });
+
+  it("renders no per-tab overflow trigger", () => {
+    installBridge();
+    render(<SessionTabStrip />);
+
+    // The right-click menu replaced the ⋯ button (2026-11-03 plan): a chip is
+    // its tab button plus the close ×, never a third control.
+    expect(screen.queryByRole("button", { name: /^Actions for / })).toBeNull();
+    const chip = screen.getByTestId("tab-tab-1");
+    expect(within(chip).getAllByRole("tab")).toHaveLength(1);
+    expect(
+      within(chip)
+        .getAllByRole("button")
+        .map((node) => node.getAttribute("aria-label")),
+    ).toEqual(["Close pi-desktop"]);
+  });
+
+  it("keeps a pinned chip to its tab button only", () => {
+    installBridge();
+    useAppStore.setState({ tabs: [{ ...tab(), pinned: true }], activeTabId: "tab-1" });
+    render(<SessionTabStrip />);
+
+    expect(screen.queryByRole("button", { name: /^Actions for / })).toBeNull();
+    const chip = screen.getByTestId("tab-tab-1");
+    expect(within(chip).getAllByRole("tab")).toHaveLength(1);
+    expect(within(chip).queryAllByRole("button")).toHaveLength(0);
+  });
+
+  it("opens the lifecycle menu from a right-click", async () => {
+    installBridge();
+    render(<SessionTabStrip />);
+
+    fireEvent.contextMenu(screen.getByTestId("tab-tab-1"));
+
+    expect(await screen.findByText("Close all sessions")).toBeInTheDocument();
+  });
+
+  it("opens the same menu from Shift+F10", async () => {
+    installBridge();
+    render(<SessionTabStrip />);
+
+    const tabButton = screen.getByRole("tab", { name: /pi-desktop/ });
+    tabButton.focus();
+    // `false` means the keydown was default-prevented, so Chromium's own
+    // Shift+F10 context menu cannot open a second time.
+    expect(fireEvent.keyDown(tabButton, { key: "F10", shiftKey: true })).toBe(false);
+
+    expect(await screen.findByText("Close others")).toBeInTheDocument();
+  });
+
+  it("treats the Menu key as the same shortcut", async () => {
+    installBridge();
+    render(<SessionTabStrip />);
+
+    fireEvent.keyDown(screen.getByRole("tab", { name: /pi-desktop/ }), { key: "ContextMenu" });
+
+    expect(await screen.findByText("Close others")).toBeInTheDocument();
+  });
+
+  it("returns focus to the tab when Escape closes the keyboard menu", async () => {
+    installBridge();
+    render(<SessionTabStrip />);
+
+    const tabButton = screen.getByRole("tab", { name: /pi-desktop/ });
+    tabButton.focus();
+    fireEvent.keyDown(tabButton, { key: "F10", shiftKey: true });
+    await screen.findByText("Close others");
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByText("Close others")).toBeNull());
+    expect(document.activeElement).toBe(tabButton);
+  });
+
+  it("leaves the inline rename input alone when the menu key is pressed", () => {
+    installBridge();
+    render(<SessionTabStrip />);
+
+    fireEvent.doubleClick(screen.getByRole("tab", { name: /pi-desktop/ }));
+    const input = screen.getByRole("textbox", { name: "Rename pi-desktop" });
+    fireEvent.keyDown(input, { key: "F10", shiftKey: true });
+
+    expect(screen.queryByText("Close others")).toBeNull();
   });
 
   it("renames a tab inline by double-click", async () => {
@@ -258,14 +346,3 @@ describe("SessionTabStrip", () => {
     expect(screen.queryByRole("textbox", { name: /Rename pi-desktop/ })).toBeNull();
   });
 });
-
-/**
- * Open the lifecycle menu through its keyboard path. jsdom's synthetic
- * pointerdown can be swallowed by a previous test's focus/pointer state; the
- * trigger's Enter path is the same Radix menu and is deterministic.
- */
-function openTabMenu(title: string): void {
-  const trigger = screen.getByRole("button", { name: `Actions for ${title}` });
-  trigger.focus();
-  fireEvent.keyDown(trigger, { key: "Enter" });
-}

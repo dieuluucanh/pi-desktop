@@ -19,6 +19,7 @@ const DESKTOP_SHORTCUTS: Array<{ keys: string[]; action: string }> = [
   { keys: ["Ctrl/⌘", "N"], action: "New session" },
   { keys: ["Ctrl/⌘", "W"], action: "Close session tab" },
   { keys: ["Ctrl/⌘", "Tab"], action: "Next / previous tab" },
+  { keys: ["Shift", "F10"], action: "Tab actions (focused tab)" },
   { keys: ["Ctrl/⌘", "S"], action: "Save file (editor)" },
   { keys: ["Shift", "Alt", "F"], action: "Format document (editor)" },
   { keys: ["Ctrl/⌘", "K"], action: "Command palette" },

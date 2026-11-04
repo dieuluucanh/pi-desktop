@@ -12,7 +12,7 @@ others.
   doing nothing.
 - **Close**: the tab’s × or `Ctrl/Cmd+W`. Closing a tab stops its host.
 - **Close others**, **duplicate** (a fresh session in the same project), rename,
-  reorder (drag) and an overflow menu with fork/clone/export live on the tab.
+  reorder (drag) and a right-click menu with fork/clone/export live on the tab.
 
 Editor and web documents have their own tab rows. Sessions, the Office host and
 web tabs stay in the top strip; file tabs appear in a second strip directly
@@ -21,7 +21,9 @@ scroll horizontally with the mouse wheel. The active tab is revealed when the
 selection changes; a manual scroll position is kept across window switches and
 tab status updates.
 
-Right-click a tab or use its **…** menu; both surfaces show the same actions.Editor tabs add Copy Path (absolute), Copy Relative Path, Pin/Unpin, Close,
+Right-click a tab — or press `Shift+F10` / the Menu key while its tab has focus —
+for the lifecycle actions. The chip itself carries only its kind glyph, title and
+×. Editor tabs add Copy Path (absolute), Copy Relative Path, Pin/Unpin, Close,
 Close Others and Close All. Pinned tabs stay at the front, hide their X, survive
 a relaunch and are skipped by Close All/Close Others. Close All/Close Others are
 kind-scoped, so closing all sessions leaves editor, web and Office tabs open.

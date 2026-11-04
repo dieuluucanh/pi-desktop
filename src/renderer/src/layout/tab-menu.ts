@@ -1,9 +1,9 @@
 /**
  * The tab lifecycle menu, as data.
  *
- * Both the “…” dropdown and the right-click context menu render this exact
- * list. Close All/Close Others are kind-scoped: a session menu never reaches the
- * editor strip, and an editor menu never closes a session.
+ * The right-click context menu (both strips) and the sidebar's “…” dropdown
+ * render this exact list. Close All/Close Others are kind-scoped: a session menu
+ * never reaches the editor strip, and an editor menu never closes a session.
  */
 
 import type { TabKind } from "../../../shared/session-ipc";

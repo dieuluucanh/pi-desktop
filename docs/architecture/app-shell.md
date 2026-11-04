@@ -46,6 +46,14 @@ with the native thin bar as the fallback. The sidebar's project groups list only
 the session row's tabs (sessions, the Office host and web tabs); file tabs are
 never repeated there and live only in the editor row.
 
+**The chip is identity, not chrome (2026-11-03 tab-strip plan).** A chip renders
+its kind glyph, the title and the close × — there is no per-tab overflow button in
+either strip, so the `max-w-48` title owns the freed width. The lifecycle menu
+(`layout/TabMenu.tsx`, one `tabMenuItems()` list) opens by right-click or, from
+the keyboard, `Shift+F10` / the Menu key: `openTabContextMenuFromKeyboard`
+synthesizes the `contextmenu` event Radix listens for. The sidebar session rows
+keep their hover-revealed “…” dropdown, which renders the same list.
+
 **Session view grid (2026-11-03 grid plan).** The content area — the `<section>`
 under both strips — can show several tabs at once. The tab strips, the sidebar
 and the panel rail stay global chrome; only the content area splits.

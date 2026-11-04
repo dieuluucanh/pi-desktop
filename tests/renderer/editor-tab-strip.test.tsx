@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { EditorTabStrip } from "../../src/renderer/src/layout/EditorTabStrip";
@@ -91,6 +91,10 @@ describe("EditorTabStrip", () => {
     // redundant "Editors" label and per-tab file glyph were removed.
     expect(screen.queryByText("Editors")).toBeNull();
     expect(screen.getByText("TS")).toBeInTheDocument();
+    // No per-chip ⋯ trigger (2026-11-03 plan): the tab button plus the close ×
+    // is the whole chrome; the lifecycle menu is the right-click menu.
+    expect(screen.queryByRole("button", { name: /^Actions for / })).toBeNull();
+    expect(within(screen.getByTestId("tab-editor-1")).getAllByRole("button")).toHaveLength(1);
   });
 
   it("activates a file through the shared active tab without host RPCs", async () => {
