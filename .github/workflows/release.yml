@@ -230,22 +230,25 @@ jobs:
             echo "--- $deb"
             dpkg-deb -I "$deb" |
               grep -E '^ (Package|Version|Architecture|Maintainer|Depends)'
-            # `dpkg-deb -c` prints thousands of lines. Piping that into `grep -q`
-            # makes `printf` die of SIGPIPE once grep exits on the first match,
-            # and `pipefail` turns that into an exit 1 — a real failure on the
-            # runner, not a missing entry. Write it to a file and grep the file.
+            # `dpkg-deb -c` prints thousands of lines. Piping that into
+            # `grep -q` makes `printf` die of SIGPIPE once grep exits on the
+            # first match, and `pipefail` turns that into an exit 1 — a real
+            # failure on the runner, not a missing entry. Write the listing to
+            # a file and grep the file.
             entries_file="$(mktemp)"
             dpkg-deb -c "$deb" > "$entries_file"
             # The Pi host runtime must ship outside the asar.
-            grep -qE 'resources/runtime/node/linux-[a-z0-9]+/bin/node$' "$entries_file"
+            node_re='resources/runtime/node/linux-[a-z0-9]+/bin/node$'
+            grep -qE "$node_re" "$entries_file"
             # `afterPack` prunes to the package's own arch: a two-arch run must
             # not leak the other architecture's Node into a package.
-            runtimes="$(grep -oE 'resources/runtime/node/linux-[a-z0-9]+/' "$entries_file" |
-              sort -u)"
+            runtime_re='resources/runtime/node/linux-[a-z0-9]+/'
+            runtimes="$(grep -oE "$runtime_re" "$entries_file" | sort -u)"
             test -n "$runtimes"
             test "$(printf '%s\n' "$runtimes" | wc -l)" -eq 1
             echo "bundled runtime: $runtimes"
-            grep -q 'resources/app.asar.unpacked/out/host/index.mjs' "$entries_file"
+            host_bundle='resources/app.asar.unpacked/out/host/index.mjs'
+            grep -q "$host_bundle" "$entries_file"
             grep -q 'usr/share/applications/pi-desktop.desktop' "$entries_file"
             rm -f "$entries_file"
           done
@@ -335,8 +338,8 @@ jobs:
           node scripts/release-assets.mjs \
             --platform mac --dir release --version "$VERSION"
           # electron-builder names the x64 bundle `mac` and the arm64 one
-          # `mac-arm64`; only the *artefacts* carry the `-x64` suffix. Looking for
-          # `release/mac-x64` fails with "no such directory".
+          # `mac-arm64`; only the *artefacts* carry the `-x64` suffix. Looking
+          # for `release/mac-x64` fails with "no such directory".
           for entry in "arm64:mac-arm64" "x64:mac"; do
             arch="${entry%%:*}"
             app="release/${entry#*:}/Pi Desktop.app"
@@ -433,6 +436,10 @@ jobs:
     env:
       TAG: ${{ needs.prepare.outputs.tag }}
       VERSION: ${{ needs.prepare.outputs.version }}
+      # This job deliberately has no `actions/checkout` (it only flips the
+      # release and curls the public feed), so `gh` has no git remote to infer
+      # {owner}/{repo} from and dies with "fatal: not a git repository".
+      GH_REPO: ${{ github.repository }}
     steps:
       # The draft is what makes the feed atomic: `electron-updater` cannot see
       # a draft, so the first moment the feed exists it is already complete.

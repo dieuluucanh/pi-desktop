@@ -149,4 +149,15 @@ describe("release workflow", () => {
     expect(yaml.match(/^\s+contents: write/gm) ?? []).toHaveLength(5);
     expect(existsSync(join(repoRoot, ".github/workflows/release-linux.yml"))).toBe(false);
   });
+
+  it("gives the publish job a repository to talk to without a checkout", () => {
+    // `gh` infers {owner}/{repo} from a git remote. This job deliberately has no
+    // checkout (it only flips the release and curls the feed), so without
+    // GH_REPO it dies with "fatal: not a git repository" — exactly how the first
+    // v0.5.0 run lost its publish step after 3 seconds.
+    const publish = job("publish");
+    // No checkout *step* — the comment mentioning it does not count.
+    expect(publish).not.toMatch(/\n\s+-\s+uses: actions\/checkout/);
+    expect(publish).toContain("GH_REPO: ${{ github.repository }}");
+  });
 });
