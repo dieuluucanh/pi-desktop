@@ -95,14 +95,36 @@ export function buildChannelFromEnv(env = {}) {
 }
 
 /** The JSON document written into `resources/build-info.json`. */
-export function buildInfoDocument({ version, channel, commit, builtAt }) {
+export function buildInfoDocument({ version, channel, commit, builtAt, platform, macSigning }) {
   const validChannel = channel === "release" || channel === "local" ? channel : "unknown";
   return {
     channel: validChannel,
     version: typeof version === "string" && version.length > 0 ? version : null,
     commit: typeof commit === "string" && commit.length > 0 ? commit : null,
     builtAt: typeof builtAt === "string" && builtAt.length > 0 ? builtAt : null,
+    macSigning: macSigningFor(platform, macSigning),
   };
+}
+
+/**
+ * Reads how the package was signed from the build environment.
+ *
+ * The hook runs before electron-builder signs, so it cannot inspect the result;
+ * the workflow states the identity it passed instead. `PI_MAC_SIGNING` is only
+ * meaningful for a macOS target (`adhoc` in CI today, `developer-id` once an
+ * Apple identity exists). The app uses it to decide whether Squirrel.Mac could
+ * ever accept an in-app update, so "not set" must mean `none`, never `adhoc`.
+ */
+export function macSigningFromEnv(env = {}) {
+  const explicit = env.PI_MAC_SIGNING;
+  if (explicit === "developer-id" || explicit === "adhoc") return explicit;
+  return "none";
+}
+
+/** Signing is only recorded for macOS; every other target reports `none`. */
+function macSigningFor(platform, signing) {
+  if (platform !== "darwin") return "none";
+  return signing === "developer-id" || signing === "adhoc" ? signing : "none";
 }
 
 /** Writes the provenance file; returns its path so the hook can log it. */
@@ -179,16 +201,22 @@ export default async function afterPack(context) {
   // degrades the updater to `unknown` (which still suppresses the old banner).
   const channel = buildChannelFromEnv(process.env);
   const commit = gitCommit(packager.projectDir);
+  const macSigning = macSigningFromEnv(process.env);
   try {
     const targetFile = writeBuildInfo(resourcesDir, {
       version: packager.appInfo?.version,
       channel,
       commit,
       builtAt: new Date().toISOString(),
+      platform: context.electronPlatformName,
+      macSigning,
     });
     process.stdout.write(
       `afterPack: build-info ${channel} ${commit ?? "unknown"} -> ${targetFile}\n`,
     );
+    if (context.electronPlatformName === "darwin") {
+      process.stdout.write(`afterPack: macOS signing recorded as ${macSigning}\n`);
+    }
   } catch (error) {
     process.stderr.write(
       `afterPack: could not write build info: ${error instanceof Error ? error.message : error}\n`,

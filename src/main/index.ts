@@ -99,6 +99,7 @@ import { createUpdateService, type UpdateService } from "./updater";
 import { readBuildInfo } from "./build-info";
 import {
   autoCheckAllowed,
+  inAppUpdatesAllowed,
   initialUpdateState,
   PI_DESKTOP_RELEASES_URL,
   resolveUpdateSupport,
@@ -1284,13 +1285,20 @@ if (!app.requestSingleInstanceLock()) {
     // Electron adapter answers whether `electron-updater` loaded, and the build
     // provenance decides whether this package is local or a released CI build.
     const updateOffline = isOfflineEnv(process.env.PI_OFFLINE);
+    // One predicate for the port and the support state: a macOS package that is
+    // not signed with a Developer ID can never satisfy Squirrel.Mac's update
+    // check, so `electron-updater` is not even constructed there.
+    const updateGate = { platform: process.platform, macSigning: buildInfo.macSigning };
     const updatePort =
-      app.isPackaged && !safeMode && !updateOffline ? await createElectronUpdatePort() : null;
+      app.isPackaged && !safeMode && !updateOffline && inAppUpdatesAllowed(updateGate)
+        ? await createElectronUpdatePort()
+        : null;
     const updateSupport = resolveUpdateSupport({
       isPackaged: app.isPackaged,
       safeMode,
       offline: updateOffline,
       portAvailable: updatePort !== null,
+      ...updateGate,
     });
     const bootstrapPrefs = (await appState.read()).prefs;
     let autoCheckDone = false;

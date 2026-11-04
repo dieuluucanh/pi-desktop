@@ -82,26 +82,32 @@ tests/               vitest (node + renderer) and the Playwright E2E suite
 ## Releases
 
 Releases are cut from `main`. `npm run package:win|mac|linux` fetches the
-runtime, builds, verifies it and produces the installers under `release/`.
-Windows NSIS + portable is the primary artefact; macOS and Linux are beta.
-`electron-builder.yml` publishes to GitHub Releases, which is also the
-`electron-updater` feed. Artefacts are unsigned in v0.4.0; signing is backlog.
-The `afterPack` hook prunes `resources/runtime` to the platform/arch being
-packaged, so an installer never carries another platform's Node runtime.
+runtime, builds, regenerates the host shims, runs `runtime:verify` and produces
+the installers under `release/`. Windows NSIS + portable is the primary
+artefact; macOS and Linux are beta. `electron-builder.yml` writes the artefacts,
+and the tag-driven `release.yml` publishes them to GitHub Releases, which is also
+the `electron-updater` feed. Artefacts are unsigned in v0.5.0; signing is
+backlog. Mac builds are ad-hoc signed and report manual updates (Squirrel.Mac
+rejects an ad-hoc update). The `afterPack` hook prunes `resources/runtime` to
+the platform/arch being packaged, so an installer never carries another
+platform's Node runtime.
 
 Each platform's `package:*` script fetches every runtime that platform ships
 (`package:linux` gets x64 **and** arm64, `package:mac` gets both macOS arches),
 because a foreign runtime is verified statically — it is never executed — so a
-Linux installer can be produced from a Windows machine and vice versa. Only the
-host platform's runtime is additionally run through `--version`.
+Linux installer can be produced from a Windows machine and vice versa. `--all`
+writes no shims (a shim names one platform's node binary), so `package:mac` and
+`package:linux` run `runtime:shims` before `runtime:verify`; only the host
+platform's runtime is additionally run through `--version`. Both arches of each
+target come from `electron-builder.yml`; the scripts pass no arch flags.
 
-The Linux beta artefacts are also built in CI by the manually dispatched
-[`release-linux.yml`](.github/workflows/release-linux.yml) workflow, which is
-the preferred route: it runs on a real Ubuntu host, asserts the finished `.deb`
-and AppImage actually contain the bundled runtime and the host bundle, and can
-attach the files to a **draft** GitHub Release. Nothing publishes a live update
-feed for Linux, because the clean-install acceptance matrix has not been run
-there yet.
+All three platforms are built and published by
+[`release.yml`](.github/workflows/release.yml) on a `v*` tag: each job runs on
+its own OS, asserts the finished artefacts, and uploads the installers plus their
+`latest*.yml` manifests to a **draft** Release that is published only once all
+three succeed. A `workflow_dispatch` run with `publish: false` is the dry run.
+The mechanics — and how to cut the next release — are in
+[the release pipeline](docs/architecture/release-pipeline.md).
 
 The checkpoint extension is a separately versioned npm package:
 `@dieulc/checkpoints` in `packages/checkpoints`. Its version and tag are

@@ -42,6 +42,21 @@ resource. The window shows a safe-mode banner.
   Electron's tray; unavailable-toast grouping also depends on the desktop
   environment. Neither affects the app itself.
 
+### macOS: the app will not open
+
+- **“Apple could not verify…” on first launch.** The build is not notarized.
+  Since macOS 15 (Sequoia), Control-clicking and choosing Open no longer
+  overrides this: open **System Settings → Privacy & Security**, scroll to the
+  bottom, and choose **Open Anyway** next to Pi Desktop (once per app).
+- **“Pi Desktop is damaged and should be moved to the Trash.”** This is a
+  quarantine flag on a valid bundle, usually after unzipping the `.zip` instead
+  of mounting the `.dmg`. Reinstall from the `.dmg`, or clear the flag:
+  `xattr -dr com.apple.quarantine "/Applications/Pi Desktop.app"`.
+- **There is no “Restart & install” for updates.** Deliberate: Squirrel.Mac
+  rejects an update whose code-signing identity differs from the running app, and
+  these builds are ad-hoc signed. **Settings → About & updates** says **Manual
+  updates** and links to the Releases page; download the new `.dmg`.
+
 ## A session looks idle/asleep after a long break
 
 - **`ready` is the normal idle state.** The host and session are open and no turn
@@ -230,15 +245,18 @@ Diagnostics → Save         redacted support bundle (no credentials)
 The bundle runs `redactSecrets` over the whole document, so it is safe to attach
 to an issue.
 
-## Known limitations in v0.4.0
+## Known limitations in v0.5.0
 
 Every known limitation is recorded with the release notes:
-[`docs/releases/v0.4.0.md`](../releases/v0.4.0.md). The short version:
+[`docs/releases/v0.5.0.md`](../releases/v0.5.0.md). The short version:
 
 - **Unsigned builds** — SmartScreen/Gatekeeper warn on first launch; signing is
   deferred ([backlog](../product/backlog.md)).
-- **macOS and Linux are beta** — built from the same config, but no real
-  Mac/Linux install has been exercised. Windows is the verified target.
+- **macOS and Linux are beta** — built and structurally verified in CI, but no
+  real macOS launch and no fresh Linux desktop install have been exercised by a
+  person for this release. Windows is the verified target.
+- **macOS updates are manual** — an ad-hoc signature cannot satisfy Squirrel.Mac,
+  so the app links to the release instead of offering an in-place install.
 - **The updater** is verified against its policy and a fake port, not a live
   GitHub Release feed.
 - **Verified structurally, not on a live machine:** provider OAuth flows,
@@ -256,5 +274,5 @@ useful issue.
 ## Related
 
 - [FAQ](faq.md) · [Getting started](getting-started.md)
-- [Release notes v0.4.0](../releases/v0.4.0.md) · [Backlog](../product/backlog.md)
+- [Release notes v0.5.0](../releases/v0.5.0.md) · [Backlog](../product/backlog.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)

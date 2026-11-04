@@ -13,6 +13,7 @@ describe("readBuildInfo", () => {
       version: null,
       commit: null,
       builtAt: null,
+      macSigning: "none",
     });
     expect(readTextFile).not.toHaveBeenCalled();
   });
@@ -24,6 +25,7 @@ describe("readBuildInfo", () => {
         version: "0.3.0",
         commit: "abc123",
         builtAt: "2026-11-01T00:00:00.000Z",
+        macSigning: "adhoc",
       }),
     );
     expect(readBuildInfo({ isPackaged: true, resourcesDir: RESOURCES, readTextFile })).toEqual({
@@ -31,12 +33,19 @@ describe("readBuildInfo", () => {
       version: "0.3.0",
       commit: "abc123",
       builtAt: "2026-11-01T00:00:00.000Z",
+      macSigning: "adhoc",
     });
     expect(readTextFile).toHaveBeenCalledWith(join(RESOURCES, BUILD_INFO_FILE));
   });
 
   it("degrades to unknown when the file is missing, unreadable or malformed", () => {
-    const expected = { channel: "unknown", version: null, commit: null, builtAt: null };
+    const expected = {
+      channel: "unknown",
+      version: null,
+      commit: null,
+      builtAt: null,
+      macSigning: "none",
+    };
     expect(
       readBuildInfo({ isPackaged: true, resourcesDir: RESOURCES, readTextFile: () => null }),
     ).toEqual(expected);

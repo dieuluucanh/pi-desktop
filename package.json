@@ -1,7 +1,7 @@
 {
   "name": "pi-desktop",
   "desktopName": "pi-desktop.desktop",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Pi Desktop — a standalone desktop app for the Pi coding agent (with zero-touch Pi for Office)",
   "type": "module",
@@ -50,8 +50,9 @@
     "icons:gen": "node scripts/gen-icons.mjs",
     "doctor": "vitest run tests/runtime/doctor.live.test.ts --disable-console-intercept",
     "package:win": "npm run runtime:fetch && npm run build && npm run runtime:verify && electron-builder --win --publish never",
-    "package:mac": "npm run runtime:fetch -- --all && npm run build && electron-builder --mac --publish never",
-    "package:linux": "npm run runtime:fetch -- --all && npm run build && electron-builder --linux --publish never",
+    "package:mac": "npm run runtime:fetch -- --all && npm run build && npm run runtime:shims && npm run runtime:verify && electron-builder --mac --publish never",
+    "package:linux": "npm run runtime:fetch -- --all && npm run build && npm run runtime:shims && npm run runtime:verify && electron-builder --linux --publish never",
+    "release:assets": "node scripts/release-assets.mjs",
     "office:doctor": "vitest run tests/office/detect.live.test.ts --disable-console-intercept",
     "office:manifest:check": "node scripts/sync-office-manifest.mjs --check",
     "office:manifest:sync": "node scripts/sync-office-manifest.mjs --source ../pi-for-office/packages/add-in/manifest.prod.xml"

@@ -91,7 +91,12 @@ tests/           vitest: node project (tests/**) + jsdom renderer project (tests
   `npm run verify:extension` checks the package/tarball contract.
 - `npm run release:extension:status` compares the package with npm;
   `npm run release:extension -- --bump patch --branch dev --yes` publishes it.
-- `npm run package:win|mac|linux` produces installers (unsigned; signing is backlog B1/B2).
+- `npm run package:win|mac|linux` produces installers locally (unsigned; signing is backlog
+  B1/B2). Releases themselves are cut by pushing a `v*` tag:
+  `.github/workflows/release.yml` builds all three platforms, uploads installers and
+  `latest*.yml` manifests to a draft Release, and publishes it only when all three pass.
+  See `docs/architecture/release-pipeline.md`; `npm run release:assets -- --platform <p>
+--dir release --version <v>` checks a local `release/` before anything is uploaded.
 - One plan step per change set; commit as `feat(<area>): <what> (plan step N)`.
 - Gates before every commit: `npm run format:check && npm run typecheck && npm run lint && npm test && npm run build`.
   Assert exit codes without piping (`cmd > /tmp/x.log 2>&1; echo $?`).

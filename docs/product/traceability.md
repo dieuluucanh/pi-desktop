@@ -7,7 +7,7 @@ row names a step range and points at a file that exists.
 
 A row is either **automated** (the referenced test or E2E spec covers it) or a
 **documented limitation** (a user-visible caveat in
-[`releases/v0.4.0.md`](../releases/v0.4.0.md) or
+[`releases/v0.5.0.md`](../releases/v0.5.0.md) or
 [`guide/troubleshooting.md`](../guide/troubleshooting.md)). The distinction is
 recorded with the release, not hidden here.
 
@@ -30,6 +30,7 @@ recorded with the release, not hidden here.
 | Source control: staging, hunk staging, commit/amend, discard, stash, sync     | 1, 2, 3, 4, 5, 6, 9, 11, 12, 13, 14  | `tests/git/service.test.ts`, `tests/renderer/rail-changes.test.tsx`, `tests/renderer/rail-commit.test.tsx`             |
 | Folder checkpoints for any folder, with restore, undo and retention           | 17, 18, 19, 20, 21, 22, 27           | `tests/checkpoints/store.test.ts`, `tests/main/checkpoint-service.test.ts`, `tests/renderer/rail-checkpoints.test.tsx` |
 | `/checkpoint` in terminal Pi from the same checkpoint store                   | 23, 24, 25, 26                       | `tests/checkpoints/extension.test.ts`, `tests/packaging/extension-artifact.test.ts`                                    |
+| One published release for Windows, Linux and macOS, with a live update feed   | 7, 8, 10                             | `.github/workflows/release.yml`, `scripts/release-assets.mjs`, `docs/architecture/release-pipeline.md`                 |
 
 ## How to read a "documented limitation"
 

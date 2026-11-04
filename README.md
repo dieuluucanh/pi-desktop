@@ -7,11 +7,11 @@ installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
 `~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
-> **Status:** v0.4.0 development build (the core-first plan's steps 1–29 plus
-> the interface, source-control, session-first chrome and explorer/editor work).
-> The Windows installer is the primary artefact; macOS and Linux are beta, and
-> builds are unsigned. Known limitations and the deferred backlog are recorded in
-> [docs/releases/v0.4.0.md](docs/releases/v0.4.0.md) and
+> **Status:** v0.5.0 — the first public release. Windows, Linux and macOS
+> installers are built and published from CI on a version tag. The Windows
+> installer is the primary artefact; macOS and Linux are beta, and builds are
+> unsigned. Known limitations and the deferred backlog are recorded in
+> [docs/releases/v0.5.0.md](docs/releases/v0.5.0.md) and
 > [docs/product/backlog.md](docs/product/backlog.md).
 >
 > **Pi for Office is an optional integration.** It installs from Extensions →
@@ -63,8 +63,9 @@ The feature-by-feature comparison with terminal Pi (including the explicit
 Download the installer for your platform from GitHub Releases. The Windows NSIS
 installer and portable `.exe` are the primary artefacts; macOS `.dmg`/`.zip`
 (arm64 + x64) and Linux AppImage/`.deb` (x64 + arm64) are beta. Builds are
-unsigned in v0.4.0, so SmartScreen/Gatekeeper will warn on first launch
-(instructions in the guide, including the Linux FUSE and apt notes).
+unsigned, so SmartScreen/Gatekeeper will warn on first launch (instructions in
+the guide, including the macOS approval steps and the Linux FUSE and apt notes).
+macOS updates are download-only for now — see the release notes.
 
 Installed release builds check GitHub Releases in the background. When a newer
 version exists, the status bar shows a small **Update vX** chip; Download and
@@ -91,8 +92,9 @@ npm run test:e2e           # Playwright-Electron (needs npm run build)
 Useful probes: `npm run doctor` (runtime, profile, extensions, bridge, git,
 Office) and `npm run office:doctor` (Office detection, sideload, bridge health).
 
-`npm run package:win|mac|linux` fetches the runtime, builds, verifies it and
-produces installers under `release/`.
+`npm run package:win|mac|linux` fetches the runtime, builds, regenerates the host
+shims, runs `runtime:verify` and produces installers under `release/`. Both
+arches of each target come from `electron-builder.yml`, not from CLI flags.
 
 ## Layout
 
