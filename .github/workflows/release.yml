@@ -230,21 +230,24 @@ jobs:
             echo "--- $deb"
             dpkg-deb -I "$deb" |
               grep -E '^ (Package|Version|Architecture|Maintainer|Depends)'
-            entries="$(dpkg-deb -c "$deb")"
+            # `dpkg-deb -c` prints thousands of lines. Piping that into `grep -q`
+            # makes `printf` die of SIGPIPE once grep exits on the first match,
+            # and `pipefail` turns that into an exit 1 — a real failure on the
+            # runner, not a missing entry. Write it to a file and grep the file.
+            entries_file="$(mktemp)"
+            dpkg-deb -c "$deb" > "$entries_file"
             # The Pi host runtime must ship outside the asar.
-            printf '%s\n' "$entries" |
-              grep -qE 'resources/runtime/node/linux-[a-z0-9]+/bin/node$'
+            grep -qE 'resources/runtime/node/linux-[a-z0-9]+/bin/node$' "$entries_file"
             # `afterPack` prunes to the package's own arch: a two-arch run must
             # not leak the other architecture's Node into a package.
-            runtimes="$(printf '%s\n' "$entries" |
-              grep -oE 'resources/runtime/node/linux-[a-z0-9]+/' | sort -u)"
+            runtimes="$(grep -oE 'resources/runtime/node/linux-[a-z0-9]+/' "$entries_file" |
+              sort -u)"
             test -n "$runtimes"
             test "$(printf '%s\n' "$runtimes" | wc -l)" -eq 1
             echo "bundled runtime: $runtimes"
-            printf '%s\n' "$entries" |
-              grep -q 'resources/app.asar.unpacked/out/host/index.mjs'
-            printf '%s\n' "$entries" |
-              grep -q 'usr/share/applications/pi-desktop.desktop'
+            grep -q 'resources/app.asar.unpacked/out/host/index.mjs' "$entries_file"
+            grep -q 'usr/share/applications/pi-desktop.desktop' "$entries_file"
+            rm -f "$entries_file"
           done
           for appimage in release/*.AppImage; do
             echo "--- $appimage"
@@ -331,8 +334,12 @@ jobs:
           ls -l release
           node scripts/release-assets.mjs \
             --platform mac --dir release --version "$VERSION"
-          for arch in arm64 x64; do
-            app="release/mac-$arch/Pi Desktop.app"
+          # electron-builder names the x64 bundle `mac` and the arm64 one
+          # `mac-arm64`; only the *artefacts* carry the `-x64` suffix. Looking for
+          # `release/mac-x64` fails with "no such directory".
+          for entry in "arm64:mac-arm64" "x64:mac"; do
+            arch="${entry%%:*}"
+            app="release/${entry#*:}/Pi Desktop.app"
             echo "--- $app ($arch)"
             test -d "$app"
             # Ad-hoc signing is still a real signature: this must pass, and it
@@ -342,8 +349,8 @@ jobs:
             # mean an invalid signature (what an unsigned arm64 app shows).
             spctl_out="$(spctl -vv --assess "$app" 2>&1 || true)"
             printf '%s\n' "$spctl_out"
-            printf '%s' "$spctl_out" | grep -q "rejected"
-            if printf '%s' "$spctl_out" | grep -qi "damaged"; then
+            grep -q "rejected" <<<"$spctl_out"
+            if grep -qi "damaged" <<<"$spctl_out"; then
               echo "::error::$app reports 'damaged'; signature is invalid"
               exit 1
             fi
