@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -89,16 +90,22 @@ describe("resolveAppPaths", () => {
 
 describe("resolveAppRoots", () => {
   it("resolves the repository root in development", () => {
+    // The fixture must be *absolute on the running platform*: `resolveAppRoots`
+    // walks up with `path.resolve(mainDir, "..", "..")`, and `C:\repo` is
+    // absolute only on Windows. On Linux/macOS it is a relative path, so
+    // `resolve` prepends the working directory and the assertion fails — which
+    // is exactly what happened on the CI runners.
+    const repo = join(tmpdir(), "pi-repo-fixture");
     const roots = resolveAppRoots({
       isPackaged: false,
-      resourcesPath: join("D:", "unused"),
-      mainDir: join("C:", "repo", "out", "main"),
+      resourcesPath: join(tmpdir(), "pi-unused-resources"),
+      mainDir: join(repo, "out", "main"),
     });
 
-    expect(roots.appRoot).toBe(join("C:", "repo"));
-    expect(roots.resourcesDir).toBe(join("C:", "repo", "resources"));
-    expect(roots.runtimeDir).toBe(join("C:", "repo", "resources", "runtime"));
-    expect(roots.manifestPath).toBe(join("C:", "repo", "resources", "office", "manifest.prod.xml"));
+    expect(roots.appRoot).toBe(repo);
+    expect(roots.resourcesDir).toBe(join(repo, "resources"));
+    expect(roots.runtimeDir).toBe(join(repo, "resources", "runtime"));
+    expect(roots.manifestPath).toBe(join(repo, "resources", "office", "manifest.prod.xml"));
   });
 
   it("resolves the resources directory when packaged", () => {
