@@ -38,11 +38,18 @@ export type BuildChannel = "local" | "release";
 /** Decides the channel from `PI_BUILD_CHANNEL` / `GITHUB_ACTIONS`. */
 export function buildChannelFromEnv(env?: Record<string, string | undefined>): BuildChannel;
 
+/** How a macOS package was signed; `none` on every other platform. */
+export type MacSigning = "developer-id" | "adhoc" | "none";
+
+/** Reads `PI_MAC_SIGNING`; anything unset or unrecognised is `none`. */
+export function macSigningFromEnv(env?: Record<string, string | undefined>): MacSigning;
+
 export interface BuildInfoDocument {
   channel: BuildChannel | "unknown";
   version: string | null;
   commit: string | null;
   builtAt: string | null;
+  macSigning: MacSigning;
 }
 
 /** The JSON document written into `resources/build-info.json`. */
@@ -51,6 +58,9 @@ export function buildInfoDocument(input: {
   channel?: unknown;
   commit?: unknown;
   builtAt?: unknown;
+  /** `context.electronPlatformName`; signing is only recorded for `darwin`. */
+  platform?: string;
+  macSigning?: unknown;
 }): BuildInfoDocument;
 
 /** Writes the provenance file and returns its path. */

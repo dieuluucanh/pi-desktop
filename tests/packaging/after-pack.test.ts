@@ -7,6 +7,7 @@ import {
   BUILD_INFO_FILE,
   buildChannelFromEnv,
   buildInfoDocument,
+  macSigningFromEnv,
   pruneForeignRuntimes,
   writeBuildInfo,
 } from "../../scripts/electron-builder-after-pack.mjs";
@@ -90,12 +91,15 @@ describe("afterPack build provenance", () => {
         channel: "release",
         commit: "abc123",
         builtAt: "2026-11-01T00:00:00.000Z",
+        platform: "darwin",
+        macSigning: "adhoc",
       }),
     ).toEqual({
       channel: "release",
       version: "0.3.0",
       commit: "abc123",
       builtAt: "2026-11-01T00:00:00.000Z",
+      macSigning: "adhoc",
     });
     expect(buildInfoDocument({ channel: "nightly" }).channel).toBe("unknown");
 
@@ -111,6 +115,39 @@ describe("afterPack build provenance", () => {
       version: "0.3.0",
       commit: null,
       builtAt: "2026-11-01T00:00:00.000Z",
+      macSigning: "none",
     });
+  });
+
+  it("records a macOS signing kind only for a darwin target", () => {
+    const base = { version: "0.5.0", channel: "release", commit: null, builtAt: null };
+    // The app turns `macSigning` into the update gate, so a Windows/Linux
+    // package must never look like a signed mac build.
+    expect(buildInfoDocument({ ...base, platform: "win32", macSigning: "adhoc" })).toEqual({
+      ...base,
+      macSigning: "none",
+    });
+    expect(buildInfoDocument({ ...base, platform: "darwin", macSigning: "developer-id" })).toEqual({
+      ...base,
+      macSigning: "developer-id",
+    });
+    expect(buildInfoDocument({ ...base, platform: "darwin", macSigning: "whatever" })).toEqual({
+      ...base,
+      macSigning: "none",
+    });
+    expect(buildInfoDocument({ ...base, platform: "darwin" })).toEqual({
+      ...base,
+      macSigning: "none",
+    });
+  });
+
+  it("reads the signing kind from PI_MAC_SIGNING and defaults to none", () => {
+    // The hook runs before electron-builder signs, so the workflow declares the
+    // identity it passed. Unset must mean "unsigned", never "ad-hoc".
+    expect(macSigningFromEnv({ PI_MAC_SIGNING: "adhoc" })).toBe("adhoc");
+    expect(macSigningFromEnv({ PI_MAC_SIGNING: "developer-id" })).toBe("developer-id");
+    expect(macSigningFromEnv({})).toBe("none");
+    expect(macSigningFromEnv({ PI_MAC_SIGNING: "none" })).toBe("none");
+    expect(macSigningFromEnv({ PI_MAC_SIGNING: "self-signed" })).toBe("none");
   });
 });

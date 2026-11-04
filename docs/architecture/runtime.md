@@ -108,6 +108,12 @@ platforms first, because those targets build more than the packager's own arch
 not depend on the packager's host arch. Foreign runtimes are verified statically
 (see above), so this works from any host.
 
+`--all` writes no shims on purpose — a shim names one `<platform>-<arch>` node
+binary, so it is per platform — and `resources/runtime/bin` is gitignored. All
+three package scripts therefore run `npm run runtime:shims` before
+`runtime:verify`, which is what makes a fresh clone able to verify the runtime it
+is about to ship.
+
 `electron-builder.yml` copies the directory into the app as
 `extraResources/runtime` (the app reads it by path, outside the asar) and lists
 it in `asarUnpack`. `resolveAppRoots`/`resolveAppRuntime` therefore see the same

@@ -228,8 +228,14 @@ describe("electron-builder config (plan step 26)", () => {
       // electron-builder runs, so an installer can never ship without one.
       expect(packageJson.scripts[script], script).toContain("runtime:fetch");
       expect(packageJson.scripts[script], script).toContain("electron-builder");
+      expect(packageJson.scripts[script], script).toContain("runtime:verify");
     }
-    expect(packageJson.scripts["package:win"]).toContain("runtime:verify");
+    // `runtime:fetch --all` deliberately writes no shims (they are per
+    // platform), and `resources/runtime/bin` is gitignored, so a fresh clone
+    // needs the shim step before `runtime:verify` can find them.
+    for (const script of ["package:mac", "package:linux"]) {
+      expect(packageJson.scripts[script], script).toContain("runtime:shims");
+    }
   });
 
   it("has pinned runtime artifacts for every platform the builder targets", () => {

@@ -9,9 +9,10 @@
 
 ## Releases
 
-- [`releases/v0.4.0.md`](releases/v0.4.0.md) — v0.4.0 release notes (file explorer,
-  editor tabs, tab actions, the memory-derived host budget and default projects), install
-  table, the known-limitations list and the verification status.
+- [`releases/v0.5.0.md`](releases/v0.5.0.md) — v0.5.0 release notes (first public,
+  cross-platform, auto-updating release: the tag-driven pipeline, the macOS artefacts,
+  the live update feed and the macOS manual-update rule), install table, the
+  known-limitations list and the verification status.
 - [`releases/v0.3.0.md`](releases/v0.3.0.md) — v0.3.0 release notes (session-first
   chrome, the interface pass, source-control feedback and one-line history), install table,
   the known-limitations list and the verification status.
@@ -64,6 +65,9 @@
   release order.
 - [`architecture/runtime.md`](architecture/runtime.md) — the bundled Node/npm runtime, the
   `pi`/`npm` PATH shims, resolution order and packaging.
+- [`architecture/release-pipeline.md`](architecture/release-pipeline.md) — the tag-driven release
+  workflow, the draft→publish contract, the per-platform asset and manifest matrix, and the
+  macOS ad-hoc signing / manual-update rule.
 - [`architecture/versions.md`](architecture/versions.md) — pinned toolchain and runtime versions,
   and why.
 

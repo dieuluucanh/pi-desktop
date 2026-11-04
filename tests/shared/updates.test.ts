@@ -5,6 +5,7 @@ import {
   compareVersions,
   describeUpdate,
   describeUpdateProblem,
+  inAppUpdatesAllowed,
   initialUpdateState,
   isVersionNewer,
   reduceUpdateState,
@@ -314,47 +315,84 @@ describe("update problem descriptions", () => {
 });
 
 describe("update support policy", () => {
-  it("orders the support gate dev → safe mode → offline → port", () => {
+  it("orders the support gate dev → safe mode → offline → unsigned mac → port", () => {
+    const base = {
+      isPackaged: true,
+      safeMode: false,
+      offline: false,
+      portAvailable: true,
+      platform: "win32",
+      macSigning: "none",
+    } as const;
+
     expect(
-      resolveUpdateSupport({
-        isPackaged: false,
-        safeMode: true,
-        offline: true,
-        portAvailable: true,
-      }),
+      resolveUpdateSupport({ ...base, isPackaged: false, safeMode: true, offline: true }),
     ).toEqual({ supported: false, reason: "development" });
-    expect(
-      resolveUpdateSupport({
-        isPackaged: true,
-        safeMode: true,
-        offline: true,
-        portAvailable: true,
-      }),
-    ).toEqual({ supported: false, reason: "safe-mode" });
-    expect(
-      resolveUpdateSupport({
-        isPackaged: true,
-        safeMode: false,
-        offline: true,
-        portAvailable: true,
-      }),
-    ).toEqual({ supported: false, reason: "offline" });
-    expect(
-      resolveUpdateSupport({
-        isPackaged: true,
-        safeMode: false,
-        offline: false,
-        portAvailable: false,
-      }),
-    ).toEqual({ supported: false, reason: "updater-unavailable" });
-    expect(
-      resolveUpdateSupport({
-        isPackaged: true,
-        safeMode: false,
-        offline: false,
-        portAvailable: true,
-      }),
-    ).toEqual({ supported: true, reason: null });
+    expect(resolveUpdateSupport({ ...base, safeMode: true, offline: true })).toEqual({
+      supported: false,
+      reason: "safe-mode",
+    });
+    expect(resolveUpdateSupport({ ...base, offline: true })).toEqual({
+      supported: false,
+      reason: "offline",
+    });
+    expect(resolveUpdateSupport({ ...base, portAvailable: false })).toEqual({
+      supported: false,
+      reason: "updater-unavailable",
+    });
+    expect(resolveUpdateSupport(base)).toEqual({ supported: true, reason: null });
+  });
+
+  it("refuses in-app updates on a macOS build without a Developer ID signature", () => {
+    const base = {
+      isPackaged: true,
+      safeMode: false,
+      offline: false,
+      portAvailable: true,
+      platform: "darwin",
+    } as const;
+
+    // Squirrel.Mac validates an update against the running app's designated
+    // requirement, and an ad-hoc requirement is cdhash-based: every build would
+    // download an update it can never install. So neither ad-hoc nor unsigned
+    // ever offers one.
+    for (const macSigning of ["adhoc", "none"] as const) {
+      expect(resolveUpdateSupport({ ...base, macSigning })).toEqual({
+        supported: false,
+        reason: "unsigned-mac",
+      });
+    }
+    expect(resolveUpdateSupport({ ...base, macSigning: "developer-id" })).toEqual({
+      supported: true,
+      reason: null,
+    });
+    // The signature gate sits before the port check, so a mac build never
+    // reports the opaque "updater-unavailable" for a policy decision.
+    expect(resolveUpdateSupport({ ...base, macSigning: "adhoc", portAvailable: false })).toEqual({
+      supported: false,
+      reason: "unsigned-mac",
+    });
+    // ...but offline still wins, because it explains more.
+    expect(resolveUpdateSupport({ ...base, offline: true, macSigning: "adhoc" })).toEqual({
+      supported: false,
+      reason: "offline",
+    });
+    // The same predicate is what main uses to skip constructing the port.
+    expect(inAppUpdatesAllowed({ platform: "darwin", macSigning: "adhoc" })).toBe(false);
+    expect(inAppUpdatesAllowed({ platform: "darwin", macSigning: "developer-id" })).toBe(true);
+    expect(inAppUpdatesAllowed({ platform: "linux", macSigning: "none" })).toBe(true);
+    expect(inAppUpdatesAllowed({ platform: "win32", macSigning: "none" })).toBe(true);
+  });
+
+  it("explains the macOS policy instead of calling it a failure", () => {
+    const state = initialUpdateState(false, {
+      currentVersion: "0.5.0",
+      unsupportedReason: "unsigned-mac",
+    });
+    expect(describeUpdate(state)).toBe(
+      "macOS updates are installed by downloading the new release from GitHub.",
+    );
+    expect(describeUpdate(state)).not.toMatch(/unavailable|failure|failed/i);
   });
 
   it("never auto-checks a local/dev build or an unsupported launch", () => {
@@ -363,6 +401,8 @@ describe("update support policy", () => {
       safeMode: false,
       offline: false,
       portAvailable: true,
+      platform: "win32",
+      macSigning: "none",
     });
     expect(autoCheckAllowed({ support: supported, autoCheck: true, buildChannel: "release" })).toBe(
       true,

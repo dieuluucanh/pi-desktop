@@ -19,12 +19,14 @@ describe("build info", () => {
       version: null,
       commit: null,
       builtAt: null,
+      macSigning: "none",
     });
     expect(unknownBuildInfo()).toEqual({
       channel: "unknown",
       version: null,
       commit: null,
       builtAt: null,
+      macSigning: "none",
     });
   });
 
@@ -35,6 +37,7 @@ describe("build info", () => {
         version: " 0.3.0 ",
         commit: " 1a2b3c4d5e6f ",
         builtAt: "2026-11-01T12:00:00.000Z",
+        macSigning: "adhoc",
         extra: "ignored",
       }),
     ).toEqual({
@@ -42,7 +45,21 @@ describe("build info", () => {
       version: "0.3.0",
       commit: "1a2b3c4d5e6f",
       builtAt: "2026-11-01T12:00:00.000Z",
+      macSigning: "adhoc",
     });
+  });
+
+  it("only trusts a known macOS signing value", () => {
+    // A package built before this field existed, or a hand-edited file, can
+    // never claim a signature Squirrel.Mac would accept.
+    expect(parseBuildInfo({ channel: "release" }).macSigning).toBe("none");
+    expect(parseBuildInfo({ channel: "release", macSigning: "self-signed" }).macSigning).toBe(
+      "none",
+    );
+    expect(parseBuildInfo({ channel: "release", macSigning: 7 }).macSigning).toBe("none");
+    expect(parseBuildInfo({ channel: "release", macSigning: "developer-id" }).macSigning).toBe(
+      "developer-id",
+    );
   });
 
   it("falls back to unknown for junk, unknown channels and oversized fields", () => {

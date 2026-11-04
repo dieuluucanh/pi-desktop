@@ -13,7 +13,7 @@
  */
 
 import { isOfflineError } from "./diagnostics";
-import type { BuildChannel } from "./build-info";
+import type { BuildChannel, MacSigning } from "./build-info";
 
 export type UpdatePhase =
   /** A development build, safe mode, offline mode, or an unavailable updater. */
@@ -30,7 +30,17 @@ export type UpdatePhase =
 
 /** Why this build cannot use the updater at all. */
 export type UpdateUnsupportedReason =
-  "development" | "safe-mode" | "offline" | "updater-unavailable";
+  | "development"
+  | "safe-mode"
+  | "offline"
+  | "updater-unavailable"
+  /**
+   * macOS without a Developer ID signature: Squirrel.Mac validates a downloaded
+   * update against the running app's designated requirement, and an ad-hoc
+   * signature's requirement is cdhash-based, so it changes with every build.
+   * Offering "Restart & install" would always fail; the user downloads instead.
+   */
+  | "unsigned-mac";
 
 /**
  * What went wrong. `no-feed` is deliberately separate from `error`: a locally
@@ -100,6 +110,7 @@ const UNSUPPORTED_REASONS: readonly UpdateUnsupportedReason[] = [
   "safe-mode",
   "offline",
   "updater-unavailable",
+  "unsigned-mac",
 ];
 
 const PROBLEM_KINDS: readonly UpdateProblemKind[] = [
@@ -157,6 +168,21 @@ export interface UpdateSupportInput {
   safeMode: boolean;
   offline: boolean;
   portAvailable: boolean;
+  /** `process.platform`; only macOS has a signature-shaped install contract. */
+  platform: string;
+  /** How this package was signed (`build-info.json`); `none` off macOS. */
+  macSigning: MacSigning;
+}
+
+/**
+ * Whether an in-app download → restart → install can ever succeed here.
+ *
+ * One predicate for both decision points (`resolveUpdateSupport` and the port
+ * construction in main) so a mac build can never end up with a live updater and
+ * an "unsupported" state at the same time.
+ */
+export function inAppUpdatesAllowed(input: { platform: string; macSigning: MacSigning }): boolean {
+  return !(input.platform === "darwin" && input.macSigning !== "developer-id");
 }
 
 /** The one place the updater's support gate is decided. */
@@ -164,6 +190,7 @@ export function resolveUpdateSupport(input: UpdateSupportInput): UpdateSupport {
   if (!input.isPackaged) return { supported: false, reason: "development" };
   if (input.safeMode) return { supported: false, reason: "safe-mode" };
   if (input.offline) return { supported: false, reason: "offline" };
+  if (!inAppUpdatesAllowed(input)) return { supported: false, reason: "unsigned-mac" };
   if (!input.portAvailable) return { supported: false, reason: "updater-unavailable" };
   return { supported: true, reason: null };
 }
@@ -528,6 +555,8 @@ function describeUnsupported(reason: UpdateUnsupportedReason | null): string {
       return "Updates are disabled while PI_OFFLINE is set.";
     case "updater-unavailable":
       return "The updater is unavailable in this build.";
+    case "unsigned-mac":
+      return "macOS updates are installed by downloading the new release from GitHub.";
     default:
       return "Updates are checked in installed builds only.";
   }

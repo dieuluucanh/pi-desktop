@@ -5,6 +5,7 @@ import {
   PI_DESKTOP_RELEASES_URL,
   updateAction,
   type UpdatePhase,
+  type UpdateState,
 } from "../../../shared/updates";
 import { useAppStore } from "../state/app-store";
 import { Badge } from "../ui/badge";
@@ -33,6 +34,18 @@ const PHASE_LABELS: Record<UpdatePhase, string> = {
 };
 
 type Tone = "neutral" | "accent" | "info" | "ok" | "warn" | "danger";
+
+/**
+ * `unsupported` is accurate but opaque on macOS, where it is a deliberate
+ * policy rather than a failure: there the app updates by downloading the new
+ * release, so the badge names that instead.
+ */
+function phaseLabel(update: Pick<UpdateState, "phase" | "unsupportedReason">): string {
+  if (update.phase === "unsupported" && update.unsupportedReason === "unsigned-mac") {
+    return "Manual updates";
+  }
+  return PHASE_LABELS[update.phase];
+}
 
 function phaseTone(phase: UpdatePhase): Tone {
   switch (phase) {
@@ -114,9 +127,7 @@ export function UpdateSettingsCard() {
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-sm font-semibold">About &amp; updates</h2>
           <Badge tone={channelTone(channel)}>{channelLabel(channel)}</Badge>
-          {update ? (
-            <Badge tone={phaseTone(update.phase)}>{PHASE_LABELS[update.phase]}</Badge>
-          ) : null}
+          {update ? <Badge tone={phaseTone(update.phase)}>{phaseLabel(update)}</Badge> : null}
         </div>
         <p className="text-xs text-ink-muted">
           Pi Desktop {info ? `v${info.version}` : "(reading app info…)"}

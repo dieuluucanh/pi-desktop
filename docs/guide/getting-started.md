@@ -14,7 +14,8 @@ and it uses the **same Pi profile as terminal Pi** — so the two are interchang
 
 Builds are published on GitHub Releases. The Windows installer is the primary
 artefact; versions are checked automatically once installed (see
-[Updates](#updates) below).
+[Updates](#updates) below). macOS builds download updates rather than applying
+them in place — see [Updates](#updates).
 
 ### Installing on Linux
 
@@ -41,9 +42,27 @@ Use `apt install ./file.deb` rather than `dpkg -i` so the GTK/NSS/asound
 runtime dependencies are resolved for you. ARM64 machines use the `arm64`
 artefacts instead. To remove: `sudo apt remove pi-desktop`.
 
-> **Unsigned builds.** Windows SmartScreen and macOS Gatekeeper will warn on
-> first launch. Choose “More info → Run anyway” (Windows) or right-click → Open
-> (macOS). Code signing is tracked in the backlog, not in v0.4.0.
+### Installing on macOS
+
+Mount the `.dmg` and drag **Pi Desktop** into `/Applications`. The build is not
+notarized, so macOS refuses the first launch and — since macOS 15 (Sequoia) —
+there is no right-click override:
+
+1. Try to open the app once so macOS registers the refusal.
+2. Open **System Settings → Privacy & Security**, scroll to the bottom, and
+   choose **Open Anyway** next to Pi Desktop.
+
+If the bundle instead reports that it is **damaged** (typically after unzipping
+the `.zip`, which is meant for the updater, not for installing), clear the
+quarantine flag and retry:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Pi Desktop.app"
+```
+
+> **Unsigned builds.** Windows SmartScreen and macOS Gatekeeper warn on first
+> launch. Choose “More info → Run anyway” (Windows) or follow the macOS steps
+> above. Code signing is tracked in the backlog.
 
 ## First launch
 
@@ -110,6 +129,13 @@ appears as a small **Update vX** chip in the status bar; the full status,
 `Help → Check for Updates…` opens that card and runs a check on demand. Locally
 built packages skip automatic checks and flag themselves as local builds;
 development builds report that updates are checked in installed builds only.
+
+**On macOS the update is a download, not an in-app install.** Squirrel.Mac only
+accepts an update signed with the same stable code-signing identity as the
+running app, and the current macOS builds are ad-hoc signed, so
+**Settings → About & updates** shows **Manual updates** and links to the Releases
+page. Download the new `.dmg` and replace the app. Windows and the Linux AppImage
+update in place.
 
 ## Where your data lives
 

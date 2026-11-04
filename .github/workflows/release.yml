@@ -1,0 +1,469 @@
+name: release
+
+# Cuts a public, cross-platform release from a `v*` tag.
+#
+# The repository is public, so every standard GitHub-hosted runner (macOS
+# included) is free, and Release assets are downloadable without a token -
+# which is also what lets `electron-updater` read the feed.
+#
+# Shape, and why it is shaped like this:
+#
+#   prepare  creates the Release as a DRAFT and decides whether this run
+#            publishes at all (tag push = yes, dispatch = opt-in).
+#   windows  \
+#   linux     > each job builds on its own OS and uploads its installers
+#   macos    /  *and* its `latest*.yml` manifests straight to that draft.
+#               No artifact hop: installers are ~200 MB each and the draft is
+#               invisible to end users, so a partial upload is never served.
+#   publish  flips the draft to published + latest only when all three builds
+#            succeeded, then re-reads the feed anonymously to prove it works.
+#
+# `workflow_dispatch` with `publish: false` is the dry run: same builds, same
+# verifications, artifacts uploaded for inspection, nothing published.
+#
+# Actions are pinned to the commit behind their major tag: this workflow holds
+# `contents: write` and publishes what everyone downloads.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (default: v<package.json version>)"
+        type: string
+        default: ""
+      publish:
+        description: "Publish the draft once all three platforms pass"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # `afterPack` turns this into `resources/build-info.json`; a `release` build
+  # is the only kind that runs automatic update checks.
+  PI_BUILD_CHANNEL: release
+
+jobs:
+  prepare:
+    name: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the draft release
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      publish: ${{ steps.resolve.outputs.publish }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # No npm cache here: a cached tree feeding a release is the one place a
+      # poisoned cache would reach installed apps.
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+
+      - name: Resolve the tag and the publish decision
+        id: resolve
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tag="$INPUT_TAG"
+          [ -n "$tag" ] || tag="v$version"
+          # A tag push must describe the version it points at; a dispatch may
+          # deliberately build an older tag, so it is not checked.
+          if [ "$EVENT_NAME" = "push" ] && [ "$tag" != "v$version" ]; then
+            echo "::error::tag $tag does not match package.json v$version"
+            exit 1
+          fi
+          test -f "docs/releases/$tag.md" || {
+            echo "::error::missing docs/releases/$tag.md"
+            exit 1
+          }
+          publish=false
+          if [ "$EVENT_NAME" = "push" ] || [ "$INPUT_PUBLISH" = "true" ]; then
+            publish=true
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "release $tag publish=$publish" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create the draft release
+        if: steps.resolve.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" \
+              --draft \
+              --verify-tag \
+              --title "Pi Desktop $TAG" \
+              --notes-file "docs/releases/$TAG.md"
+          echo "draft release: $TAG"
+
+  windows:
+    name: windows (${{ needs.prepare.outputs.version }})
+    needs: prepare
+    runs-on: windows-latest
+    permissions:
+      contents: write # upload to the draft release
+    defaults:
+      run:
+        # The runner default is PowerShell, where `set -euo pipefail` is a
+        # syntax error. Git Bash is preinstalled and lets all three jobs share
+        # one shell dialect.
+        shell: bash
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+
+      - name: Install
+        run: npm ci
+
+      # Fetches the win32-x64 runtime, builds, regenerates the host shims, runs
+      # `runtime:verify`, then NSIS + portable (+ `latest.yml`, blockmap).
+      - name: Package
+        run: npm run package:win
+
+      - name: Verify the artefacts
+        run: |
+          set -euo pipefail
+          ls -l release
+          node scripts/release-assets.mjs \
+            --platform win --dir release --version "$VERSION"
+          runtimes="$(ls release/win-unpacked/resources/runtime/node)"
+          echo "bundled runtime(s): $runtimes"
+          test "$(printf '%s\n' "$runtimes" | wc -l)" -eq 1
+          test "$runtimes" = "win32-x64"
+          res=release/win-unpacked/resources
+          test -f "$res/app-update.yml"
+          grep -q "provider: github" "$res/app-update.yml"
+          grep -q '"channel": "release"' "$res/build-info.json"
+          grep -q "\"version\": \"$VERSION\"" "$res/build-info.json"
+
+      - name: Upload to the draft release
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG" \
+            release/*.exe release/*.blockmap release/latest.yml \
+            --clobber
+
+      - name: Keep the artefacts (dry run)
+        if: needs.prepare.outputs.publish != 'true'
+        # Pinned to v4's commit.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-${{ needs.prepare.outputs.version }}
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
+          if-no-files-found: error
+
+  linux:
+    name: linux (${{ needs.prepare.outputs.version }})
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Fetch order matters: `runtime:fetch` writes `resources/runtime/bin` for
+      # the *last* `--platform` it was given, and `runtime:verify` executes that
+      # shim. Foreign arm64 first (no shims), host x64 last.
+      - name: Fetch the bundled runtimes
+        run: |
+          set -euo pipefail
+          npm run runtime:fetch -- --platform linux-arm64 --skip-shims
+          npm run runtime:fetch -- --platform linux-x64
+
+      - name: Verify the bundled runtime
+        run: npm run runtime:verify
+
+      - name: Package
+        run: npx electron-builder --linux --x64 --arm64 --publish never
+
+      - name: Verify the artefacts
+        run: |
+          set -euo pipefail
+          ls -l release
+          node scripts/release-assets.mjs \
+            --platform linux --dir release --version "$VERSION"
+          for deb in release/*.deb; do
+            echo "--- $deb"
+            dpkg-deb -I "$deb" |
+              grep -E '^ (Package|Version|Architecture|Maintainer|Depends)'
+            entries="$(dpkg-deb -c "$deb")"
+            # The Pi host runtime must ship outside the asar.
+            printf '%s\n' "$entries" |
+              grep -qE 'resources/runtime/node/linux-[a-z0-9]+/bin/node$'
+            # `afterPack` prunes to the package's own arch: a two-arch run must
+            # not leak the other architecture's Node into a package.
+            runtimes="$(printf '%s\n' "$entries" |
+              grep -oE 'resources/runtime/node/linux-[a-z0-9]+/' | sort -u)"
+            test -n "$runtimes"
+            test "$(printf '%s\n' "$runtimes" | wc -l)" -eq 1
+            echo "bundled runtime: $runtimes"
+            printf '%s\n' "$entries" |
+              grep -q 'resources/app.asar.unpacked/out/host/index.mjs'
+            printf '%s\n' "$entries" |
+              grep -q 'usr/share/applications/pi-desktop.desktop'
+          done
+          for appimage in release/*.AppImage; do
+            echo "--- $appimage"
+            magic="$(head -c 4 "$appimage" | od -An -tx1 | tr -d ' \n')"
+            test "$magic" = "7f454c46"
+            # A packaged app is ~200 MB; a truncated one is the classic
+            # failure.
+            test "$(stat -c %s "$appimage")" -gt 150000000
+          done
+          echo "artefacts verified"
+
+      - name: Upload to the draft release
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG" \
+            release/*.AppImage release/*.deb \
+            release/latest-linux.yml release/latest-linux-arm64.yml \
+            --clobber
+
+      - name: Keep the artefacts (dry run)
+        if: needs.prepare.outputs.publish != 'true'
+        # Pinned to v4's commit.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: linux-${{ needs.prepare.outputs.version }}
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/latest-linux.yml
+            release/latest-linux-arm64.yml
+          if-no-files-found: error
+
+  macos:
+    name: macos (${{ needs.prepare.outputs.version }})
+    needs: prepare
+    # `macos-latest` is the arm64 image (3-core M1). Both arches are packaged in
+    # one run: electron-builder downloads the x64 Electron distribution itself.
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      # No Apple Developer identity exists yet (backlog). Never look for one in
+      # the keychain, and tell `afterPack` what the package will be signed
+      # with: ad-hoc is enough for the kernel on arm64, but Squirrel.Mac
+      # rejects an update built with it - hence "manual updates" on macOS.
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      PI_MAC_SIGNING: adhoc
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Same ordering rule as linux: foreign x64 first without shims, host arm64
+      # last so `resources/runtime/bin` points at a runtime this host can run.
+      - name: Fetch the bundled runtimes
+        run: |
+          set -euo pipefail
+          npm run runtime:fetch -- --platform darwin-x64 --skip-shims
+          npm run runtime:fetch -- --platform darwin-arm64
+
+      - name: Verify the bundled runtime
+        run: npm run runtime:verify
+
+      - name: Package
+        run: |
+          npx electron-builder --mac --arm64 --x64 --publish never \
+            -c.mac.identity=-
+
+      - name: Verify the bundles
+        run: |
+          set -euo pipefail
+          ls -l release
+          node scripts/release-assets.mjs \
+            --platform mac --dir release --version "$VERSION"
+          for arch in arm64 x64; do
+            app="release/mac-$arch/Pi Desktop.app"
+            echo "--- $app ($arch)"
+            test -d "$app"
+            # Ad-hoc signing is still a real signature: this must pass, and it
+            # fails if electron-builder skipped signing entirely.
+            codesign --verify --deep --strict --verbose=2 "$app"
+            # Not notarized, so Gatekeeper rejects it - but "damaged" would
+            # mean an invalid signature (what an unsigned arm64 app shows).
+            spctl_out="$(spctl -vv --assess "$app" 2>&1 || true)"
+            printf '%s\n' "$spctl_out"
+            printf '%s' "$spctl_out" | grep -q "rejected"
+            if printf '%s' "$spctl_out" | grep -qi "damaged"; then
+              echo "::error::$app reports 'damaged'; signature is invalid"
+              exit 1
+            fi
+            info="$app/Contents/Resources/build-info.json"
+            grep -q '"channel": "release"' "$info"
+            grep -q '"macSigning": "adhoc"' "$info"
+            grep -q "\"version\": \"$VERSION\"" "$info"
+          done
+          # The packaged shims and the bundled node must run inside the bundle:
+          # this is what proves `app.asar.unpacked` paths survive packaging.
+          app="release/mac-arm64/Pi Desktop.app"
+          test -f "$app/Contents/Resources/runtime/bin/pi"
+          env -i PATH=/usr/bin:/bin HOME="$RUNNER_TEMP" \
+            "$app/Contents/Resources/runtime/bin/pi" --version
+          env -i PATH=/usr/bin:/bin \
+            "$app/Contents/Resources/runtime/node/darwin-arm64/bin/node" \
+            --version
+          # Record what the single mac manifest lists; the dry run decides
+          # whether one arch needs a follow-up merge (see the docs).
+          if grep -q '\-arm64\.zip' release/latest-mac.yml &&
+            grep -q '\-x64\.zip' release/latest-mac.yml; then
+            echo "latest-mac.yml lists both arches" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::latest-mac.yml does not list both arches"
+            echo "latest-mac.yml is missing an arch" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          {
+            echo "### latest-mac.yml"
+            echo '```yaml'
+            cat release/latest-mac.yml
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # A mac runner may lack a GUI session, so this is evidence, not a gate.
+      - name: Launch smoke (arm64)
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          app="release/mac-arm64/Pi Desktop.app"
+          "$app/Contents/MacOS/Pi Desktop" > /tmp/launch.log 2>&1 &
+          pid=$!
+          sleep 15
+          if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" || true
+            echo "launch smoke: alive after 15 s" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "launch smoke: exited early" >> "$GITHUB_STEP_SUMMARY"
+            tail -40 /tmp/launch.log || true
+            exit 1
+          fi
+
+      - name: Upload to the draft release
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG" \
+            release/*.dmg release/*.zip release/latest-mac.yml \
+            --clobber
+
+      - name: Keep the artefacts (dry run)
+        if: needs.prepare.outputs.publish != 'true'
+        # Pinned to v4's commit.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: macos-${{ needs.prepare.outputs.version }}
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/latest-mac.yml
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: [prepare, windows, linux, macos]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      # The draft is what makes the feed atomic: `electron-updater` cannot see
+      # a draft, so the first moment the feed exists it is already complete.
+      - name: Publish the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" --draft=false --latest
+
+      # Proves the two things only the public internet can prove: the manifests
+      # are readable without a token, and the installers they name are there.
+      - name: Verify the public feed anonymously
+        run: |
+          set -euo pipefail
+          repo="${{ github.repository }}"
+          base="https://github.com/$repo/releases/download/$TAG"
+          manifests="latest.yml latest-linux.yml"
+          manifests="$manifests latest-linux-arm64.yml latest-mac.yml"
+          for manifest in $manifests; do
+            for attempt in 1 2 3 4 5; do
+              if body="$(curl -fsSL "$base/$manifest")"; then break; fi
+              echo "waiting for $manifest ($attempt)"
+              sleep 5
+              body=""
+            done
+            test -n "$body"
+            printf '%s' "$body" | grep -q "^version: $VERSION$"
+            echo "feed: $manifest -> $VERSION"
+          done
+          for asset in \
+            "Pi-Desktop-$VERSION-win-x64-setup.exe" \
+            "Pi-Desktop-$VERSION-linux-x86_64-appimage.AppImage" \
+            "Pi-Desktop-$VERSION-mac-arm64.dmg"; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' \
+              -L -r 0-0 "$base/$asset")"
+            echo "asset: $asset -> HTTP $code"
+            test "$code" = "206" || test "$code" = "200"
+          done
+          {
+            echo "### Published $TAG"
+            echo "Feed verified anonymously for all four manifests."
+          } >> "$GITHUB_STEP_SUMMARY"

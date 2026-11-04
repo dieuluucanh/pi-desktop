@@ -158,4 +158,29 @@ describe("UpdateSettingsCard", () => {
     await user.click(screen.getByRole("button", { name: /open releases page/i }));
     expect(openExternal).toHaveBeenCalledWith(PI_DESKTOP_RELEASES_URL);
   });
+
+  it("presents the macOS signature policy as manual updates, not a failure", async () => {
+    const user = userEvent.setup();
+    const openExternal = vi.fn(async () => true);
+    (window.pi as unknown as { openExternal: typeof openExternal }).openExternal = openExternal;
+    useAppStore.setState({
+      update: initialUpdateState(false, {
+        currentVersion: "0.5.0",
+        unsupportedReason: "unsigned-mac",
+      }),
+    });
+    render(<UpdateSettingsCard />);
+
+    // The badge names the policy, and the prose says where the update comes from
+    // — an ad-hoc-signed mac build can never install one in place.
+    expect(screen.getByText("Manual updates")).toBeInTheDocument();
+    expect(screen.queryByText("Unsupported")).not.toBeInTheDocument();
+    expect(screen.getByTestId("settings-updates")).toHaveTextContent(
+      /installed by downloading the new release from GitHub/i,
+    );
+    expect(screen.getByRole("switch", { name: /check for updates automatically/i })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /open releases page/i }));
+    expect(openExternal).toHaveBeenCalledWith(PI_DESKTOP_RELEASES_URL);
+  });
 });

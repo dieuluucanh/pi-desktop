@@ -38,16 +38,19 @@ then works like any other extension. See
 [parity.md](../product/parity.md#mcp).
 
 **Is there an in-app terminal?**
-Not in v0.4.0 (it is explicit post-MVP backlog). The app ships a `pi` PATH shim
+Not in v0.5.0 (it is explicit post-MVP backlog). The app ships a `pi` PATH shim
 and can open an external terminal in a project folder.
 
 **Can I open several projects at once?**
 Yes — tabs are per session and sessions belong to projects; the sidebar groups
-them. There is one window in v0.4.0 (multi-window is backlog).
+them. There is one window in v0.5.0 (multi-window is backlog).
 
 **Why does Windows/macOS warn when I install it?**
-The v0.4.0 artefacts are unsigned. Windows SmartScreen: “More info → Run anyway”;
-macOS: right-click → Open. Signing is tracked in the backlog.
+The v0.5.0 artefacts are unsigned. Windows SmartScreen: “More info → Run anyway”.
+macOS refuses the first launch without offering a right-click override: open
+**System Settings → Privacy & Security**, scroll to the bottom and choose
+**Open Anyway**. See [Getting started](getting-started.md#installing-on-macos).
+Signing is tracked in the backlog.
 
 **Does the app send telemetry?**
 Not unless you opt in. Pi’s install telemetry is forced off with
@@ -70,7 +73,7 @@ so. Package installs are separate: the app updates its own code, the package
 manager updates extensions.
 
 **Is it translated?**
-Not yet (i18n is backlog). The UI is English in v0.4.0.
+Not yet (i18n is backlog). The UI is English in v0.5.0.
 
 **How do I copy the proposed commit message from `/commit`?**
 The extension renders it in a questionnaire panel. Select the text and press

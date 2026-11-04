@@ -54,12 +54,20 @@ function fakePort() {
   };
 }
 
-function build(options: { supported?: boolean; withPort?: boolean; currentVersion?: string } = {}) {
+function build(
+  options: {
+    supported?: boolean;
+    withPort?: boolean;
+    currentVersion?: string;
+    unsupportedReason?: UpdateState["unsupportedReason"];
+  } = {},
+) {
   const fake = fakePort();
   const changes: UpdateState[] = [];
   const service = createUpdateService({
     port: options.withPort === false ? null : fake.port,
     supported: options.supported ?? true,
+    unsupportedReason: options.unsupportedReason ?? null,
     currentVersion: options.currentVersion ?? "",
     now: () => 123,
     onChange: (state) => changes.push(state),
@@ -82,6 +90,21 @@ describe("createUpdateService (plan step 26)", () => {
     expect(service.state().supported).toBe(false);
     void service.check();
     expect(calls).toEqual([]);
+  });
+
+  it("reports the macOS ­unsigned-mac policy without ever touching the port", () => {
+    // main already skips constructing the port for this build; the service must
+    // agree even if one were injected, so the UI can explain the policy.
+    const { service, calls } = build({ supported: false, unsupportedReason: "unsigned-mac" });
+    expect(service.state()).toMatchObject({
+      phase: "unsupported",
+      supported: false,
+      unsupportedReason: "unsigned-mac",
+    });
+    void service.check();
+    expect(service.install()).toBe(false);
+    expect(calls).toEqual([]);
+    expect(service.state().unsupportedReason).toBe("unsigned-mac");
   });
 
   it("subscribes to the port and reflects events", () => {
