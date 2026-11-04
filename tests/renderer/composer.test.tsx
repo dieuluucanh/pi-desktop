@@ -12,6 +12,7 @@ import {
   serializeWorkspaceDrag,
   type WorkspaceDragPayload,
 } from "../../src/shared/workspace-drag";
+import { TAB_DRAG_MIME, TAB_DRAG_VERSION } from "../../src/shared/tab-drag";
 /**
  * The composer (plan step 6). The behaviours worth pinning are the ones that
  * silently lose a user's work or send at the wrong moment: Enter vs Shift+Enter,
@@ -783,13 +784,37 @@ describe("workspace drops", () => {
     renderComposer();
     const drop = screen.getByTestId("composer-drop");
 
-    fireEvent.dragOver(drop, { dataTransfer: { types: ["text/plain"], files: [] } });
+    fireEvent.dragOver(drop, {
+      dataTransfer: { types: [TAB_DRAG_MIME], files: [] },
+    });
     expect(drop.className).not.toContain("ring-accent");
 
     fireEvent.dragOver(drop, {
       dataTransfer: { types: [WORKSPACE_PATH_DRAG_MIME], files: [] },
     });
     expect(drop.className).toContain("ring-accent");
+  });
+
+  it("lets a tab drag bubble to the enclosing pane", () => {
+    const onDraftChange = vi.fn();
+    renderComposer({ draft: "", onDraftChange, workspaceRoot: "C:/work/app" });
+    const transfer = {
+      types: [TAB_DRAG_MIME],
+      files: [] as File[],
+      dropEffect: "none",
+      effectAllowed: "move",
+      getData: (type: string) =>
+        type === TAB_DRAG_MIME ? JSON.stringify({ version: TAB_DRAG_VERSION, tabId: "tab-1" }) : "",
+      setData: () => undefined,
+    };
+
+    const notPrevented = fireEvent.drop(screen.getByTestId("composer-drop"), {
+      dataTransfer: transfer,
+    });
+
+    expect(notPrevented).toBe(true);
+    expect(onDraftChange).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("attachments")).toBeNull();
   });
 
   it("ignores a drop while the session cannot accept prompts", () => {

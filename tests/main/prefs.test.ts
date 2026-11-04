@@ -71,17 +71,22 @@ describe("sanitizePrefs", () => {
   describe("grid", () => {
     it("supplies the single-pane default for an older app-state.json", () => {
       const prefs = sanitizePrefs({ theme: "light" });
-      expect(prefs.grid).toEqual({ layout: "single", panes: [null] });
-    });
-
-    it("falls back to single for an unknown layout", () => {
-      expect(sanitizePrefs({ grid: { layout: "nine", panes: ["a", "b"] } }).grid).toEqual({
+      expect(prefs.grid).toEqual({
         layout: "single",
-        panes: ["a"],
+        lastMultiLayout: "two",
+        panes: [null, null, null, null],
       });
     });
 
-    it("pads and truncates the pane array against the layout", () => {
+    it("falls back to single for an unknown layout without discarding slots", () => {
+      expect(sanitizePrefs({ grid: { layout: "nine", panes: ["a", "b"] } }).grid).toEqual({
+        layout: "single",
+        lastMultiLayout: "two",
+        panes: ["a", "b", null, null],
+      });
+    });
+
+    it("pads the fixed four-slot pane array", () => {
       expect(sanitizePrefs({ grid: { layout: "four", panes: ["a"] } }).grid.panes).toEqual([
         "a",
         null,
@@ -90,31 +95,43 @@ describe("sanitizePrefs", () => {
       ]);
       expect(
         sanitizePrefs({ grid: { layout: "two", panes: ["a", "b", "c", "d"] } }).grid.panes,
-      ).toEqual(["a", "b"]);
+      ).toEqual(["a", "b", "c", "d"]);
     });
 
     it("drops a duplicate pane assignment and a malformed slot", () => {
       expect(
         sanitizePrefs({ grid: { layout: "three-left", panes: ["a", "a", 42] } }).grid.panes,
-      ).toEqual(["a", null, null]);
+      ).toEqual(["a", null, null, null]);
     });
 
     it("accepts a garbage grid block without throwing", () => {
       for (const value of [null, 42, "four", ["a"], { panes: "nope" }]) {
-        expect(sanitizePrefs({ grid: value }).grid).toEqual({ layout: "single", panes: [null] });
+        expect(sanitizePrefs({ grid: value }).grid).toEqual({
+          layout: "single",
+          lastMultiLayout: "two",
+          panes: [null, null, null, null],
+        });
       }
     });
 
     it("keeps the assignments when a patch only names the layout", () => {
       const current = sanitizePrefs({ grid: { layout: "four", panes: ["a", "b", "c", "d"] } });
       const next = mergePrefs(current, { grid: { layout: "two" } });
-      expect(next.grid).toEqual({ layout: "two", panes: ["a", "b"] });
+      expect(next.grid).toEqual({
+        layout: "two",
+        lastMultiLayout: "two",
+        panes: ["a", "b", "c", "d"],
+      });
     });
 
     it("keeps the layout when a patch only names the panes", () => {
       const current = sanitizePrefs({ grid: { layout: "four", panes: [] } });
       const next = mergePrefs(current, { grid: { panes: ["x", null, "y"] } });
-      expect(next.grid).toEqual({ layout: "four", panes: ["x", null, "y", null] });
+      expect(next.grid).toEqual({
+        layout: "four",
+        lastMultiLayout: "four",
+        panes: ["x", null, "y", null],
+      });
     });
 
     it("leaves the block alone when the patch does not mention it", () => {

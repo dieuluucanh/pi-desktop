@@ -36,25 +36,37 @@ status dot.
 The window can show several tabs side by side. The grid replaces only the content
 area — the tab strips, the sidebar and the panel rail stay where they are.
 
-- **Choose a layout** with the layout button at the far right of the session tab
-  strip, from **View → Layout** in the menu, or from the command palette: single,
-  two columns, three panes (left tall), three panes (right tall), or four panes.
-- **Fill a pane** with its chevron: the list shows your open **session tabs**
-  grouped by project, then your open **editor tabs**, then **Browse saved
-  sessions…** to resume one straight into that pane.
+- **Choose a layout** with the icon-only layout button at the far right of the
+  session tab strip, from **View → Layout** in the menu, or from the command
+  palette: single, two columns, three panes (left tall), three panes (right tall),
+  or four panes. Hover an icon to see its name. The icons run widest to
+  narrowest: four panes on the left, single on the right.
+- **Fill a pane** with its header chevron or, when it is empty, the centred `+`
+  button. Both open the same list of your open **session tabs** grouped by
+  project, your open **editor tabs**, then **Browse saved sessions…** to resume
+  one straight into that pane. The menu always hangs from the header chevron;
+  “Pick a session” and “or drop a tab here” are labels, not buttons — only the
+  `+` opens the list.
 - **Drag a tab** from either tab strip (or a session in the sidebar) onto a pane.
-  Each tab can be in one pane only, so dropping a tab that another pane already
-  shows swaps the two panes.
+  From a single/solo view the remembered multi-pane layout appears faded while
+  you drag, so you can drop into any pane; releasing outside cancels and restores
+  the single view. Each tab can be in one pane only, so dropping a tab that
+  another pane already shows swaps the two panes.
 - **Click a pane** to focus it. The focused pane is the tab the menu, the palette,
   model/thinking cycling and the panel rail act on, so the rail follows a pane in
   another project.
-- **Grid and single run in parallel.** Clicking a tab that no pane holds shows it
+- **Single and grid run in parallel.** Clicking a tab that no pane holds shows it
   full-size without forgetting the layout; clicking a tab that a pane holds
-  returns to the grid. **Show grid / Show single tab** in the layout menu toggles
-  the same way.
+  returns to the grid. The **Single** preset is the same one-tab view and keeps
+  every pane assignment, so choosing a multi-pane preset later restores the split.
+- **Clear a pane** with the header `×`: it removes that tab from the pane without
+  closing the session, and the pane shows “Pick a session” again. If it held the
+  focused tab, focus moves to the next occupied pane; the grid stays on screen
+  even when the last pane is cleared. The tab strip's `×` still closes the
+  session itself.
 - Closing a tab empties its pane (it shows “Pick a session”); the other panes and
-  the layout keep running. The layout and every pane assignment are remembered
-  across a relaunch.
+  the layout keep running. The layout, the last multi-pane preset and every pane
+  assignment are remembered across a relaunch.
 
 Every visible pane keeps its session awake. Sessions in panes you are not looking
 at still sleep after a long idle period, and wake on the next click or keystroke.

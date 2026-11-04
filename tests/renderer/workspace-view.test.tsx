@@ -1,7 +1,8 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { useAppStore, type AppStateShape } from "../../src/renderer/src/state/app-store";
+import { beginTabDrag } from "../../src/renderer/src/state/tab-drag-session";
 import { WorkspaceView } from "../../src/renderer/src/views/WorkspaceView";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { GridLayout } from "../../src/shared/session-grid";
@@ -54,14 +55,17 @@ function setup(
     project: { path: WORK, name: "app" },
     projects: [],
     projectsLoaded: true,
-    prefs: { ...DEFAULT_PREFS, drafts: {}, grid: { layout, panes } },
+    prefs: {
+      ...DEFAULT_PREFS,
+      drafts: {},
+      grid: { layout, lastMultiLayout: layout === "single" ? "two" : layout, panes },
+    },
     tabs: [
       tab(`${prefix}-1`, "first", 1),
       tab(`${prefix}-2`, "second", 2),
       tab(`${prefix}-3`, "third", 3),
     ],
     activeTabId: `${prefix}-1`,
-    gridSolo: false,
     panePickerTarget: null,
     transcripts: {},
     sessionStates: {},
@@ -87,6 +91,56 @@ describe("workspace view", () => {
     expect(screen.getByTestId("session-view")).toBeInTheDocument();
   });
 
+  it("reveals the last multi layout at reduced opacity while dragging from Single", () => {
+    setup("single", [null, null, null, null], { prefix: "drag" });
+    useAppStore.setState({
+      prefs: {
+        ...useAppStore.getState().prefs,
+        grid: {
+          layout: "single",
+          lastMultiLayout: "four",
+          panes: ["drag-1", "drag-2", null, null],
+        },
+      },
+    });
+    beginTabDrag();
+
+    render(<WorkspaceView />);
+
+    const workspace = screen.getByTestId("workspace-view");
+    expect(workspace).toHaveAttribute("data-grid-mode", "grid");
+    expect(workspace).toHaveAttribute("data-drag-reveal", "true");
+    expect(workspace).toHaveAttribute("data-layout", "four");
+    expect(workspace.className).toContain("opacity-80");
+    expect(screen.getByTestId("pane-grid")).toHaveAttribute("data-layout", "four");
+    expect(screen.getByTestId("pane-1")).toBeInTheDocument();
+  });
+
+  it("restores solo when the drag ends without a drop", async () => {
+    setup("single", [null, null, null, null], { prefix: "cancel" });
+    useAppStore.setState({
+      prefs: {
+        ...useAppStore.getState().prefs,
+        grid: {
+          layout: "single",
+          lastMultiLayout: "four",
+          panes: ["cancel-1", "cancel-2", null, null],
+        },
+      },
+    });
+    beginTabDrag();
+
+    render(<WorkspaceView />);
+    expect(screen.getByTestId("workspace-view")).toHaveAttribute("data-grid-mode", "grid");
+
+    fireEvent.dragEnd(window);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("workspace-view")).toHaveAttribute("data-grid-mode", "solo"),
+    );
+    expect(screen.queryByTestId("pane-grid")).toBeNull();
+  });
+
   it("shows the remembered grid when a pane holds the active tab", () => {
     setup("two", ["grid-1", "grid-2"], { prefix: "grid" });
     render(<WorkspaceView />);
@@ -99,7 +153,7 @@ describe("workspace view", () => {
   it("goes solo — without forgetting the layout — for a tab no pane holds", () => {
     setup("two", ["keep-1", "keep-2"], {
       prefix: "keep",
-      extra: { activeTabId: "keep-3", gridSolo: true },
+      extra: { activeTabId: "keep-3" },
     });
     render(<WorkspaceView />);
 
@@ -108,6 +162,7 @@ describe("workspace view", () => {
     // The layout and its assignments survive; clicking a pane's tab returns to it.
     expect(useAppStore.getState().prefs.grid).toEqual({
       layout: "two",
+      lastMultiLayout: "two",
       panes: ["keep-1", "keep-2"],
     });
   });
@@ -115,7 +170,7 @@ describe("workspace view", () => {
   it("returns to the grid when a pane's tab is activated", async () => {
     setup("two", ["back-1", "back-2"], {
       prefix: "back",
-      extra: { activeTabId: "back-3", gridSolo: true },
+      extra: { activeTabId: "back-3" },
     });
     const { rerender } = render(<WorkspaceView />);
     expect(screen.getByTestId("workspace-view")).toHaveAttribute("data-grid-mode", "solo");
@@ -149,10 +204,35 @@ describe("the visible-set push", () => {
     await waitFor(() => expect(visibleTabPushes.at(-1)).toEqual(["push1-a", "push1-b"]));
   });
 
+  it("sends the revealed panes while dragging and narrows again on cancel", async () => {
+    const { visibleTabPushes } = setup("single", [null, null, null, null], {
+      prefix: "push-drag",
+    });
+    useAppStore.setState({
+      prefs: {
+        ...useAppStore.getState().prefs,
+        grid: {
+          layout: "single",
+          lastMultiLayout: "two",
+          panes: ["push-drag-1", "push-drag-2", null, null],
+        },
+      },
+    });
+    beginTabDrag();
+
+    render(<WorkspaceView />);
+
+    await waitFor(() => expect(visibleTabPushes.at(-1)).toEqual(["push-drag-1", "push-drag-2"]));
+
+    fireEvent.dragEnd(window);
+
+    await waitFor(() => expect(visibleTabPushes.at(-1)).toEqual(["push-drag-1"]));
+  });
+
   it("sends only the active tab in solo", async () => {
     const { visibleTabPushes } = setup("two", ["push2-a", "push2-b"], {
       prefix: "push2",
-      extra: { activeTabId: "push2-c", gridSolo: true },
+      extra: { activeTabId: "push2-c" },
     });
 
     render(<WorkspaceView />);

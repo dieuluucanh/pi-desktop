@@ -55,8 +55,11 @@ function setGrid(
   extra: Partial<AppStateShape> = {},
 ): void {
   useAppStore.setState({
-    prefs: { ...DEFAULT_PREFS, drafts: {}, grid: { layout, panes } },
-    gridSolo: false,
+    prefs: {
+      ...DEFAULT_PREFS,
+      drafts: {},
+      grid: { layout, lastMultiLayout: layout === "single" ? "two" : layout, panes },
+    },
     panePickerTarget: null,
     hint: null,
     ...extra,
@@ -116,17 +119,25 @@ describe("layouts", () => {
     expect(screen.queryByTestId(`pane-${count}`)).toBeNull();
   });
 
-  it("puts the tall pane on the correct column", () => {
+  it("places the tall pane on the correct column with explicit starts", () => {
     setGrid("three-left", ["tab-1", "tab-2", null]);
     const { unmount } = render(<PaneGrid />);
+    expect(screen.getByTestId("pane-0").className).toContain("col-start-1");
     expect(screen.getByTestId("pane-0").className).toContain("row-span-2");
+    expect(screen.getByTestId("pane-1").className).toContain("col-start-2");
+    expect(screen.getByTestId("pane-1").className).toContain("row-start-1");
     expect(screen.getByTestId("pane-1").className).not.toContain("row-span-2");
+    expect(screen.getByTestId("pane-2").className).toContain("row-start-2");
     unmount();
 
     setGrid("three-right", ["tab-1", "tab-2", null]);
     render(<PaneGrid />);
+    expect(screen.getByTestId("pane-0").className).toContain("col-start-1");
     expect(screen.getByTestId("pane-0").className).not.toContain("row-span-2");
+    expect(screen.getByTestId("pane-1").className).toContain("col-start-2");
     expect(screen.getByTestId("pane-1").className).toContain("row-span-2");
+    expect(screen.getByTestId("pane-2").className).toContain("col-start-1");
+    expect(screen.getByTestId("pane-2").className).toContain("row-start-2");
   });
 });
 
@@ -170,7 +181,31 @@ describe("panes", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Clear pane 2" }));
 
-    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-1", null]);
+    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-1", null, null, null]);
+    expect(useAppStore.getState().activeTabId).toBe("tab-1");
+    expect(within(screen.getByTestId("pane-1")).getByText("Pick a session")).toBeInTheDocument();
+  });
+
+  it("clears the focused pane, keeps the grid and focuses the survivor", async () => {
+    setGrid("two", ["tab-1", "tab-2"], { activeTabId: "tab-2" });
+    render(<PaneGrid />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Clear pane 2" }));
+
+    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-1", null, null, null]);
+    expect(useAppStore.getState().activeTabId).toBe("tab-1");
+    expect(screen.getByTestId("pane-grid")).toBeInTheDocument();
+    expect(screen.getByTestId("pane-0")).toHaveAttribute("data-pane-active", "true");
+  });
+
+  it("does not change focus when clearing a background pane", async () => {
+    setGrid("two", ["tab-1", "tab-2"], { activeTabId: "tab-1" });
+    render(<PaneGrid />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Clear pane 2" }));
+
+    expect(useAppStore.getState().activeTabId).toBe("tab-1");
+    expect(screen.getByTestId("pane-0")).toHaveAttribute("data-pane-active", "true");
   });
 });
 
@@ -178,7 +213,7 @@ describe("pane picker model", () => {
   const tabsFixture = (): TabRecord[] => useAppStore.getState().tabs;
 
   it("classifies open tabs into session groups and an editor group", () => {
-    const model = panePickerModel(tabsFixture(), ["tab-1", null], null);
+    const model = panePickerModel(tabsFixture(), ["tab-1", null], null, "two");
 
     // One group per project, titled by the folder's own name, in tab order.
     expect(model.sessions.map((group) => group.name)).toEqual(["app", "other"]);
@@ -189,7 +224,7 @@ describe("pane picker model", () => {
   });
 
   it("marks the pane's own tab and hints the panes holding the others", () => {
-    const model = panePickerModel(tabsFixture(), ["tab-1", "tab-2"], "tab-1");
+    const model = panePickerModel(tabsFixture(), ["tab-1", "tab-2"], "tab-1", "two");
 
     const [first, second] = model.sessions[0]!.tabs;
     expect(first).toMatchObject({ id: "tab-1", current: true, paneHint: null });
@@ -199,21 +234,65 @@ describe("pane picker model", () => {
 
   it("skips a session tab with no project folder", () => {
     const homeless = tab({ id: "tab-x", cwd: "", title: "no folder" });
-    const model = panePickerModel([...tabsFixture(), homeless], [], null);
+    const model = panePickerModel([...tabsFixture(), homeless], [], null, "two");
 
     expect(model.sessions.flatMap((group) => group.tabs.map((tab) => tab.id))).not.toContain(
       "tab-x",
     );
   });
 
+  it("does not hint a tab held only in a hidden slot", () => {
+    const model = panePickerModel(tabsFixture(), ["tab-1", "tab-2", "tab-3", null], "tab-1", "two");
+
+    const hidden = model.sessions[1]!.tabs[0];
+    expect(hidden).toMatchObject({ id: "tab-3", current: false, paneHint: null });
+  });
+
   it("is empty when nothing is open", () => {
-    const model = panePickerModel([], [], null);
+    const model = panePickerModel([], [], null, "two");
     expect(model.sessions).toEqual([]);
     expect(model.editors).toEqual([]);
   });
 });
 
 describe("pane picker", () => {
+  it("opens the same picker from the empty-pane plus", async () => {
+    setGrid("two", ["tab-1", null]);
+    render(<PaneGrid />);
+
+    const trigger = screen.getByTestId("pane-empty-picker-1");
+    expect(trigger).toHaveAttribute("aria-haspopup", "menu");
+
+    await userEvent.click(trigger);
+
+    expect(await screen.findByTestId("pane-pick-tab-2")).toBeInTheDocument();
+    expect(screen.getByTestId("pane-browse-1")).toBeInTheDocument();
+    expect(screen.getAllByTestId("pane-picker-menu-1")).toHaveLength(1);
+  });
+
+  it("does not open from the placeholder text or empty background", async () => {
+    setGrid("two", ["tab-1", null]);
+    render(<PaneGrid />);
+
+    await userEvent.click(screen.getByText("Pick a session"));
+    await userEvent.click(screen.getByText(/drop a tab here/i));
+    await userEvent.click(screen.getByTestId("pane-1"));
+
+    expect(screen.queryByTestId("pane-pick-tab-2")).not.toBeInTheDocument();
+  });
+
+  it("opens the same menu from the header chevron", async () => {
+    setGrid("two", ["tab-1", null]);
+    render(<PaneGrid />);
+
+    const trigger = screen.getByTestId("pane-picker-1");
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+
+    expect(await screen.findByTestId("pane-pick-tab-2")).toBeInTheDocument();
+    expect(screen.getByTestId("pane-picker-menu-1")).toHaveAttribute("id", "pane-picker-content-1");
+  });
+
   it("renders a chevron in every pane header", () => {
     setGrid("two", ["tab-1", null]);
     render(<PaneGrid />);
@@ -246,7 +325,7 @@ describe("drag and drop", () => {
 
     fireEvent.drop(pane, { dataTransfer: fakeTabDrop("tab-2") });
 
-    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-1", "tab-2"]);
+    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-1", "tab-2", null, null]);
     expect(pane).not.toHaveAttribute("data-drop-active");
   });
 
@@ -256,7 +335,7 @@ describe("drag and drop", () => {
 
     fireEvent.drop(screen.getByTestId("pane-1"), { dataTransfer: fakeTabDrop("tab-1") });
 
-    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-2", "tab-1"]);
+    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-2", "tab-1", null, null]);
   });
 
   it("ignores a workspace-file drag", () => {

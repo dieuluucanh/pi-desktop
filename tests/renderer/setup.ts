@@ -1,6 +1,7 @@
 import { cleanup } from "@testing-library/react";
 import { afterEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
+import { endTabDrag } from "../../src/renderer/src/state/tab-drag-session";
 
 /**
  * Renderer-test setup (plan step 1).
@@ -16,6 +17,7 @@ import "@testing-library/jest-dom/vitest";
  */
 afterEach(() => {
   cleanup();
+  endTabDrag();
   // A live Radix dialog leaves a body pointer-events/aria-hidden lock that
   // would poison every later test in the file. Clearing it here keeps a leaked
   // lock from being reported by the wrong test (the delete regression asserts

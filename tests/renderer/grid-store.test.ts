@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAppStore, type AppStateShape } from "../../src/renderer/src/state/app-store";
+import { clearPane } from "../../src/renderer/src/state/grid-actions";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
+import { gridMode } from "../../src/shared/session-grid";
 import type { TabRecord } from "../../src/shared/session-ipc";
 import type { SessionSummary } from "../../src/shared/session-browser";
 import { installBridge } from "./fixtures";
@@ -54,7 +56,6 @@ function resetStore(overrides: Partial<AppStateShape> = {}): void {
     prefs: { ...DEFAULT_PREFS, drafts: {} },
     tabs: [tab(), tab({ id: "tab-2", title: "second", lastActiveAt: 2 })],
     activeTabId: "tab-1",
-    gridSolo: false,
     panePickerTarget: null,
     transcripts: {},
     sessionStates: {},
@@ -74,13 +75,18 @@ describe("setGridLayout", () => {
 
     expect(useAppStore.getState().prefs.grid).toEqual({
       layout: "two",
-      panes: ["tab-1", null],
+      lastMultiLayout: "two",
+      panes: ["tab-1", null, null, null],
     });
-    expect(useAppStore.getState().gridSolo).toBe(false);
   });
 
   it("pads the new layout and keeps what the old one held", () => {
-    resetStore({ prefs: { ...DEFAULT_PREFS, grid: { layout: "two", panes: ["tab-1", "tab-2"] } } });
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", "tab-2"] },
+      },
+    });
 
     useAppStore.getState().setGridLayout("four");
 
@@ -91,56 +97,133 @@ describe("setGridLayout", () => {
     resetStore({
       prefs: {
         ...DEFAULT_PREFS,
-        grid: { layout: "four", panes: ["tab-2", "tab-3", "tab-4", "tab-5"] },
+        grid: {
+          layout: "four",
+          lastMultiLayout: "four",
+          panes: ["tab-2", "tab-3", "tab-4", "tab-5"],
+        },
       },
       activeTabId: "tab-5",
     });
 
     useAppStore.getState().setGridLayout("two");
 
-    // Truncation keeps the first two slots, so the tab on screen takes slot 0.
-    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-5", "tab-3"]);
+    // Truncation would have hidden the tab, so it moves into slot 0 and the
+    // displaced tab takes its hidden slot. Every assignment survives.
+    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-5", "tab-3", "tab-4", "tab-2"]);
   });
 
   it("goes solo for the single layout and leaves the panes remembered", () => {
-    resetStore({ prefs: { ...DEFAULT_PREFS, grid: { layout: "two", panes: ["tab-1", "tab-2"] } } });
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", "tab-2"] },
+      },
+    });
 
     useAppStore.getState().setGridLayout("single");
 
-    expect(useAppStore.getState().prefs.grid).toEqual({ layout: "single", panes: ["tab-1"] });
-    expect(useAppStore.getState().gridSolo).toBe(false);
+    expect(useAppStore.getState().prefs.grid).toEqual({
+      layout: "single",
+      lastMultiLayout: "two",
+      panes: ["tab-1", "tab-2", null, null],
+    });
+  });
+
+  it("keeps the remembered split across four -> single -> four", () => {
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: {
+          layout: "four",
+          lastMultiLayout: "four",
+          panes: ["tab-1", "tab-2", "tab-3", "tab-4"],
+        },
+      },
+    });
+
+    useAppStore.getState().setGridLayout("single");
+    expect(useAppStore.getState().prefs.grid).toEqual({
+      layout: "single",
+      lastMultiLayout: "four",
+      panes: ["tab-1", "tab-2", "tab-3", "tab-4"],
+    });
+
+    useAppStore.getState().setGridLayout("four");
+    expect(useAppStore.getState().prefs.grid).toEqual({
+      layout: "four",
+      lastMultiLayout: "four",
+      panes: ["tab-1", "tab-2", "tab-3", "tab-4"],
+    });
   });
 });
 
 describe("assignPaneTab", () => {
   it("fills an empty pane and focuses its tab", async () => {
-    resetStore({ prefs: { ...DEFAULT_PREFS, grid: { layout: "two", panes: [null, null] } } });
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: [null, null] },
+      },
+    });
 
     await useAppStore.getState().assignPaneTab(1, "tab-2");
 
-    expect(useAppStore.getState().prefs.grid.panes).toEqual([null, "tab-2"]);
+    expect(useAppStore.getState().prefs.grid.panes).toEqual([null, "tab-2", null, null]);
     expect(useAppStore.getState().activeTabId).toBe("tab-2");
-    expect(useAppStore.getState().gridSolo).toBe(false);
   });
 
   it("swaps instead of showing one tab in two panes", async () => {
-    resetStore({ prefs: { ...DEFAULT_PREFS, grid: { layout: "two", panes: ["tab-1", "tab-2"] } } });
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", "tab-2"] },
+      },
+    });
 
     await useAppStore.getState().assignPaneTab(0, "tab-2");
 
-    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-2", "tab-1"]);
+    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-2", "tab-1", null, null]);
   });
 
-  it("clears a pane with null", () => {
-    resetStore({ prefs: { ...DEFAULT_PREFS, grid: { layout: "two", panes: ["tab-1", "tab-2"] } } });
+  it("clears a pane with null", async () => {
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", "tab-2"] },
+      },
+    });
 
-    void useAppStore.getState().assignPaneTab(1, null);
+    await useAppStore.getState().assignPaneTab(1, null);
 
-    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-1", null]);
+    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-1", null, null, null]);
+    expect(useAppStore.getState().activeTabId).toBe("tab-1");
+  });
+
+  it("assigns into an effective layout and records it as the last split", async () => {
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "single", lastMultiLayout: "four", panes: [null, null, null, null] },
+      },
+    });
+
+    await useAppStore.getState().assignPaneTab(1, "tab-2", { layout: "three-left" });
+
+    expect(useAppStore.getState().prefs.grid).toEqual({
+      layout: "three-left",
+      lastMultiLayout: "three-left",
+      panes: [null, "tab-2", null, null],
+    });
   });
 
   it("leaves prefs untouched for a redundant assignment", async () => {
-    resetStore({ prefs: { ...DEFAULT_PREFS, grid: { layout: "two", panes: ["tab-1", null] } } });
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", null] },
+      },
+    });
     const setPrefs = vi.spyOn(useAppStore.getState(), "setPrefs");
 
     await useAppStore.getState().assignPaneTab(0, "tab-1");
@@ -149,58 +232,220 @@ describe("assignPaneTab", () => {
   });
 });
 
+describe("clearPane", () => {
+  it("keeps the grid and focuses the next occupied pane", async () => {
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: {
+          layout: "two",
+          lastMultiLayout: "two",
+          panes: ["tab-1", "tab-2"],
+        },
+      },
+      activeTabId: "tab-1",
+    });
+
+    await clearPane(0);
+
+    expect(useAppStore.getState().prefs.grid.panes).toEqual([null, "tab-2", null, null]);
+    expect(useAppStore.getState().activeTabId).toBe("tab-2");
+    expect(
+      gridMode({
+        layout: useAppStore.getState().prefs.grid.layout,
+        panes: useAppStore.getState().prefs.grid.panes,
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
+    ).toBe("grid");
+  });
+
+  it("leaves the active tab alone when a background pane is cleared", async () => {
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", "tab-2"] },
+      },
+      activeTabId: "tab-1",
+    });
+
+    await clearPane(1);
+
+    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-1", null, null, null]);
+    expect(useAppStore.getState().activeTabId).toBe("tab-1");
+  });
+
+  it("keeps the empty grid after clearing the last occupied pane", async () => {
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", null] },
+      },
+      activeTabId: "tab-1",
+    });
+
+    await clearPane(0);
+
+    expect(useAppStore.getState().prefs.grid.panes).toEqual([null, null, null, null]);
+    expect(useAppStore.getState().activeTabId).toBeNull();
+    expect(
+      gridMode({
+        layout: useAppStore.getState().prefs.grid.layout,
+        panes: useAppStore.getState().prefs.grid.panes,
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
+    ).toBe("grid");
+  });
+
+  it("preserves hidden slots while clearing a visible pane", async () => {
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: {
+          layout: "two",
+          lastMultiLayout: "two",
+          panes: ["tab-1", "tab-2", "tab-3", "tab-4"],
+        },
+      } as unknown as AppStateShape["prefs"],
+      tabs: [
+        tab(),
+        tab({ id: "tab-2", title: "second", lastActiveAt: 2 }),
+        tab({ id: "tab-3", title: "third", lastActiveAt: 3 }),
+        tab({ id: "tab-4", title: "fourth", lastActiveAt: 4 }),
+      ],
+      activeTabId: "tab-1",
+    });
+
+    await clearPane(0);
+
+    expect(useAppStore.getState().prefs.grid.panes).toEqual([null, "tab-2", "tab-3", "tab-4"]);
+    expect(useAppStore.getState().activeTabId).toBe("tab-2");
+  });
+
+  it("writes the cleared panes once", async () => {
+    const { bridge } = installBridge();
+    const setPrefs = vi.spyOn(bridge.prefs, "set");
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", "tab-2"] },
+      },
+      activeTabId: "tab-1",
+    });
+
+    await clearPane(0);
+
+    expect(setPrefs).toHaveBeenCalledWith({
+      grid: { layout: "two", lastMultiLayout: "two", panes: [null, "tab-2", null, null] },
+    });
+    expect(setPrefs).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not re-insert the cleared tab when the layout changes", async () => {
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", null] },
+      },
+      activeTabId: "tab-1",
+    });
+
+    await clearPane(0);
+    useAppStore.getState().setGridLayout("four");
+
+    expect(useAppStore.getState().prefs.grid.panes).toEqual([null, null, null, null]);
+    expect(useAppStore.getState().activeTabId).toBeNull();
+  });
+
+  it("is a no-op for an already empty pane", async () => {
+    const setPrefs = vi.spyOn(useAppStore.getState(), "setPrefs");
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", null] },
+      },
+    });
+
+    await clearPane(1);
+
+    expect(setPrefs).not.toHaveBeenCalled();
+  });
+});
+
 describe("solo and grid", () => {
   it("returns to the grid when a pane's tab is activated", async () => {
     resetStore({
-      prefs: { ...DEFAULT_PREFS, grid: { layout: "two", panes: ["tab-1", "tab-2"] } },
-      gridSolo: true,
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", "tab-2"] },
+      },
       activeTabId: "tab-3",
     });
 
     await useAppStore.getState().activateTab("tab-2");
 
-    expect(useAppStore.getState().gridSolo).toBe(false);
+    expect(
+      gridMode({
+        layout: useAppStore.getState().prefs.grid.layout,
+        panes: useAppStore.getState().prefs.grid.panes,
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
+    ).toBe("grid");
   });
 
   it("goes solo when a tab no pane holds is activated", async () => {
     resetStore({
-      prefs: { ...DEFAULT_PREFS, grid: { layout: "two", panes: ["tab-1", "tab-2"] } },
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", "tab-2"] },
+      },
       tabs: [tab(), tab({ id: "tab-2", lastActiveAt: 2 }), tab({ id: "tab-3", lastActiveAt: 3 })],
       activeTabId: "tab-1",
     });
 
     await useAppStore.getState().activateTab("tab-3");
 
-    expect(useAppStore.getState().gridSolo).toBe(true);
+    expect(
+      gridMode({
+        layout: useAppStore.getState().prefs.grid.layout,
+        panes: useAppStore.getState().prefs.grid.panes,
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
+    ).toBe("solo");
   });
 
   it("is always solo for a single layout", async () => {
-    resetStore({ activeTabId: "tab-1", gridSolo: true });
+    resetStore({ activeTabId: "tab-1" });
 
     await useAppStore.getState().activateTab("tab-2");
 
-    expect(useAppStore.getState().gridSolo).toBe(false);
+    expect(
+      gridMode({
+        layout: useAppStore.getState().prefs.grid.layout,
+        panes: useAppStore.getState().prefs.grid.panes,
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
+    ).toBe("solo");
   });
 
-  it("showGrid places the active tab in the first empty pane", () => {
+  it("keeps the grid after clearing the focused pane", async () => {
     resetStore({
-      prefs: { ...DEFAULT_PREFS, grid: { layout: "two", panes: [null, null] } },
-      gridSolo: true,
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", null] },
+      },
+      activeTabId: "tab-1",
     });
 
-    useAppStore.getState().showGrid();
+    await useAppStore.getState().assignPaneTab(0, null);
 
-    expect(useAppStore.getState().gridSolo).toBe(false);
-    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-1", null]);
-  });
-
-  it("showSolo keeps the layout and panes", () => {
-    resetStore({ prefs: { ...DEFAULT_PREFS, grid: { layout: "four", panes: ["tab-1"] } } });
-
-    useAppStore.getState().showSolo();
-
-    expect(useAppStore.getState().gridSolo).toBe(true);
-    expect(useAppStore.getState().prefs.grid.layout).toBe("four");
+    expect(useAppStore.getState().activeTabId).toBeNull();
+    expect(
+      gridMode({
+        layout: useAppStore.getState().prefs.grid.layout,
+        panes: useAppStore.getState().prefs.grid.panes,
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
+    ).toBe("grid");
   });
 });
 
@@ -209,14 +454,19 @@ describe("applyTabs", () => {
     const { bridge } = installBridge();
     const setPrefs = vi.spyOn(bridge.prefs, "set");
     resetStore({
-      prefs: { ...DEFAULT_PREFS, grid: { layout: "two", panes: ["tab-1", "tab-2"] } },
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", "tab-2"] },
+      },
       activeTabId: "tab-1",
     });
 
     useAppStore.getState().applyTabs({ tabs: [tab()], activeTabId: "tab-1" });
 
-    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-1", null]);
-    expect(setPrefs).toHaveBeenCalledWith({ grid: { layout: "two", panes: ["tab-1", null] } });
+    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-1", null, null, null]);
+    expect(setPrefs).toHaveBeenCalledWith({
+      grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", null, null, null] },
+    });
     expect(setPrefs).toHaveBeenCalledTimes(1);
   });
 
@@ -224,7 +474,10 @@ describe("applyTabs", () => {
     const { bridge } = installBridge();
     const setPrefs = vi.spyOn(bridge.prefs, "set");
     resetStore({
-      prefs: { ...DEFAULT_PREFS, grid: { layout: "two", panes: ["tab-1", null] } },
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", null] },
+      },
       tabs: [tab(), tab({ id: "tab-2", lastActiveAt: 2 })],
       activeTabId: "tab-1",
     });
@@ -234,9 +487,35 @@ describe("applyTabs", () => {
     expect(setPrefs).not.toHaveBeenCalled();
   });
 
+  it("does not strand a newly created tab in a grid it is not shown in", () => {
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", "tab-2"] },
+      },
+      activeTabId: "tab-1",
+    });
+
+    useAppStore.getState().applyTabs({
+      tabs: [tab(), tab({ id: "tab-2", lastActiveAt: 2 }), tab({ id: "tab-3", lastActiveAt: 3 })],
+      activeTabId: "tab-3",
+    });
+
+    expect(
+      gridMode({
+        layout: useAppStore.getState().prefs.grid.layout,
+        panes: useAppStore.getState().prefs.grid.panes,
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
+    ).toBe("solo");
+  });
+
   it("keeps every visible pane's transcript hydrated", () => {
     resetStore({
-      prefs: { ...DEFAULT_PREFS, grid: { layout: "four", panes: ["tab-1", "tab-2", null, null] } },
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "four", lastMultiLayout: "four", panes: ["tab-1", "tab-2", null, null] },
+      },
     });
     const hydrated = Object.fromEntries(
       ["tab-1", "tab-2", "tab-3", "tab-4", "tab-5", "tab-6"].map((id) => [
@@ -262,7 +541,12 @@ describe("applyTabs", () => {
 describe("syncVisibleTabs", () => {
   it("pushes the visible set once per change", () => {
     const { visibleTabPushes } = installBridge();
-    resetStore({ prefs: { ...DEFAULT_PREFS, grid: { layout: "two", panes: ["tab-1", "tab-2"] } } });
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", "tab-2"] },
+      },
+    });
     const before = visibleTabPushes.length;
 
     useAppStore.getState().syncVisibleTabs();
@@ -274,17 +558,19 @@ describe("syncVisibleTabs", () => {
     expect(visibleTabPushes.length).toBe(before + 1);
   });
 
-  it("pushes only the active tab in solo", () => {
+  it("pushes only the active tab when the active tab is not in a pane", () => {
     const { visibleTabPushes } = installBridge();
     resetStore({
-      prefs: { ...DEFAULT_PREFS, grid: { layout: "two", panes: ["tab-1", "tab-2"] } },
-      gridSolo: true,
-      activeTabId: "tab-2",
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", "tab-2"] },
+      },
+      activeTabId: "tab-3",
     });
 
     useAppStore.getState().syncVisibleTabs();
 
-    expect(visibleTabPushes.at(-1)).toEqual(["tab-2"]);
+    expect(visibleTabPushes.at(-1)).toEqual(["tab-3"]);
   });
 });
 
@@ -296,7 +582,12 @@ describe("browseSessionsForPane", () => {
       tabs: [...useAppStore.getState().tabs, created],
       activeTabId: created.id,
     }));
-    resetStore({ prefs: { ...DEFAULT_PREFS, grid: { layout: "two", panes: ["tab-1", null] } } });
+    resetStore({
+      prefs: {
+        ...DEFAULT_PREFS,
+        grid: { layout: "two", lastMultiLayout: "two", panes: ["tab-1", null] },
+      },
+    });
 
     await useAppStore.getState().browseSessionsForPane(1);
     expect(useAppStore.getState().sessionBrowserOpen).toBe(true);
@@ -304,7 +595,7 @@ describe("browseSessionsForPane", () => {
 
     await useAppStore.getState().resumeSession(session("C:/profile/s9.jsonl"));
 
-    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-1", "tab-9"]);
+    expect(useAppStore.getState().prefs.grid.panes).toEqual(["tab-1", "tab-9", null, null]);
     expect(useAppStore.getState().panePickerTarget).toBeNull();
     expect(useAppStore.getState().activeTabId).toBe("tab-9");
   });

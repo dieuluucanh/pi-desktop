@@ -8,10 +8,12 @@ import {
   type TabStatus,
 } from "../../../shared/session-ipc";
 import { languageBadge, languageIdForPath } from "../../../shared/languages";
-import { paneAreaClass } from "../../../shared/session-grid";
+import type { GridLayout } from "../../../shared/session-grid";
 import { useAppStore } from "../state/app-store";
+import { clearPane } from "../state/grid-actions";
 import { isTabDrag, readTabDrop } from "./tab-drag";
 import { PanePicker } from "./PanePicker";
+import { paneAreaClass } from "./pane-areas";
 import { TabSurface } from "../views/TabSurface";
 
 /**
@@ -38,14 +40,20 @@ const STATUS_DOT: Record<TabStatus, string> = {
   stopped: "bg-ink-faint",
 };
 
-export function GridPane({ index }: { index: number }): React.JSX.Element {
-  const layout = useAppStore((state) => state.prefs.grid.layout);
+export function GridPane({
+  index,
+  layout,
+}: {
+  index: number;
+  layout: GridLayout;
+}): React.JSX.Element {
   const panes = useAppStore((state) => state.prefs.grid.panes);
   const tabs = useAppStore((state) => state.tabs);
   const activeTabId = useAppStore((state) => state.activeTabId);
   const assignPaneTab = useAppStore((state) => state.assignPaneTab);
   const focusPane = useAppStore((state) => state.focusPane);
   const [dropActive, setDropActive] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const dropDepth = useRef(0);
 
   const tabId = panes[index] ?? null;
@@ -97,9 +105,13 @@ export function GridPane({ index }: { index: number }): React.JSX.Element {
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
-      onPointerDownCapture={() => {
+      onPointerDownCapture={(event) => {
         // Clicking anywhere in a pane focuses it: its tab becomes the app-wide
         // selection, which is what menus, the palette and the rail follow.
+        // Header controls are not content: the clear button must not activate
+        // the tab it is about to remove.
+        const target = event.target;
+        if (target instanceof Element && target.closest("[data-pane-control]")) return;
         if (tabId !== null && !focused) void focusPane(index);
       }}
     >
@@ -121,22 +133,41 @@ export function GridPane({ index }: { index: number }): React.JSX.Element {
             className="rounded-xs p-0.5 text-ink-faint hover:bg-raised hover:text-ink"
             aria-label={`Clear pane ${index + 1}`}
             title="Clear this pane"
-            onClick={() => void assignPaneTab(index, null)}
+            data-pane-control
+            onClick={() => void clearPane(index)}
           >
             <X className="size-3" aria-hidden />
           </button>
         ) : null}
-        <PanePicker paneIndex={index} assignedTabId={tabId} />
+        <PanePicker
+          paneIndex={index}
+          assignedTabId={tabId}
+          layout={layout}
+          open={pickerOpen}
+          onOpenChange={setPickerOpen}
+        />
       </header>
 
       <div className="relative flex min-h-0 flex-1 flex-col">
         {tabId !== null ? (
           <TabSurface tabId={tabId} />
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-2 text-xs text-ink-muted">
-            <Plus className="size-4" aria-hidden />
-            <p>Pick a session</p>
-            <p className="text-[10px] text-ink-faint">or drop a tab here</p>
+          <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-xs text-ink-muted">
+            <button
+              type="button"
+              aria-label={`Choose a tab for pane ${index + 1}`}
+              aria-haspopup="menu"
+              aria-expanded={pickerOpen}
+              aria-controls={pickerOpen ? `pane-picker-content-${index}` : undefined}
+              data-testid={`pane-empty-picker-${index}`}
+              data-pane-control
+              className="rounded-sm p-1.5 text-ink-muted hover:bg-raised hover:text-ink focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+              onClick={() => setPickerOpen(true)}
+            >
+              <Plus className="size-5" aria-hidden />
+            </button>
+            <span>Pick a session</span>
+            <span className="text-[10px] text-ink-faint">or drop a tab here</span>
           </div>
         )}
       </div>

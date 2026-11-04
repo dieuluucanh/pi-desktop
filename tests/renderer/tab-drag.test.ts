@@ -29,15 +29,16 @@ class FakeTransfer {
 }
 
 describe("writeTabDrag", () => {
-  it("writes the typed payload and a plain-text fallback", () => {
+  it("writes only the typed payload", () => {
     const transfer = new FakeTransfer();
     writeTabDrag(transfer, "tab-1");
 
     expect(transfer.getData(TAB_DRAG_MIME)).toBe(
       JSON.stringify({ version: TAB_DRAG_VERSION, tabId: "tab-1" }),
     );
-    // Reorder inside a strip still uses the plain form.
-    expect(transfer.getData("text/plain")).toBe("tab-1");
+    // No plain-text copy: a tab id must never be insertable as text.
+    expect(transfer.getData("text/plain")).toBe("");
+    expect(transfer.types).toEqual([TAB_DRAG_MIME]);
     expect(transfer.effectAllowed).toBe("move");
   });
 

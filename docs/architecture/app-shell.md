@@ -53,8 +53,10 @@ and the panel rail stay global chrome; only the content area splits.
 - **Five presets**, no draggable splitters: `single`, `two` (two full-height
   columns), `three-left` (left pane full height, right column split),
   `three-right` (mirrored) and `four` (2×2). `shared/session-grid.ts` owns the
-  pane count and the CSS area of every pane, so the geometry is unit tested
-  without a DOM.
+  pane count and visibility math; `layout/pane-areas.ts` owns the complete
+  Tailwind placement literals (`col-start`, `row-start`, `row-span`) so CSS
+  auto-placement cannot push a pane into an implicit row. The geometry is unit
+  tested without a DOM.
 - **A pane is one `TabRecord`** (`session`, `office`, `web` or `editor`, from any
   project), rendered by `views/TabSurface.tsx` — the same kind dispatcher the
   solo view uses. `editor-store`, `editor-registry` and the web-tab service are
@@ -65,13 +67,26 @@ and the panel rail stay global chrome; only the content area splits.
   Several mounted `SessionView`s therefore each render their own tab; the two
   `window` key listeners (find, jump-to-bottom) and the editor's mount focus are
   gated on the focused tab.
-- **Solo mode.** `prefs.grid.layout` stays authoritative. Activating a tab that no
-  pane holds shows it full-size (`gridSolo`); activating a pane's tab returns to
-  the grid. `gridMode()` is the single decision, and it is why "grid and single
-  run in parallel" without losing the layout.
-- **Persistence.** `prefs.grid = { layout, panes }`; `applyTabs` clears a closed
-  tab's slot to `null` (never re-flows the layout) and writes prefs only when
-  something actually changed.
+- **Solo mode is derived.** `prefs.grid.layout` stays authoritative. Activating a
+  tab that no **visible** pane holds shows it full-size; activating a pane's tab
+  returns to the grid. `gridMode()` is the single decision, and no mode flag is
+  stored. A split layout with no active tab shows the **empty grid**, which is
+  what makes clearing the last pane stay in the grid. The layout and every
+  assignment survive a trip through Single.
+- **Drag reveals the grid.** While a tab drag is active from a solo view,
+  `gridSurface()` renders the remembered multi layout (`lastMultiLayout`) at
+  reduced opacity so every pane is a drop target. A drop adopts that layout; a
+  cancelled drag restores solo without writing prefs.
+- **Persistence.** `prefs.grid = { layout, lastMultiLayout, panes }`; `panes` is a
+  fixed four-slot array, so hidden assignments survive a smaller preset.
+  `applyTabs` clears a closed tab's slot to `null` (never re-flows the layout) and
+  writes prefs only when something actually changed.
+- **Clearing a pane keeps the grid.** The header `×` removes that pane's
+  assignment only; the session stays open in the tab strip. If the cleared pane
+  held the active tab, focus moves cyclically to the next occupied visible pane;
+  if none is left, `activeTabId` becomes `null` and the split layout stays on the
+  empty grid. Header controls carry `data-pane-control`, so pointer-down on the
+  clear button or picker chevron does not first focus the tab being removed.
 - **Host pinning.** The renderer pushes the mounted pane tabs over
   `session:set-visible`; main feeds them to `keepHostAlive`, excludes them from
   `parkTab`/`idleCandidates` and raises `reclaimHosts`' floor. The per-host RSS
@@ -81,12 +96,19 @@ and the panel rail stay global chrome; only the content area splits.
   `tabId === activeTabId`; eviction only ever takes a hidden view and
   `MAX_LIVE_WEB_VIEWS` is 6 (four panes may each show one).
 
-Entry points: the layout switcher at the far right of the session strip
+Entry points: the icon-only layout switcher at the far right of the session strip
 (`layout/GridLayoutMenu.tsx`), View ▸ Layout in the menu, and the command palette.
-Each pane's chevron (`layout/PanePicker.tsx`) lists session tabs grouped by
-project, then editor tabs, then a route into the session browser; a tab can also
-be dragged from either strip or the sidebar onto a pane
-(`shared/tab-drag.ts`, MIME `application/x-pi-tab`).
+The switcher trigger shows the current preset. Its five icons run widest to
+narrowest — four panes at the far left, then the two three-pane shapes, two
+columns, and single at the far right. They have accessible names, not visible
+labels. Each pane has **one controlled
+`layout/PanePicker.tsx`**; its header chevron is the sole trigger and anchor. The
+empty pane's centred `+` button opens that same menu, so it also hangs from the
+chevron rather than the centre of the pane. Only the `+` is clickable — “Pick a
+session” and “or drop a tab here” are plain text. The menu lists session tabs
+grouped by project, then editor tabs, then a route into the session browser. A
+tab can also be dragged from either strip or the sidebar onto a pane
+(`shared/tab-drag.ts`, MIME `application/x-pi-tab`, no `text/plain` copy).
 
 **Two surfaces, one job each (2026-10-31 minimal-session-ui).** The status bar is
 app-level and mounted on every view; it never carries session facts. It shows the

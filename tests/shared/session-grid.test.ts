@@ -11,13 +11,15 @@ import {
   gridMode,
   gridPaneCount,
   gridRowCount,
+  gridSurface,
   isGridLayout,
   mergeGridPrefs,
+  nextVisiblePaneTab,
   normalizeGridPanes,
-  paneAreaClass,
   paneIndexOfTab,
   sanitizeGridPrefs,
   visibleGridTabIds,
+  visiblePaneIds,
   type GridPrefs,
 } from "../../src/shared/session-grid";
 
@@ -30,7 +32,7 @@ import {
  */
 
 function grid(layout: GridPrefs["layout"], panes: (string | null)[]): GridPrefs {
-  return { layout, panes };
+  return { layout, lastMultiLayout: layout === "single" ? "two" : layout, panes };
 }
 
 describe("layouts", () => {
@@ -66,77 +68,47 @@ describe("layouts", () => {
   });
 });
 
-describe("pane geometry", () => {
-  it("gives a single pane the whole area without a second row", () => {
-    expect(paneAreaClass("single", 0)).toBe("col-span-2");
-  });
-
-  it("puts two panes in two full-height columns", () => {
-    expect([0, 1].map((index) => paneAreaClass("two", index))).toEqual([
-      "row-span-2",
-      "row-span-2",
-    ]);
-  });
-
-  it("puts the tall pane on the left for three-left", () => {
-    expect([0, 1, 2].map((index) => paneAreaClass("three-left", index))).toEqual([
-      "row-span-2",
-      "",
-      "",
-    ]);
-  });
-
-  it("puts the tall pane on the right for three-right", () => {
-    expect([0, 1, 2].map((index) => paneAreaClass("three-right", index))).toEqual([
-      "",
-      "row-span-2",
-      "",
-    ]);
-  });
-
-  it("lays four panes out as a 2x2 with no spans", () => {
-    expect([0, 1, 2, 3].map((index) => paneAreaClass("four", index))).toEqual(["", "", "", ""]);
-  });
-
-  it("hides a pane index the layout does not show", () => {
-    // A stale render after a shrink must not paint a fifth pane.
-    expect(paneAreaClass("two", 2)).toBe("hidden");
-    expect(paneAreaClass("single", 1)).toBe("hidden");
-    expect(paneAreaClass("four", -1)).toBe("hidden");
-  });
-});
-
 describe("normalizeGridPanes", () => {
-  it("pads to the layout's pane count with empty slots", () => {
-    expect(normalizeGridPanes("four", ["a"])).toEqual(["a", null, null, null]);
-    expect(normalizeGridPanes("single", [])).toEqual([null]);
+  it("pads every array to the four fixed slots", () => {
+    expect(normalizeGridPanes(["a"])).toEqual(["a", null, null, null]);
+    expect(normalizeGridPanes([])).toEqual([null, null, null, null]);
   });
 
-  it("truncates to the layout's pane count, keeping the first slots", () => {
-    expect(normalizeGridPanes("two", ["a", "b", "c", "d"])).toEqual(["a", "b"]);
+  it("never truncates to the current layout, so a preset switch can round-trip", () => {
+    expect(normalizeGridPanes(["a", "b", "c", "d"])).toEqual(["a", "b", "c", "d"]);
+    expect(normalizeGridPanes(["a", "b", "c", "d", "e"])).toEqual(["a", "b", "c", "d"]);
   });
 
   it("drops duplicates, keeping the first occurrence", () => {
-    expect(normalizeGridPanes("two", ["a", "b"])).toEqual(["a", "b"]);
-    expect(normalizeGridPanes("three-left", ["a", "a", "b"])).toEqual(["a", null, "b"]);
+    expect(normalizeGridPanes(["a", "a", "b"])).toEqual(["a", null, "b", null]);
   });
 
   it("turns an invalid slot into null without moving its neighbours", () => {
-    expect(normalizeGridPanes("three-left", ["a", 42, "b"])).toEqual(["a", null, "b"]);
-    expect(normalizeGridPanes("three-left", ["a", "", "b"])).toEqual(["a", null, "b"]);
-    expect(normalizeGridPanes("three-left", ["a", "   ", "b"])).toEqual(["a", null, "b"]);
+    expect(normalizeGridPanes(["a", 42, "b"])).toEqual(["a", null, "b", null]);
+    expect(normalizeGridPanes(["a", "", "b"])).toEqual(["a", null, "b", null]);
+    expect(normalizeGridPanes(["a", "   ", "b"])).toEqual(["a", null, "b", null]);
   });
 
   it("rejects an oversized tab id", () => {
     const huge = "x".repeat(129);
-    expect(normalizeGridPanes("two", [huge, "ok"])).toEqual([null, "ok"]);
-    expect(normalizeGridPanes("two", ["x".repeat(128)])).toEqual(["x".repeat(128), null]);
+    expect(normalizeGridPanes([huge, "ok"])).toEqual([null, "ok", null, null]);
+    expect(normalizeGridPanes(["x".repeat(128)])).toEqual(["x".repeat(128), null, null, null]);
   });
 
   it("accepts a missing or non-array panes value", () => {
-    expect(normalizeGridPanes("two", null)).toEqual([null, null]);
-    expect(normalizeGridPanes("two", undefined)).toEqual([null, null]);
-    expect(normalizeGridPanes("two", "a" as unknown as string[])).toEqual([null, null]);
+    expect(normalizeGridPanes(null)).toEqual([null, null, null, null]);
+    expect(normalizeGridPanes(undefined)).toEqual([null, null, null, null]);
+    expect(normalizeGridPanes("a" as unknown as string[])).toEqual([null, null, null, null]);
+  });
+});
+
+describe("visiblePaneIds", () => {
+  it("returns only the slots the layout shows", () => {
+    const panes = ["a", "b", "c", "d"];
+    expect(visiblePaneIds("single", panes)).toEqual(["a"]);
+    expect(visiblePaneIds("two", panes)).toEqual(["a", "b"]);
+    expect(visiblePaneIds("three-left", panes)).toEqual(["a", "b", "c"]);
+    expect(visiblePaneIds("four", panes)).toEqual(panes);
   });
 });
 
@@ -145,15 +117,32 @@ describe("sanitizeGridPrefs", () => {
     for (const value of [null, undefined, 42, "four", ["a"]]) {
       expect(sanitizeGridPrefs(value)).toEqual(DEFAULT_GRID_PREFS);
     }
-    // The shared default already has the layout's single (empty) slot.
-    expect(DEFAULT_GRID_PREFS.panes).toEqual([null]);
+    // The shared default already has the four empty slots.
+    expect(DEFAULT_GRID_PREFS.panes).toEqual([null, null, null, null]);
   });
 
   it("keeps a valid layout and its panes", () => {
     expect(sanitizeGridPrefs({ layout: "four", panes: ["a", null, "b"] })).toEqual({
       layout: "four",
+      lastMultiLayout: "four",
       panes: ["a", null, "b", null],
     });
+  });
+
+  it("keeps the last multi layout while Single is selected", () => {
+    expect(
+      sanitizeGridPrefs({ layout: "single", lastMultiLayout: "three-left", panes: ["a"] })
+        .lastMultiLayout,
+    ).toBe("three-left");
+  });
+
+  it("forces lastMultiLayout to the layout whenever a multi layout is active", () => {
+    expect(
+      sanitizeGridPrefs({ layout: "four", lastMultiLayout: "two", panes: [] }).lastMultiLayout,
+    ).toBe("four");
+    expect(
+      sanitizeGridPrefs({ layout: "single", lastMultiLayout: "wat", panes: [] }).lastMultiLayout,
+    ).toBe("two");
   });
 
   it("falls back to single for an unknown layout, keeping the first pane", () => {
@@ -161,14 +150,16 @@ describe("sanitizeGridPrefs", () => {
     // app-state.json does not silently lose which tab was on screen.
     expect(sanitizeGridPrefs({ layout: "nine", panes: ["a", "b", "c", "d"] })).toEqual({
       layout: "single",
-      panes: ["a"],
+      lastMultiLayout: "two",
+      panes: ["a", "b", "c", "d"],
     });
   });
 
   it("tolerates a missing panes array", () => {
     expect(sanitizeGridPrefs({ layout: "three-right" })).toEqual({
       layout: "three-right",
-      panes: [null, null, null],
+      lastMultiLayout: "three-right",
+      panes: [null, null, null, null],
     });
   });
 });
@@ -178,7 +169,17 @@ describe("mergeGridPrefs", () => {
     const current = grid("four", ["a", "b", "c", "d"]);
     expect(mergeGridPrefs(current, { layout: "two" })).toEqual({
       layout: "two",
-      panes: ["a", "b"],
+      lastMultiLayout: "two",
+      panes: ["a", "b", "c", "d"],
+    });
+  });
+
+  it("keeps the remembered split when the patch names Single", () => {
+    const current = grid("four", ["a", "b", "c", "d"]);
+    expect(mergeGridPrefs(current, { layout: "single" })).toEqual({
+      layout: "single",
+      lastMultiLayout: "four",
+      panes: ["a", "b", "c", "d"],
     });
   });
 
@@ -186,20 +187,30 @@ describe("mergeGridPrefs", () => {
     const current = grid("four", ["a", "b", "c", "d"]);
     expect(mergeGridPrefs(current, { panes: ["x"] })).toEqual({
       layout: "four",
+      lastMultiLayout: "four",
       panes: ["x", null, null, null],
     });
   });
 
   it("ignores an unknown layout in the patch", () => {
     const current = grid("three-left", ["a", "b", "c"]);
-    expect(mergeGridPrefs(current, { layout: "wat" })).toEqual(current);
+    expect(mergeGridPrefs(current, { layout: "wat" })).toEqual({
+      layout: "three-left",
+      lastMultiLayout: "three-left",
+      panes: ["a", "b", "c", null],
+    });
   });
 
   it("accepts a garbage patch without throwing", () => {
     const current = grid("two", ["a", "b"]);
-    expect(mergeGridPrefs(current, null)).toEqual(current);
-    expect(mergeGridPrefs(current, 7)).toEqual(current);
-    expect(mergeGridPrefs(current, [1, 2])).toEqual(current);
+    const normalised = {
+      layout: "two",
+      lastMultiLayout: "two",
+      panes: ["a", "b", null, null],
+    };
+    expect(mergeGridPrefs(current, null)).toEqual(normalised);
+    expect(mergeGridPrefs(current, 7)).toEqual(normalised);
+    expect(mergeGridPrefs(current, [1, 2])).toEqual(normalised);
   });
 });
 
@@ -211,18 +222,18 @@ describe("assignGridPane", () => {
 
   it("clears a pane when the tab is null", () => {
     const next = assignGridPane(grid("two", ["a", "b"]), 0, null);
-    expect(next.panes).toEqual([null, "b"]);
+    expect(next.panes).toEqual([null, "b", null, null]);
   });
 
   it("is idempotent for the same assignment", () => {
     const next = assignGridPane(grid("two", ["a", "b"]), 1, "b");
-    expect(next.panes).toEqual(["a", "b"]);
+    expect(next.panes).toEqual(["a", "b", null, null]);
   });
 
   it("swaps instead of showing one tab twice", () => {
     // 'b' lives in pane 1; dropping it on pane 0 moves 'a' to pane 1.
     const next = assignGridPane(grid("two", ["a", "b"]), 0, "b");
-    expect(next.panes).toEqual(["b", "a"]);
+    expect(next.panes).toEqual(["b", "a", null, null]);
   });
 
   it("keeps a displaced empty slot empty", () => {
@@ -230,27 +241,56 @@ describe("assignGridPane", () => {
     expect(next.panes).toEqual(["a", null, "b", null]);
   });
 
-  it("ignores a pane index the layout does not show", () => {
+  it("ignores a pane index beyond the four stored slots", () => {
     const prefs = grid("two", ["a", "b"]);
-    expect(assignGridPane(prefs, 3, "c").panes).toEqual(["a", "b"]);
-    expect(assignGridPane(prefs, -1, "c").panes).toEqual(["a", "b"]);
+    expect(assignGridPane(prefs, 4, "c").panes).toEqual(["a", "b", null, null]);
+    expect(assignGridPane(prefs, -1, "c").panes).toEqual(["a", "b", null, null]);
   });
 
   it("rejects a blank or oversized id, clearing the slot", () => {
-    expect(assignGridPane(grid("two", ["a", "b"]), 0, "  ").panes).toEqual([null, "b"]);
-    expect(assignGridPane(grid("two", ["a", "b"]), 0, "x".repeat(129)).panes).toEqual([null, "b"]);
+    expect(assignGridPane(grid("two", ["a", "b"]), 0, "  ").panes).toEqual([null, "b", null, null]);
+    expect(assignGridPane(grid("two", ["a", "b"]), 0, "x".repeat(129)).panes).toEqual([
+      null,
+      "b",
+      null,
+      null,
+    ]);
+  });
+
+  it("keeps hidden slot assignments when assigning another pane", () => {
+    const next = assignGridPane(grid("two", ["a", "b", "c", "d"]), 0, "e");
+    expect(next.panes).toEqual(["e", "b", "c", "d"]);
+  });
+
+  it("swaps with a tab held only in a hidden slot", () => {
+    const next = assignGridPane(grid("two", ["a", "b", "c", "d"]), 0, "c");
+    expect(next.panes).toEqual(["c", "b", "a", "d"]);
+  });
+
+  it("preserves the remembered split when assigning a pane", () => {
+    const next = assignGridPane(
+      { layout: "single", lastMultiLayout: "four", panes: ["a", "b", "c", "d"] },
+      0,
+      "e",
+    );
+    expect(next.lastMultiLayout).toBe("four");
+    expect(next.panes).toEqual(["e", "b", "c", "d"]);
   });
 
   it("normalizes the stored panes before assigning", () => {
-    // A stale array longer than the layout is truncated first, so the dropped
-    // 'c' can still be assigned: it is no longer "already shown" in a hidden slot.
-    const next = assignGridPane({ layout: "two", panes: ["a", "b", "c", "d"] }, 1, "c");
-    expect(next.panes).toEqual(["a", "c"]);
+    // A stale array longer than four is truncated first, so the dropped 'e' can
+    // still be assigned.
+    const next = assignGridPane(
+      { layout: "two", lastMultiLayout: "two", panes: ["a", "b", "c", "d", "e"] },
+      1,
+      "e",
+    );
+    expect(next.panes).toEqual(["a", "e", "c", "d"]);
   });
 });
 
 describe("lookups", () => {
-  it("finds the pane holding a tab, or -1", () => {
+  it("finds the visible pane holding a tab, or -1", () => {
     const prefs = grid("three-left", ["a", null, "b"]);
     expect(paneIndexOfTab(prefs, "b")).toBe(2);
     expect(paneIndexOfTab(prefs, "a")).toBe(0);
@@ -258,15 +298,32 @@ describe("lookups", () => {
     expect(paneIndexOfTab(prefs, null)).toBe(-1);
   });
 
-  it("finds the first empty pane, or null when the layout is full", () => {
+  it("does not treat a hidden slot as a pane", () => {
+    expect(paneIndexOfTab(grid("two", ["a", "b", "c", "d"]), "d")).toBe(-1);
+  });
+
+  it("finds the first empty visible pane, or null when the layout is full", () => {
     expect(firstEmptyPane(grid("three-left", ["a", null, "b"]))).toBe(1);
     expect(firstEmptyPane(grid("two", ["a", "b"]))).toBeNull();
     expect(firstEmptyPane(grid("four", []))).toBe(0);
+    // Slots 2 and 3 are hidden in the two-pane layout, not empty panes.
+    expect(firstEmptyPane(grid("two", ["a", "b", null, null]))).toBeNull();
+  });
+
+  it("finds the next occupied visible pane cyclically", () => {
+    expect(nextVisiblePaneTab("three-left", ["a", null, "b"], 0)).toBe("b");
+    expect(nextVisiblePaneTab("three-left", ["a", null, "b"], 2)).toBe("a");
+    expect(nextVisiblePaneTab("three-left", ["a", null, "c"], 1)).toBe("c");
+    expect(nextVisiblePaneTab("two", ["a", "b"], 0)).toBe("b");
+    expect(nextVisiblePaneTab("four", ["a", "b", "c", "d"], 3)).toBe("a");
+    // A hidden slot is never a handoff target, and an empty grid has none.
+    expect(nextVisiblePaneTab("two", ["a", null, "hidden", null], 0)).toBeNull();
+    expect(nextVisiblePaneTab("two", [null, null], 0)).toBeNull();
   });
 });
 
 describe("gridMode", () => {
-  const base = { layout: "two", panes: ["a", null], solo: false, activeTabId: "a" } as const;
+  const base = { layout: "two", panes: ["a", null], activeTabId: "a" } as const;
 
   it("is always solo for the single layout", () => {
     expect(gridMode({ ...base, layout: "single" })).toBe("solo");
@@ -276,26 +333,74 @@ describe("gridMode", () => {
     expect(gridMode(base)).toBe("grid");
   });
 
-  it("is solo when the user opened a tab no pane holds", () => {
-    expect(gridMode({ ...base, solo: true })).toBe("solo");
+  it("is solo when the active tab is not in a visible pane", () => {
+    expect(gridMode({ ...base, activeTabId: "hidden" })).toBe("solo");
+    expect(
+      gridMode({ layout: "two", panes: ["a", "b", "hidden", null], activeTabId: "hidden" }),
+    ).toBe("solo");
   });
 
-  it("is solo with no active tab", () => {
-    expect(gridMode({ ...base, activeTabId: null })).toBe("solo");
+  it("keeps the grid with no active tab in a split layout", () => {
+    expect(gridMode({ ...base, activeTabId: null })).toBe("grid");
+  });
+});
+
+describe("gridSurface", () => {
+  const base = {
+    layout: "single" as const,
+    lastMultiLayout: "four" as const,
+    panes: ["a", "b", "c", "d"],
+    activeTabId: "a",
+    dragging: false,
+  };
+
+  it("is the normal surface when no drag is active", () => {
+    expect(gridSurface(base)).toEqual({ mode: "solo", layout: "single", dragReveal: false });
+    expect(gridSurface({ ...base, layout: "four", panes: ["a", "b", "c", "d"] })).toEqual({
+      mode: "grid",
+      layout: "four",
+      dragReveal: false,
+    });
+  });
+
+  it("reveals the last multi layout from Single while dragging", () => {
+    expect(gridSurface({ ...base, dragging: true })).toEqual({
+      mode: "grid",
+      layout: "four",
+      dragReveal: true,
+    });
+  });
+
+  it("reveals the current layout from a multi-layout solo view", () => {
+    expect(
+      gridSurface({
+        ...base,
+        layout: "two",
+        lastMultiLayout: "two",
+        activeTabId: "hidden",
+        dragging: true,
+      }),
+    ).toEqual({ mode: "grid", layout: "two", dragReveal: true });
+  });
+
+  it("does not mark an already-visible grid as a reveal", () => {
+    expect(gridSurface({ ...base, layout: "four", activeTabId: "b", dragging: true })).toEqual({
+      mode: "grid",
+      layout: "four",
+      dragReveal: false,
+    });
   });
 });
 
 describe("visibleGridTabIds", () => {
-  it("is only the active tab in solo", () => {
-    expect(
-      visibleGridTabIds({ layout: "two", panes: ["a", "b"], solo: true, activeTabId: "c" }),
-    ).toEqual(["c"]);
+  it("is only the active tab when the tab is not in a pane", () => {
+    expect(visibleGridTabIds({ layout: "two", panes: ["a", "b"], activeTabId: "c" })).toEqual([
+      "c",
+    ]);
   });
 
   it("is empty when nothing is active and nothing is arranged", () => {
-    expect(
-      visibleGridTabIds({ layout: "single", panes: [], solo: false, activeTabId: null }),
-    ).toEqual([]);
+    expect(visibleGridTabIds({ layout: "single", panes: [], activeTabId: null })).toEqual([]);
   });
 
   it("lists the focused tab first, then the other panes", () => {
@@ -303,17 +408,15 @@ describe("visibleGridTabIds", () => {
       visibleGridTabIds({
         layout: "four",
         panes: ["b", "c", null, "d"],
-        solo: false,
         activeTabId: "b",
       }),
     ).toEqual(["b", "c", "d"]);
   });
 
-  it("includes the active tab even when no pane holds it", () => {
-    // The focused tab is on screen only in solo, but its caches must stay warm.
+  it("is solo-only when the active tab is held in a hidden slot", () => {
     expect(
-      visibleGridTabIds({ layout: "two", panes: ["a", "b"], solo: false, activeTabId: "z" }),
-    ).toEqual(["z", "a", "b"]);
+      visibleGridTabIds({ layout: "two", panes: ["a", "b", "z", null], activeTabId: "z" }),
+    ).toEqual(["z"]);
   });
 
   it("drops duplicate pane slots", () => {
@@ -321,7 +424,6 @@ describe("visibleGridTabIds", () => {
       visibleGridTabIds({
         layout: "four",
         panes: ["a", "a", "b", null],
-        solo: false,
         activeTabId: "b",
       }),
     ).toEqual(["b", "a"]);

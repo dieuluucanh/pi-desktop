@@ -109,7 +109,7 @@ export function App() {
   }, []);
 
   // Dropping an OS file on the window must never navigate the renderer to
-  // `file://`. In-app tab/rail drags carry `text/plain` only, so this guard is
+  // `file://`. In-app tab drags carry only their typed MIME, so this guard is
   // deliberately limited to external `Files` drags.
   useEffect(() => {
     const guard = (event: DragEvent): void => {

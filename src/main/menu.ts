@@ -73,7 +73,6 @@ const VIEW_ITEMS: readonly ItemSpec[] = [
  * would fire before the renderer (that space belongs to Pi's own keys).
  */
 const LAYOUT_ITEMS: readonly ItemSpec[] = [
-  { command: "grid-toggle", label: "Toggle Grid / Single Tab" },
   { command: "grid-single", label: "Layout: Single Tab" },
   { command: "grid-two", label: "Layout: Two Columns" },
   { command: "grid-three-left", label: "Layout: Three Panes (Left Tall)" },

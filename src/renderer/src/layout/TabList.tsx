@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { TabRecord } from "../../../shared/session-ipc";
 import { useEditorStore } from "../editor/editor-store";
 import { useAppStore } from "../state/app-store";
+import { beginTabDrag, endTabDrag } from "../state/tab-drag-session";
 import { TabChip } from "./TabChip";
 import { writeTabDrag } from "./tab-drag";
 import { useTabStripScroll } from "./use-tab-scroll";
@@ -56,9 +57,13 @@ export function TabList({ tabs, label, empty }: TabListProps): React.JSX.Element
             // Two consumers, one gesture: the strip reorders from `dragId`, and a
             // grid pane accepts the typed payload (2026-11-03 plan).
             writeTabDrag(event.dataTransfer, tab.id);
+            beginTabDrag();
             setDragId(tab.id);
           }}
-          onDragEnd={() => setDragId(null)}
+          onDragEnd={() => {
+            setDragId(null);
+            endTabDrag();
+          }}
           onDragOver={(event) => {
             if (dragId && dragId !== tab.id) event.preventDefault();
           }}

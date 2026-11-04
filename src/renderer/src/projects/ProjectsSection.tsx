@@ -31,6 +31,7 @@ import { openProjectAction } from "../menu-actions";
 import { CloneProjectDialog, CreateProjectDialog } from "./ProjectDialogs";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
 import { writeTabDrag } from "../layout/tab-drag";
+import { beginTabDrag, endTabDrag } from "../state/tab-drag-session";
 import { removeProjectWithPrompt } from "./remove-project";
 import type {
   PiProjectResources,
@@ -401,7 +402,11 @@ function SessionRow({ session }: { session: SessionTab }) {
       // A session row is a drag source for the grid panes, exactly like a chip in
       // the strip (2026-11-03 plan).
       draggable
-      onDragStart={(event) => writeTabDrag(event.dataTransfer, session.id)}
+      onDragStart={(event) => {
+        writeTabDrag(event.dataTransfer, session.id);
+        beginTabDrag();
+      }}
+      onDragEnd={() => endTabDrag()}
     >
       <Badge tone={STATUS_TONE[session.status]} className="shrink-0 px-1 py-0 leading-3">
         {session.status === "running" ? "●" : "○"}

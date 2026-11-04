@@ -4,6 +4,7 @@ import { Check, ChevronDown, FolderOpen } from "lucide-react";
 import { isEditorTab, isSessionTab, type TabRecord } from "../../../shared/session-ipc";
 import { projectNameOf } from "../../../shared/projects";
 import { languageBadge, languageIdForPath } from "../../../shared/languages";
+import { gridPaneCount, type GridLayout } from "../../../shared/session-grid";
 import { useAppStore } from "../state/app-store";
 import {
   DropdownMenu,
@@ -16,7 +17,9 @@ import {
 import { Button } from "../ui/button";
 
 /**
- * The chevron in a pane header.
+ * The chevron in a pane header is the menu's only trigger. The empty pane's `+`
+ * opens the same controlled menu, so both gestures are anchored to the chevron
+ * and there is never a second popup with its own position.
  *
  * The list is classified exactly as asked (2026-11-03 grid plan): **Session
  * tabs**, grouped by project, then **Editor tabs** in their own group, then a
@@ -35,21 +38,27 @@ import { Button } from "../ui/button";
 export function PanePicker({
   paneIndex,
   assignedTabId,
+  layout,
+  open,
+  onOpenChange,
 }: {
   paneIndex: number;
   assignedTabId: string | null;
+  layout: GridLayout;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }): React.JSX.Element {
   const tabs = useAppStore((state) => state.tabs);
   const panes = useAppStore((state) => state.prefs.grid.panes);
   const assignPaneTab = useAppStore((state) => state.assignPaneTab);
   const browseSessionsForPane = useAppStore((state) => state.browseSessionsForPane);
   const model = useMemo(
-    () => panePickerModel(tabs, panes, assignedTabId),
-    [tabs, panes, assignedTabId],
+    () => panePickerModel(tabs, panes, assignedTabId, layout),
+    [tabs, panes, assignedTabId, layout],
   );
 
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
         <Button
           size="icon-sm"
@@ -57,11 +66,17 @@ export function PanePicker({
           aria-label={`Choose a tab for pane ${paneIndex + 1}`}
           title="Choose a tab for this pane"
           data-testid={`pane-picker-${paneIndex}`}
+          data-pane-control
         >
           <ChevronDown className="size-3.5" aria-hidden />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="max-h-80 overflow-y-auto">
+      <DropdownMenuContent
+        align="end"
+        id={`pane-picker-content-${paneIndex}`}
+        data-testid={`pane-picker-menu-${paneIndex}`}
+        className="max-h-80 overflow-y-auto"
+      >
         <DropdownMenuLabel>Session tabs</DropdownMenuLabel>
         {model.sessions.length === 0 ? (
           <DropdownMenuItem disabled>No open sessions</DropdownMenuItem>
@@ -166,14 +181,17 @@ export function panePickerModel(
   tabs: readonly TabRecord[],
   panes: readonly (string | null)[],
   assignedTabId: string | null,
+  layout: GridLayout,
 ): PanePickerModel {
+  const visibleCount = gridPaneCount(layout);
   const entry = (tab: TabRecord): PanePickerEntry => {
     const pane = panes.indexOf(tab.id);
     return {
       id: tab.id,
       title: tab.title,
       current: tab.id === assignedTabId,
-      paneHint: pane >= 0 && tab.id !== assignedTabId ? `pane ${pane + 1}` : null,
+      paneHint:
+        pane >= 0 && pane < visibleCount && tab.id !== assignedTabId ? `pane ${pane + 1}` : null,
     };
   };
 

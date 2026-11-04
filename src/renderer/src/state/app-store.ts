@@ -26,16 +26,19 @@ import { normalizeScopePatterns, scopeKeys, scopeStarKeys } from "../../../share
 import { mostRecentSessionTabForFolder, sameFolder } from "../../../shared/rail-scope";
 import {
   assignGridPane,
-  firstEmptyPane,
+  gridSurface,
+  nextVisiblePaneTab,
   normalizeGridPanes,
-  paneIndexOfTab,
   sanitizeGridPrefs,
   visibleGridTabIds,
+  visiblePaneIds,
   type GridLayout,
+  type GridPrefs,
 } from "../../../shared/session-grid";
 import type { WorkspaceEntryKind } from "../../../shared/workspace";
 import { workspaceMention } from "../../../shared/workspace-drag";
 import { MAX_BLOB_BYTES, MAX_RETAINED_BLOBS, maxRetainedTranscripts } from "./retention";
+import { isTabDragActive } from "./tab-drag-session";
 import type { CustomProviderInput, CustomProviderSummary } from "../../../shared/custom-providers";
 import {
   isNotificationMuted,
@@ -666,12 +669,6 @@ export interface AppStateShape {
   /** Open session tabs (plan step 3); the main process owns their hosts. */
   tabs: TabRecord[];
   activeTabId: string | null;
-  /**
-   * True when the active tab is shown full-size instead of the grid (2026-11-03
-   * grid plan). `prefs.grid.layout` stays authoritative; this is only "the user
-   * last opened a tab that no pane holds".
-   */
-  gridSolo: boolean;
   /** The pane “Browse saved sessions…” will fill, cleared once it does. */
   panePickerTarget: number | null;
   /** Per-tab event counter/last event: proof the host pipe is live (step 5 renders it). */
@@ -1477,13 +1474,18 @@ export interface AppStateShape {
   /** The session view grid (2026-11-03 plan): preset, panes, focus and solo. */
   setGridLayout: (layout: GridLayout) => void;
   /** Assigns (or clears, with null) one pane, swapping when the tab is shown elsewhere. */
-  assignPaneTab: (paneIndex: number, tabId: string | null) => Promise<void>;
+  assignPaneTab: (
+    paneIndex: number,
+    tabId: string | null,
+    options?: { layout?: GridLayout },
+  ) => Promise<void>;
+  /**
+   * Clears one pane without closing its tab. If it held the active tab, focus
+   * moves to the next occupied visible pane (or no tab), so the grid stays up.
+   */
+  clearPane: (paneIndex: number) => Promise<void>;
   /** Focuses whatever a pane holds, making it the app-wide active tab. */
   focusPane: (paneIndex: number) => Promise<void>;
-  /** Leaves solo: shows the remembered grid, placing the active tab if needed. */
-  showGrid: () => void;
-  /** Shows the active tab full-size while remembering the grid layout. */
-  showSolo: () => void;
   /** Opens the session browser to fill one pane with a saved session. */
   browseSessionsForPane: (paneIndex: number) => Promise<void>;
   /** Pushes the mounted pane tabs to main so their hosts stay warm. */
@@ -1903,7 +1905,6 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   staleHosts: {},
   tabs: [],
   activeTabId: null,
-  gridSolo: false,
   panePickerTarget: null,
   transcripts: {},
   sessionStates: {},
@@ -2570,24 +2571,23 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // re-flow the layout), so every reader sees `null` rather than a ghost id.
     // Only a real change writes prefs, so a normal publish touches nothing.
     const gridBefore = state.prefs.grid;
-    const prunedPanes = normalizeGridPanes(gridBefore.layout, gridBefore.panes).map((id) =>
-      id !== null && !ids.has(id) ? null : id,
-    );
-    const gridChanged = prunedPanes.some((id, index) => id !== gridBefore.panes[index]);
+    const currentPanes = normalizeGridPanes(gridBefore.panes);
+    const prunedPanes = currentPanes.map((id) => (id !== null && !ids.has(id) ? null : id));
+    const gridChanged = prunedPanes.some((id, index) => id !== currentPanes[index]);
+    const nextGrid: GridPrefs = { ...gridBefore, panes: prunedPanes };
     const gridPatch: Partial<AppStateShape> = gridChanged
-      ? { prefs: { ...state.prefs, grid: { layout: gridBefore.layout, panes: prunedPanes } } }
+      ? { prefs: { ...state.prefs, grid: nextGrid } }
       : {};
     if (gridChanged) {
       // Main owns the durable copy of `prefs`; a prune must survive a relaunch.
-      void bridge()?.prefs.set({ grid: { layout: gridBefore.layout, panes: prunedPanes } });
+      void bridge()?.prefs.set({ grid: nextGrid });
     }
     // Unlimited tabs must not mean unbounded per-tab caches. Prune every record
     // for a closed tab and keep the transcript cache bounded by recency, always
     // keeping every visible pane hydrated.
     const visibleIds = visibleGridTabIds({
-      layout: gridBefore.layout,
-      panes: gridChanged ? prunedPanes : gridBefore.panes,
-      solo: state.gridSolo,
+      layout: nextGrid.layout,
+      panes: nextGrid.panes,
       activeTabId: envelope.activeTabId,
     });
     const pruned = pruneClosedTabRecords(state, ids);
@@ -5921,26 +5921,45 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   setGridLayout: (layout) => {
     const { prefs, activeTabId } = get();
-    const panes = normalizeGridPanes(layout, prefs.grid.panes);
+    let grid: GridPrefs = {
+      layout,
+      lastMultiLayout: layout === "single" ? prefs.grid.lastMultiLayout : layout,
+      panes: normalizeGridPanes(prefs.grid.panes),
+    };
     // Switching to a multi-pane layout keeps the tab the user is on: an empty
-    // grid gets it in the first slot, and a shrink that would hide it rescues it
-    // into slot 0 rather than letting the layout change swap the screen.
-    if (layout !== "single" && activeTabId !== null && !panes.includes(activeTabId)) {
-      const empty = panes.indexOf(null);
-      if (empty >= 0) panes[empty] = activeTabId;
-      else panes[0] = activeTabId;
+    // visible slot gets it, and a shrink that would hide it moves it into the
+    // first visible slot. `assignGridPane` swaps, so a hidden assignment cannot
+    // become a duplicate.
+    if (
+      layout !== "single" &&
+      activeTabId !== null &&
+      !visiblePaneIds(layout, grid.panes).includes(activeTabId)
+    ) {
+      const visible = visiblePaneIds(layout, grid.panes);
+      const empty = visible.indexOf(null);
+      grid = assignGridPane(grid, empty >= 0 ? empty : 0, activeTabId);
     }
-    get().setPrefs({ grid: { layout, panes: sanitizeGridPrefs({ layout, panes }).panes } });
-    set({ gridSolo: false });
+    get().setPrefs({ grid: sanitizeGridPrefs(grid) });
   },
 
-  assignPaneTab: async (paneIndex, tabId) => {
+  assignPaneTab: async (paneIndex, tabId, options) => {
+    if (tabId === null) {
+      await get().clearPane(paneIndex);
+      return;
+    }
     const { prefs } = get();
-    const grid = assignGridPane(prefs.grid, paneIndex, tabId);
+    const layout = options?.layout ?? prefs.grid.layout;
+    const currentPanes = normalizeGridPanes(prefs.grid.panes);
+    const base: GridPrefs = {
+      layout,
+      lastMultiLayout: layout === "single" ? prefs.grid.lastMultiLayout : layout,
+      panes: currentPanes,
+    };
+    const grid = assignGridPane(base, paneIndex, tabId);
     const changed =
       grid.layout !== prefs.grid.layout ||
-      grid.panes.length !== prefs.grid.panes.length ||
-      grid.panes.some((id, index) => id !== prefs.grid.panes[index]);
+      grid.lastMultiLayout !== prefs.grid.lastMultiLayout ||
+      currentPanes.some((id, index) => id !== grid.panes[index]);
     if (!changed) {
       // A redundant drop is still a focus gesture on that pane.
       const current = grid.panes[paneIndex] ?? null;
@@ -5948,29 +5967,33 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return;
     }
     get().setPrefs({ grid });
-    // Assigning a pane always returns to the grid: the user asked to see it.
-    set({ gridSolo: false });
-    if (tabId !== null && tabId !== get().activeTabId) await get().activateTab(tabId);
+    // Assigning a pane focuses the tab the user asked to see.
+    if (tabId !== get().activeTabId) await get().activateTab(tabId);
+  },
+
+  clearPane: async (paneIndex) => {
+    const { prefs, activeTabId } = get();
+    const currentPanes = normalizeGridPanes(prefs.grid.panes);
+    const cleared = currentPanes[paneIndex] ?? null;
+    if (cleared === null) return;
+
+    const panes = [...currentPanes];
+    panes[paneIndex] = null;
+    const grid: GridPrefs = { ...prefs.grid, panes };
+    const survivor =
+      activeTabId === cleared ? nextVisiblePaneTab(grid.layout, grid.panes, paneIndex) : null;
+    get().setPrefs({ grid });
+    if (activeTabId !== cleared) return;
+    // Hand the selection to a pane that is still on screen. If none is left,
+    // clearing the selection keeps a split layout on the empty grid.
+    if (survivor !== null) await get().activateTab(survivor);
+    else await get().clearActiveTab();
   },
 
   focusPane: async (paneIndex) => {
     const tabId = get().prefs.grid.panes[paneIndex] ?? null;
-    set({ gridSolo: false });
     if (tabId !== null && tabId !== get().activeTabId) await get().activateTab(tabId);
   },
-
-  showGrid: () => {
-    set({ gridSolo: false });
-    const { activeTabId, prefs } = get();
-    if (activeTabId === null) return;
-    if (paneIndexOfTab(prefs.grid, activeTabId) >= 0) return;
-    // Never hide the tab the user is reading: park it in an empty pane (or in the
-    // first slot when the layout is full, which swaps that pane's tab out).
-    const target = firstEmptyPane(prefs.grid) ?? 0;
-    void get().assignPaneTab(target, activeTabId);
-  },
-
-  showSolo: () => set({ gridSolo: true }),
 
   browseSessionsForPane: async (paneIndex) => {
     set({ panePickerTarget: paneIndex });
@@ -5979,12 +6002,21 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   syncVisibleTabs: () => {
     const state = get();
-    const ids = visibleGridTabIds({
+    const surface = gridSurface({
       layout: state.prefs.grid.layout,
+      lastMultiLayout: state.prefs.grid.lastMultiLayout,
       panes: state.prefs.grid.panes,
-      solo: state.gridSolo,
       activeTabId: state.activeTabId,
+      dragging: isTabDragActive(),
     });
+    const ids = visibleGridTabIds(
+      {
+        layout: surface.layout,
+        panes: state.prefs.grid.panes,
+        activeTabId: state.activeTabId,
+      },
+      surface.mode,
+    );
     const key = ids.join("\u0000");
     if (key === lastVisibleTabsKey) return;
     lastVisibleTabsKey = key;
@@ -5996,11 +6028,6 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.sessions) return;
     set({ activeTabId: tabId, view: "session" });
-    // Solo/grid (2026-11-03 grid plan): `single` is inherently solo, a tab some
-    // pane holds returns to the grid, and a tab no pane holds is shown full-size
-    // while the layout is remembered.
-    const grid = get().prefs.grid;
-    set({ gridSolo: grid.layout !== "single" && !grid.panes.includes(tabId) });
     const tab = get().tabs.find((entry) => entry.id === tabId);
     if (!tab || tab.kind === "web") return;
     // The rail and the sidebar follow the session that is on screen (2026-10-30

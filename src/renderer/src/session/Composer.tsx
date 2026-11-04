@@ -10,6 +10,7 @@ import { sameFolder } from "../../../shared/rail-scope";
 import type { WorkspaceEntryKind } from "../../../shared/workspace";
 import { insertWorkspaceMention, workspaceMention } from "../../../shared/workspace-drag";
 import { isExternalFileDrag, isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
+import { isTabDrag } from "../layout/tab-drag";
 import {
   parseWorkflowStatus,
   statusLineText,
@@ -532,6 +533,9 @@ export function Composer({
         setDragging(false);
       }}
       onDrop={(event) => {
+        // A tab drag belongs to the enclosing grid pane, not the composer. Let it
+        // bubble instead of consuming it as an (empty) file drop.
+        if (isTabDrag(event.dataTransfer)) return;
         const payload = readWorkspaceDrop(event.dataTransfer);
         if (payload) {
           event.preventDefault();

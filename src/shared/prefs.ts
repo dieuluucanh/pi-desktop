@@ -228,8 +228,13 @@ export const DEFAULT_PREFS: UiPrefs = {
   checkpoints: { ...DEFAULT_CHECKPOINT_CONFIG, exclude: [] },
   updates: { ...DEFAULT_UPDATE_PREFS },
   // A fresh `panes` array for the same reason as `rail.order`: the shared
-  // default's slot must never be mutated by a caller.
-  grid: { layout: DEFAULT_GRID_PREFS.layout, panes: [...DEFAULT_GRID_PREFS.panes] },
+  // default's slot must never be mutated by a caller. `lastMultiLayout` keeps the
+  // last split when the user selects Single.
+  grid: {
+    layout: DEFAULT_GRID_PREFS.layout,
+    lastMultiLayout: DEFAULT_GRID_PREFS.lastMultiLayout,
+    panes: [...DEFAULT_GRID_PREFS.panes],
+  },
 };
 
 const THEMES: readonly ThemeSetting[] = ["dark", "light", "system"];

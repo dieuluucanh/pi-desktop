@@ -1,44 +1,40 @@
-import { Check, Columns2, Columns3, Grid2x2, LayoutGrid, Square } from "lucide-react";
-
 import {
-  GRID_LAYOUTS,
-  GRID_LAYOUT_LABELS,
-  gridMode,
-  type GridLayout,
-} from "../../../shared/session-grid";
+  Columns2,
+  Grid2x2,
+  PanelsLeftBottom,
+  PanelsRightBottom,
+  Square,
+  type LucideIcon,
+} from "lucide-react";
+
+import { GRID_LAYOUTS, GRID_LAYOUT_LABELS, type GridLayout } from "../../../shared/session-grid";
 import { useAppStore } from "../state/app-store";
 import { Button } from "../ui/button";
+import { cn } from "../ui/cn";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
 
 /**
- * The layout switcher, at the far right of the session strip (2026-11-03 plan).
+ * The icon-only layout switcher, at the far right of the session strip.
  *
  * It lives here rather than in the editor row because that row disappears when no
- * file is open, which would make the control vanish with it. The `+` button sits
- * immediately to its left.
+ * file is open, which would make the control vanish with it. The trigger shows the
+ * current preset; the menu is a compact row of five icons with no visible wording.
+ * Icons run widest to narrowest (four panes on the left, single on the right) so
+ * the row matches the visual weight of the shapes. Accessible names come from
+ * `GRID_LAYOUT_LABELS`, so the control stays usable by keyboard and screen reader.
  *
- * The list is `gridLayoutChoices` + `gridViewToggle` — pure, so the tests pin the
- * labels, the checked state and the enablement without opening a Radix menu in
- * jsdom (the same split `tabMenuItems` and `panePickerModel` use).
+ * `gridLayoutChoices` is pure so the labels and the checked preset are tested
+ * without opening a Radix menu in jsdom (the same split `tabMenuItems` and
+ * `panePickerModel` use).
  */
 export function GridLayoutMenu(): React.JSX.Element {
   const layout = useAppStore((state) => state.prefs.grid.layout);
-  const panes = useAppStore((state) => state.prefs.grid.panes);
-  const solo = useAppStore((state) => state.gridSolo);
-  const activeTabId = useAppStore((state) => state.activeTabId);
   const setGridLayout = useAppStore((state) => state.setGridLayout);
-  const showGrid = useAppStore((state) => state.showGrid);
-  const showSolo = useAppStore((state) => state.showSolo);
-
-  const mode = gridMode({ layout, panes, solo, activeTabId });
-  const toggle = gridViewToggle(mode);
 
   return (
     <DropdownMenu>
@@ -51,40 +47,33 @@ export function GridLayoutMenu(): React.JSX.Element {
           data-testid="grid-layout-menu"
           data-layout={layout}
         >
-          <LayoutGrid className="size-3.5" aria-hidden />
+          <LayoutIcon layout={layout} />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuLabel>Layout</DropdownMenuLabel>
-        {gridLayoutChoices(layout).map((choice) => (
-          <DropdownMenuItem
-            key={choice.layout}
-            onSelect={() => setGridLayout(choice.layout)}
-            data-testid={`grid-layout-${choice.layout}`}
-            data-checked={choice.checked ? "true" : undefined}
-          >
-            <span className="flex size-3 shrink-0 items-center justify-center">
-              {choice.checked ? <Check className="size-3 text-accent" aria-hidden /> : null}
-            </span>
-            <LayoutIcon layout={choice.layout} />
-            <span className="flex-1">{choice.label}</span>
-          </DropdownMenuItem>
-        ))}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onSelect={() => (toggle.id === "show-grid" ? showGrid() : showSolo())}
-          disabled={toggle.disabled}
-          data-testid={`grid-view-${toggle.id}`}
-        >
-          <span className="flex size-3 shrink-0" aria-hidden />
-          <span className="flex-1">{toggle.label}</span>
-        </DropdownMenuItem>
+      <DropdownMenuContent align="end" className="min-w-0 p-1">
+        <div className="flex items-center gap-0.5" role="group" aria-label="Grid layout">
+          {gridLayoutChoices(layout).map((choice) => (
+            <DropdownMenuItem
+              key={choice.layout}
+              role="menuitemradio"
+              aria-checked={choice.checked}
+              aria-label={choice.label}
+              title={choice.label}
+              onSelect={() => setGridLayout(choice.layout)}
+              data-testid={`grid-layout-${choice.layout}`}
+              data-checked={choice.checked ? "true" : undefined}
+              className={cn("size-7 justify-center p-0", choice.checked && "bg-raised text-accent")}
+            >
+              <LayoutIcon layout={choice.layout} />
+            </DropdownMenuItem>
+          ))}
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   );
 }
 
-/** The five presets with their labels and which one is on screen. */
+/** One preset with its accessible label and checked state. */
 export interface GridLayoutChoice {
   layout: GridLayout;
   label: string;
@@ -92,48 +81,39 @@ export interface GridLayoutChoice {
 }
 
 export function gridLayoutChoices(current: GridLayout): GridLayoutChoice[] {
-  return GRID_LAYOUTS.map((layout) => ({
+  // The menu reads widest to narrowest, opposite the canonical model order:
+  // four panes at the far left and single at the far right.
+  return [...GRID_LAYOUTS].reverse().map((layout) => ({
     layout,
     label: GRID_LAYOUT_LABELS[layout],
     checked: layout === current,
   }));
 }
 
-/**
- * The one grid/solo toggle.
- *
- * A `single` layout is already solo, so the item is disabled: there is no grid to
- * return to until the user picks a multi-pane preset.
- */
-export interface GridViewToggle {
-  id: "show-grid" | "show-solo";
-  label: string;
-  disabled: boolean;
-}
+const ICONS: Record<GridLayout, LucideIcon> = {
+  single: Square,
+  two: Columns2,
+  "three-left": PanelsLeftBottom,
+  "three-right": PanelsRightBottom,
+  four: Grid2x2,
+};
 
-export function gridViewToggle(
-  mode: ReturnType<typeof gridMode>,
-  layout: GridLayout = mode === "solo" ? "single" : "two",
-): GridViewToggle {
-  if (layout === "single") {
-    return { id: "show-grid", label: "Show single tab", disabled: true };
-  }
-  return mode === "grid"
-    ? { id: "show-solo", label: "Show single tab", disabled: false }
-    : { id: "show-grid", label: "Show grid", disabled: false };
+const ICON_NAMES: Record<GridLayout, string> = {
+  single: "square",
+  two: "columns-2",
+  "three-left": "panels-left-bottom",
+  "three-right": "panels-right-bottom",
+  four: "grid-2x2",
+};
+
+/** Stable name for tests and diagnostics. */
+export function layoutIconName(layout: GridLayout): string {
+  return ICON_NAMES[layout];
 }
 
 function LayoutIcon({ layout }: { layout: GridLayout }): React.JSX.Element {
-  switch (layout) {
-    case "single":
-      return <Square className="size-3.5 shrink-0 text-ink-muted" aria-hidden />;
-    case "two":
-      return <Columns2 className="size-3.5 shrink-0 text-ink-muted" aria-hidden />;
-    case "three-left":
-    case "three-right":
-      return <Columns3 className="size-3.5 shrink-0 text-ink-muted" aria-hidden />;
-    case "four":
-    default:
-      return <Grid2x2 className="size-3.5 shrink-0 text-ink-muted" aria-hidden />;
-  }
+  const Icon = ICONS[layout];
+  return (
+    <Icon className="size-3.5 shrink-0 text-ink-muted" aria-hidden data-icon={ICON_NAMES[layout]} />
+  );
 }

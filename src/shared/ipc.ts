@@ -330,7 +330,6 @@ export const MENU_COMMANDS = [
   "toggle-rail",
   // Session view grid (2026-11-03 plan). No accelerators: the layout is chosen
   // rarely, and a global chord would collide with Pi's own keys.
-  "grid-toggle",
   "grid-single",
   "grid-two",
   "grid-three-left",

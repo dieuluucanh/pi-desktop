@@ -1,5 +1,4 @@
 import type { MenuCommand } from "../../shared/ipc";
-import { gridMode } from "../../shared/session-grid";
 import { projectNameOf } from "../../shared/projects";
 import {
   DEFAULT_ZOOM,
@@ -170,22 +169,6 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "grid-four":
       store.setGridLayout("four");
       return;
-    case "grid-toggle": {
-      const { layout, panes } = store.prefs.grid;
-      if (layout === "single") {
-        store.setHint("Pick a multi-pane layout first — a single tab already fills the window.");
-        return;
-      }
-      const mode = gridMode({
-        layout,
-        panes,
-        solo: store.gridSolo,
-        activeTabId: store.activeTabId,
-      });
-      if (mode === "grid") store.showSolo();
-      else store.showGrid();
-      return;
-    }
     // Display zoom is applied by main from the persisted pref; the menu handler
     // only advances the level (2026-10-30 zoom plan).
     case "zoom-in":

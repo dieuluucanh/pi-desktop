@@ -6,11 +6,10 @@
  * so the contract is a string: this module owns that string, mirroring
  * `shared/workspace-drag.ts`.
  *
- * It is a **separate MIME** from the workspace-file drag on purpose. A strip drag
- * also carries `text/plain` (for reordering and for other consumers), so a pane
- * that sniffed `text/plain` could not tell a tab from a file path. Requiring
- * `application/x-pi-tab` is what keeps "drop to add a mention" and "drop to fill a
- * pane" from ever competing for the same gesture.
+ * It is a **separate MIME** from the workspace-file drag on purpose, and a tab
+ * drag writes no plain-text copy. Requiring `application/x-pi-tab` is what keeps
+ * "drop to add a mention" and "drop to fill a pane" from ever competing for the
+ * same gesture; a tab id must not be insertable as text into a composer or editor.
  *
  * Pure and DOM-free, so the renderer, the tests and any future main-process
  * consumer share one parser; the `DataTransfer` wrapper lives beside the strips.

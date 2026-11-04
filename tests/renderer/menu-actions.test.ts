@@ -350,9 +350,8 @@ describe("editor menu commands", () => {
 /**
  * The layout commands (2026-11-03 grid plan step 14).
  *
- * Every preset is one `setGridLayout` call, and the toggle flips between the
- * remembered grid and the full-size view. The `single` layout is already solo, so
- * the toggle explains that instead of appearing to do nothing.
+ * Every preset is one `setGridLayout` call. There is no separate grid/single
+ * toggle: the Single preset and activating a pane/hidden tab decide the surface.
  */
 describe("grid layout commands", () => {
   it.each([
@@ -364,32 +363,5 @@ describe("grid layout commands", () => {
   ] as const)("%s selects the %s preset", (command, layout) => {
     handleMenuCommand(command);
     expect(useAppStore.getState().prefs.grid.layout).toBe(layout);
-  });
-
-  it("toggles between the grid and the single-tab view", () => {
-    useAppStore.setState({
-      prefs: { ...DEFAULT_PREFS, grid: { layout: "two", panes: ["tab-1", null] } },
-      gridSolo: false,
-      activeTabId: "tab-1",
-    });
-
-    handleMenuCommand("grid-toggle");
-    expect(useAppStore.getState().gridSolo).toBe(true);
-
-    handleMenuCommand("grid-toggle");
-    expect(useAppStore.getState().gridSolo).toBe(false);
-  });
-
-  it("explains that a single-layout window is already one tab", () => {
-    useAppStore.setState({
-      prefs: { ...DEFAULT_PREFS, grid: { layout: "single", panes: [null] } },
-      gridSolo: false,
-      hint: null,
-    });
-
-    handleMenuCommand("grid-toggle");
-
-    expect(useAppStore.getState().hint).toMatch(/multi-pane layout/i);
-    expect(useAppStore.getState().gridSolo).toBe(false);
   });
 });

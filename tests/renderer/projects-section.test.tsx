@@ -7,6 +7,7 @@ import type { TabRecord } from "../../src/shared/session-ipc";
 import { ProjectsSection } from "../../src/renderer/src/projects/ProjectsSection";
 import { TAB_DRAG_MIME, TAB_DRAG_VERSION } from "../../src/shared/tab-drag";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
+import { isTabDragActive } from "../../src/renderer/src/state/tab-drag-session";
 import { installBridge } from "./fixtures";
 
 const PATH = "C:\\work\\pi-desktop";
@@ -261,6 +262,10 @@ describe("ProjectsSection", () => {
       JSON.stringify({ version: TAB_DRAG_VERSION, tabId: "tab-1" }),
     );
     expect(row).toHaveAttribute("draggable", "true");
+    expect(isTabDragActive()).toBe(true);
+
+    fireEvent.dragEnd(row, { dataTransfer: transfer });
+    expect(isTabDragActive()).toBe(false);
   });
 
   it("opens the session lifecycle menu and renames inline", async () => {

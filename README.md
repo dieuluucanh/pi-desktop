@@ -21,7 +21,8 @@ skills, themes and settings are managed through a UI, using the **same
 ## What it does
 
 - **Projects and sessions** — open a folder, manage recents and trust, and run
-  parallel sessions in tabs, each in its own Pi host process.
+  parallel sessions in tabs — or several at once in a pane grid — each in its own
+  Pi host process.
 - **File explorer and editor** — a project tree with hidden/ignored toggles,
   project-wide name search and drag-to-chat mentions; CodeMirror editor tabs with
   syntax highlighting, conflict-safe saves, hot-exit recovery and Format

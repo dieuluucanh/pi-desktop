@@ -7,6 +7,7 @@ import { SessionTabStrip } from "../../src/renderer/src/layout/SessionTabStrip";
 import { tabMenuItems } from "../../src/renderer/src/layout/tab-menu";
 import { TAB_DRAG_MIME, TAB_DRAG_VERSION } from "../../src/shared/tab-drag";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
+import { isTabDragActive } from "../../src/renderer/src/state/tab-drag-session";
 import { installBridge } from "./fixtures";
 
 /**
@@ -221,6 +222,10 @@ describe("SessionTabStrip", () => {
       JSON.stringify({ version: TAB_DRAG_VERSION, tabId: "tab-2" }),
     );
     expect(transfer.effectAllowed).toBe("move");
+    expect(isTabDragActive()).toBe(true);
+
+    fireEvent.dragEnd(screen.getByTestId("tab-tab-2"), { dataTransfer: transfer });
+    expect(isTabDragActive()).toBe(false);
   });
 
   it("closes other tabs through the service", async () => {
