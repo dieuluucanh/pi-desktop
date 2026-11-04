@@ -1,29 +1,41 @@
 ---
-import { PLATFORMS, RELEASES_FALLBACK } from "../../data/platforms";
+import { RELEASES_FALLBACK, PLATFORMS } from "../../data/platforms";
+import { staticAssetUrl } from "../../lib/downloads";
 import { withBase } from "../../../site.config.mjs";
+
+interface Props {
+  version: string;
+}
+
+const { version } = Astro.props;
+
+/** A direct release-asset URL, or the Releases page when the version is unusable. */
+const installUrl = (suffix: string): string => staticAssetUrl(version, suffix) || RELEASES_FALLBACK;
 ---
 
 <section class="pi-section" id="download" aria-labelledby="pi-download-title">
   <p class="pi-kicker">Install</p>
   <h2 id="pi-download-title">Download for your platform</h2>
   <p class="pi-section__lede">
-    The buttons preselect the current installer from the latest published release. Every link works
-    without JavaScript and falls back to the Releases page.
+    Every button downloads the current installer straight from GitHub Releases. No JavaScript is
+    needed; the page only uses it to preselect your platform.
   </p>
-  <div class="pi-download-grid">
+  <div class="pi-download-grid pi-platform-grid">
     {PLATFORMS.map((platform) => (
       <article class="pi-download-card" data-platform={platform.id}>
         <div class="pi-download-card__head">
           <h3>{platform.label}</h3>
-          <span class:list={["pi-badge", platform.status === "primary" ? "pi-badge--primary" : ""]}>
-            {platform.status}
-          </span>
+          <div class="pi-download-card__badges">
+            <span class="pi-badge pi-badge--gold pi-platform-flag">Your platform</span>
+            <span class:list={["pi-badge", platform.status === "primary" ? "pi-badge--gold" : ""]}>
+              {platform.status}
+            </span>
+          </div>
         </div>
         <p class="pi-download-card__arch">{platform.arch}</p>
         <a
           class="pi-button pi-button--primary pi-download-card__cta"
-          href={RELEASES_FALLBACK}
-          data-download-primary
+          href={installUrl(platform.primary.suffix)}
           data-download-suffix={platform.primary.suffix}
           data-download-label={platform.primary.label}
         >
@@ -33,7 +45,7 @@ import { withBase } from "../../../site.config.mjs";
           {platform.alternates.map((alternate) => (
             <li>
               <a
-                href={RELEASES_FALLBACK}
+                href={installUrl(alternate.suffix)}
                 data-download-suffix={alternate.suffix}
                 data-download-label={alternate.label}
               >
@@ -47,13 +59,15 @@ import { withBase } from "../../../site.config.mjs";
     ))}
   </div>
   <p class="pi-download__fine">
-    <a href={RELEASES_FALLBACK}>All releases, manifests and checksums on GitHub</a>·{" "}
-    <a href={withBase("/releases/")}>Release notes</a>
+    <a href={RELEASES_FALLBACK} target="_blank" rel="noopener noreferrer">
+      All releases, manifests and checksums on GitHub
+    </a>
+    · <a href={withBase("/releases/")}>Release notes</a>
   </p>
   <noscript>
     <p>
-      JavaScript only preselects your installer. Every link above opens the Releases page, where you
-      can choose the file for your platform.
+      The buttons above download the installer directly. Choose the card that matches your machine;
+      the Releases page lists every file.
     </p>
   </noscript>
 </section>

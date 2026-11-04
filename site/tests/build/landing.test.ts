@@ -36,6 +36,22 @@ describe("landing page", () => {
     expect(html).toContain("Is Pi Desktop the official Pi app?");
   });
 
+  it("orders the landing sections like the product menu", () => {
+    let cursor = -1;
+    for (const marker of [
+      'id="features"',
+      'id="screenshots"',
+      'id="download"',
+      'id="install"',
+      'id="faq"',
+    ]) {
+      const index = html.indexOf(marker, cursor + 1);
+      expect(index, marker).toBeGreaterThan(cursor);
+      cursor = index;
+    }
+    expect(html).toContain('id="profile"');
+  });
+
   it("links the product surfaces and carries no analytics", () => {
     for (const href of [
       "/pi-desktop/download/",

@@ -1,0 +1,26 @@
+---
+import { RELEASES_FALLBACK } from "../../data/platforms";
+import { staticAssetUrl } from "../../lib/downloads";
+
+interface Props {
+  version: string;
+  label?: string;
+  class?: string;
+}
+
+const {
+  version,
+  label = "Download Pi Desktop",
+  class: className = "pi-button pi-button--primary",
+} = Astro.props;
+
+/*
+ * Windows is the primary platform, so it is the no-JS target. The client script
+ * rewrites this anchor to the visitor's platform as soon as it runs.
+ */
+const href = staticAssetUrl(version, "win-x64-setup.exe") || RELEASES_FALLBACK;
+---
+
+<a class={className} href={href} data-download-primary data-download-label={label}>
+  {label}
+</a>

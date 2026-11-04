@@ -1,5 +1,6 @@
 ---
-import { RELEASES_URL, withBase } from "../../../site.config.mjs";
+import { withBase } from "../../../site.config.mjs";
+import DownloadCta from "./DownloadCta.astro";
 
 interface Props {
   version: string;
@@ -22,14 +23,7 @@ const { version } = Astro.props;
       desktop app — using the same <code>~/.pi/agent</code> profile as terminal Pi.
     </p>
     <div class="pi-actions">
-      <a
-        class="pi-button pi-button--primary"
-        href={RELEASES_URL}
-        data-download-primary
-        data-download-label="Download for your platform"
-      >
-        Download Pi Desktop
-      </a>
+      <DownloadCta version={version} />
       <a class="pi-button pi-button--secondary" href={withBase("/docs/")}>
         Read the docs
       </a>
@@ -43,7 +37,7 @@ const { version } = Astro.props;
       <span aria-hidden="true">·</span>
       <a href={withBase("/releases/")}>Release notes</a>
       <span aria-hidden="true">·</span>
-      <a href="https://github.com/dieuluucanh/pi-desktop" rel="noreferrer">
+      <a href="https://github.com/dieuluucanh/pi-desktop" target="_blank" rel="noopener noreferrer">
         View source
       </a>
     </div>

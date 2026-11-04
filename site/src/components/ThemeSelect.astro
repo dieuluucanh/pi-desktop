@@ -1,0 +1,78 @@
+---
+/*
+ * Icon-only override of Starlight's ThemeSelect. The accessible name lives on
+ * each button (`aria-label` + `title`); the selected state is `aria-pressed`
+ * plus a visible surface and ring. Starlight's `ThemeProvider` still sets
+ * `data-theme` before paint, and storage stays in `starlight-theme`.
+ */
+const choices = [
+  { value: "light", label: "Light theme" },
+  { value: "dark", label: "Dark theme" },
+  { value: "auto", label: "System theme" },
+] as const;
+---
+
+<div class="pi-theme-select" role="group" aria-label="Color theme" data-theme-group>
+  {choices.map((choice) => (
+    <button
+      type="button"
+      class="pi-theme-select__button"
+      data-theme-choice={choice.value}
+      aria-label={choice.label}
+      aria-pressed="false"
+      title={choice.label}
+    >
+      {choice.value === "light" && (
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+        </svg>
+      )}
+      {choice.value === "dark" && (
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" />
+        </svg>
+      )}
+      {choice.value === "auto" && (
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <rect x="3" y="4" width="18" height="12" rx="2" />
+          <path d="M8 20h8M12 16v4" />
+        </svg>
+      )}
+    </button>
+  ))}
+</div>
+
+<script>
+  import "../scripts/theme-picker";
+</script>

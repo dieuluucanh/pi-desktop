@@ -3,6 +3,7 @@ import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
 import DownloadSection from "../components/landing/DownloadSection.astro";
 import InstallSection from "../components/landing/InstallSection.astro";
 import UpdateTable from "../components/landing/UpdateTable.astro";
+import manifest from "../data/site.generated.json";
 import { RELEASES_URL, withBase } from "../../site.config.mjs";
 ---
 
@@ -24,13 +25,15 @@ import { RELEASES_URL, withBase } from "../../site.config.mjs";
           updates are manual.
         </p>
         <p class="pi-download__fine">
-          <a href={RELEASES_URL}>Open the GitHub Releases page</a> ·
-          <a href={withBase("/guide/getting-started/")}>Installation guide</a>
+          <a href={RELEASES_URL} target="_blank" rel="noopener noreferrer">
+            Open the GitHub Releases page
+          </a>{" "}
+          ·<a href={withBase("/guide/getting-started/")}>Installation guide</a>
         </p>
         <p data-download-status aria-live="polite" class="pi-download__fine"></p>
       </div>
     </section>
-    <DownloadSection />
+    <DownloadSection version={manifest.version} />
     <InstallSection />
     <UpdateTable />
   </div>

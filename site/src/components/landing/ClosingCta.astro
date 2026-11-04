@@ -1,5 +1,12 @@
 ---
-import { RELEASES_URL, withBase } from "../../../site.config.mjs";
+import { withBase } from "../../../site.config.mjs";
+import DownloadCta from "./DownloadCta.astro";
+
+interface Props {
+  version: string;
+}
+
+const { version } = Astro.props;
 ---
 
 <section class="pi-closing" aria-labelledby="pi-closing-title">
@@ -12,16 +19,15 @@ import { RELEASES_URL, withBase } from "../../../site.config.mjs";
     </p>
   </div>
   <div class="pi-actions">
-    <a class="pi-button pi-button--primary" href={RELEASES_URL} data-download-primary>
-      Download Pi Desktop
-    </a>
+    <DownloadCta version={version} label="Download Pi Desktop" />
     <a class="pi-button pi-button--secondary" href={withBase("/docs/")}>
       Browse the docs
     </a>
     <a
       class="pi-button pi-button--secondary"
       href="https://github.com/dieuluucanh/pi-desktop"
-      rel="noreferrer"
+      target="_blank"
+      rel="noopener noreferrer"
     >
       GitHub
     </a>

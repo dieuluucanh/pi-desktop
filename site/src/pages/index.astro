@@ -1,6 +1,7 @@
 ---
 import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
 import ClosingCta from "../components/landing/ClosingCta.astro";
+import DownloadSection from "../components/landing/DownloadSection.astro";
 import FaqSection from "../components/landing/FaqSection.astro";
 import FeatureGrid from "../components/landing/FeatureGrid.astro";
 import Hero from "../components/landing/Hero.astro";
@@ -9,7 +10,6 @@ import ProfileSection from "../components/landing/ProfileSection.astro";
 import ScreenshotGallery from "../components/landing/ScreenshotGallery.astro";
 import TrustStrip from "../components/landing/TrustStrip.astro";
 import UpdateTable from "../components/landing/UpdateTable.astro";
-import DownloadSection from "../components/landing/DownloadSection.astro";
 import manifest from "../data/site.generated.json";
 ---
 
@@ -24,13 +24,14 @@ import manifest from "../data/site.generated.json";
   <div class="pi-landing">
     <Hero version={manifest.version} />
     <TrustStrip />
-    <ScreenshotGallery />
+    {/* The three menu-linked sections are contiguous and in menu order. */}
     <FeatureGrid />
-    <ProfileSection />
-    <DownloadSection />
+    <ScreenshotGallery />
+    <DownloadSection version={manifest.version} />
     <InstallSection />
     <UpdateTable />
+    <ProfileSection />
     <FaqSection />
-    <ClosingCta />
+    <ClosingCta version={manifest.version} />
   </div>
 </StarlightPage>

@@ -1,0 +1,72 @@
+---
+import { REPO_URL, withBase } from "../../site.config.mjs";
+
+interface NavLink {
+  label: string;
+  href: string;
+  /** Base-prefixed path prefixes that make this link current. */
+  match?: string[];
+  /** Section id the client scroll-spy watches on the landing page. */
+  spy?: string;
+  external?: boolean;
+}
+
+const pathname = Astro.url.pathname;
+const isCurrent = (link: NavLink): boolean =>
+  (link.match ?? []).some((prefix) => pathname === prefix || pathname.startsWith(prefix));
+
+const links: NavLink[] = [
+  { label: "Features", href: "/#features", spy: "features" },
+  { label: "Screenshots", href: "/#screenshots", spy: "screenshots" },
+  { label: "Download", href: "/download/", match: [withBase("/download/")] },
+  { label: "Releases", href: "/releases/", match: [withBase("/releases/")] },
+  {
+    label: "Docs",
+    href: "/docs/",
+    match: [
+      withBase("/docs/"),
+      withBase("/guide/"),
+      withBase("/architecture/"),
+      withBase("/product/"),
+      withBase("/privacy/"),
+    ],
+  },
+  { label: "GitHub", href: REPO_URL, external: true },
+];
+---
+
+<nav class="pi-site-nav" aria-label="Product">
+  <div class="pi-site-nav__inner">
+    {links.map((link) => (
+      <a
+        href={link.external ? link.href : withBase(link.href)}
+        data-spy={link.spy}
+        aria-current={!link.spy && isCurrent(link) ? "page" : undefined}
+        target={link.external ? "_blank" : undefined}
+        rel={link.external ? "noopener noreferrer" : undefined}
+      >
+        {link.label}
+        {link.external && <span class="sr-only"> (opens in a new tab)</span>}
+        {link.external && (
+          <svg
+            class="pi-site-nav__external"
+            width="11"
+            height="11"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            aria-hidden="true"
+          >
+            <path d="M7 17 17 7" />
+            <path d="M9 7h8v8" />
+          </svg>
+        )}
+      </a>
+    ))}
+  </div>
+</nav>
+
+<script>
+  import "../scripts/site-nav";
+</script>

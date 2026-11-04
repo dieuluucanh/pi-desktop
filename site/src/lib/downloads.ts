@@ -2,7 +2,8 @@ import { RELEASES_URL } from "../../site.config.mjs";
 
 export interface ReleaseAsset {
   name: string;
-  url: string;
+  /** The browser download URL, never the `api.github.com` asset endpoint. */
+  downloadUrl: string;
   size?: number;
 }
 
@@ -25,6 +26,30 @@ export interface AssetSelection {
 
 export const REPO_RELEASES_URL = RELEASES_URL;
 export const DOWNLOAD_PREFIX = "https://github.com/dieuluucanh/pi-desktop/releases/download/";
+
+const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.-]+)?$/;
+
+/** A version that is safe to interpolate into a release asset URL. */
+export function isValidReleaseVersion(value: string): boolean {
+  return RELEASE_VERSION_PATTERN.test(value);
+}
+
+/** The file name the release workflow publishes for an installer suffix. */
+export function assetFileName(version: string, suffix: string): string {
+  return `Pi-Desktop-${version}-${suffix}`;
+}
+
+/**
+ * A direct download URL for an installer in the current release. Every
+ * `electron-builder` artefact embeds the version (see scripts/release-assets.mjs),
+ * so the site can link straight at the file instead of the Releases page.
+ * Returns an empty string for an unusable version; callers fall back to the
+ * Releases page.
+ */
+export function staticAssetUrl(version: string, suffix: string): string {
+  if (!isValidReleaseVersion(version) || suffix.length === 0) return "";
+  return `${DOWNLOAD_PREFIX}v${version}/${assetFileName(version, suffix)}`;
+}
 
 const TARGET_SUFFIXES: Record<Platform, Record<Architecture, string[]>> = {
   windows: {
@@ -117,27 +142,40 @@ export function isAllowedAssetUrl(url: string): boolean {
   return url.startsWith(DOWNLOAD_PREFIX) && !url.slice(DOWNLOAD_PREFIX.length).includes("?");
 }
 
-export interface LatestRelease {
-  tag_name?: string;
-  assets?: ReleaseAsset[];
+/** The subset of a GitHub release asset this page reads. */
+interface GitHubReleaseAsset {
+  name?: unknown;
+  browser_download_url?: unknown;
+  size?: unknown;
 }
 
-/** Parse the small part of the GitHub API response the page needs. */
+/**
+ * Parse the small part of the GitHub API response the page needs.
+ *
+ * `browser_download_url` is the only field a browser may navigate to; the
+ * sibling `url` field is the api.github.com asset endpoint (it returns JSON for
+ * an anonymous request), so it is deliberately ignored.
+ */
 export function parseLatestRelease(
   value: unknown,
 ): { version: string; assets: ReleaseAsset[] } | null {
   if (!value || typeof value !== "object") return null;
-  const release = value as LatestRelease;
+  const release = value as { tag_name?: unknown; assets?: unknown };
   const version = typeof release.tag_name === "string" ? release.tag_name.replace(/^v/, "") : "";
   if (!version || !Array.isArray(release.assets)) return null;
-  const assets = release.assets
-    .filter(
-      (asset): asset is ReleaseAsset =>
-        Boolean(asset) &&
-        typeof asset.name === "string" &&
-        typeof asset.url === "string" &&
-        isAllowedAssetUrl(asset.url),
-    )
-    .map((asset) => ({ name: asset.name, url: asset.url, size: asset.size }));
+
+  const assets: ReleaseAsset[] = [];
+  for (const raw of release.assets) {
+    if (!raw || typeof raw !== "object") continue;
+    const asset = raw as GitHubReleaseAsset;
+    if (typeof asset.name !== "string" || typeof asset.browser_download_url !== "string") continue;
+    if (!isAllowedAssetUrl(asset.browser_download_url)) continue;
+    assets.push({
+      name: asset.name,
+      downloadUrl: asset.browser_download_url,
+      ...(typeof asset.size === "number" ? { size: asset.size } : {}),
+    });
+  }
+
   return assets.length > 0 ? { version, assets } : null;
 }

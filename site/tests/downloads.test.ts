@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { expectedAssets } from "../../scripts/release-assets.mjs";
+import { PLATFORMS } from "../src/data/platforms";
 import {
+  assetFileName,
   assetSuffixes,
   detectTarget,
   isAllowedAssetUrl,
+  isValidReleaseVersion,
   parseLatestRelease,
   selectAssets,
+  staticAssetUrl,
   DOWNLOAD_PREFIX,
   type ReleaseAsset,
 } from "../src/lib/downloads";
@@ -13,7 +17,7 @@ import {
 function assetsFor(platform: "win" | "linux" | "mac", version = "0.5.0"): ReleaseAsset[] {
   return expectedAssets(platform, version).map((name: string) => ({
     name,
-    url: `${DOWNLOAD_PREFIX}v${version}/${name}`,
+    downloadUrl: `${DOWNLOAD_PREFIX}v${version}/${name}`,
   }));
 }
 
@@ -57,6 +61,41 @@ describe("download target detection", () => {
   });
 });
 
+describe("static installer URLs", () => {
+  const version = "0.5.0";
+  const published = new Set([
+    ...expectedAssets("win", version),
+    ...expectedAssets("linux", version),
+    ...expectedAssets("mac", version),
+  ]);
+  const suffixes = [
+    ...new Set(
+      PLATFORMS.flatMap((platform) => [
+        platform.primary.suffix,
+        ...platform.alternates.map((alternate) => alternate.suffix),
+      ]),
+    ),
+  ];
+
+  it("points every card link at a file the release workflow publishes", () => {
+    for (const suffix of suffixes) {
+      const name = assetFileName(version, suffix);
+      expect(published.has(name), name).toBe(true);
+      const url = staticAssetUrl(version, suffix);
+      expect(url).toBe(`${DOWNLOAD_PREFIX}v${version}/${name}`);
+      expect(isAllowedAssetUrl(url)).toBe(true);
+    }
+  });
+
+  it("refuses to build a URL from an unusable version", () => {
+    for (const invalid of ["", "1.0", "../x", "1.0.0/extra", "v0.5.0", "0.5.0?x"]) {
+      expect(isValidReleaseVersion(invalid), invalid).toBe(false);
+      expect(staticAssetUrl(invalid, "win-x64-setup.exe"), invalid).toBe("");
+    }
+    expect(isValidReleaseVersion("1.0.0-beta.2")).toBe(true);
+  });
+});
+
 describe("release asset selection", () => {
   it("maps every current Windows installer to the primary/alternate links", () => {
     const selection = selectAssets(allAssets, { os: "windows", arch: "x64" });
@@ -97,15 +136,47 @@ describe("release asset selection", () => {
   });
 });
 
+/** The real GitHub API shape: `url` is the API endpoint, `browser_download_url` the file. */
+function apiAssets(): unknown[] {
+  return allAssets.map((asset) => ({
+    name: asset.name,
+    url: `https://api.github.com/repos/dieuluucanh/pi-desktop/releases/assets/${asset.name}`,
+    browser_download_url: asset.downloadUrl,
+    size: 123,
+  }));
+}
+
 describe("latest release parsing", () => {
-  it("keeps only allowlisted assets and the version", () => {
+  it("reads browser_download_url and keeps only allowlisted assets", () => {
     const parsed = parseLatestRelease({
       tag_name: "v0.5.0",
-      assets: [...allAssets, { name: "evil.exe", url: "https://example.com/evil.exe" }],
+      assets: [
+        ...apiAssets(),
+        {
+          name: "evil.exe",
+          url: "https://example.com/evil.exe",
+          browser_download_url: "https://example.com/evil.exe",
+        },
+      ],
     });
     expect(parsed?.version).toBe("0.5.0");
-    expect(parsed?.assets.some((asset) => asset.name === "evil.exe")).toBe(false);
     expect(parsed?.assets.length).toBe(allAssets.length);
+    expect(parsed?.assets[0]?.downloadUrl).toBe(allAssets[0]?.downloadUrl);
+    expect(parsed?.assets.some((asset) => asset.name === "evil.exe")).toBe(false);
+  });
+
+  it("ignores a payload that only carries API asset endpoints", () => {
+    expect(
+      parseLatestRelease({
+        tag_name: "v0.5.0",
+        assets: [
+          {
+            name: "Pi-Desktop-0.5.0-win-x64-setup.exe",
+            url: `${DOWNLOAD_PREFIX}v0.5.0/Pi-Desktop-0.5.0-win-x64-setup.exe`,
+          },
+        ],
+      }),
+    ).toBeNull();
   });
 
   it("rejects malformed or empty releases", () => {

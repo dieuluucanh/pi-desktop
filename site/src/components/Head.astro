@@ -19,6 +19,24 @@ const applicationJsonLd = {
 ---
 
 <DefaultHead />
+<meta name="pi-desktop-release" content={manifest.version} />
+{/*
+  Choose the detected platform before first paint so the card grids can order
+  and highlight it without a layout shift. The arch-aware detection lives in
+  src/lib/downloads.ts; this only needs the OS family.
+*/}
+<script is:inline>
+  (() => {
+    const ua = navigator.userAgent;
+    document.documentElement.dataset.detectedOs = /Windows/i.test(ua)
+      ? "windows"
+      : /Macintosh|Mac OS X/i.test(ua)
+        ? "macos"
+        : /Linux|X11/i.test(ua)
+          ? "linux"
+          : "";
+  })();
+</script>
 <meta property="og:image" content={absoluteUrl("/og.png")} />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />

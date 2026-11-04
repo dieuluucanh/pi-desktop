@@ -13,9 +13,11 @@ behaviour of the website and the app; it is not a legal contract.
 - GitHub Pages hosts the site, so GitHub may process standard web-server logs (IP address,
   user agent, requested URL) under
   [GitHub's privacy statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
-- The download buttons make one anonymous request to the public GitHub Releases API to find the
-  current installer. That request carries no account token and no identifier beyond a normal
-  HTTPS request. If it fails, the buttons simply open the Releases page.
+- The download buttons link directly at the current release's installer files on GitHub Releases.
+  The page also makes one anonymous, best-effort request to the public GitHub Releases API to pick
+  up a newer release. That request carries no account token and no identifier beyond a normal
+  HTTPS request; if it fails, the static links still download the build the site was published
+  with, and a Releases link lists every other file.
 - The site loads no remote fonts or CDN assets.
 
 ## The app

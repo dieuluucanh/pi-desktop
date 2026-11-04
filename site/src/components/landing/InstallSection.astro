@@ -5,9 +5,12 @@ import { withBase } from "../../../site.config.mjs";
 <section class="pi-section" id="install" aria-labelledby="pi-install-title">
   <p class="pi-kicker">After the download</p>
   <h2 id="pi-install-title">Install in a couple of minutes</h2>
-  <div class="pi-grid pi-grid--three">
-    <article class="pi-card">
-      <h3>Windows</h3>
+  <div class="pi-grid pi-grid--three pi-platform-grid">
+    <article class="pi-card" data-platform="windows">
+      <div class="pi-download-card__head">
+        <h3>Windows</h3>
+        <span class="pi-badge pi-badge--gold pi-platform-flag">Your platform</span>
+      </div>
       <p>
         Run the NSIS installer and open Pi Desktop from the Start menu. The portable .exe needs no
         install.
@@ -16,14 +19,17 @@ import { withBase } from "../../../site.config.mjs";
         Unsigned build. If SmartScreen appears, choose <strong>More info → Run anyway</strong>.
       </p>
     </article>
-    <article class="pi-card">
-      <h3>macOS</h3>
+    <article class="pi-card" data-platform="macos">
+      <div class="pi-download-card__head">
+        <h3>macOS</h3>
+        <span class="pi-badge pi-badge--gold pi-platform-flag">Your platform</span>
+      </div>
       <p>
         Open the .dmg and drag Pi Desktop into <code>/Applications</code>.
       </p>
       <p class="pi-warning">
-        The build is unsigned and not notarized. Launch once, then open
-        <strong>System Settings → Privacy &amp; Security</strong> and choose
+        The build is unsigned and not notarized. Launch once, then open{" "}
+        <strong>System Settings → Privacy &amp; Security</strong> and choose{" "}
         <strong>Open Anyway</strong>.
       </p>
       <p>
@@ -31,8 +37,11 @@ import { withBase } from "../../../site.config.mjs";
         stable signing identity.
       </p>
     </article>
-    <article class="pi-card">
-      <h3>Linux</h3>
+    <article class="pi-card" data-platform="linux">
+      <div class="pi-download-card__head">
+        <h3>Linux</h3>
+        <span class="pi-badge pi-badge--gold pi-platform-flag">Your platform</span>
+      </div>
       <p>Make the AppImage executable and run it, or install the .deb:</p>
       <pre><code>chmod +x Pi-Desktop-*.AppImage
 ./Pi-Desktop-*.AppImage
