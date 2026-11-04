@@ -3,6 +3,7 @@ import {
   documentMentionValue,
   documentMentionsForHost,
   emptyOfficeDocumentsView,
+  officeBridgeCandidateTab,
   officeBridgeOwnerTab,
   parseOfficeBridgeOwner,
   formatPaneAge,
@@ -537,7 +538,7 @@ describe("toDocumentMentions", () => {
 function tab(
   overrides: Partial<{
     id: string;
-    kind: "session" | "office" | "web";
+    kind: "session" | "office" | "web" | "editor";
     cwd: string;
     title: string;
     status: "idle" | "running" | "starting" | "crashed" | "failed" | "stopped";
@@ -552,6 +553,52 @@ function tab(
     ...overrides,
   };
 }
+
+describe("officeBridgeCandidateTab", () => {
+  const desktopOwner = {
+    pid: 4242,
+    sessionId: "tab-owner",
+    client: "desktop",
+    cwd: "/work/app",
+  };
+  const manualView = parseOfficeDocumentsView({
+    payload: manualHealthPayload([], { ...desktopOwner, sessionId: null, client: "cli" }),
+    status: "ok",
+    fetchedAt: "2026-09-20T10:00:00.000Z",
+  });
+
+  it("prefers the live owner, then an Office host", () => {
+    const tabs = [
+      tab({ id: "session-1" }),
+      tab({ id: "office-1", kind: "office" }),
+      tab({ id: "tab-owner" }),
+    ];
+    const owned = parseOfficeDocumentsView({
+      payload: manualHealthPayload([], desktopOwner),
+      status: "ok",
+      fetchedAt: "2026-09-20T10:00:00.000Z",
+    });
+
+    expect(officeBridgeCandidateTab(owned, tabs)?.id).toBe("tab-owner");
+    expect(officeBridgeCandidateTab(manualView, tabs)?.id).toBe("office-1");
+  });
+
+  it("falls back to a host-backed session and never an editor or web tab", () => {
+    const tabs = [
+      tab({ id: "editor-1", kind: "editor" }),
+      tab({ id: "web-1", kind: "web" }),
+      tab({ id: "session-1" }),
+    ];
+
+    expect(officeBridgeCandidateTab(manualView, tabs)?.id).toBe("session-1");
+    expect(
+      officeBridgeCandidateTab(manualView, [
+        tab({ id: "editor-1", kind: "editor" }),
+        tab({ id: "web-1", kind: "web" }),
+      ]),
+    ).toBeNull();
+  });
+});
 
 describe("officeHostTab", () => {
   it("finds the office tab that holds the bridge", () => {

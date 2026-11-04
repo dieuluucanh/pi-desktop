@@ -228,6 +228,7 @@ describe("model scope", () => {
         tab(),
         { ...tab(), id: "tab-2" },
         { ...tab(), id: "tab-3" },
+        { ...tab(), id: "editor-1", kind: "editor", filePath: "a.ts", sessionFile: null },
         { ...tab(), id: "web-1", kind: "web" },
       ],
     });
@@ -237,7 +238,9 @@ describe("model scope", () => {
     const state = useAppStore.getState();
     expect(state.modelScope["tab-2"]).toEqual(["fake/fake-2"]);
     expect(state.modelScope["tab-3"]).toBeUndefined();
+    expect(state.modelScope["editor-1"]).toBeUndefined();
     expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ tabId: "tab-1" }));
+    expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ tabId: "editor-1" }));
     expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ tabId: "web-1" }));
   });
 

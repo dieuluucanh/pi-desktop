@@ -56,6 +56,9 @@ Rules that matter:
 
 - Only one session can own 38617. A second connect reports the owner; it never
   silently falls back to 38618.
+- Only a host-backed tab (`session`/`office`) can be the bridge target. Editor
+  and web tabs are refused before any host RPC (`officeBridgeCandidateTab` and
+  `requireConnectableTab`).
 - `session_shutdown` always stops the server. Pi re-instantiates extension
   factories on `/new`, `/resume`, `/fork` and `/reload`, so keeping it would
   orphan it; every new session starts off.

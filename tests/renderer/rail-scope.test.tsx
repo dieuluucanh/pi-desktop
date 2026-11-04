@@ -321,7 +321,24 @@ describe("DocumentsScope", () => {
 
     const move = screen.getByRole("button", { name: "Move bridge here" });
     expect(move).toBeDisabled();
-    expect(move).toHaveAttribute("title", "A web tab cannot host the Office bridge.");
+    expect(move).toHaveAttribute("title", "Only a session tab can host the Office bridge.");
+  });
+
+  it("refuses to move a bridge into an editor tab and says why", () => {
+    seedScope(
+      [
+        tab({ id: "editor-1", kind: "editor", filePath: "a.ts" }),
+        tab({ id: "office-1", kind: "office" }),
+      ],
+      "editor-1",
+      ownerView("office-1"),
+      "editor",
+    );
+    render(<DocumentsScope railFolder="/work/app" activeKind="editor" />);
+
+    const move = screen.getByRole("button", { name: "Move bridge here" });
+    expect(move).toBeDisabled();
+    expect(move).toHaveAttribute("title", "Only a session tab can host the Office bridge.");
   });
 
   it("offers Connect this session when the bridge is off", async () => {

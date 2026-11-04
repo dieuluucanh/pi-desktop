@@ -16,7 +16,7 @@ import type {
 } from "../../shared/office-bridge";
 import type { OfficeBridgeOwner, OfficeDocumentsView } from "../../shared/office-documents";
 import { PI_OFFICE_BRIDGE } from "../../shared/office";
-import type { TabRecord } from "../../shared/session-ipc";
+import { isHostBackedTab, type TabRecord } from "../../shared/session-ipc";
 
 export type { OfficeBridgeControlReason, OfficeBridgeControlResult };
 
@@ -106,11 +106,11 @@ export function createOfficeBridgeControl(deps: OfficeBridgeControlDeps): Office
     if (!tab) {
       return { ok: false, reason: "bad-tab", message: "That session tab no longer exists." };
     }
-    if (tab.kind === "web") {
+    if (!isHostBackedTab(tab.kind)) {
       return {
         ok: false,
         reason: "bad-tab",
-        message: "A web tab cannot host the Office bridge.",
+        message: "Only a session tab can host the Office bridge.",
       };
     }
     return null;

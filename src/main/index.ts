@@ -105,7 +105,7 @@ import {
 } from "../shared/updates";
 import { officeEvidenceLine, type OfficeBridgeEnsureResult } from "../shared/office-setup";
 import { PI_OFFICE_BRIDGE } from "../shared/office";
-import { officeBridgeOwnerTab } from "../shared/office-documents";
+import { officeBridgeCandidateTab, officeBridgeOwnerTab } from "../shared/office-documents";
 import { profileModeFromDocument, type ProfileMode } from "../shared/profile";
 import {
   isSafeMode,
@@ -886,11 +886,7 @@ async function ensureOfficeBridge(): Promise<OfficeBridgeEnsureResult> {
     return { ok: false, error: "The Pi runtime is unavailable, so no bridge can start." };
   }
   const tabs = sessions.tabs();
-  const target =
-    officeBridgeOwnerTab(officeDocuments.get(), tabs) ??
-    tabs.find((tab) => tab.kind === "office" && tab.status !== "stopped") ??
-    tabs.find((tab) => tab.kind !== "web") ??
-    null;
+  const target = officeBridgeCandidateTab(officeDocuments.get(), tabs);
 
   let tabId = target?.id ?? null;
   if (tabId === null) {

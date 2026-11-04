@@ -481,6 +481,11 @@ The app treats failure as a first-class state rather than a silent no-op:
   session does not read as inactive. Window focus/visibility and
   `powerMonitor` resume call `sessions.reconcile()`; any interaction calls the
   coalesced `ensureSession()`, which repairs a stopped or sessionless host.
+- **Only host-backed tabs receive host RPCs.** `isHostBackedTab(kind)` is true for
+  `session` and `office` only. Cross-tab fan-outs (model scope, queue modes,
+  project-settings reload) go through `hostBackedTabs()`; an `editor` or `web`
+  tab never receives `session.request`. Main still rejects a misplaced request
+  with `editor_tab`/`web_tab` as defense in depth.
 - **Stale host.** A host process keeps the bundle it was spawned from. The app
   compares its `buildId` with `out/host/index.mjs`; an idle stale session is
   recycled before the next request, and a busy one shows a persistent banner

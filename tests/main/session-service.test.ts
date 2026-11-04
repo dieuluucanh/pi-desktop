@@ -1722,6 +1722,21 @@ describe("web tabs (plan step 21)", () => {
     await expect(service.request("tab-2", "state.get")).rejects.toThrow(/no Pi host/);
   });
 
+  it("never starts a host for an editor tab and refuses host requests", async () => {
+    const { service, specs } = createHarness();
+    const envelope = await service.createTab({
+      cwd: "C:/work/app",
+      kind: "editor",
+      filePath: "src/app.ts",
+    });
+    const editorId = envelope.tabs[0]!.id;
+    expect(specs).toHaveLength(0);
+
+    await expect(service.request(editorId, "state.get")).rejects.toThrow(/no Pi host/);
+    await expect(service.restartTab(editorId)).rejects.toThrow(/no Pi host to restart/);
+    expect(specs).toHaveLength(0);
+  });
+
   it("restores a web tab as idle (there is no host to stop)", async () => {
     const { service, stored } = createHarness();
     stored.tabs = [

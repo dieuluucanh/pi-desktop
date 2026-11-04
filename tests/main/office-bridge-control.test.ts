@@ -72,6 +72,7 @@ function makeDeps(
       { id: "tab-2", kind: "session", status: "idle" },
       { id: "office-1", kind: "office", status: "idle" },
       { id: "web-1", kind: "web", status: "idle" },
+      { id: "editor-1", kind: "editor", status: "idle" },
     ],
     probe: probe.probe,
     request: async (tabId, _method, params) => {
@@ -239,12 +240,16 @@ describe("createOfficeBridgeControl.connect", () => {
     expect(result.message).toMatch(/older than 0\.6/);
   });
 
-  it("rejects a web tab and an unknown tab", async () => {
+  it("rejects a web tab, an editor tab and an unknown tab", async () => {
     const deps = makeDeps([off()]);
     const control = createOfficeBridgeControl(deps.deps);
 
     expect((await control.connect("web-1")).reason).toBe("bad-tab");
+    expect((await control.connect("editor-1")).reason).toBe("bad-tab");
+    expect((await control.close("editor-1")).reason).toBe("bad-tab");
+    expect((await control.restart("editor-1")).reason).toBe("bad-tab");
     expect((await control.connect("nope")).reason).toBe("bad-tab");
+    expect(deps.calls).toEqual([]);
   });
 });
 

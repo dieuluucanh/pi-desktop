@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  hostBackedTabs,
+  isHostBackedTab,
   isSessionBusyState,
   isSessionTab,
   isTabKind,
@@ -92,6 +94,43 @@ describe("sanitizeTabRecord", () => {
 
     const malformed = sanitizeTabRecord({ id: "t", cwd: "C:\\x", pinned: "yes" });
     expect(malformed).not.toHaveProperty("pinned");
+  });
+});
+
+describe("hostBackedTabs", () => {
+  function record(kind: TabRecord["kind"], id = `tab-${kind}`): TabRecord {
+    return {
+      id,
+      kind,
+      cwd: "C:\\work\\app",
+      title: kind,
+      sessionFile: null,
+      status: "idle",
+      createdAt: 1,
+      lastActiveAt: 1,
+      model: null,
+      ...(kind === "editor" ? { filePath: "a.ts" } : {}),
+    };
+  }
+
+  it("owns a host only for session and office tabs", () => {
+    expect(isHostBackedTab("session")).toBe(true);
+    expect(isHostBackedTab("office")).toBe(true);
+    expect(isHostBackedTab("web")).toBe(false);
+    expect(isHostBackedTab("editor")).toBe(false);
+  });
+
+  it("keeps host-backed tabs in order and excludes a target id", () => {
+    const tabs = [
+      record("session", "tab-1"),
+      record("editor", "editor-1"),
+      record("office", "office-1"),
+      record("web", "web-1"),
+      record("session", "tab-2"),
+    ];
+
+    expect(hostBackedTabs(tabs).map((tab) => tab.id)).toEqual(["tab-1", "office-1", "tab-2"]);
+    expect(hostBackedTabs(tabs, "tab-1").map((tab) => tab.id)).toEqual(["office-1", "tab-2"]);
   });
 });
 

@@ -19,7 +19,7 @@ import {
 } from "./office";
 import { projectBridgeCompatibility, type BridgeCompatibility } from "./office-bridge";
 import { sameFolder } from "./rail-scope";
-import type { TabRecord } from "./session-ipc";
+import { isHostBackedTab, type TabRecord } from "./session-ipc";
 
 /** One attached task pane, as the Documents panel and the completion source see it. */
 export interface OfficeDocumentPane {
@@ -530,6 +530,23 @@ export function officeBridgeOwnerTab(
   // tab by construction in that release, so this is display-only compatibility.
   if (!view.manualLifecycle) return officeHostTab(tabs);
   return null;
+}
+
+/**
+ * The tab an automatic bridge setup should use: the live owner, then an Office
+ * host, then any host-backed session. An editor or web tab has no Pi host, so
+ * it is never a bridge target even when it is the most recently used tab.
+ */
+export function officeBridgeCandidateTab(
+  view: Pick<OfficeDocumentsView, "available" | "manualLifecycle" | "owner"> | null,
+  tabs: readonly ScopeTab[],
+): ScopeTab | null {
+  return (
+    officeBridgeOwnerTab(view, tabs) ??
+    officeHostTab(tabs) ??
+    tabs.find((tab) => isHostBackedTab(tab.kind)) ??
+    null
+  );
 }
 
 /** The Office host, as the Documents scope line renders it. */

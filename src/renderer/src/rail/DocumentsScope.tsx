@@ -24,6 +24,7 @@ import { Button } from "../ui/button";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { useAppStore } from "../state/app-store";
 import { documentScopeNote } from "../../../shared/rail-scope";
+import { isHostBackedTab, type TabKind } from "../../../shared/session-ipc";
 import {
   emptyOfficeDocumentsView,
   officeDocumentScope,
@@ -41,8 +42,8 @@ export interface DocumentsScopeProps {
   panes?: readonly OfficeDocumentPane[];
   /** The folder the rail is scoped to, so the note can omit a redundant path. */
   railFolder?: string | null;
-  /** The active tab's kind: a `web` tab can never hold the bridge. */
-  activeKind?: string | null;
+  /** The active tab's kind: only a host-backed `session`/`office` tab can hold the bridge. */
+  activeKind?: TabKind | null;
   /** Legacy/test form: the bridge is known to be down. */
   bridgeDown?: boolean;
 }
@@ -64,12 +65,15 @@ export function DocumentsScope({
   view: suppliedView,
   panes,
   railFolder = null,
-  activeKind = null,
+  activeKind: suppliedActiveKind = null,
   bridgeDown = false,
 }: DocumentsScopeProps): React.JSX.Element {
   const storeView = useAppStore((state) => state.officeDocuments);
   const tabs = useAppStore((state) => state.tabs);
   const activeTabId = useAppStore((state) => state.activeTabId);
+  // `ProjectRail` passes the kind, but a caller that omits it must still get the
+  // same answer as the store: never enable a bridge action for a file/web tab.
+  const activeKind = suppliedActiveKind ?? tabs.find((tab) => tab.id === activeTabId)?.kind ?? null;
   const activateTab = useAppStore((state) => state.activateTab);
   const connectOfficeBridge = useAppStore((state) => state.connectOfficeBridge);
   const closeOfficeBridge = useAppStore((state) => state.closeOfficeBridge);
@@ -98,9 +102,10 @@ export function DocumentsScope({
   const legacy = available && !manualLifecycle;
   const owner = view?.owner ?? null;
   const portConflict = view?.status === "not-our-bridge";
-  const canHost = activeKind !== "web" && activeTabId !== null;
+  const canHost = activeTabId !== null && activeKind !== null && isHostBackedTab(activeKind);
   const busyReason = busy ? "An Office bridge action is already running." : undefined;
-  const webReason = activeTabId === null ? undefined : "A web tab cannot host the Office bridge.";
+  const hostReason =
+    activeTabId === null ? undefined : "Only a session tab can host the Office bridge.";
 
   const [confirming, setConfirming] = useState<"move" | "takeover" | null>(null);
 
@@ -126,7 +131,7 @@ export function DocumentsScope({
   const update = (): void => installOfficeBridge();
 
   const actionDisabled = busy || !canHost;
-  const actionTitle = busy ? busyReason : webReason;
+  const actionTitle = busy ? busyReason : hostReason;
 
   return (
     <div

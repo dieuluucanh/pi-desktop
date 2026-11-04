@@ -73,6 +73,7 @@ import type {
 } from "../../../shared/settings";
 import {
   CONTROL_TAB_ID,
+  hostBackedTabs,
   isHostBackedTab,
   type CreateTabInput,
   type RetargetEditorTabsInput,
@@ -2268,13 +2269,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       if (get().resourcesLoaded) await get().loadResources({ refresh: true });
       if (get().packagesLoaded) await get().loadPackages({ refresh: true });
 
-      // The whole project document changed: reload any live tab rooted there so
-      // non-scope settings (theme, extensions, tools) also take effect.
-      const targets = get().tabs.filter(
-        (tab) =>
-          tab.cwd === path &&
-          tab.kind !== "web" &&
-          (tab.status === "idle" || tab.status === "running"),
+      // The whole project document changed: reload any live host tab rooted
+      // there so non-scope settings (theme, extensions, tools) also take effect.
+      // An editor tab is a file view, not a session, so it must never receive
+      // `session.reload`.
+      const targets = hostBackedTabs(get().tabs).filter(
+        (tab) => tab.cwd === path && (tab.status === "idle" || tab.status === "running"),
       );
       await Promise.all(
         targets.map(async (tab) => {
@@ -3349,8 +3349,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.sessions) return;
     if (!mainSupports(get().info, "model.scope.apply")) return;
-    // Office tabs are host-backed sessions too; only a web tab has no Pi host.
-    const targets = get().tabs.filter((tab) => tab.id !== exceptTabId && tab.kind !== "web");
+    // Office tabs are host-backed sessions too; editor and web tabs have no Pi
+    // host, so a fan-out must never address them.
+    const targets = hostBackedTabs(get().tabs, exceptTabId);
     await Promise.all(
       targets.map(async (tab) => {
         try {
@@ -3376,7 +3377,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
    * A Settings write goes through the control host, so the open sessions keep
    * the modes they were constructed with until reload. Terminal Pi applies both
    * live (`setSteeringMode`/`setFollowUpMode`); the fan-out mirrors
-   * `applyModelScopeToTabs`, skipping web tabs and tolerating a dead one.
+   * `applyModelScopeToTabs`, targeting host-backed tabs only and tolerating a
+   * dead one.
    */
   applyQueueModeToTabs: async (exceptTabId) => {
     const api = bridge();
@@ -3389,7 +3391,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const steering = read("steeringMode");
     const followUp = read("followUpMode");
     if (!steering && !followUp) return;
-    const targets = get().tabs.filter((tab) => tab.id !== exceptTabId && tab.kind !== "web");
+    const targets = hostBackedTabs(get().tabs, exceptTabId);
     await Promise.all(
       targets.map(async (tab) => {
         try {

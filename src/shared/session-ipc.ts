@@ -91,6 +91,20 @@ export interface TabRecord {
   pinned?: boolean;
 }
 
+/**
+ * The tabs that own a Pi host (`session`/`office`), optionally excluding one id.
+ *
+ * Every cross-tab fan-out (model scope, queue modes, project-settings reload)
+ * must use this selector: an `editor` or `web` tab has no host and a
+ * `session.request` addressed to it is a bug, not a failed operation.
+ */
+export function hostBackedTabs<T extends Pick<TabRecord, "id" | "kind">>(
+  tabs: readonly T[],
+  exceptTabId?: string,
+): T[] {
+  return tabs.filter((tab) => tab.id !== exceptTabId && isHostBackedTab(tab.kind));
+}
+
 /** The path mapping used after a rename or move retargets open editor tabs. */
 export interface RetargetEditorTabsInput {
   fromProjectPath: string;
