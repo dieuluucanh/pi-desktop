@@ -1,0 +1,37 @@
+---
+import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
+import DownloadSection from "../components/landing/DownloadSection.astro";
+import InstallSection from "../components/landing/InstallSection.astro";
+import UpdateTable from "../components/landing/UpdateTable.astro";
+import { RELEASES_URL, withBase } from "../../site.config.mjs";
+---
+
+<StarlightPage
+  frontmatter={{
+    title: "Download Pi Desktop",
+    description:
+      "Download the current Pi Desktop installer for Windows, macOS or Linux, and read the install and update notes.",
+    template: "splash",
+  }}
+>
+  <div class="pi-landing">
+    <section class="pi-hero" aria-labelledby="download-title">
+      <div class="pi-hero__inner">
+        <p class="pi-kicker">Downloads</p>
+        <h1 id="download-title">Get Pi Desktop</h1>
+        <p class="pi-hero__lede">
+          Windows is the primary platform; macOS and Linux are beta. Builds are unsigned, and macOS
+          updates are manual.
+        </p>
+        <p class="pi-download__fine">
+          <a href={RELEASES_URL}>Open the GitHub Releases page</a> ·
+          <a href={withBase("/guide/getting-started/")}>Installation guide</a>
+        </p>
+        <p data-download-status aria-live="polite" class="pi-download__fine"></p>
+      </div>
+    </section>
+    <DownloadSection />
+    <InstallSection />
+    <UpdateTable />
+  </div>
+</StarlightPage>

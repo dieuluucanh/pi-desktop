@@ -91,3 +91,27 @@ jobs:
             test-results
             playwright-report
           if-no-files-found: ignore
+
+  site:
+    name: site gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install site dependencies
+        run: npm ci --prefix site
+
+      - name: Format the site
+        run: npm --prefix site run format:check
+
+      - name: Typecheck, sync and unit test the site
+        run: npm run site:check
+
+      - name: Build the site and check every link
+        run: npm run site:build

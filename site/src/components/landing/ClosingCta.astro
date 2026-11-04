@@ -1,0 +1,29 @@
+---
+import { RELEASES_URL, withBase } from "../../../site.config.mjs";
+---
+
+<section class="pi-closing" aria-labelledby="pi-closing-title">
+  <div>
+    <p class="pi-kicker">Ready when you are</p>
+    <h2 id="pi-closing-title">Give the agent a proper window.</h2>
+    <p>
+      Download the current build, open a project, and keep using the same Pi profile you already
+      have.
+    </p>
+  </div>
+  <div class="pi-actions">
+    <a class="pi-button pi-button--primary" href={RELEASES_URL} data-download-primary>
+      Download Pi Desktop
+    </a>
+    <a class="pi-button pi-button--secondary" href={withBase("/docs/")}>
+      Browse the docs
+    </a>
+    <a
+      class="pi-button pi-button--secondary"
+      href="https://github.com/dieuluucanh/pi-desktop"
+      rel="noreferrer"
+    >
+      GitHub
+    </a>
+  </div>
+</section>

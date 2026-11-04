@@ -29,6 +29,7 @@ src/host/        Pi host process: runs the SDK under the bundled Node runtime
 src/shared/      types + constants shared by all of the above (ipc.ts is the IPC allowlist)
 packages/checkpoints/  the publishable @dieulc/checkpoints package (tracked metadata, generated index.mjs)
 resources/       vendored Office manifest, fetched Node/npm runtime
+site/            public Astro/Starlight site + docs build (separate package and lockfile)
 tests/           vitest: node project (tests/**) + jsdom renderer project (tests/renderer/)
 ```
 
@@ -66,6 +67,10 @@ tests/           vitest: node project (tests/**) + jsdom renderer project (tests
    _not_ gate `additionalExtensionPaths` — use
    `checkpointExtensionLoaderOptions` in `src/host/safe-mode.ts`, which is the one
    place the decision is made.
+10. **The site is generated from `docs/`.** `site/src/content/docs/` generated
+    files are gitignored; edit `docs/` and run `npm run site:sync`. The site
+    never imports app/Electron code and its dependencies stay in
+    `site/package-lock.json`.
 
 ## Style
 
@@ -91,6 +96,9 @@ tests/           vitest: node project (tests/**) + jsdom renderer project (tests
   `npm run verify:extension` checks the package/tarball contract.
 - `npm run release:extension:status` compares the package with npm;
   `npm run release:extension -- --bump patch --branch dev --yes` publishes it.
+- `npm run site:dev`, `site:check`, `site:build` and `site:screenshots` work in
+  the isolated `site/` package; `site/check-links.mjs` verifies the GitHub Pages
+  base path. The site deploys from `main` via `.github/workflows/pages.yml`.
 - `npm run package:win|mac|linux` produces installers locally (unsigned; signing is backlog
   B1/B2). Releases themselves are cut by pushing a `v*` tag:
   `.github/workflows/release.yml` builds all three platforms, uploads installers and

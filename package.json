@@ -55,7 +55,12 @@
     "release:assets": "node scripts/release-assets.mjs",
     "office:doctor": "vitest run tests/office/detect.live.test.ts --disable-console-intercept",
     "office:manifest:check": "node scripts/sync-office-manifest.mjs --check",
-    "office:manifest:sync": "node scripts/sync-office-manifest.mjs --source ../pi-for-office/packages/add-in/manifest.prod.xml"
+    "office:manifest:sync": "node scripts/sync-office-manifest.mjs --source ../pi-for-office/packages/add-in/manifest.prod.xml",
+    "site:dev": "npm --prefix site run dev",
+    "site:sync": "npm --prefix site run sync",
+    "site:check": "npm --prefix site run check",
+    "site:build": "npm --prefix site run build",
+    "site:screenshots": "npm run build && playwright test --config playwright.screenshots.config.ts && node site/scripts/optimize-screenshots.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",

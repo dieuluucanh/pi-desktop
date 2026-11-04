@@ -78,6 +78,27 @@ Next:
 - **Discovery.** winget, Homebrew Cask and Flathub listings are free and follow the
   release assets, not the other way round.
 
+## Public site
+
+Shipped with v0.5.0: the GitHub Pages site in `site/`, the landing/download pages,
+the generated docs and release notes, the privacy page and the Playwright
+screenshot harness. It has no analytics and no custom domain.
+
+Next:
+
+- **Custom domain.** Point a domain at GitHub Pages, add `public/CNAME`, set
+  `SITE_URL`/`SITE_BASE_PATH` and remove the `/pi-desktop` base; the link checker
+  already covers both bases.
+- **Versioned docs.** Starlight versioning once there is more than one supported
+  release line; today the site documents `main` and keeps every release note.
+- **PR previews.** GitHub Pages has no preview deployments; a Cloudflare Pages
+  preview job could build `site/dist` per pull request without changing the
+  production deploy.
+- **Privacy-friendly analytics.** Optional and explicitly out of the first site;
+  adding it requires updating `privacy.md` in the same change.
+- **Screenshot refresh.** Re-run `npm run site:screenshots` when the shell
+  changes materially; the harness is deterministic but not part of CI.
+
 ## Upstream watch
 
 | Item                                                         | Why it matters                                                                                                   | Mitigation                                                                                                                                                         |

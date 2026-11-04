@@ -1,0 +1,63 @@
+---
+import { PLATFORMS, RELEASES_FALLBACK } from "../../data/platforms";
+import { withBase } from "../../../site.config.mjs";
+---
+
+<section class="pi-section" id="download" aria-labelledby="pi-download-title">
+  <p class="pi-kicker">Install</p>
+  <h2 id="pi-download-title">Download for your platform</h2>
+  <p class="pi-section__lede">
+    The buttons preselect the current installer from the latest published release. Every link works
+    without JavaScript and falls back to the Releases page.
+  </p>
+  <div class="pi-download-grid">
+    {PLATFORMS.map((platform) => (
+      <article class="pi-download-card" data-platform={platform.id}>
+        <div class="pi-download-card__head">
+          <h3>{platform.label}</h3>
+          <span class:list={["pi-badge", platform.status === "primary" ? "pi-badge--primary" : ""]}>
+            {platform.status}
+          </span>
+        </div>
+        <p class="pi-download-card__arch">{platform.arch}</p>
+        <a
+          class="pi-button pi-button--primary pi-download-card__cta"
+          href={RELEASES_FALLBACK}
+          data-download-primary
+          data-download-suffix={platform.primary.suffix}
+          data-download-label={platform.primary.label}
+        >
+          {platform.primary.label}
+        </a>
+        <ul class="pi-download-card__alternates">
+          {platform.alternates.map((alternate) => (
+            <li>
+              <a
+                href={RELEASES_FALLBACK}
+                data-download-suffix={alternate.suffix}
+                data-download-label={alternate.label}
+              >
+                {alternate.label}
+              </a>
+            </li>
+          ))}
+        </ul>
+        <p class="pi-download-card__note">{platform.note}</p>
+      </article>
+    ))}
+  </div>
+  <p class="pi-download__fine">
+    <a href={RELEASES_FALLBACK}>All releases, manifests and checksums on GitHub</a>·{" "}
+    <a href={withBase("/releases/")}>Release notes</a>
+  </p>
+  <noscript>
+    <p>
+      JavaScript only preselects your installer. Every link above opens the Releases page, where you
+      can choose the file for your platform.
+    </p>
+  </noscript>
+</section>
+
+<script>
+  import "../../scripts/downloads";
+</script>

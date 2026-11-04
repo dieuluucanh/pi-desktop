@@ -1,0 +1,36 @@
+---
+import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
+import ClosingCta from "../components/landing/ClosingCta.astro";
+import FaqSection from "../components/landing/FaqSection.astro";
+import FeatureGrid from "../components/landing/FeatureGrid.astro";
+import Hero from "../components/landing/Hero.astro";
+import InstallSection from "../components/landing/InstallSection.astro";
+import ProfileSection from "../components/landing/ProfileSection.astro";
+import ScreenshotGallery from "../components/landing/ScreenshotGallery.astro";
+import TrustStrip from "../components/landing/TrustStrip.astro";
+import UpdateTable from "../components/landing/UpdateTable.astro";
+import DownloadSection from "../components/landing/DownloadSection.astro";
+import manifest from "../data/site.generated.json";
+---
+
+<StarlightPage
+  frontmatter={{
+    title: "Pi Desktop — the Pi coding agent, without the terminal",
+    description:
+      "A desktop UI for the Pi coding agent: projects, sessions, an editor, chat, providers, models, extensions and checkpoints, using the same profile as terminal Pi.",
+    template: "splash",
+  }}
+>
+  <div class="pi-landing">
+    <Hero version={manifest.version} />
+    <TrustStrip />
+    <ScreenshotGallery />
+    <FeatureGrid />
+    <ProfileSection />
+    <DownloadSection />
+    <InstallSection />
+    <UpdateTable />
+    <FaqSection />
+    <ClosingCta />
+  </div>
+</StarlightPage>

@@ -1,0 +1,83 @@
+---
+import DefaultFooter from "@astrojs/starlight/components/Footer.astro";
+import { RELEASES_URL, REPO_URL, withBase } from "../../site.config.mjs";
+---
+
+<DefaultFooter />
+
+<footer class="pi-footer">
+  <div class="pi-footer__inner">
+    <p class="pi-footer__brand">
+      <strong>Pi Desktop</strong> is an independent client for the Pi coding agent and is not
+      affiliated with the Pi project.
+    </p>
+    <nav aria-label="Site footer">
+      <a href={withBase("/download/")}>Download</a>
+      <a href={withBase("/docs/")}>Docs</a>
+      <a href={withBase("/releases/")}>Releases</a>
+      <a href={withBase("/privacy/")}>Privacy</a>
+      <a href={REPO_URL} rel="noreferrer">
+        GitHub
+      </a>
+      <a href={`${REPO_URL}/issues`} rel="noreferrer">
+        Issues
+      </a>
+      <a href={`${REPO_URL}/blob/main/CONTRIBUTING.md`} rel="noreferrer">
+        Contributing
+      </a>
+      <a href={`${REPO_URL}/blob/main/LICENSE`} rel="noreferrer">
+        MIT license
+      </a>
+      <a href="https://pi.dev" rel="noreferrer">
+        Pi
+      </a>
+    </nav>
+    <p class="pi-footer__fine">
+      Built with the Pi SDK. Release installers and update manifests are published on
+      <a href={RELEASES_URL}>GitHub Releases</a>.
+    </p>
+  </div>
+</footer>
+
+<style>
+  .pi-footer {
+    border-top: 1px solid var(--sl-color-hairline, #d8d2c2);
+    margin-top: 3rem;
+    padding: 1.5rem 0 2rem;
+    color: var(--sl-color-gray-2, #5c6478);
+    font-size: var(--sl-text-sm, 0.875rem);
+  }
+
+  .pi-footer__inner {
+    display: grid;
+    gap: 0.75rem;
+    margin: 0 auto;
+    max-width: 72rem;
+    padding: 0 1rem;
+  }
+
+  .pi-footer__brand {
+    color: var(--sl-color-text, #14213d);
+    margin: 0;
+  }
+
+  .pi-footer nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1rem;
+  }
+
+  .pi-footer a {
+    color: var(--sl-color-accent-high, #082f78);
+    text-decoration: underline;
+    text-underline-offset: 0.18em;
+  }
+
+  .pi-footer a:hover {
+    color: var(--sl-color-accent, #0a3d9c);
+  }
+
+  .pi-footer__fine {
+    margin: 0;
+  }
+</style>

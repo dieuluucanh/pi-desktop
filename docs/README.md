@@ -1,11 +1,17 @@
 # Pi Desktop docs
 
+> **On the web:** [Pi Desktop product site](https://dieuluucanh.github.io/pi-desktop/) ·
+> [Downloads](https://dieuluucanh.github.io/pi-desktop/download/) ·
+> [All release notes](https://dieuluucanh.github.io/pi-desktop/releases/)
+
 ## Product
 
 - [`product/parity.md`](product/parity.md) — the feature matrix against terminal Pi (implemented,
   planned at which step, and what is deliberately out of scope, including MCP).
 - [`product/backlog.md`](product/backlog.md) — the deferred backlog: post-MVP items, MVP scope
   deferred during the plan, release engineering and the upstream watch list.
+- [`product/traceability.md`](product/traceability.md) — requirement → plan step → test/doc
+  evidence, so a claim can be traced to something that runs.
 
 ## Releases
 
@@ -13,6 +19,8 @@
   cross-platform, auto-updating release: the tag-driven pipeline, the macOS artefacts,
   the live update feed and the macOS manual-update rule), install table, the
   known-limitations list and the verification status.
+- [`releases/v0.4.0.md`](releases/v0.4.0.md) — the local v0.4.0 build: the explorer, editor tabs
+  and the first local Windows/Linux packaging run, with the same limitations.
 - [`releases/v0.3.0.md`](releases/v0.3.0.md) — v0.3.0 release notes (session-first
   chrome, the interface pass, source-control feedback and one-line history), install table,
   the known-limitations list and the verification status.
@@ -57,6 +65,8 @@
 - [`architecture/extension-ui.md`](architecture/extension-ui.md) — `ExtensionUIContext`
   member-by-member (the parity doc the definition of done calls `extension-parity.md`) and the
   TUI rendering surface.
+- [`architecture/session-parity.md`](architecture/session-parity.md) — the session file format,
+  resume behavior and the parity notes against terminal Pi.
 - [`architecture/source-control.md`](architecture/source-control.md) — the git and checkpoint
   engines, the shadow-repository layout, the private-index recipe, the CAS-retry and
   prune-suffix invariants, restore safety and the safe-mode rule for the extension.
@@ -66,8 +76,8 @@
 - [`architecture/runtime.md`](architecture/runtime.md) — the bundled Node/npm runtime, the
   `pi`/`npm` PATH shims, resolution order and packaging.
 - [`architecture/release-pipeline.md`](architecture/release-pipeline.md) — the tag-driven release
-  workflow, the draft→publish contract, the per-platform asset and manifest matrix, and the
-  macOS ad-hoc signing / manual-update rule.
+  workflow, the draft→publish contract, the per-platform asset and manifest matrix, the macOS
+  ad-hoc signing / manual-update rule and the GitHub Pages deployment.
 - [`architecture/versions.md`](architecture/versions.md) — pinned toolchain and runtime versions,
   and why.
 

@@ -1,0 +1,67 @@
+---
+import { Image } from "astro:assets";
+import editorShot from "../../assets/screenshots/editor.webp";
+import gridShot from "../../assets/screenshots/grid.webp";
+import sessionShot from "../../assets/screenshots/session.webp";
+import settingsShot from "../../assets/screenshots/settings.webp";
+import sourceControlShot from "../../assets/screenshots/source-control.webp";
+import welcomeShot from "../../assets/screenshots/welcome.webp";
+
+const shots = [
+  {
+    src: sessionShot,
+    alt: "A Pi Desktop session with a thinking block, a read tool result and a streamed answer",
+    caption: "Sessions, thinking and tool cards",
+  },
+  {
+    src: editorShot,
+    alt: "The Pi Desktop file explorer and CodeMirror editor beside a live session",
+    caption: "Explorer, editor and chat together",
+  },
+  {
+    src: sourceControlShot,
+    alt: "The Pi Desktop source-control rail showing a changed README and a commit",
+    caption: "Git and checkpoints in the rail",
+  },
+  {
+    src: gridShot,
+    alt: "Two panes in Pi Desktop: a session on the left and an editor on the right",
+    caption: "Run two surfaces side by side",
+  },
+  {
+    src: settingsShot,
+    alt: "Pi Desktop settings with app preferences and the shared Pi settings",
+    caption: "Shared settings, one place",
+  },
+  {
+    src: welcomeShot,
+    alt: "The Pi Desktop welcome shell with project navigation",
+    caption: "A clean start, no terminal required",
+  },
+];
+---
+
+<section class="pi-section" id="screenshots" aria-labelledby="pi-screenshots-title">
+  <p class="pi-kicker">A look around</p>
+  <h2 id="pi-screenshots-title">The app, not a mockup</h2>
+  <p class="pi-section__lede">
+    Projects and sessions, a real editor, tool cards, the source-control rail and a pane grid — all
+    in the same window. Captured from the built app against a demo profile.
+  </p>
+  <div class="pi-gallery">
+    {shots.map((shot) => (
+      <figure class="pi-gallery__item">
+        <Image
+          src={shot.src}
+          alt={shot.alt}
+          widths={[800, 1200, 1600]}
+          format="webp"
+          sizes="(max-width: 40rem) 100vw, (max-width: 58rem) 50vw, 33vw"
+          loading="lazy"
+          decoding="async"
+        />
+        <figcaption>{shot.caption}</figcaption>
+      </figure>
+    ))}
+  </div>
+</section>

@@ -136,6 +136,26 @@ npm run runtime:verify
 npx electron-builder --linux --x64 --publish never  # add --arm64 for arm64
 ```
 
+## Public site
+
+The product site lives in `site/` (Astro + Starlight) with its own
+`site/package-lock.json`. It is deployed by `.github/workflows/pages.yml` to
+GitHub Pages. The Markdown in `docs/` is the source of truth; the generated files
+under `site/src/content/docs/` are gitignored and must not be edited.
+
+```bash
+npm ci --prefix site
+npm run site:dev          # sync docs/brand, then Astro dev
+npm run site:sync         # regenerate docs and brand assets once
+npm run site:check        # sync, astro check and site unit tests
+npm run site:build        # build, link-check, built-output tests
+npm run site:screenshots  # rebuild the app and capture the six landing images
+```
+
+`site:` changes are also gated by the `site` job in `.github/workflows/checks.yml`,
+which does not install Electron. Keep the site package's dependencies exact-pinned
+and do not add analytics or third-party runtime scripts.
+
 ## Security
 
 Do not open a public issue for a vulnerability. Report it privately to the

@@ -1,0 +1,51 @@
+---
+import { RELEASES_URL, withBase } from "../../../site.config.mjs";
+
+interface Props {
+  version: string;
+}
+
+const { version } = Astro.props;
+---
+
+<section class="pi-hero" aria-labelledby="pi-hero-title">
+  <div class="pi-hero__glow" aria-hidden="true"></div>
+  <div class="pi-hero__inner">
+    <p class="pi-eyebrow">Pi Desktop · v{version}</p>
+    <h1 id="pi-hero-title">
+      The Pi coding agent,
+      <br />
+      without the terminal.
+    </h1>
+    <p class="pi-hero__lede">
+      Projects, sessions, chat, an editor, providers, models, extensions and checkpoints in a
+      desktop app — using the same <code>~/.pi/agent</code> profile as terminal Pi.
+    </p>
+    <div class="pi-actions">
+      <a
+        class="pi-button pi-button--primary"
+        href={RELEASES_URL}
+        data-download-primary
+        data-download-label="Download for your platform"
+      >
+        Download Pi Desktop
+      </a>
+      <a class="pi-button pi-button--secondary" href={withBase("/docs/")}>
+        Read the docs
+      </a>
+    </div>
+    <p class="pi-hero__note">
+      <strong>v{version}</strong> · Windows primary · macOS/Linux beta · unsigned builds · no Node,
+      npm or Pi install required
+    </p>
+    <div class="pi-hero__meta">
+      <a href={withBase("/download/")}>All installers</a>
+      <span aria-hidden="true">·</span>
+      <a href={withBase("/releases/")}>Release notes</a>
+      <span aria-hidden="true">·</span>
+      <a href="https://github.com/dieuluucanh/pi-desktop" rel="noreferrer">
+        View source
+      </a>
+    </div>
+  </div>
+</section>

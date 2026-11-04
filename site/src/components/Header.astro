@@ -1,0 +1,24 @@
+---
+import DefaultHeader from "@astrojs/starlight/components/Header.astro";
+import { withBase } from "../../site.config.mjs";
+
+const links = [
+  { label: "Features", href: "/#features" },
+  { label: "Screenshots", href: "/#screenshots" },
+  { label: "Download", href: "/download/" },
+  { label: "Docs", href: "/docs/" },
+  { label: "Releases", href: "/releases/" },
+];
+---
+
+<DefaultHeader />
+<nav class="pi-site-nav" aria-label="Product">
+  <div class="pi-site-nav__inner">
+    {links.map((link) => (
+      <a href={withBase(link.href)}>{link.label}</a>
+    ))}
+    <a href="https://github.com/dieuluucanh/pi-desktop" rel="noreferrer">
+      GitHub
+    </a>
+  </div>
+</nav>

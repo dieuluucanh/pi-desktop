@@ -1,0 +1,45 @@
+---
+const items = [
+  { label: "Same profile as terminal Pi", detail: "~/.pi/agent" },
+  { label: "Bundled Node 24", detail: "No system install" },
+  { label: "MIT licensed", detail: "Open source" },
+  { label: "Telemetry off by default", detail: "Opt-in only" },
+];
+---
+
+<section class="pi-trust" aria-label="Pi Desktop at a glance">
+  {items.map((item) => (
+    <div class="pi-trust__item">
+      <strong>{item.label}</strong>
+      <span>{item.detail}</span>
+    </div>
+  ))}
+</section>
+
+<style>
+  .pi-trust {
+    border-block: 1px solid var(--sl-color-hairline, #d8d2c2);
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin: 2rem 0;
+    padding: 1rem 0;
+  }
+  .pi-trust__item {
+    display: grid;
+    gap: 0.15rem;
+  }
+  .pi-trust__item strong {
+    color: var(--sl-color-text, #14213d);
+    font-size: var(--sl-text-sm, 0.875rem);
+  }
+  .pi-trust__item span {
+    color: var(--sl-color-gray-2, #5c6478);
+    font-size: var(--sl-text-xs, 0.75rem);
+  }
+  @media (max-width: 42rem) {
+    .pi-trust {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+</style>

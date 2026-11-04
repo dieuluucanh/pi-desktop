@@ -1,0 +1,31 @@
+---
+import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
+import { withBase } from "../../site.config.mjs";
+import manifest from "../data/site.generated.json";
+---
+
+<StarlightPage
+  frontmatter={{
+    title: "Releases",
+    description: "Every published Pi Desktop release, newest first.",
+    template: "splash",
+  }}
+>
+  <h1>Releases</h1>
+  <p>
+    Every published Pi Desktop release, newest first. The
+    <a href={withBase("/download/")}>download page</a> always resolves the current installer.
+  </p>
+  <ul>
+    {manifest.releases.map((release) => (
+      <li>
+        <a href={withBase(release.route)}>{release.title}</a>
+        {release.date ? <span> — {release.date}</span> : null}
+        {release.version === manifest.version ? <strong> (latest)</strong> : null}
+      </li>
+    ))}
+  </ul>
+  <p>
+    <a href="https://github.com/dieuluucanh/pi-desktop/releases">All releases on GitHub</a>
+  </p>
+</StarlightPage>

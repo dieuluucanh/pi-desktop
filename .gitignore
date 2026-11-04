@@ -22,3 +22,19 @@ resources/runtime/*
 /playwright-report/
 /blob-report/
 .pi/plans
+
+# Public site (site/ owns its dependencies and generated content)
+site/node_modules/
+site/dist/
+site/.astro/
+site/src/content/docs/guide/
+site/src/content/docs/architecture/
+site/src/content/docs/product/
+site/src/content/docs/releases/
+site/src/content/docs/docs/
+site/src/data/site.generated.json
+site/src/assets/brand/
+site/public/brand/
+site/public/docs/
+site/public/favicon.svg
+site/test-results/

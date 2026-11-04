@@ -14,5 +14,10 @@
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["tests/e2e/**/*.ts", "playwright.config.ts"]
+  "include": [
+    "tests/e2e/**/*.ts",
+    "tests/screenshots/**/*.ts",
+    "playwright.config.ts",
+    "playwright.screenshots.config.ts"
+  ]
 }

@@ -1,0 +1,45 @@
+---
+import { withBase } from "../../../site.config.mjs";
+---
+
+<section class="pi-section" aria-labelledby="pi-updates-title">
+  <p class="pi-kicker">Updates</p>
+  <h2 id="pi-updates-title">How updates work</h2>
+  <div class="pi-table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Platform</th>
+          <th>Check in app</th>
+          <th>Install in app</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Windows</td>
+          <td>Yes, after launch</td>
+          <td>Yes — download, then Restart &amp; install</td>
+        </tr>
+        <tr>
+          <td>Linux AppImage</td>
+          <td>Yes</td>
+          <td>Yes</td>
+        </tr>
+        <tr>
+          <td>Linux .deb</td>
+          <td>No</td>
+          <td>No — install the new .deb</td>
+        </tr>
+        <tr>
+          <td>macOS</td>
+          <td>No</td>
+          <td>No — download the new .dmg and replace the app</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="pi-section__more">
+    The reason macOS is manual is the ad-hoc signature: Squirrel.Mac requires a stable signing
+    identity. See <a href={withBase("/releases/v0.5.0/")}>the v0.5.0 notes</a>.
+  </p>
+</section>

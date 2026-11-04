@@ -41,6 +41,22 @@ reads it at startup; a missing or malformed file degrades to `unknown` and never
 repairs itself. The app uses the channel to skip automatic update checks for
 local builds (see `docs/architecture/app-shell.md`).
 
+## Public site (independent toolchain)
+
+The public product site lives in `site/` and has its own `package-lock.json`; it is
+not part of the Electron dependency tree. Pins at the first site release:
+
+| Component            | Pin      | Why                                                            |
+| -------------------- | -------- | -------------------------------------------------------------- |
+| `astro`              | `7.4.5`  | Static output, content collections and the Pages build.        |
+| `@astrojs/starlight` | `0.42.8` | Docs layout, Pagefind search, sitemap and accessible defaults. |
+| `@astrojs/sitemap`   | `3.7.4`  | Sitemap generation; exercised against the `/pi-desktop` base.  |
+| Node.js              | 24       | Same runtime as CI; Astro 7 requires Node `>= 22.23.4`.        |
+
+The site build runs in `site/` with `npm ci --prefix site`; the Electron build
+never installs those dependencies. `docs/` remains the single docs source and
+`site/src/content/docs/` is generated and gitignored.
+
 ## Published extension (independent version)
 
 `@dieulc/checkpoints` is a separately versioned npm package (`packages/checkpoints`),

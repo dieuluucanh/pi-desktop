@@ -1,0 +1,57 @@
+---
+const features = [
+  {
+    title: "Projects and sessions",
+    body: "Open a folder, manage recents and trust, then run parallel sessions in tabs or a pane grid — each in its own Pi host process.",
+  },
+  {
+    title: "Files and editor",
+    body: "A project tree with hidden/ignored toggles, project-wide name search, drag-to-chat mentions and CodeMirror editor tabs with conflict-safe saves.",
+  },
+  {
+    title: "Chat that follows the work",
+    body: "Streaming text, thinking, one card per tool call with diffs and images, steering and follow-up queues, Esc to stop, retry and compaction status.",
+  },
+  {
+    title: "Providers and models",
+    body: "OAuth subscriptions, write-only API keys, custom gateways, model and thinking pickers, and per-project defaults.",
+  },
+  {
+    title: "Extensions and skills",
+    body: "The same discovery as terminal Pi, with provenance, load errors, enable/disable, install consent and the full extension UI surface.",
+  },
+  {
+    title: "Git and checkpoints",
+    body: "A source-control rail for staging and commits, plus a shadow-repo checkpoint engine that never touches your project's .git.",
+  },
+  {
+    title: "Pi for Office, optionally",
+    body: "An optional integration installed from Extensions → Integrations like any other Pi package. No Office surface appears unless you set it up.",
+  },
+  {
+    title: "Commands and context",
+    body: "Slash commands, @ file mentions, image paste/drop, # Office document mentions, /session, /copy, /export jsonl, /share, /bug and /hotkeys.",
+  },
+  {
+    title: "Recovery and safety",
+    body: "Safe mode, crash recovery, a redacted diagnostics bundle, a sandboxed renderer, strict CSP and an allowlisted IPC surface.",
+  },
+];
+---
+
+<section class="pi-section" id="features" aria-labelledby="pi-features-title">
+  <p class="pi-kicker">Everything in one window</p>
+  <h2 id="pi-features-title">A real desktop surface for the agent</h2>
+  <p class="pi-section__lede">
+    Pi Desktop does not replace the Pi agent. It gives the same agent the UI it was missing, while
+    keeping the terminal profile useful.
+  </p>
+  <div class="pi-grid">
+    {features.map((feature) => (
+      <article class="pi-card">
+        <h3>{feature.title}</h3>
+        <p>{feature.body}</p>
+      </article>
+    ))}
+  </div>
+</section>

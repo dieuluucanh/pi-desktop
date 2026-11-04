@@ -2,6 +2,11 @@
 
 <img src="assets/pi-desktop-logo-full.svg" alt="pi — PI DESKTOP" width="440">
 
+[Website](https://dieuluucanh.github.io/pi-desktop/) ·
+[Downloads](https://dieuluucanh.github.io/pi-desktop/download/) ·
+[Documentation](https://dieuluucanh.github.io/pi-desktop/docs/) ·
+[Releases](https://dieuluucanh.github.io/pi-desktop/releases/)
+
 A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global
 installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
@@ -60,7 +65,8 @@ The feature-by-feature comparison with terminal Pi (including the explicit
 
 ## Install
 
-Download the installer for your platform from GitHub Releases. The Windows NSIS
+Download the installer for your platform from the [website](https://dieuluucanh.github.io/pi-desktop/download/)
+or [GitHub Releases](https://github.com/dieuluucanh/pi-desktop/releases). The Windows NSIS
 installer and portable `.exe` are the primary artefacts; macOS `.dmg`/`.zip`
 (arm64 + x64) and Linux AppImage/`.deb` (x64 + arm64) are beta. Builds are
 unsigned, so SmartScreen/Gatekeeper will warn on first launch (instructions in
@@ -108,10 +114,15 @@ src/shared/          types, constants and the single IPC allowlist
 packages/checkpoints/  the publishable @dieulc/checkpoints package
 resources/           vendored Office manifest, fetched Node/npm runtime
 tests/               vitest (node project + jsdom renderer project) and Playwright E2E
+site/                the public Astro/Starlight site and docs build (separate lockfile)
 docs/                product/parity + backlog, the user guide, releases and the architecture docs
 ```
 
 ## Docs
+
+The same docs are published at
+[dieluucanh.github.io/pi-desktop/docs](https://dieuluucanh.github.io/pi-desktop/docs/);
+the Markdown in `docs/` remains the source.
 
 - **User guide** — [docs/guide/](docs/guide/) (getting started, projects,
   sessions and tabs, providers, models, extensions and packages, settings,
@@ -120,7 +131,7 @@ docs/                product/parity + backlog, the user guide, releases and the 
   host protocol + RPC mapping, extension UI host + TUI surface, Office
   integration, runtime, pinned versions).
 - **Parity** — [docs/product/parity.md](docs/product/parity.md).
-- **Release notes** — [docs/releases/v0.4.0.md](docs/releases/v0.4.0.md)
+- **Release notes** — [docs/releases/v0.5.0.md](docs/releases/v0.5.0.md)
   (install table, known limitations, verification status).
 - **Backlog** — [docs/product/backlog.md](docs/product/backlog.md).
 - **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md) and

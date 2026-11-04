@@ -1,0 +1,29 @@
+---
+import { withBase } from "../../../site.config.mjs";
+---
+
+<section class="pi-section pi-profile" aria-labelledby="pi-profile-title">
+  <div>
+    <p class="pi-kicker">One profile, two front ends</p>
+    <h2 id="pi-profile-title">Your terminal Pi setup comes with you</h2>
+    <p>
+      By default the app uses <code>~/.pi/agent</code> — the same profile as terminal Pi. Sessions,
+      credentials, extensions, settings, skills and themes are shared in both directions, so you can
+      start a session in the app and continue it in the terminal (or the other way around).
+    </p>
+    <p>
+      Prefer a clean separation? Onboarding offers an app-private profile. Either way, the choice is
+      an app preference: it never rewrites your Pi <code>settings.json</code>.
+    </p>
+    <a class="pi-text-link" href={withBase("/guide/getting-started/#choose-a-pi-profile")}>
+      How profiles work →
+    </a>
+  </div>
+  <pre class="pi-profile__diagram" aria-label="Shared profile diagram"><code>~/.pi/agent
+├─ sessions/       both front ends
+├─ settings.json   both read/write
+├─ auth.json       shared credentials
+└─ extensions/     same packages
+
+terminal Pi  ⇄  Pi Desktop</code></pre>
+</section>

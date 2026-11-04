@@ -1,0 +1,58 @@
+---
+import { withBase } from "../../../site.config.mjs";
+
+const faqs = [
+  {
+    question: "Is Pi Desktop the official Pi app?",
+    answer:
+      "No. It is an independent desktop client built on the Pi coding agent SDK. Pi itself is by the Pi project; this app does not claim to be official.",
+  },
+  {
+    question: "Do I need terminal Pi installed?",
+    answer:
+      "No. The app bundles its own Node runtime and the Pi runtime. Installing the app is enough.",
+  },
+  {
+    question: "Does it share my terminal Pi setup?",
+    answer:
+      "By default, yes: it uses the same ~/.pi/agent profile, so sessions, credentials, extensions, settings, skills and themes are shared in both directions. Onboarding can create a separate app-private profile instead.",
+  },
+  {
+    question: "Does the app send telemetry?",
+    answer:
+      "Not unless you opt in. Pi telemetry is forced off at startup; the first-run screen explains the optional anonymous install/update ping, and the choice never rewrites your shared settings.json.",
+  },
+  {
+    question: "Why does Windows or macOS warn when I install it?",
+    answer:
+      "The v0.5.0 builds are unsigned. Windows SmartScreen: More info → Run anyway. macOS: open the app once, then System Settings → Privacy & Security → Open Anyway. Signing is backlog.",
+  },
+  {
+    question: "Can extensions do anything they want?",
+    answer:
+      "Extensions are not sandboxed, the same as terminal Pi. Installs require a consent dialog that names the source, projects need trust before project resources load, and Safe mode exists for recovery.",
+  },
+  {
+    question: "Where do I report a bug?",
+    answer:
+      "Open an issue on GitHub with the version from Settings → About and a redacted Diagnostics support bundle.",
+  },
+];
+---
+
+<section class="pi-section" id="faq" aria-labelledby="pi-faq-title">
+  <p class="pi-kicker">Questions</p>
+  <h2 id="pi-faq-title">The short answers</h2>
+  <div class="pi-faq">
+    {faqs.map((faq) => (
+      <details>
+        <summary>{faq.question}</summary>
+        <p>{faq.answer}</p>
+      </details>
+    ))}
+  </div>
+  <p class="pi-section__more">
+    More in the <a href={withBase("/guide/faq/")}>FAQ</a> and
+    <a href={withBase("/guide/troubleshooting/")}>troubleshooting guide</a>.
+  </p>
+</section>
