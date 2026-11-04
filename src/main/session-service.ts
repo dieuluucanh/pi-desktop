@@ -13,23 +13,34 @@ import type { TrustAnswer } from "../shared/projects";
 import {
   COALESCE_BYTES,
   COALESCE_MS,
-  MAX_HOSTS,
-  MAX_TABS,
-  capacity,
-  capacityMessage,
-  type Capacity,
+  DEFAULT_LIVE_HOSTS,
   type HostMemoryMetrics,
+  type SessionCapacity,
 } from "../shared/performance";
 import { sanitizeWebUrl, webTabTitle } from "../shared/web-tabs";
 import {
+  isWorkspacePathWithin,
+  isWorkspaceRelativePath,
+  workspaceBasename,
+} from "../shared/workspace";
+import { sameFolder } from "../shared/rail-scope";
+import { MAX_GRID_PANES } from "../shared/session-grid";
+import { moveTabWithinPinGroup, partitionPinnedTabs } from "../shared/tab-order";
+import { PI_OFFICE_BRIDGE } from "../shared/office";
+import {
   CONTROL_TAB_ID,
+  isEditorTab,
+  isHostBackedTab,
+  isSessionBusyState,
   sanitizeTabs,
   sessionTitle,
   type CreateTabInput,
+  type RetargetEditorTabsInput,
   type SessionEventEnvelope,
   type SessionEventEntry,
   type SessionStateEnvelope,
   type SessionTabsEnvelope,
+  type TabKind,
   type TabRecord,
   type TabStatus,
 } from "../shared/session-ipc";
@@ -52,7 +63,12 @@ import {
 export const CONTROL_HOST_ID = CONTROL_TAB_ID;
 export const DEFAULT_COALESCE_MS = COALESCE_MS;
 export const DEFAULT_COALESCE_BYTES = COALESCE_BYTES;
-export const DEFAULT_MAX_TABS = MAX_TABS;
+/**
+ * A tab used this recently is not a parking candidate even when it is idle:
+ * the user is probably still at its keyboard, and a prompt can arrive in the
+ * probe->stop window. All-busy overflow is preferred to a surprising sleep.
+ */
+const PARK_MIN_IDLE_MS = 5_000;
 
 /**
  * Measured shape of delta batching (plan step 24): how many renderer pushes a
@@ -83,6 +99,11 @@ export interface HostInfoLike {
   pids?: { pid?: number };
   /** Build fingerprint reported by `host.hello` (2026-10-24 stale-host plan). */
   buildId?: string | null;
+  /** Optional host features (git-checkpoint plan step 24); absent = unknown. */
+  capabilities?: {
+    checkpointsExtension?: boolean;
+    checkpointExtensionSource?: "profile" | "package" | "bundled" | null;
+  };
 }
 
 /** The narrow supervisor surface this service drives. */
@@ -95,6 +116,10 @@ export interface SupervisorHostLike {
   info?(): HostInfoLike | null;
   /** Last self-reported RSS sample (plan step 24). Optional for test doubles. */
   metrics?(): HostMemoryMetrics | null;
+  /** Whether the host is pinned by policy (bridge owner/active/control). */
+  pinned?(): boolean;
+  /** Whether the host is ready with no request in flight. */
+  isIdle?(): boolean;
   /** The tail of the host's own log (plan step 22). Optional for test doubles. */
   logs?(): string[];
   shutdown(): Promise<void>;
@@ -112,8 +137,8 @@ export interface SupervisorLike {
   list(): SupervisorHostLike[];
   stop(sessionId: string): Promise<void>;
   stopAll(): Promise<void>;
-  /** Used/limit of the host cap (plan step 24). Optional for test doubles. */
-  capacity?(): Capacity;
+  /** Used/limit of the memory-derived host-process ceiling. Optional for test doubles. */
+  capacity?(): { used: number; limit: number; atCapacity: boolean };
 }
 
 export interface SessionStoreLike {
@@ -142,7 +167,37 @@ export interface SessionServiceDeps {
   coalesceMs?: number;
   /** Flush a delta batch early once it grows past this many bytes. */
   coalesceBytes?: number;
-  maxTabs?: number;
+  /**
+   * Soft target for live host processes, derived from total RAM by main. This
+   * is not a session limit: idle sessions are parked before a new host starts,
+   * and a new session still opens when every live session is busy.
+   */
+  maxLiveHosts?: number;
+  /**
+   * Aggregate host RSS budget, derived from total RAM by main. When the last
+   * `host.metrics()` samples add up past this, `makeRoom` and the periodic
+   * reclaim park idle hosts even while the live count is under target. 0 or
+   * absent disables the guard.
+   */
+  hostRssLimitBytes?: number;
+  /**
+   * Makes the Office bridge port free before a promoted host binds it
+   * (2026-10-30 project-scoped rail plan). It terminates whatever listens on the
+   * port — including a process this app does not own — so the takeover the user
+   * asked for cannot fail with "port is already in use".
+   *
+   * Injected rather than imported so this module stays Electron-free and the
+   * tests can script the outcome. Absent in tests and in callers that have no
+   * Office integration: promotion then behaves as it did before.
+   */
+  releaseOfficePort?: (input: {
+    port: number;
+    ownPids: readonly number[];
+  }) => Promise<{ ok: boolean; detail?: string }>;
+  /** PIDs this app owns, passed to the reclaimer so it never kills itself. */
+  ownPids?: () => readonly number[];
+  /** The bridge port; defaults to `PI_OFFICE_BRIDGE.defaultPort` (38617). */
+  officeBridgePort?: number;
 }
 
 export interface SessionService {
@@ -150,10 +205,25 @@ export interface SessionService {
   controlHost(): Promise<SupervisorHostLike>;
   tabs(): TabRecord[];
   activeTabId(): string | null;
+  /**
+   * Declares which tabs the renderer currently shows (the grid's panes, or the
+   * solo tab). Advisory and cheap: it parks nothing and spawns nothing, it only
+   * tells the parking policy which hosts must stay warm.
+   */
+  setVisibleTabs(ids: readonly string[]): void;
+  /** The tabs the renderer last reported as visible (bounded). */
+  visibleTabIds(): string[];
   envelope(): SessionTabsEnvelope;
   restoreTabs(): Promise<SessionTabsEnvelope>;
   createTab(input: CreateTabInput): Promise<SessionTabsEnvelope>;
   activateTab(tabId: string): Promise<SessionTabsEnvelope>;
+  /**
+   * Clears the active tab without closing one (2026-10-30 project-scoped rail
+   * plan). Every tab and every host stays exactly as it was; only the selection
+   * is dropped, so a project with no open session can show Welcome while the
+   * rail keeps that project's scope.
+   */
+  deactivate(): Promise<SessionTabsEnvelope>;
   /**
    * Makes the tab table truthful about host/session readiness after a suspend,
    * a lost process, or a renderer that missed pushes. It never spawns; the next
@@ -161,8 +231,16 @@ export interface SessionService {
    */
   reconcile(): Promise<SessionTabsEnvelope>;
   closeTab(tabId: string): Promise<SessionTabsEnvelope>;
-  /** Closes every tab except `tabId` (the tab strip's "close others", step 11). */
+  /** Closes every non-pinned tab of `kind` (session, office, web or editor). */
+  closeAll(kind: TabKind): Promise<SessionTabsEnvelope>;
+  /** Closes every other non-pinned tab of the same kind. */
   closeOthers(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Closes every tab in a project, including pinned tabs (project removal). */
+  closeForProject(cwd: string): Promise<SessionTabsEnvelope>;
+  /** Pins/unpins a tab and keeps the pinned group at the front. */
+  setPinned(tabId: string, pinned: boolean): Promise<SessionTabsEnvelope>;
+  /** Updates open editor tabs after a rename/move of their file or folder. */
+  retargetEditorTabs(input: RetargetEditorTabsInput): Promise<SessionTabsEnvelope>;
   /** Moves a tab to `toIndex`, persisted so the strip order survives a relaunch. */
   reorderTab(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
   /**
@@ -181,8 +259,14 @@ export interface SessionService {
   incidents(): Incident[];
   /** Which host is behind each tab, plus its log tail (plan step 22 Diagnostics). */
   diagnosticsHosts(): DiagnosticsHostInfo[];
-  /** Used/limit of the running host and tab caps (plan step 24 backpressure). */
-  capacity(): { hosts: Capacity; tabs: Capacity };
+  /** Used/target/ceiling of the live-host budget (plan step 24 backpressure). */
+  capacity(): SessionCapacity;
+  /**
+   * Parks idle hosts until the live count and aggregate RSS are back under
+   * pressure (or no parkable candidate remains). Called by main's memory timer;
+   * never throws and never stops the active, Office, bridge-owner or busy host.
+   */
+  reclaimHosts(): Promise<SessionCapacity>;
   /** Measured delta-batching figures (plan step 24). */
   coalesceStats(): CoalesceStats;
   /** Bounded `extension_error` history across tabs (plan step 22 Diagnostics). */
@@ -296,7 +380,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   const newId = deps.newId ?? ((): string => `tab-${Math.random().toString(36).slice(2, 10)}`);
   const coalesceMs = deps.coalesceMs ?? DEFAULT_COALESCE_MS;
   const coalesceBytes = deps.coalesceBytes ?? DEFAULT_COALESCE_BYTES;
-  const maxTabs = deps.maxTabs ?? DEFAULT_MAX_TABS;
+  const maxLiveHosts = Math.max(1, deps.maxLiveHosts ?? DEFAULT_LIVE_HOSTS);
+  const maxHostRssBytes = Math.max(0, deps.hostRssLimitBytes ?? 0);
+
+  /** Sum of the last `host.metrics()` samples across live hosts. */
+  const hostRssBytes = (): number =>
+    deps.supervisor.list().reduce((sum, host) => sum + (host.metrics?.()?.rssBytes ?? 0), 0);
 
   const tabs = new Map<string, TabRecord>();
   const hosts = new Map<string, SupervisorHostLike>();
@@ -327,6 +416,10 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    * recycle, or they would stop each other's freshly spawned host.
    */
   const recycling = new Map<string, Promise<SupervisorHostLike>>();
+  /** In-flight parking, per tab: a wake waits for the stop to settle first. */
+  const parking = new Map<string, Promise<void>>();
+  /** Serialized budget decisions, so two starts cannot park the same tab twice. */
+  let slotQueue: Promise<void> = Promise.resolve();
   /** Per-tab `session.create` defaults (per-project model/thinking + trust, step 10). */
   const createParams = new Map<
     string,
@@ -353,6 +446,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   let incidentCounter = 0;
 
   let activeId: string | null = null;
+  /**
+   * Tabs the renderer shows (2026-11-03 grid plan): the visible grid panes, or
+   * the single solo tab. Bounded by the largest layout, because it comes from a
+   * renderer push and is only ever a parking hint.
+   */
+  const visibleTabs = new Set<string>();
   let control: SupervisorHostLike | null = null;
   let disposed = false;
 
@@ -361,8 +460,20 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     activeTabId: activeId,
   });
 
-  const publishTabs = (): void => {
-    deps.emit("tabs", envelope());
+  /**
+   * The last table handed to the renderer. A state frame that did not change a
+   * rendered field (sessionFile/title/model/status) must not make the renderer
+   * process the whole tab table; `applyTabs` also reuses unchanged records
+   * (2026-11-03 plan step 10).
+   */
+  let lastPublishedTabs = "";
+
+  const publishTabs = (force = false): void => {
+    const next = envelope();
+    const signature = JSON.stringify(next);
+    if (!force && signature === lastPublishedTabs) return;
+    lastPublishedTabs = signature;
+    deps.emit("tabs", next);
   };
 
   const persist = async (): Promise<void> => {
@@ -531,18 +642,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   };
 
   /** Whether a `state.get` snapshot says the host must not be recycled. */
-  const hostIsBusy = (snapshot: unknown): boolean => {
-    const record = asRecord(snapshot);
-    const nonEmpty = (value: unknown): boolean => Array.isArray(value) && value.length > 0;
-    return (
-      record.streaming === true ||
-      record.compacting === true ||
-      record.retrying === true ||
-      (typeof record.pendingMessages === "number" && record.pendingMessages > 0) ||
-      nonEmpty(record.steering) ||
-      nonEmpty(record.followUp)
-    );
-  };
+  const hostIsBusy = (snapshot: unknown): boolean => isSessionBusyState(snapshot);
 
   /** Forgets a tab's handle/subscriptions without stopping the supervisor process. */
   const forgetHost = (tabId: string): void => {
@@ -578,6 +678,92 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       tab.status = "stopped";
       publishTabs();
     }
+  };
+
+  /**
+   * Parks one tab's process after proving it is idle. The generation bump in
+   * `detachHost` makes a late wake/open stop its own orphan rather than reviving
+   * the old process for the new owner.
+   */
+  const parkTab = async (tabId: string): Promise<void> => {
+    const existing = parking.get(tabId);
+    if (existing) return existing;
+    const run = (async (): Promise<void> => {
+      const tab = tabs.get(tabId);
+      if (!tab || !isHostBackedTab(tab.kind) || tab.kind === "office") return;
+      if (tabId === activeId) return;
+      // A pane the user is watching must never go to sleep under them.
+      if (visibleTabs.has(tabId)) return;
+      if (starting.has(tabId) || opening.has(tabId) || recycling.has(tabId)) return;
+      if (pending.has(tabId) || timers.has(tabId)) return;
+      if (now() - tab.lastActiveAt < PARK_MIN_IDLE_MS) return;
+      const host = hosts.get(tabId);
+      if (!host || host.status() !== "ready" || host.pinned?.()) return;
+      if (host.isIdle?.() === false) return;
+      let snapshot: unknown;
+      try {
+        snapshot = await host.request("state.get", undefined, { timeoutMs: 1_500 });
+      } catch {
+        return;
+      }
+      if (isSessionBusyState(snapshot)) return;
+      // The probe yields; the user may have activated or written to the tab in
+      // the meantime. Only the post-probe state decides whether it can sleep.
+      if (tabId === activeId) return;
+      if (visibleTabs.has(tabId)) return;
+      if (starting.has(tabId) || opening.has(tabId) || recycling.has(tabId)) return;
+      const record = asRecord(snapshot);
+      if (typeof record.sessionFile === "string") tab.sessionFile = record.sessionFile;
+      await detachHost(tabId);
+      await persist();
+    })().finally(() => {
+      if (parking.get(tabId) === run) parking.delete(tabId);
+    });
+    parking.set(tabId, run);
+    return run;
+  };
+
+  /**
+   * Parks idle hosts until the live count is back under the soft target and the
+   * aggregate host RSS is under its budget. It is deliberately best effort:
+   * when every live session is busy the caller still starts its host, so a
+   * session count can never block the user.
+   */
+  const makeRoom = async (exceptTabId: string): Promise<void> => {
+    const overCount = (): boolean => deps.supervisor.list().length >= maxLiveHosts;
+    const overRss = (): boolean => maxHostRssBytes > 0 && hostRssBytes() > maxHostRssBytes;
+    if (!overCount() && !overRss()) return;
+    for (const tab of idleCandidates(exceptTabId)) {
+      if (!overCount() && !overRss()) break;
+      await parkTab(tab.id);
+    }
+  };
+
+  /**
+   * LRU candidates for parking, oldest `lastActiveAt` first. Excludes the active
+   * tab, every visible pane, Office hosts, pinned hosts (control/bridge/active),
+   * in-flight work, pending event batches and tabs used within
+   * `PARK_MIN_IDLE_MS`.
+   */
+  const idleCandidates = (exceptTabId: string | null): TabRecord[] => {
+    return [...tabs.values()]
+      .filter((tab) => tab.id !== exceptTabId && tab.id !== activeId)
+      .filter((tab) => !visibleTabs.has(tab.id))
+      .filter((tab) => isHostBackedTab(tab.kind) && tab.kind !== "office")
+      .filter((tab) => hosts.has(tab.id))
+      .filter((tab) => !starting.has(tab.id) && !opening.has(tab.id) && !recycling.has(tab.id))
+      .filter((tab) => !pending.has(tab.id) && !timers.has(tab.id))
+      .filter((tab) => now() - tab.lastActiveAt >= PARK_MIN_IDLE_MS)
+      .filter((tab) => hosts.get(tab.id)?.pinned?.() !== true)
+      .filter((tab) => hosts.get(tab.id)?.isIdle?.() !== false)
+      .sort((left, right) => left.lastActiveAt - right.lastActiveAt);
+  };
+
+  /** Serializes budget decisions: two starts must never park the same tab twice. */
+  const requestSlot = (exceptTabId: string): Promise<void> => {
+    const run = slotQueue.then(() => makeRoom(exceptTabId)).catch(() => undefined);
+    slotQueue = run;
+    return run;
   };
 
   const subscribe = (tab: TabRecord, host: SupervisorHostLike): void => {
@@ -671,13 +857,23 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   const startProcess = async (tab: TabRecord): Promise<SupervisorHostLike> => {
     setStatus(tab, "starting");
     const generation = generations.get(tab.id) ?? 0;
-    const host = await deps.supervisor.start({
-      sessionId: tab.id,
-      cwd: tab.cwd,
-      role: "session",
-      officeHost: tab.kind === "office",
-      sessionFile: tab.sessionFile,
-    });
+    let host: SupervisorHostLike;
+    try {
+      host = await deps.supervisor.start({
+        sessionId: tab.id,
+        cwd: tab.cwd,
+        role: "session",
+        officeHost: tab.kind === "office",
+        sessionFile: tab.sessionFile,
+      });
+    } catch (error) {
+      // A failed spawn must never leave a phantom `starting` tab. Keep the tab
+      // and its error so the user can read what happened and close/retry it; the
+      // trust retry path is a session.open failure below, not a spawn failure.
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(tab, "failed", message);
+      throw error;
+    }
     // `closeTab`/`dispose`/a newer detach may have run while the spawn was in
     // flight. Never publish a host over the replacement; stop the orphan.
     if (disposed || !tabs.has(tab.id) || (generations.get(tab.id) ?? 0) !== generation) {
@@ -691,14 +887,26 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
   /** Process-start coalescer: one child per tab, never opens a session. */
   const ensureProcess = async (tab: TabRecord): Promise<SupervisorHostLike> => {
-    if (tab.kind === "web") {
-      throw new SessionServiceError("a web tab has no Pi host", "web_tab");
+    if (!isHostBackedTab(tab.kind)) {
+      throw new SessionServiceError(
+        tab.kind === "editor" ? "an editor tab has no Pi host" : "a web tab has no Pi host",
+        tab.kind === "editor" ? "editor_tab" : "web_tab",
+      );
     }
     const inFlight = starting.get(tab.id);
     if (inFlight) return inFlight;
+    // A wake must wait for an in-flight park to settle; otherwise it could spawn
+    // a second process while the old one is still shutting down.
+    const inPark = parking.get(tab.id);
+    if (inPark) await inPark;
     const existing = hosts.get(tab.id);
     if (existing && existing.status() === "ready") return existing;
     if (existing) await detachHost(tab.id);
+    const raced = starting.get(tab.id);
+    if (raced) return raced;
+    await requestSlot(tab.id);
+    const startedWhileQueued = starting.get(tab.id);
+    if (startedWhileQueued) return startedWhileQueued;
     const run = startProcess(tab);
     starting.set(tab.id, run);
     void run.then(
@@ -761,8 +969,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    * and one open. `ready` is never returned before this settles.
    */
   const ensureSession = async (tab: TabRecord): Promise<SupervisorHostLike> => {
-    if (tab.kind === "web") {
-      throw new SessionServiceError("a web tab has no Pi host", "web_tab");
+    if (!isHostBackedTab(tab.kind)) {
+      throw new SessionServiceError(
+        tab.kind === "editor" ? "an editor tab has no Pi host" : "a web tab has no Pi host",
+        tab.kind === "editor" ? "editor_tab" : "web_tab",
+      );
     }
     const inFlight = opening.get(tab.id);
     if (inFlight) return inFlight;
@@ -840,6 +1051,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         control = null;
         pushEntries(CONTROL_TAB_ID, [{ event: "host.crashed", payload }]);
       }),
+      host.on("status", (status) => {
+        // The control host is pinned, so the idle reaper should never stop it;
+        // this is the safety net that keeps `controlHost()` from returning a
+        // dead handle if it ever does.
+        if (String(status) === "stopped") control = null;
+      }),
     );
   };
 
@@ -870,6 +1087,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   const service: SessionService = {
     async controlHost() {
       if (control) return control;
+      await requestSlot(CONTROL_HOST_ID);
       const host = await deps.supervisor.start({
         sessionId: CONTROL_HOST_ID,
         cwd: deps.controlCwd,
@@ -882,14 +1100,73 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     tabs: () => [...tabs.values()],
     activeTabId: () => activeId,
+
+    setVisibleTabs(ids) {
+      // Advisory and idempotent: an unknown or already-closed id is dropped (a
+      // close races this push), and the set is bounded because the renderer can
+      // be restarted against a stale `prefs.grid`.
+      const next = new Set<string>();
+      for (const id of ids) {
+        if (typeof id !== "string" || id.length === 0) continue;
+        if (!tabs.has(id)) continue;
+        next.add(id);
+        if (next.size >= MAX_GRID_PANES + 1) break;
+      }
+      const unchanged =
+        next.size === visibleTabs.size && [...next].every((id) => visibleTabs.has(id));
+      if (unchanged) return;
+      visibleTabs.clear();
+      for (const id of next) visibleTabs.add(id);
+    },
+
+    visibleTabIds: () => [...visibleTabs],
     envelope,
 
     incidents: () => [...incidents],
     extensionErrors: () => [...extensionErrors],
-    capacity: () => ({
-      hosts: deps.supervisor.capacity?.() ?? capacity(hosts.size + (control ? 1 : 0), MAX_HOSTS),
-      tabs: capacity(tabs.size, maxTabs),
-    }),
+    capacity: () => {
+      const all = [...tabs.values()];
+      const open = all.filter((tab) => isHostBackedTab(tab.kind));
+      const hosts = deps.supervisor.list();
+      const liveHosts = hosts.length;
+      const hostRssBytes = hosts.reduce((sum, host) => sum + (host.metrics?.()?.rssBytes ?? 0), 0);
+      const hostRssLimitBytes = Math.max(0, deps.hostRssLimitBytes ?? 0);
+      return {
+        liveHosts,
+        targetHosts: maxLiveHosts,
+        ceilingHosts: deps.supervisor.capacity?.().limit ?? maxLiveHosts,
+        overTarget: liveHosts > maxLiveHosts,
+        hostRssBytes,
+        hostRssLimitBytes,
+        overMemory: hostRssLimitBytes > 0 && hostRssBytes > hostRssLimitBytes,
+        openSessions: open.length,
+        asleepSessions: open.filter((tab) => tab.status === "stopped").length,
+        editorTabs: all.filter(isEditorTab).length,
+        visibleSessions: visibleTabs.size,
+      };
+    },
+    reclaimHosts: async () => {
+      // Serialize with spawns: a reclaim must never park a host that a queued
+      // activation is about to reuse, and two reclaims must not park twice.
+      const run = slotQueue
+        .then(async () => {
+          // Every visible pane is un-parkable, so the floor is the panes plus
+          // the focused tab; a reclaimed app still keeps what the user sees.
+          const targetLive = Math.max(2, visibleTabs.size + (activeId ? 1 : 0));
+          for (const tab of idleCandidates(null)) {
+            const live = deps.supervisor.list().length;
+            const rss = hostRssBytes();
+            const underCount = live <= targetLive;
+            const underRss = maxHostRssBytes === 0 || rss <= maxHostRssBytes;
+            if (underCount && underRss) break;
+            await parkTab(tab.id);
+          }
+        })
+        .catch(() => undefined);
+      slotQueue = run;
+      await run;
+      return service.capacity();
+    },
     coalesceStats: () => ({ ...coalesceStats }),
     diagnosticsHosts: () => {
       const rows: DiagnosticsHostInfo[] = [];
@@ -927,12 +1204,17 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       sessionReady.clear();
       generations.clear();
       recovering.clear();
-      for (const tab of sanitizeTabs(state.tabs).slice(0, maxTabs)) {
-        // Nothing is running yet after a relaunch: a restored tab is "stopped"
-        // until the user activates it (or `prewarmLast` does). A web tab has no
-        // host to stop, so it is idle from the start (plan step 21).
-        tabs.set(tab.id, { ...tab, status: tab.kind === "web" ? "idle" : "stopped" });
+      for (const tab of sanitizeTabs(state.tabs)) {
+        // A tab is a resumable record, not a process. Nothing is running yet
+        // after a relaunch, so a restored tab is idle/stopped until activated;
+        // the full table is restored, however many tabs the user keeps.
+        tabs.set(tab.id, { ...tab, status: isHostBackedTab(tab.kind) ? "stopped" : "idle" });
       }
+      // Persisted order is authoritative, but an older profile may have a
+      // pinned tab below an unpinned one. Stable-partition once on restore.
+      const restored = partitionPinnedTabs([...tabs.values()]);
+      tabs.clear();
+      for (const tab of restored) tabs.set(tab.id, tab);
       const persistedActive = typeof state.activeTabId === "string" ? state.activeTabId : null;
       activeId = persistedActive && tabs.has(persistedActive) ? persistedActive : null;
       publishTabs();
@@ -942,19 +1224,18 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     async createTab(input) {
       if (disposed) throw new SessionServiceError("session service is disposed", "disposed");
       const kind = input.kind ?? "session";
+      const isEditor = kind === "editor";
       // A web tab carries a URL and needs no project folder; every other kind
-      // needs a session host and therefore a cwd.
+      // needs a cwd. An editor tab additionally needs a contained file path.
       const webUrl = kind === "web" ? sanitizeWebUrl(input.url) : null;
       if (kind === "web") {
         if (!webUrl) throw new SessionServiceError("createTab requires a web URL", "bad_request");
       } else if (typeof input.cwd !== "string" || input.cwd.length === 0) {
         throw new SessionServiceError("createTab requires a project folder", "bad_request");
       }
-      if (tabs.size >= maxTabs) {
-        throw new SessionServiceError(
-          `session limit reached (${maxTabs}); close a tab first. ${capacityMessage("tabs", maxTabs)}`,
-          "too_many_tabs",
-        );
+      const filePath = isEditor ? input.filePath : undefined;
+      if (isEditor && (!filePath || !isWorkspaceRelativePath(filePath))) {
+        throw new SessionServiceError("createTab requires a project-relative file", "bad_request");
       }
       const id = newId();
       const timestamp = now();
@@ -963,17 +1244,22 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         id,
         kind,
         cwd,
-        title: kind === "web" ? webTabTitle(webUrl) : sessionTitle(cwd),
+        title: isEditor
+          ? workspaceBasename(filePath!)
+          : kind === "web"
+            ? webTabTitle(webUrl)
+            : sessionTitle(cwd),
         sessionFile: input.sessionFile ?? null,
-        status: kind === "web" ? "idle" : "starting",
+        status: isHostBackedTab(kind) ? "starting" : "idle",
         createdAt: timestamp,
         lastActiveAt: timestamp,
         model: null,
         ...(kind === "web" ? { url: webUrl, sessionTabId: input.sessionTabId ?? null } : {}),
+        ...(isEditor ? { filePath } : {}),
       };
       tabs.set(id, tab);
       activeId = id;
-      if (kind !== "web" && (input.model || input.thinking || input.trust)) {
+      if (isHostBackedTab(kind) && (input.model || input.thinking || input.trust)) {
         createParams.set(id, {
           ...(input.model ? { model: input.model } : {}),
           ...(input.thinking ? { thinking: input.thinking } : {}),
@@ -991,16 +1277,28 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       activeId = tabId;
       tab.lastActiveAt = now();
       publishTabs();
-      // A web tab has no host to start (plan step 21); main's web-tab manager
-      // reconciles the view from the tab table instead.
-      if (tab.kind !== "web") await ensureSession(tab);
+      // A web or editor tab has no host to start (plan step 7); main reconciles
+      // the web view from the tab table and the editor from its own buffer.
+      if (isHostBackedTab(tab.kind)) await ensureSession(tab);
+      await persist();
+      return envelope();
+    },
+
+    async deactivate() {
+      // Clearing a *selection* is not closing a tab: every host keeps running and
+      // every record is untouched, so switching back is instant. This is what
+      // lets a project with no open session own the rail while the session column
+      // shows Welcome (2026-10-30 project-scoped rail plan).
+      if (activeId === null) return envelope();
+      activeId = null;
+      publishTabs();
       await persist();
       return envelope();
     },
 
     async reconcile() {
       for (const tab of tabs.values()) {
-        if (tab.kind === "web") continue;
+        if (!isHostBackedTab(tab.kind)) continue;
         if (opening.has(tab.id) || starting.has(tab.id)) {
           tab.status = "starting";
           continue;
@@ -1044,11 +1342,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       if (!tab) return envelope();
       forgetHost(tabId);
       recycling.delete(tabId);
+      parking.delete(tabId);
+      sequences.delete(tabId);
+      generations.delete(tabId);
       createParams.delete(tabId);
       tabs.delete(tabId);
       try {
-        // A web tab has no supervisor host to stop (plan step 21).
-        if (tab.kind !== "web") await deps.supervisor.stop(tabId);
+        // A web or editor tab has no supervisor host to stop (plan step 7).
+        if (isHostBackedTab(tab.kind)) await deps.supervisor.stop(tabId);
       } catch {
         // A host that is already gone is not an error for the user.
       }
@@ -1062,28 +1363,67 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     },
 
     async closeOthers(tabId) {
-      if (!tabs.has(tabId)) return envelope();
-      for (const id of [...tabs.keys()]) {
-        if (id !== tabId) await service.closeTab(id);
+      const target = tabs.get(tabId);
+      if (!target) return envelope();
+      for (const [id, record] of [...tabs]) {
+        if (id !== tabId && record.kind === target.kind && record.pinned !== true) {
+          await service.closeTab(id);
+        }
       }
       return envelope();
     },
 
+    async closeAll(kind) {
+      for (const tab of [...tabs.values()]) {
+        if (tab.kind === kind && tab.pinned !== true) await service.closeTab(tab.id);
+      }
+      return envelope();
+    },
+
+    async closeForProject(cwd) {
+      for (const tab of [...tabs.values()]) {
+        if (sameFolder(tab.cwd, cwd)) await service.closeTab(tab.id);
+      }
+      return envelope();
+    },
+
+    async setPinned(tabId, pinned) {
+      const tab = requireTab(tabId);
+      if (pinned) tab.pinned = true;
+      else delete tab.pinned;
+      const ordered = partitionPinnedTabs([...tabs.values()]);
+      tabs.clear();
+      for (const record of ordered) tabs.set(record.id, record);
+      publishTabs();
+      await persist();
+      return envelope();
+    },
+
+    async retargetEditorTabs(input) {
+      for (const tab of tabs.values()) {
+        if (!isEditorTab(tab)) continue;
+        if (!sameFolder(tab.cwd, input.fromProjectPath)) continue;
+        if (!isWorkspacePathWithin(tab.filePath, input.fromPath, input.kind)) continue;
+        const suffix = input.kind === "file" ? "" : tab.filePath.slice(input.fromPath.length);
+        const nextPath = `${input.toPath}${suffix}`;
+        tab.cwd = input.toProjectPath;
+        tab.filePath = nextPath;
+        tab.title = workspaceBasename(nextPath);
+      }
+      publishTabs();
+      await persist();
+      return envelope();
+    },
+
     async reorderTab(tabId, toIndex) {
-      const order = [...tabs.keys()];
-      const from = order.indexOf(tabId);
-      if (from === -1) return envelope();
-      const target = Math.max(0, Math.min(order.length - 1, Math.floor(toIndex)));
-      if (target === from) return envelope();
-      order.splice(from, 1);
-      order.splice(target, 0, tabId);
+      const ordered = moveTabWithinPinGroup([...tabs.values()], tabId, toIndex);
+      if (ordered.map((tab) => tab.id).join("\0") === [...tabs.keys()].join("\0")) {
+        return envelope();
+      }
       // Rebuild the map in the new order: the tab table's insertion order *is*
       // the strip order, so this is the only place it is defined.
-      const entries = order
-        .map((id) => [id, tabs.get(id)] as const)
-        .filter((entry): entry is readonly [string, TabRecord] => entry[1] !== undefined);
       tabs.clear();
-      for (const [id, record] of entries) tabs.set(id, record);
+      for (const record of ordered) tabs.set(record.id, record);
       publishTabs();
       await persist();
       return envelope();
@@ -1097,8 +1437,21 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // Already the office host and running: nothing to restart.
       if (tab.kind === "office" && hosts.has(tabId)) return envelope();
 
-      // One office host only: demote every other `office` tab and stop its host
-      // so port 38617 is free for the promoted tab (plan step 20 acceptance).
+      // Remember the host we are about to displace, so a failed takeover can put
+      // it back instead of leaving the app with no bridge at all.
+      const previous = [...tabs.values()].find(
+        (record) => record.id !== tabId && record.kind === "office",
+      );
+
+      // Snapshot the PIDs **before** anything is detached (2026-10-30
+      // rail-headers plan). The reclaimer must never signal this app, and a host
+      // that has just been detached has already left `hosts.list()` — sampling
+      // later would make our own still-exiting process look like a stranger.
+      const ownPids = deps.ownPids?.() ?? [];
+
+      // One office host only: demote every other `office` tab and stop its host.
+      // `detachHost` awaits the process exit (step 8), so the old bridge has
+      // really let go of the port by the time we look at it.
       for (const [id, record] of [...tabs]) {
         if (id === tabId || record.kind !== "office") continue;
         recycling.delete(id);
@@ -1109,6 +1462,35 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // Restart the promoted tab so its host is spawned with `officeHost: true`.
       recycling.delete(tabId);
       await detachHost(tabId);
+
+      // Free the bridge port *before* the new host binds it (2026-10-30 plan).
+      // Stopping our own host is not enough: an earlier app run, terminal Pi, or
+      // an unrelated squatter can still hold 38617, and the bridge extension
+      // would report `EADDRINUSE` instead of listening. The reclaimer terminates
+      // the owner (never this app's own processes) and verifies the port is free.
+      const release = deps.releaseOfficePort;
+      if (release) {
+        const freed = await release({
+          port: deps.officeBridgePort ?? PI_OFFICE_BRIDGE.defaultPort,
+          ownPids,
+        });
+        if (!freed.ok) {
+          // Roll back: re-promote the host we displaced so the user keeps the
+          // bridge they had, and fail with the reason the port stayed busy.
+          if (previous) {
+            tabs.set(previous.id, { ...previous, kind: "office", status: "stopped" });
+            publishTabs();
+            await persist();
+            await service.activateTab(previous.id).catch(() => undefined);
+          }
+          throw new SessionServiceError(
+            freed.detail ??
+              `Office bridge port ${deps.officeBridgePort ?? PI_OFFICE_BRIDGE.defaultPort} is in use, so this session cannot take the bridge.`,
+            "office_port_busy",
+          );
+        }
+      }
+
       tab.kind = "office";
       tab.status = "stopped";
       publishTabs();
@@ -1126,6 +1508,16 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         return host.request(method, params);
       }
       const tab = requireTab(tabId);
+      // LRU is about real use, not merely an open tab: every user request keeps
+      // the session warm. Internal `state.get` probes call `host.request`
+      // directly, so they do not distort the ordering.
+      tab.lastActiveAt = now();
+      if (!isHostBackedTab(tab.kind)) {
+        throw new SessionServiceError(
+          tab.kind === "editor" ? "an editor tab has no Pi host" : "a web tab has no Pi host",
+          tab.kind === "editor" ? "editor_tab" : "web_tab",
+        );
+      }
       // Explicit session lifecycle commands bypass auto-open: the caller owns
       // the operation (trust retry, /new, fork). Only the process is ensured.
       if (SESSION_ESTABLISHING_METHODS.has(method)) {
@@ -1179,8 +1571,13 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     async restartTab(tabId) {
       const tab = requireTab(tabId);
-      if (tab.kind === "web") {
-        throw new SessionServiceError("a web tab has no Pi host to restart", "web_tab");
+      if (!isHostBackedTab(tab.kind)) {
+        throw new SessionServiceError(
+          tab.kind === "editor"
+            ? "an editor tab has no Pi host to restart"
+            : "a web tab has no Pi host to restart",
+          tab.kind === "editor" ? "editor_tab" : "web_tab",
+        );
       }
       // Let an in-flight stale recycle settle first; otherwise it could spawn a
       // host after this detach and leave two processes for one tab.
@@ -1195,7 +1592,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     async prewarmLast() {
       const tab = [...tabs.values()]
-        .filter((entry) => entry.kind !== "web")
+        .filter((entry) => isHostBackedTab(entry.kind))
         .sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
       if (!tab) return false;
       try {

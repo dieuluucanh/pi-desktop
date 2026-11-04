@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Transcript } from "../../src/renderer/src/session/Transcript";
 import {
   createTranscriptState,
@@ -21,6 +21,10 @@ import { installBridge } from "./fixtures";
 
 beforeEach(() => {
   installBridge();
+});
+
+afterEach(() => {
+  window.getSelection()?.removeAllRanges();
 });
 
 /** One assistant message whose text is progressively longer. */
@@ -95,6 +99,25 @@ describe("auto-follow", () => {
 
     rerender(<Transcript items={streamingItems("first + more text")} followPaused />);
     expect(scroll.read()).toBe(0);
+  });
+
+  it("does not chase the content while the user has a selection", () => {
+    const { rerender } = render(<Transcript items={streamingItems("first")} />);
+    const scroll = primeScrollGeometry();
+    const transcript = screen.getByTestId("transcript");
+    const row = transcript.querySelector("[data-row-index='0']") ?? transcript;
+    const range = document.createRange();
+    range.selectNodeContents(row);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    rerender(<Transcript items={streamingItems("first + more text")} />);
+
+    // The selection is the user's; auto-follow offers the pill instead of
+    // scrolling the viewport (and the selection) away.
+    expect(scroll.read()).toBe(0);
+    expect(screen.getByTestId("jump-to-latest")).toHaveTextContent("New messages");
   });
 
   it("jumps to the bottom on Ctrl+End, but not from inside a textarea", () => {

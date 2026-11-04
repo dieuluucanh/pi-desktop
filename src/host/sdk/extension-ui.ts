@@ -100,6 +100,7 @@ const REQUIRED_FG = [
   "thinkingMedium",
   "thinkingHigh",
   "thinkingXhigh",
+  "thinkingMax",
   "bashMode",
 ] as const;
 

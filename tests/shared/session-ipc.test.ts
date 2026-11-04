@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  hostBackedTabs,
+  isHostBackedTab,
+  isSessionBusyState,
+  isSessionTab,
   isTabKind,
   sanitizeTabRecord,
   sanitizeTabs,
   SESSION_STATUS_LABEL,
   sessionTitle,
   TAB_KINDS,
+  type TabRecord,
 } from "../../src/shared/session-ipc";
 
 /**
@@ -16,7 +21,7 @@ import {
 
 describe("tab kinds", () => {
   it("knows session, office and web", () => {
-    expect(TAB_KINDS).toEqual(["session", "office", "web"]);
+    expect(TAB_KINDS).toEqual(["session", "office", "web", "editor"]);
     expect(isTabKind("web")).toBe(true);
     expect(isTabKind("popup")).toBe(false);
   });
@@ -79,6 +84,82 @@ describe("sanitizeTabRecord", () => {
     expect(sanitizeTabRecord({ kind: "session", cwd: "C:\\x" })).toBeNull();
     expect(sanitizeTabRecord(null)).toBeNull();
   });
+
+  it("keeps a pinned tab pinned and drops a malformed flag", () => {
+    const pinned = sanitizeTabRecord({ id: "t", cwd: "C:\\x", pinned: true });
+    expect(pinned?.pinned).toBe(true);
+
+    const ordinary = sanitizeTabRecord({ id: "t", cwd: "C:\\x" });
+    expect(ordinary).not.toHaveProperty("pinned");
+
+    const malformed = sanitizeTabRecord({ id: "t", cwd: "C:\\x", pinned: "yes" });
+    expect(malformed).not.toHaveProperty("pinned");
+  });
+});
+
+describe("hostBackedTabs", () => {
+  function record(kind: TabRecord["kind"], id = `tab-${kind}`): TabRecord {
+    return {
+      id,
+      kind,
+      cwd: "C:\\work\\app",
+      title: kind,
+      sessionFile: null,
+      status: "idle",
+      createdAt: 1,
+      lastActiveAt: 1,
+      model: null,
+      ...(kind === "editor" ? { filePath: "a.ts" } : {}),
+    };
+  }
+
+  it("owns a host only for session and office tabs", () => {
+    expect(isHostBackedTab("session")).toBe(true);
+    expect(isHostBackedTab("office")).toBe(true);
+    expect(isHostBackedTab("web")).toBe(false);
+    expect(isHostBackedTab("editor")).toBe(false);
+  });
+
+  it("keeps host-backed tabs in order and excludes a target id", () => {
+    const tabs = [
+      record("session", "tab-1"),
+      record("editor", "editor-1"),
+      record("office", "office-1"),
+      record("web", "web-1"),
+      record("session", "tab-2"),
+    ];
+
+    expect(hostBackedTabs(tabs).map((tab) => tab.id)).toEqual(["tab-1", "office-1", "tab-2"]);
+    expect(hostBackedTabs(tabs, "tab-1").map((tab) => tab.id)).toEqual(["office-1", "tab-2"]);
+  });
+});
+
+describe("isSessionTab", () => {
+  function record(kind: TabRecord["kind"]): TabRecord {
+    return {
+      id: `tab-${kind}`,
+      kind,
+      cwd: "C:\\work\\app",
+      title: kind,
+      sessionFile: null,
+      status: "idle",
+      createdAt: 1,
+      lastActiveAt: 1,
+      model: null,
+      ...(kind === "editor" ? { filePath: "a.ts" } : {}),
+    };
+  }
+
+  it("keeps every non-editor kind in the session surfaces", () => {
+    expect(isSessionTab(record("session"))).toBe(true);
+    expect(isSessionTab(record("office"))).toBe(true);
+    expect(isSessionTab(record("web"))).toBe(true);
+    expect(isSessionTab(record("editor"))).toBe(false);
+  });
+
+  it("excludes an editor tab by kind, even without a valid file path", () => {
+    expect(isSessionTab({ ...record("editor"), filePath: null })).toBe(false);
+  });
 });
 
 describe("session status labels", () => {
@@ -111,5 +192,23 @@ describe("sessionTitle", () => {
   it("uses the last path segment", () => {
     expect(sessionTitle("C:\\work\\pi-desktop")).toBe("pi-desktop");
     expect(sessionTitle("/home/me/project/")).toBe("project");
+  });
+});
+
+describe("isSessionBusyState", () => {
+  it("treats every in-flight session state as busy", () => {
+    expect(isSessionBusyState({ streaming: true })).toBe(true);
+    expect(isSessionBusyState({ compacting: true })).toBe(true);
+    expect(isSessionBusyState({ retrying: true })).toBe(true);
+    expect(isSessionBusyState({ pendingMessages: 1 })).toBe(true);
+    expect(isSessionBusyState({ steering: ["use the other file"] })).toBe(true);
+    expect(isSessionBusyState({ followUp: ["then run the tests"] })).toBe(true);
+  });
+
+  it("keeps an idle session parkable", () => {
+    expect(isSessionBusyState({ streaming: false, pendingMessages: 0 })).toBe(false);
+    expect(isSessionBusyState({ steering: [], followUp: [] })).toBe(false);
+    expect(isSessionBusyState(null)).toBe(false);
+    expect(isSessionBusyState("working")).toBe(false);
   });
 });

@@ -2,9 +2,11 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
+import { muteRuleFor } from "../../src/shared/notifications";
 import type { ExtensionDialogRequest } from "../../src/shared/extension-ui";
 import { ExtensionDialogDock } from "../../src/renderer/src/extension-ui/ExtensionDialog";
 import { NotificationCenter } from "../../src/renderer/src/extension-ui/NotificationCenter";
+import { MuteNotificationDialog } from "../../src/renderer/src/extension-ui/MuteNotificationDialog";
 import { WidgetStrip } from "../../src/renderer/src/extension-ui/WidgetStrip";
 import { WorkingRow } from "../../src/renderer/src/extension-ui/WorkingRow";
 import { StatusBar } from "../../src/renderer/src/layout/StatusBar";
@@ -53,6 +55,8 @@ function resetStore() {
     extensionUi: {},
     extensionDialogs: [],
     extensionNotifications: [],
+    muteTarget: null,
+    notificationCooldowns: {},
   });
 }
 
@@ -371,6 +375,112 @@ describe("StatusBar and notification centre", () => {
     expect(screen.getByText("Installed workflow")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(useAppStore.getState().extensionNotifications).toHaveLength(0);
+  });
+
+  it("marks a muted row, opens its settings and unmutes it", async () => {
+    const entry = {
+      id: "n-muted",
+      message: "Installed workflow",
+      type: "warning" as const,
+      tabId: TAB,
+      at: 1,
+    };
+    useAppStore.getState().muteNotification(entry, "exact");
+    useAppStore.setState({ extensionNotifications: [entry], muteTarget: null });
+    render(<NotificationCenter />);
+    await userEvent.click(screen.getByRole("button", { name: /extension notifications/i }));
+    expect(screen.getByTestId("notification-muted")).toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /notification settings for installed workflow/i }),
+    );
+    expect(useAppStore.getState().muteTarget).toEqual(entry);
+
+    await userEvent.click(screen.getByRole("button", { name: /unmute notification/i }));
+    expect(useAppStore.getState().prefs.notifications.muted).toHaveLength(0);
+    expect(screen.queryByTestId("notification-muted")).toBeNull();
+  });
+});
+
+describe("MuteNotificationDialog", () => {
+  const target = {
+    id: "n-mute",
+    message:
+      "Workflow plan: thinking xhigh → high (opencode-go/deepseek-v4.1-flash does not support xhigh).",
+    type: "warning" as const,
+    tabId: TAB,
+    at: 1,
+  };
+
+  it("defaults to the template rule and saves it", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({ muteTarget: target });
+    render(<MuteNotificationDialog />);
+    expect(screen.getByRole("dialog", { name: "Notification settings" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Mute" }));
+    expect(useAppStore.getState().prefs.notifications.muted[0]).toMatchObject({
+      scope: "template",
+      type: "warning",
+    });
+    expect(useAppStore.getState().muteTarget).toBeNull();
+  });
+
+  it("can save the exact text", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({ muteTarget: target });
+    render(<MuteNotificationDialog />);
+    await user.click(screen.getByRole("radio", { name: /just this notification/i }));
+    await user.click(screen.getByRole("button", { name: "Mute" }));
+    expect(useAppStore.getState().prefs.notifications.muted[0]?.scope).toBe("exact");
+  });
+
+  it("can save the whole type", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({ muteTarget: target });
+    render(<MuteNotificationDialog />);
+    await user.click(screen.getByRole("radio", { name: /all warning notifications/i }));
+    await user.click(screen.getByRole("button", { name: "Mute" }));
+    expect(useAppStore.getState().prefs.notifications.muted[0]).toMatchObject({
+      scope: "type",
+      value: "warning",
+    });
+  });
+
+  it("shows muted state and unmutes", async () => {
+    const user = userEvent.setup();
+    useAppStore.getState().muteNotification(target, "exact");
+    useAppStore.setState({ muteTarget: target });
+    render(<MuteNotificationDialog />);
+    expect(screen.getByText("muted")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Unmute" }));
+    expect(useAppStore.getState().prefs.notifications.muted).toHaveLength(0);
+  });
+});
+
+describe("Transcript extension notices", () => {
+  it("hides a muted notify row and restores it on unmute", () => {
+    const items = [
+      {
+        kind: "notice" as const,
+        id: "notice-1",
+        notice: {
+          id: "notice-1",
+          severity: "warning" as const,
+          event: "oi.notify",
+          text: "noisy warning",
+        },
+      },
+    ];
+    const rule = muteRuleFor({ message: "noisy warning", type: "warning" }, "exact");
+    useAppStore.setState({
+      prefs: { ...DEFAULT_PREFS, notifications: { muted: [rule] } },
+    });
+    const view = render(<Transcript items={items} />);
+    expect(screen.queryByText("noisy warning")).toBeNull();
+
+    useAppStore.setState({ prefs: { ...DEFAULT_PREFS, notifications: { muted: [] } } });
+    view.rerender(<Transcript items={items} />);
+    expect(screen.getByText("noisy warning")).toBeInTheDocument();
   });
 });
 

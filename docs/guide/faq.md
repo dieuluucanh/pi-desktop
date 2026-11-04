@@ -38,15 +38,15 @@ then works like any other extension. See
 [parity.md](../product/parity.md#mcp).
 
 **Is there an in-app terminal?**
-Not in v0.2.0 (it is explicit post-MVP backlog). The app ships a `pi` PATH shim
+Not in v0.4.0 (it is explicit post-MVP backlog). The app ships a `pi` PATH shim
 and can open an external terminal in a project folder.
 
 **Can I open several projects at once?**
 Yes — tabs are per session and sessions belong to projects; the sidebar groups
-them. There is one window in v0.2.0 (multi-window is backlog).
+them. There is one window in v0.4.0 (multi-window is backlog).
 
 **Why does Windows/macOS warn when I install it?**
-The v0.2.0 artefacts are unsigned. Windows SmartScreen: “More info → Run anyway”;
+The v0.4.0 artefacts are unsigned. Windows SmartScreen: “More info → Run anyway”;
 macOS: right-click → Open. Signing is tracked in the backlog.
 
 **Does the app send telemetry?**
@@ -61,13 +61,32 @@ project resources load, and why safe mode exists. The app itself is isolated:
 sandboxed renderer, strict CSP, allowlisted IPC, web tabs without a preload.
 
 **How do I get a newer version?**
-Installed builds check GitHub Releases after launch and show an update banner;
-`Help → Check for Updates…` checks on demand. Package installs are separate: the
-app updates its own code, the package manager updates extensions.
+Release builds check GitHub Releases once after launch. An available version
+appears as a small **Update vX** chip in the status bar; the full status,
+**Download** and **Restart & install** live in **Settings → About & updates**.
+`Help → Check for Updates…` opens that card and checks on demand. Locally built
+packages are not on the update feed: automatic checks are off and the card says
+so. Package installs are separate: the app updates its own code, the package
+manager updates extensions.
 
 **Is it translated?**
-Not yet (i18n is backlog). The UI is English in v0.2.0.
+Not yet (i18n is backlog). The UI is English in v0.4.0.
+
+**How do I copy the proposed commit message from `/commit`?**
+The extension renders it in a questionnaire panel. Select the text and press
+<kbd>Ctrl</kbd>+<kbd>C</kbd> (<kbd>Cmd</kbd>+<kbd>C</kbd> on macOS), or use the
+panel's **Copy** button, right-click → **Copy**, or the panel's own context menu;
+The selection takes precedence over the extension's
+`^C`, and <kbd>Esc</kbd> still aborts. The same works for any text an extension
+draws, and for ordinary assistant messages in the transcript.
+
+**How do I make the app bigger or smaller?**
+Use <kbd>Ctrl/Cmd</kbd>+<kbd>=</kbd> to zoom in, <kbd>Ctrl/Cmd</kbd>+<kbd>-</kbd> to
+zoom out, and <kbd>Ctrl/Cmd</kbd>+<kbd>0</kbd> for 100 %. The same controls are in
+View → Zoom In / Zoom Out / Actual Size, in the status bar's `− 100 % +`
+cluster, and in Settings → Display zoom. The level is remembered across
+launches.
 
 **Where do I report a bug?**
 Attach a Diagnostics support bundle (it is redacted) and the version from
-Settings → About or the title bar, and open an issue on the repository.
+Settings → About or the status bar, and open an issue on the repository.

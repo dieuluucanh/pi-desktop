@@ -56,8 +56,28 @@ resource. The window shows a safe-mode banner.
   active tab; other tabs stay asleep until you interact with them.
 - **A tab that says `asleep`** has no running host. Clicking it, focusing the
   composer or typing wakes it; you do not need the Start session link.
-- The time-based 15-minute idle recycler is **not enabled by default**; the
-  high-RSS guardrail is. Both show up in the host log and Diagnostics.
+- The time-based 15-minute idle recycler is **on by default**; only inactive
+  tabs sleep (the active tab, the control host and the bridge owner are protected
+  from _idle_ sleep). The 1 GB RSS guardrail still applies to the active tab.
+  Both show up in the host log and Diagnostics.
+
+## The app's memory keeps growing, or a Pi terminal gets slow
+
+- Open **Diagnostics** first. The Hosts card reports `live/target (ceiling)`,
+  aggregate `host RSS / limit`, system free/total memory and live web views. A
+  warn badge (`over target` or `over memory`) names the pressure instead of
+  guessing.
+- **Live host target:** 20 % of physical RAM at 512 MB per host, clamped 2–8.
+  The ceiling is target + 2 (4–10). Opening more session tabs does not raise it;
+  idle sessions sleep and resume from JSONL.
+- **Web tabs:** unlimited as records, but at most four live renderers are kept.
+  Switching back to an old review reloads it.
+- **Dev mode:** an `electron-vite --watch` restart kills main; hosts now exit
+  when their stdin pipe closes. If you upgraded from an older build, any host
+  left from yesterday's run may still be alive — close the dev terminal (or use
+  Task Manager / `ps`) once, then restart.
+- If the machine is still tight, close pinned/background sessions you are not
+  using, or close the app and the dev terminal; the process tree goes with it.
 
 ## A session stopped responding
 
@@ -66,6 +86,18 @@ resource. The window shows a safe-mode banner.
   re-spawns the host and resumes the session from its JSONL. History is not lost.
 - A closed tab mid-run leaves no orphan process: hosts are owned by the main
   process and stopped on close and on quit.
+
+## A `!` shell command did not run
+
+- `!command` and `!!command` are executed by the host through the same Bash Pi
+  uses; they are not an interactive terminal. Commands that need a password, an
+  editor or another TTY prompt belong in a real terminal. `git push` works when
+  git's credential helper or SSH agent is already configured.
+- A session host older than the app can fail with a `_bashAbortControllers` /
+  `_bashAbortController` message. Restart the session tab or the app; current
+  builds call the SDK method with its session receiver.
+- `!` needs Bash on `PATH` (Git Bash on Windows). If Bash or `git` is missing,
+  the app reports it rather than hanging. `Esc` cancels a running command.
 
 ## Slash-command suggestions stopped working after a host edit
 
@@ -131,6 +163,16 @@ A **malformed** `settings.json`, `auth.json` or `app-state.json` is reported and
 left untouched; fix it by hand and reload. `settings.json` is backed up before
 the first write per run.
 
+## Display and window
+
+- **The UI is too small or too large** — <kbd>Ctrl/Cmd</kbd>+<kbd>=</kbd> zooms
+  in, <kbd>Ctrl/Cmd</kbd>+<kbd>-</kbd> zooms out, and <kbd>Ctrl/Cmd</kbd>+<kbd>0</kbd>
+  resets to 100 %. The status bar's `− 100 % +` cluster and Settings → Display
+  zoom do the same; the level survives a restart. The range is 50 %–300 %.
+- **Zoom resets after a reload** — it should not: main re-applies
+  `prefs.zoomFactor` on `did-finish-load`. If it does, check that
+  `app-state.json` is writable.
+
 ## Extensions and packages
 
 - A loader error appears in the Extensions hub’s status banner and diagnostics,
@@ -140,15 +182,23 @@ the first write per run.
 - `/reload` reloads a live session and shows what changed; **Reload runtime** in
   the hub does the same with no session open.
 - Pin a known-good version from the package list if an update broke something.
+- **Cannot copy text from an extension panel** — select the text and press
+  <kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Cmd</kbd>+<kbd>C</kbd>, or use the panel's
+  **Copy** button, or right-click → **Copy**. A selection is copied instead of
+  being sent to the extension;
+  with nothing selected the chord still reaches it, and <kbd>Esc</kbd> aborts.
 
 ## Pi for Office
 
-- **Nothing listens on 38617** — the Office session is not running or Office is
-  not open. Open the Office host app; the card’s **Re-check bridge** polls
-  `/health`.
-- **Port conflict** — another program owns 38617. The card says so explicitly;
-  close it and retry, or use a different bridge port via
-  `PI_OFFICE_BRIDGE_PORT`.
+- **Nothing listens on 38617** — the bridge is off. Run `/office connect` in the
+  session you want, or click **Connect this session** in the Documents rail. The
+  bridge does not start just because a session opened.
+- **Port conflict** — another Pi session or program owns 38617. The row shows the
+  owner (PID/cwd); close it there, or use **Take over** in Desktop. A terminal
+  user can run `/office close` in the owner or use
+  `/office connect <port>`.
+- **"Automatic bridge (legacy)"** — a 0.5.x bridge auto-starts and has no close
+  command. Click **Update bridge** to install the pinned 0.6+ package.
 - **Add-in not appearing in Office** — use **Copy diagnostics**; common causes
   are a stale sideload entry, an Office update invalidating the cache, or a
   WSL/remote setup that cannot see the host registry. **Reset add-in** then
@@ -156,9 +206,18 @@ the first write per run.
 
 ## Updates
 
-`Help → Check for Updates…` runs a check. Development builds have no feed and say
-so. A failed check shows a Retry in the banner; the error text is kept in the
-updater state.
+`Help → Check for Updates…` opens **Settings → About & updates** and runs a
+check. A released build checks once after launch; the status bar shows a small
+**Update vX** chip when a version is available, or **Restart to update** after a
+download. All outcomes live in the card: up to date, downloading, ready, error,
+and **no published release**.
+
+A locally built package (stamped `local` in `resources/build-info.json`) does not
+auto-check; a manual check only tells you whether a published release exists. A
+missing release is the neutral “No published release was found for this build”
+state, not a failure. Errors keep their raw message under **Technical details**
+and can be dismissed; automatic failures never open a banner. A development build
+reports that updates are checked in installed builds only.
 
 ## Logs and the support bundle
 
@@ -171,10 +230,10 @@ Diagnostics → Save         redacted support bundle (no credentials)
 The bundle runs `redactSecrets` over the whole document, so it is safe to attach
 to an issue.
 
-## Known limitations in v0.2.0
+## Known limitations in v0.4.0
 
 Every known limitation is recorded with the release notes:
-[`docs/releases/v0.2.0.md`](../releases/v0.2.0.md). The short version:
+[`docs/releases/v0.4.0.md`](../releases/v0.4.0.md). The short version:
 
 - **Unsigned builds** — SmartScreen/Gatekeeper warn on first launch; signing is
   deferred ([backlog](../product/backlog.md)).
@@ -197,5 +256,5 @@ useful issue.
 ## Related
 
 - [FAQ](faq.md) · [Getting started](getting-started.md)
-- [Release notes v0.2.0](../releases/v0.2.0.md) · [Backlog](../product/backlog.md)
+- [Release notes v0.4.0](../releases/v0.4.0.md) · [Backlog](../product/backlog.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)

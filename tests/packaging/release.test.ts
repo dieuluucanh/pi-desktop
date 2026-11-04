@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { PI_DESKTOP_RELEASES_URL } from "../../src/shared/updates";
 
 /**
  * Release guard (plan step 27).
@@ -43,6 +44,9 @@ describe("release guard (plan step 27)", () => {
     }
     // The updater feed and the builder agree on the repository.
     expect(packageJson.repository?.url).toContain("github.com");
+    expect(PI_DESKTOP_RELEASES_URL).toBe(
+      `${packageJson.repository?.url?.replace(/\.git$/, "")}/releases`,
+    );
   });
 
   it("ships release notes with a known-limitations list covering every platform", () => {

@@ -11,7 +11,20 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
-const CORE_DIRS = ["src/host", "src/main/office", "src/main/packages", "src/main/runtime"] as const;
+const CORE_DIRS = [
+  "src/host",
+  "src/main/office",
+  "src/main/packages",
+  "src/main/runtime",
+  // The two engines behind source control and folder checkpoints (git-checkpoint
+  // plan D16). They run in main *and* under the bundled host runtime (the
+  // checkpoint extension), so neither may reach for Electron.
+  "src/git",
+  "src/checkpoints",
+  // The pure workspace engines (file listing, path containment, content) are
+  // shared by main and the host; neither may reach for Electron.
+  "src/workspace",
+] as const;
 /** Electron-free *modules* that live outside those directories (plan step 3/23/28). */
 const CORE_FILES = [
   "src/main/host-build.ts",
@@ -19,6 +32,11 @@ const CORE_FILES = [
   "src/main/diagnostics-service.ts",
   "src/main/security.ts",
   "src/main/branding.ts",
+  // Ports-injected services (git-checkpoint plan steps 8/20): the rail's push
+  // loops, with `isWindowFocused`/`onResume`/`trash`/`attachedPanes` supplied by
+  // `src/main/index.ts` rather than imported here.
+  "src/main/git-service.ts",
+  "src/main/checkpoint-service.ts",
 ] as const;
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js"] as const;
 

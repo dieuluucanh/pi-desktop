@@ -64,8 +64,14 @@ changed while off, the current file is kept and the app reports it.
 A few things live in app state on purpose, so they never change terminal Pi’s
 behaviour:
 
-- theme fallback before Pi’s theme loads (`prefs.theme`);
-- sidebar layout, view mode and per-tab drafts;
+- theme first-paint cache (`prefs.theme`) and per-theme chrome colour overrides
+  (`prefs.themeColors`); the active Pi theme is loaded at startup and owns the
+  accent/status colours from then on, while the app owns the high-contrast
+  neutral surfaces;
+- follow-system appearance (`prefs.followSystemTheme`) and app display zoom
+  (`prefs.zoomFactor`; View → Zoom In / Zoom Out / Actual Size, or
+  <kbd>Ctrl/Cmd</kbd>+<kbd>=</kbd> / <kbd>-</kbd> / <kbd>0</kbd>);
+- sidebar layout and per-tab drafts;
 - telemetry opt-in (`PI_TELEMETRY=0` unless enabled);
 - the Pi profile choice (shared vs app-private);
 - `externalEditor` is a Pi setting, but the launcher that spawns the editor is
@@ -75,3 +81,8 @@ behaviour:
 
 - [Providers and auth](providers-and-auth.md) · [Extensions and packages](extensions-and-packages.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)
+
+**Notifications.** Settings → Notifications lists mute rules created from a
+notification's gear or from the notification history. Each rule can be unmuted
+individually, or use **Unmute all**. Muted notifications stay in the history
+(marked `muted`) but disappear from the transcript and stop toasting.

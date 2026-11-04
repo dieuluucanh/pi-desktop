@@ -21,6 +21,13 @@
     "src/preload/**/*.ts",
     "src/host/**/*.ts",
     "src/shared/**/*.ts",
+    // The git, checkpoint and workspace engines are pure Node (no Electron, no
+    // DOM), so they are checked by the node project and can run in main and under
+    // the bundled host runtime.
+    "src/git/**/*.ts",
+    "src/checkpoints/**/*.ts",
+    "src/workspace/**/*.ts",
+    "src/extensions/**/*.ts",
     // The completion engine is pure (no DOM, no React): the node project checks it
     // and `tests/completion/**` runs it without a DOM (plan step 7). The overlay
     // (.tsx) stays in the renderer project.

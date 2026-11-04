@@ -38,8 +38,8 @@ import {
   type KeybindingPort,
 } from "./keybindings";
 import { buildResourcesSnapshot } from "./resources";
-import type { FileListing } from "./file-listing";
-import type { WorkspaceReadResult } from "./workspace-files";
+import type { FileListing } from "../workspace/file-listing";
+import type { WorkspaceReadResult } from "../workspace/workspace-files";
 import type { HostHandler } from "./service";
 
 /**
@@ -75,8 +75,8 @@ export type PiPayload = object;
 export interface HostSession extends SessionStateLike {
   subscribe?(listener: (event: { type: string; [key: string]: unknown }) => void): () => void;
   prompt(text: string, options?: unknown): Promise<void>;
-  steer?(text: string): Promise<unknown>;
-  followUp?(text: string): Promise<unknown>;
+  steer?(text: string, images?: unknown, options?: { source?: string }): Promise<unknown>;
+  followUp?(text: string, images?: unknown, options?: { source?: string }): Promise<unknown>;
   abort?(): Promise<void>;
   clearQueue?(): ClearedQueue;
   executeBash?(
@@ -300,6 +300,11 @@ export interface SessionRuntimeRequest {
   safeMode?: boolean;
   /** Whether the project is trusted, so its `.pi/settings.json` may be read. */
   projectTrusted?: boolean;
+  /**
+   * The bundled checkpoint extension's path (git-checkpoint plan step 24). The
+   * composition root resolves it next to the host bundle; safe mode ignores it.
+   */
+  checkpointsExtensionPath?: string | null;
 }
 
 export interface SessionCoreDeps {
@@ -309,6 +314,8 @@ export interface SessionCoreDeps {
   npmCommand?: readonly string[] | null;
   /** Safe mode (plan step 22): the runtime is built with every loader disabled. */
   safeMode?: boolean;
+  /** The bundled checkpoint extension (git-checkpoint plan step 24). Safe mode wins. */
+  checkpointsExtensionPath?: string | null;
   /** Creates the SDK runtime (see `src/host/sdk/index.ts`). */
   createRuntime(
     request: SessionRuntimeRequest,
@@ -361,6 +368,12 @@ export interface SessionCoreDeps {
    * is called on rebind and dispose.
    */
   observeModelChanges?(session: HostSession, onChange: () => void): () => void;
+  /**
+   * Per-model supported thinking levels for `model.available` (2026-10-31 UI
+   * plan). The SDK adapter lives in `src/host/sdk/model-thinking.ts`; the core
+   * stays SDK-free. Missing means the renderer simply has no preview.
+   */
+  describeModelThinking?(models: readonly unknown[]): Record<string, string[]>;
   /**
    * Settings writes (plan step 12). The composition root supplies the SDK port
    * built over this session's own manager, so `settings.set` here is visible to
@@ -810,6 +823,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       npmCommand: deps.npmCommand,
       projectTrusted: trust.status(cwd).trusted,
       ...(deps.safeMode ? { safeMode: true } : {}),
+      ...(deps.checkpointsExtensionPath
+        ? { checkpointsExtensionPath: deps.checkpointsExtensionPath }
+        : {}),
     });
     runtime = created.runtime;
     settingsManager = created.runtime.services?.settingsManager ?? null;
@@ -963,6 +979,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const options: Record<string, unknown> = {
         ...(input.images ? { images: input.images } : {}),
         ...(behavior ? { streamingBehavior: behavior } : {}),
+        // Pi's RPC mode labels prompts this way; the checkpoint extension uses
+        // it to distinguish user input from extension-originated messages.
+        source: "rpc",
       };
       if (input.ack === "preflight") {
         return await new Promise<unknown>((resolve, reject) => {
@@ -1016,7 +1035,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const current = ensure();
       const text = requireString(asRecord(params).text, "text");
       if (!current.steer) throw new SessionCoreError("steering is not supported", "unsupported");
-      await current.steer(text);
+      await current.steer(text, undefined, { source: "rpc" });
       return { queued: true };
     },
 
@@ -1025,7 +1044,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const text = requireString(asRecord(params).text, "text");
       if (!current.followUp)
         throw new SessionCoreError("follow-up is not supported", "unsupported");
-      await current.followUp(text);
+      await current.followUp(text, undefined, { source: "rpc" });
       return { queued: true };
     },
 
@@ -1462,6 +1481,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         source: scopeState?.source ?? scopeWriteTarget(readSettingsScopes(settingsManager)),
         diagnostics: scopeState?.diagnostics ?? [],
         auth: providerAuthStatus(current, models),
+        thinkingByModel: deps.describeModelThinking ? deps.describeModelThinking(models) : {},
         thinkingLevels: snapshot().thinkingLevels,
         current: snapshot().model,
       };
@@ -1499,6 +1519,12 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       if (!executeBash) {
         throw new SessionCoreError("running bash is not supported", "unsupported");
       }
+      // `AgentSession.executeBash` is a class method that reads
+      // `this._bashAbortControllers`; extracting it and calling it bare made
+      // `this` undefined (the `!`/`!!` error). Keep the receiver explicitly so
+      // a later "cleanup" cannot reintroduce the failure.
+      const runBash: typeof executeBash = (command, onChunk, options) =>
+        executeBash.call(current, command, onChunk, options);
       // Terminal Pi refuses a second command while one runs (`interactive-mode`
       // checks `session.isBashRunning`); the run is not queued, so a double
       // submit must say so instead of racing two shells.
@@ -1578,7 +1604,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         }
         let execution: Promise<BashResultLike>;
         try {
-          execution = executeBash(command, undefined, {
+          execution = runBash(command, undefined, {
             excludeFromContext,
             id,
             ...(outcome.operations === undefined ? {} : { operations: outcome.operations }),
@@ -1597,7 +1623,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       try {
         const result: BashResultLike =
           outcome.result ??
-          (await executeBash(command, undefined, {
+          (await runBash(command, undefined, {
             excludeFromContext,
             id,
             ...(outcome.operations === undefined ? {} : { operations: outcome.operations }),

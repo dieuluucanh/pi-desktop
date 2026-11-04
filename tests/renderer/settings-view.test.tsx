@@ -59,14 +59,26 @@ beforeEach(() => {
     settingsProjectTrusted: true,
     settingsMtimes: { global: null, project: null },
     settingsExternalEdit: false,
+    settingsFocus: null,
   });
 });
 
 describe("SettingsView", () => {
+  it("reveals the About & updates card when Settings is focused there", async () => {
+    stubRequest();
+    useAppStore.setState({ settingsFocus: "updates" });
+    render(<SettingsView />);
+
+    expect(screen.getByTestId("settings-updates")).toBeInTheDocument();
+    await waitFor(() => expect(useAppStore.getState().settingsFocus).toBeNull());
+  });
+
   it("renders every schema group with its fields", async () => {
     stubRequest();
     render(<SettingsView />);
 
+    expect(screen.getByTestId("view-scroll")).toHaveClass("overflow-y-auto");
+    expect(screen.getByTestId("view-content")).toHaveClass("max-w-4xl");
     await waitFor(() =>
       expect(screen.getByTestId("settings-group-compaction")).toBeInTheDocument(),
     );
@@ -76,6 +88,36 @@ describe("SettingsView", () => {
     // The provenance badge explains where the effective value comes from.
     const field = screen.getByTestId("setting-compaction.enabled");
     expect(within(field).getByText("global")).toBeInTheDocument();
+  });
+
+  it("has no tool-call detail control (Ctrl+O owns expansion)", async () => {
+    stubRequest();
+    render(<SettingsView />);
+
+    await screen.findByTestId("setting-compaction.enabled");
+    expect(screen.queryByText("Tool-call detail")).toBeNull();
+  });
+
+  it("points theme changes at the single Skills theme surface", async () => {
+    stubRequest();
+    render(<SettingsView />);
+
+    await screen.findByTestId("setting-compaction.enabled");
+    // The raw Pi `theme` field and the app-pref segmented control are gone; the
+    // catalogue in Skills is the one control.
+    expect(screen.queryByTestId("setting-theme")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Open theme settings" }));
+    expect(useAppStore.getState().view).toBe("skills");
+  });
+
+  it("changes the display zoom from App preferences", async () => {
+    stubRequest();
+    render(<SettingsView />);
+
+    const row = await screen.findByTestId("display-zoom");
+    await userEvent.click(within(row).getByRole("button", { name: "Zoom in" }));
+    expect(useAppStore.getState().prefs.zoomFactor).toBe(1.1);
+    expect(within(row).getByText("110%")).toBeInTheDocument();
   });
 
   it("writes a boolean to the global scope", async () => {

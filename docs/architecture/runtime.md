@@ -114,3 +114,15 @@ it in `asarUnpack`. `resolveAppRoots`/`resolveAppRuntime` therefore see the same
 layout packaged as in development, and `runtime:verify` proves it before an
 installer is produced. `tests/packaging/builder-config.test.ts` checks that
 `node.lock.json` has an artifact for every platform the builder targets.
+
+That copy is whole-directory, which is too much when several runtimes are
+installed. The `afterPack` hook therefore prunes `runtime/node` down to the
+`<platform>-<arch>` the package is being built for, keeping `node.lock.json`,
+the runtime README and the regenerated `bin/` shims. There are two reasons: an
+installer should not carry ~100 MB per foreign runtime, and on Windows the NSIS
+step compresses the packaged app with 7za, which exits 1 on the Linux
+distribution's `bin/{npm,npx,corepack}` symlinks (_The directory name is
+invalid_) — without the prune, a Windows installer cannot be built from a tree
+that also holds a Linux runtime. `afterPack` runs per architecture into its own
+app directory, so a multi-arch Linux or macOS build still ships exactly one
+runtime per package.

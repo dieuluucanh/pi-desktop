@@ -5,8 +5,11 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  FolderClock,
   FolderOpen,
+  FolderPlus,
   GitBranch,
+  PanelLeftClose,
   Plus,
   RefreshCw,
   Terminal,
@@ -14,16 +17,33 @@ import {
 } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 import { Switch } from "../ui/switch";
+import { InlineRename } from "../ui/inline-rename";
+import { TabMenu } from "../layout/TabMenu";
 import { useAppStore } from "../state/app-store";
 import { openProjectAction } from "../menu-actions";
+import { CloneProjectDialog, CreateProjectDialog } from "./ProjectDialogs";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
+import { writeTabDrag } from "../layout/tab-drag";
+import { beginTabDrag, endTabDrag } from "../state/tab-drag-session";
+import { removeProjectWithPrompt } from "./remove-project";
 import type {
   PiProjectResources,
   ProjectRecord,
   ProjectTrustStatus,
 } from "../../../shared/projects";
-import type { TabRecord, TabStatus } from "../../../shared/session-ipc";
+import {
+  isSessionTab,
+  type SessionTab,
+  type TabRecord,
+  type TabStatus,
+} from "../../../shared/session-ipc";
 
 /**
  * The sidebar's project section (plan step 10, IA per D-A4).
@@ -46,11 +66,35 @@ const STATUS_TONE: Record<TabStatus, "neutral" | "accent" | "ok" | "warn" | "dan
   stopped: "neutral",
 };
 
+/** The session rows a project group shows: every open tab except file tabs. */
+function projectSessionTabs(tabs: readonly TabRecord[], projectPath: string): SessionTab[] {
+  return tabs.filter((tab): tab is SessionTab => isSessionTab(tab) && tab.cwd === projectPath);
+}
+
 export function ProjectsSection() {
   const projects = useAppStore((state) => state.projects);
   const activePath = useAppStore((state) => state.project?.path ?? null);
   const tabs = useAppStore((state) => state.tabs);
   const projectsLoaded = useAppStore((state) => state.projectsLoaded);
+  const toggleSidebar = useAppStore((state) => state.toggleSidebar);
+  // Both dialogs already exist for the welcome view; the Projects header is the
+  // in-workspace entry point (minimal-session-ui step 2).
+  const [createOpen, setCreateOpen] = useState(false);
+  const [cloneOpen, setCloneOpen] = useState(false);
+  const [defaultBusy, setDefaultBusy] = useState(false);
+
+  // One click, no dialog: create the dated folder in Documents/Pi-Desktop,
+  // make it active and open a session, exactly like the two dialogs do.
+  const createDefault = async (): Promise<void> => {
+    setDefaultBusy(true);
+    try {
+      if (await useAppStore.getState().createDefaultProject()) {
+        await useAppStore.getState().createSessionTab();
+      }
+    } finally {
+      setDefaultBusy(false);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-1 px-1" data-testid="projects-section">
@@ -58,15 +102,47 @@ export function ProjectsSection() {
         <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">
           Projects
         </span>
-        <Button
-          size="sm"
-          variant="ghost"
-          aria-label="Add project"
-          title="Add project folder…"
-          onClick={() => void openProjectAction()}
-        >
-          <FolderOpen className="size-3.5" aria-hidden />
-        </Button>
+        <div className="flex items-center gap-0.5">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="icon-sm" variant="ghost" aria-label="New project" title="New project…">
+                <Plus className="size-3.5" aria-hidden />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem disabled={defaultBusy} onSelect={() => void createDefault()}>
+                <FolderClock className="size-3.5" aria-hidden />
+                New default project
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setCreateOpen(true)}>
+                <FolderPlus className="size-3.5" aria-hidden />
+                New project…
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setCloneOpen(true)}>
+                <GitBranch className="size-3.5" aria-hidden />
+                Clone repository…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label="Open project folder"
+            title="Open project folder…"
+            onClick={() => void openProjectAction()}
+          >
+            <FolderOpen className="size-3.5" aria-hidden />
+          </Button>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label="Hide sidebar"
+            title="Hide sidebar (Ctrl+B)"
+            onClick={toggleSidebar}
+          >
+            <PanelLeftClose className="size-3.5" aria-hidden />
+          </Button>
+        </div>
       </div>
 
       {projects.length === 0 ? (
@@ -83,10 +159,13 @@ export function ProjectsSection() {
             index={index}
             total={projects.length}
             active={project.path === activePath}
-            sessions={tabs.filter((tab) => tab.cwd === project.path)}
+            sessionTabs={projectSessionTabs(tabs, project.path)}
           />
         ))
       )}
+
+      <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <CloneProjectDialog open={cloneOpen} onOpenChange={setCloneOpen} />
     </div>
   );
 }
@@ -96,13 +175,13 @@ function ProjectGroup({
   index,
   total,
   active,
-  sessions,
+  sessionTabs,
 }: {
   project: ProjectRecord;
   index: number;
   total: number;
   active: boolean;
-  sessions: TabRecord[];
+  sessionTabs: SessionTab[];
 }) {
   // The active project expands by default, but an explicit toggle wins (no
   // effect-driven setState, which would cascade renders).
@@ -114,7 +193,6 @@ function ProjectGroup({
   const trustPrompt = useAppStore((state) => state.trustPrompt);
   const activateProject = useAppStore((state) => state.activateProject);
   const inspectProject = useAppStore((state) => state.inspectProject);
-  const removeProject = useAppStore((state) => state.removeProject);
   const reorderProject = useAppStore((state) => state.reorderProject);
   const setProjectSettingsEnabled = useAppStore((state) => state.setProjectSettingsEnabled);
   const settingsBusy = useAppStore((state) => state.projectSettingsBusy[project.path] === true);
@@ -124,7 +202,7 @@ function ProjectGroup({
     if (expanded && !inspection && !inspectionError) void inspectProject(project.path);
   }, [expanded, inspection, inspectionError, inspectProject, project.path]);
 
-  const running = sessions.some((tab) => tab.status === "running");
+  const running = sessionTabs.some((tab) => tab.status === "running");
 
   return (
     <div
@@ -276,15 +354,15 @@ function ProjectGroup({
               </IconButton>
             ) : null}
             <IconButton
-              label={`Remove ${project.name} from the project list`}
-              onClick={() => void removeProject(project.path)}
+              label={`Remove ${project.name} and close its tabs`}
+              onClick={() => void removeProjectWithPrompt(project.path)}
             >
               <Trash2 className="size-3" aria-hidden />
             </IconButton>
           </div>
 
           <div className="flex flex-col gap-0.5">
-            {sessions.map((session) => (
+            {sessionTabs.map((session) => (
               <SessionRow key={session.id} session={session} />
             ))}
             <Button
@@ -292,7 +370,10 @@ function ProjectGroup({
               variant="ghost"
               className="justify-start text-xs"
               onClick={async () => {
-                await activateProject(project.path);
+                // `focusSession: false`: this click creates a session itself, so
+                // clearing the active tab first would flash Welcome (2026-10-30
+                // project-scoped rail plan).
+                await activateProject(project.path, { focusSession: false });
                 await useAppStore.getState().createSessionTab();
               }}
             >
@@ -306,23 +387,60 @@ function ProjectGroup({
   );
 }
 
-function SessionRow({ session }: { session: TabRecord }) {
+function SessionRow({ session }: { session: SessionTab }) {
   const activeTabId = useAppStore((state) => state.activeTabId);
   const activateTab = useAppStore((state) => state.activateTab);
+  const renameSession = useAppStore((state) => state.renameSession);
+  const [renaming, setRenaming] = useState(false);
   return (
-    <button
-      type="button"
-      className={`flex items-center gap-1.5 rounded-xs px-1 py-0.5 text-left text-xs ${
+    <div
+      className={`group flex items-center gap-1.5 rounded-xs px-1 py-0.5 text-left text-xs ${
         session.id === activeTabId ? "bg-surface text-ink" : "text-ink-muted hover:text-ink"
       }`}
-      onClick={() => void activateTab(session.id)}
-      title={session.sessionFile ?? session.title}
+      data-testid={`sidebar-session-${session.id}`}
+      data-tab-id={session.id}
+      // A session row is a drag source for the grid panes, exactly like a chip in
+      // the strip (2026-11-03 plan).
+      draggable
+      onDragStart={(event) => {
+        writeTabDrag(event.dataTransfer, session.id);
+        beginTabDrag();
+      }}
+      onDragEnd={() => endTabDrag()}
     >
-      <Badge tone={STATUS_TONE[session.status]} className="px-1 py-0 leading-3">
+      <Badge tone={STATUS_TONE[session.status]} className="shrink-0 px-1 py-0 leading-3">
         {session.status === "running" ? "●" : "○"}
       </Badge>
-      <span className="min-w-0 flex-1 truncate">{session.title}</span>
-    </button>
+      {renaming ? (
+        <InlineRename
+          value={session.title}
+          ariaLabel={`Rename ${session.title}`}
+          className="min-w-0 flex-1"
+          onCommit={(name) => {
+            setRenaming(false);
+            void renameSession(session.id, name);
+          }}
+          onCancel={() => setRenaming(false)}
+        />
+      ) : (
+        <button
+          type="button"
+          className="min-w-0 flex-1 truncate text-left"
+          onClick={() => void activateTab(session.id)}
+          onDoubleClick={() => setRenaming(true)}
+          title={session.sessionFile ?? session.title}
+        >
+          {session.title}
+        </button>
+      )}
+      <TabMenu
+        tab={session}
+        onRename={() => setRenaming(true)}
+        align="end"
+        triggerLabel={`Session actions for ${session.title}`}
+        triggerClassName="opacity-0 group-hover:opacity-100 focus:opacity-100"
+      />
+    </div>
   );
 }
 

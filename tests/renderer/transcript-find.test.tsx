@@ -102,3 +102,36 @@ describe("transcript find", () => {
     );
   });
 });
+
+/**
+ * The grid mounts several transcripts (2026-11-03 plan). The find bar is a
+ * `window` listener, so only the focused pane's transcript may claim `Ctrl+F`;
+ * otherwise one keystroke would open a find bar in every pane.
+ */
+describe("one find bar per keystroke", () => {
+  it("ignores Ctrl+F in a background pane", () => {
+    render(
+      <>
+        <Transcript items={items()} active={false} />
+        <Transcript items={items()} active />
+      </>,
+    );
+
+    fireEvent.keyDown(document.body, { key: "f", ctrlKey: true });
+
+    expect(screen.getAllByTestId("transcript-find")).toHaveLength(1);
+  });
+
+  it("does not claim Ctrl+F when every pane is inactive", () => {
+    render(
+      <>
+        <Transcript items={items()} active={false} />
+        <Transcript items={items()} active={false} />
+      </>,
+    );
+
+    fireEvent.keyDown(document.body, { key: "f", ctrlKey: true });
+
+    expect(screen.queryByTestId("transcript-find")).toBeNull();
+  });
+});

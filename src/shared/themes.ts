@@ -54,6 +54,72 @@ export const THEME_SWATCH_KEYS = [
 export type ThemeSwatchKey = (typeof THEME_SWATCH_KEYS)[number];
 
 /**
+ * The chrome colours a theme/override can set. `THEME_SWATCH_KEYS` describes
+ * what a Pi theme document supplies; these are the app's own tokens, including
+ * the neutral infrastructure (`raised`, `sunken`, `line`, `lineStrong`) that Pi
+ * themes do not map directly.
+ */
+export const THEME_COLOR_KEYS = [
+  "canvas",
+  "surface",
+  "raised",
+  "sunken",
+  "line",
+  "lineStrong",
+  "ink",
+  "inkMuted",
+  "inkFaint",
+  "accent",
+  "info",
+  "ok",
+  "warn",
+  "danger",
+] as const;
+export type ThemeColorKey = (typeof THEME_COLOR_KEYS)[number];
+export type ThemeColorOverrides = Partial<Record<ThemeColorKey, string>>;
+
+/**
+ * The app-owned chrome palette (2026-10-31 high-contrast pass). Dark is a
+ * deliberate high-contrast neutral palette: `line`/`lineStrong` are tuned to be
+ * visible against `surface` (see `contrastRatio` in the tests) while built-in
+ * themes keep their own accent/status identity. Light mirrors `tokens.css`.
+ */
+export const APP_CHROME_SWATCHES: Record<"dark" | "light", Record<ThemeColorKey, string>> = {
+  dark: {
+    canvas: "#0b0d12",
+    surface: "#141922",
+    raised: "#232b39",
+    sunken: "#080a0e",
+    line: "#4e5b79",
+    lineStrong: "#6b7a99",
+    ink: "#eef2f8",
+    inkMuted: "#aab4c6",
+    inkFaint: "#7f8ba0",
+    accent: "#7aa2f7",
+    info: "#7dcfff",
+    ok: "#9ece6a",
+    warn: "#e0af68",
+    danger: "#f7768e",
+  },
+  light: {
+    canvas: "#f6f7f9",
+    surface: "#ffffff",
+    raised: "#ffffff",
+    sunken: "#eceef2",
+    line: "#dcdfe6",
+    lineStrong: "#c3c8d4",
+    ink: "#1c2128",
+    inkMuted: "#5b6472",
+    inkFaint: "#8b94a3",
+    accent: "#3b6fd4",
+    info: "#16689b",
+    ok: "#3f7d2c",
+    warn: "#9a6700",
+    danger: "#c33c54",
+  },
+};
+
+/**
  * Built-in swatches, resolved from the SDK's own theme JSON (`vars` + `export`
  * sections) at `@earendil-works/pi-coding-agent@1.4.0`. `tests/shared/themes`
  * re-resolves the SDK files and asserts equality, so an upstream palette change
@@ -324,27 +390,151 @@ export function resolveThemeSwatches(
 }
 
 /**
- * Maps swatches onto the app chrome's CSS variables (the token names in
- * `src/renderer/src/styles/tokens.css`). The renderer sets these on
- * `document.documentElement`, so a custom Pi theme recolours the chrome without
- * any component knowing a hex value.
+ * The chrome variables a theme can set. `applyChromeTheme` clears all of them
+ * before applying a new theme, so a key a custom theme set cannot survive a
+ * switch to a theme that omits it.
+ */
+export const THEME_CHROME_VARIABLES = [
+  "--color-canvas",
+  "--color-surface",
+  "--color-raised",
+  "--color-sunken",
+  "--color-line",
+  "--color-line-strong",
+  "--color-ink",
+  "--color-ink-muted",
+  "--color-ink-faint",
+  "--color-accent",
+  "--color-info",
+  "--color-ok",
+  "--color-warn",
+  "--color-danger",
+] as const;
+
+export type ThemeChromeSource = Pick<ThemeSummary, "scope" | "variant" | "swatches">;
+
+/**
+ * Resolves the chrome colours for a theme.
+ *
+ * Built-in themes use the app's neutral high-contrast palette for surfaces and
+ * ink (Pi's built-in dark surface made separators nearly invisible), while
+ * keeping the theme's accent/status identity. Custom themes keep their own
+ * canvas/surface/text/muted/dim and use the app's infrastructure colours.
+ * User overrides win last.
+ */
+export function resolvedChromeSwatches(
+  theme: ThemeChromeSource,
+  overrides: ThemeColorOverrides = {},
+): Record<ThemeColorKey, string> {
+  const app = APP_CHROME_SWATCHES[theme.variant];
+  const builtin = theme.scope === "builtin";
+  const swatches = theme.swatches;
+  const resolved: Record<ThemeColorKey, string> = {
+    canvas: builtin ? app.canvas : (swatches.canvas ?? app.canvas),
+    surface: builtin ? app.surface : (swatches.surface ?? app.surface),
+    raised: app.raised,
+    sunken: app.sunken,
+    line: app.line,
+    lineStrong: app.lineStrong,
+    ink: builtin ? app.ink : (swatches.text ?? app.ink),
+    inkMuted: builtin ? app.inkMuted : (swatches.muted ?? app.inkMuted),
+    inkFaint: builtin ? app.inkFaint : (swatches.dim ?? app.inkFaint),
+    accent: swatches.accent ?? app.accent,
+    info: app.info,
+    ok: swatches.success ?? app.ok,
+    warn: swatches.warning ?? app.warn,
+    danger: swatches.error ?? app.danger,
+  };
+  for (const key of THEME_COLOR_KEYS) {
+    const value = overrides[key];
+    if (value) resolved[key] = value;
+  }
+  return resolved;
+}
+
+/**
+ * Maps a theme (plus optional user overrides) onto the app chrome's CSS
+ * variables. The renderer sets these on `document.documentElement`, so no
+ * component knows a hex value.
  */
 export function themeCssVariables(
-  swatches: Record<string, string>,
-  variant: "dark" | "light",
+  theme: ThemeChromeSource,
+  overrides: ThemeColorOverrides = {},
 ): Record<string, string> {
+  const colors = resolvedChromeSwatches(theme, overrides);
   return {
-    "data-theme": variant,
-    "--color-accent": swatches.accent ?? "",
-    "--color-ink": swatches.text ?? "",
-    "--color-ink-muted": swatches.muted ?? "",
-    "--color-ink-faint": swatches.dim ?? "",
-    "--color-ok": swatches.success ?? "",
-    "--color-danger": swatches.error ?? "",
-    "--color-warn": swatches.warning ?? "",
-    "--color-canvas": swatches.canvas ?? "",
-    "--color-surface": swatches.surface ?? "",
+    "data-theme": theme.variant,
+    "--color-canvas": colors.canvas,
+    "--color-surface": colors.surface,
+    "--color-raised": colors.raised,
+    "--color-sunken": colors.sunken,
+    "--color-line": colors.line,
+    "--color-line-strong": colors.lineStrong,
+    "--color-ink": colors.ink,
+    "--color-ink-muted": colors.inkMuted,
+    "--color-ink-faint": colors.inkFaint,
+    "--color-accent": colors.accent,
+    "--color-info": colors.info,
+    "--color-ok": colors.ok,
+    "--color-warn": colors.warn,
+    "--color-danger": colors.danger,
   };
+}
+
+/** WCAG relative-luminance contrast ratio for two `#rrggbb` colours. */
+export function contrastRatio(hexA: string, hexB: string): number {
+  const luminance = (hex: string): number => {
+    const value = hex.replace("#", "");
+    const channels = [0, 2, 4].map((offset) => {
+      const channel = Number.parseInt(value.slice(offset, offset + 2), 16) / 255;
+      return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * (channels[0] ?? 0) + 0.7152 * (channels[1] ?? 0) + 0.0722 * (channels[2] ?? 0);
+  };
+  const a = luminance(hexA);
+  const b = luminance(hexB);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+/** Per-theme colour overrides, keyed by the theme name. */
+export type ThemeColorPrefs = Record<string, ThemeColorOverrides>;
+
+export const MAX_THEME_COLOR_THEMES = 32;
+export const MAX_THEME_COLOR_NAME_LENGTH = 64;
+
+/** Normalizes one `#rrggbb` value; anything else is rejected. */
+export function normalizeThemeColor(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return /^#[0-9a-f]{6}$/i.test(trimmed) ? trimmed.toLowerCase() : null;
+}
+
+/** Drops unknown keys and malformed colours from one theme's overrides. */
+export function sanitizeThemeColorOverrides(value: unknown): ThemeColorOverrides {
+  const record = asRecord(value);
+  const overrides: ThemeColorOverrides = {};
+  for (const key of THEME_COLOR_KEYS) {
+    const color = normalizeThemeColor(record[key]);
+    if (color) overrides[key] = color;
+  }
+  return overrides;
+}
+
+/** Bounds the override map so `app-state.json` cannot grow without limit. */
+export function sanitizeThemeColorPrefs(value: unknown): ThemeColorPrefs {
+  const record = asRecord(value);
+  const result: ThemeColorPrefs = {};
+  let count = 0;
+  for (const [name, entry] of Object.entries(record)) {
+    if (count >= MAX_THEME_COLOR_THEMES) break;
+    const trimmed = name.trim();
+    if (trimmed.length === 0 || trimmed.length > MAX_THEME_COLOR_NAME_LENGTH) continue;
+    const overrides = sanitizeThemeColorOverrides(entry);
+    if (Object.keys(overrides).length === 0) continue;
+    result[trimmed] = overrides;
+    count += 1;
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------

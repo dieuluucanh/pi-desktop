@@ -262,6 +262,17 @@ describe("queue and notices", () => {
     expect(notices[2]).toMatchObject({ severity: "error", text: "failed" });
   });
 
+  it("keeps only one transcript row for an identical repeated oi.notify", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "oi.notify", payload: { message: "same warning", type: "warning" } },
+      { event: "oi.notify", payload: { message: "same warning", type: "warning" } },
+      { event: "oi.notify", payload: { message: "same warning", type: "info" } },
+      { event: "oi.notify", payload: { message: "different", type: "warning" } },
+    ]);
+    const notices = items(state).filter((item) => item.kind === "notice");
+    expect(notices).toHaveLength(3);
+  });
+
   it("renders compaction as a card, a cancellation, and a failure", () => {
     const summary = reduceSessionEvents(createTranscriptState(), [
       { event: "compaction_end", payload: { result: { summary: "condensed" } } },

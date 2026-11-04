@@ -1,9 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { EMPTY_EXTENSION_UI } from "../../src/shared/extension-ui";
 import { installBridge } from "./fixtures";
+
+vi.mock("sonner", () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+  },
+}));
 
 /**
  * The renderer's extension-UI store (plan step 16).
@@ -45,11 +54,14 @@ function resetStore() {
     extensionUi: {},
     extensionDialogs: [],
     extensionNotifications: [],
+    muteTarget: null,
+    notificationCooldowns: {},
   });
 }
 
 beforeEach(() => {
   resetStore();
+  vi.clearAllMocks();
 });
 
 describe("extension UI state", () => {
@@ -186,6 +198,86 @@ describe("notifications, theme and shutdown", () => {
     });
     useAppStore.getState().clearExtensionNotifications();
     expect(useAppStore.getState().extensionNotifications).toHaveLength(0);
+  });
+
+  it("archives a muted notification but suppresses its toast", () => {
+    const notification = {
+      id: "n-muted",
+      message: "Workflow plan: thinking xhigh → high (model does not support xhigh).",
+      type: "warning" as const,
+      tabId: TAB,
+      at: 1,
+    };
+    useAppStore.getState().muteNotification(notification, "template");
+    expect(useAppStore.getState().prefs.notifications.muted).toHaveLength(1);
+
+    useAppStore.getState().handleExtensionUiEvent(TAB, {
+      event: "oi.notify",
+      payload: { id: "n-muted", message: notification.message, type: "warning" },
+    });
+    expect(useAppStore.getState().extensionNotifications[0]).toMatchObject({
+      message: notification.message,
+    });
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it("toasts once, suppresses an identical repeat, then allows it after the window", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1_000_000);
+      const event = {
+        event: "oi.notify",
+        payload: { id: "n-repeat", message: "Same warning", type: "warning" },
+      };
+      useAppStore.getState().handleExtensionUiEvent(TAB, event);
+      useAppStore.getState().handleExtensionUiEvent(TAB, event);
+      expect(toast.warning).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(5 * 60_000 + 1);
+      useAppStore.getState().handleExtensionUiEvent(TAB, event);
+      expect(toast.warning).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("opens the mute dialog and unmutes a notification", () => {
+    const notification = {
+      id: "n-dialog",
+      message: "Installed workflow",
+      type: "warning" as const,
+      tabId: TAB,
+      at: 1,
+    };
+    useAppStore.getState().openMuteDialog(notification);
+    expect(useAppStore.getState().muteTarget).toEqual(notification);
+
+    useAppStore.getState().muteNotification(notification, "exact");
+    expect(useAppStore.getState().muteTarget).toBeNull();
+    expect(useAppStore.getState().prefs.notifications.muted).toHaveLength(1);
+
+    useAppStore.getState().unmuteNotification(notification);
+    expect(useAppStore.getState().prefs.notifications.muted).toHaveLength(0);
+  });
+
+  it("removes one rule by id or all rules", () => {
+    const first = {
+      id: "n-one",
+      message: "one",
+      type: "warning" as const,
+      tabId: TAB,
+      at: 1,
+    };
+    const second = { ...first, id: "n-two", message: "two" };
+    useAppStore.getState().muteNotification(first, "exact");
+    useAppStore.getState().muteNotification(second, "exact");
+    const [newest, oldest] = useAppStore.getState().prefs.notifications.muted;
+    expect(newest && oldest).toBeTruthy();
+
+    useAppStore.getState().unmuteNotificationRule(oldest!.id);
+    expect(useAppStore.getState().prefs.notifications.muted).toHaveLength(1);
+    useAppStore.getState().unmuteAllNotifications();
+    expect(useAppStore.getState().prefs.notifications.muted).toHaveLength(0);
   });
 
   it("routes a theme switch to setActiveTheme", () => {

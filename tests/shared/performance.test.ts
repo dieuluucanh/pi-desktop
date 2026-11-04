@@ -2,18 +2,24 @@ import { describe, expect, it } from "vitest";
 import {
   COALESCE_BYTES,
   COALESCE_MS,
+  DEFAULT_LIVE_HOSTS,
   HOST_RSS_BUDGET_BYTES,
   HOST_RSS_RESTART_BYTES,
+  LIVE_HOST_RAM_SHARE,
+  MAX_LIVE_HOSTS,
+  MIN_LIVE_HOSTS,
   SESSION_READY_BUDGET_MS,
   TRANSCRIPT_10K_ITEMS,
   TRANSCRIPT_VIRTUALIZE_THRESHOLD,
   WINDOW_INTERACTIVE_BUDGET_MS,
   capacity,
-  capacityMessage,
   checkBudget,
   createStartupMetrics,
   formatBytes,
   formatDuration,
+  hostCeilingMessage,
+  hostProcessCeiling,
+  liveHostBudget,
   shouldRestartForMemory,
   worstBudgetStatus,
   type HostMemoryMetrics,
@@ -64,7 +70,7 @@ describe("formatting", () => {
     expect(formatBytes(512)).toBe("512 B");
     expect(formatBytes(1_024)).toBe("1 KB");
     expect(formatBytes(HOST_RSS_BUDGET_BYTES)).toBe("512 MB");
-    expect(formatBytes(HOST_RSS_RESTART_BYTES)).toBe("1.5 GB");
+    expect(formatBytes(HOST_RSS_RESTART_BYTES)).toBe("1 GB");
   });
 });
 
@@ -131,16 +137,50 @@ describe("memory thresholds", () => {
   });
 });
 
+describe("live-host budget", () => {
+  const gib = 1024 ** 3;
+
+  it("derives a soft target from total physical memory", () => {
+    expect(LIVE_HOST_RAM_SHARE).toBe(0.2);
+    expect(liveHostBudget(8 * gib)).toBe(3);
+    expect(liveHostBudget(16 * gib)).toBe(6);
+    expect(liveHostBudget(32 * gib)).toBe(8);
+  });
+
+  it("clamps small and huge machines to a sane range", () => {
+    expect(liveHostBudget(1 * gib)).toBe(MIN_LIVE_HOSTS);
+    expect(liveHostBudget(64 * gib)).toBe(MAX_LIVE_HOSTS);
+  });
+
+  it("derives the process ceiling from the same target", () => {
+    expect(hostProcessCeiling(8 * gib)).toBe(5);
+    expect(hostProcessCeiling(16 * gib)).toBe(8);
+    expect(hostProcessCeiling(32 * gib)).toBe(10);
+    expect(hostProcessCeiling(64 * gib)).toBe(10);
+    expect(hostProcessCeiling(1 * gib)).toBe(4);
+    expect(hostProcessCeiling()).toBe(6);
+  });
+
+  it("falls back to the default when the OS reading is unusable", () => {
+    expect(liveHostBudget()).toBe(DEFAULT_LIVE_HOSTS);
+    expect(liveHostBudget(null)).toBe(DEFAULT_LIVE_HOSTS);
+    expect(liveHostBudget(0)).toBe(DEFAULT_LIVE_HOSTS);
+    expect(liveHostBudget(-1)).toBe(DEFAULT_LIVE_HOSTS);
+    expect(liveHostBudget(Number.NaN)).toBe(DEFAULT_LIVE_HOSTS);
+  });
+
+  it("names the memory-derived ceiling without inventing a session limit", () => {
+    const message = hostCeilingMessage(8);
+    expect(message).toContain("memory-derived ceiling of 8 host processes");
+    expect(message).not.toMatch(/session tabs|close a tab/i);
+  });
+});
+
 describe("capacity", () => {
-  it("reports when the cap is reached", () => {
+  it("reports when a hard ceiling is reached", () => {
     expect(capacity(2, 8)).toEqual({ used: 2, limit: 8, atCapacity: false });
     expect(capacity(8, 8).atCapacity).toBe(true);
     expect(capacity(9, 8).atCapacity).toBe(true);
-  });
-
-  it("has one user-facing sentence per limit", () => {
-    expect(capacityMessage("hosts", 8)).toContain("at most 8 host processes");
-    expect(capacityMessage("tabs", 8)).toContain("at most 8 session tabs");
   });
 });
 

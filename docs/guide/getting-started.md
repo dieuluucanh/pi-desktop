@@ -43,7 +43,7 @@ artefacts instead. To remove: `sudo apt remove pi-desktop`.
 
 > **Unsigned builds.** Windows SmartScreen and macOS Gatekeeper will warn on
 > first launch. Choose “More info → Run anyway” (Windows) or right-click → Open
-> (macOS). Code signing is tracked in the backlog, not in v0.2.0.
+> (macOS). Code signing is tracked in the backlog, not in v0.4.0.
 
 ## First launch
 
@@ -72,21 +72,25 @@ launch; the app offers a restart.
 ## The window
 
 ```text
-title bar ─ update banner · active project · Open project · New session
-sidebar   ─ command palette · New session · Open project · projects → sessions ·
+tabs      ─ one tab per open session (plus web tabs and the Office session);
+            the topmost row, with the "+" new-session action
+sidebar   ─ command palette · projects (+ menu · open folder) → sessions ·
             Settings · Extensions · Connections · Skills · Diagnostics
-tabs      ─ one tab per open session (plus web tabs and the Office session)
 main area ─ the active view (session, settings, extensions, …)
-status bar─ host state · tokens · cost · context % · hints · version
+footer    ─ session footer: pwd (branch) · tokens/cost/context · model •
+            thinking · extension statuses · compact widgets, in one wrapping
+            row (an extension setFooter replaces it)
+status bar─ active project path · display zoom · version · profile · runtime · hints
 ```
 
 Keyboard: `Ctrl/Cmd+K` command palette, `Ctrl/Cmd+N` new session, `Ctrl/Cmd+W`
-close session, `Ctrl/Cmd+B` sidebar, `Ctrl+Tab` next session, `Ctrl/Cmd+/`
-shortcuts, `Esc` stops the run.
+close session, `Ctrl/Cmd+B` sidebar, `Ctrl/Cmd+=` / `-` / `0` zoom in / out /
+reset, `Ctrl+Tab` next session, `Ctrl/Cmd+/` shortcuts, `Esc` stops the run.
 
 ## Your first session
 
-1. **Open project folder…** (or create a blank project / clone a repository).
+1. **Open project folder…** (or create a default project in
+   `Documents/Pi-Desktop` / a blank project / clone a repository).
    If the folder contains a `.pi/` directory, the app asks how you want to trust
    it — see [Projects](projects.md).
 2. A session tab opens in that folder. Type a prompt and press **Enter**
@@ -100,10 +104,12 @@ parallel across projects. See [Sessions and tabs](sessions-and-tabs.md).
 
 ## Updates
 
-Installed builds check GitHub Releases shortly after launch and show a banner
-when a newer version is available: **Download**, then **Restart & install**.
-`Help → Check for Updates…` runs a check on demand. Development builds have no
-update feed and say so.
+Release builds check GitHub Releases shortly after launch. A newer version
+appears as a small **Update vX** chip in the status bar; the full status,
+**Download** and **Restart & install** live in **Settings → About & updates**.
+`Help → Check for Updates…` opens that card and runs a check on demand. Locally
+built packages skip automatic checks and flag themselves as local builds;
+development builds report that updates are checked in installed builds only.
 
 ## Where your data lives
 

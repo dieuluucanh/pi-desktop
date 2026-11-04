@@ -15,6 +15,8 @@
  * star never silently drops a model or a terminal edit.
  */
 
+import { THINKING_LEVELS } from "./thinking";
+
 /** Bounds shared with Pi's settings guards (`enabledModels` is a string list). */
 export const SCOPE_PATTERN_MAX_LENGTH = 300;
 /** Upper bound on one scope list; the catalogue is capped at 200 models. */
@@ -25,15 +27,7 @@ export const SCOPE_PATTERN_LIMIT = 500;
  * copy (rather than importing `@earendil-works/pi-agent-core`) so this module
  * stays dependency-free; it mirrors `ThinkingLevel`.
  */
-export const SCOPE_THINKING_LEVELS = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const;
+export const SCOPE_THINKING_LEVELS = THINKING_LEVELS;
 
 export type ScopeThinkingLevel = (typeof SCOPE_THINKING_LEVELS)[number];
 

@@ -15,6 +15,9 @@ import {
   type SessionsBridge,
   type UpdatesBridge,
   type WebBridge,
+  type GitBridge,
+  type CheckpointsBridge,
+  type WorkspaceBridge,
   type WebTabOpenInput,
   type WindowState,
 } from "../shared/ipc";
@@ -31,16 +34,39 @@ import type {
 } from "../shared/projects";
 import type {
   CreateTabInput,
+  RetargetEditorTabsInput,
   SessionEventEnvelope,
   SessionRequestInput,
   SessionStateEnvelope,
   SessionTabsEnvelope,
+  TabKind,
 } from "../shared/session-ipc";
 import type { OfficeSetupStepId, OfficeSetupView } from "../shared/office-setup";
-import type { OfficeStopResult } from "../shared/office-bridge";
+import type { OfficeBridgeControlResult, OfficeStopResult } from "../shared/office-bridge";
 import type { OfficeDocumentsView } from "../shared/office-documents";
 import type { DiagnosticsExport, DiagnosticsSnapshot } from "../shared/diagnostics";
 import type { UpdateState } from "../shared/updates";
+import type {
+  EditorBackup,
+  ResolvedEditorConfig,
+  WorkspaceCreateInput,
+  WorkspaceDeleteInput,
+  WorkspaceFileContent,
+  WorkspaceFileList,
+  WorkspaceListing,
+  WorkspaceMutationResult,
+  WorkspaceRenameInput,
+  WorkspaceResult,
+  WorkspaceSearchRequest,
+  WorkspaceSearchResult,
+  WorkspaceStat,
+  WorkspaceTransferInput,
+  WorkspaceTransferResult,
+  WorkspaceWriteInput,
+  WorkspaceWriteResult,
+  WorkspaceFormatRequest,
+  WorkspaceFormatResult,
+} from "../shared/workspace";
 import type {
   WebCommand,
   WebNavigationDecision,
@@ -48,6 +74,20 @@ import type {
   WebTabBounds,
   WebTabState,
 } from "../shared/web-tabs";
+import type {
+  GitAction,
+  GitActionResult,
+  GitCommitEntry,
+  GitDiff,
+  GitDiffRequest,
+  GitLogRequest,
+  GitSnapshot,
+} from "../shared/git";
+import type {
+  CheckpointAction,
+  CheckpointActionResult,
+  CheckpointState,
+} from "../shared/checkpoints";
 
 /**
  * The preload is the only place that touches `ipcRenderer`. It exposes a fixed,
@@ -70,14 +110,25 @@ const sessions: SessionsBridge = {
     ipcRenderer.invoke(IPC.sessionCreate, input) as Promise<SessionTabsEnvelope>,
   close: (tabId: string) =>
     ipcRenderer.invoke(IPC.sessionClose, tabId) as Promise<SessionTabsEnvelope>,
+  closeAll: (kind: TabKind) =>
+    ipcRenderer.invoke(IPC.sessionCloseAll, kind) as Promise<SessionTabsEnvelope>,
   closeOthers: (tabId: string) =>
     ipcRenderer.invoke(IPC.sessionCloseOthers, tabId) as Promise<SessionTabsEnvelope>,
+  closeProject: (cwd: string) =>
+    ipcRenderer.invoke(IPC.sessionCloseProject, cwd) as Promise<SessionTabsEnvelope>,
+  setPinned: (tabId: string, pinned: boolean) =>
+    ipcRenderer.invoke(IPC.sessionSetPinned, tabId, pinned) as Promise<SessionTabsEnvelope>,
+  retargetEditorTabs: (input: RetargetEditorTabsInput) =>
+    ipcRenderer.invoke(IPC.sessionRetargetEditor, input) as Promise<SessionTabsEnvelope>,
   reorder: (tabId: string, toIndex: number) =>
     ipcRenderer.invoke(IPC.sessionReorder, tabId, toIndex) as Promise<SessionTabsEnvelope>,
   promoteOfficeHost: (tabId: string) =>
     ipcRenderer.invoke(IPC.sessionPromoteOffice, tabId) as Promise<SessionTabsEnvelope>,
   activate: (tabId: string) =>
     ipcRenderer.invoke(IPC.sessionActivate, tabId) as Promise<SessionTabsEnvelope>,
+  setVisibleTabs: (ids: readonly string[]) =>
+    ipcRenderer.invoke(IPC.sessionSetVisible, ids) as Promise<void>,
+  deactivate: () => ipcRenderer.invoke(IPC.sessionDeactivate) as Promise<SessionTabsEnvelope>,
   reconcile: () => ipcRenderer.invoke(IPC.sessionReconcile) as Promise<SessionTabsEnvelope>,
   restore: () => ipcRenderer.invoke(IPC.sessionRestore) as Promise<SessionTabsEnvelope>,
   restart: (tabId: string) =>
@@ -112,6 +163,18 @@ const office: OfficeBridge = {
     ipcRenderer.invoke(IPC.officeDocumentsRefresh) as Promise<OfficeDocumentsView>,
   onDocuments: (listener: (view: OfficeDocumentsView) => void) =>
     subscribe<OfficeDocumentsView>(IPC.officeDocumentsState, listener),
+  connectBridge: (tabId: string, options?: { takeover?: boolean }) =>
+    ipcRenderer.invoke(IPC.officeBridgeConnect, {
+      tabId,
+      ...options,
+    }) as Promise<OfficeBridgeControlResult>,
+  closeBridge: (tabId: string) =>
+    ipcRenderer.invoke(IPC.officeBridgeClose, tabId) as Promise<OfficeBridgeControlResult>,
+  restartBridge: (tabId: string, options?: { takeover?: boolean }) =>
+    ipcRenderer.invoke(IPC.officeBridgeRestart, {
+      tabId,
+      ...options,
+    }) as Promise<OfficeBridgeControlResult>,
 };
 
 const prefs: PrefsBridge = {
@@ -131,6 +194,7 @@ const projects: ProjectsBridge = {
     ipcRenderer.invoke(IPC.projectsMutate, input) as Promise<ProjectsSnapshot>,
   create: (input: CreateProjectInput) =>
     ipcRenderer.invoke(IPC.projectsCreate, input) as Promise<ProjectOpResponse>,
+  createDefault: () => ipcRenderer.invoke(IPC.projectsCreateDefault) as Promise<ProjectOpResponse>,
   clone: (input: CloneProjectInput) =>
     ipcRenderer.invoke(IPC.projectsClone, input) as Promise<ProjectOpResponse>,
   action: (input: ProjectActionInput) =>
@@ -166,8 +230,115 @@ const updates: UpdatesBridge = {
   check: () => ipcRenderer.invoke(IPC.updatesCheck) as Promise<UpdateState>,
   download: () => ipcRenderer.invoke(IPC.updatesDownload) as Promise<UpdateState>,
   install: () => ipcRenderer.invoke(IPC.updatesInstall) as Promise<boolean>,
+  clearProblem: () => ipcRenderer.invoke(IPC.updatesClearProblem) as Promise<UpdateState>,
   onState: (listener: (state: UpdateState) => void) =>
     subscribe<UpdateState>(IPC.updatesState, listener),
+};
+
+/**
+ * Source control (git-checkpoint plan step 7). The renderer never sees an argv:
+ * it names a project folder and one action from the closed union, and main does
+ * the rest.
+ */
+const git: GitBridge = {
+  snapshot: (projectPath: string) =>
+    ipcRenderer.invoke(IPC.gitSnapshot, projectPath) as Promise<GitSnapshot>,
+  refresh: (projectPath: string) =>
+    ipcRenderer.invoke(IPC.gitRefresh, projectPath) as Promise<GitSnapshot>,
+  watch: (projectPath: string, enabled: boolean) =>
+    ipcRenderer.invoke(IPC.gitWatch, projectPath, enabled) as Promise<boolean>,
+  action: (projectPath: string, action: GitAction) =>
+    ipcRenderer.invoke(IPC.gitAction, projectPath, action) as Promise<GitActionResult>,
+  diff: (projectPath: string, request: GitDiffRequest) =>
+    ipcRenderer.invoke(IPC.gitDiff, projectPath, request) as Promise<GitDiff>,
+  log: (projectPath: string, request?: GitLogRequest) =>
+    ipcRenderer.invoke(IPC.gitLog, projectPath, request) as Promise<GitCommitEntry[]>,
+  headMessage: (projectPath: string) =>
+    ipcRenderer.invoke(IPC.gitHeadMessage, projectPath) as Promise<string | null>,
+  branches: (projectPath: string) =>
+    ipcRenderer.invoke(IPC.gitBranches, projectPath) as Promise<string[]>,
+  onSnapshot: (listener: (snapshot: GitSnapshot) => void) =>
+    subscribe<GitSnapshot>(IPC.gitPushed, listener),
+};
+
+/**
+ * Folder checkpoints (git-checkpoint plan step 21). One hydration pair plus a
+ * push, mirroring the git bridge: the renderer names a folder it has open and an
+ * action from the closed union, and main does the rest.
+ */
+const checkpoints: CheckpointsBridge = {
+  get: (projectPath: string) =>
+    ipcRenderer.invoke(IPC.checkpointsGet, projectPath) as Promise<CheckpointState>,
+  refresh: (projectPath: string) =>
+    ipcRenderer.invoke(IPC.checkpointsRefresh, projectPath) as Promise<CheckpointState>,
+  action: (projectPath: string, action: CheckpointAction) =>
+    ipcRenderer.invoke(
+      IPC.checkpointsAction,
+      projectPath,
+      action,
+    ) as Promise<CheckpointActionResult>,
+  onState: (listener: (state: CheckpointState) => void) =>
+    subscribe<CheckpointState>(IPC.checkpointsPushed, listener),
+};
+
+/** Workspace file access for the explorer and editor. */
+const workspace: WorkspaceBridge = {
+  listDirectory: (input) =>
+    ipcRenderer.invoke(IPC.workspaceListDirectory, input) as Promise<
+      WorkspaceResult<WorkspaceListing>
+    >,
+  listFiles: (input) =>
+    ipcRenderer.invoke(IPC.workspaceListFiles, input) as Promise<
+      WorkspaceResult<WorkspaceFileList>
+    >,
+  searchFiles: (input: WorkspaceSearchRequest) =>
+    ipcRenderer.invoke(IPC.workspaceSearchFiles, input) as Promise<
+      WorkspaceResult<WorkspaceSearchResult>
+    >,
+  readFile: (input) =>
+    ipcRenderer.invoke(IPC.workspaceReadFile, input) as Promise<
+      WorkspaceResult<WorkspaceFileContent>
+    >,
+  stat: (input) =>
+    ipcRenderer.invoke(IPC.workspaceStat, input) as Promise<WorkspaceResult<WorkspaceStat>>,
+  writeFile: (input: WorkspaceWriteInput) =>
+    ipcRenderer.invoke(IPC.workspaceWriteFile, input) as Promise<
+      WorkspaceResult<WorkspaceWriteResult>
+    >,
+  create: (input: WorkspaceCreateInput) =>
+    ipcRenderer.invoke(IPC.workspaceCreate, input) as Promise<
+      WorkspaceResult<WorkspaceMutationResult>
+    >,
+  rename: (input: WorkspaceRenameInput) =>
+    ipcRenderer.invoke(IPC.workspaceRename, input) as Promise<
+      WorkspaceResult<WorkspaceMutationResult>
+    >,
+  delete: (input: WorkspaceDeleteInput) =>
+    ipcRenderer.invoke(IPC.workspaceDelete, input) as Promise<
+      WorkspaceResult<WorkspaceMutationResult>
+    >,
+  transfer: (input: WorkspaceTransferInput) =>
+    ipcRenderer.invoke(IPC.workspaceTransfer, input) as Promise<
+      WorkspaceResult<WorkspaceTransferResult>
+    >,
+  reveal: (input) =>
+    ipcRenderer.invoke(IPC.workspaceReveal, input) as Promise<WorkspaceResult<boolean>>,
+  editorConfig: (input) =>
+    ipcRenderer.invoke(IPC.workspaceEditorConfig, input) as Promise<
+      WorkspaceResult<ResolvedEditorConfig>
+    >,
+  readBackup: (tabId: string) =>
+    ipcRenderer.invoke(IPC.workspaceReadBackup, tabId) as Promise<
+      WorkspaceResult<EditorBackup | null>
+    >,
+  writeBackup: (backup: EditorBackup) =>
+    ipcRenderer.invoke(IPC.workspaceWriteBackup, backup) as Promise<WorkspaceResult<boolean>>,
+  deleteBackup: (tabId: string) =>
+    ipcRenderer.invoke(IPC.workspaceDeleteBackup, tabId) as Promise<WorkspaceResult<boolean>>,
+  format: (request: WorkspaceFormatRequest) =>
+    ipcRenderer.invoke(IPC.workspaceFormat, request) as Promise<
+      WorkspaceResult<WorkspaceFormatResult>
+    >,
 };
 
 const bridge: PiDesktopBridge = {
@@ -222,6 +393,9 @@ const bridge: PiDesktopBridge = {
   web,
   diagnostics,
   updates,
+  git,
+  checkpoints,
+  workspace,
 };
 
 contextBridge.exposeInMainWorld("pi", bridge);

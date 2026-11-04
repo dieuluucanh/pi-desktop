@@ -1,10 +1,18 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { Composer, isSendKey } from "../../src/renderer/src/session/Composer";
 import type { ImageAttachment } from "../../src/renderer/src/session/image-attachment";
 import type { CompletionProvider } from "../../src/renderer/src/completion/types";
+import { useAppStore } from "../../src/renderer/src/state/app-store";
+import {
+  WORKSPACE_PATH_DRAG_MIME,
+  WORKSPACE_PATH_DRAG_VERSION,
+  serializeWorkspaceDrag,
+  type WorkspaceDragPayload,
+} from "../../src/shared/workspace-drag";
+import { TAB_DRAG_MIME, TAB_DRAG_VERSION } from "../../src/shared/tab-drag";
 /**
  * The composer (plan step 6). The behaviours worth pinning are the ones that
  * silently lose a user's work or send at the wrong moment: Enter vs Shift+Enter,
@@ -22,30 +30,27 @@ function renderComposer(overrides: Partial<Parameters<typeof Composer>[0]> = {})
   const onStop = vi.fn();
   const onClearQueue = vi.fn();
   const onRestoreQueue = vi.fn();
-  const onSendModeChange = vi.fn();
   const onDraftChange = vi.fn();
   const props: Parameters<typeof Composer>[0] = {
     tabId: "tab-1",
     running: false,
     draft: "",
     queue: { steering: [], followUp: [] },
-    sendMode: "steer",
     onDraftChange,
     onSend,
     onStop,
     onClearQueue,
     onRestoreQueue,
-    onSendModeChange,
     onHistoryStep: () => null,
     ...overrides,
   };
   const rendered = render(<Composer {...props} />);
   return {
+    props,
     onSend,
     onStop,
     onClearQueue,
     onRestoreQueue,
-    onSendModeChange,
     onDraftChange,
     ...rendered,
   };
@@ -91,22 +96,33 @@ describe("sending", () => {
 });
 
 describe("streaming delivery", () => {
-  it("marks a send with the chosen mode while running", async () => {
+  it("sends a steer on Enter and a follow-up on Alt+Enter while running", async () => {
     const user = userEvent.setup();
-    const { onSend, onSendModeChange } = renderComposer({ running: true, draft: "change of plan" });
+    const { onSend } = renderComposer({ running: true, draft: "change of plan" });
     const prompt = screen.getByLabelText("Prompt");
 
-    // The default delivery mode comes from the store (steer), so a plain Enter sends.
     await user.click(prompt);
     await user.keyboard("{Enter}");
     expect(onSend).toHaveBeenCalledTimes(1);
-
-    await user.click(screen.getByRole("button", { name: "follow-up mode" }));
-    expect(onSendModeChange).toHaveBeenCalledWith("followUp");
+    expect(onSend.mock.calls[0]?.[2]?.followUp).toBeUndefined();
 
     await user.click(prompt);
-    await user.keyboard("{Enter}");
+    await user.keyboard("{Alt>}{Enter}{/Alt}");
     expect(onSend).toHaveBeenCalledTimes(2);
+    expect(onSend.mock.calls[1]?.[2]?.followUp).toBe(true);
+  });
+
+  it("offers one Send button and no steer/follow-up toggles", () => {
+    renderComposer({ running: true });
+
+    const send = screen.getByRole("button", { name: /^send$/i });
+    expect(send).toHaveClass("h-7", "w-7");
+    expect(send.textContent).toBe("");
+    expect(screen.getByRole("button", { name: "Attach image" })).toHaveClass("h-7", "w-7");
+    expect(screen.getByRole("button", { name: "Stop" })).toHaveClass("h-7", "w-7");
+    expect(screen.queryByRole("button", { name: "steer mode" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "follow-up mode" })).toBeNull();
+    expect(screen.getByText(/Alt\+Enter queues a follow-up/)).toBeInTheDocument();
   });
 
   it("stops the run on Escape while streaming", async () => {
@@ -270,14 +286,7 @@ describe("follow-up chords (plan step 9)", () => {
   });
 });
 
-describe("send mode memory", () => {
-  it("reports a mode change", async () => {
-    const user = userEvent.setup();
-    const { onSendModeChange } = renderComposer({ running: true });
-    await user.click(screen.getByRole("button", { name: "follow-up mode" }));
-    expect(onSendModeChange).toHaveBeenCalledWith("followUp");
-  });
-
+describe("hint row", () => {
   it("renders the hint row", () => {
     renderComposer();
     const hints = screen.getByText(/commands/);
@@ -304,12 +313,15 @@ describe("workflow mode border", () => {
     // without it the mode changes with no visible feedback in the composer.
     const plan = renderComposer({ workflowStatus: "\u23f8 plan" });
     expect(promptBox()).toHaveClass("border-warn");
+    expect(promptBox()).toHaveClass("pr-14");
     expect(screen.getByTestId("workflow-mode-badge")).toHaveTextContent("Plan");
+    expect(screen.getByTestId("workflow-mode-badge").firstElementChild).toHaveClass("text-warn");
     plan.unmount();
 
     renderComposer({ workflowStatus: "\u25b6 build 3/8" });
     expect(promptBox()).toHaveClass("border-accent");
     expect(screen.getByTestId("workflow-mode-badge")).toHaveTextContent("Build");
+    expect(screen.getByTestId("workflow-mode-badge").firstElementChild).toHaveClass("text-accent");
   });
 
   it("decodes an ANSI-coloured status exactly like a plain one", () => {
@@ -332,7 +344,22 @@ describe("workflow mode border", () => {
     // workflow had no textual indicator at all. Every recognised mode is named.
     renderComposer({ workflowStatus: "\u25e6 commits:never" });
     expect(promptBox()).toHaveClass("border-line");
+    expect(promptBox()).toHaveClass("pr-14");
     expect(screen.getByTestId("workflow-mode-badge")).toHaveTextContent("Default");
+    expect(screen.getByTestId("workflow-mode-badge").firstElementChild).toHaveClass(
+      "text-ink-faint",
+    );
+  });
+
+  it("renders the badge inside the input's top-right corner", () => {
+    renderComposer({ workflowStatus: "\u23f8 plan" });
+    const input = screen.getByTestId("composer-input");
+    const badge = within(input).getByTestId("workflow-mode-badge");
+    // It is part of the composer box, not a floating sibling above it.
+    expect(input.contains(badge)).toBe(true);
+    expect(badge.className).toContain("absolute");
+    expect(badge.className).toContain("top-1");
+    expect(badge.className).not.toContain("bottom-1");
   });
 
   it("keeps the badge readable at every width and to assistive tech", () => {
@@ -370,6 +397,35 @@ describe("workflow mode border", () => {
       expect(screen.queryByTestId("workflow-mode-badge")).toBeNull();
       view.unmount();
     }
+  });
+});
+
+describe("auto-growing height", () => {
+  function promptBox(): HTMLTextAreaElement {
+    return screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+  }
+
+  it("grows to its cap and shrinks with the draft", () => {
+    const { props, rerender } = renderComposer();
+    const box = promptBox();
+    Object.defineProperty(box, "scrollHeight", { value: 400, configurable: true });
+
+    rerender(<Composer {...props} draft={"line\n".repeat(20)} />);
+    expect(box.style.height).toBe("192px");
+    expect(box.style.maxHeight).toBe("192px");
+
+    Object.defineProperty(box, "scrollHeight", { value: 42, configurable: true });
+    rerender(<Composer {...props} draft="short" />);
+    expect(box.style.height).toBe("42px");
+  });
+
+  it("keeps the two-row floor and drops the manual handle", () => {
+    renderComposer();
+    const box = promptBox();
+    expect(box).toHaveAttribute("rows", "2");
+    expect(box).toHaveClass("min-h-16", "overflow-y-auto");
+    expect(box).not.toHaveClass("resize-y");
+    expect(box).not.toHaveClass("max-h-48");
   });
 });
 
@@ -437,13 +493,11 @@ describe("extension shortcut dispatch (Tab)", () => {
           running={false}
           draft={draft}
           queue={{ steering: [], followUp: [] }}
-          sendMode="steer"
           onDraftChange={setDraft}
           onSend={async () => true}
           onStop={() => undefined}
           onClearQueue={() => undefined}
           onRestoreQueue={() => undefined}
-          onSendModeChange={() => undefined}
           onHistoryStep={() => null}
           extensionShortcuts={[{ key: "tab" }]}
           onInvokeShortcut={onInvokeShortcut}
@@ -507,13 +561,11 @@ describe("sleeping session (2026-10-24 plan)", () => {
         running={false}
         draft=""
         queue={{ steering: [], followUp: [] }}
-        sendMode="steer"
         onDraftChange={() => undefined}
         onSend={async () => true}
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onSendModeChange={() => undefined}
         onHistoryStep={() => null}
         focusToken={1}
       />,
@@ -548,13 +600,11 @@ describe("caret readout", () => {
         running={false}
         draft={draft}
         queue={{ steering: [], followUp: [] }}
-        sendMode="steer"
         onDraftChange={setDraft}
         onSend={async () => true}
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onSendModeChange={() => undefined}
         onHistoryStep={() => null}
       />
     );
@@ -595,5 +645,207 @@ describe("caret readout", () => {
     // findable in a dark buffer (plan step 1).
     renderComposer();
     expect(screen.getByLabelText("Prompt")).toHaveClass("caret-accent");
+  });
+});
+
+describe("shell mode", () => {
+  it("names the mode and explains whether output stays in context", () => {
+    const { rerender, props } = renderComposer({ draft: "!git status" });
+    expect(screen.getByTestId("composer-shell-mode")).toHaveTextContent(
+      "shell · output kept in context",
+    );
+    expect(screen.getByTestId("composer-shell-hint")).toHaveTextContent("! shell");
+    expect(screen.getByLabelText("Prompt")).toHaveClass("border-warn");
+
+    rerender(<Composer {...props} draft="!!git status" />);
+    expect(screen.getByTestId("composer-shell-mode")).toHaveTextContent(
+      "shell · output excluded from model",
+    );
+  });
+
+  it("disappears when the shell prefix is removed", () => {
+    const { rerender, props } = renderComposer({ draft: "!pwd" });
+    expect(screen.getByTestId("composer-shell-mode")).toBeInTheDocument();
+
+    rerender(<Composer {...props} draft="pwd" />);
+    expect(screen.queryByTestId("composer-shell-mode")).not.toBeInTheDocument();
+  });
+});
+
+describe("session tools slot (minimal-session-ui step 4)", () => {
+  it("renders the view's tools above Send", () => {
+    renderComposer({ toolsSlot: <button type="button">Model picker</button> });
+
+    const tools = screen.getByTestId("composer-tools");
+    expect(tools).toHaveTextContent("Model picker");
+    const send = screen.getByRole("button", { name: /send/i });
+    // The tools row sits in the blank space above the Send row.
+    expect(tools.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("adds no row when the view supplies no tools", () => {
+    renderComposer();
+    expect(screen.queryByTestId("composer-tools")).toBeNull();
+  });
+});
+
+function workspacePayload(overrides: Partial<WorkspaceDragPayload> = {}): WorkspaceDragPayload {
+  return {
+    version: WORKSPACE_PATH_DRAG_VERSION,
+    projectPath: "C:/work/app",
+    path: "src/app.ts",
+    kind: "file",
+    ...overrides,
+  };
+}
+
+function fakeDropTransfer(payload?: WorkspaceDragPayload, files: File[] = []) {
+  const data = new Map<string, string>();
+  if (payload) {
+    data.set(WORKSPACE_PATH_DRAG_MIME, serializeWorkspaceDrag(payload));
+    data.set("text/plain", payload.path);
+  }
+  const types = [...data.keys(), ...(files.length > 0 ? ["Files"] : [])];
+  return {
+    types,
+    files,
+    dropEffect: "none",
+    effectAllowed: "none",
+    getData: (type: string) => data.get(type) ?? "",
+    setData: (type: string, value: string) => data.set(type, value),
+  };
+}
+
+describe("workspace drops", () => {
+  it("inserts an @mention at the caret", () => {
+    const onDraftChange = vi.fn();
+    renderComposer({
+      draft: "look at ",
+      onDraftChange,
+      workspaceRoot: "C:/work/app",
+    });
+    const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    box.setSelectionRange(box.value.length, box.value.length);
+
+    fireEvent.drop(screen.getByTestId("composer-drop"), {
+      dataTransfer: fakeDropTransfer(workspacePayload()),
+    });
+
+    expect(onDraftChange).toHaveBeenCalledWith("look at @src/app.ts ");
+  });
+
+  it("quotes a path with spaces and appends at the end", () => {
+    const onDraftChange = vi.fn();
+    renderComposer({ draft: "", onDraftChange, workspaceRoot: "C:/work/app" });
+
+    fireEvent.drop(screen.getByTestId("composer-drop"), {
+      dataTransfer: fakeDropTransfer(workspacePayload({ path: "my file.ts" })),
+    });
+
+    expect(onDraftChange).toHaveBeenCalledWith('@"my file.ts" ');
+  });
+
+  it("keeps the directory slash", () => {
+    const onDraftChange = vi.fn();
+    renderComposer({ draft: "", onDraftChange, workspaceRoot: "C:/work/app" });
+
+    fireEvent.drop(screen.getByTestId("composer-drop"), {
+      dataTransfer: fakeDropTransfer(workspacePayload({ path: "src", kind: "directory" })),
+    });
+
+    expect(onDraftChange).toHaveBeenCalledWith("@src/ ");
+  });
+
+  it("refuses a file from a different folder", () => {
+    const onDraftChange = vi.fn();
+    useAppStore.setState({ hint: null });
+    renderComposer({ draft: "", onDraftChange, workspaceRoot: "C:/other" });
+
+    fireEvent.drop(screen.getByTestId("composer-drop"), {
+      dataTransfer: fakeDropTransfer(workspacePayload()),
+    });
+
+    expect(onDraftChange).not.toHaveBeenCalled();
+    expect(useAppStore.getState().hint).toMatch(/different folder/);
+  });
+
+  it("still accepts an image drop", async () => {
+    renderComposer({ draft: "look" });
+    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+
+    fireEvent.drop(screen.getByTestId("composer-drop"), {
+      dataTransfer: fakeDropTransfer(undefined, [file]),
+    });
+
+    expect(await screen.findByTestId("attachments")).toBeInTheDocument();
+  });
+
+  it("does not highlight for an in-app tab drag", () => {
+    renderComposer();
+    const drop = screen.getByTestId("composer-drop");
+
+    fireEvent.dragOver(drop, {
+      dataTransfer: { types: [TAB_DRAG_MIME], files: [] },
+    });
+    expect(drop.className).not.toContain("ring-accent");
+
+    fireEvent.dragOver(drop, {
+      dataTransfer: { types: [WORKSPACE_PATH_DRAG_MIME], files: [] },
+    });
+    expect(drop.className).toContain("ring-accent");
+  });
+
+  it("lets a tab drag bubble to the enclosing pane", () => {
+    const onDraftChange = vi.fn();
+    renderComposer({ draft: "", onDraftChange, workspaceRoot: "C:/work/app" });
+    const transfer = {
+      types: [TAB_DRAG_MIME],
+      files: [] as File[],
+      dropEffect: "none",
+      effectAllowed: "move",
+      getData: (type: string) =>
+        type === TAB_DRAG_MIME ? JSON.stringify({ version: TAB_DRAG_VERSION, tabId: "tab-1" }) : "",
+      setData: () => undefined,
+    };
+
+    const notPrevented = fireEvent.drop(screen.getByTestId("composer-drop"), {
+      dataTransfer: transfer,
+    });
+
+    expect(notPrevented).toBe(true);
+    expect(onDraftChange).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("attachments")).toBeNull();
+  });
+
+  it("ignores a drop while the session cannot accept prompts", () => {
+    const onDraftChange = vi.fn();
+    useAppStore.setState({ hint: null });
+    renderComposer({
+      enabled: false,
+      onDraftChange,
+      workspaceRoot: "C:/work/app",
+    });
+
+    fireEvent.drop(screen.getByTestId("composer-drop"), {
+      dataTransfer: fakeDropTransfer(workspacePayload()),
+    });
+
+    expect(onDraftChange).not.toHaveBeenCalled();
+    expect(useAppStore.getState().hint).toMatch(/cannot accept prompts/);
+  });
+
+  it("inserts a mention request from the session pane", async () => {
+    const onDraftChange = vi.fn();
+    const onMentionHandled = vi.fn();
+    renderComposer({
+      draft: "review ",
+      onDraftChange,
+      onMentionHandled,
+      workspaceRoot: "C:/work/app",
+      mentionRequest: { id: 4, tabId: "tab-1", path: "src/a.ts", kind: "file" },
+    });
+
+    await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith("review @src/a.ts "));
+    expect(onMentionHandled).toHaveBeenCalledWith(4);
   });
 });

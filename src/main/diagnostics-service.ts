@@ -6,8 +6,10 @@ import {
   DIAGNOSTIC_ENV_KEYS,
   isOfflineEnv,
   parseReportedIncident,
+  type DiagnosticsCheckpointInfo,
   type DiagnosticsExport,
   type DiagnosticsExtensionError,
+  type DiagnosticsGitInfo,
   type DiagnosticsHostInfo,
   type DiagnosticsOfficeInfo,
   type DiagnosticsSnapshot,
@@ -16,12 +18,11 @@ import {
 } from "../shared/diagnostics";
 import { redactSecrets } from "./office/troubleshoot";
 import {
+  DEFAULT_LIVE_HOSTS,
   HOST_RSS_BUDGET_BYTES,
   HOST_RSS_RESTART_BYTES,
-  MAX_HOSTS,
-  MAX_TABS,
-  capacity,
-  type Capacity,
+  hostProcessCeiling,
+  type SessionCapacity,
   type StartupReport,
 } from "../shared/performance";
 
@@ -42,8 +43,8 @@ export interface DiagnosticsSessionProvider {
   hosts(): DiagnosticsHostInfo[];
   incidents(): Incident[];
   extensionErrors(): DiagnosticsExtensionError[];
-  /** Used/limit of the running caps (plan step 24). Optional for test doubles. */
-  capacity?(): { hosts: Capacity; tabs: Capacity };
+  /** Soft live-host budget readout (plan step 24). Optional for test doubles. */
+  capacity?(): SessionCapacity;
 }
 
 export interface DiagnosticsServiceDeps {
@@ -55,6 +56,18 @@ export interface DiagnosticsServiceDeps {
   officeBundle: () => Promise<string>;
   /** The startup-budget measurements so far (plan step 24). */
   startup: () => StartupReport;
+  /**
+   * Source control, as the rail's engine sees it (git-checkpoint plan step 28).
+   * Optional so every existing test double keeps working: a service without the
+   * port reports "not read" rather than inventing facts.
+   */
+  git?: () => DiagnosticsGitInfo;
+  /** Folder checkpoints (git-checkpoint plan step 28). Optional for the same reason. */
+  checkpoints?: () => DiagnosticsCheckpointInfo;
+  /** Machine memory, when main can read it (Electron's system memory API). */
+  systemMemory?: () => { totalBytes: number | null; freeBytes: number | null };
+  /** Live web renderers; the tab records themselves are unlimited. */
+  web?: () => { tabs: number; liveViews: number; limit: number };
   /** The environment to sample; only `DIAGNOSTIC_ENV_KEYS` are ever read. */
   env?: Record<string, string | undefined>;
   now?: () => number;
@@ -110,6 +123,9 @@ export function renderDiagnosticsBundle(snapshot: DiagnosticsSnapshot, officeTex
   );
   lines.push(
     `os: ${snapshot.app.platform} ${snapshot.app.arch}${snapshot.app.isDev ? " (development)" : ""}`,
+  );
+  lines.push(
+    `build: ${snapshot.app.buildChannel} · v${snapshot.app.buildVersion ?? "unknown"} · ${snapshot.app.buildCommit ?? "unknown"} · ${snapshot.app.builtAt ?? "unknown"}`,
   );
   lines.push(`safe mode: ${snapshot.safeMode ? "yes" : "no"}`);
   lines.push(`pi offline: ${isOfflineEnv(snapshot.environment.PI_OFFLINE) ? "yes" : "no"}`);
@@ -175,6 +191,32 @@ export function renderDiagnosticsBundle(snapshot: DiagnosticsSnapshot, officeTex
   );
   if (snapshot.office.error) lines.push(`error: ${snapshot.office.error}`);
   lines.push("");
+  lines.push("## Source control");
+  lines.push(`git: ${snapshot.git.version ?? "(not found on PATH)"}`);
+  if (snapshot.git.repos.length === 0) lines.push("(no repository read yet)");
+  for (const repo of snapshot.git.repos) {
+    lines.push(
+      `- ${repo.root} · ${repo.branch ?? "detached"} · ${repo.dirty ? "dirty" : "clean"}` +
+        `${repo.lastStatusMs === null ? "" : ` · ${repo.lastStatusMs}ms`}`,
+    );
+    // Already classified before it reaches here; the raw message is what the
+    // rail showed, and `redactSecrets` runs over the whole bundle afterwards.
+    if (repo.lastError) lines.push(`  error: ${repo.lastError}`);
+  }
+  lines.push("");
+  lines.push("## Folder checkpoints");
+  lines.push(`root: ${snapshot.checkpoints.root ?? "(unavailable)"}`);
+  lines.push(
+    `enabled: ${snapshot.checkpoints.enabled} · run snapshots: ${snapshot.checkpoints.runSnapshots}`,
+  );
+  if (snapshot.checkpoints.projects.length === 0) lines.push("(no folder snapshotted yet)");
+  for (const project of snapshot.checkpoints.projects) {
+    lines.push(
+      `- ${project.key} ← ${project.workTree} · ${project.commits} checkpoints · ` +
+        `${project.bytes} bytes${project.skipped > 0 ? ` · ${project.skipped} skipped` : ""}`,
+    );
+  }
+  lines.push("");
   lines.push("## Office setup (wizard)");
   lines.push(officeText.trim().length > 0 ? officeText.trim() : "(not available)");
   return lines.join("\n");
@@ -219,6 +261,10 @@ export function createDiagnosticsService(deps: DiagnosticsServiceDeps): Diagnost
         platform: info.platform,
         arch: info.arch,
         isDev: info.isDev,
+        buildChannel: info.buildChannel,
+        buildVersion: info.buildVersion,
+        buildCommit: info.buildCommit,
+        builtAt: info.builtAt,
         safeMode: info.safeMode,
       },
       runtime: {
@@ -239,10 +285,24 @@ export function createDiagnosticsService(deps: DiagnosticsServiceDeps): Diagnost
       },
       hosts: deps.sessions?.hosts() ?? [],
       capacity: deps.sessions?.capacity?.() ?? {
-        hosts: capacity(0, MAX_HOSTS),
-        tabs: capacity(0, MAX_TABS),
+        liveHosts: 0,
+        targetHosts: DEFAULT_LIVE_HOSTS,
+        ceilingHosts: hostProcessCeiling(),
+        overTarget: false,
+        hostRssBytes: 0,
+        hostRssLimitBytes: 0,
+        overMemory: false,
+        openSessions: 0,
+        asleepSessions: 0,
+        editorTabs: 0,
+        visibleSessions: 0,
       },
-      memory: { budgetBytes: HOST_RSS_BUDGET_BYTES, restartBytes: HOST_RSS_RESTART_BYTES },
+      memory: {
+        budgetBytes: HOST_RSS_BUDGET_BYTES,
+        restartBytes: HOST_RSS_RESTART_BYTES,
+        ...(deps.systemMemory?.() ?? { totalBytes: null, freeBytes: null }),
+      },
+      web: deps.web?.() ?? { tabs: 0, liveViews: 0, limit: 0 },
       incidents: [...mainIncidents, ...sessionIncidents]
         .sort((left, right) => right.at - left.at)
         .slice(0, DEFAULT_INCIDENT_LIMIT),
@@ -250,6 +310,13 @@ export function createDiagnosticsService(deps: DiagnosticsServiceDeps): Diagnost
       office: deps.office(),
       environment: collectDiagnosticEnvironment(env),
       startup: deps.startup(),
+      git: deps.git?.() ?? { version: null, repos: [] },
+      checkpoints: deps.checkpoints?.() ?? {
+        root: null,
+        enabled: false,
+        projects: [],
+        runSnapshots: false,
+      },
     };
   };
 

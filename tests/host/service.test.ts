@@ -49,6 +49,7 @@ function harness(options: Partial<HostServiceOptions> = {}) {
       piVersion: "0.85.1",
       startedAt: 1_700_000_000_000,
       buildId: "build-1",
+      ...(options.info?.capabilities ? { capabilities: options.info.capabilities } : {}),
     },
     writeBlob: async (name, contents) => {
       const path = join(BLOB_DIR, name);
@@ -87,6 +88,8 @@ function harness(options: Partial<HostServiceOptions> = {}) {
 
   return {
     service,
+    stdin,
+    start: () => service.start(),
     frames,
     last,
     lastResult,
@@ -109,6 +112,25 @@ describe("host service dispatch", () => {
     expect(host.lastResult()).toMatchObject({ pong: true });
   });
 
+  it("shuts down once when the parent closes stdin", async () => {
+    const host = harness();
+    host.start();
+    host.stdin.end();
+
+    await vi.waitFor(() => expect(host.shutdowns()).toBe(1));
+  });
+
+  it("does not run the shutdown callback twice when the request races stdin close", async () => {
+    const host = harness();
+    host.start();
+    await host.request(1, "host.shutdown");
+    host.stdin.end();
+
+    await vi.waitFor(() => expect(host.shutdowns()).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(host.shutdowns()).toBe(1);
+  });
+
   it("reports its identity in host.hello", async () => {
     const host = harness();
     await host.request(1, "host.hello");
@@ -121,6 +143,16 @@ describe("host service dispatch", () => {
       bridgePort: 38618,
       pids: { pid: process.pid },
       buildId: "build-1",
+    });
+  });
+
+  it("reports the checkpoint extension capability (git-checkpoint step 24)", async () => {
+    const host = harness();
+    await host.request(1, "host.hello");
+    // Absent from the harness's info object, so the host must answer "no"
+    // rather than omitting the field: the rail reads a boolean.
+    expect(host.lastResult()).toMatchObject({
+      capabilities: { checkpointsExtension: false },
     });
   });
 

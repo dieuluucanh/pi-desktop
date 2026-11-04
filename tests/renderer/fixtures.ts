@@ -15,10 +15,24 @@ import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { UiPrefs } from "../../src/shared/prefs";
 import { initialUpdateState, type UpdateState } from "../../src/shared/updates";
 import {
+  emptyGitSnapshot,
+  type GitAction,
+  type GitActionResult,
+  type GitCommitEntry,
+  type GitDiff,
+  type GitSnapshot,
+} from "../../src/shared/git";
+import {
+  emptyCheckpointState,
+  type CheckpointActionResult,
+  type CheckpointState,
+} from "../../src/shared/checkpoints";
+import {
   projectNameOf,
   type ProjectRecord,
   type ProjectsSnapshot,
 } from "../../src/shared/projects";
+import { useAppStore } from "../../src/renderer/src/state/app-store";
 
 /** Shared renderer-test fixtures (plan step 1). */
 
@@ -32,6 +46,10 @@ export function appInfoFixture(overrides: Partial<AppInfo> = {}): AppInfo {
     platform: "win32",
     arch: "x64",
     isDev: true,
+    buildChannel: "dev",
+    buildVersion: null,
+    buildCommit: null,
+    builtAt: null,
     safeMode: false,
     piOffline: false,
     userDataDir: "C:\\state",
@@ -67,6 +85,7 @@ export function officeViewFixture(overrides: Partial<OfficeSetupView> = {}): Off
     sideload: null,
     openOffice: null,
     health: null,
+    bridgeConnect: null,
     compatibility: null,
     run: null,
     panes: [],
@@ -85,12 +104,15 @@ export function documentsViewFixture(
 ): OfficeDocumentsView {
   return {
     available: false,
+    configured: false,
     port: 38617,
     status: "unknown",
     serverVersion: null,
     protocolVersion: null,
     catalogVersion: null,
     compatibility: null,
+    owner: null,
+    manualLifecycle: false,
     panes: [],
     fetchedAt: new Date(0).toISOString(),
     error: null,
@@ -109,6 +131,18 @@ export interface BridgeOptions {
   diagnostics?: Partial<DiagnosticsSnapshot>;
   /** The updater's starting state (plan step 26); defaults to "unsupported". */
   update?: UpdateState;
+  /** Source control (git-checkpoint plan step 9). */
+  git?: GitSnapshot;
+  gitDiff?: GitDiff;
+  gitLog?: GitCommitEntry[];
+  gitAction?: GitActionResult | ((action: GitAction) => Promise<GitActionResult>);
+  /** HEAD's commit message the amend box prefills from. */
+  headMessage?: string | null;
+  /** Local branch names the checkout menu offers. */
+  branches?: string[];
+  /** Folder checkpoints (git-checkpoint plan step 21). */
+  checkpoints?: CheckpointState;
+  checkpointsAction?: CheckpointActionResult;
 }
 
 export interface BridgeHandles {
@@ -118,10 +152,18 @@ export interface BridgeHandles {
   webCommands: Array<{ tabId: string; command: WebCommand }>;
   webBounds: Array<{ tabId: string; bounds: WebTabBounds }>;
   webDecisions: WebNavigationDecision[];
+  /** Every `session:set-visible` push, in order (2026-11-03 grid plan). */
+  visibleTabPushes: string[][];
   updateCalls: string[];
+  /** Every git bridge call, in order, with its payload. */
+  gitCalls: Array<{ kind: string; projectPath: string; payload?: unknown }>;
+  checkpointCalls: Array<{ kind: string; projectPath: string; payload?: unknown }>;
+  emitCheckpointState: (state: CheckpointState) => void;
   emitWebState(state: WebTabState): void;
   emitWebNavigationRequest(request: WebNavigationRequest): void;
   emitUpdateState(state: UpdateState): void;
+  /** Pushes a git snapshot to the renderer, like main's poll would. */
+  emitGitSnapshot(snapshot: GitSnapshot): void;
 }
 
 /** Installs a `window.pi` stub and returns the prefs store it writes to. */
@@ -137,6 +179,7 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
   const webCommands: Array<{ tabId: string; command: WebCommand }> = [];
   const webBounds: Array<{ tabId: string; bounds: WebTabBounds }> = [];
   const webDecisions: WebNavigationDecision[] = [];
+  const visibleTabPushes: string[][] = [];
   const updateListeners = new Set<(state: UpdateState) => void>();
   const updateCalls: string[] = [];
   let updateState: UpdateState = options.update ?? initialUpdateState(false);
@@ -148,6 +191,26 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
     ...diagnosticsSnapshot(info),
     ...options.diagnostics,
   };
+
+  const gitListeners = new Set<(snapshot: GitSnapshot) => void>();
+  const gitCalls: Array<{ kind: string; projectPath: string; payload?: unknown }> = [];
+  const checkpointCalls: Array<{ kind: string; projectPath: string; payload?: unknown }> = [];
+  const checkpointListeners = new Set<(state: CheckpointState) => void>();
+  const checkpointValue: CheckpointState =
+    options.checkpoints ?? emptyCheckpointState("/work/app", 1_700_000_000_000);
+  const checkpointActionResult: CheckpointActionResult = options.checkpointsAction ?? { ok: true };
+  const gitSnapshotValue: GitSnapshot = options.git ?? emptyGitSnapshot("/work/app");
+  const gitDiffValue: GitDiff = options.gitDiff ?? {
+    scope: "working",
+    files: [],
+    tooLarge: false,
+    truncated: false,
+  };
+  const gitLogValue: GitCommitEntry[] = options.gitLog ?? [];
+  const gitActionResult: GitActionResult | ((action: GitAction) => Promise<GitActionResult>) =
+    options.gitAction ?? { ok: true };
+  const gitHeadMessage: string | null = options.headMessage ?? null;
+  const gitBranches: string[] = options.branches ?? [];
 
   const bridge: PiDesktopBridge = {
     getAppInfo: async () => info,
@@ -179,10 +242,56 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
       list: async () => ({ tabs: [], activeTabId: null }),
       create: async () => ({ tabs: [], activeTabId: null }),
       close: async () => ({ tabs: [], activeTabId: null }),
+      closeAll: async (kind) => ({
+        tabs: useAppStore.getState().tabs.filter((tab) => tab.kind !== kind || tab.pinned === true),
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
       closeOthers: async () => ({ tabs: [], activeTabId: null }),
+      closeProject: async (cwd: string) => ({
+        tabs: useAppStore.getState().tabs.filter((tab) => tab.cwd !== cwd),
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
+      setPinned: async (tabId: string, pinned: boolean) => ({
+        tabs: useAppStore
+          .getState()
+          .tabs.map((tab) =>
+            tab.id === tabId
+              ? pinned
+                ? { ...tab, pinned: true }
+                : { ...tab, pinned: undefined }
+              : tab,
+          ),
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
+      retargetEditorTabs: async (input) => ({
+        tabs: useAppStore.getState().tabs.map((tab) => {
+          if (tab.kind !== "editor" || tab.cwd !== input.fromProjectPath || !tab.filePath) {
+            return tab;
+          }
+          if (tab.filePath !== input.fromPath && !tab.filePath.startsWith(`${input.fromPath}/`)) {
+            return tab;
+          }
+          const suffix = input.kind === "file" ? "" : tab.filePath.slice(input.fromPath.length);
+          return { ...tab, cwd: input.toProjectPath, filePath: `${input.toPath}${suffix}` };
+        }),
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
       reorder: async () => ({ tabs: [], activeTabId: null }),
       promoteOfficeHost: async () => ({ tabs: [], activeTabId: null }),
-      activate: async () => ({ tabs: [], activeTabId: null }),
+      // `activate` (and `deactivate`) must answer with the *current* tab table:
+      // the store applies the response, so an empty envelope would wipe the tabs
+      // on any host wake (a keystroke, a click on the composer). Main always
+      // publishes its real table here, and so must the fake.
+      activate: async (tabId: string) => ({
+        tabs: useAppStore.getState().tabs,
+        activeTabId: tabId,
+      }),
+      deactivate: async () => ({ tabs: useAppStore.getState().tabs, activeTabId: null }),
+      // Advisory pinning hint (2026-11-03 grid plan): recorded so a test can
+      // assert what the renderer told main was on screen.
+      setVisibleTabs: async (ids: readonly string[]) => {
+        visibleTabPushes.push([...ids]);
+      },
       reconcile: async () => ({ tabs: [], activeTabId: null }),
       restore: async () => ({ tabs: [], activeTabId: null }),
       restart: async () => ({ tabs: [], activeTabId: null }),
@@ -229,6 +338,28 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
         };
       },
       create: async () => ({ ok: false, path: null, error: "not configured", ...projectsState }),
+      createDefault: async () => {
+        // The one-click flow always lands in Documents/Pi-Desktop with a dated
+        // folder; tests assert the session opens against this path.
+        const path = "C:\\Users\\test\\Documents\\Pi-Desktop\\2026-11-03T10-15-42";
+        const record: ProjectRecord = {
+          path,
+          name: projectNameOf(path),
+          addedAt: 1,
+          lastOpenedAt: 1,
+        };
+        projectsState.projects = [
+          record,
+          ...projectsState.projects.filter((project) => project.path !== path),
+        ];
+        projectsState.activeProject = path;
+        return {
+          ok: true,
+          path,
+          projects: [...projectsState.projects],
+          activeProject: path,
+        };
+      },
       clone: async () => ({ ok: false, path: null, error: "not configured", ...projectsState }),
       action: async () => true,
       setSettings: async (input) => {
@@ -262,6 +393,9 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
       documents: async () => documents,
       refreshDocuments: async () => documents,
       onDocuments: () => () => undefined,
+      connectBridge: async () => ({ ok: true, reason: "connected" }),
+      closeBridge: async () => ({ ok: true, reason: "closed" }),
+      restartBridge: async () => ({ ok: true, reason: "connected" }),
     },
     integrations: {
       get: async () => integrationsState,
@@ -326,6 +460,10 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
         updateCalls.push("download");
         return updateState;
       },
+      clearProblem: async () => {
+        updateCalls.push("clearProblem");
+        return updateState;
+      },
       install: async () => {
         updateCalls.push("install");
         return true;
@@ -335,16 +473,148 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
         return () => updateListeners.delete(listener);
       },
     },
+    git: {
+      snapshot: async (projectPath) => {
+        gitCalls.push({ kind: "snapshot", projectPath });
+        return { ...gitSnapshotValue, projectPath };
+      },
+      refresh: async (projectPath) => {
+        gitCalls.push({ kind: "refresh", projectPath });
+        return { ...gitSnapshotValue, projectPath };
+      },
+      watch: async (projectPath, enabled) => {
+        gitCalls.push({ kind: "watch", projectPath, payload: enabled });
+        return enabled;
+      },
+      action: async (projectPath, action) => {
+        gitCalls.push({ kind: "action", projectPath, payload: action });
+        return typeof gitActionResult === "function" ? gitActionResult(action) : gitActionResult;
+      },
+      diff: async (projectPath, request) => {
+        gitCalls.push({ kind: "diff", projectPath, payload: request });
+        return gitDiffValue;
+      },
+      log: async (projectPath, request) => {
+        gitCalls.push({ kind: "log", projectPath, payload: request });
+        return gitLogValue;
+      },
+      headMessage: async (projectPath) => {
+        gitCalls.push({ kind: "head-message", projectPath });
+        return gitHeadMessage;
+      },
+      branches: async (projectPath) => {
+        gitCalls.push({ kind: "branches", projectPath });
+        return gitBranches;
+      },
+      onSnapshot: (listener) => {
+        gitListeners.add(listener);
+        return () => gitListeners.delete(listener);
+      },
+    },
+    checkpoints: {
+      get: async (projectPath) => {
+        checkpointCalls.push({ kind: "get", projectPath });
+        return { ...checkpointValue, projectPath };
+      },
+      refresh: async (projectPath) => {
+        checkpointCalls.push({ kind: "refresh", projectPath });
+        return { ...checkpointValue, projectPath };
+      },
+      action: async (projectPath, action) => {
+        checkpointCalls.push({ kind: "action", projectPath, payload: action });
+        return checkpointActionResult;
+      },
+      onState: (listener) => {
+        checkpointListeners.add(listener);
+        return () => checkpointListeners.delete(listener);
+      },
+    },
+    workspace: {
+      listDirectory: async () => ({
+        ok: true as const,
+        value: { root: "", path: "", entries: [], truncated: false },
+      }),
+      listFiles: async () => ({
+        ok: true as const,
+        value: { root: "", files: [], truncated: false },
+      }),
+      searchFiles: async (input) => ({
+        ok: true as const,
+        value: {
+          root: input.projectPath,
+          query: input.query,
+          matches: [],
+          truncated: false,
+          scanned: 0,
+        },
+      }),
+      readFile: async () => ({
+        ok: false as const,
+        error: { code: "not_found" as const, message: "no file" },
+      }),
+      stat: async () => ({
+        ok: false as const,
+        error: { code: "not_found" as const, message: "no file" },
+      }),
+      writeFile: async () => ({
+        ok: false as const,
+        error: { code: "bad_request" as const, message: "not implemented" },
+      }),
+      create: async () => ({
+        ok: false as const,
+        error: { code: "bad_request" as const, message: "not implemented" },
+      }),
+      rename: async () => ({
+        ok: false as const,
+        error: { code: "bad_request" as const, message: "not implemented" },
+      }),
+      delete: async () => ({
+        ok: false as const,
+        error: { code: "bad_request" as const, message: "not implemented" },
+      }),
+      transfer: async () => ({
+        ok: false as const,
+        error: { code: "bad_request" as const, message: "not implemented" },
+      }),
+      reveal: async () => ({ ok: true as const, value: true }),
+      editorConfig: async () => ({
+        ok: true as const,
+        value: {
+          indentStyle: "space" as const,
+          indentSize: 2,
+          tabWidth: 2,
+          endOfLine: "lf" as const,
+          insertFinalNewline: true,
+          trimTrailingWhitespace: true,
+        },
+      }),
+      readBackup: async () => ({ ok: true as const, value: null }),
+      writeBackup: async () => ({ ok: true as const, value: true }),
+      deleteBackup: async () => ({ ok: true as const, value: true }),
+      format: async () => ({
+        ok: false as const,
+        error: { code: "not_configured" as const, message: "no formatter" },
+      }),
+    },
   };
 
   (window as unknown as { pi: PiDesktopBridge }).pi = bridge;
   return {
     bridge,
     prefs,
+    gitCalls,
+    emitGitSnapshot: (snapshot: GitSnapshot) => {
+      for (const listener of gitListeners) listener(snapshot);
+    },
+    checkpointCalls,
+    emitCheckpointState: (state: CheckpointState) => {
+      for (const listener of checkpointListeners) listener(state);
+    },
     webOpened,
     webCommands,
     webBounds,
     webDecisions,
+    visibleTabPushes,
     updateCalls,
     emitWebState: (state) => {
       for (const listener of webStateListeners) listener(state);
@@ -377,6 +647,10 @@ function diagnosticsSnapshot(info: AppInfo): DiagnosticsSnapshot {
       platform: info.platform,
       arch: info.arch,
       isDev: info.isDev,
+      buildChannel: info.buildChannel,
+      buildVersion: info.buildVersion,
+      buildCommit: info.buildCommit,
+      builtAt: info.builtAt,
       safeMode: info.safeMode,
     },
     runtime: {
@@ -397,10 +671,25 @@ function diagnosticsSnapshot(info: AppInfo): DiagnosticsSnapshot {
     },
     hosts: [],
     capacity: {
-      hosts: { used: 0, limit: 8, atCapacity: false },
-      tabs: { used: 0, limit: 8, atCapacity: false },
+      liveHosts: 0,
+      targetHosts: 6,
+      ceilingHosts: 8,
+      overTarget: false,
+      hostRssBytes: 0,
+      hostRssLimitBytes: 8_589_934_592,
+      overMemory: false,
+      openSessions: 0,
+      asleepSessions: 0,
+      editorTabs: 0,
+      visibleSessions: 0,
     },
-    memory: { budgetBytes: 536_870_912, restartBytes: 1_610_612_736 },
+    memory: {
+      budgetBytes: 536_870_912,
+      restartBytes: 1_073_741_824,
+      totalBytes: 17_179_869_184,
+      freeBytes: 8_589_934_592,
+    },
+    web: { tabs: 0, liveViews: 0, limit: 4 },
     incidents: [],
     extensionErrors: [],
     office: {
@@ -434,5 +723,8 @@ function diagnosticsSnapshot(info: AppInfo): DiagnosticsSnapshot {
       },
       status: "unknown",
     },
+    // Source control and folder checkpoints (git-checkpoint plan step 28).
+    git: { version: null, repos: [] },
+    checkpoints: { root: null, enabled: false, projects: [], runSnapshots: false },
   };
 }

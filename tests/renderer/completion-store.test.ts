@@ -50,7 +50,6 @@ beforeEach(() => {
     activeTabId: "tab-1",
     transcripts: {},
     sessionStates: {},
-    sendModes: {},
     draftHistory: {},
     historyIndex: {},
     completionCommands: {},
@@ -86,7 +85,6 @@ describe("runCommandInput", () => {
     const request = stubRequest();
     useAppStore.setState({
       tabs: [{ ...tab(), status: "running" }],
-      sendModes: { "tab-1": "steer" },
     });
     const outcome = await useAppStore.getState().runCommandInput("tab-1", "/deploy now");
 

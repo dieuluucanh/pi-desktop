@@ -26,10 +26,12 @@ import {
   createExtensionCompletionProvider,
   type ExtensionCompletionBridge,
 } from "./extension-source";
+import { isShellLine } from "./shell-source";
 
 export interface CompletionStackOptions {
   command?: CompletionProvider | null;
   file?: CompletionProvider | null;
+  shell?: CompletionProvider | null;
   document?: CompletionProvider | null;
   /**
    * Host-run extension providers (plan step 16). The factories live in the host
@@ -51,7 +53,7 @@ export function createCompletionProvider(options: CompletionStackOptions = {}): 
 export function createBaseProvider(options: CompletionStackOptions): CompletionProvider {
   return {
     id: "pi-desktop-completion",
-    triggerCharacters: ["/", "@", "#"],
+    triggerCharacters: ["/", "!", "@", "#"],
     async getSuggestions(lines, cursorLine, cursorCol, completionOptions) {
       const provider = selectProvider(
         options,
@@ -103,6 +105,10 @@ function selectProvider(
   force: boolean,
 ): CompletionProvider | null {
   const token = tokenAtCursor(lines, cursorLine, cursorCol).query;
+
+  // A `!` line is a shell command, never a `/` command or an `@` mention. The
+  // shell provider completes workspace paths after the command word.
+  if (isShellLine(lines, cursorLine)) return options.shell ?? null;
 
   // A `/` on the first line is always a command line (name or arguments),
   // never a path. Checking the whole line matters after the first space: the

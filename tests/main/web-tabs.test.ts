@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_LIVE_WEB_VIEWS,
   createWebTabManager,
   type WebViewEvent,
   type WebViewLike,
@@ -161,14 +162,42 @@ describe("createWebTabManager", () => {
     });
   });
 
-  it("shows only the active tab's view", () => {
+  it("keeps a fresh view hidden until the renderer reports a rectangle", () => {
     const { manager, views } = harness();
     const both = [webTab("w1", "http://localhost:1/"), webTab("w2", "http://localhost:2/")];
     manager.sync(envelope(both, "w1"));
-    expect(views.get("w1")!.visible).toBe(true);
-    expect(views.get("w2")!.visible).toBe(false);
 
-    manager.sync(envelope(both, "w2"));
+    // Visibility is per pane now (2026-11-03 grid plan), so a view nobody has
+    // reported yet is hidden — otherwise an unmounted tab would count as visible
+    // and could never be evicted.
+    expect(views.get("w1")!.visible).toBe(false);
+    expect(views.get("w2")!.visible).toBe(false);
+  });
+
+  it("shows two panes' web tabs at the same time", () => {
+    const { manager, views } = harness();
+    const both = [webTab("w1", "http://localhost:1/"), webTab("w2", "http://localhost:2/")];
+    manager.sync(envelope(both, "w1"));
+
+    // Each pane reports its own rectangle; the grid may show several viewports.
+    manager.setBounds("w1", { x: 0, y: 0, width: 400, height: 300, visible: true });
+    manager.setBounds("w2", { x: 400, y: 0, width: 400, height: 300, visible: true });
+
+    expect(views.get("w1")!.visible).toBe(true);
+    expect(views.get("w2")!.visible).toBe(true);
+    expect(views.get("w1")!.bounds).toEqual({ x: 0, y: 0, width: 400, height: 300 });
+    expect(views.get("w2")!.bounds).toEqual({ x: 400, y: 0, width: 400, height: 300 });
+  });
+
+  it("hides one pane without touching the other", () => {
+    const { manager, views } = harness();
+    const both = [webTab("w1", "http://localhost:1/"), webTab("w2", "http://localhost:2/")];
+    manager.sync(envelope(both, "w1"));
+    manager.setBounds("w1", { x: 0, y: 0, width: 400, height: 300, visible: true });
+    manager.setBounds("w2", { x: 400, y: 0, width: 400, height: 300, visible: true });
+
+    manager.setBounds("w1", { x: 0, y: 0, width: 400, height: 300, visible: false });
+
     expect(views.get("w1")!.visible).toBe(false);
     expect(views.get("w2")!.visible).toBe(true);
   });
@@ -327,5 +356,97 @@ describe("createWebTabManager", () => {
     manager.sync(envelope([webTab("w1", "http://localhost:19432/review", "s1")], "w1"));
     expect(views.get("w1")!.loaded).toEqual(["http://localhost:19432/review"]);
     expect(manager.state("w1")?.sessionTabId).toBe("s1");
+  });
+
+  it("keeps only MAX_LIVE_WEB_VIEWS views and parks the rest", () => {
+    const { manager, views, closed } = harness();
+    const tabs = Array.from({ length: 7 }, (_, index) => ({
+      ...webTab(`w${index + 1}`, `http://localhost:${index + 1}/`),
+      lastActiveAt: index + 1,
+    }));
+
+    manager.sync(envelope(tabs, "w7"));
+
+    expect(manager.liveViewCount()).toBe(MAX_LIVE_WEB_VIEWS);
+    expect(manager.webViewLimit()).toBe(MAX_LIVE_WEB_VIEWS);
+    expect(views.has("w7")).toBe(true);
+    // The least-recent tab never got a view at all.
+    expect(views.has("w1")).toBe(false);
+    expect(manager.states()).toHaveLength(MAX_LIVE_WEB_VIEWS);
+
+    // Showing the never-created tab evicts the least-recent **hidden** view and
+    // keeps that tab's last metadata in the parked map.
+    manager.sync(envelope(tabs, "w1"));
+    expect(views.has("w1")).toBe(true);
+    expect(closed.has("w2")).toBe(true);
+    expect(manager.state("w2")).toMatchObject({ tabId: "w2", url: "http://localhost:2/" });
+    expect(manager.states()).toHaveLength(MAX_LIVE_WEB_VIEWS + 1);
+  });
+
+  it("never evicts a view the renderer reports as visible", () => {
+    const { manager, views, closed } = harness();
+    const tabs = Array.from({ length: 7 }, (_, index) => ({
+      ...webTab(`w${index + 1}`, `http://localhost:${index + 1}/`),
+      lastActiveAt: index + 1,
+    }));
+    manager.sync(envelope(tabs, "w7"));
+    expect(views.has("w1")).toBe(false);
+
+    // Four panes are showing four of the live views.
+    for (const id of ["w2", "w3", "w4", "w5"]) {
+      manager.setBounds(id, { x: 0, y: 0, width: 100, height: 100, visible: true });
+    }
+
+    // Bringing another tab forward needs a slot, and only hidden views may go.
+    manager.sync(envelope(tabs, "w1"));
+
+    expect(views.has("w1")).toBe(true);
+    for (const id of ["w2", "w3", "w4", "w5"]) {
+      expect(views.get(id)!.visible).toBe(true);
+    }
+    // The LRU *hidden* view went instead of any on-screen pane. (`views` keeps
+    // every FakeView it ever built; a teardown is visible through `closed`.)
+    expect(closed.has("w6")).toBe(true);
+    for (const id of ["w2", "w3", "w4", "w5", "w7"]) {
+      expect(closed.has(id)).toBe(false);
+    }
+    expect(manager.liveViewCount()).toBe(MAX_LIVE_WEB_VIEWS);
+  });
+
+  it("recreates and reloads an evicted view when its tab is shown again", () => {
+    const { manager, views, closed } = harness();
+    const tabs = Array.from({ length: 7 }, (_, index) => ({
+      ...webTab(`w${index + 1}`, `http://localhost:${index + 1}/`),
+      lastActiveAt: index + 1,
+    }));
+    manager.sync(envelope(tabs, "w7"));
+    expect(views.has("w1")).toBe(false);
+
+    manager.sync(envelope(tabs, "w1"));
+
+    expect(views.has("w1")).toBe(true);
+    expect(views.get("w1")!.loaded).toContain("http://localhost:1/");
+    expect(closed.has("w2")).toBe(true);
+    expect(manager.liveViewCount()).toBe(MAX_LIVE_WEB_VIEWS);
+  });
+
+  it("drops a closed tab's parked state", () => {
+    const { manager } = harness();
+    const tabs = Array.from({ length: 7 }, (_, index) => ({
+      ...webTab(`w${index + 1}`, `http://localhost:${index + 1}/`),
+      lastActiveAt: index + 1,
+    }));
+    manager.sync(envelope(tabs, "w7"));
+    manager.sync(envelope(tabs, "w1"));
+    expect(manager.state("w2")).not.toBeNull();
+
+    manager.sync(
+      envelope(
+        tabs.filter((tab) => tab.id !== "w2"),
+        "w1",
+      ),
+    );
+
+    expect(manager.state("w2")).toBeNull();
   });
 });

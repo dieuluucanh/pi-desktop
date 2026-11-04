@@ -9,6 +9,12 @@
 
 ## Releases
 
+- [`releases/v0.4.0.md`](releases/v0.4.0.md) — v0.4.0 release notes (file explorer,
+  editor tabs, tab actions, the memory-derived host budget and default projects), install
+  table, the known-limitations list and the verification status.
+- [`releases/v0.3.0.md`](releases/v0.3.0.md) — v0.3.0 release notes (session-first
+  chrome, the interface pass, source-control feedback and one-line history), install table,
+  the known-limitations list and the verification status.
 - [`releases/v0.2.0.md`](releases/v0.2.0.md) — v0.2.0 release notes (Pi 1.4.0 session
   parity), install table, the known-limitations list and the verification status.
 - [`releases/v0.1.0.md`](releases/v0.1.0.md) — the v0.1.0 release notes, kept as the
@@ -24,13 +30,16 @@
 - [`guide/providers-and-auth.md`](guide/providers-and-auth.md) — Connections, OAuth, write-only API
   keys, custom gateways, proxy/offline.
 - [`guide/models-and-thinking.md`](guide/models-and-thinking.md) — model picker, thinking levels,
-  usage, view mode.
+  usage, tool detail.
 - [`guide/extensions-and-packages.md`](guide/extensions-and-packages.md) — the Extensions hub,
   enable/disable, packages and consent, safe mode.
 - [`guide/settings.md`](guide/settings.md) — every Pi setting, scopes, raw JSON, backups.
 - [`guide/skills-themes-keybindings.md`](guide/skills-themes-keybindings.md) — skills, themes and
   `keybindings.json`.
 - [`guide/office-setup.md`](guide/office-setup.md) — Pi for Office as an optional integration.
+- [`guide/git-and-checkpoints.md`](guide/git-and-checkpoints.md) — the right rail's Git, Changes,
+  History and Checkpoints sections: staging and committing, what a checkpoint is (and is not),
+  restoring safely, retention, and `/checkpoint` in terminal Pi.
 - [`guide/plannotator-web-tabs.md`](guide/plannotator-web-tabs.md) — in-app web tabs and reviews.
 - [`guide/troubleshooting.md`](guide/troubleshooting.md) — safe mode, recovery, diagnostics.
 - [`guide/branding.md`](guide/branding.md) — the logo set, which mark belongs to which product, and
@@ -47,6 +56,9 @@
 - [`architecture/extension-ui.md`](architecture/extension-ui.md) — `ExtensionUIContext`
   member-by-member (the parity doc the definition of done calls `extension-parity.md`) and the
   TUI rendering surface.
+- [`architecture/source-control.md`](architecture/source-control.md) — the git and checkpoint
+  engines, the shadow-repository layout, the private-index recipe, the CAS-retry and
+  prune-suffix invariants, restore safety and the safe-mode rule for the extension.
 - [`architecture/office-integration.md`](architecture/office-integration.md) — the Office bridge:
   processes and flows, the protocol compatibility matrix, streaming/stop rules, `/health` usage and
   release order.

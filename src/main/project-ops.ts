@@ -26,6 +26,25 @@ export const CLONE_TIMEOUT_MS = 10 * 60_000;
 /** Longest accepted project folder name. */
 export const MAX_PROJECT_NAME_LENGTH = 100;
 
+/** The folder created inside the OS Documents folder for default projects. */
+export const DEFAULT_PROJECT_ROOT_NAME = "Pi-Desktop";
+
+/** How many `-2`, `-3`, … suffixes a default project folder name may try. */
+export const MAX_DEFAULT_PROJECT_ATTEMPTS = 100;
+
+/**
+ * The folder name a default project gets: local date and time with a `T`
+ * separator and dashes in the time (`2026-11-03T10-15-42`). Colons are invalid
+ * in Windows folder names, and a space would need quoting in a shell.
+ */
+export function defaultProjectFolderName(date: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`
+  );
+}
+
 export interface ProjectOpsDeps {
   fs: FsPort;
   runner: CommandRunner;
@@ -37,9 +56,18 @@ export interface ProjectOpsDeps {
   copyText(text: string): Promise<boolean>;
   /** Platform-correct path join; injected so tests run on any OS. */
   join?: (...parts: string[]) => string;
+  /**
+   * The OS Documents folder, resolved lazily when the user acts (main builds
+   * this service before `app.whenReady`). Null/empty means "unavailable".
+   */
+  documentsDir?: () => string | null;
+  /** Clock for the dated folder name; injected so tests are deterministic. */
+  now?: () => number;
 }
 
 export interface ProjectOps {
+  /** One-click dated folder inside `<Documents>/Pi-Desktop`. */
+  createDefault(): Promise<ProjectOpResult>;
   createBlank(input: CreateProjectInput): Promise<ProjectOpResult>;
   cloneRepo(input: CloneProjectInput): Promise<ProjectOpResult>;
   action(path: string, action: ProjectAction): Promise<boolean>;
@@ -92,6 +120,7 @@ function isSafeGitUrl(url: string): boolean {
 
 export function createProjectOps(deps: ProjectOpsDeps): ProjectOps {
   const join = deps.join ?? nodeJoin;
+  const now = deps.now ?? ((): number => Date.now());
 
   const requireDirectory = async (target: string, label: string): Promise<string | null> => {
     const kind = await deps.fs.pathKind(target);
@@ -100,6 +129,37 @@ export function createProjectOps(deps: ProjectOpsDeps): ProjectOps {
   };
 
   return {
+    async createDefault() {
+      const documents = deps.documentsDir?.()?.trim() ?? "";
+      if (documents.length === 0) return failed("the Documents folder is unavailable");
+      const root = join(documents, DEFAULT_PROJECT_ROOT_NAME);
+      const base = defaultProjectFolderName(new Date(now()));
+
+      try {
+        const rootKind = await deps.fs.pathKind(root);
+        if (rootKind === "file") return failed(`${root} exists but is not a folder`);
+        if (rootKind === null) await deps.fs.ensureDir(root);
+
+        // A timestamp plus a bounded suffix is the uniqueness rule: never reuse
+        // an existing project folder, so two clicks in one second stay separate.
+        let attempt = 1;
+        let target = join(root, base);
+        while ((await deps.fs.pathKind(target)) !== null) {
+          attempt += 1;
+          if (attempt > MAX_DEFAULT_PROJECT_ATTEMPTS) {
+            return failed(`could not find a free project folder in ${root}`);
+          }
+          target = join(root, `${base}-${attempt}`);
+        }
+
+        await deps.fs.ensureDir(target);
+        return { ok: true, path: target };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return failed(`the default project could not be created: ${message}`);
+      }
+    },
+
     async createBlank(input) {
       const parent = input.parentDir?.trim() ?? "";
       if (parent.length === 0) return failed("a parent folder is required");

@@ -24,12 +24,13 @@ test("@smoke the app opens on the welcome view of the new shell", async () => {
   const { window } = launched;
 
   await expect(window.getByText("Pi Desktop").first()).toBeVisible();
-  // Several surfaces own the action (title bar, sidebar, tab strip, palette), so
-  // the assertion is "the command exists in the shell", not an exact count.
+  // The welcome view, tab strip and palette own the action (the title bar and
+  // sidebar CTAs were removed in the minimal-session-ui plan), so the assertion
+  // is "the command exists in the shell", not an exact count.
   const newSession = window.getByRole("button", { name: /new session/i });
   expect(await newSession.count()).toBeGreaterThanOrEqual(2);
   await expect(window.getByText(/the desktop ui for the pi coding agent/i)).toBeVisible();
-  await expect(window.getByRole("button", { name: /open project folder/i })).toBeVisible();
+  await expect(window.getByRole("button", { name: "Open project folder…" })).toBeVisible();
 
   // Navigation exists up front: the sidebar carries the product views.
   for (const label of ["Settings", "Extensions", "Connections", "Diagnostics"]) {
@@ -115,6 +116,20 @@ test("@smoke the first run asks about telemetry and defaults it off", async () =
   await window.getByRole("button", { name: /skip setup/i }).click();
 
   // Acknowledged and skipped: the shell is reachable again.
-  await expect(window.getByRole("button", { name: /open project folder/i })).toBeVisible();
+  await expect(window.getByRole("button", { name: "Open project folder…" })).toBeVisible();
   await expect(window.getByTestId("onboarding-wizard")).toBeHidden();
+});
+
+test("collapses and reopens the sidebar from the header and tab strip", async () => {
+  launched = await launchApp({ settings: { theme: "dark" } });
+  const { window } = launched;
+  await expect(window.getByLabel("Navigation")).toBeVisible();
+
+  await window.getByRole("button", { name: "Hide sidebar" }).click();
+  await expect(window.getByLabel("Navigation")).toHaveCount(0);
+  const show = window.getByRole("button", { name: "Show sidebar" });
+  await expect(show).toBeVisible();
+
+  await show.click();
+  await expect(window.getByLabel("Navigation")).toBeVisible();
 });

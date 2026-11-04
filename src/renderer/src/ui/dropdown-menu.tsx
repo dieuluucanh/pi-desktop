@@ -3,9 +3,9 @@ import type { ComponentPropsWithRef } from "react";
 import { cn } from "./cn";
 
 /**
- * Dropdown menu primitives (plan step 1 dependency, first used by the session
- * tab overflow menu in step 11). Radix supplies the a11y wiring (roving focus,
- * typeahead, escape/outside-click); the styling is ours.
+ * Dropdown menu primitives (plan step 1 dependency; used by the sidebar session
+ * rows, the layout switcher and the pane picker). Radix supplies the a11y wiring
+ * (roving focus, typeahead, escape/outside-click); the styling is ours.
  */
 
 export const DropdownMenu = DropdownMenuPrimitive.Root;

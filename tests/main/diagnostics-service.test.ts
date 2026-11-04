@@ -25,6 +25,10 @@ function appInfo(overrides: Partial<AppInfo> = {}): AppInfo {
     platform: "win32",
     arch: "x64",
     isDev: false,
+    buildChannel: "release",
+    buildVersion: "0.0.1",
+    buildCommit: null,
+    builtAt: null,
     safeMode: false,
     piOffline: false,
     userDataDir: "C:\\state",
@@ -108,6 +112,11 @@ function deps(overrides: Partial<DiagnosticsServiceDeps> = {}): DiagnosticsServi
   };
 }
 
+/** The new suites read the service rather than the raw deps. */
+function harness(overrides: Partial<DiagnosticsServiceDeps> = {}) {
+  return createDiagnosticsService(deps(overrides));
+}
+
 describe("snapshot", () => {
   it("flattens the process, paths, hosts and office state", () => {
     const service = createDiagnosticsService(deps());
@@ -119,6 +128,29 @@ describe("snapshot", () => {
     expect(snapshot.hosts).toHaveLength(1);
     expect(snapshot.hosts[0]?.logLines).toContain("resumed session\n");
     expect(snapshot.office).toMatchObject({ available: true, protocolVersion: 3, panes: 1 });
+  });
+
+  it("reports system memory and live web views from the injected providers", () => {
+    const service = createDiagnosticsService(
+      deps({
+        systemMemory: () => ({ totalBytes: 17_179_869_184, freeBytes: 8_589_934_592 }),
+        web: () => ({ tabs: 7, liveViews: 4, limit: 4 }),
+      }),
+    );
+    const snapshot = service.snapshot();
+
+    expect(snapshot.memory).toMatchObject({
+      totalBytes: 17_179_869_184,
+      freeBytes: 8_589_934_592,
+    });
+    expect(snapshot.web).toEqual({ tabs: 7, liveViews: 4, limit: 4 });
+  });
+
+  it("does not invent system or web facts when the providers are absent", () => {
+    const snapshot = createDiagnosticsService(deps()).snapshot();
+    expect(snapshot.memory.totalBytes).toBeNull();
+    expect(snapshot.memory.freeBytes).toBeNull();
+    expect(snapshot.web).toEqual({ tabs: 0, liveViews: 0, limit: 0 });
   });
 
   it("samples only the allowlisted environment", () => {
@@ -197,6 +229,7 @@ describe("renderDiagnosticsBundle", () => {
     expect(text).toContain("host_crash");
     expect(text).toContain("office wizard text");
     expect(text).toContain("safe mode: no");
+    expect(text).toContain("build: release · v0.0.1");
   });
 
   it("marks safe mode and PI_OFFLINE in the header", () => {
@@ -255,5 +288,104 @@ describe("collectDiagnosticEnvironment", () => {
     expect(
       collectDiagnosticEnvironment({ PI_OFFLINE: "1", SECRET_TOKEN: "x", HOME: "/root" }),
     ).toEqual({ PI_OFFLINE: "1" });
+  });
+});
+
+/**
+ * Source control and checkpoint facts (git-checkpoint plan step 28).
+ *
+ * The bundle is what a user pastes into an issue, so two things matter: the facts
+ * are present when the service is wired, and an **identity email never reaches the
+ * file** even though the rail shows it in full.
+ */
+describe("source control and checkpoint facts", () => {
+  const gitInfo = {
+    version: "git version 2.43.0",
+    repos: [
+      {
+        root: "/work/app",
+        branch: "main",
+        dirty: true,
+        lastStatusMs: 42,
+        lastError: null,
+      },
+      {
+        root: "/work/other",
+        branch: null,
+        dirty: false,
+        lastStatusMs: null,
+        lastError: "fatal: Unable to create '.git/index.lock': File exists.",
+      },
+    ],
+  };
+  const checkpointInfo = {
+    root: "/profile/checkpoints",
+    enabled: true,
+    projects: [
+      {
+        key: "reports-1a2b3c4d",
+        workTree: "/work/reports",
+        commits: 37,
+        bytes: 1_200_000,
+        lastSnapshotAt: 1_700_000_000_000,
+        skipped: 2,
+      },
+    ],
+    runSnapshots: true,
+  };
+
+  it("reports both sections when the ports are wired", () => {
+    const service = harness({ git: () => gitInfo, checkpoints: () => checkpointInfo });
+    const snapshot = service.snapshot();
+    expect(snapshot.git.version).toBe("git version 2.43.0");
+    expect(snapshot.git.repos).toHaveLength(2);
+    expect(snapshot.checkpoints.projects[0]?.commits).toBe(37);
+    expect(snapshot.checkpoints.runSnapshots).toBe(true);
+  });
+
+  it("reports an empty, honest shape without the ports", () => {
+    const snapshot = harness().snapshot();
+    // Never `undefined`: a consumer that reads `snapshot.git.repos` must work.
+    expect(snapshot.git).toEqual({ version: null, repos: [] });
+    expect(snapshot.checkpoints).toMatchObject({ enabled: false, projects: [] });
+  });
+
+  it("renders both sections into the bundle", async () => {
+    const service = harness({ git: () => gitInfo, checkpoints: () => checkpointInfo });
+    const bundle = await service.exportBundle();
+    expect(bundle.text).toContain("## Source control");
+    expect(bundle.text).toContain("git version 2.43.0");
+    expect(bundle.text).toContain("/work/app");
+    expect(bundle.text).toContain("index.lock");
+    expect(bundle.text).toContain("## Folder checkpoints");
+    expect(bundle.text).toContain("reports-1a2b3c4d");
+  });
+
+  it("redacts a commit identity's email from the bundle", async () => {
+    // The rail shows `Ada <ada@example.com>`; the file must not.
+    const withIdentity = {
+      ...gitInfo,
+      repos: [
+        {
+          ...gitInfo.repos[0]!,
+          lastError: "Your identity is Ada <ada@example.com>",
+        },
+      ],
+    };
+    const service = harness({ git: () => withIdentity, checkpoints: () => checkpointInfo });
+    const bundle = await service.exportBundle();
+    expect(bundle.text).not.toContain("ada@example.com");
+    expect(bundle.text).toContain("Ada");
+    expect(bundle.redactions).toBeGreaterThan(0);
+  });
+
+  it("redacts a bare address too (git config output)", async () => {
+    const withBare = {
+      ...gitInfo,
+      repos: [{ ...gitInfo.repos[0]!, lastError: "user.email=ada@example.com" }],
+    };
+    const service = harness({ git: () => withBare, checkpoints: () => checkpointInfo });
+    const bundle = await service.exportBundle();
+    expect(bundle.text).not.toContain("ada@example.com");
   });
 });

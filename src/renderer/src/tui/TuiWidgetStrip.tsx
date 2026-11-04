@@ -1,5 +1,5 @@
 import type { TuiFrame } from "../../../shared/tui-surface";
-import { AnsiBlock } from "./AnsiBlock";
+import { AnsiBlock, AnsiInlineFrame } from "./AnsiBlock";
 
 /**
  * Component-factory extension widgets (2026-10-26 plan, step 5).
@@ -29,5 +29,20 @@ export function TuiWidgetStrip({
         <AnsiBlock key={frame.seq} frame={frame} className="font-mono text-xs leading-tight" />
       ))}
     </div>
+  );
+}
+
+/**
+ * Single-line widget frames rendered as footer columns (2026-10-31 UI plan).
+ * They share the session footer's row instead of taking a strip of their own.
+ */
+export function TuiWidgetInline({ frames }: { frames: readonly TuiFrame[] }) {
+  if (frames.length === 0) return null;
+  return (
+    <>
+      {frames.map((frame) => (
+        <AnsiInlineFrame key={frame.seq} frame={frame} className="min-w-0 max-w-[48ch] truncate" />
+      ))}
+    </>
   );
 }

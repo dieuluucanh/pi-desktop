@@ -133,6 +133,23 @@ describe("electron-builder config (plan step 26)", () => {
     expect(hook).toContain("packaged");
   });
 
+  it("prunes bundled runtimes to the platform/arch being packaged", () => {
+    // `extraResources` copies `resources/runtime` whole, so without this prune a
+    // checkout that holds a Linux runtime cannot even build the Windows NSIS
+    // target (7za exits 1 on the Linux bin/{npm,npx,corepack} symlinks), and
+    // every installer would carry ~100 MB per foreign runtime.
+    const hook = readFileSync(join(repoRoot, "scripts", "electron-builder-after-pack.mjs"), "utf8");
+    expect(hook).toContain("pruneForeignRuntimes");
+    expect(hook).toContain("readdirSync");
+    expect(hook).toContain("rmSync");
+    // The target check must stay before the prune: deleting the target runtime
+    // would be silent, and the shims would then point at nothing.
+    const targetCheck = hook.indexOf("no bundled runtime for");
+    const pruneCall = hook.indexOf("const pruned = pruneForeignRuntimes(");
+    expect(targetCheck).toBeGreaterThan(-1);
+    expect(pruneCall).toBeGreaterThan(targetCheck);
+  });
+
   it("uses URL-safe, target-distinct artifact names and a GitHub update feed", () => {
     // A space is expanded unsanitized on disk but sanitized in `latest.yml`, so
     // `${productName}` must never appear in an artifact name (plan step 27).

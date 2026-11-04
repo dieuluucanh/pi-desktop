@@ -15,7 +15,9 @@ import {
   isControlTabId,
   isTabKind,
   type CreateTabInput,
+  type RetargetEditorTabsInput,
   type SessionTabsEnvelope,
+  type TabKind,
 } from "../shared/session-ipc";
 import { isOfficeSetupStepId } from "../shared/office-setup";
 import {
@@ -38,7 +40,47 @@ import {
 import type { DiagnosticsSaveResult } from "../shared/ipc";
 import type { UpdateState } from "../shared/updates";
 import { isTrustAnswer } from "../shared/projects";
-import type { OfficeStopResult } from "../shared/office-bridge";
+import type { OfficeBridgeControlResult, OfficeStopResult } from "../shared/office-bridge";
+import type {
+  EditorBackup,
+  ResolvedEditorConfig,
+  WorkspaceCreateInput,
+  WorkspaceDeleteInput,
+  WorkspaceFileContent,
+  WorkspaceFileList,
+  WorkspaceListing,
+  WorkspaceMutationResult,
+  WorkspaceRenameInput,
+  WorkspaceResult,
+  WorkspaceSearchRequest,
+  WorkspaceSearchResult,
+  WorkspaceSort,
+  WorkspaceStat,
+  WorkspaceTransferInput,
+  WorkspaceTransferResult,
+  WorkspaceWriteInput,
+  WorkspaceWriteResult,
+  WorkspaceFormatRequest,
+  WorkspaceFormatResult,
+} from "../shared/workspace";
+import { sanitizeEditorBackup } from "../workspace/backup";
+import {
+  MAX_TRANSFER_SOURCES,
+  MAX_WORKSPACE_SEARCH_QUERY_LENGTH,
+  isWorkspaceRelativePath,
+} from "../shared/workspace";
+import {
+  parseGitAction,
+  parseGitDiffRequest,
+  parseGitLogRequest,
+  type GitAction,
+  type GitActionResult,
+  type GitCommitEntry,
+  type GitDiff,
+  type GitDiffRequest,
+  type GitLogRequest,
+  type GitSnapshot,
+} from "../shared/git";
 import {
   parseCloneProjectInput,
   parseCreateProjectInput,
@@ -46,6 +88,12 @@ import {
   parseProjectMutation,
 } from "./projects-service";
 import type { OfficeSetupService } from "./office/setup-service";
+import {
+  parseCheckpointAction,
+  type CheckpointAction,
+  type CheckpointActionResult,
+  type CheckpointState,
+} from "../shared/checkpoints";
 
 /**
  * The Electron glue for the allowlisted IPC surface.
@@ -64,11 +112,19 @@ export interface IpcSessionDeps {
   list(): SessionTabsEnvelope;
   create(input: CreateTabInput): Promise<SessionTabsEnvelope>;
   close(tabId: string): Promise<SessionTabsEnvelope>;
+  closeAll(kind: TabKind): Promise<SessionTabsEnvelope>;
   closeOthers(tabId: string): Promise<SessionTabsEnvelope>;
+  closeProject(cwd: string): Promise<SessionTabsEnvelope>;
+  setPinned(tabId: string, pinned: boolean): Promise<SessionTabsEnvelope>;
+  retargetEditorTabs(input: RetargetEditorTabsInput): Promise<SessionTabsEnvelope>;
   reorder(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
   /** Makes one tab the single Office host (plan step 20). */
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Declares the tabs the renderer shows; advisory, parks and spawns nothing. */
+  setVisibleTabs(ids: readonly string[]): void;
+  /** Clears the active tab without closing or stopping any host. */
+  deactivate(): Promise<SessionTabsEnvelope>;
   /** Re-checks host/session readiness after suspend or a missed push. */
   reconcile(): Promise<SessionTabsEnvelope>;
   restore(): Promise<SessionTabsEnvelope>;
@@ -112,6 +168,8 @@ export interface IpcDependencies {
     get(): Promise<ProjectsSnapshot>;
     mutate(input: ProjectMutation): Promise<ProjectsSnapshot>;
     create(input: CreateProjectInput): Promise<ProjectOpResponse>;
+    /** Creates the dated project in the OS Documents folder (no git init). */
+    createDefault(): Promise<ProjectOpResponse>;
     clone(input: CloneProjectInput): Promise<ProjectOpResponse>;
     action(input: ProjectActionInput): Promise<boolean>;
     setSettings(input: ProjectSettingsToggleInput): Promise<ProjectSettingsToggleResult>;
@@ -127,6 +185,12 @@ export interface IpcDependencies {
    * flight) until the app owns one — the wizard's health probe is unaffected.
    */
   officeRun: { stop: () => Promise<OfficeStopResult> };
+  /** On-demand bridge lifecycle (bridge 0.6+): connect/close/restart. */
+  officeControl: {
+    connect(tabId: string, options?: { takeover?: boolean }): Promise<OfficeBridgeControlResult>;
+    close(tabId: string): Promise<OfficeBridgeControlResult>;
+    restart(tabId: string, options?: { takeover?: boolean }): Promise<OfficeBridgeControlResult>;
+  };
   /** Live Office pane registry (plan step 20), pushed from main's poll. */
   officeDocuments: {
     get(): OfficeDocumentsView;
@@ -152,6 +216,64 @@ export interface IpcDependencies {
     check(): Promise<UpdateState>;
     download(): Promise<UpdateState>;
     install(): boolean;
+    clearProblem(): UpdateState;
+  };
+  /** Source control (git-checkpoint plan step 7). */
+  git: {
+    /**
+     * Resolves a renderer-supplied folder to one the app has open (a tab's cwd
+     * or a remembered project), or throws. The allowlist lives where the data
+     * does; the handlers never hold the project list themselves.
+     */
+    resolveProjectPath(value: unknown): Promise<string>;
+    snapshot(projectPath: string): Promise<GitSnapshot>;
+    refresh(projectPath: string): Promise<GitSnapshot>;
+    watch(projectPath: string, enabled: boolean): boolean;
+    action(projectPath: string, action: GitAction): Promise<GitActionResult>;
+    diff(projectPath: string, request: GitDiffRequest): Promise<GitDiff>;
+    log(projectPath: string, request: GitLogRequest): Promise<GitCommitEntry[]>;
+    headMessage(projectPath: string): Promise<string | null>;
+    branches(projectPath: string): Promise<string[]>;
+  };
+  /** Folder checkpoints (git-checkpoint plan step 21). */
+  checkpoints: {
+    /** Same allowlist as `git.resolveProjectPath`: a folder the app has open. */
+    resolveProjectPath(value: unknown): Promise<string>;
+    get(projectPath: string): Promise<CheckpointState>;
+    refresh(projectPath: string): Promise<CheckpointState>;
+    action(projectPath: string, action: CheckpointAction): Promise<CheckpointActionResult>;
+  };
+  /** Workspace file access for the explorer and editor (2026-11-01 plan). */
+  workspace: {
+    resolveProjectPath(value: unknown): Promise<string>;
+    listDirectory(input: {
+      projectPath: string;
+      path: string;
+    }): Promise<WorkspaceResult<WorkspaceListing>>;
+    listFiles(input: {
+      projectPath: string;
+      limit?: number;
+    }): Promise<WorkspaceResult<WorkspaceFileList>>;
+    searchFiles(input: WorkspaceSearchRequest): Promise<WorkspaceResult<WorkspaceSearchResult>>;
+    readFile(input: {
+      projectPath: string;
+      path: string;
+    }): Promise<WorkspaceResult<WorkspaceFileContent>>;
+    stat(input: { projectPath: string; path: string }): Promise<WorkspaceResult<WorkspaceStat>>;
+    writeFile(input: WorkspaceWriteInput): Promise<WorkspaceResult<WorkspaceWriteResult>>;
+    create(input: WorkspaceCreateInput): Promise<WorkspaceResult<WorkspaceMutationResult>>;
+    rename(input: WorkspaceRenameInput): Promise<WorkspaceResult<WorkspaceMutationResult>>;
+    delete(input: WorkspaceDeleteInput): Promise<WorkspaceResult<WorkspaceMutationResult>>;
+    transfer(input: WorkspaceTransferInput): Promise<WorkspaceResult<WorkspaceTransferResult>>;
+    reveal(input: { projectPath: string; path: string }): Promise<WorkspaceResult<boolean>>;
+    editorConfig(input: {
+      projectPath: string;
+      path: string;
+    }): Promise<WorkspaceResult<ResolvedEditorConfig>>;
+    readBackup(tabId: string): Promise<WorkspaceResult<EditorBackup | null>>;
+    writeBackup(backup: EditorBackup): Promise<WorkspaceResult<boolean>>;
+    deleteBackup(tabId: string): Promise<WorkspaceResult<boolean>>;
+    format(input: WorkspaceFormatRequest): Promise<WorkspaceResult<WorkspaceFormatResult>>;
   };
 }
 
@@ -166,6 +288,166 @@ export function broadcastToWindows(channel: string, payload: unknown): void {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function parseWorkspacePath(
+  value: unknown,
+  allowEmpty = false,
+): { projectPath: string; path: string } {
+  const record = asRecord(value);
+  const projectPath = record.projectPath;
+  if (typeof projectPath !== "string" || projectPath.length === 0) {
+    throw new Error("workspace: a project folder is required");
+  }
+  const path = record.path;
+  if (typeof path !== "string" || (!allowEmpty && path.length === 0)) {
+    throw new Error("workspace: a project-relative path is required");
+  }
+  return { projectPath, path };
+}
+
+function parseWorkspaceWrite(value: unknown): WorkspaceWriteInput {
+  const record = asRecord(value);
+  const base = parseWorkspacePath(record);
+  if (typeof record.text !== "string") {
+    throw new Error("workspace: write text is required");
+  }
+  const input: WorkspaceWriteInput = { ...base, text: record.text };
+  if (record.eol === "lf" || record.eol === "crlf") input.eol = record.eol;
+  if (typeof record.bom === "boolean") input.bom = record.bom;
+  if (record.expectedMtimeMs === null) input.expectedMtimeMs = null;
+  else if (typeof record.expectedMtimeMs === "number" && Number.isFinite(record.expectedMtimeMs)) {
+    input.expectedMtimeMs = record.expectedMtimeMs;
+  }
+  if (typeof record.force === "boolean") input.force = record.force;
+  return input;
+}
+
+const WORKSPACE_SORTS: readonly WorkspaceSort[] = ["name", "type", "modified"];
+
+function parseWorkspaceDirectory(value: unknown): {
+  projectPath: string;
+  path: string;
+  sort?: WorkspaceSort;
+} {
+  const record = asRecord(value);
+  const base = parseWorkspacePath(record, true);
+  const sort = record.sort;
+  if (sort === undefined) return base;
+  if (typeof sort !== "string" || !(WORKSPACE_SORTS as readonly string[]).includes(sort)) {
+    throw new Error("workspace: unsupported sort order");
+  }
+  return { ...base, sort: sort as WorkspaceSort };
+}
+
+function requireWorkspaceString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`workspace: ${label} is required`);
+  }
+  return value;
+}
+
+function parseWorkspaceCreate(value: unknown): WorkspaceCreateInput {
+  const record = asRecord(value);
+  const base = parseWorkspacePath(record);
+  if (record.kind !== "file" && record.kind !== "directory") {
+    throw new Error("workspace: a new entry must be a file or a directory");
+  }
+  return { ...base, kind: record.kind };
+}
+
+function parseWorkspaceRename(value: unknown): WorkspaceRenameInput {
+  const record = asRecord(value);
+  const base = parseWorkspacePath(record);
+  return {
+    ...base,
+    toPath: requireWorkspaceString(record.toPath, "the new path"),
+  };
+}
+
+function parseWorkspaceDelete(value: unknown): WorkspaceDeleteInput {
+  return parseWorkspacePath(value);
+}
+
+function parseWorkspaceTransfer(value: unknown): WorkspaceTransferInput {
+  const record = asRecord(value);
+  const sourceProjectPath = requireWorkspaceString(record.sourceProjectPath, "the source project");
+  const targetProjectPath = requireWorkspaceString(record.targetProjectPath, "the target project");
+  if (!Array.isArray(record.sources) || record.sources.length === 0) {
+    throw new Error("workspace: choose at least one entry to paste");
+  }
+  if (record.sources.length > MAX_TRANSFER_SOURCES) {
+    throw new Error(`workspace: paste supports at most ${MAX_TRANSFER_SOURCES} entries`);
+  }
+  const sources = record.sources.map((source) => requireWorkspaceString(source, "a source path"));
+  if (typeof record.targetDirectory !== "string") {
+    throw new Error("workspace: the target folder is required");
+  }
+  if (record.operation !== "copy" && record.operation !== "move") {
+    throw new Error("workspace: a transfer must be copy or move");
+  }
+  return {
+    sourceProjectPath,
+    targetProjectPath,
+    sources,
+    targetDirectory: record.targetDirectory,
+    operation: record.operation,
+  };
+}
+
+function parseWorkspaceSearch(value: unknown): WorkspaceSearchRequest {
+  const record = asRecord(value);
+  const projectPath = record.projectPath;
+  if (typeof projectPath !== "string" || projectPath.length === 0) {
+    throw new Error("workspace: a project folder is required");
+  }
+  if (typeof record.query !== "string") {
+    throw new Error("workspace: a search query is required");
+  }
+  if (record.query.length > MAX_WORKSPACE_SEARCH_QUERY_LENGTH) {
+    throw new Error("workspace: the search query is too long");
+  }
+  const request: WorkspaceSearchRequest = { projectPath, query: record.query };
+  if (typeof record.includeHidden === "boolean") request.includeHidden = record.includeHidden;
+  if (typeof record.includeIgnored === "boolean") request.includeIgnored = record.includeIgnored;
+  if (typeof record.limit === "number" && Number.isFinite(record.limit) && record.limit > 0) {
+    request.limit = record.limit;
+  }
+  return request;
+}
+
+function parseWorkspaceTabId(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("workspace: a tab id is required");
+  }
+  return value;
+}
+
+function parseSessionKind(value: unknown): TabKind {
+  if (!isTabKind(value)) throw new Error(`session: unsupported tab kind ${String(value)}`);
+  return value;
+}
+
+function parseSessionString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`session: ${label} is required`);
+  }
+  return value;
+}
+
+function parseRetargetEditorTabs(value: unknown): RetargetEditorTabsInput {
+  const record = asRecord(value);
+  const fromProjectPath = parseSessionString(record.fromProjectPath, "the source project");
+  const toProjectPath = parseSessionString(record.toProjectPath, "the target project");
+  const fromPath = record.fromPath;
+  const toPath = record.toPath;
+  if (!isWorkspaceRelativePath(fromPath) || !isWorkspaceRelativePath(toPath)) {
+    throw new Error("session: editor paths must be project-relative");
+  }
+  if (record.kind !== "file" && record.kind !== "directory") {
+    throw new Error("session: editor retarget kind must be file or directory");
+  }
+  return { fromProjectPath, fromPath, toProjectPath, toPath, kind: record.kind };
 }
 
 /**
@@ -191,7 +473,50 @@ function requireRealTabId(deps: IpcDependencies, value: unknown): string {
   return id;
 }
 
+/**
+ * Components in a visibility push.
+ *
+ * `session:set-visible` is advisory (the renderer may be shutting down, or hold a
+ * stale `prefs.grid`), so a malformed payload is answered with "nothing is
+ * visible" rather than an exception. The bound matches the largest layout plus
+ * the focused tab; `visibleTabIds()` bounds again in the service.
+ */
+const MAX_VISIBLE_TAB_IDS = 5;
+
+function parseVisibleTabIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const id = entry.trim();
+    if (id.length === 0 || id.length > 128) continue;
+    if (ids.includes(id)) continue;
+    ids.push(id);
+    if (ids.length >= MAX_VISIBLE_TAB_IDS) break;
+  }
+  return ids;
+}
+
 /** Validates the project-panel settings toggle input. */
+function parseBridgeTabId(value: unknown): string {
+  const tabId = typeof value === "string" ? value.trim() : "";
+  if (tabId.length === 0) {
+    throw new Error("office: bridge control requires a session tab id");
+  }
+  return tabId;
+}
+
+function parseBridgeControlInput(value: unknown): { tabId: string; takeover: boolean } {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  if (record.takeover !== undefined && typeof record.takeover !== "boolean") {
+    throw new Error("office: takeover must be a boolean");
+  }
+  return {
+    tabId: parseBridgeTabId(record.tabId),
+    takeover: record.takeover === true,
+  };
+}
+
 function parseProjectSettingsToggle(value: unknown): ProjectSettingsToggleInput {
   const record = asRecord(value);
   const path = typeof record.path === "string" ? record.path.trim() : "";
@@ -242,6 +567,12 @@ function parseCreateTab(value: unknown): CreateTabInput {
   }
   const input: CreateTabInput = { cwd };
   if (isTabKind(kind)) input.kind = kind;
+  if (kind === "editor") {
+    if (typeof record.filePath !== "string" || !isWorkspaceRelativePath(record.filePath)) {
+      throw new Error("session: an editor tab requires a project-relative file");
+    }
+    input.filePath = record.filePath;
+  }
   if (typeof record.sessionFile === "string" && record.sessionFile.length > 0) {
     input.sessionFile = record.sessionFile;
   }
@@ -291,6 +622,19 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.sessionCloseOthers, (_event, tabId: unknown) =>
     deps.sessions.closeOthers(requireTabId(deps, tabId)),
   );
+  ipcMain.handle(IPC.sessionCloseAll, (_event, kind: unknown) =>
+    deps.sessions.closeAll(parseSessionKind(kind)),
+  );
+  ipcMain.handle(IPC.sessionCloseProject, (_event, cwd: unknown) =>
+    deps.sessions.closeProject(parseSessionString(cwd, "a project folder")),
+  );
+  ipcMain.handle(IPC.sessionSetPinned, (_event, tabId: unknown, pinned: unknown) => {
+    if (typeof pinned !== "boolean") throw new Error("session: pinned must be a boolean");
+    return deps.sessions.setPinned(requireRealTabId(deps, tabId), pinned);
+  });
+  ipcMain.handle(IPC.sessionRetargetEditor, (_event, input: unknown) =>
+    deps.sessions.retargetEditorTabs(parseRetargetEditorTabs(input)),
+  );
   ipcMain.handle(IPC.sessionReorder, (_event, tabId: unknown, toIndex: unknown) => {
     const id = requireTabId(deps, tabId);
     if (typeof toIndex !== "number" || !Number.isFinite(toIndex)) {
@@ -304,6 +648,12 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.sessionActivate, (_event, tabId: unknown) =>
     deps.sessions.activate(requireTabId(deps, tabId)),
   );
+  ipcMain.handle(IPC.sessionDeactivate, () => deps.sessions.deactivate());
+  ipcMain.handle(IPC.sessionSetVisible, (_event, ids: unknown) => {
+    // Advisory by design: a close or a drop races this push, so an unknown id or
+    // an odd shape must never surface as an error the user has to dismiss.
+    deps.sessions.setVisibleTabs(parseVisibleTabIds(ids));
+  });
   ipcMain.handle(IPC.sessionReconcile, () => deps.sessions.reconcile());
   ipcMain.handle(IPC.sessionRestart, (_event, tabId: unknown) =>
     deps.sessions.restart(requireTabId(deps, tabId)),
@@ -325,6 +675,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.projectsCreate, (_event, input: unknown) =>
     deps.projects.create(parseCreateProjectInput(input)),
   );
+  ipcMain.handle(IPC.projectsCreateDefault, () => deps.projects.createDefault());
   ipcMain.handle(IPC.projectsClone, (_event, input: unknown) =>
     deps.projects.clone(parseCloneProjectInput(input)),
   );
@@ -350,6 +701,17 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.officeStopRun, () => deps.officeRun.stop());
   ipcMain.handle(IPC.officeDocuments, () => deps.officeDocuments.get());
   ipcMain.handle(IPC.officeDocumentsRefresh, () => deps.officeDocuments.refresh());
+  ipcMain.handle(IPC.officeBridgeConnect, (_event, input: unknown) => {
+    const { tabId, takeover } = parseBridgeControlInput(input);
+    return deps.officeControl.connect(tabId, { takeover });
+  });
+  ipcMain.handle(IPC.officeBridgeClose, (_event, tabId: unknown) => {
+    return deps.officeControl.close(parseBridgeTabId(tabId));
+  });
+  ipcMain.handle(IPC.officeBridgeRestart, (_event, input: unknown) => {
+    const { tabId, takeover } = parseBridgeControlInput(input);
+    return deps.officeControl.restart(tabId, { takeover });
+  });
   // Same implementation as `app:reveal-path` — one path-validation rule.
   ipcMain.handle(IPC.officeReveal, (_event, target: unknown) => deps.revealPath(target));
 
@@ -390,6 +752,151 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.updatesCheck, () => deps.updates.check());
   ipcMain.handle(IPC.updatesDownload, () => deps.updates.download());
   ipcMain.handle(IPC.updatesInstall, () => deps.updates.install());
+  ipcMain.handle(IPC.updatesClearProblem, () => deps.updates.clearProblem());
+
+  // Source control (git-checkpoint plan step 7). Every handler resolves the
+  // folder against the allowlist first, so git only ever runs in a folder the
+  // user opened; the action payload is then parsed against the closed union.
+  ipcMain.handle(IPC.gitSnapshot, async (_event, projectPath: unknown) =>
+    deps.git.snapshot(await deps.git.resolveProjectPath(projectPath)),
+  );
+  ipcMain.handle(IPC.gitRefresh, async (_event, projectPath: unknown) =>
+    deps.git.refresh(await deps.git.resolveProjectPath(projectPath)),
+  );
+  ipcMain.handle(IPC.gitWatch, async (_event, projectPath: unknown, enabled: unknown) => {
+    const path = await deps.git.resolveProjectPath(projectPath);
+    if (typeof enabled !== "boolean") throw new Error("git: enabled must be a boolean");
+    return deps.git.watch(path, enabled);
+  });
+  ipcMain.handle(IPC.gitAction, async (_event, projectPath: unknown, action: unknown) => {
+    const path = await deps.git.resolveProjectPath(projectPath);
+    const parsed = parseGitAction(action);
+    if (!parsed) throw new Error("git: unsupported action");
+    return deps.git.action(path, parsed);
+  });
+  ipcMain.handle(IPC.gitDiff, async (_event, projectPath: unknown, request: unknown) =>
+    deps.git.diff(await deps.git.resolveProjectPath(projectPath), parseGitDiffRequest(request)),
+  );
+  ipcMain.handle(IPC.gitLog, async (_event, projectPath: unknown, request: unknown) =>
+    deps.git.log(await deps.git.resolveProjectPath(projectPath), parseGitLogRequest(request)),
+  );
+  ipcMain.handle(IPC.gitHeadMessage, async (_event, projectPath: unknown) =>
+    deps.git.headMessage(await deps.git.resolveProjectPath(projectPath)),
+  );
+  ipcMain.handle(IPC.gitBranches, async (_event, projectPath: unknown) =>
+    deps.git.branches(await deps.git.resolveProjectPath(projectPath)),
+  );
+
+  // Folder checkpoints (git-checkpoint plan step 21). Same two rules as git: the
+  // folder must be one the app has open, and the action must parse against the
+  // closed union before the store sees it. `restore` is the one action that can
+  // overwrite work, so it re-validates its ref here as well.
+  ipcMain.handle(IPC.checkpointsGet, async (_event, projectPath: unknown) =>
+    deps.checkpoints.get(await deps.checkpoints.resolveProjectPath(projectPath)),
+  );
+  ipcMain.handle(IPC.checkpointsRefresh, async (_event, projectPath: unknown) =>
+    deps.checkpoints.refresh(await deps.checkpoints.resolveProjectPath(projectPath)),
+  );
+  ipcMain.handle(IPC.checkpointsAction, async (_event, projectPath: unknown, action: unknown) => {
+    const path = await deps.checkpoints.resolveProjectPath(projectPath);
+    const parsed = parseCheckpointAction(action);
+    if (!parsed) throw new Error("checkpoints: unsupported action");
+    return deps.checkpoints.action(path, parsed);
+  });
+
+  // Workspace file access (2026-11-01 plan). The folder allowlist is applied
+  // before the service sees the request; the service then applies the realpath
+  // containment guard and returns a result envelope.
+  ipcMain.handle(IPC.workspaceListDirectory, async (_event, input: unknown) => {
+    const request = parseWorkspaceDirectory(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.listDirectory({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceListFiles, async (_event, input: unknown) => {
+    const record = asRecord(input);
+    const projectPath = await deps.workspace.resolveProjectPath(record.projectPath);
+    const limit =
+      typeof record.limit === "number" && Number.isFinite(record.limit) ? record.limit : undefined;
+    return deps.workspace.listFiles({ projectPath, ...(limit === undefined ? {} : { limit }) });
+  });
+  ipcMain.handle(IPC.workspaceSearchFiles, async (_event, input: unknown) => {
+    const request = parseWorkspaceSearch(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.searchFiles({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceReadFile, async (_event, input: unknown) => {
+    const request = parseWorkspacePath(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.readFile({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceStat, async (_event, input: unknown) => {
+    const request = parseWorkspacePath(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.stat({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceWriteFile, async (_event, input: unknown) => {
+    const request = parseWorkspaceWrite(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.writeFile({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceCreate, async (_event, input: unknown) => {
+    const request = parseWorkspaceCreate(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.create({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceRename, async (_event, input: unknown) => {
+    const request = parseWorkspaceRename(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.rename({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceDelete, async (_event, input: unknown) => {
+    const request = parseWorkspaceDelete(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.delete({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceTransfer, async (_event, input: unknown) => {
+    const request = parseWorkspaceTransfer(input);
+    const [sourceProjectPath, targetProjectPath] = await Promise.all([
+      deps.workspace.resolveProjectPath(request.sourceProjectPath),
+      deps.workspace.resolveProjectPath(request.targetProjectPath),
+    ]);
+    return deps.workspace.transfer({ ...request, sourceProjectPath, targetProjectPath });
+  });
+  ipcMain.handle(IPC.workspaceReveal, async (_event, input: unknown) => {
+    const request = parseWorkspacePath(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.reveal({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceEditorConfig, async (_event, input: unknown) => {
+    const request = parseWorkspacePath(input);
+    const projectPath = await deps.workspace.resolveProjectPath(request.projectPath);
+    return deps.workspace.editorConfig({ ...request, projectPath });
+  });
+  ipcMain.handle(IPC.workspaceReadBackup, (_event, tabId: unknown) =>
+    deps.workspace.readBackup(parseWorkspaceTabId(tabId)),
+  );
+  ipcMain.handle(IPC.workspaceWriteBackup, (_event, value: unknown) => {
+    const backup = sanitizeEditorBackup(value);
+    if (!backup) throw new Error("workspace: invalid editor backup");
+    return deps.workspace.writeBackup(backup);
+  });
+  ipcMain.handle(IPC.workspaceDeleteBackup, (_event, tabId: unknown) =>
+    deps.workspace.deleteBackup(parseWorkspaceTabId(tabId)),
+  );
+  ipcMain.handle(IPC.workspaceFormat, async (_event, value: unknown) => {
+    const record = asRecord(value);
+    const base = parseWorkspacePath(record);
+    if (typeof record.languageId !== "string" || typeof record.text !== "string") {
+      throw new Error("workspace: format requires a language and text");
+    }
+    const projectPath = await deps.workspace.resolveProjectPath(base.projectPath);
+    return deps.workspace.format({
+      ...base,
+      projectPath,
+      languageId: record.languageId,
+      text: record.text,
+    });
+  });
 }
 
 /** The default `revealPath` implementation: a non-empty string reveals, nothing else. */

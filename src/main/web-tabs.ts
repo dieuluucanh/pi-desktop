@@ -90,6 +90,10 @@ export interface WebTabManager {
   state(tabId: string): WebTabState | null;
   /** Every open web tab's state. */
   states(): WebTabState[];
+  /** Number of live `WebContentsView`s (Diagnostics/backpressure). */
+  liveViewCount(): number;
+  /** The live-view cap (Diagnostics/backpressure). */
+  webViewLimit(): number;
   /** Tears every view down (window close / quit). */
   dispose(): void;
 }
@@ -107,9 +111,22 @@ function isString(value: unknown): value is string {
   return typeof value === "string";
 }
 
+/**
+ * A web tab is a URL record; a `WebContentsView` is a full Chromium renderer.
+ *
+ * Six live views: a grid can show four web panes at once (2026-11-03 plan), and a
+ * **visible** view is never evicted, so the bound must exceed the largest pane
+ * count or a fifth web tab could not be reached while four are on screen. An
+ * evicted view's last state is kept and the page reloads from its URL when it is
+ * shown again.
+ */
+export const MAX_LIVE_WEB_VIEWS = 6;
+
 export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
   const now = deps.now ?? ((): number => Date.now());
   const views = new Map<string, ManagedView>();
+  /** Last projected state of web tabs whose view was evicted. */
+  const parkedStates = new Map<string, WebTabState>();
   /** The tab whose view should be shown; others stay hidden. */
   let activeTabId: string | null = null;
 
@@ -119,7 +136,12 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
   };
 
   const applyVisibility = (managed: ManagedView): void => {
-    managed.view.setVisible(managed.visible && managed.tabId === activeTabId);
+    // Each pane reports its own rectangle, and the grid may show several at
+    // once, so the renderer's `visible` flag is authoritative. It used to be
+    // ANDed with `tabId === activeTabId`, which allowed exactly one web view on
+    // screen; a view the renderer has not reported yet stays hidden, so an
+    // unmounted tab can never become un-evictable.
+    managed.view.setVisible(managed.visible);
   };
 
   const applyBounds = (managed: ManagedView): void => {
@@ -200,26 +222,32 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
   };
 
   const create = (tab: TabRecord & { url: string }): ManagedView => {
-    const url = sanitizeWebUrl(tab.url) ?? tab.url;
+    const parked = parkedStates.get(tab.id);
+    const url = sanitizeWebUrl(parked?.url ?? tab.url) ?? tab.url;
     const view = deps.createView.create({ tabId: tab.id, url });
     const managed: ManagedView = {
       tabId: tab.id,
       view,
-      state: emptyWebTabState(tab.id, url, tab.sessionTabId ?? null),
+      state: parked ?? emptyWebTabState(tab.id, url, tab.sessionTabId ?? null),
       bounds: { x: 0, y: 0, width: 0, height: 0 },
-      // Until the renderer reports a rectangle the view is 0×0 anyway; treating
-      // the freshly created (active) tab as visible avoids a flash once bounds land.
-      visible: true,
+      // Hidden until the renderer reports a rectangle. A fresh view that claimed
+      // to be visible would paint at 0×0 (a flash) and, worse, could never be
+      // evicted because eviction only takes hidden views.
+      visible: false,
       detach: [],
     };
+    parkedStates.delete(tab.id);
     attach(managed);
     void view.webContents.loadURL(url);
     views.set(tab.id, managed);
-    deps.emitState(managed.state);
+    deps.emitState(project(managed));
     return managed;
   };
 
   const teardown = (managed: ManagedView): void => {
+    // Keep the last URL/title/favicon so the tab strip does not go blank while
+    // the view is parked. A closed tab deletes its parked entry separately.
+    parkedStates.set(managed.tabId, project(managed));
     for (const off of managed.detach.splice(0)) off();
     try {
       managed.view.close?.();
@@ -238,19 +266,69 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
         }
       }
 
-      // Close views whose tab is gone or is no longer a web tab.
+      // Close views whose tab is gone or is no longer a web tab. A closed tab
+      // must not leave a parked state behind forever.
       for (const managed of [...views.values()]) {
-        if (!webTabs.has(managed.tabId)) teardown(managed);
+        if (!webTabs.has(managed.tabId)) {
+          teardown(managed);
+          parkedStates.delete(managed.tabId);
+        }
       }
-      // Open views for new web tabs (including ones restored from disk).
-      for (const tab of webTabs.values()) {
-        if (!views.has(tab.id)) create(tab);
+      for (const tabId of [...parkedStates.keys()]) {
+        if (!webTabs.has(tabId)) parkedStates.delete(tabId);
       }
 
       activeTabId =
         isString(envelope.activeTabId) && webTabs.has(envelope.activeTabId)
           ? envelope.activeTabId
           : null;
+
+      /**
+       * Parks the least-recently-active **hidden** view.
+       *
+       * Visibility is per pane now, so a visible view is on screen somewhere and
+       * must never be torn down under the user — even to make room for another
+       * tab. When every live view is visible, eviction simply stops and the extra
+       * tab stays parked (its URL is kept and it loads when first shown).
+       */
+      const evictHidden = (): boolean => {
+        const victims = [...views.values()]
+          .filter((managed) => !managed.visible && managed.tabId !== activeTabId)
+          .sort(
+            (left, right) =>
+              (webTabs.get(left.tabId)?.lastActiveAt ?? 0) -
+              (webTabs.get(right.tabId)?.lastActiveAt ?? 0),
+          );
+        const victim = victims[0];
+        if (!victim) return false;
+        teardown(victim);
+        return true;
+      };
+
+      // The active tab always gets a view. If the limit is reached, park the
+      // least-recently-active hidden view first (never a visible or active tab).
+      const activeTab = activeTabId ? webTabs.get(activeTabId) : undefined;
+      if (activeTab && !views.has(activeTab.id)) {
+        while (views.size >= MAX_LIVE_WEB_VIEWS && evictHidden()) {
+          // keep evicting until there is a slot or nothing else can go
+        }
+        if (views.size < MAX_LIVE_WEB_VIEWS) create(activeTab);
+      }
+
+      // Restore/open other web tabs only while there is a slot, newest first.
+      const candidates = [...webTabs.values()]
+        .filter((tab) => !views.has(tab.id))
+        .sort((left, right) => right.lastActiveAt - left.lastActiveAt);
+      for (const tab of candidates) {
+        if (views.size >= MAX_LIVE_WEB_VIEWS) break;
+        create(tab);
+      }
+
+      // A limit change or a tab-list edit can leave an extra hidden view.
+      while (views.size > MAX_LIVE_WEB_VIEWS) {
+        if (!evictHidden()) break;
+      }
+
       for (const managed of views.values()) {
         applyBounds(managed);
         applyVisibility(managed);
@@ -311,13 +389,22 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
 
     state: (tabId) => {
       const managed = views.get(tabId);
-      return managed ? project(managed) : null;
+      return managed ? project(managed) : (parkedStates.get(tabId) ?? null);
     },
 
-    states: () => [...views.values()].map(project),
+    states: () => [
+      ...[...views.values()].map(project),
+      ...[...parkedStates.entries()]
+        .filter(([tabId]) => !views.has(tabId))
+        .map(([, state]) => state),
+    ],
+
+    liveViewCount: () => views.size,
+    webViewLimit: () => MAX_LIVE_WEB_VIEWS,
 
     dispose() {
       for (const managed of [...views.values()]) teardown(managed);
+      parkedStates.clear();
       activeTabId = null;
     },
   };

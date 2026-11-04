@@ -107,6 +107,7 @@ export function toOfficeSetupView(
           capabilities: [...(state.health.health?.capabilities ?? [])],
         }
       : null,
+    bridgeConnect: state.bridgeConnect,
     compatibility: state.health?.health
       ? projectBridgeCompatibility({
           protocolVersion: state.health.health.protocolVersion,

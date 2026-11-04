@@ -42,7 +42,9 @@ asarUnpack:
 # The runtime shims are generated when the runtime is fetched, so the copies in
 # `extraResources` bake in development paths. This hook rewrites them with the
 # packaged layout — `extraResources` is copied after the asar is packed, so the
-# shim directory only exists by `afterPack`.
+# shim directory only exists by `afterPack`. It also writes
+# `resources/build-info.json` (`local` vs `release` CI provenance), which the
+# app reads to decide whether an update feed exists for this build.
 afterPack: scripts/electron-builder-after-pack.mjs
 
 # The bundled runtime and the vendored Office manifest are read by path, so

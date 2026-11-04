@@ -1,6 +1,12 @@
 import type { MenuCommand } from "../../shared/ipc";
 import { projectNameOf } from "../../shared/projects";
+import {
+  DEFAULT_ZOOM,
+  zoomIn as nextZoomLevel,
+  zoomOut as previousZoomLevel,
+} from "../../shared/zoom";
 import { useAppStore } from "./state/app-store";
+import { useEditorStore } from "./editor/editor-store";
 
 /**
  * Menu-command handling (plan step 1).
@@ -53,13 +59,33 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "open-project":
       void openProjectAction(deps);
       return;
+    case "open-file":
+      void import("./files/quick-open-store").then((module) =>
+        module.useQuickOpen.getState().openDialog(),
+      );
+      return;
+    case "save-editor":
+    case "format-editor": {
+      const tabId = store.activeTabId;
+      const tab = tabId ? store.tabs.find((entry) => entry.id === tabId) : undefined;
+      if (!tab || tab.kind !== "editor") {
+        store.setHint(
+          command === "save-editor" ? "Open a file to save it." : "Open a file to format it.",
+        );
+        return;
+      }
+      if (command === "save-editor") void useEditorStore.getState().save(tab.id);
+      else void useEditorStore.getState().format(tab.id);
+      return;
+    }
     case "open-web-url":
       // The manual "Open URL in a tab" action (plan step 21); the dialog is the
       // one place a URL is typed, so localhost UIs never need a terminal.
       store.openWebUrlDialog();
       return;
     case "close-session":
-      void store.closeActiveTab();
+      if (store.activeTabId) useEditorStore.getState().requestClose(store.activeTabId);
+      else void store.closeActiveTab();
       return;
     case "view-sessions":
       void store.openSessionBrowser();
@@ -123,6 +149,60 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "toggle-sidebar":
       store.toggleSidebar();
       return;
+    case "toggle-rail":
+      store.toggleRail();
+      return;
+    // Session view grid (2026-11-03 plan). The presets are fixed shapes, so each
+    // menu command maps to one `setGridLayout` call.
+    case "grid-single":
+      store.setGridLayout("single");
+      return;
+    case "grid-two":
+      store.setGridLayout("two");
+      return;
+    case "grid-three-left":
+      store.setGridLayout("three-left");
+      return;
+    case "grid-three-right":
+      store.setGridLayout("three-right");
+      return;
+    case "grid-four":
+      store.setGridLayout("four");
+      return;
+    // Display zoom is applied by main from the persisted pref; the menu handler
+    // only advances the level (2026-10-30 zoom plan).
+    case "zoom-in":
+      store.setPrefs({ zoomFactor: nextZoomLevel(store.prefs.zoomFactor) });
+      return;
+    case "zoom-out":
+      store.setPrefs({ zoomFactor: previousZoomLevel(store.prefs.zoomFactor) });
+      return;
+    case "zoom-reset":
+      store.setPrefs({ zoomFactor: DEFAULT_ZOOM });
+      return;
+    case "view-explorer":
+      store.openRailMenu("explorer");
+      return;
+    case "view-source-control":
+      // Opens the panel on Source Control without toggling it.
+      store.openRailMenu("source-control");
+      return;
+    case "view-checkpoints":
+      store.openRailMenu("checkpoints");
+      return;
+    case "view-documents":
+      // The menu is also the place to *connect* the bridge, so it opens while
+      // the package is configured even when `/health` is silent.
+      if (
+        store.officeDocuments?.available ||
+        store.officeDocuments?.configured ||
+        store.tabs.some((tab) => tab.kind === "office")
+      ) {
+        store.openRailMenu("documents");
+      } else {
+        store.setHint("Pi for Office is not installed. Install it from Extensions → Integrations.");
+      }
+      return;
     case "view-settings":
       store.setView("settings");
       return;
@@ -147,9 +227,13 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
       store.setShortcutsHelpOpen(true);
       return;
     case "check-updates":
-      // Runs a real check (plan step 26); the banner shows the outcome and, in a
-      // dev build, says that only installed builds have a feed.
-      void store.checkForUpdates();
+      // Opens the durable About & updates card and starts a check; the status
+      // bar then carries available/downloading/downloaded, and the card carries
+      // every outcome including a missing published feed.
+      store.openUpdateSettings({ check: true });
+      return;
+    case "view-about":
+      store.openUpdateSettings();
       return;
     default: {
       // Exhaustive today: every MenuCommand is handled above, so `command` is

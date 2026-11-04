@@ -185,7 +185,7 @@ describe("settings store", () => {
 });
 
 describe("queue delivery modes (plan step 9)", () => {
-  function sessionTab(id: string, kind: "session" | "web" = "session") {
+  function sessionTab(id: string, kind: "session" | "web" | "editor" = "session") {
     return {
       id,
       kind,
@@ -213,7 +213,12 @@ describe("queue delivery modes (plan step 9)", () => {
       ),
     );
     useAppStore.setState({
-      tabs: [sessionTab("tab-1"), sessionTab("tab-2"), sessionTab("web-1", "web")],
+      tabs: [
+        sessionTab("tab-1"),
+        sessionTab("tab-2"),
+        { ...sessionTab("editor-1", "editor"), filePath: "a.ts" },
+        sessionTab("web-1", "web"),
+      ],
     });
 
     await useAppStore.getState().setSetting("steeringMode", "all", "global");
@@ -228,6 +233,7 @@ describe("queue delivery modes (plan step 9)", () => {
       method: "session.queueMode",
       params: { kind: "followUp", mode: "all" },
     });
+    expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ tabId: "editor-1" }));
     expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ tabId: "web-1" }));
   });
 

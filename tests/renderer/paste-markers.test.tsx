@@ -100,13 +100,11 @@ describe("composer paste", () => {
         running={false}
         draft=""
         queue={{ steering: [], followUp: [] }}
-        sendMode="steer"
         onDraftChange={onDraftChange}
         onSend={async () => true}
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onSendModeChange={() => undefined}
         onHistoryStep={() => null}
       />,
     );
@@ -127,13 +125,11 @@ describe("composer paste", () => {
         running={false}
         draft=""
         queue={{ steering: [], followUp: [] }}
-        sendMode="steer"
         onDraftChange={onDraftChange}
         onSend={async () => true}
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onSendModeChange={() => undefined}
         onHistoryStep={() => null}
       />,
     );
@@ -153,13 +149,11 @@ describe("composer paste", () => {
         running={false}
         draft={draft}
         queue={{ steering: [], followUp: [] }}
-        sendMode="steer"
         onDraftChange={onDraftChange}
         onSend={async () => true}
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onSendModeChange={() => undefined}
         onHistoryStep={() => null}
       />,
     );
@@ -179,13 +173,11 @@ describe("composer paste", () => {
         running={false}
         draft="[paste #2 +200 lines]"
         queue={{ steering: [], followUp: [] }}
-        sendMode="steer"
         onDraftChange={() => undefined}
         onSend={async () => true}
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onSendModeChange={() => undefined}
         onHistoryStep={() => null}
       />,
     );

@@ -6,33 +6,165 @@ steps must extend it rather than re-invent it.
 ## Regions
 
 ```text
-title bar        brand logo, active project, Open project…, New session
-sidebar          + New session · Open project… · Project · Sessions · Views
-tab strip        session tabs (empty until step 11) + the "+" action
+tab strip        session tabs (the topmost app row; the OS frame owns the window
+                 controls) + the "+" action
+editor tab strip editor tabs in a second row under the session strip; it
+                 renders only while at least one file is open
+sidebar          Projects (+ menu: default · new · clone · open folder) ·
+                 Sessions · Views
 main area        the active view (welcome | session | settings | extensions |
                  connections | skills | diagnostics)
-status bar       slim app-level facts only: build version · Pi profile ·
-                 bundled runtime · transient hints · notifications
-composer footer  session facts, bound to the prompt input: cwd (branch) · model ·
-                 thinking · context/tokens/cost, then one dim line of extension
-                 statuses (ctx.ui.setStatus), ANSI-coloured
+status bar       active project path · build version · Pi profile · bundled
+                 runtime · display zoom · transient hints · notifications
+panel rail       docked at the right edge of a session: an always-visible 44 px
+                 menu strip (Source Control · Checkpoints · Documents) beside one
+                 resizable panel body; the strip's order is user-adjustable
+session footer   one responsive status rail under the composer: pwd (branch) ·
+                 tokens/cost/context · model • thinking · extension statuses
+                 (ctx.ui.setStatus) · single-line extension widgets; an extension
+                 ctx.ui.setFooter() replaces the whole footer
 overlays         command palette (Ctrl+K), toast host
 ```
 
 The sidebar and the tab strip are fixed parts of the frame: step 11 fills the tab
-strip, step 10 fills the project section — neither re-lays-out the window.
+strip, step 10 fills the project section — neither re-lays-out the window. The
+in-app title bar was removed in the 2026-10-31 minimal-session-ui pass; the brand
+mark survives in the welcome/onboarding views and the OS window title is set by
+`app:set-title`.
 
-**Two status surfaces, one job each (2026-10-19 UI rework).** The status bar is
-app-level and mounted on every view; it never carries session facts. Everything
-session-scoped lives in `ComposerFooter`, under the prompt input, the way
-terminal Pi binds its footer to the editor. Extension statuses
-(`ctx.ui.setStatus`) render in that footer's dim second line — for example the
-Office bridge's `office: Excel attached (bridge :38617)` — not in the status bar.
-The footer is rendered as a **sibling of the editor branch**, not inside
-`<Composer>`, so its facts and mode chip survive when an extension shows a
-non-overlay `ctx.ui.custom()` UI and `<TuiSurface>` replaces the composer. An
-extension's `ctx.ui.setEditorComponent()` is recorded but never mounted: the
-native composer is always the editor (2026-10-26 plan).
+**Two tab rows, one workbench (2026-11-02 editor-tabs plan).** Sessions, the
+Office host and web tabs stay in the top strip. File tabs get their own row
+directly beneath it, still inside `<main>`, so the sidebar and the panel rail
+bound both rows. The editor row renders nothing until a file is open, and both
+rows share one `activeTabId`: clicking a file replaces the main view rather than
+creating a second pane. Both rows scroll horizontally with the mouse wheel, reveal the active tab when
+the selection changes, and keep the user's manual scroll position across window
+focus and tab updates. The tab-strip horizontal scrollbar is 2 px (the app
+default is 10 px); the strips reset `scrollbar-width`/`scrollbar-color` to
+`auto` so the WebKit pixel size is not overridden by the standard properties,
+with the native thin bar as the fallback. The sidebar's project groups list only
+the session row's tabs (sessions, the Office host and web tabs); file tabs are
+never repeated there and live only in the editor row.
+
+**The chip is identity, not chrome (2026-11-03 tab-strip plan).** A chip renders
+its kind glyph, the title and the close × — there is no per-tab overflow button in
+either strip, so the `max-w-48` title owns the freed width. The lifecycle menu
+(`layout/TabMenu.tsx`, one `tabMenuItems()` list) opens by right-click or, from
+the keyboard, `Shift+F10` / the Menu key: `openTabContextMenuFromKeyboard`
+synthesizes the `contextmenu` event Radix listens for. The sidebar session rows
+keep their hover-revealed “…” dropdown, which renders the same list.
+
+**Session view grid (2026-11-03 grid plan).** The content area — the `<section>`
+under both strips — can show several tabs at once. The tab strips, the sidebar
+and the panel rail stay global chrome; only the content area splits.
+
+- **Five presets**, no draggable splitters: `single`, `two` (two full-height
+  columns), `three-left` (left pane full height, right column split),
+  `three-right` (mirrored) and `four` (2×2). `shared/session-grid.ts` owns the
+  pane count and visibility math; `layout/pane-areas.ts` owns the complete
+  Tailwind placement literals (`col-start`, `row-start`, `row-span`) so CSS
+  auto-placement cannot push a pane into an implicit row. The geometry is unit
+  tested without a DOM.
+- **A pane is one `TabRecord`** (`session`, `office`, `web` or `editor`, from any
+  project), rendered by `views/TabSurface.tsx` — the same kind dispatcher the
+  solo view uses. `editor-store`, `editor-registry` and the web-tab service are
+  keyed by tab id, so **one tab may be visible in one pane only**: assigning a tab
+  another pane already holds swaps the two slots (`assignGridPane`).
+- **The focused pane is `activeTabId`.** Clicking a pane activates its tab, which
+  is what menus, the palette, the rail scope and the window title already follow.
+  Several mounted `SessionView`s therefore each render their own tab; the two
+  `window` key listeners (find, jump-to-bottom) and the editor's mount focus are
+  gated on the focused tab.
+- **Solo mode is derived.** `prefs.grid.layout` stays authoritative. Activating a
+  tab that no **visible** pane holds shows it full-size; activating a pane's tab
+  returns to the grid. `gridMode()` is the single decision, and no mode flag is
+  stored. A split layout with no active tab shows the **empty grid**, which is
+  what makes clearing the last pane stay in the grid. The layout and every
+  assignment survive a trip through Single.
+- **Drag reveals the grid.** While a tab drag is active from a solo view,
+  `gridSurface()` renders the remembered multi layout (`lastMultiLayout`) at
+  reduced opacity so every pane is a drop target. A drop adopts that layout; a
+  cancelled drag restores solo without writing prefs.
+- **Persistence.** `prefs.grid = { layout, lastMultiLayout, panes }`; `panes` is a
+  fixed four-slot array, so hidden assignments survive a smaller preset.
+  `applyTabs` clears a closed tab's slot to `null` (never re-flows the layout) and
+  writes prefs only when something actually changed.
+- **Clearing a pane keeps the grid.** The header `×` removes that pane's
+  assignment only; the session stays open in the tab strip. If the cleared pane
+  held the active tab, focus moves cyclically to the next occupied visible pane;
+  if none is left, `activeTabId` becomes `null` and the split layout stays on the
+  empty grid. Header controls carry `data-pane-control`, so pointer-down on the
+  clear button or picker chevron does not first focus the tab being removed.
+- **Host pinning.** The renderer pushes the mounted pane tabs over
+  `session:set-visible`; main feeds them to `keepHostAlive`, excludes them from
+  `parkTab`/`idleCandidates` and raises `reclaimHosts`' floor. The per-host RSS
+  watchdog still applies, and panes wake lazily on first interaction, so a
+  four-pane layout never spawns four hosts by itself.
+- **Web panes.** A web view's visibility is now what its pane reports, not
+  `tabId === activeTabId`; eviction only ever takes a hidden view and
+  `MAX_LIVE_WEB_VIEWS` is 6 (four panes may each show one).
+
+Entry points: the icon-only layout switcher at the far right of the session strip
+(`layout/GridLayoutMenu.tsx`), View ▸ Layout in the menu, and the command palette.
+The switcher trigger shows the current preset. Its five icons run widest to
+narrowest — four panes at the far left, then the two three-pane shapes, two
+columns, and single at the far right. They have accessible names, not visible
+labels. Each pane has **one controlled
+`layout/PanePicker.tsx`**; its header chevron is the sole trigger and anchor. The
+empty pane's centred `+` button opens that same menu, so it also hangs from the
+chevron rather than the centre of the pane. Only the `+` is clickable — “Pick a
+session” and “or drop a tab here” are plain text. The menu lists session tabs
+grouped by project, then editor tabs, then a route into the session browser. A
+tab can also be dragged from either strip or the sidebar onto a pane
+(`shared/tab-drag.ts`, MIME `application/x-pi-tab`, no `text/plain` copy).
+
+**Two surfaces, one job each (2026-10-31 minimal-session-ui).** The status bar is
+app-level and mounted on every view; it never carries session facts. It shows the
+active project path on the left and the app facts on the right. Everything
+session-scoped lives in `SessionFooter`, under the composer, the way terminal Pi
+binds its footer to the editor: `pwd (branch)`, the token/cost/context facts,
+`model • thinking`, the extension statuses (`ctx.ui.setStatus`) — for example the
+Office bridge's `office: Excel attached (bridge :38617)` or pi-lens'
+`pi-lens-lsp` line — and single-line component widgets. They share one
+`flex-wrap` rail (2026-10-31 UI plan), so a wide window uses one row and a narrow
+one wraps instead of always stacking three rows; long items truncate and keep
+the full value in `title`. An extension's `ctx.ui.setFooter()` **replaces** that
+built-in footer rather than stacking above it; the custom footer then owns the
+statuses, exactly as Pi hands its factory a `FooterDataProvider`. The built-in
+footer renders as a **sibling of the editor branch**, not inside `<Composer>`, so
+it survives when an extension shows a non-overlay `ctx.ui.custom()` UI and
+`<TuiSurface>` replaces the composer. An extension's
+`ctx.ui.setEditorComponent()` is recorded but never mounted: the native composer
+is always the editor (2026-10-26 plan).
+
+**Right-click is the platform's editing menu.** Electron ships no default
+context menu, so the app builds one from `src/main/context-menu.ts` and attaches
+it to the main window's `webContents`: Undo / Redo / Cut / Paste / Select All for
+an editable field, and Copy for any non-collapsed selection — including a
+selection inside the extension TUI surface, where Ctrl+C normally belongs to the
+terminal. The template is pure and unit-tested; `index.ts` only supplies the
+`webContents` actions (2026-10-30 copy plan).
+
+**Display zoom is an app fact (2026-10-30 zoom plan).** The factor lives in
+`prefs.zoomFactor` (50 %–300 %, discrete levels) and is applied by main with
+`webContents.setZoomFactor` to every window. The status bar carries the always-
+visible `− 100 % +` cluster (the application menu is hidden on Windows/Linux
+until Alt), Settings has a Display zoom row, and View → Zoom In / Zoom Out /
+Actual Size use explicit `Ctrl/Cmd+=`, `Ctrl/Cmd+-` and `Ctrl/Cmd+0`
+accelerators. The Electron zoom roles were removed because `zoomIn` binds
+`Ctrl+Shift+=` on Windows/Linux (`electron#40674`) — the reported "zoom does
+not work". The factor is re-applied on `did-finish-load` because Chromium keeps
+a per-origin zoom map.
+
+**The chrome palette is app-owned and high-contrast (2026-10-31).** The active
+Pi theme still supplies accent and status hues, but the Desktop owns the neutral
+surfaces and separators: `APP_CHROME_SWATCHES` (in `src/shared/themes.ts`) is
+mirrored by `src/renderer/src/styles/tokens.css`, and `applyChromeTheme` maps
+all 14 chrome tokens (`canvas`, `surface`, `raised`, `sunken`, `line`,
+`line-strong`, `ink`, `ink-muted`, `ink-faint`, accent, info, ok, warn, danger). Dark
+is deliberately high-contrast; tests guard the separator contrast and the
+`tokens.css` values. Per-theme overrides live in `prefs.themeColors` and are
+edited in Skills → Themes; they never write a Pi theme file.
 
 **Extension interactions live in the session column (2026-10-26).**
 `ctx.ui.select/confirm/input/editor` render as an inline `ExtensionDialogDock`
@@ -45,7 +177,9 @@ overlay floats inside the column with no dim backdrop. While either owns the
 keyboard, clicking the transcript re-focuses it and a floating overlay makes the
 composer `inert`. Component-factory widgets (`ctx.ui.setWidget(key, factory)`)
 render as read-only TUI frames above/below the editor dock, next to the
-existing string-array widget strip. The TUI grid is measured from this column,
+existing string-array widget strip. A component frame with exactly one line is
+rendered as a footer column instead of its own strip (2026-10-31 UI plan);
+multi-line frames keep Pi's placement. The TUI grid is measured from this column,
 never from the surface's own rendered frame (`src/renderer/src/tui/use-tui-viewport.ts`).
 
 **The workflow mode is shown as text, not just colour.** The composer's textarea
@@ -53,12 +187,15 @@ border reflects the Workflow extension's mode (`Plan` → warn, `Build` → acce
 decoded from its status text by `src/shared/workflow-mode.ts`; an unrecognised
 value degrades to the neutral border rather than guessing. The desktop names
 exactly the extension's three modes (Default/Plan/Build): the Plannotator
-`reviewing in browser` phrase is a Plan sub-state, so the mode chip reads the
-mode — `Plan` — never the sub-state (2026-10-20 startup-tab-cycle plan). Because colour alone is
-not an indicator, the mode is also named: a badge on the composer's top edge and a
-`mode: …` chip in the footer, both exposed through `role="status"`. Every
-recognised mode has a label, including `Default`. The badge renders at every
-window width — it used to be hidden below the `sm` breakpoint.
+`reviewing in browser` phrase is a Plan sub-state, so the composer label reads
+the mode — `Plan` — never the sub-state (2026-10-20 startup-tab-cycle plan).
+Because colour alone is not an indicator, the mode is also named in the
+composer's top-right corner, exposed through `role="status"`. Every
+recognised mode has a label, including `Default`; Plan/Build use the same
+`text-warn`/`text-accent` tone as the border, and Default uses the readable
+faint ink. The label renders at every
+window width — it used to be hidden below the `sm` breakpoint — and there is no
+duplicate `mode: …` chip in the footer (2026-10-31 minimal-session-ui).
 
 **The composer says where the cursor is (2026-10-21).** The textarea's caret
 carries the app's accent colour, and the composer's status row spells the
@@ -66,6 +203,24 @@ position out (`Ln 2 · Col 7`) next to the shortcut hints. The offset is the one
 the completion engine already tracks (`caretRef`), so the readout and the
 providers can never disagree; `src/renderer/src/session/caret.ts` turns the
 offset into the line/column pair.
+
+**Both composers grow with their content (2026-11-01).** The session prompt and
+the Source Control commit message use one shared `useAutoGrowTextarea` hook
+(`src/renderer/src/ui/auto-grow.ts`): it measures `scrollHeight` plus the border
+and writes an explicit height, capped at 192 px for the prompt and 160 px for
+the commit message. Past the cap the box scrolls. The session prompt no longer
+has a manual `resize-y` handle — the next keystroke would overwrite the drag —
+while the commit box keeps `resize-none`. The two-row floor comes from `rows=2`
+and the CSS minimum; no height is persisted.
+
+**The thinking picker shows the whole scale (2026-11-01).**
+`thinkingLevelOptions()` in `src/shared/thinking.ts` unions the canonical seven
+levels with any custom level the host reported, keeps canonical order and marks
+support. `ThinkingPicker` renders every row and disables the ones the current
+model does not expose, with a “not supported” marker and a tooltip naming the
+model; the enabled set follows the selected model. The model picker's per-model
+preview and the `/thinking` completion remain supported-only, because they are
+capability hints rather than the selector.
 
 **The composer completes three levels (2026-10-24).** `/` names a command;
 after the first space the same provider asks for the command's arguments
@@ -77,13 +232,15 @@ items replace their whole prefix verbatim, command names keep the trailing
 space, and Enter on a command-name suggestion runs it in one keystroke while an
 argument suggestion only fills.
 
-**The session header is one cluster (2026-10-21).** The title, the status badge
-and the restart action are the left group; the controls on the right are one
-row of equally-weighted ghost buttons — model, thinking level, the context ring,
-a vertical rule, the view mode, the documents panel, the linked reviews and
-`Stop`. The view mode was a native `<select>`, the only unstyled control in the
-header; it is now a menu in the app's own vocabulary, with a `✓` on the active
-mode. The title truncates and the hints clip, so the row never wraps.
+**The session column is transcript-first (2026-10-31 minimal-session-ui).** There
+is no session header any more: the tab strip owns the title (with rename in its
+menu), the status dot and the linked review tabs; the composer owns Stop and the
+compact model/thinking/context controls in the blank space above Send; the error
+banner owns Restart; a stopped session wakes on typing. The view keeps only an
+`sr-only` `<h1>` for the accessible name, so the freed rows go to the transcript.
+Tool-card detail is still not a header control: Ctrl+O (or each card's chevron)
+is the one expand-all switch (2026-10-30 copy plan removed the
+Normal/Verbose/Summary menu).
 
 **Global CSS lives in `@layer base`.** Tailwind v4 emits its own rules into
 cascade layers, and in CSS an _unlayered_ rule beats every layered one regardless
@@ -98,6 +255,13 @@ renderer's Tailwind scan root, so `styles.css` also declares them with
 
 ## View model
 
+- **Product views scroll the full main area (2026-11-01).** Settings,
+  Extensions, Connections, Skills and Diagnostics render through
+  `src/renderer/src/views/ViewShell.tsx`: a full-width `h-full overflow-y-auto`
+  outer element (scrollbar at the far-right edge, wheel works over the gutters)
+  around a centred `mx-auto w-full min-h-full max-w-4xl/3xl` content column. The
+  inner column keeps the old readable width; the outer element is the only
+  scroller. Welcome is unchanged.
 - `src/renderer/src/state/app-store.ts` (zustand) owns `view`, `project`, `prefs`,
   `paletteOpen`, `info` and a one-line `hint`.
 - Views are keyed in `src/renderer/src/App.tsx` (`VIEWS`) and rendered one at a
@@ -133,14 +297,82 @@ renderer's Tailwind scan root, so `styles.css` also declares them with
   only remembers what Pi cannot: that the user consented to the bridge install
   here and when setup last completed. Whether a package is installed stays a
   `packages` entry in Pi's `settings.json`, which terminal Pi also sees.
-- **Documents panel (plan step 20).** `DocumentsPanel` is the session's right
-  rail: it renders only while the bridge answers `/health` (plan D-A10) and lists
-  every attached task pane with its facts and actions. The registry is the main
-  process's `/health` poll (`src/main/office/documents-service.ts`), pushed over
+- **Docked panel rail (2026-10-29 plan).** The session's right edge carries an
+  always-visible 44 px menu **strip** — Source Control, Checkpoints, Documents —
+  beside one resizable panel body. Clicking an entry expands its body, clicking
+  the active entry collapses it back to the strip, and the strip's order is
+  user-adjustable by dragging an entry (there is no per-entry reorder menu).
+  The panel body clamps to 200 px at its narrowest — the same floor as the
+  sidebar — while the 44 px strip remains additional chrome.
+  `prefs.rail` persists `{ open, activeMenu, width, order, split, collapsed }`;
+  the strip is never unmounted, which is what makes it the stable entry point
+  (the old header button
+  was gated on the Office bridge and so came and went). A menu this session does
+  not have — Documents with no `/health` — is resolved at render time to the first
+  available menu without rewriting the user's choice.
+- **Source Control is three blocks (2026-10-29 plan).** The body stacks
+  Source Control (branch row, commit composer, collapsible Stashes), Changes and
+  Commit History, each with its own scroller, separated by two draggable
+  `BlockSplitter`s whose sizes persist in `prefs.rail.split`. `Staged Changes`,
+  `Changes` and `Stashes` fold independently (`prefs.rail.collapsed`; Stashes
+  start collapsed). A render-time clamp is never written back — only a drag, a
+  key or a double-click reset persists.
+- **Block headers are pinned (2026-10-30 rail-headers plan).** Each block's header
+  is its scroller's first child: `sticky top-0` with an opaque `bg-surface` and a
+  hairline, so the block's name, count and _Refresh_ stay visible while the rows
+  scroll under them. Both blocks use `rail/RailBlockHeader` (one owner for the
+  rule), and the header sits outside the `gap` column that holds the rows. The
+  Commit History block always renders its header — a repository with no log
+  explains why instead of leaving a bare block.
+- **Project scope.** The rail is **app chrome**, not part of a view: `ProjectRail`
+  sits beside the session column in `App.tsx` and is scoped to the **selected
+  project** (`railScopeFolder` in `src/shared/rail-scope.ts`), falling back to the
+  active session's folder when a cwd was never saved as a project. Selecting a
+  project jumps to that project's most recently active **open** tab, and clears
+  the active tab when the folder has none — so Welcome shows while the rail keeps
+  the project's source control and checkpoints. Selecting a session selects its
+  project. The rail is hidden on Settings, Extensions, Connections, Skills and
+  Diagnostics, which get the full width.
+- **No scope row.** The panel header names the folder in its `title`
+  (`RailMenuSpec.scopeTitle`); there is no per-menu project line and no
+  _Go to project_ button, because the panel and the sidebar always agree now.
+  `RightRail` still renders `RailMenuSpec.scope` **outside** the body's scroll
+  container, which is what keeps the Documents action row pinned.
+- **Documents section (plan step 20).** One of those three menus. Its **presence**
+  is a stable fact, not a probe reading (2026-10-30 rail-headers plan): the entry
+  is in the strip when the Pi settings list the bridge package
+  (`OfficeDocumentsView.configured`, read once at startup and after a wizard
+  install), **or** the bridge answers `/health` right now, **or** an `office`-kind
+  tab exists. One failed probe during a host restart therefore cannot make it
+  vanish, and `resolveActiveMenu` no longer falls back to another menu mid-takeover.
+  The body lists every attached task pane with its facts and actions; while the
+  bridge is not answering it says why (still starting, versus another program
+  owning port 38617) and keeps its re-check, instead of rendering nothing. When a
+  host exists but the bridge is down, the scope row offers _Restart host session_.
+  The registry is the main process's `/health` poll
+  (`src/main/office/documents-service.ts`), pushed over
   `office:documents-state`; the pure projection lives in
   `src/shared/office-documents.ts` and also feeds the `#` completion source and
-  the office tool cards. A session tab that owns port 38617 is the **Office
-  host**; the panel's footer names it or offers _Promote to Office host_.
+  the office tool cards. The menu appears in **every** session while the package
+  is configured, even when the bridge is off. Its pinned row is the control
+  surface: _The Office bridge is off_ + _Connect this session_, or _Office host:
+  …_ / _This session is the Office host._ plus Disconnect/Restart. Another app
+  tab offers _Open host session_ / _Move bridge here_; a terminal/foreign owner
+  offers a confirmed _Take over_. Moving runs `/office close` in the old tab and
+  `/office connect 38617` in the new one, **without restarting either session**.
+  A non-owner session has its two composer actions disabled and `#` completion
+  returns nothing, because only the live owner can serve the `office_*` call.
+
+  A legacy 0.5.x bridge cannot be closed by the app; the row offers _Update
+  bridge_ instead. The old `promoteToOfficeHost` path stays only as a
+  compatibility hook and has no renderer caller. A takeover of a terminal or
+  foreign owner is still explicit: `src/main/office/port-owner.ts` samples this
+  app's PIDs before detaching, finds the listener (structured
+  `Get-NetTCPConnection`, falling back to dual-stack `netstat -ano`), terminates
+  it only after confirmation, re-reads the owner before each signal, and
+  **verifies the port is free**. A forced kill of a TUI can leave that console in
+  raw mode; reopening it is the user's call, and the confirm dialog says so.
+
 - **Web tabs (plan step 21).** A `web` tab is a page the app did not write — a
   Plannotator review served on a loopback port, or any localhost UI. It has no Pi
   host: `src/shared/session-ipc.ts` carries only its record (`url`,
@@ -201,14 +433,22 @@ src/host/safe-mode.ts          the one "no third-party code" policy value (step 
 src/renderer/src/App.tsx       regions + view routing + theme + menu dispatch
 src/renderer/src/menu-actions.ts  what each command does today
 src/renderer/src/state/app-store.ts  view state (zustand)
-src/renderer/src/layout/*      TitleBar, Sidebar, TabStrip, StatusBar, CommandPalette
+src/git/*                     the git engine: runner, repo, status, diff, service
+src/checkpoints/*             the shadow-repo engine, its Node fs adapter and config
+src/extensions/*              the app's own Pi extension (prompt snapshots + /checkpoint)
+src/renderer/src/layout/*      TitleBar, Sidebar, TabStrip, StatusBar, CommandPalette, RightRail
+src/renderer/src/rail/*       the docked panel rail: RightRail (host), RailStrip (the
+                             always-visible menu column), the three menu bodies
+                             (SourceControlPanel, CheckpointsSection, DocumentsSection)
+                             and their dialogs
 src/renderer/src/views/*       Welcome, Session, Settings, Extensions, Connections,
-                               Skills, Diagnostics
-src/renderer/src/office/*      OfficeIntegrationCard, DocumentsPanel + the unchanged wizard panel
+                               Skills, Diagnostics; ViewShell is the five product
+                               views' full-width scroller + centred column
+src/renderer/src/office/*      OfficeIntegrationCard, the Documents section body + the unchanged wizard panel
 src/renderer/src/web/*         WebTabView chrome, the URL/navigation dialogs, overlay detect
 src/renderer/src/session/*     Transcript, Composer, OfficeToolCard, …
 src/renderer/src/ui/*          Button, Badge, Kbd, Separator, Dialog, DropdownMenu,
-                               ScrollArea, Switch, Toaster
+                               ScrollArea, Switch, Toaster, the auto-grow textarea hook
 src/renderer/src/styles/*      tokens.css (Tailwind + theme tokens), office-panel.css
 ```
 
@@ -241,6 +481,11 @@ The app treats failure as a first-class state rather than a silent no-op:
   session does not read as inactive. Window focus/visibility and
   `powerMonitor` resume call `sessions.reconcile()`; any interaction calls the
   coalesced `ensureSession()`, which repairs a stopped or sessionless host.
+- **Only host-backed tabs receive host RPCs.** `isHostBackedTab(kind)` is true for
+  `session` and `office` only. Cross-tab fan-outs (model scope, queue modes,
+  project-settings reload) go through `hostBackedTabs()`; an `editor` or `web`
+  tab never receives `session.request`. Main still rejects a misplaced request
+  with `editor_tab`/`web_tab` as defense in depth.
 - **Stale host.** A host process keeps the bundle it was spawned from. The app
   compares its `buildId` with `out/host/index.mjs`; an idle stale session is
   recycled before the next request, and a busy one shows a persistent banner
@@ -345,14 +590,41 @@ and the renderer all read it, so a budget change is one edit.
   body through `host.blobs.read` only when the card is opened.
 - **Per-host memory.** Every host answers `host.metrics` with its own RSS (no
   OS-specific process query). The supervisor polls it, Diagnostics shows it
-  against the soft budget, and an idle host over the hard threshold is recycled
-  by **stopping** it (the same path as an idle recycle), not by restarting in
-  place. The session service drops a handle that reports `stopped`, so the next
-  interaction spawns a fresh process and resumes from JSONL. The 15-minute
-  time-based idle recycler remains opt-in (see the host protocol table).
-- **Caps and backpressure.** The supervisor enforces the host cap (8) and the
-  session service the tab cap (8); both raise a coded, user-facing sentence
-  (`capacityMessage`), and Diagnostics shows used/limit.
+  against the soft budget, and an idle host over the hard threshold (1 GB) is
+  recycled by **stopping** it (the same path as an idle recycle), not by
+  restarting in place. The session service drops a handle that reports
+  `stopped`, so the next interaction spawns a fresh process and resumes from
+  JSONL. The 15-minute time-based idle recycler is **on by default**. The active
+  tab, the control host, an Office host and the bridge owner are protected from
+  _idle_ sleep; the active tab is deliberately **not** exempt from the RSS
+  watchdog (it is the session most likely to hold a large transcript). Only the
+  Office host and the bridge owner are RSS-exempt, because stopping them drops
+  port 38617.
+- **Open tabs vs live hosts.** A tab is a resumable JSONL record, not a process,
+  so session, Office, web and editor tabs are **unlimited**. The only resource
+  budget is live host processes: `liveHostBudget(totalMemory)` reserves 20% of
+  physical RAM at 512 MB per host, clamped to 2–8. Before a spawn the session
+  service parks the least-recently-used **idle** host (status `stopped` shows as
+  "asleep"); if every live session is busy the spawn still proceeds, so a
+  session count can never block the user. `hostProcessCeiling(totalMemory)` is
+  the memory-derived process ceiling (`target + 2`, 4–10). A 30-second
+  main-process tick parks idle hosts when the live count is over target or the
+  sum of host RSS is over 50% of physical RAM. Diagnostics shows
+  `live/target (ceiling)`, aggregate host RSS/limit, system free/total memory and
+  live web views, with over-target/over-memory warn badges. Both idle and RSS
+  recycling probe `state.get` first, so a streaming turn or a long tool call is
+  never stopped mid-work.
+- **Bounded live renderers and caches.** Unlimited web tabs are URL records; at
+  most four `WebContentsView`s stay live (active + three recent), and an evicted
+  view reloads its URL on activation. The renderer keeps at most four hydrated
+  transcripts and a bounded lazy blob cache; closed tabs lose every per-tab
+  cache immediately. These bounds are independent of the tab count, so opening
+  many tabs cannot grow Chromium or the renderer without limit.
+- **Host process lifetime.** A service host shuts down when its stdin pipe
+  closes, which is what happens when main exits (including an `electron-vite`
+  dev restart). A failed `start()` or `restart()` terminates the child it
+  spawned, and host logs are bounded in memory and on disk. Without these, each
+  dev restart could leave invisible hosts behind.
 
 ## Tests
 
@@ -363,11 +635,18 @@ and the renderer all read it, so a budget change is one edit.
 - `tests/main/diagnostics-service.test.ts` — snapshot shape, incident merge, the
   bundle structure, credential redaction and the allowlisted environment.
 - `tests/shared/performance.test.ts` — budget classification, the startup report,
-  the memory threshold, capacity and formatting (plan step 24).
-- `tests/main/host-supervisor.test.ts` — `host.metrics` polling, the RSS restart
-  cooldown, idle recycling and the coded host-cap error (plan step 24).
-- `tests/main/session-service.test.ts` — coalescing measurements, capacity and
-  the stopped-host handle drop (plan step 24).
+  the memory threshold, the RAM-derived live-host budget and formatting.
+- `tests/shared/session-ipc.test.ts` — tab sanitizing and the shared "is this
+  session busy?" predicate used by parking and recycling.
+- `tests/main/host-supervisor.test.ts` — `host.metrics` polling, busy-aware RSS
+  recycling, idle recycling/pinning and the coded emergency-ceiling error.
+- `tests/main/session-service.test.ts` — coalescing measurements, unbounded
+  restore, soft-budget capacity, LRU parking and wake, and the stopped-host
+  handle drop.
+- `tests/main/host-policy.test.ts` — control/active/bridge-owner protection for
+  the idle reaper.
+- `tests/renderer/session-tab-strip.test.tsx` — a strip with more than eight
+  session tabs; `editor-tab-strip.test.tsx` covers more than sixteen files.
 - `tests/host/service.test.ts` — in-place event spilling and `host.metrics`.
 - `tests/renderer/transcript.test.tsx` — 10k virtualization and the lazy blob
   fetch.
@@ -378,13 +657,15 @@ and the renderer all read it, so a budget change is one edit.
 - `tests/styles-layering.test.ts` — the global stylesheet stays inside
   `@layer base` (an unlayered rule beats Tailwind's utilities), and the
   `@source inline(...)` list matches every class `workflowBorderClass` returns.
-- `tests/renderer/composer-footer.test.tsx` — the composer-bound session footer:
-  cwd/branch/model/thinking and the context budget, the ANSI-coloured extension
-  status line, and the `mode: …` chip for every recognised mode.
+- `tests/renderer/session-footer.test.tsx` — the Pi-shaped session footer:
+  pwd/branch and the token/cost/context line, `model • thinking`, the
+  ANSI-coloured extension status line, and no `mode:` chip (the composer names
+  the mode now).
 - `tests/renderer/composer.test.tsx` — Enter vs Shift+Enter, IME safety, the
-  steer/follow-up choice, the hint row, the workflow mode border/badge
-  (always visible, announced, focus ring does not mask it) and Tab dispatch to a
-  registered extension shortcut before completion.
+  one-Send streaming model (Enter steers, Alt+Enter queues a follow-up), the hint
+  row, the workflow mode border/badge (always visible, announced, focus ring does
+  not mask it) and Tab dispatch to a registered extension shortcut before
+  completion.
 - `tests/renderer/session-events.test.ts` — the reducer, including the
   hidden-item boundary: a `display: false` custom message is dropped (live and on
   reload), and the rule never keys on `customType`.
@@ -442,8 +723,13 @@ and the renderer all read it, so a budget change is one edit.
 - `tests/main/office-documents-service.test.ts` — the registry poll projects
   `/health`, rejects another service on the port, emits only on change and stops
   cleanly (plan step 20).
-- `tests/renderer/documents-panel.test.tsx`, `tests/renderer/office-tool-card.test.tsx`
-  — the right rail and the office tool cards (plan step 20).
+- `tests/renderer/documents-section.test.tsx`, `tests/renderer/office-tool-card.test.tsx`
+  — the Documents section and the office tool cards (plan step 20).
+- `tests/renderer/right-rail.test.tsx`, `tests/renderer/rail-order.test.tsx`,
+  `tests/renderer/rail-store.test.ts`, `tests/renderer/source-control-panel.test.tsx`,
+  `tests/renderer/rail-*.test.tsx`, `tests/renderer/diff-dialog.test.tsx` — the rail
+  host, the strip's order and store slice, the Source Control composition
+  (composer → sync → changes → stashes → history) and the diff viewer.
 - `tests/renderer/office-documents-store.test.ts` — the registry in the store,
   the `#`-tagged composer draft and Office-host promotion.
 - `tests/shared/web-tabs.test.ts` — the URL policy (only http(s), loopback
@@ -496,8 +782,8 @@ process, which is the Playwright suite's job, not a Vitest one.
 
 **Playwright-Electron E2E.** `tests/e2e/fixtures/fake-app.ts` launches the built
 app with the fake provider and a seeded project. `session.spec.ts` covers
-create → send → stream → abort, the steering/follow-up modes and two independent
-tabs; `settings.spec.ts` round-trips a preference across a restart;
+create → send → stream → abort, the one-Send model (Enter steers, Alt+Enter queues
+a follow-up) and two independent tabs; `settings.spec.ts` round-trips a preference across a restart;
 `persistence.spec.ts` restores a tab and its transcript; `web-tab.spec.ts` opens
 a loopback URL in an in-app tab; `shell.spec.ts` and `performance.spec.ts` stay
 as the tagged `@smoke`/`@perf` subsets. `npm run test:e2e` runs them all; CI runs
@@ -533,13 +819,22 @@ value so the UI can tell the stored choice from the running one.
 **Updates.** `src/main/updater.ts` is the Electron-free policy; the only module
 that imports `electron-updater` is `src/main/electron-updater.ts`, reduced to an
 `UpdatePort`. `autoDownload` is **off** — a check reports and the user chooses.
-Events reduce into `UpdateState` (`src/shared/updates.ts`), pushed over
-`updates:state`; the renderer reads `updates.get` on start and shows an
-`UpdateBanner` for the actionable phases (available → Download, downloading →
-progress, downloaded → Restart & install, error → Retry). A finished check with
-nothing to install reports in the status bar instead of leaving a banner.
-`Help → Check for Updates…` runs one on demand; installed builds also check ~10 s
-after launch (skipped when `PI_OFFLINE`). A dev build reports `supported: false`.
+`resolveUpdateSupport` gates the updater by dev/safe mode/`PI_OFFLINE`/port, and
+`<resources>/build-info.json` (written by the `afterPack` hook) records whether
+the package is a **local** build or a **release** CI build. Local, dev, offline
+and safe-mode launches never auto-check; a manual check is still allowed.
+
+Events reduce into `UpdateState` (`src/shared/updates.ts`), whose phases include
+the benign `no-feed` state for an unpublished build/feed. `prefs.updates` carries
+`autoCheck` and the per-version `dismissedVersion`. The renderer shows only a
+compact status-bar chip for available → **Update vX**, downloading → **Updating
+N%** and downloaded → **Restart to update**; a new version re-notifies after a
+dismissal. Every other outcome — up to date, no feed, an error — lives in
+**Settings → About & updates**, with the raw updater text under Technical
+details. `Help → Check for Updates…` opens that card and checks; on Windows and
+Linux `Help → About Pi Desktop` opens the same card, while macOS keeps its native
+About panel. Automatic failures stay silent; a manual failure is a dismissible
+status hint plus the card. There is no full-width update banner.
 
 **Packaging.** `electron-builder.yml` targets Windows NSIS + portable, macOS
 dmg/zip on arm64 + x64, and Linux AppImage/deb on x64 + arm64. The bundled
@@ -564,3 +859,41 @@ provider, and `package.json` carries the `repository` URL so the builder and the
 updater agree. `tests/packaging/builder-config.test.ts` pins the targets,
 resources, unpack list, feed and the runtime artifacts each target needs; the
 installers themselves are verified on a clean machine (step 27).
+
+## Fixed footer, aligned composer, resizable sidebar (2026-10-31)
+
+- The session footer is a fixed **40 px** (two-line) scroll viewport. Plan/Build
+  status columns and inline widgets wrap and scroll inside it, so switching modes
+  no longer changes the composer/transcript height.
+- Composer controls (model, thinking, context, attach, Stop, Send) share the
+  28 × 28 `icon-md` size. The tools row is at the top of the textarea's height and
+  the action row at the bottom; Send/Stop are icon-only with accessible names.
+- The sidebar has a resize handle on its right edge (local preview, one prefs
+  write on release, 200–520 px) and a collapse button in the Projects header.
+  When collapsed, a Show-sidebar button sits at the far left of the tab strip.
+- Sidebar session rows reuse the tab lifecycle menu and support double-click
+  inline rename (Enter/blur commits, Escape cancels).
+
+## Modal layers and body locks (2026-11-03)
+
+Radix keeps the modal `pointer-events: none` lock in **module-level** state, so
+two installed copies of `@radix-ui/react-dismissable-layer` are two independent
+locks on one document. Opening a dialog from a context-menu item made the dialog
+record the menu's `"none"` as its previous value and restore it on close — the
+renderer kept running but ignored every click (radix-ui/primitives#3317,
+#3645).
+
+- **One copy.** `package.json` `overrides` pins the stateful packages
+  (`@radix-ui/react-dismissable-layer`, `@radix-ui/react-focus-guards`), and
+  `tests/architecture/radix-singletons.test.ts` fails if a nested copy of any
+  guarded package reappears. Add a new entry there when a dependency bump
+  introduces another singleton.
+- **Never stack a modal dialog on a closing modal menu.** The Explorer's Delete
+  action defers the confirm dialog by one task so the menu layer has released
+  the lock first (`ExplorerSection.tsx`).
+- **Recovery net.** `src/renderer/src/ui/body-pointer-lock.ts` clears a stale
+  `pointer-events: none` on the last dialog unmount and on window focus, but only
+  when no `[data-state="open"]` dialog/menu/popover exists.
+- **One reconcile per focus burst.** Alt+Tab emits both `focus` and
+  `visibilitychange`; `createFocusResync` coalesces the burst into one
+  `sessions.reconcile()`.

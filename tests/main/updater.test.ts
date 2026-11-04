@@ -13,6 +13,7 @@ function fakePort() {
   const listeners = new Set<(event: UpdateEvent) => void>();
   const calls: string[] = [];
   let checkImpl: () => void | Promise<void> = () => undefined;
+  let downloadImpl: () => void | Promise<void> = () => undefined;
   let installImpl: () => void = () => undefined;
 
   const port: UpdatePort = {
@@ -26,6 +27,7 @@ function fakePort() {
     },
     download: () => {
       calls.push("download");
+      return downloadImpl();
     },
     install: () => {
       calls.push("install");
@@ -42,6 +44,9 @@ function fakePort() {
     setCheck: (impl: () => void | Promise<void>) => {
       checkImpl = impl;
     },
+    setDownload: (impl: () => void | Promise<void>) => {
+      downloadImpl = impl;
+    },
     setInstall: (impl: () => void) => {
       installImpl = impl;
     },
@@ -49,12 +54,13 @@ function fakePort() {
   };
 }
 
-function build(options: { supported?: boolean; withPort?: boolean } = {}) {
+function build(options: { supported?: boolean; withPort?: boolean; currentVersion?: string } = {}) {
   const fake = fakePort();
   const changes: UpdateState[] = [];
   const service = createUpdateService({
     port: options.withPort === false ? null : fake.port,
     supported: options.supported ?? true,
+    currentVersion: options.currentVersion ?? "",
     now: () => 123,
     onChange: (state) => changes.push(state),
   });
@@ -117,6 +123,7 @@ describe("createUpdateService (plan step 26)", () => {
         install: () => undefined,
       },
       supported: true,
+      currentVersion: "0.0.0",
     });
     const first = gate.check();
     void gate.check();
@@ -153,7 +160,85 @@ describe("createUpdateService (plan step 26)", () => {
     });
     emit({ type: "downloaded", version: "2.0.0" });
     expect(service.install()).toBe(false);
-    expect(service.state()).toMatchObject({ phase: "error", error: "installer missing" });
+    // The downloaded build is kept so Restart & install can be retried.
+    expect(service.state()).toMatchObject({
+      phase: "downloaded",
+      error: "installer missing",
+      problemKind: "install",
+    });
+  });
+
+  it("keeps an automatic check quiet and a manual one visible", async () => {
+    const automatic = build();
+    automatic.setCheck(() => Promise.reject(new Error("getaddrinfo ENOTFOUND github.com")));
+    await automatic.service.check({ automatic: true });
+    expect(automatic.service.state()).toMatchObject({
+      phase: "idle",
+      problemKind: "network",
+      problemAutomatic: true,
+    });
+
+    const manual = build();
+    manual.setCheck(() => Promise.reject(new Error("getaddrinfo ENOTFOUND github.com")));
+    await manual.service.check();
+    expect(manual.service.state()).toMatchObject({
+      phase: "error",
+      problemKind: "network",
+      problemAutomatic: false,
+    });
+  });
+
+  it("marks a missing check feed as no-feed, not an error", async () => {
+    const { service, setCheck } = build();
+    setCheck(() => Promise.reject(new Error("ERR_UPDATER_LATEST_VERSION_NOT_FOUND")));
+    await service.check();
+    expect(service.state()).toMatchObject({ phase: "no-feed", problemKind: "no-feed" });
+  });
+
+  it("keeps a download failure retryable instead of calling it no-feed", async () => {
+    const { service, emit, setDownload } = build();
+    emit({ type: "available", version: "2.0.0" });
+    setDownload(() => {
+      throw new Error("HttpError: 404 Not Found");
+    });
+    await service.download();
+    expect(service.state()).toMatchObject({
+      phase: "available",
+      version: "2.0.0",
+      problemKind: "download",
+    });
+  });
+
+  it("clearProblem resets an error/no-feed notice but keeps an offer", async () => {
+    const failed = build();
+    failed.setCheck(() => Promise.reject(new Error("feed down")));
+    await failed.service.check();
+    expect(failed.service.state().phase).toBe("error");
+    failed.service.clearProblem();
+    expect(failed.service.state()).toMatchObject({
+      phase: "idle",
+      error: null,
+      problemKind: null,
+    });
+
+    const offered = build();
+    offered.emit({ type: "available", version: "2.0.0" });
+    offered.emit({ type: "error", message: "feed down", context: "check" });
+    expect(offered.service.state().phase).toBe("available");
+    offered.service.clearProblem();
+    expect(offered.service.state()).toMatchObject({
+      phase: "available",
+      version: "2.0.0",
+      error: null,
+    });
+  });
+
+  it("does not offer a build that is not newer than the running app", () => {
+    const { service, emit } = build({ currentVersion: "0.3.0" });
+    emit({ type: "available", version: "0.3.0" });
+    expect(service.state()).toMatchObject({ phase: "up-to-date", version: null });
+    emit({ type: "available", version: "0.4.0" });
+    expect(service.state()).toMatchObject({ phase: "available", version: "0.4.0" });
   });
 
   it("stops forwarding events and callbacks after dispose", () => {

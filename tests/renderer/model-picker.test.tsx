@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ModelPicker } from "../../src/renderer/src/session/ModelPicker";
@@ -58,6 +58,24 @@ describe("ModelPicker", () => {
     expect(screen.getByRole("option", { name: /GPT-5/ })).toHaveAttribute("aria-selected", "false");
   });
 
+  it("previews each model's supported thinking levels", () => {
+    const entries = toCatalog(
+      [
+        { id: "deepseek", provider: "synthetic", name: "DeepSeek" },
+        { id: "plain", provider: "synthetic", name: "Plain" },
+      ],
+      {
+        "synthetic/deepseek": ["off", "low", "high", "xhigh", "max"],
+      },
+    );
+    renderPicker({ entries });
+
+    const deepseek = screen.getByText("off/low/high/xhigh/max");
+    expect(deepseek).toHaveAttribute("title", "Supports thinking: off, low, high, xhigh, max");
+    // A model with no capability entry shows no extra span.
+    expect(screen.queryByText("off", { exact: true })).toBeNull();
+  });
+
   it("shows the credential state, and offers Sign in when there is none", async () => {
     const user = userEvent.setup();
     const { onSignIn } = renderPicker();
@@ -103,7 +121,7 @@ describe("ModelPicker", () => {
   it("toggles a model in the scope from the star", async () => {
     const user = userEvent.setup();
     const { onToggleScope } = renderPicker();
-    await user.click(screen.getByRole("button", { name: "Add GPT-5 to scope" }));
+    await user.click(screen.getByRole("button", { name: "Add openai / GPT-5 to scope" }));
     expect(onToggleScope).toHaveBeenCalledWith(CATALOG[1]);
   });
 
@@ -121,7 +139,32 @@ describe("ModelPicker", () => {
 
   it("disables the star while that model's scope write is in flight", () => {
     renderPicker({ scoped: ["openai/gpt-5"], scopeBusyKey: "openai/gpt-5" });
-    expect(screen.getByRole("button", { name: "Remove GPT-5 from scope" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove openai / GPT-5 from scope" })).toBeDisabled();
+  });
+
+  it("prefixes scoped rows when two providers share a model name", () => {
+    const entries = toCatalog([
+      { id: "kimi", provider: "moonshotai", name: "Kimi" },
+      { id: "kimi", provider: "synthetic", name: "Kimi" },
+    ]);
+    renderPicker({ entries, scoped: ["moonshotai/kimi", "synthetic/kimi"] });
+
+    const list = screen.getByTestId("model-list");
+    const options = within(list).getAllByRole("option", { name: /Kimi/ });
+    expect(options).toHaveLength(2);
+    expect(options[0]).toHaveAccessibleName("moonshotai / Kimi");
+    expect(options[1]).toHaveAccessibleName("synthetic / Kimi");
+    // The visible prefix is what disambiguates the rows.
+    expect(within(list).getByText("moonshotai /")).toHaveAttribute(
+      "data-model-provider",
+      "moonshotai",
+    );
+    expect(within(list).getByText("synthetic /")).toHaveAttribute(
+      "data-model-provider",
+      "synthetic",
+    );
+    // Provider groups keep their heading, so their rows stay uncluttered.
+    expect(within(list).queryByText("anthropic /")).toBeNull();
   });
 
   it("shows a picker-scoped error when one is set, and none otherwise", () => {
@@ -168,7 +211,15 @@ describe("ModelPicker", () => {
 });
 
 describe("ThinkingPicker", () => {
-  it("offers only the levels the host reported for this model", async () => {
+  function levelRow(level: string): HTMLButtonElement {
+    const node = screen
+      .getByTestId("thinking-levels")
+      .querySelector(`button[data-level="${level}"]`);
+    if (!(node instanceof HTMLButtonElement)) throw new Error(`no row for ${level}`);
+    return node;
+  }
+
+  it("shows the full scale and disables levels the model does not support", async () => {
     const user = userEvent.setup();
     const onPick = vi.fn();
     render(
@@ -181,14 +232,62 @@ describe("ThinkingPicker", () => {
       />,
     );
 
-    const levels = [...screen.getByTestId("thinking-levels").querySelectorAll("[data-level]")].map(
-      (node) => node.getAttribute("data-level"),
-    );
-    expect(levels).toEqual(["off", "high"]);
-    expect(screen.getByRole("option", { name: /high/ })).toHaveAttribute("aria-selected", "true");
+    const rows = [...screen.getByTestId("thinking-levels").querySelectorAll("button[data-level]")];
+    expect(rows.map((node) => node.getAttribute("data-level"))).toEqual([
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    expect(rows.map((node) => node.getAttribute("data-supported"))).toEqual([
+      "true",
+      "false",
+      "false",
+      "false",
+      "true",
+      "false",
+      "false",
+    ]);
+    expect(levelRow("high")).toHaveAttribute("aria-selected", "true");
 
-    await user.click(screen.getByRole("option", { name: /off/ }));
+    // Unsupported rows are visible but cannot be picked.
+    const medium = levelRow("medium");
+    expect(medium).toBeDisabled();
+    expect(within(medium).getByText("not supported")).toBeInTheDocument();
+    await user.click(medium);
+    expect(onPick).not.toHaveBeenCalled();
+
+    await user.click(levelRow("off"));
     expect(onPick).toHaveBeenCalledWith("off", { persist: true });
+  });
+
+  it("updates the enabled set when the selected model changes", () => {
+    const { rerender } = render(
+      <ThinkingPicker
+        open
+        levels={["low", "high", "max"]}
+        current="high"
+        onPick={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(levelRow("medium")).toBeDisabled();
+    expect(levelRow("off")).toBeDisabled();
+
+    rerender(
+      <ThinkingPicker
+        open
+        levels={["off", "minimal", "low", "medium", "high", "xhigh", "max"]}
+        current="high"
+        onPick={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(levelRow("medium")).toBeEnabled();
+    expect(levelRow("off")).toBeEnabled();
   });
 
   it("no longer offers a save-as-default switch", () => {
@@ -204,9 +303,50 @@ describe("ThinkingPicker", () => {
     expect(screen.queryByLabelText("Save as default")).toBeNull();
   });
 
-  it("says so when the model cannot think", () => {
+  it("says so when the model cannot think, and disables the whole scale", () => {
     render(<ThinkingPicker open levels={[]} current={null} onPick={vi.fn()} onClose={vi.fn()} />);
     expect(screen.getByText(/does not support thinking levels/)).toBeInTheDocument();
+    const rows = [...screen.getByTestId("thinking-levels").querySelectorAll("button[data-level]")];
+    expect(rows).toHaveLength(7);
+    for (const row of rows) expect(row).toBeDisabled();
+  });
+
+  it("orders the full scale, names the model and describes every level", () => {
+    render(
+      <ThinkingPicker
+        open
+        levels={["max", "low", "off", "high", "xhigh"]}
+        current="max"
+        modelLabel="synthetic/deepseek"
+        onPick={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const levels = [
+      ...screen.getByTestId("thinking-levels").querySelectorAll("button[data-level]"),
+    ].map((node) => node.getAttribute("data-level"));
+    expect(levels).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+    expect(screen.getByText(/Levels supported by synthetic\/deepseek\./)).toBeInTheDocument();
+    expect(screen.getByText("Maximum reasoning effort")).toBeInTheDocument();
+    expect(screen.getByText("Extra-high reasoning effort")).toBeInTheDocument();
+    expect(levelRow("max")).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("shows a custom level as its own enabled row", () => {
+    render(
+      <ThinkingPicker
+        open
+        levels={["off", "ultra"]}
+        current="off"
+        onPick={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Custom level")).toBeInTheDocument();
+    const ultra = levelRow("ultra");
+    expect(ultra).toBeEnabled();
+    expect(ultra).toHaveAttribute("data-supported", "true");
   });
 });
 

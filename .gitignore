@@ -3,6 +3,7 @@ dist/
 out/
 release/
 coverage/
+packages/checkpoints/index.mjs
 *.log
 .DS_Store
 Thumbs.db

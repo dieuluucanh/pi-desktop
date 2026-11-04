@@ -22,6 +22,7 @@ function view(overrides: Partial<OfficeSetupView> = {}): OfficeSetupView {
     sideload: null,
     openOffice: null,
     health: null,
+    bridgeConnect: null,
     compatibility: null,
     run: null,
     panes: [],

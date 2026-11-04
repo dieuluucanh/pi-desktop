@@ -3,6 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { diffLines } from "diff";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { copyText, hasSelectionWithin } from "../ui/clipboard";
 import { cn } from "../ui/cn";
 import { Markdown } from "./Markdown";
 import { HighlightText } from "./Highlight";
@@ -15,6 +16,7 @@ import { isOfficeTool, officeToolSummary } from "./office-tool-card";
 import { useMarkdownTransform } from "./useMarkdownTransform";
 import { useAppStore } from "../state/app-store";
 import { matchesBinding } from "../shortcuts/dom-keys";
+import { isNotificationMuted } from "../../../shared/notifications";
 import { resolveDesktopKeymap } from "../../../shared/desktop-keymap";
 import { isBlobRef } from "../../../shared/host-protocol";
 import type { OfficeDocumentPane } from "../../../shared/office-documents";
@@ -321,6 +323,15 @@ function NoticeView({
   onAbort?: () => void;
   running?: boolean;
 }) {
+  const notifications = useAppStore((state) => state.prefs.notifications);
+  // A muted extension notification stays in the history archive, but it must
+  // not take a row in the transcript. The hook runs before this early return.
+  if (
+    notice.event === "oi.notify" &&
+    isNotificationMuted({ message: notice.text, type: notice.severity }, notifications)
+  ) {
+    return null;
+  }
   const tone =
     notice.severity === "error" ? "danger" : notice.severity === "warning" ? "warn" : "neutral";
   return (
@@ -352,22 +363,20 @@ function NoticeView({
  * teach users not to trust the transcript's controls.
  */
 function MessageActions({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
   return (
     <div className="mt-1 flex gap-2 text-[11px] text-ink-faint">
       <button
         type="button"
         className="hover:text-ink"
         onClick={() => {
-          const clipboard = navigator.clipboard;
-          if (!clipboard) return;
-          void clipboard.writeText(text).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1_500);
+          void copyText(text).then((ok) => {
+            setStatus(ok ? "copied" : "failed");
+            setTimeout(() => setStatus("idle"), 1_500);
           });
         }}
       >
-        {copied ? "copied" : "copy"}
+        {status === "copied" ? "copied" : status === "failed" ? "copy failed" : "copy"}
       </button>
     </div>
   );
@@ -702,6 +711,7 @@ export function Transcript({
   toolsExpanded,
   onToggleToolsExpanded,
   followPaused = false,
+  active = true,
 }: {
   items: readonly TranscriptItem[];
   /** The session tab, so tool/message renderers can run in its host (step 18). */
@@ -715,6 +725,14 @@ export function Transcript({
   toolsExpanded?: boolean | null;
   /** Flips the app's expand-all state (`app.tools.expand`). */
   onToggleToolsExpanded?: () => void;
+  /**
+   * False for a transcript in a background grid pane (2026-11-03 plan).
+   *
+   * The find bar and jump-to-bottom are `window` listeners, so several mounted
+   * transcripts would all react to one keystroke. Only the focused pane's
+   * transcript claims them; a background pane's stays inert until it is clicked.
+   */
+  active?: boolean;
   /**
    * Suspends auto-follow while an overlay owns the user's attention (a picker or
    * dialog). Streaming continues; the viewport just stops chasing it.
@@ -733,9 +751,10 @@ export function Transcript({
     [items],
   );
 
-  // Command prompts (2026-10-26 composer plan): Summary/Ctrl+O/Verbose are the
-  // global override, the App preference is the neutral default, and a per-row
-  // toggle wins until the global state changes.
+  // Command prompts (2026-10-26 composer plan): Ctrl+O is the global override,
+  // the App preference is the neutral default, and a per-row toggle wins until
+  // the global state changes. The Normal/Verbose/Summary mode was removed
+  // (2026-10-30 copy plan); Ctrl+O is the only expand-all switch.
   const showExpandedPrompts = useAppStore((state) => state.prefs.showExpandedPrompts);
   const defaultPromptExpanded = toolsExpanded ?? showExpandedPrompts;
   const [promptOverrides, setPromptOverrides] = useState<Record<string, boolean>>({});
@@ -758,18 +777,30 @@ export function Transcript({
     overscan: 8,
   });
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
-    const node = scrollRef.current;
-    if (!node) return;
-    if (typeof node.scrollTo === "function") {
-      node.scrollTo({ top: node.scrollHeight, behavior });
-    } else {
-      node.scrollTop = node.scrollHeight;
-    }
-    stickToBottom.current = true;
-    setAtBottom(true);
-    setHasNews(false);
-  }, []);
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior = "auto", options?: { force?: boolean }) => {
+      const node = scrollRef.current;
+      if (!node) return;
+      // A live selection belongs to the user. Auto-follow must not move the
+      // viewport out from under a drag-select while a response streams; the
+      // pill and Ctrl+End are the explicit ways to force it (2026-10-30 copy
+      // plan).
+      if (!options?.force && hasSelectionWithin(node)) {
+        setAtBottom(false);
+        setHasNews(true);
+        return;
+      }
+      if (typeof node.scrollTo === "function") {
+        node.scrollTo({ top: node.scrollHeight, behavior });
+      } else {
+        node.scrollTop = node.scrollHeight;
+      }
+      stickToBottom.current = true;
+      setAtBottom(true);
+      setHasNews(false);
+    },
+    [],
+  );
 
   /**
    * A size signature of the last item's streamed text. Streaming deltas grow the
@@ -840,16 +871,19 @@ export function Transcript({
   // `Ctrl+End` is terminal Pi's jump-to-bottom; it must never steal the chord
   // from a native editor (where it means "end of document").
   useEffect(() => {
+    // Only the focused pane owns the global chord: a grid mounts several
+    // transcripts, and each one listening would scroll all of them at once.
+    if (!active) return;
     const onKeyDown = (event: KeyboardEvent): void => {
       if (!event.ctrlKey || event.key !== "End") return;
       const target = event.target as HTMLElement | null;
       if (target?.closest?.("input, textarea, [contenteditable='true']")) return;
       event.preventDefault();
-      scrollToBottom("smooth");
+      scrollToBottom("smooth", { force: true });
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [scrollToBottom]);
+  }, [scrollToBottom, active]);
 
   // ---- Transcript find (plan step 11) ----
   const [findOpen, setFindOpen] = useState(false);
@@ -888,6 +922,8 @@ export function Transcript({
     [findOverride],
   );
   useEffect(() => {
+    // Same rule as Ctrl+End: one find bar per keystroke, owned by the focused pane.
+    if (!active) return;
     const onKeyDown = (event: KeyboardEvent): void => {
       if (findKeys.length === 0) return;
       if (!matchesBinding(event, findKeys)) return;
@@ -898,7 +934,7 @@ export function Transcript({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [findKeys]);
+  }, [findKeys, active]);
 
   const activeItemId =
     activeMatch >= 0 ? (find.matches[activeMatch]?.itemId ?? undefined) : undefined;
@@ -961,7 +997,7 @@ export function Transcript({
         type="button"
         data-testid="jump-to-latest"
         className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-line bg-surface px-3 py-1 text-xs shadow-sm hover:bg-raised"
-        onClick={() => scrollToBottom("smooth")}
+        onClick={() => scrollToBottom("smooth", { force: true })}
       >
         {hasNews ? "New messages · jump to latest" : "Jump to latest"}
       </button>

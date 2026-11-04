@@ -68,6 +68,15 @@ export function isEditableTarget(target: unknown): boolean {
 }
 
 /**
+ * True when the event originates inside a CodeMirror surface. CodeMirror owns
+ * these keys (undo, search, save); Pi's composer-oriented actions must not also
+ * fire while the file editor has focus.
+ */
+export function isEditorSurfaceTarget(target: unknown): boolean {
+  return target instanceof Element && target.closest(".cm-editor") !== null;
+}
+
+/**
  * Finds the extension shortcut an event fires, comparing canonically so
  * `ctrl+shift+o` matches a registered `shift+ctrl+o`.
  */

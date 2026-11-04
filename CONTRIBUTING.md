@@ -74,6 +74,7 @@ src/preload/         the only place that touches contextBridge/ipcRenderer
 src/renderer/src/    React app: layout/, views/, ui/, state/, styles/
 src/host/            the Pi host process (SDK behind src/host/sdk/)
 src/shared/          types + constants shared by all of the above
+packages/checkpoints/  the publishable @dieulc/checkpoints package
 resources/           vendored Office manifest, fetched Node/npm runtime
 tests/               vitest (node + renderer) and the Playwright E2E suite
 ```
@@ -84,7 +85,9 @@ Releases are cut from `main`. `npm run package:win|mac|linux` fetches the
 runtime, builds, verifies it and produces the installers under `release/`.
 Windows NSIS + portable is the primary artefact; macOS and Linux are beta.
 `electron-builder.yml` publishes to GitHub Releases, which is also the
-`electron-updater` feed. Artefacts are unsigned in v0.2.0; signing is backlog.
+`electron-updater` feed. Artefacts are unsigned in v0.4.0; signing is backlog.
+The `afterPack` hook prunes `resources/runtime` to the platform/arch being
+packaged, so an installer never carries another platform's Node runtime.
 
 Each platform's `package:*` script fetches every runtime that platform ships
 (`package:linux` gets x64 **and** arm64, `package:mac` gets both macOS arches),
@@ -99,6 +102,22 @@ and AppImage actually contain the bundled runtime and the host bundle, and can
 attach the files to a **draft** GitHub Release. Nothing publishes a live update
 feed for Linux, because the clean-install acceptance matrix has not been run
 there yet.
+
+The checkpoint extension is a separately versioned npm package:
+`@dieulc/checkpoints` in `packages/checkpoints`. Its version and tag are
+independent of the app (`@dieulc/checkpoints@0.1.2`). Use:
+
+```bash
+npm run build:extension
+npm run verify:extension
+npm run release:extension:status -- --check
+npm run release:extension -- --bump patch --branch dev --yes
+```
+
+`release:extension` defaults to `main`; pass `--branch dev` for a pre-merge
+release. It runs the full gate, builds and verifies the tarball, commits only the
+package manifest/changelog, publishes with npm, then tags and pushes. A stale
+installed copy in a profile is updated with `pi update --extensions`.
 
 To build Linux locally on a Linux machine (or WSL):
 

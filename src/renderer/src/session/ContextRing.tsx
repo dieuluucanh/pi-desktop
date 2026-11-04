@@ -56,9 +56,9 @@ export function ContextRing({ usage, cost = null, className }: ContextRingProps)
       role="img"
       aria-label={label}
       title={label}
-      className={cn("inline-flex size-6 items-center justify-center", className)}
+      className={cn("inline-flex size-7 items-center justify-center", className)}
     >
-      <svg viewBox="0 0 24 24" className="size-6 -rotate-90" aria-hidden>
+      <svg viewBox="0 0 24 24" className="size-4 -rotate-90" aria-hidden>
         <circle cx="12" cy="12" r={radius} fill="none" strokeWidth="2.5" className="stroke-line" />
         {fraction !== null ? (
           <circle

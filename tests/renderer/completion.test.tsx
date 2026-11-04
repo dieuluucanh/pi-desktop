@@ -80,7 +80,6 @@ function renderComposer(
         running={options.running ?? false}
         draft={draft}
         queue={{ steering: [], followUp: [] }}
-        sendMode="steer"
         onDraftChange={(text) => {
           setDraft(text);
           onDraftChange(text);
@@ -89,7 +88,6 @@ function renderComposer(
         onStop={onStop}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onSendModeChange={() => undefined}
         onHistoryStep={() => null}
         completion={{
           provider: options.provider ?? fakeProvider(),

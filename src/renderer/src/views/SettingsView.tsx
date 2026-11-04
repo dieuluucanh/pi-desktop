@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { SettingsScope } from "../../../shared/settings-schema";
+import { formatZoomPercent } from "../../../shared/zoom";
+import { MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH } from "../../../shared/prefs";
 import {
   getSettingsValue,
   groupSettingsFields,
@@ -13,7 +15,6 @@ import {
   settingsGlobalValueProvenance,
   splitAdvancedFields,
 } from "../../../shared/settings-view";
-import type { ThemeSetting, ViewMode } from "../../../shared/prefs";
 import { useAppStore } from "../state/app-store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -21,6 +22,14 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dia
 import { Separator } from "../ui/separator";
 import { Switch } from "../ui/switch";
 import { SettingsFieldEditor } from "../settings/SettingsFieldEditor";
+import {
+  CheckpointsSettingsCard,
+  SourceControlSettingsCard,
+} from "../settings/SourceControlSettings";
+import { NotificationsSettingsCard } from "../settings/NotificationsSettings";
+import { UpdateSettingsCard } from "../settings/UpdateSettingsCard";
+import { setSidebarWidth } from "../state/sidebar-width";
+import { ViewShell } from "./ViewShell";
 
 /**
  * Settings (plan step 12).
@@ -35,12 +44,21 @@ import { SettingsFieldEditor } from "../settings/SettingsFieldEditor";
  * validated document edit; a malformed file is surfaced here, never overwritten.
  */
 
-const THEMES: readonly ThemeSetting[] = ["dark", "light", "system"];
-const VIEW_MODES: readonly ViewMode[] = ["normal", "verbose", "summary"];
+/**
+ * Settings fields this view does not render because another surface owns them.
+ * `theme` is the Pi theme setting; the Skills → Themes catalogue is its one
+ * control (the raw JSON editor remains an escape hatch).
+ */
+const APP_OWNED_SETTINGS = new Set(["theme"]);
 
 export function SettingsView() {
   const prefs = useAppStore((state) => state.prefs);
   const setPrefs = useAppStore((state) => state.setPrefs);
+  const setView = useAppStore((state) => state.setView);
+  const zoomFactor = useAppStore((state) => state.prefs.zoomFactor);
+  const zoomIn = useAppStore((state) => state.zoomIn);
+  const zoomOut = useAppStore((state) => state.zoomOut);
+  const zoomReset = useAppStore((state) => state.zoomReset);
   const toggleSidebar = useAppStore((state) => state.toggleSidebar);
   const info = useAppStore((state) => state.info);
   const project = useAppStore((state) => state.project);
@@ -53,6 +71,18 @@ export function SettingsView() {
   const settingsExternalEdit = useAppStore((state) => state.settingsExternalEdit);
   const loadSettings = useAppStore((state) => state.loadSettings);
   const setSetting = useAppStore((state) => state.setSetting);
+  const settingsFocus = useAppStore((state) => state.settingsFocus);
+  const clearSettingsFocus = useAppStore((state) => state.clearSettingsFocus);
+  const updateCardRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    // The Help menu routes here (`check-updates` / `view-about`): scroll to the
+    // card and consume the target so a later unrelated Settings visit starts at
+    // the top.
+    if (settingsFocus !== "updates") return;
+    updateCardRef.current?.scrollIntoView?.({ block: "start" });
+    clearSettingsFocus();
+  }, [settingsFocus, clearSettingsFocus]);
   const writeRawSettings = useAppStore((state) => state.writeRawSettings);
   const reloadSettings = useAppStore((state) => state.reloadSettings);
   const checkExternalSettingsEdit = useAppStore((state) => state.checkExternalSettingsEdit);
@@ -135,7 +165,7 @@ export function SettingsView() {
   }, [rawDraft]);
 
   return (
-    <div className="mx-auto flex h-full max-w-4xl flex-col gap-5 overflow-y-auto px-8 py-6">
+    <ViewShell width="standard" gap={5}>
       <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold">Settings</h1>
@@ -213,20 +243,27 @@ export function SettingsView() {
         <h2 className="text-sm font-semibold">App preferences</h2>
         <Row
           label="Theme"
-          hint="First-paint fallback only; the active Pi theme (Skills → Themes) owns the chrome once it loads."
+          hint="Light, dark and custom themes live in Skills, themes & keys — one catalogue, one control."
         >
-          <Segmented
-            options={THEMES}
-            value={prefs.theme}
-            onChange={(theme) => setPrefs({ theme })}
-          />
+          <Button size="sm" onClick={() => setView("skills")}>
+            Open theme settings
+          </Button>
         </Row>
-        <Row label="Tool-call detail" hint="How much of each tool call the transcript shows.">
-          <Segmented
-            options={VIEW_MODES}
-            value={prefs.viewMode}
-            onChange={(viewMode) => setPrefs({ viewMode })}
-          />
+        <Row
+          label="Display zoom"
+          hint="Changes the size of the whole app. View → Zoom In / Zoom Out / Actual Size, or Ctrl/Cmd + = / - / 0."
+        >
+          <div className="flex items-center gap-2" data-testid="display-zoom">
+            <Button size="sm" variant="ghost" aria-label="Zoom out" onClick={zoomOut}>
+              −
+            </Button>
+            <Button size="sm" variant="ghost" title="Reset to 100%" onClick={zoomReset}>
+              {formatZoomPercent(zoomFactor)}
+            </Button>
+            <Button size="sm" variant="ghost" aria-label="Zoom in" onClick={zoomIn}>
+              +
+            </Button>
+          </div>
         </Row>
         <Row
           label="Expanded command prompts"
@@ -251,16 +288,16 @@ export function SettingsView() {
             <Button
               size="sm"
               variant="ghost"
-              disabled={prefs.sidebarWidth <= 200}
-              onClick={() => setPrefs({ sidebarWidth: Math.max(200, prefs.sidebarWidth - 24) })}
+              disabled={prefs.sidebarWidth <= MIN_SIDEBAR_WIDTH}
+              onClick={() => setSidebarWidth(prefs.sidebarWidth - 24)}
             >
               Narrower
             </Button>
             <Button
               size="sm"
               variant="ghost"
-              disabled={prefs.sidebarWidth >= 520}
-              onClick={() => setPrefs({ sidebarWidth: Math.min(520, prefs.sidebarWidth + 24) })}
+              disabled={prefs.sidebarWidth >= MAX_SIDEBAR_WIDTH}
+              onClick={() => setSidebarWidth(prefs.sidebarWidth + 24)}
             >
               Wider
             </Button>
@@ -286,6 +323,16 @@ export function SettingsView() {
         </Row>
       </section>
 
+      {/*
+        Source control and checkpoints (git-checkpoint plan step 27). Both cards edit
+        `prefs` only: main projects the checkpoint keys to
+        `<profile>/checkpoints/config.json`, and the host-side extension reads that
+        file — there is no second write path (D19).
+      */}
+      <SourceControlSettingsCard />
+      <CheckpointsSettingsCard />
+      <NotificationsSettingsCard />
+
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold">Pi settings</h2>
         <div className="flex items-center gap-2">
@@ -302,7 +349,9 @@ export function SettingsView() {
 
       {groups.map(({ group, fields }) => {
         const { basic, advanced } = splitAdvancedFields(fields);
-        const visible = showAdvanced ? [...basic, ...advanced] : basic;
+        const visible = (showAdvanced ? [...basic, ...advanced] : basic).filter(
+          (field) => !APP_OWNED_SETTINGS.has(field.key),
+        );
         if (visible.length === 0) return null;
         return (
           <section
@@ -348,6 +397,10 @@ export function SettingsView() {
           </dd>
         </dl>
       </section>
+
+      <div ref={updateCardRef}>
+        <UpdateSettingsCard />
+      </div>
 
       <Dialog open={rawOpen} onOpenChange={setRawOpen}>
         <DialogContent data-testid="settings-raw-dialog">
@@ -479,7 +532,7 @@ export function SettingsView() {
           </div>
         </DialogContent>
       </Dialog>
-    </div>
+    </ViewShell>
   );
 }
 
@@ -497,32 +550,6 @@ function Row({
       <div className="text-sm">{label}</div>
       {hint ? <div className="text-xs text-ink-faint">{hint}</div> : null}
       {children}
-    </div>
-  );
-}
-
-function Segmented<T extends string>({
-  options,
-  value,
-  onChange,
-}: {
-  options: readonly T[];
-  value: T;
-  onChange: (next: T) => void;
-}) {
-  return (
-    <div className="flex gap-1">
-      {options.map((option) => (
-        <Button
-          key={option}
-          size="sm"
-          variant={option === value ? "secondary" : "ghost"}
-          aria-pressed={option === value}
-          onClick={() => onChange(option)}
-        >
-          {option}
-        </Button>
-      ))}
     </div>
   );
 }

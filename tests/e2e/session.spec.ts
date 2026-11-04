@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { expect, test } from "@playwright/test";
 import { launchFakeApp, type FakeApp } from "./fixtures/fake-app";
 import { removeTempDirs } from "./fixtures/app";
@@ -9,6 +10,10 @@ import { removeTempDirs } from "./fixtures/app";
  */
 
 let app: FakeApp | undefined;
+
+// The host runs `!` through the same Bash Pi uses. A Windows CI machine without
+// Git Bash cannot exercise the path, so the test says so instead of failing.
+const hasBash = spawnSync("bash", ["-c", "true"], { stdio: "ignore" }).status === 0;
 
 test.afterEach(async () => {
   if (!app) return;
@@ -45,6 +50,21 @@ test("@smoke creates a session and streams a reply from the model", async () => 
   await expect(app.window.getByText("Say hello")).toBeVisible();
 });
 
+test("runs ! and !! shell commands without losing the composer", async () => {
+  test.skip(!hasBash, "bash is not on PATH");
+  app = await launchFakeApp();
+  const composer = await startSession(app);
+
+  await composer.fill("!echo shell-e2e-ok");
+  await composer.press("Enter");
+  await expect(app.window.getByText("shell-e2e-ok")).toBeVisible({ timeout: 30_000 });
+
+  await composer.fill("!!echo excluded-e2e-ok");
+  await composer.press("Enter");
+  await expect(app.window.getByText("excluded-e2e-ok")).toBeVisible({ timeout: 30_000 });
+  await expect(composer).toHaveValue("");
+});
+
 test("@smoke aborts a running reply and returns the session to idle", async () => {
   app = await launchFakeApp();
   const composer = await startSession(app);
@@ -67,7 +87,7 @@ test("@smoke aborts a running reply and returns the session to idle", async () =
   await expect(stop).toBeHidden({ timeout: 30_000 });
 });
 
-test("offers steering and follow-up modes while streaming", async () => {
+test("uses one Send button and queues a follow-up with Alt+Enter", async () => {
   app = await launchFakeApp();
   const composer = await startSession(app);
 
@@ -79,21 +99,22 @@ test("offers steering and follow-up modes while streaming", async () => {
   await composer.fill("start a long answer");
   await composer.press("Enter");
 
-  // While streaming the composer offers the steer/follow-up modes, and the send
-  // button becomes the delivery action for the chosen mode (plan step 6).
-  const steerMode = app.window.getByRole("button", { name: "steer mode" });
-  const followUpMode = app.window.getByRole("button", { name: "follow-up mode" });
-  await expect(steerMode).toBeVisible({ timeout: 30_000 });
-  await expect(followUpMode).toBeVisible();
-  await expect(app.window.getByRole("button", { name: /^steer$/i })).toBeVisible();
+  // One Send button in every state; the delivery choice is the chord, exactly
+  // like terminal Pi (Enter steers, Alt+Enter queues a follow-up).
+  const send = app.window.getByRole("button", { name: /^send$/i });
+  await expect(send).toBeVisible({ timeout: 30_000 });
+  await expect(send).toHaveAttribute("title", /Alt\+Enter/);
+  await expect(app.window.getByRole("button", { name: "steer mode" })).toHaveCount(0);
+  await expect(app.window.getByRole("button", { name: "follow-up mode" })).toHaveCount(0);
 
-  await followUpMode.click();
-  await expect(followUpMode).toHaveAttribute("aria-pressed", "true");
-  await expect(app.window.getByRole("button", { name: /^follow up$/i })).toBeVisible();
+  await composer.fill("after this");
+  await composer.press("Alt+Enter");
+  await expect(app.window.getByTestId("pending-queue").getByText("Follow-up")).toBeVisible({
+    timeout: 15_000,
+  });
 
   // Stop the long run so the app can shut down promptly.
   await app.window.locator('button[title="Esc"]').click();
-  await expect(steerMode).toBeHidden({ timeout: 30_000 });
 });
 
 test("@smoke keeps two session tabs independent", async () => {

@@ -1,49 +1,27 @@
 /**
  * Node adapters for the workspace file listing (plan step 7).
  *
- * This is the only place that touches `node:fs`/`node:child_process` for file
- * completion; `file-listing.ts` stays pure and testable against a fake tree, and
- * the session core only sees the `FileListingIo` port.
+ * This is the only place that touches `node:fs` for file completion;
+ * `file-listing.ts` stays pure and testable against a fake tree, and the session
+ * core only sees the `FileListingIo` port. The `git` spawn itself lives in
+ * `src/git/runner.ts`, because the source-control rail needs the same adapter.
  */
 
-import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { mkdir, open, readdir, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
-import { dirname } from "node:path";
+import { open, readdir, readFile, realpath, stat, unlink } from "node:fs/promises";
 
+import { createNodeGitRunner } from "../git/runner";
+import { writeFileAtomic } from "../workspace/atomic";
 import type { ModelsFileIo } from "./custom-providers";
-import type { DirectoryEntry, FileListingIo } from "./file-listing";
+import type { DirectoryEntry, FileListingIo } from "../workspace/file-listing";
 import type { ProjectIo } from "./project-inspect";
 import type { SettingsFileIo } from "./settings";
-import type { WorkspaceFileIo } from "./workspace-files";
+import type { WorkspaceFileIo } from "../workspace/workspace-files";
 
 /**
- * Atomic, durable file write (plan step 27).
- *
- * The rename makes the *name* swap atomic, but the new file's bytes can still
- * be sitting in the page cache: a power loss after the rename can leave an
- * empty `settings.json`/`models.json` behind. `sync()` forces the contents out
- * before the rename, so the target is either the old file or the complete new
- * one. The temp file is removed on any failure so a refused write leaves no
- * debris in the shared profile.
+ * The atomic write now lives in `src/workspace/atomic.ts` so main's editor
+ * service and the profile stores share one implementation. The profile stores
+ * keep the historical `0600` default by calling it without a mode.
  */
-async function writeFileAtomic(target: string, text: string): Promise<void> {
-  await mkdir(dirname(target), { recursive: true });
-  const temporary = `${target}.${randomUUID()}.tmp`;
-  let handle: Awaited<ReturnType<typeof open>> | null = null;
-  try {
-    handle = await open(temporary, "w", 0o600);
-    await handle.writeFile(text, "utf8");
-    await handle.sync();
-    await handle.close();
-    handle = null;
-    await rename(temporary, target);
-  } catch (error) {
-    await handle?.close().catch(() => undefined);
-    await unlink(temporary).catch(() => undefined);
-    throw error;
-  }
-}
 
 /**
  * Atomic `models.json` access (plan step 9, slice 5). A temp file in the same
@@ -107,46 +85,25 @@ export function createNodeSettingsFileIo(): SettingsFileIo {
   };
 }
 
-/** Runs `git` in `root` and resolves stdout, or null when it fails/does not exist. */
-function runGitCommand(
+/**
+ * Runs `git` in `root` and resolves stdout, or null when it fails/does not exist.
+ *
+ * The spawn itself lives in `src/git/runner.ts` (the app has one git adapter, so
+ * the completion listing, the project header and the source-control rail cannot
+ * drift apart on flags, timeouts or "what counts as no git").
+ */
+async function runGitCommand(
   root: string,
   args: readonly string[],
   timeoutMs: number,
 ): Promise<string | null> {
-  return new Promise<string | null>((resolve) => {
-    let settled = false;
-    const finish = (value: string | null) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-    };
-    let child;
-    try {
-      child = spawn("git", [...args], { cwd: root, windowsHide: true });
-    } catch {
-      finish(null);
-      return;
-    }
-    const timer = setTimeout(() => {
-      child.kill();
-      finish(null);
-    }, timeoutMs);
-    let stdout = "";
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-    child.on("error", () => {
-      clearTimeout(timer);
-      finish(null);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      // A non-zero exit means "not a repository" or "no git".
-      finish(code === 0 ? stdout : null);
-    });
-  });
+  const result = await sharedGitRunner.run(root, args, { timeoutMs });
+  if (result.missing || result.code !== 0) return null;
+  return result.stdout;
 }
+
+/** One shared adapter: the spawn has no per-call state worth duplicating. */
+const sharedGitRunner = createNodeGitRunner();
 
 export function createNodeFileListingIo(gitTimeoutMs = 4000): FileListingIo {
   return {

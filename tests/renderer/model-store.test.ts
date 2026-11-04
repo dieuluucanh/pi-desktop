@@ -36,6 +36,10 @@ function stubRequest(
         scoped: [{ model: { id: "gpt-5", provider: "openai" }, thinkingLevel: "high" }],
         auth: { anthropic: { configured: true, source: "stored" }, openai: { configured: false } },
         thinkingLevels: ["off", "low", "high"],
+        thinkingByModel: {
+          "anthropic/claude-sonnet-4-5": ["off", "low", "high"],
+          "openai/gpt-5": ["off", "high"],
+        },
       };
     }
     if (input.method === "model.set") {
@@ -82,6 +86,12 @@ describe("loadModels", () => {
     ]);
     // The scoped wrapper's thinking level survives normalisation.
     expect(state.modelCatalog["tab-1"]?.[1]?.thinkingLevel).toBe("high");
+    expect(state.modelCatalog["tab-1"]?.[0]?.supportedThinkingLevels).toEqual([
+      "off",
+      "low",
+      "high",
+    ]);
+    expect(state.modelCatalog["tab-1"]?.[1]?.supportedThinkingLevels).toEqual(["off", "high"]);
     expect(state.providerAuth["tab-1"]?.["openai"]).toMatchObject({ configured: false });
     expect(state.thinkingLevels["tab-1"]).toEqual(["off", "low", "high"]);
     // The live scope is what the dialog's stars and the extension pickers use.
@@ -218,6 +228,7 @@ describe("model scope", () => {
         tab(),
         { ...tab(), id: "tab-2" },
         { ...tab(), id: "tab-3" },
+        { ...tab(), id: "editor-1", kind: "editor", filePath: "a.ts", sessionFile: null },
         { ...tab(), id: "web-1", kind: "web" },
       ],
     });
@@ -227,7 +238,9 @@ describe("model scope", () => {
     const state = useAppStore.getState();
     expect(state.modelScope["tab-2"]).toEqual(["fake/fake-2"]);
     expect(state.modelScope["tab-3"]).toBeUndefined();
+    expect(state.modelScope["editor-1"]).toBeUndefined();
     expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ tabId: "tab-1" }));
+    expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ tabId: "editor-1" }));
     expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ tabId: "web-1" }));
   });
 
@@ -539,14 +552,19 @@ describe("renameSession", () => {
   });
 });
 
-describe("preferences", () => {
-  it("persists the view mode per app, not per session", async () => {
+describe("display zoom", () => {
+  it("persists a clamped zoom factor and steps through the levels", () => {
     const set = vi.fn(async () => ({}));
     (window.pi as unknown as { prefs: { set: unknown } }).prefs.set = set;
 
-    useAppStore.getState().setViewMode("verbose");
+    useAppStore.getState().setZoomFactor(1.25);
+    expect(useAppStore.getState().prefs.zoomFactor).toBe(1.25);
+    expect(set).toHaveBeenCalledWith({ zoomFactor: 1.25 });
 
-    expect(useAppStore.getState().prefs.viewMode).toBe("verbose");
-    expect(set).toHaveBeenCalledWith({ viewMode: "verbose" });
+    useAppStore.getState().zoomIn();
+    expect(useAppStore.getState().prefs.zoomFactor).toBe(1.5);
+
+    useAppStore.getState().zoomReset();
+    expect(useAppStore.getState().prefs.zoomFactor).toBe(1);
   });
 });

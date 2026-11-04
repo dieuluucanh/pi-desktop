@@ -10,6 +10,7 @@
 
 import type { TrustAnswer } from "./projects";
 import { sanitizeWebUrl, webTabTitle } from "./web-tabs";
+import { isWorkspaceRelativePath, workspaceBasename, type WorkspaceEntryKind } from "./workspace";
 
 /**
  * The address of the app-wide **control host** (plan D-A3) on the session
@@ -25,16 +26,34 @@ export function isControlTabId(value: unknown): value is typeof CONTROL_TAB_ID {
 }
 
 /**
- * A tab's backing: a Pi session, the single Office host, or an isolated web view
- * (plan step 21). A `web` tab has no host at all — the session service only
- * carries its record; `src/main/web-tabs.ts` owns its `WebContentsView`.
+ * A tab's backing: a Pi session, the single Office host, an isolated web view,
+ * or a file open in the editor (plan step 7). A `web` tab has no host at all;
+ * an `editor` tab has no host either — its state is the file plus the renderer's
+ * buffer registry.
  */
-export type TabKind = "session" | "office" | "web";
+export type TabKind = "session" | "office" | "web" | "editor";
 
-export const TAB_KINDS: readonly TabKind[] = ["session", "office", "web"];
+export const TAB_KINDS: readonly TabKind[] = ["session", "office", "web", "editor"];
 
 export function isTabKind(value: unknown): value is TabKind {
   return typeof value === "string" && (TAB_KINDS as readonly string[]).includes(value);
+}
+
+/** True for a kind that owns a supervised Pi host. */
+export function isHostBackedTab(kind: TabKind): boolean {
+  return kind === "session" || kind === "office";
+}
+
+/** A tab kind that belongs in the session surfaces (everything but a file tab). */
+export type SessionTabKind = Exclude<TabKind, "editor">;
+
+export function isSessionTabKind(kind: TabKind): kind is SessionTabKind {
+  return kind !== "editor";
+}
+
+/** A narrows to an editor record with a validated file path. */
+export function isEditorTab(tab: TabRecord): tab is TabRecord & { filePath: string } {
+  return tab.kind === "editor" && typeof tab.filePath === "string";
 }
 
 /** Host/tab lifecycle as the UI needs to show it. */
@@ -56,6 +75,8 @@ export interface TabRecord {
   model: string | null;
   /** The page a `web` tab displays (plan step 21); null for host-backed tabs. */
   url?: string | null;
+  /** The project-relative file an `editor` tab edits (plan step 7). */
+  filePath?: string | null;
   /**
    * The session tab whose notification opened this web tab (Plannotator). The
    * transcript uses it to link a review back to the session that started it.
@@ -63,6 +84,47 @@ export interface TabRecord {
   sessionTabId?: string | null;
   /** Last failure, surfaced inline in the tab instead of only in a log. */
   error?: string;
+  /**
+   * Pinned tabs form a stable group at the front of the strip and are skipped by
+   * Close Others/Close All. Omitted for a normal, unpinned tab.
+   */
+  pinned?: boolean;
+}
+
+/**
+ * The tabs that own a Pi host (`session`/`office`), optionally excluding one id.
+ *
+ * Every cross-tab fan-out (model scope, queue modes, project-settings reload)
+ * must use this selector: an `editor` or `web` tab has no host and a
+ * `session.request` addressed to it is a bug, not a failed operation.
+ */
+export function hostBackedTabs<T extends Pick<TabRecord, "id" | "kind">>(
+  tabs: readonly T[],
+  exceptTabId?: string,
+): T[] {
+  return tabs.filter((tab) => tab.id !== exceptTabId && isHostBackedTab(tab.kind));
+}
+
+/** The path mapping used after a rename or move retargets open editor tabs. */
+export interface RetargetEditorTabsInput {
+  fromProjectPath: string;
+  fromPath: string;
+  toProjectPath: string;
+  toPath: string;
+  kind: WorkspaceEntryKind;
+}
+
+/** A tab that the session strip, sidebar and project activation may show. */
+export type SessionTab = TabRecord & { kind: SessionTabKind };
+
+/**
+ * True for a tab that belongs in the session surfaces. A file tab is an editor
+ * view, not a session, even though it shares the persisted tab list. The test is
+ * `kind`, not `filePath`, so a malformed editor record cannot leak into a
+ * session list.
+ */
+export function isSessionTab(tab: TabRecord): tab is SessionTab {
+  return isSessionTabKind(tab.kind);
 }
 
 export type SessionTabsEnvelope = { tabs: TabRecord[]; activeTabId: string | null };
@@ -99,6 +161,8 @@ export interface CreateTabInput {
   sessionFile?: string | null;
   /** The page to open when `kind` is `web` (required in that case). */
   url?: string;
+  /** The project-relative file to edit when `kind` is `editor`. */
+  filePath?: string;
   /** The session tab this web tab belongs to, for the transcript chip. */
   sessionTabId?: string;
   model?: string;
@@ -161,21 +225,31 @@ export function sanitizeTabRecord(value: unknown): TabRecord | null {
   const kind = isTabKind(source.kind) ? source.kind : "session";
   const url = sanitizeWebUrl(source.url);
   const cwd = stringOrNull(source.cwd);
+  const filePath = stringOrNull(source.filePath);
   if (kind === "web" && !url) return null;
   if (kind !== "web" && !cwd) return null;
+  if (kind === "editor" && (!filePath || !isWorkspaceRelativePath(filePath))) return null;
   const status = source.status;
   return {
     id,
     kind,
     cwd: cwd ?? "",
-    title: stringOrNull(source.title) ?? (kind === "web" ? webTabTitle(url) : sessionTitle(cwd!)),
+    title:
+      stringOrNull(source.title) ??
+      (kind === "web"
+        ? webTabTitle(url)
+        : kind === "editor" && filePath
+          ? workspaceBasename(filePath)
+          : sessionTitle(cwd!)),
     sessionFile: stringOrNull(source.sessionFile),
     status: TAB_STATUSES.includes(status as TabStatus) ? (status as TabStatus) : "idle",
     createdAt: numberOr(source.createdAt, 0),
     lastActiveAt: numberOr(source.lastActiveAt, 0),
     model: stringOrNull(source.model),
     ...(kind === "web" ? { url, sessionTabId: stringOrNull(source.sessionTabId) } : {}),
+    ...(kind === "editor" ? { filePath } : {}),
     ...(typeof source.error === "string" ? { error: source.error } : {}),
+    ...(source.pinned === true ? { pinned: true } : {}),
   };
 }
 
@@ -188,6 +262,26 @@ export function sanitizeTabs(value: unknown): TabRecord[] {
     if (record) records.push(record);
   }
   return records;
+}
+
+/**
+ * Whether a `state.get` snapshot says the session is doing work and must not be
+ * parked or recycled. Shared by the session service (idle parking) and the
+ * supervisor (idle/RSS recycling) so the two can never disagree about what
+ * "busy" means.
+ */
+export function isSessionBusyState(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  const nonEmpty = (field: unknown): boolean => Array.isArray(field) && field.length > 0;
+  return (
+    record.streaming === true ||
+    record.compacting === true ||
+    record.retrying === true ||
+    (typeof record.pendingMessages === "number" && record.pendingMessages > 0) ||
+    nonEmpty(record.steering) ||
+    nonEmpty(record.followUp)
+  );
 }
 
 /** Display title for a tab: the last path segment of the project folder. */

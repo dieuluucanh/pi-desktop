@@ -1,12 +1,23 @@
 import type { OfficeSetupStepId, OfficeSetupView } from "./office-setup";
-import type { OfficeStopResult } from "./office-bridge";
+import type { OfficeBridgeControlResult, OfficeStopResult } from "./office-bridge";
 import type { OfficeDocumentsView } from "./office-documents";
 import type { DiagnosticsExport, DiagnosticsSnapshot } from "./diagnostics";
 import type { IntegrationsState, OfficeIntegrationRecordPatch } from "./integrations";
 import type { UiPrefs } from "./prefs";
 import type { ProfileMode } from "./profile";
+import type {
+  GitAction,
+  GitActionResult,
+  GitCommitEntry,
+  GitDiff,
+  GitDiffRequest,
+  GitLogRequest,
+  GitSnapshot,
+} from "./git";
+import type { CheckpointAction, CheckpointActionResult, CheckpointState } from "./checkpoints";
 import type { HostMethod } from "./host-protocol";
 import type { UpdateState } from "./updates";
+import type { BuildChannel } from "./build-info";
 import type {
   CloneProjectInput,
   CreateProjectInput,
@@ -18,10 +29,12 @@ import type {
 } from "./projects";
 import type {
   CreateTabInput,
+  RetargetEditorTabsInput,
   SessionEventEnvelope,
   SessionRequestInput,
   SessionStateEnvelope,
   SessionTabsEnvelope,
+  TabKind,
 } from "./session-ipc";
 import type {
   WebCommand,
@@ -30,6 +43,28 @@ import type {
   WebTabBounds,
   WebTabState,
 } from "./web-tabs";
+import type {
+  EditorBackup,
+  ResolvedEditorConfig,
+  WorkspaceCreateInput,
+  WorkspaceDeleteInput,
+  WorkspaceFileContent,
+  WorkspaceFileList,
+  WorkspaceListing,
+  WorkspaceMutationResult,
+  WorkspaceRenameInput,
+  WorkspaceResult,
+  WorkspaceSearchRequest,
+  WorkspaceSearchResult,
+  WorkspaceSort,
+  WorkspaceStat,
+  WorkspaceTransferInput,
+  WorkspaceTransferResult,
+  WorkspaceWriteInput,
+  WorkspaceWriteResult,
+  WorkspaceFormatRequest,
+  WorkspaceFormatResult,
+} from "./workspace";
 
 /**
  * The IPC surface between the Electron main process and the renderer.
@@ -74,13 +109,33 @@ export const IPC = {
   sessionTabs: "session:tabs",
   sessionCreate: "session:create",
   sessionClose: "session:close",
-  /** Closes every tab except one (plan step 11). */
+  /** Closes every non-pinned tab of one kind. */
+  sessionCloseAll: "session:close-all",
+  /** Closes every tab except one, scoped to the same kind. */
   sessionCloseOthers: "session:close-others",
+  /** Closes every tab in a project, including pinned tabs. */
+  sessionCloseProject: "session:close-project",
+  /** Pins/unpins a tab. */
+  sessionSetPinned: "session:set-pinned",
+  /** Retargets open editor tabs after a rename or move. */
+  sessionRetargetEditor: "session:retarget-editor",
   /** Moves a tab to a new index (plan step 11 drag-reorder). */
   sessionReorder: "session:reorder",
   /** Makes one tab the single Office host, owning the bridge port (plan step 20). */
   sessionPromoteOffice: "session:promote-office",
   sessionActivate: "session:activate",
+  /**
+   * Renderer → main: which tabs are on screen (the grid's panes, or the solo
+   * tab). Advisory — it parks and spawns nothing; it only tells the host policy
+   * which processes must not be idle-recycled (2026-11-03 grid plan).
+   */
+  sessionSetVisible: "session:set-visible",
+  /**
+   * Clears the active tab without closing one (2026-10-30 project-scoped rail
+   * plan): a selected project with no open session shows Welcome while the rail
+   * keeps that project's scope.
+   */
+  sessionDeactivate: "session:deactivate",
   sessionRestore: "session:restore",
   /** Re-checks host/session readiness after suspend or a missed push (no spawn). */
   sessionReconcile: "session:reconcile",
@@ -100,6 +155,8 @@ export const IPC = {
   projectsGet: "projects:get",
   projectsMutate: "projects:mutate",
   projectsCreate: "projects:create",
+  /** Renderer → main: one-click dated project in `<Documents>/Pi-Desktop`. */
+  projectsCreateDefault: "projects:create-default",
   projectsClone: "projects:clone",
   projectsAction: "projects:action",
   /** Enables/disables project-scoped settings for one project. */
@@ -127,6 +184,11 @@ export const IPC = {
   officeDocumentsRefresh: "office:documents-refresh",
   /** Main → renderer: the pane registry changed. */
   officeDocumentsState: "office:documents-state",
+
+  /** On-demand bridge lifecycle (bridge 0.6+). */
+  officeBridgeConnect: "office:bridge-connect",
+  officeBridgeClose: "office:bridge-close",
+  officeBridgeRestart: "office:bridge-restart",
 
   /**
    * Integrations (plan step 19): the app's own record of a consented install,
@@ -159,8 +221,69 @@ export const IPC = {
   updatesCheck: "updates:check",
   updatesDownload: "updates:download",
   updatesInstall: "updates:install",
+  /** Clears a recorded update problem (a no-feed notice or a failed check). */
+  updatesClearProblem: "updates:clear-problem",
   /** Main → renderer: the updater's state changed. */
   updatesState: "updates:state",
+
+  /**
+   * Source control (git-checkpoint plan step 7). The renderer addresses a
+   * *project folder*, never a repository path or an argv: main resolves the work
+   * tree, validates every action against it, and answers with the snapshot the
+   * rail renders.
+   */
+  gitSnapshot: "git:snapshot",
+  /** Re-reads now, bypassing the main-process memo. */
+  gitRefresh: "git:refresh",
+  /** Starts/stops the background status poll for one folder. */
+  gitWatch: "git:watch",
+  /** Runs one validated action from the closed `GitAction` union. */
+  gitAction: "git:action",
+  /** One diff side, for the viewer. */
+  gitDiff: "git:diff",
+  /** One page of the commit log. */
+  gitLog: "git:log",
+  /** HEAD's full commit message, for the amend box. */
+  gitHeadMessage: "git:head-message",
+  /** Local branch names, for the checkout menu. */
+  gitBranches: "git:branches",
+  /** Main → renderer: a folder's snapshot changed. */
+  gitPushed: "git:state",
+
+  /**
+   * Folder checkpoints (git-checkpoint plan step 21). Same shape as git: a
+   * hydration pair (`get`/`refresh`) plus a push, so the section can render
+   * immediately after a relaunch and still update live.
+   */
+  checkpointsGet: "checkpoints:get",
+  checkpointsRefresh: "checkpoints:refresh",
+  /** Runs one validated action from the closed `CheckpointAction` union. */
+  checkpointsAction: "checkpoints:action",
+  /** Main → renderer: a project's checkpoint state changed. */
+  checkpointsPushed: "checkpoints:state",
+
+  /**
+   * Workspace file access for the explorer and editor (2026-11-01 plan). The
+   * renderer names a project folder (main resolves it against the open-project
+   * allowlist) and a project-relative POSIX path; main applies the realpath
+   * containment guard and answers with a `WorkspaceResult` envelope.
+   */
+  workspaceListDirectory: "workspace:list-directory",
+  workspaceListFiles: "workspace:list-files",
+  workspaceSearchFiles: "workspace:search-files",
+  workspaceReadFile: "workspace:read-file",
+  workspaceStat: "workspace:stat",
+  workspaceWriteFile: "workspace:write-file",
+  workspaceCreate: "workspace:create",
+  workspaceRename: "workspace:rename",
+  workspaceDelete: "workspace:delete",
+  workspaceTransfer: "workspace:transfer",
+  workspaceReveal: "workspace:reveal",
+  workspaceEditorConfig: "workspace:editor-config",
+  workspaceReadBackup: "workspace:read-backup",
+  workspaceWriteBackup: "workspace:write-backup",
+  workspaceDeleteBackup: "workspace:delete-backup",
+  workspaceFormat: "workspace:format",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -169,6 +292,12 @@ export type IpcChannel = (typeof IPC)[keyof typeof IPC];
 export const MENU_COMMANDS = [
   "new-session",
   "open-project",
+  "open-file",
+  // Editor surface (2026-11-02 plan). Menu items only: Save/Format are
+  // editor-local chords, so no accelerator is registered here (a menu
+  // accelerator fires before the renderer and would swallow Pi's own Ctrl+S).
+  "save-editor",
+  "format-editor",
   "open-web-url",
   "close-session",
   "view-sessions",
@@ -185,6 +314,8 @@ export const MENU_COMMANDS = [
   "shortcuts",
   // Updates (plan step 26).
   "check-updates",
+  /** Opens the Settings About & updates card (non-macOS About item). */
+  "view-about",
   // Session history (plan step 11).
   "session-tree",
   "session-fork",
@@ -194,6 +325,25 @@ export const MENU_COMMANDS = [
   "model-cycle-forward",
   "model-cycle-backward",
   "thinking-cycle",
+  // The docked panel rail: one toggle for the panel body plus the commands that
+  // open it on a specific menu.
+  "toggle-rail",
+  // Session view grid (2026-11-03 plan). No accelerators: the layout is chosen
+  // rarely, and a global chord would collide with Pi's own keys.
+  "grid-single",
+  "grid-two",
+  "grid-three-left",
+  "grid-three-right",
+  "grid-four",
+  "view-explorer",
+  "view-source-control",
+  "view-checkpoints",
+  "view-documents",
+  // App display zoom (2026-10-30 zoom plan). Explicit CmdOrCtrl+= replaces the
+  // Electron `zoomIn` role, whose Windows/Linux default is Ctrl+Shift+=.
+  "zoom-in",
+  "zoom-out",
+  "zoom-reset",
 ] as const;
 
 export type MenuCommand = (typeof MENU_COMMANDS)[number];
@@ -212,6 +362,18 @@ export interface AppInfo {
   platform: string;
   arch: string;
   isDev: boolean;
+  /**
+   * Build provenance from `<resources>/build-info.json` (written by the
+   * electron-builder `afterPack` hook). `local` builds skip automatic update
+   * checks; `unknown` is a packaged build without a readable provenance file.
+   */
+  buildChannel: BuildChannel;
+  /** The version recorded at pack time (normally `version` above). */
+  buildVersion: string | null;
+  /** Short git commit, when the build host had a checkout. */
+  buildCommit: string | null;
+  /** ISO timestamp of the packaging run. */
+  builtAt: string | null;
   safeMode: boolean;
   /** True when `PI_OFFLINE` disables Pi's startup network calls (plan step 22). */
   piOffline: boolean;
@@ -254,13 +416,28 @@ export interface SessionsBridge {
   list(): Promise<SessionTabsEnvelope>;
   create(input: CreateTabInput): Promise<SessionTabsEnvelope>;
   close(tabId: string): Promise<SessionTabsEnvelope>;
-  /** Closes every tab except `tabId`, keeping that one active. */
+  /** Closes every non-pinned tab of `kind`. */
+  closeAll(kind: TabKind): Promise<SessionTabsEnvelope>;
+  /** Closes every other non-pinned tab of the same kind. */
   closeOthers(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Closes every tab in a project, including pinned tabs (project removal). */
+  closeProject(cwd: string): Promise<SessionTabsEnvelope>;
+  /** Pins/unpins a tab; the pinned group stays first. */
+  setPinned(tabId: string, pinned: boolean): Promise<SessionTabsEnvelope>;
+  /** Updates open editor tabs after a rename or move. */
+  retargetEditorTabs(input: RetargetEditorTabsInput): Promise<SessionTabsEnvelope>;
   /** Moves a tab within the strip; persisted so the order survives a relaunch. */
   reorder(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
   /** Makes this tab the single Office host (plan step 20), restarting its host. */
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
+  /**
+   * Declares the tabs the renderer currently shows. Advisory: unknown ids are
+   * ignored, nothing is parked or spawned, and no tab table is published.
+   */
+  setVisibleTabs(ids: readonly string[]): Promise<void>;
+  /** Clears the active tab without closing or stopping any host. */
+  deactivate(): Promise<SessionTabsEnvelope>;
   /** Makes the tab table truthful after sleep/resume or a lost host. */
   reconcile(): Promise<SessionTabsEnvelope>;
   restore(): Promise<SessionTabsEnvelope>;
@@ -312,6 +489,22 @@ export interface OfficeBridge {
   refreshDocuments(): Promise<OfficeDocumentsView>;
   /** Main → renderer: the pane registry changed. */
   onDocuments(listener: (view: OfficeDocumentsView) => void): () => void;
+  /**
+   * Starts the on-demand bridge in `tabId`. When another app tab owns it, main
+   * closes that tab's bridge first; a terminal/foreign owner requires
+   * `takeover: true` (the UI asks first).
+   */
+  connectBridge(
+    tabId: string,
+    options?: { takeover?: boolean },
+  ): Promise<OfficeBridgeControlResult>;
+  /** Stops the bridge, but only when `tabId` is its live owner. */
+  closeBridge(tabId: string): Promise<OfficeBridgeControlResult>;
+  /** Stops (if owned) and starts again in `tabId`. */
+  restartBridge(
+    tabId: string,
+    options?: { takeover?: boolean },
+  ): Promise<OfficeBridgeControlResult>;
 }
 
 /** UI preferences persisted by the main process (plan step 1). */
@@ -342,6 +535,8 @@ export interface ProjectsBridge {
   get(): Promise<ProjectsSnapshot>;
   mutate(input: ProjectMutation): Promise<ProjectsSnapshot>;
   create(input: CreateProjectInput): Promise<ProjectOpResponse>;
+  /** Creates the dated project inside the OS Documents folder (no git init). */
+  createDefault(): Promise<ProjectOpResponse>;
   clone(input: CloneProjectInput): Promise<ProjectOpResponse>;
   action(input: ProjectActionInput): Promise<boolean>;
   /** Snapshot/empty or restore the project's `.pi/settings.json`. */
@@ -438,8 +633,99 @@ export interface UpdatesBridge {
   download(): Promise<UpdateState>;
   /** Quits and installs a downloaded update; false when none is ready. */
   install(): Promise<boolean>;
+  /** Clears a no-feed/error notice without discarding an offer or download. */
+  clearProblem(): Promise<UpdateState>;
   /** Main → renderer: the updater's state changed. */
   onState(listener: (state: UpdateState) => void): () => void;
+}
+
+/**
+ * Source control (git-checkpoint plan step 7).
+ *
+ * `projectPath` is the *folder* the user opened (a tab's cwd or a remembered
+ * project), never a repository path: main resolves the work tree itself, so a
+ * renderer cannot point git at an arbitrary directory.
+ */
+export interface GitBridge {
+  /** The folder's snapshot; never throws (an unavailable state carries a reason). */
+  snapshot(projectPath: string): Promise<GitSnapshot>;
+  /** Re-reads immediately, bypassing main's short-lived memo. */
+  refresh(projectPath: string): Promise<GitSnapshot>;
+  /**
+   * Starts or stops the background poll. The rail watches only while its Git
+   * section is visible, so a hidden panel costs nothing.
+   */
+  watch(projectPath: string, enabled: boolean): Promise<boolean>;
+  /** Runs one action from the closed union; resolves to a classified result. */
+  action(projectPath: string, action: GitAction): Promise<GitActionResult>;
+  /** One diff side, for the viewer. */
+  diff(projectPath: string, request: GitDiffRequest): Promise<GitDiff>;
+  /** One page of the commit log. */
+  log(projectPath: string, request?: GitLogRequest): Promise<GitCommitEntry[]>;
+  /**
+   * HEAD's complete commit message, or null when there is no commit yet. Used to
+   * prefill the amend box: a subject-only prefill would drop the body.
+   */
+  headMessage(projectPath: string): Promise<string | null>;
+  /** Local branch names, sorted, for the checkout menu. */
+  branches(projectPath: string): Promise<string[]>;
+  /** Main → renderer: a watched folder's snapshot changed. */
+  onSnapshot(listener: (snapshot: GitSnapshot) => void): () => void;
+}
+
+/**
+ * Folder checkpoints (git-checkpoint plan step 21).
+ *
+ * The pair `get`/`refresh` exists for the same reason `office.documents()` /
+ * `refreshDocuments()` exists: the section has to render something on mount,
+ * after a relaunch, before any push arrives.
+ */
+export interface CheckpointsBridge {
+  /** The folder's checkpoint surface; never throws (a disabled state says why). */
+  get(projectPath: string): Promise<CheckpointState>;
+  /** Re-reads the timeline and the usage numbers. */
+  refresh(projectPath: string): Promise<CheckpointState>;
+  /** Runs one action from the closed union. */
+  action(projectPath: string, action: CheckpointAction): Promise<CheckpointActionResult>;
+  /** Main → renderer: a project's checkpoint state changed. */
+  onState(listener: (state: CheckpointState) => void): () => void;
+}
+
+/**
+ * Workspace file access (2026-11-01 plan). Every method returns an envelope:
+ * expected failures (conflict, forbidden, not_found) travel as data because
+ * Electron's IPC boundary drops custom Error fields.
+ */
+export interface WorkspaceBridge {
+  listDirectory(input: {
+    projectPath: string;
+    path: string;
+    sort?: WorkspaceSort;
+  }): Promise<WorkspaceResult<WorkspaceListing>>;
+  listFiles(input: {
+    projectPath: string;
+    limit?: number;
+  }): Promise<WorkspaceResult<WorkspaceFileList>>;
+  searchFiles(input: WorkspaceSearchRequest): Promise<WorkspaceResult<WorkspaceSearchResult>>;
+  readFile(input: {
+    projectPath: string;
+    path: string;
+  }): Promise<WorkspaceResult<WorkspaceFileContent>>;
+  stat(input: { projectPath: string; path: string }): Promise<WorkspaceResult<WorkspaceStat>>;
+  writeFile(input: WorkspaceWriteInput): Promise<WorkspaceResult<WorkspaceWriteResult>>;
+  create(input: WorkspaceCreateInput): Promise<WorkspaceResult<WorkspaceMutationResult>>;
+  rename(input: WorkspaceRenameInput): Promise<WorkspaceResult<WorkspaceMutationResult>>;
+  delete(input: WorkspaceDeleteInput): Promise<WorkspaceResult<WorkspaceMutationResult>>;
+  transfer(input: WorkspaceTransferInput): Promise<WorkspaceResult<WorkspaceTransferResult>>;
+  reveal(input: { projectPath: string; path: string }): Promise<WorkspaceResult<boolean>>;
+  editorConfig(input: {
+    projectPath: string;
+    path: string;
+  }): Promise<WorkspaceResult<ResolvedEditorConfig>>;
+  readBackup(tabId: string): Promise<WorkspaceResult<EditorBackup | null>>;
+  writeBackup(backup: EditorBackup): Promise<WorkspaceResult<boolean>>;
+  deleteBackup(tabId: string): Promise<WorkspaceResult<boolean>>;
+  format(request: WorkspaceFormatRequest): Promise<WorkspaceResult<WorkspaceFormatResult>>;
 }
 
 /** The complete API exposed to the renderer as `window.pi`. */
@@ -465,4 +751,7 @@ export interface PiDesktopBridge {
   web: WebBridge;
   diagnostics: DiagnosticsBridge;
   updates: UpdatesBridge;
+  git: GitBridge;
+  checkpoints: CheckpointsBridge;
+  workspace: WorkspaceBridge;
 }

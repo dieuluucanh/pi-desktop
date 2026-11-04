@@ -131,6 +131,42 @@ describe("createOfficeDocumentsService", () => {
     expect(seen[1]?.panes).toHaveLength(2);
   });
 
+  it("re-emits when the bridge owner moves between tabs", async () => {
+    const ownerA = {
+      pid: 11,
+      sessionId: "tab-a",
+      client: "desktop",
+      cwd: "/work/app",
+    };
+    const body = (owner: unknown): string =>
+      healthBody([excelPane], {
+        serverVersion: "0.6.0",
+        capabilities: ["http-health", "agent-deltas", "manual-lifecycle"],
+        owner,
+      });
+    const { deps } = scriptedDeps([
+      body(ownerA),
+      body(ownerA),
+      body({ ...ownerA, sessionId: "tab-b" }),
+    ]);
+    const seen: OfficeDocumentsView[] = [];
+    const service = createOfficeDocumentsService({
+      verify: deps,
+      now: () => 1_700_000_000_000,
+      onView: (view) => seen.push(view),
+    });
+
+    await service.refresh();
+    await service.refresh();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.owner?.sessionId).toBe("tab-a");
+    expect(seen[0]?.manualLifecycle).toBe(true);
+
+    await service.refresh();
+    expect(seen).toHaveLength(2);
+    expect(seen[1]?.owner?.sessionId).toBe("tab-b");
+  });
+
   it("polls on its interval and stops cleanly", async () => {
     vi.useFakeTimers();
     const { deps, probes } = scriptedDeps([healthBody([excelPane])]);
@@ -163,5 +199,52 @@ describe("createOfficeDocumentsService", () => {
     await vi.advanceTimersByTimeAsync(10_000);
 
     expect(probes()).toBe(0);
+  });
+
+  it("carries the configured fact through every probe", async () => {
+    const { deps } = scriptedDeps([new Error("ECONNREFUSED"), healthBody([excelPane])]);
+    const service = createOfficeDocumentsService({
+      verify: deps,
+      now: () => 1_700_000_000_000,
+      configured: () => true,
+    });
+
+    // The initial view is built before the first probe and still knows the
+    // install fact, so the rail's menu can be present on the first frame.
+    expect(service.get().configured).toBe(true);
+    expect(service.get().available).toBe(false);
+
+    const down = await service.refresh();
+    expect(down.available).toBe(false);
+    expect(down.configured).toBe(true);
+
+    const up = await service.refresh();
+    expect(up.available).toBe(true);
+    expect(up.configured).toBe(true);
+  });
+
+  it("re-emits when the configured fact changes even if the payload does not", async () => {
+    // The wizard can install the package while the bridge is down, so the
+    // signature that gates pushes must include the install fact.
+    const { deps } = scriptedDeps([new Error("ECONNREFUSED")]);
+    let configured = false;
+    const seen: OfficeDocumentsView[] = [];
+    const service = createOfficeDocumentsService({
+      verify: deps,
+      now: () => 1_700_000_000_000,
+      configured: () => configured,
+      onView: (view) => seen.push(view),
+    });
+
+    await service.refresh();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.configured).toBe(false);
+
+    configured = true;
+    await service.refresh();
+
+    expect(seen).toHaveLength(2);
+    expect(seen[1]?.configured).toBe(true);
+    expect(seen[1]?.available).toBe(false);
   });
 });

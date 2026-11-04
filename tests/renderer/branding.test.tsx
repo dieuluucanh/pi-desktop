@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { App } from "../../src/renderer/src/App";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
@@ -14,6 +14,11 @@ import { installBridge } from "./fixtures";
  * decorative (`alt=""`, `aria-hidden`), so the text stays the accessible label —
  * which is also what the e2e and onboarding tests query by. Hence each case
  * asserts both halves: an image is present, and the name is still readable.
+ *
+ * The in-app title bar was removed in the minimal-session-ui plan: its brand
+ * mark was the chrome's copy, and the welcome/onboarding marks are the two that
+ * remain. This file now pins that the chrome header is gone and those marks
+ * still behave.
  *
  * `getByRole("img")` is deliberately not used: `alt=""` makes these
  * `role="presentation"`. Vite inlines a mark this small as a `data:` URL (which
@@ -48,17 +53,15 @@ beforeEach(() => {
   installBridge();
 });
 
-describe("title bar brand mark", () => {
-  it("shows the mark beside the name instead of replacing it", async () => {
+describe("app chrome brand mark", () => {
+  it("has no in-app title bar; the welcome mark is the remaining chrome mark", async () => {
     const container = renderShell();
-    // "Pi Desktop" appears twice (title bar and welcome heading), so wait on all
-    // matches and then scope the assertion to the chrome.
     await screen.findAllByText("Pi Desktop");
 
-    const header = container.querySelector("header");
-    expect(header).not.toBeNull();
-    expect(within(header as HTMLElement).getByText("Pi Desktop")).toBeInTheDocument();
-    expect(marks(header).length).toBeGreaterThan(0);
+    // The OS frame owns the window controls and title (minimal-session-ui step 1).
+    expect(container.querySelector("header")).toBeNull();
+    // The welcome heading's mark is the only brand image left in the shell.
+    expect(marks(container).length).toBeGreaterThan(0);
   });
 
   it("keeps the mark out of the accessibility tree", async () => {
@@ -79,7 +82,8 @@ describe("welcome view brand mark", () => {
     expect(heading).toBeInTheDocument();
     // The mark sits in the heading's own row, not loose elsewhere on the page.
     expect(marks(heading.parentElement).length).toBeGreaterThan(0);
-    expect(marks(container).length).toBeGreaterThanOrEqual(2);
+    // The title-bar copy is gone, so the welcome mark is the shell's only one.
+    expect(marks(container).length).toBe(1);
   });
 });
 

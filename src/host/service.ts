@@ -15,7 +15,7 @@ import {
   type HostRequestFrame,
   type HostRole,
 } from "../shared/host-protocol";
-import { isPathInside } from "./path-guard";
+import { isPathInside } from "../workspace/path-guard";
 import type { HostMemoryMetrics } from "../shared/performance";
 
 /**
@@ -56,6 +56,20 @@ export interface HostServiceInfo {
    * started by an older main process that did not pass one.
    */
   buildId?: string | null;
+  /**
+   * Which optional host features this build carries (git-checkpoint plan step
+   * 24). A stale host answers `false`, and the rail says run snapshots are
+   * unavailable instead of waiting for one that will never arrive (R9).
+   */
+  capabilities?: HostCapabilities;
+}
+
+/** The optional features a host can report on `host.hello`. */
+export interface HostCapabilities {
+  /** The checkpoint extension was loaded (never true in safe mode). */
+  checkpointsExtension: boolean;
+  /** Which copy was found: a profile clone, npm package, or the app bundle. */
+  checkpointExtensionSource?: "profile" | "package" | "bundled" | null;
 }
 
 export interface HostServiceOptions {
@@ -118,6 +132,20 @@ export function createHostService(options: HostServiceOptions): HostService {
   const decoder = new JsonlFrameDecoder(options.maxFrameBytes);
   const handlers: Partial<Record<HostMethod, HostHandler>> = { ...options.handlers };
   let closed = false;
+  let shutdownStarted = false;
+
+  /**
+   * One teardown for both `host.shutdown` and a closed stdin pipe. The supervisor
+   * owns the pipe; if it ends (main crashed, was killed by `electron-vite` on a
+   * dev rebuild, or quit), the parent is gone and the host must not keep running
+   * as an orphan. `runService` resolves on this callback, and `hostMain` calls
+   * `process.exit(0)`.
+   */
+  const shutdown = (): void => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    options.onShutdown?.();
+  };
 
   const writeBlob =
     options.writeBlob ??
@@ -239,6 +267,7 @@ export function createHostService(options: HostServiceOptions): HostService {
     env: { blobDir: blobDir || process.env[BLOB_DIR_ENV] || null },
     startedAt: options.info.startedAt,
     buildId: options.info.buildId ?? null,
+    capabilities: options.info.capabilities ?? { checkpointsExtension: false },
   });
 
   handlers["host.blobs.read"] = async (
@@ -259,7 +288,7 @@ export function createHostService(options: HostServiceOptions): HostService {
   };
 
   handlers["host.shutdown"] = () => {
-    options.onShutdown?.();
+    shutdown();
     return { ok: true };
   };
 
@@ -304,6 +333,9 @@ export function createHostService(options: HostServiceOptions): HostService {
       };
       const onEnd = (): void => {
         closed = true;
+        // The parent died or closed the pipe: dispose now so the process can
+        // exit. Without this a dev main restart leaves the child running.
+        shutdown();
       };
       stdin.on("data", onData);
       stdin.on("end", onEnd);

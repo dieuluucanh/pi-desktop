@@ -14,6 +14,8 @@ beforeEach(() => {
   installBridge({ update: initialUpdateState(true) });
   useAppStore.setState({
     prefs: { ...DEFAULT_PREFS },
+    view: "welcome",
+    settingsFocus: null,
     update: null,
     hint: null,
     offlineNotice: null,
@@ -49,23 +51,41 @@ describe("update store (plan step 26)", () => {
 
   it("reports a dev build honestly when the menu asks for a check", async () => {
     removeBridge();
-    installBridge({ update: initialUpdateState(false) });
+    installBridge({
+      update: initialUpdateState(false, { unsupportedReason: "development" }),
+    });
     await useAppStore.getState().checkForUpdates();
     expect(useAppStore.getState().hint).toBe("Updates are checked in installed builds only.");
   });
 
-  it("shows the updater's error message in the hint", async () => {
+  it("uses a friendly hint for the updater's error kind", async () => {
     const check = vi.fn(async () => ({
       ...initialUpdateState(true),
       phase: "error" as const,
       error: "feed down",
+      problemKind: "network" as const,
     }));
     (window.pi as unknown as { updates: { check: unknown } }).updates.check = check;
 
     await useAppStore.getState().checkForUpdates();
 
     expect(useAppStore.getState().update?.phase).toBe("error");
-    expect(useAppStore.getState().hint).toBe("feed down");
+    expect(useAppStore.getState().hint).toContain("Couldn't reach the update server");
+  });
+
+  it("reports a missing published feed neutrally", async () => {
+    const check = vi.fn(async () => ({
+      ...initialUpdateState(true),
+      phase: "no-feed" as const,
+      problemKind: "no-feed" as const,
+      error: "ERR_UPDATER_LATEST_VERSION_NOT_FOUND",
+    }));
+    (window.pi as unknown as { updates: { check: unknown } }).updates.check = check;
+
+    await useAppStore.getState().checkForUpdates();
+
+    expect(useAppStore.getState().update?.phase).toBe("no-feed");
+    expect(useAppStore.getState().hint).toBe("No published release was found for this build.");
   });
 
   it("forwards download and install to main", async () => {
@@ -95,6 +115,64 @@ describe("update store (plan step 26)", () => {
     };
     await useAppStore.getState().checkForUpdates();
     expect(useAppStore.getState().hint).toBe("no updater");
+  });
+
+  it("clears a problem through main and drops the hint", async () => {
+    const clearProblem = vi.fn(async () => initialUpdateState(true));
+    (window.pi as unknown as { updates: { clearProblem: unknown } }).updates.clearProblem =
+      clearProblem;
+    useAppStore.setState({
+      update: {
+        ...initialUpdateState(true),
+        phase: "error",
+        error: "feed down",
+        problemKind: "unknown",
+      },
+      hint: "The update check failed.",
+    });
+
+    await useAppStore.getState().clearUpdateProblem();
+
+    expect(clearProblem).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().update?.phase).toBe("idle");
+    expect(useAppStore.getState().hint).toBeNull();
+  });
+
+  it("persists a per-version notification dismissal", () => {
+    useAppStore.setState({
+      prefs: { ...DEFAULT_PREFS },
+      update: { ...initialUpdateState(true), phase: "available", version: "0.4.0" },
+    });
+
+    useAppStore.getState().dismissUpdateNotification();
+
+    expect(useAppStore.getState().prefs.updates.dismissedVersion).toBe("0.4.0");
+
+    // Nothing is offered / downloaded: the action is a no-op.
+    useAppStore.setState({
+      prefs: { ...DEFAULT_PREFS },
+      update: { ...initialUpdateState(true), phase: "idle" },
+    });
+    useAppStore.getState().dismissUpdateNotification();
+    expect(useAppStore.getState().prefs.updates.dismissedVersion).toBeNull();
+  });
+
+  it("opens Settings on the updates card and can start a check", async () => {
+    const check = vi.fn(async () => initialUpdateState(true));
+    (window.pi as unknown as { updates: { check: unknown } }).updates.check = check;
+
+    useAppStore.getState().openUpdateSettings();
+    expect(useAppStore.getState().view).toBe("settings");
+    expect(useAppStore.getState().settingsFocus).toBe("updates");
+
+    // Navigating away consumes/clears the section target.
+    useAppStore.getState().setView("welcome");
+    expect(useAppStore.getState().settingsFocus).toBeNull();
+
+    useAppStore.getState().openUpdateSettings({ check: true });
+    await vi.waitFor(() => expect(check).toHaveBeenCalledTimes(1));
+    expect(useAppStore.getState().view).toBe("settings");
+    expect(useAppStore.getState().settingsFocus).toBe("updates");
   });
 
   it("does nothing when the bridge is absent", async () => {

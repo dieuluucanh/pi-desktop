@@ -108,7 +108,9 @@ export function useOfficeSetup(): OfficeSetupApi {
             setError(
               result.reason === "idle"
                 ? "Nothing is running in the Office session."
-                : `Stop failed: ${result.error ?? "the host did not answer"}`,
+                : result.reason === "external"
+                  ? "The bridge is hosted by a terminal Pi session; stop the run there."
+                  : `Stop failed: ${result.error ?? "the host did not answer"}`,
             );
             return;
           }

@@ -7,6 +7,7 @@ import {
   formatTokens,
   groupByProvider,
   modelKeyOf,
+  qualifiedModelLabel,
   ringFraction,
   thinkingLevelsOf,
   toAuthBadge,
@@ -15,7 +16,7 @@ import {
   withScopedFirst,
   type ModelCatalogEntry,
 } from "../../src/renderer/src/session/model-catalog";
-import { contextFooterText } from "../../src/renderer/src/session/ComposerFooter";
+import { contextUsageText } from "../../src/renderer/src/session/footer-text";
 
 /**
  * Model/usage helpers (plan step 8). Two things here are easy to get wrong and
@@ -81,6 +82,17 @@ describe("the catalog", () => {
     expect(groups[0]?.auth.configured).toBe(true);
     expect(groups[1]?.auth.configured).toBe(false);
     expect(groups[0]?.models.map((entry) => entry.key)).toEqual(["alpha/b", "alpha/c"]);
+  });
+
+  it("qualifies a label with its provider", () => {
+    const [entry] = toCatalog([
+      { id: "claude-sonnet-4-5", provider: "anthropic", name: "Sonnet 4.5" },
+    ]);
+    expect(qualifiedModelLabel(entry!)).toBe("anthropic / Sonnet 4.5");
+
+    // A missing `name` falls back to the id, and the provider still qualifies it.
+    const [bare] = toCatalog([{ id: "x", provider: "p" }]);
+    expect(qualifiedModelLabel(bare!)).toBe("p / x");
   });
 
   it("matches a search against the label and the provider/id key", () => {
@@ -175,10 +187,10 @@ describe("context usage (Pi reports 0-100)", () => {
 
   it("renders the footer context line as a percentage, not a fraction times 100", () => {
     // Regression: Pi reports 42 meaning 42%, so the line must not read "4200%".
-    // The line moved from the session header to the composer footer (2026-10-19
-    // UI rework), so the guard moved with it.
-    const line = contextFooterText({ tokens: 42_000, contextWindow: 100_000, percent: 42 }, 0.0432);
-    expect(line).toBe("42% of 100.0k · 42.0k tokens · $0.0432");
+    // The line moved from the session header to the session footer
+    // (minimal-session-ui step 6), so the guard moved with it.
+    const line = contextUsageText({ tokens: 42_000, contextWindow: 100_000, percent: 42 });
+    expect(line).toBe("42%/100.0k");
   });
 
   it("reads thinking levels the host reported", () => {

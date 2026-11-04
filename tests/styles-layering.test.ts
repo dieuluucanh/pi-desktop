@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { parseWorkflowStatus, workflowBorderClass } from "../src/shared/workflow-mode";
+import {
+  parseWorkflowStatus,
+  workflowBadgeClass,
+  workflowBorderClass,
+} from "../src/shared/workflow-mode";
 
 /**
  * `styles.css` cascade-layering guard (2026-10-19).
@@ -72,7 +76,9 @@ describe("styles.css layering", () => {
     // which lives outside the renderer root, so its directory must be scanned.
     expect(css).toContain('@source "../../../shared"');
     // And the utility names are pinned explicitly (same order as the function).
-    expect(css).toContain('@source inline("border-line border-accent border-warn")');
+    expect(css).toContain(
+      '@source inline("border-line border-accent border-warn text-accent text-warn text-ink-faint")',
+    );
   });
 });
 
@@ -93,6 +99,10 @@ describe("workflow border class contract", () => {
     workflowBorderClass(parseWorkflowStatus("\u23f8 plan")),
     workflowBorderClass(parseWorkflowStatus("\u25e6 commits:never")),
     workflowBorderClass(null),
+    workflowBadgeClass(parseWorkflowStatus("\u25b6 build")),
+    workflowBadgeClass(parseWorkflowStatus("\u23f8 plan")),
+    workflowBadgeClass(parseWorkflowStatus("\u25e6 commits:never")),
+    workflowBadgeClass(null),
   ];
 
   it("lists exactly the classes the function returns", () => {
@@ -102,5 +112,29 @@ describe("workflow border class contract", () => {
     expect(declaration).not.toBeNull();
     const declared = (declaration?.[1] ?? "").split(/\s+/).filter(Boolean);
     expect([...new Set(returned)].sort()).toEqual([...new Set(declared)].sort());
+  });
+});
+
+/**
+ * Tab-strip scrollbar contract (2026-11-02 plan step 3). The strips ask for a
+ * 2 px bar. Chromium 121+ lets the standard `scrollbar-width`/`scrollbar-color`
+ * properties override `::-webkit-scrollbar`, so the strip must reset both to
+ * `auto`; without that reset the pixel size is inert. A 2 px track also needs a
+ * zero-width thumb ring, or the global 2 px ring would leave no visible thumb.
+ */
+describe("tab-strip scrollbar", () => {
+  const css = stripComments(readFileSync(STYLES_CSS, "utf8"));
+
+  it("resets the standard properties so the pixel size is effective", () => {
+    const rule = /\.tab-strip-scrollbar\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(rule).toMatch(/scrollbar-width:\s*auto;/);
+    expect(rule).toMatch(/scrollbar-color:\s*auto;/);
+  });
+
+  it("is two pixels with a full-width thumb", () => {
+    expect(css).toMatch(
+      /\.tab-strip-scrollbar::-webkit-scrollbar\s*\{[^}]*width:\s*2px;[^}]*height:\s*2px;/,
+    );
+    expect(css).toMatch(/\.tab-strip-scrollbar::-webkit-scrollbar-thumb\s*\{[^}]*border:\s*0;/);
   });
 });

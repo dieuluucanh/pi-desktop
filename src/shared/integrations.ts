@@ -12,7 +12,7 @@
  * between the main process (the app-state record) and the renderer (the card).
  */
 
-import { PI_OFFICE_BRIDGE } from "./office";
+import { PI_OFFICE_BRIDGE, bridgeSupportsManualLifecycle } from "./office";
 import type { OfficeSetupView } from "./office-setup";
 import { packageNameOf } from "./recommended-packages";
 
@@ -34,6 +34,9 @@ export function officeBridgePackageName(): string {
 /** Where the integration stands, in one word, for the card's badge. */
 export type OfficeIntegrationStatus = "not-installed" | "installed" | "connected" | "attention";
 
+/** Whether the installed bridge can be connected/disconnected on demand. */
+export type OfficeBridgeLifecycle = "manual" | "legacy" | "unknown";
+
 export interface OfficeIntegrationFacts {
   packageName: string;
   /** The pinned source as the package manager and the consent dialog see it. */
@@ -45,6 +48,8 @@ export interface OfficeIntegrationFacts {
   scope: string | null;
   /** The wizard's last bridge-package result, or "unknown" before it has run. */
   bridgeStatus: string;
+  /** 0.6+ stays off until connected; older bridges auto-start. */
+  lifecycle: OfficeBridgeLifecycle;
   protocolVersion: number | null;
   catalogVersion: number | null;
   sideloaded: boolean;
@@ -126,6 +131,14 @@ export function deriveOfficeIntegrationFacts(input: {
   const installed =
     lookup.installed || (view?.bridge?.status != null && view.bridge.status !== "failed");
   const installedVersion = view?.bridge?.version ?? lookup.version;
+  const lifecycleVersion = view?.health?.serverVersion ?? installedVersion;
+  const lifecycle: OfficeBridgeLifecycle = !installed
+    ? "unknown"
+    : lifecycleVersion === null
+      ? "unknown"
+      : bridgeSupportsManualLifecycle(lifecycleVersion)
+        ? "manual"
+        : "legacy";
   const bridgeStatus = view?.bridge?.status ?? (lookup.installed ? "installed" : "unknown");
   const healthStatus = stringOrNull(view?.health?.status);
   const port = typeof view?.port === "number" ? view.port : PI_OFFICE_BRIDGE.defaultPort;
@@ -155,6 +168,7 @@ export function deriveOfficeIntegrationFacts(input: {
     installedVersion: installedVersion ?? null,
     scope: lookup.scope,
     bridgeStatus,
+    lifecycle,
     protocolVersion: numberOrNull(view?.health?.protocolVersion),
     catalogVersion: numberOrNull(view?.health?.catalogVersion),
     sideloaded,

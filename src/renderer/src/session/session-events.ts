@@ -145,6 +145,14 @@ export interface TranscriptState {
   lastSeq: number;
   /** True once history has been loaded from `messages.get`. */
   hydrated: boolean;
+  /**
+   * Every session entry id this transcript knows about (git-checkpoint plan step
+   * 25). A checkpoint carries the entry id of the turn it was taken for, and the
+   * rail offers *Conversation rewind* only when that id exists here. Collected
+   * from hydration and from `entry_appended`, so a resumed session re-establishes
+   * the linkage without a second host call.
+   */
+  entryIds: Record<string, true>;
 }
 
 export function createTranscriptState(): TranscriptState {
@@ -159,6 +167,7 @@ export function createTranscriptState(): TranscriptState {
     usage: null,
     lastSeq: 0,
     hydrated: false,
+    entryIds: {},
   };
 }
 
@@ -618,6 +627,21 @@ const NOTICE_SEVERITY: Record<string, TranscriptNotice["severity"]> = {
   extension_error: "error",
 };
 
+/** True when this transcript already carries the same extension notification. */
+function hasNotificationNotice(
+  state: TranscriptState,
+  severity: TranscriptNotice["severity"],
+  text: string,
+): boolean {
+  return state.items.some(
+    (item) =>
+      item.kind === "notice" &&
+      item.notice.event === "oi.notify" &&
+      item.notice.severity === severity &&
+      item.notice.text === text,
+  );
+}
+
 /** One `ctx.ui.notify` payload as a transcript notice, or null when malformed. */
 function notificationNotice(
   payload: unknown,
@@ -894,6 +918,7 @@ export function reduceSessionEvents(
         if (entry.type === "custom" && !isRenderableCustomEntry(payload)) break;
         if (entry.type === "custom_message" || entry.type === "custom") {
           const entryId = asString(entry.id) || nextId("custom");
+          next = recordEntryId(next, entryId);
           next = appendItem(next, {
             kind: "message",
             id: entryId,
@@ -920,7 +945,12 @@ export function reduceSessionEvents(
         // full multi-line message; the notification archive/toast path is
         // handled separately by the store.
         const notice = notificationNotice(payload);
-        if (notice) next = appendNotice(next, "oi.notify", notice.severity, notice.text);
+        // The workflow (and other extensions) can re-emit the same advisory on
+        // every mode switch. Keep one row per distinct message; the history
+        // archive still records every arrival (see app-store).
+        if (notice && !hasNotificationNotice(next, notice.severity, notice.text)) {
+          next = appendNotice(next, "oi.notify", notice.severity, notice.text);
+        }
         break;
       }
 
@@ -1001,6 +1031,18 @@ export function imagesOfPartial(result: unknown): Array<{ mimeType: string; data
  * before any live events, and `messageIndex` is rebuilt so `message_end` still
  * finds its message.
  */
+/**
+ * Remembers one session entry id, so the rail can tell whether a checkpoint
+ * belongs to the session it is showing (git-checkpoint plan step 25).
+ *
+ * Idempotent and cheap: the map is `id -> true`, and a transcript that already
+ * knows an id returns the same state object so no re-render is triggered.
+ */
+function recordEntryId(state: TranscriptState, entryId: string): TranscriptState {
+  if (entryId.length === 0 || state.entryIds[entryId]) return state;
+  return { ...state, entryIds: { ...state.entryIds, [entryId]: true } };
+}
+
 export function hydrateMessages(
   state: TranscriptState,
   messages: readonly unknown[],
@@ -1032,6 +1074,7 @@ export function hydrateMessages(
       continue;
     }
     const id = asString(record.id) || nextId("history");
+    next = recordEntryId(next, id);
     next = appendItem(next, { kind: "message", id, message: messageFromSdk(message, id) });
     if (role === "assistant") {
       for (const block of blocksFromContent(record.content)) {

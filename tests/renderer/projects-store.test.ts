@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { ProjectInspection, ProjectRecord } from "../../src/shared/projects";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
-import { installBridge } from "./fixtures";
+import { appInfoFixture, installBridge } from "./fixtures";
 
 /**
  * Projects and the trust flow in the renderer store (plan step 10). The main
@@ -69,7 +69,6 @@ function resetStore(): void {
     activeTabId: null,
     transcripts: {},
     sessionStates: {},
-    sendModes: {},
     draftHistory: {},
     historyIndex: {},
     picker: null,
@@ -126,6 +125,111 @@ describe("project list", () => {
       path: PATH,
       patch: { useProjectSettings: true },
     });
+  });
+});
+
+describe("project settings reload", () => {
+  it("reloads host-backed tabs only and never an editor tab", async () => {
+    const { bridge } = installBridge({ projects: [record(PATH)], activeProject: PATH });
+    const request = vi.fn(async (input: { tabId?: string; method: string }) => {
+      if (input.method === "settings.get") {
+        return {
+          settings: { global: { theme: "dark" }, project: {} },
+          errors: [],
+          files: {
+            global: { path: "/profile/agent/settings.json", exists: true, mtimeMs: 100 },
+            project: { path: `${PATH}/.pi/settings.json`, exists: true, mtimeMs: 200 },
+          },
+          projectTrusted: true,
+        };
+      }
+      return {};
+    });
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+    useAppStore.setState({
+      info: appInfoFixture(),
+      project: { path: PATH, name: "pi-desktop" },
+      projects: [record(PATH)],
+      activeTabId: "session-1",
+      tabs: [
+        {
+          id: "session-1",
+          kind: "session",
+          cwd: PATH,
+          title: "app",
+          sessionFile: null,
+          status: "idle",
+          createdAt: 1,
+          lastActiveAt: 1,
+          model: null,
+        },
+        {
+          id: "editor-1",
+          kind: "editor",
+          cwd: PATH,
+          title: "a.ts",
+          filePath: "a.ts",
+          sessionFile: null,
+          status: "idle",
+          createdAt: 1,
+          lastActiveAt: 1,
+          model: null,
+        },
+      ],
+    });
+
+    const ok = await useAppStore.getState().setProjectSettingsEnabled(PATH, true);
+
+    expect(ok).toBe(true);
+    const calls = request.mock.calls.map(([input]) => `${input.tabId}:${input.method}`);
+    expect(calls).toContain("session-1:session.reload");
+    expect(calls).toContain("session-1:model.scope.apply");
+    expect(calls).not.toContain("editor-1:session.reload");
+    expect(calls).not.toContain("editor-1:model.scope.apply");
+  });
+});
+
+describe("default project", () => {
+  const DEFAULT_PATH = "C:\\Users\\test\\Documents\\Pi-Desktop\\2026-11-03T10-15-42";
+
+  it("creates the dated project, makes it active and switches to the session view", async () => {
+    const { bridge } = installBridge();
+    const createDefault = vi.spyOn(bridge.projects, "createDefault").mockResolvedValue({
+      ok: true,
+      path: DEFAULT_PATH,
+      projects: [record(DEFAULT_PATH)],
+      activeProject: DEFAULT_PATH,
+    });
+
+    const created = await useAppStore.getState().createDefaultProject();
+
+    expect(created).toBe(true);
+    expect(createDefault).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().project).toEqual({
+      path: DEFAULT_PATH,
+      name: "2026-11-03T10-15-42",
+    });
+    expect(useAppStore.getState().projects.map((entry) => entry.path)).toEqual([DEFAULT_PATH]);
+    expect(useAppStore.getState().view).toBe("session");
+    expect(useAppStore.getState().hint).toBeNull();
+  });
+
+  it("keeps the current project and surfaces the error when creation fails", async () => {
+    const { bridge } = installBridge({ projects: [record(PATH)], activeProject: PATH });
+    await useAppStore.getState().loadProjects();
+    vi.spyOn(bridge.projects, "createDefault").mockResolvedValue({
+      ok: false,
+      path: null,
+      error: "the Documents folder is unavailable",
+      projects: [record(PATH)],
+      activeProject: PATH,
+    });
+
+    const created = await useAppStore.getState().createDefaultProject();
+
+    expect(created).toBe(false);
+    expect(useAppStore.getState().project?.path).toBe(PATH);
+    expect(useAppStore.getState().hint).toBe("the Documents folder is unavailable");
   });
 });
 

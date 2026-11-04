@@ -41,6 +41,9 @@ jobs:
       - name: Unit + integration tests
         run: npm test
 
+      - name: Checkpoint extension package
+        run: npm run build:extension && npm run verify:extension
+
       # Coverage thresholds are enforced on one OS (the numbers are the same on
       # all three; this keeps the matrix fast) — plan step 25.
       - name: Coverage thresholds

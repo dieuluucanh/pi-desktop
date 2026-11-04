@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
+import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { installBridge } from "./fixtures";
 
 /**
@@ -15,6 +16,31 @@ function stubRequest(impl: (method: string, params?: unknown) => Promise<unknown
   (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = request;
   return request;
 }
+
+const originalMatchMedia = window.matchMedia;
+
+function stubSystemTheme(dark: boolean): void {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: vi.fn(() => ({
+      matches: dark,
+      media: "(prefers-color-scheme: dark)",
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
+}
+
+afterEach(() => {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: originalMatchMedia,
+  });
+});
 
 function resetStore() {
   installBridge();
@@ -91,6 +117,142 @@ describe("themes actions", () => {
     expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("#8abeb7");
   });
 
+  it("syncs the first-paint cache to the active theme's variant", async () => {
+    stubRequest(async (method) => {
+      if (method === "themes.list") return { ...THEMES_PAYLOAD, active: "light" };
+      throw new Error(`unexpected ${method}`);
+    });
+
+    await useAppStore.getState().loadThemes();
+
+    expect(useAppStore.getState().prefs.theme).toBe("light");
+  });
+
+  it("replaces a variable the previous theme set with the resolved palette", () => {
+    document.documentElement.style.setProperty("--color-accent", "#123456");
+    useAppStore.setState({
+      themes: {
+        active: "light",
+        themes: [
+          {
+            name: "light",
+            scope: "builtin",
+            active: true,
+            variant: "light",
+            swatches: { text: "#000000" },
+          },
+        ],
+      },
+    });
+
+    useAppStore.getState().applyChromeTheme();
+
+    // Built-in themes use the app neutral palette; no stale custom value survives.
+    expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("#3b6fd4");
+    expect(document.documentElement.style.getPropertyValue("--color-ink")).toBe("#1c2128");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+  });
+
+  it("removes every chrome variable when the catalogue is empty", () => {
+    document.documentElement.style.setProperty("--color-accent", "#123456");
+    document.documentElement.setAttribute("data-theme", "dark");
+    useAppStore.setState({ themes: { active: "dark", themes: [] } });
+
+    useAppStore.getState().applyChromeTheme();
+
+    expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("");
+    expect(document.documentElement.getAttribute("data-theme")).toBeNull();
+  });
+
+  it("does not overwrite the cache when the catalogue fails to load", async () => {
+    stubRequest(async (method) => {
+      if (method === "themes.list") throw new Error("no host");
+      throw new Error(`unexpected ${method}`);
+    });
+    const before = useAppStore.getState().prefs.theme;
+
+    await useAppStore.getState().loadThemes();
+
+    expect(useAppStore.getState().prefs.theme).toBe(before);
+    expect(useAppStore.getState().themesError).toContain("no host");
+  });
+
+  it("follow-system activates the built-in theme that matches the OS", async () => {
+    stubSystemTheme(false); // light
+    stubRequest(async (method) => {
+      if (method === "themes.list") return THEMES_PAYLOAD; // stored dark
+      if (method === "settings.get") return settingsSetResult("dark");
+      if (method === "settings.set") return settingsSetResult("light");
+      throw new Error(`unexpected ${method}`);
+    });
+    await useAppStore.getState().loadThemes();
+
+    useAppStore.getState().setFollowSystemTheme(true);
+
+    await vi.waitFor(() => expect(useAppStore.getState().themes.active).toBe("light"));
+    expect(useAppStore.getState().prefs.followSystemTheme).toBe(true);
+    expect(useAppStore.getState().prefs.theme).toBe("light");
+  });
+
+  it("a manual theme choice turns follow-system off", async () => {
+    stubSystemTheme(true);
+    stubRequest(async (method) => {
+      if (method === "themes.list") return THEMES_PAYLOAD;
+      if (method === "settings.get") return settingsSetResult("dark");
+      if (method === "settings.set") return settingsSetResult("dark");
+      throw new Error(`unexpected ${method}`);
+    });
+    await useAppStore.getState().loadThemes();
+    useAppStore.setState({
+      prefs: { ...useAppStore.getState().prefs, followSystemTheme: true },
+    });
+
+    const ok = await useAppStore.getState().setActiveTheme("dark");
+
+    expect(ok).toBe(true);
+    expect(useAppStore.getState().prefs.followSystemTheme).toBe(false);
+  });
+
+  it("paints the OS-matching built-in even when the stored theme is custom", () => {
+    stubSystemTheme(true);
+    useAppStore.setState({
+      prefs: { ...DEFAULT_PREFS, followSystemTheme: true },
+      themes: {
+        active: "mine",
+        themes: [
+          {
+            name: "mine",
+            scope: "user",
+            active: true,
+            variant: "light",
+            swatches: { accent: "#ff0000" },
+          },
+        ],
+      },
+    });
+
+    useAppStore.getState().applyChromeTheme();
+
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+    expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("#a798d7");
+  });
+
+  it("does not write the theme when follow-system already matches", async () => {
+    stubSystemTheme(true);
+    const request = stubRequest(async (method) => {
+      if (method === "themes.list") return THEMES_PAYLOAD; // stored dark
+      throw new Error(`unexpected ${method}`);
+    });
+    await useAppStore.getState().loadThemes();
+    useAppStore.setState({
+      prefs: { ...useAppStore.getState().prefs, followSystemTheme: true },
+    });
+
+    await useAppStore.getState().applySystemTheme();
+
+    expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ method: "settings.set" }));
+  });
+
   it("activates a theme through the theme setting", async () => {
     const seen: Array<{ method: string; params?: unknown }> = [];
     stubRequest(async (method, params) => {
@@ -115,6 +277,43 @@ describe("themes actions", () => {
     expect(ok).toBe(true);
     expect(useAppStore.getState().themes.active).toBe("light");
     expect(seen.some((entry) => entry.method === "settings.set")).toBe(true);
+  });
+
+  it("stores a per-theme colour override and repaints the chrome", () => {
+    useAppStore.setState({
+      themes: {
+        active: "dark",
+        themes: [
+          {
+            name: "dark",
+            scope: "builtin",
+            active: true,
+            variant: "dark",
+            swatches: { accent: "#a798d7" },
+          },
+        ],
+      },
+    });
+
+    useAppStore.getState().setThemeColor("dark", "line", "#123456");
+
+    expect(useAppStore.getState().prefs.themeColors.dark?.line).toBe("#123456");
+    expect(document.documentElement.style.getPropertyValue("--color-line")).toBe("#123456");
+
+    useAppStore.getState().resetThemeColors("dark");
+    expect(useAppStore.getState().prefs.themeColors.dark).toBeUndefined();
+    expect(document.documentElement.style.getPropertyValue("--color-line")).toBe("#4e5b79");
+  });
+
+  it("ignores malformed colours", () => {
+    useAppStore.setState({
+      themes: {
+        active: "dark",
+        themes: [{ name: "dark", scope: "builtin", active: true, variant: "dark", swatches: {} }],
+      },
+    });
+    useAppStore.getState().setThemeColor("dark", "line", "red");
+    expect(useAppStore.getState().prefs.themeColors.dark).toBeUndefined();
   });
 
   it("imports a theme and selects it", async () => {

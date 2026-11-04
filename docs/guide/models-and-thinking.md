@@ -1,18 +1,20 @@
 # Models and thinking
 
-The session header shows the current model, the thinking level, a context-usage
-ring and the token/cost totals. Each of these has a picker.
+The composer's controls show the current model (the icon's tooltip), the
+thinking level as a four-fill brain icon, a context-usage ring and the
+token/cost totals. Each of these has a picker.
 
 ## Choosing a model
 
-Open the model picker from the header or with `/model`. It groups models by
+Open the model picker from the composer's model icon or with `/model`. It groups models by
 provider and shows:
 
 - **auth badges** — a provider you are not signed in to says “Sign in” and routes
   to Connections;
 - **search**;
 - your **model scope** (`enabledModels`) — the starred models, listed first;
-- the thinking level the selected model supports;
+- **the thinking levels each model supports**, previewed on its row before you
+  select it (Pi's `thinkingLevelMap` is the authority);
 - the model the session actually reports, which may differ from the one you
   asked for if the provider resolves a catalog entry to its own choice. The app
   shows the recorded model rather than the requested one.
@@ -42,7 +44,9 @@ list as _Settings → Model scope_. It is the set used by `Ctrl/Cmd+Alt+↓/↑`
 cycling and by extension model pickers such as `/profile` and `/role`, so one
 star controls all of them:
 
-- **starred** — in scope; the dialog lists these first under **Scoped**;
+- **starred** — in scope; the dialog lists these first under **Scoped**, each
+  row prefixed with its provider (e.g. `anthropic / Sonnet 4.5`) so two
+  providers exposing the same model name stay distinguishable;
 - **no stars** — no scope is configured, so every available model is usable and
   cycling covers all of them (the dialog says so);
 - **changing it** writes `enabledModels` immediately and applies it to every open
@@ -68,10 +72,32 @@ remains the only persisted scope state.
 
 ## Thinking level
 
-`/thinking`, the header picker, or `Ctrl/Cmd+Alt+T` cycles the level. The list is
-clamped to `getAvailableThinkingLevels()` for the current model, so you can never
-select a level the model does not support. A model without auth shows a single
+`/thinking`, the composer's brain icon, or `Ctrl/Cmd+Alt+T` cycles the level. The
+picker shows the full seven-level scale — `off`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, `max` — plus any custom level the host reports. Levels the
+selected model does not expose are shown disabled and marked “not supported”, so
+the whole vocabulary is visible without the app pretending an unsupported level
+will take effect; switching models updates the enabled set. The picker names the
+model and sorts the levels canonically. A model without auth shows a single
 “off/low” set and a sign-in route.
+
+The brain icon has four fill states plus an empty `off` outline:
+
+| Level            | Brain fill    |
+| ---------------- | ------------- |
+| `off`            | empty outline |
+| `minimal`, `low` | 1/4           |
+| `medium`         | 1/2           |
+| `high`           | 3/4           |
+| `xhigh`, `max`   | full          |
+
+Hovering the icon shows the exact level, its description, the current model and
+the model's supported set, so `xhigh` and `max` never look identical by accident.
+
+The workflow extension's `/profile` and `/role` editors use the same model
+capability data: when a model disables `minimal` or `medium`, those levels are
+not offered, and an unsupported value already stored in a profile is clamped on
+save or activation with a warning.
 
 Cycling shortcuts (from Pi’s keybindings):
 
@@ -89,22 +115,19 @@ These are editable in `keybindings.json` (see
 
 ## Usage
 
-The header’s ring reads Pi’s own `contextUsage` (percent of the context window)
-and the footer shows tokens and cost from `getSessionStats()`. Long sessions can
+The composer's ring reads Pi's own `contextUsage` (percent of the context window)
+and the session footer shows tokens and cost from `getSessionStats()`. Long sessions can
 be compacted manually with `/compact`, or automatically according to the
 compaction settings.
 
-## View mode
+## Tool detail
 
-The session header’s **view mode** controls how much tool detail the transcript
-shows:
-
-- **Normal** — tool cards collapsed to a summary.
-- **Verbose** — every tool call expanded.
-- **Summary** — the most compact rendering.
-
-The mode is an app preference (`prefs.viewMode`) and persists across sessions. It
-also overrides the `app.tools.expand` binding (`Ctrl+O`) for the transcript.
+Tool cards and command prompts are expanded or collapsed with
+<kbd>Ctrl</kbd>+<kbd>O</kbd> (Pi's `app.tools.expand`), and each card also has its
+own chevron. There is no Normal/Verbose/Summary mode: the app follows terminal
+Pi here, where Ctrl+O is the only expand-all switch. Command prompts stay
+collapsed by default; `prefs.showExpandedPrompts` changes that default for plain
+prompts and commands such as `/commit`.
 
 ## Related
 

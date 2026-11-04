@@ -1,27 +1,57 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { SessionView } from "../../src/renderer/src/views/SessionView";
+import { ShortcutDispatcher } from "../../src/renderer/src/shortcuts/ShortcutDispatcher";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
-import { installBridge } from "./fixtures";
+import { EMPTY_EXTENSION_UI } from "../../src/shared/extension-ui";
+import { EMPTY_TUI_SURFACE } from "../../src/shared/tui-surface";
+import { documentsViewFixture, installBridge } from "./fixtures";
+import {
+  WORKSPACE_PATH_DRAG_MIME,
+  WORKSPACE_PATH_DRAG_VERSION,
+  serializeWorkspaceDrag,
+  type WorkspaceDragPayload,
+} from "../../src/shared/workspace-drag";
 
 /**
  * The session view's chrome (plan step 6).
  *
  * The header used to pack eight differently-styled controls, including a
  * native `<select>` that matched nothing beside it. The cluster is now one row
- * of equally-weighted buttons, and the view mode is a menu in the app's own
- * vocabulary.
+ * of equally-weighted buttons; Ctrl+O is the only tool-detail switch.
  */
 
 const TAB = "tab-1";
 
+function fakeWorkspaceDrop(
+  overrides: Partial<WorkspaceDragPayload> = {},
+  types: string[] = [WORKSPACE_PATH_DRAG_MIME],
+) {
+  const payload: WorkspaceDragPayload = {
+    version: WORKSPACE_PATH_DRAG_VERSION,
+    projectPath: "C:/work/app",
+    path: "src/notes.md",
+    kind: "file",
+    ...overrides,
+  };
+  return {
+    types,
+    files: [] as File[],
+    dropEffect: "none",
+    effectAllowed: "none",
+    getData: (type: string) =>
+      type === WORKSPACE_PATH_DRAG_MIME ? serializeWorkspaceDrag(payload) : "",
+    setData: () => undefined,
+  };
+}
+
 function resetStore(): void {
   installBridge();
   useAppStore.setState({
-    prefs: { ...DEFAULT_PREFS, drafts: {}, viewMode: "normal" },
+    prefs: { ...DEFAULT_PREFS, drafts: {} },
     tabs: [
       {
         id: TAB,
@@ -48,430 +78,408 @@ beforeEach(() => {
   resetStore();
 });
 
-describe("session header", () => {
-  it("uses the user-facing lifecycle word for an idle session", () => {
-    render(<SessionView />);
-    expect(screen.getByTitle("Session status: ready")).toHaveTextContent("ready");
-    expect(screen.queryByText("idle")).toBeNull();
+describe("session chrome", () => {
+  it("has no visible session header; the heading stays for assistive tech", () => {
+    render(<SessionView tabId={TAB} />);
+    // The tab strip owns the visible title and status; the view keeps only a
+    // screen-reader heading so it still has an accessible name.
+    expect(screen.queryByTitle("Session status: ready")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Fix the bug" })).toHaveClass("sr-only");
   });
 
-  it("shows the view mode as one of the header's buttons, not a native select", () => {
-    render(<SessionView />);
-    // A native select was the only unstyled control in the header.
-    expect(screen.queryByRole("combobox")).toBeNull();
-    expect(screen.getByRole("button", { name: "View mode" })).toHaveTextContent("Normal");
+  it("keeps the model/thinking/context controls beside the composer", () => {
+    render(<SessionView tabId={TAB} />);
+    const tools = screen.getByTestId("composer-tools");
+    expect(within(tools).getByRole("button", { name: "Change model" })).toBeInTheDocument();
+    expect(within(tools).getByTestId("composer-thinking")).toHaveAttribute(
+      "aria-label",
+      "Thinking level",
+    );
+    expect(within(tools).getByTestId("context-ring")).toHaveClass("size-7");
+    expect(within(tools).getByRole("button", { name: "Change model" })).toHaveClass("h-7", "w-7");
+    expect(within(tools).getByTestId("composer-thinking")).toHaveClass("h-7", "w-7");
+    expect(tools).toHaveClass("h-7");
   });
 
-  it("switches the view mode from the menu", async () => {
-    const user = userEvent.setup();
-    render(<SessionView />);
-
-    await user.click(screen.getByRole("button", { name: "View mode" }));
-    await user.click(await screen.findByRole("menuitem", { name: /Verbose/ }));
-    expect(useAppStore.getState().prefs.viewMode).toBe("verbose");
+  it("shows the thinking level as a brain icon, not a text label", () => {
+    render(<SessionView tabId={TAB} />);
+    const thinking = screen.getByTestId("composer-thinking");
+    expect(thinking.textContent).toBe("");
+    expect(thinking.querySelector("[data-testid='brain']")).not.toBeNull();
+    expect(thinking).toHaveAttribute(
+      "title",
+      [
+        "Thinking level",
+        "This model does not report a thinking level.",
+        "Model: anthropic/claude",
+      ].join("\n"),
+    );
   });
 
-  it("keeps the facts and the actions in one cluster, split by a rule", () => {
-    render(<SessionView />);
-    // The vertical rule says which way it runs, so assistive tech reads it as
-    // a separator between the two groups (plan step 6).
-    const rule = document.querySelector('[aria-orientation="vertical"]');
-    expect(rule).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Change model" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Change thinking level" })).toBeInTheDocument();
+  it("keeps the model and thinking tooltips in step with the live pair", () => {
+    render(<SessionView tabId={TAB} />);
+    act(() => {
+      useAppStore.getState().applySessionState({
+        tabId: TAB,
+        state: {
+          model: { provider: "synthetic", id: "deepseek" },
+          thinkingLevel: "max",
+          thinkingLevels: ["off", "low", "high", "xhigh", "max"],
+        },
+      });
+    });
+
+    const model = screen.getByTestId("composer-model");
+    const thinking = screen.getByTestId("composer-thinking");
+    expect(model).toHaveAttribute("title", "synthetic/deepseek · thinking max");
+    expect(thinking).toHaveAttribute(
+      "title",
+      [
+        "Thinking: max (full)",
+        "Maximum reasoning effort",
+        "Model: synthetic/deepseek",
+        "Supports: off, low, high, xhigh, max",
+      ].join("\n"),
+    );
+    expect(thinking.querySelector("[data-testid='brain']")).toHaveAttribute("data-fill", "4");
   });
 
-  it("shows the live model from the session state, not the stale tab record", () => {
+  it("shows the live model in the icon's tooltip, not as a label", () => {
     // The tab spawned on one model; the host has since switched (plan step 1).
     useAppStore.setState({
       sessionStates: { [TAB]: { model: { provider: "opencode-go", id: "other-model" } } },
     });
-    render(<SessionView />);
-    expect(screen.getByRole("button", { name: "Change model" })).toHaveTextContent(
-      "opencode-go/other-model",
-    );
+    render(<SessionView tabId={TAB} />);
+    const model = screen.getByRole("button", { name: "Change model" });
+    expect(model).toHaveAttribute("title", "opencode-go/other-model");
+    // An icon, not a long label: the visible text is gone.
+    expect(model.textContent).toBe("");
   });
 
-  it("moves the header when a host state frame reports a different model", () => {
-    render(<SessionView />);
+  it("updates the model tooltip when a host state frame reports a change", () => {
+    render(<SessionView tabId={TAB} />);
     act(() => {
       useAppStore.getState().applySessionState({
         tabId: TAB,
         state: { model: { provider: "openai", id: "gpt-5" } },
       });
     });
-    expect(screen.getByRole("button", { name: "Change model" })).toHaveTextContent("openai/gpt-5");
+    expect(screen.getByRole("button", { name: "Change model" })).toHaveAttribute(
+      "title",
+      "openai/gpt-5",
+    );
+  });
+
+  it("keeps the error banner's Restart when the host crashed", () => {
+    useAppStore.setState({
+      tabs: [{ ...useAppStore.getState().tabs[0]!, status: "crashed", error: "host failed" }],
+    });
+    render(<SessionView tabId={TAB} />);
+    expect(screen.getByText("host failed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restart" })).toBeInTheDocument();
+  });
+
+  it("has no view-mode control; Ctrl+O is the only tool-detail switch", () => {
+    render(
+      <>
+        <SessionView tabId={TAB} />
+        <ShortcutDispatcher />
+      </>,
+    );
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByRole("button", { name: "View mode" })).toBeNull();
+
+    fireEvent.keyDown(document.body, { key: "o", ctrlKey: true });
+    expect(useAppStore.getState().toolsExpanded[TAB]).toBe(true);
+    fireEvent.keyDown(document.body, { key: "o", ctrlKey: true });
+    expect(useAppStore.getState().toolsExpanded[TAB]).toBe(false);
   });
 });
 
-describe("model picker per tab", () => {
-  it("remounts the picker per tab and never offers a save-as-default switch", () => {
-    const second = { ...useAppStore.getState().tabs[0]!, id: "tab-2", title: "Second" };
+describe("extension footer and widget placement (minimal-session-ui step 7)", () => {
+  const frame = (seq: number, text: string) => ({
+    seq,
+    width: 20,
+    height: 1,
+    lines: [text],
+    cursor: null,
+  });
+
+  it("lets an extension footer replace the built-in footer instead of stacking", () => {
     useAppStore.setState({
-      tabs: [...useAppStore.getState().tabs, second],
-      picker: "model",
-      modelCatalog: {
-        [TAB]: [
-          {
-            key: "openai/gpt-5",
-            id: "gpt-5",
-            provider: "openai",
-            label: "GPT-5",
-            raw: { id: "gpt-5", provider: "openai" },
-          },
-        ],
+      tuiSurfaces: {
+        [TAB]: {
+          ...EMPTY_TUI_SURFACE,
+          active: true,
+          footer: frame(1, "EXT FOOTER"),
+        },
+      },
+      extensionUi: { [TAB]: { ...EMPTY_EXTENSION_UI, statuses: { probe: "on" } } },
+    });
+
+    render(<SessionView tabId={TAB} />);
+    expect(screen.getByText("EXT FOOTER")).toBeInTheDocument();
+    // The built-in rows are gone, not duplicated.
+    expect(screen.queryByTestId("session-footer")).toBeNull();
+    // A custom footer owns the statuses (Pi hands it the FooterDataProvider).
+    expect(screen.queryByTestId("extension-status-probe")).toBeNull();
+  });
+
+  it("renders the built-in footer and its statuses when no extension footer is set", () => {
+    useAppStore.setState({
+      extensionUi: { [TAB]: { ...EMPTY_EXTENSION_UI, statuses: { probe: "on" } } },
+    });
+
+    render(<SessionView tabId={TAB} />);
+    expect(screen.getByTestId("session-footer")).toBeInTheDocument();
+    expect(screen.getByTestId("extension-status-probe")).toHaveTextContent("on");
+  });
+
+  it("keeps extension widgets in Pi's above/below editor positions", () => {
+    useAppStore.setState({
+      tuiSurfaces: {
+        [TAB]: {
+          ...EMPTY_TUI_SURFACE,
+          active: true,
+          widgetsAbove: [frame(1, "ABOVE WIDGET")],
+          widgetsBelow: [frame(2, "BELOW WIDGET")],
+        },
       },
     });
-    const { rerender } = render(<SessionView />);
-    // Keying the dialog by tab remounts it, so transient state cannot carry over.
-    useAppStore.setState({ activeTabId: "tab-2" });
-    rerender(<SessionView />);
-    expect(screen.getByLabelText("Choose a model")).toBeInTheDocument();
-    // Every pick now saves as the default, so the switch is gone for good.
-    expect(screen.queryByLabelText("Save as default")).toBeNull();
-  });
-});
 
-describe("composer rows", () => {
-  it("puts the shortcut hints and the caret readout on one row", () => {
-    render(<SessionView />);
-    const row = screen.getByTestId("composer-caret").parentElement;
-    expect(row?.textContent).toContain("commands");
-    expect(row?.textContent).toContain("Ln 1 · Col 1");
-  });
-});
-
-describe("idle session wake (2026-10-24 plan)", () => {
-  it("focuses the composer when the transcript background is clicked", () => {
-    render(<SessionView />);
-    const box = screen.getByLabelText("Prompt");
-    box.blur();
-    expect(box).not.toHaveFocus();
-
-    fireEvent.click(screen.getByText("This session is ready"));
-
-    expect(box).toHaveFocus();
+    render(<SessionView tabId={TAB} />);
+    expect(screen.getByText("ABOVE WIDGET")).toBeInTheDocument();
+    expect(screen.getByText("BELOW WIDGET")).toBeInTheDocument();
   });
 
-  it("wakes a stopped session when the composer is focused", async () => {
-    const handles = installBridge();
-    const activate = vi.spyOn(handles.bridge.sessions, "activate");
+  it("puts a one-line below-editor widget in the footer and keeps multi-line ones in the strip", () => {
     useAppStore.setState({
-      tabs: [{ ...useAppStore.getState().tabs[0]!, status: "stopped" }],
-      activeTabId: TAB,
+      tuiSurfaces: {
+        [TAB]: {
+          ...EMPTY_TUI_SURFACE,
+          active: true,
+          widgetsBelow: [
+            frame(1, "ONE-LINE PI-LENS"),
+            {
+              seq: 2,
+              width: 20,
+              height: 2,
+              lines: ["MULTI-LINE 1", "MULTI-LINE 2"],
+              cursor: null,
+            },
+          ],
+        },
+      },
     });
 
-    render(<SessionView />);
-    const box = screen.getByLabelText("Prompt");
-    expect(box).toBeEnabled();
+    render(<SessionView tabId={TAB} />);
+    const footer = screen.getByTestId("session-footer");
+    const inline = screen.getByTestId("inline-widget-1");
+    expect(footer.contains(inline)).toBe(true);
+    expect(inline).toHaveTextContent("ONE-LINE PI-LENS");
 
-    fireEvent.focus(box);
-    await waitFor(() => expect(activate).toHaveBeenCalledWith(TAB));
-  });
-
-  it("does not auto-wake a crashed session", () => {
-    const handles = installBridge();
-    const activate = vi.spyOn(handles.bridge.sessions, "activate");
-    useAppStore.setState({
-      tabs: [{ ...useAppStore.getState().tabs[0]!, status: "crashed" }],
-      activeTabId: TAB,
-    });
-
-    render(<SessionView />);
-    const box = screen.getByLabelText("Prompt");
-    expect(box).toBeDisabled();
-
-    fireEvent.focus(box);
-    expect(activate).not.toHaveBeenCalled();
+    const multi = screen.getByText("MULTI-LINE 1");
+    expect(footer.contains(multi)).toBe(false);
+    expect(multi.closest("[data-tui-widgets='belowEditor']")).not.toBeNull();
   });
 });
 
-/** A DOMRect-shaped value for the layout stubs (jsdom has no layout). */
-function rect(width: number, height: number): DOMRect {
-  return {
-    x: 0,
-    y: 0,
-    width,
-    height,
-    top: 0,
-    left: 0,
-    right: width,
-    bottom: height,
-    toJSON: () => ({}),
-  } as DOMRect;
-}
-
-/**
- * Give the session column and its monospace probe a real box. Every other
- * element keeps jsdom's zero rect, matching the production fallback.
- */
-function stubViewportLayout(width = 1200, height = 600, cell = { width: 8, height: 16 }): void {
-  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
-    if (this instanceof HTMLElement && this.matches("[data-tui-cell-probe]")) {
-      return rect(cell.width, cell.height);
-    }
-    if (this instanceof HTMLElement && this.matches("[data-tui-viewport]")) {
-      return rect(width, height);
-    }
-    return rect(0, 0);
-  });
-}
-
-function resizeCalls(request: { mock: { calls: unknown[][] } }): Array<{ params?: unknown }> {
-  return request.mock.calls
-    .map((call) => call[0] as { method?: string; params?: unknown })
-    .filter((input) => input.method === "tui.resize");
-}
-
-function surfaceFrame(lines: number) {
-  return {
-    active: true,
-    overlay: false,
-    bounds: null,
-    focus: "custom" as const,
-    custom: {
-      seq: 1,
-      width: 150,
-      height: lines,
-      lines: Array.from({ length: lines }, (_, index) => `row ${index}`),
-      cursor: null,
-    },
-    footer: null,
-    header: null,
-    widgetsAbove: [],
-    widgetsBelow: [],
+describe("# document completion follows the host session", () => {
+  const PANE = {
+    host: "excel" as const,
+    hostLabel: "Excel",
+    paneId: "pane-1",
+    clientName: "Excel",
+    documentId: "url_sha256:aaaa1111",
+    documentName: "Book1.xlsx",
+    targetId: "url_sha256:aaaa1111",
+    focused: true,
+    visible: true,
+    windows: 1,
+    ops: [],
+    catalogVersion: null,
+    protocolVersion: null,
+    opsIgnoredCount: 0,
+    connectedAt: null,
+    lastSeen: null,
+    model: null,
+    provider: null,
+    mention: "Book1.xlsx",
   };
-}
 
-describe("TUI viewport grid (2026-10-26 plan, step 1)", () => {
-  it("reports the session column, not the surface frame", () => {
-    const handles = installBridge();
-    const request = vi.spyOn(handles.bridge.sessions, "request");
-    stubViewportLayout();
-
-    render(<SessionView />);
-
-    const calls = resizeCalls(request);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.params).toEqual({ rows: 37, cols: 150 });
-  });
-
-  it("does not re-measure when an extension frame changes height", () => {
-    const handles = installBridge();
-    const request = vi.spyOn(handles.bridge.sessions, "request");
-    stubViewportLayout();
-    render(<SessionView />);
-
-    act(() => {
-      useAppStore.setState({ tuiSurfaces: { [TAB]: surfaceFrame(32) } });
-    });
-
-    // The old implementation reported the 32-line frame back as terminal rows,
-    // which is what collapsed the questionnaire.
-    expect(resizeCalls(request)).toHaveLength(1);
-  });
-
-  it("re-reports the same grid after a status change (a fresh host)", () => {
-    const handles = installBridge();
-    const request = vi.spyOn(handles.bridge.sessions, "request");
-    stubViewportLayout();
-    render(<SessionView />);
-    expect(resizeCalls(request)).toHaveLength(1);
-
-    act(() => {
-      useAppStore.setState({
-        tabs: useAppStore
-          .getState()
-          .tabs.map((tab) => (tab.id === TAB ? { ...tab, status: "running" as const } : tab)),
-      });
-    });
-
-    const calls = resizeCalls(request);
-    expect(calls).toHaveLength(2);
-    expect(calls[1]?.params).toEqual({ rows: 37, cols: 150 });
-  });
-
-  it("keeps the 80x24 fallback when jsdom has no layout", () => {
-    const handles = installBridge();
-    const request = vi.spyOn(handles.bridge.sessions, "request");
-    render(<SessionView />);
-
-    expect(resizeCalls(request)[0]?.params).toEqual({ rows: 24, cols: 80 });
-  });
-});
-
-function overlaySurfaceFrame(
-  bounds: { row: number; col: number; width: number; height: number },
-  lines = 12,
-) {
-  return {
-    ...surfaceFrame(lines),
-    overlay: true,
-    bounds,
-    custom: {
-      seq: 1,
-      width: bounds.width,
-      height: lines,
-      lines: Array.from({ length: lines }, (_, index) => `option ${index}`),
-      cursor: null,
-    },
-  };
-}
-
-describe("TUI surface presentation (2026-10-26 plan, step 2)", () => {
-  it("docks the questionnaire's bottom sheet inside the session column", () => {
+  function seedHost(isHostTab: boolean): void {
     useAppStore.setState({
-      tuiSurfaces: {
-        [TAB]: overlaySurfaceFrame({ row: 12, col: 0, width: 80, height: 12 }),
-      },
+      tabs: [
+        { ...useAppStore.getState().tabs[0]!, id: "tab-1", kind: isHostTab ? "office" : "session" },
+        ...(isHostTab
+          ? []
+          : [{ ...useAppStore.getState().tabs[0]!, id: "tab-office", kind: "office" as const }]),
+      ],
+      activeTabId: "tab-1",
+      officeDocuments: documentsViewFixture({
+        available: true,
+        status: "ok",
+        panes: [PANE],
+      }),
     });
+  }
 
-    render(<SessionView />);
-
-    const surface = document.querySelector('[data-tui-surface="dock"]');
-    expect(surface).toBeTruthy();
-    expect(surface?.closest("[data-tui-viewport]")).toBeTruthy();
-    // No page-level wrapper and no dim backdrop: the transcript stays usable.
-    expect(document.querySelector("[data-tui-overlay]")).toBeNull();
-    expect(document.querySelector(".bg-black\\/40")).toBeNull();
-    // The dock replaces the composer, exactly as Pi's editor dock does.
-    expect(screen.queryByLabelText("Prompt")).toBeNull();
-    expect(document.querySelector("[data-tui-viewport]")).toBeTruthy();
-  });
-
-  it("floats a non-bottom overlay inside the column and keeps the composer", () => {
-    useAppStore.setState({
-      tuiSurfaces: {
-        [TAB]: overlaySurfaceFrame({ row: 7, col: 20, width: 40, height: 6 }),
-      },
-    });
-
-    render(<SessionView />);
-
-    const overlay = document.querySelector('[data-tui-surface="overlay"]');
-    expect(overlay).toBeTruthy();
-    expect(overlay?.closest("[data-tui-viewport]")).toBeTruthy();
-    expect(document.querySelector(".bg-black\\/40")).toBeNull();
-    expect(screen.getByLabelText("Prompt")).toBeInTheDocument();
-  });
-
-  it("gives the keyboard back to a docked surface when the transcript is clicked", () => {
-    useAppStore.setState({
-      tuiSurfaces: {
-        [TAB]: overlaySurfaceFrame({ row: 12, col: 0, width: 80, height: 12 }),
-      },
-    });
-    render(<SessionView />);
-    const surface = document.querySelector('[data-tui-surface="dock"]') as HTMLElement;
-    surface.blur();
-    expect(surface).not.toHaveFocus();
-
-    fireEvent.click(screen.getByText("This session is ready"));
-
-    expect(surface).toHaveFocus();
-    expect(screen.queryByLabelText("Prompt")).toBeNull();
-  });
-
-  it("makes the composer inert while a floating overlay owns the keyboard", () => {
-    useAppStore.setState({
-      tuiSurfaces: {
-        [TAB]: overlaySurfaceFrame({ row: 7, col: 20, width: 40, height: 6 }),
-      },
-    });
-    render(<SessionView />);
+  it("lists the attached documents in the host session", async () => {
+    seedHost(true);
+    render(<SessionView tabId={TAB} />);
 
     const prompt = screen.getByLabelText("Prompt");
-    const wrapper = prompt.closest(".contents");
-    expect(wrapper).toHaveAttribute("inert");
+    await userEvent.type(prompt, "#");
 
-    const overlay = document.querySelector('[data-tui-surface="overlay"]') as HTMLElement;
-    overlay.blur();
-    fireEvent.click(screen.getByText("This session is ready"));
-    expect(overlay).toHaveFocus();
+    // The completion item's label carries the `#` the user typed.
+    expect(await screen.findByText("#Book1.xlsx")).toBeInTheDocument();
+    expect(screen.getByTestId("completion-overlay")).toBeInTheDocument();
   });
 
-  it("renders an extension dialog in the composer region, not as a modal", () => {
+  it("lists nothing in a sibling session of the same project", async () => {
+    seedHost(false);
+    render(<SessionView tabId={TAB} />);
+
+    const prompt = screen.getByLabelText("Prompt");
+    await userEvent.type(prompt, "#");
+
+    // The `office_*` call would land on the other tab, so the menu offers
+    // nothing rather than a document this session cannot serve.
+    await waitFor(() => expect(screen.queryByTestId("completion-overlay")).not.toBeInTheDocument());
+    expect(screen.queryByText("#Book1.xlsx")).not.toBeInTheDocument();
+  });
+});
+
+describe("workspace drops on the session pane", () => {
+  it("inserts a mention when a file is dropped on the transcript", async () => {
+    render(<SessionView tabId={TAB} />);
+
+    fireEvent.drop(screen.getByTestId("session-view"), {
+      dataTransfer: fakeWorkspaceDrop(),
+    });
+
+    await waitFor(() =>
+      expect(useAppStore.getState().prefs.drafts[TAB]).toContain("@src/notes.md"),
+    );
+  });
+
+  it("shows and clears the drop overlay", async () => {
+    render(<SessionView tabId={TAB} />);
+    const view = screen.getByTestId("session-view");
+
+    fireEvent.dragEnter(view, { dataTransfer: fakeWorkspaceDrop() });
+    expect(screen.getByText(/Drop to mention this file/)).toBeInTheDocument();
+
+    fireEvent.dragLeave(view, { dataTransfer: fakeWorkspaceDrop() });
+    await waitFor(() =>
+      expect(screen.queryByText(/Drop to mention this file/)).not.toBeInTheDocument(),
+    );
+  });
+
+  it("refuses a file from a different project", () => {
+    render(<SessionView tabId={TAB} />);
+    useAppStore.setState({ hint: null });
+
+    fireEvent.drop(screen.getByTestId("session-view"), {
+      dataTransfer: fakeWorkspaceDrop({ projectPath: "C:/other" }),
+    });
+
+    expect(useAppStore.getState().prefs.drafts[TAB] ?? "").toBe("");
+    expect(useAppStore.getState().hint).toMatch(/different folder/);
+  });
+
+  it("ignores an in-app text drag", () => {
+    render(<SessionView tabId={TAB} />);
+    const view = screen.getByTestId("session-view");
+
+    fireEvent.dragEnter(view, {
+      dataTransfer: fakeWorkspaceDrop({}, ["text/plain"]),
+    });
+    expect(screen.queryByText(/Drop to mention this file/)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The grid renders several session views at once (2026-11-03 plan). Each one must
+ * read its own tab's state, never the app-wide selection, or two panes would show
+ * the same conversation.
+ */
+describe("two panes at once", () => {
+  const OTHER = "tab-2";
+
+  function twoTabs(): void {
+    installBridge();
     useAppStore.setState({
-      extensionDialogs: [
+      prefs: { ...DEFAULT_PREFS, drafts: {} },
+      tabs: [
         {
-          id: "ui-1",
-          method: "select",
-          title: "Pick a target",
-          options: ["Sheet1", "Sheet2"],
-          message: "",
-          placeholder: null,
-          prefill: null,
-          timeout: null,
-          tabId: TAB,
-          at: Date.now(),
+          id: TAB,
+          kind: "session",
+          cwd: "C:/work/app",
+          title: "First session",
+          sessionFile: null,
+          status: "idle",
+          createdAt: 1,
+          lastActiveAt: 1,
+          model: "anthropic/claude",
+        },
+        {
+          id: OTHER,
+          kind: "session",
+          cwd: "C:/work/other",
+          title: "Second session",
+          sessionFile: null,
+          status: "idle",
+          createdAt: 2,
+          lastActiveAt: 2,
+          model: "anthropic/claude",
         },
       ],
+      activeTabId: TAB,
+      transcripts: {},
+      sessionStates: {},
+      extensionUi: {},
+      tuiSurfaces: {},
+      picker: null,
+      pickerTabId: null,
+    });
+  }
+
+  it("renders each tab's own heading and draft", () => {
+    twoTabs();
+    useAppStore.setState({
+      prefs: { ...DEFAULT_PREFS, drafts: { [TAB]: "first", [OTHER]: "second" } },
     });
 
-    render(<SessionView />);
+    render(
+      <>
+        <SessionView tabId={TAB} />
+        <SessionView tabId={OTHER} />
+      </>,
+    );
 
-    const dialog = screen.getByRole("dialog", { name: "Pick a target" });
-    expect(dialog.closest("[data-tui-viewport]")).toBeTruthy();
-    expect(document.querySelector(".bg-black\\/55")).toBeNull();
-    expect(screen.queryByLabelText("Prompt")).toBeNull();
-
-    // Another tab's dialog is not shown here; the owning tab is activated when
-    // it arrives (the store does that on `oi.request`).
-    act(() => {
-      useAppStore.setState({
-        extensionDialogs: [
-          {
-            id: "ui-2",
-            method: "select",
-            title: "Elsewhere",
-            options: ["a"],
-            message: "",
-            placeholder: null,
-            prefill: null,
-            timeout: null,
-            tabId: "tab-2",
-            at: Date.now(),
-          },
-        ],
-      });
-    });
-    expect(screen.queryByRole("dialog", { name: "Elsewhere" })).toBeNull();
-    expect(screen.getByLabelText("Prompt")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "First session" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Second session" })).toBeInTheDocument();
+    const composers = screen.getAllByLabelText("Prompt");
+    expect(composers).toHaveLength(2);
+    expect(composers[0]).toHaveValue("first");
+    expect(composers[1]).toHaveValue("second");
   });
 
-  it("renders TUI header slots full-bleed so cols-wide frames do not clip", () => {
-    useAppStore.setState({
-      tuiSurfaces: {
-        [TAB]: {
-          ...surfaceFrame(1),
-          header: { seq: 2, width: 80, height: 1, lines: ["HEADER"], cursor: null },
-        },
-      },
-    });
+  it("opens the model picker only in the pane that asked", () => {
+    twoTabs();
 
-    render(<SessionView />);
+    render(
+      <>
+        <SessionView tabId={TAB} />
+        <SessionView tabId={OTHER} />
+      </>,
+    );
 
-    const slot = document.querySelector("[data-tui-slot]");
-    expect(slot?.textContent).toContain("HEADER");
-    expect(slot?.className).not.toContain("px-3");
-  });
+    const tools = screen.getAllByTestId("composer-tools");
+    expect(tools).toHaveLength(2);
+    fireEvent.click(within(tools[0]!).getByRole("button", { name: "Change model" }));
 
-  it("renders component widgets above and below the editor dock", () => {
-    useAppStore.setState({
-      tuiSurfaces: {
-        [TAB]: {
-          ...surfaceFrame(1),
-          widgetsAbove: [{ seq: 3, width: 80, height: 1, lines: ["ABOVE"], cursor: null }],
-          widgetsBelow: [{ seq: 4, width: 80, height: 1, lines: ["BELOW"], cursor: null }],
-        },
-      },
-    });
-
-    render(<SessionView />);
-
-    expect(screen.getByText("ABOVE")).toBeInTheDocument();
-    expect(screen.getByText("BELOW")).toBeInTheDocument();
-    expect(document.querySelector('[data-tui-widgets="aboveEditor"]')).toBeTruthy();
-    expect(document.querySelector('[data-tui-widgets="belowEditor"]')).toBeTruthy();
+    expect(useAppStore.getState().pickerTabId).toBe(TAB);
   });
 });

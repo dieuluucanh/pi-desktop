@@ -1,19 +1,27 @@
 import { useEffect, type ReactElement } from "react";
 import { CommandPalette } from "./layout/CommandPalette";
+import { QuickOpenDialog } from "./files/QuickOpenDialog";
+import { isExternalFileDrag } from "./files/workspace-drag";
+import { UnsavedCloseDialog } from "./layout/UnsavedCloseDialog";
+import { useEditorStore } from "./editor/editor-store";
 import { ProviderLoginDialog } from "./connections/ProviderLoginDialog";
 import { PackageConsentDialog } from "./extensions/PackageConsentDialog";
 import { PrivacyDialog } from "./privacy/PrivacyDialog";
 import { TrustDialog } from "./projects/TrustDialog";
 import { Sidebar } from "./layout/Sidebar";
+import { ProjectRail } from "./layout/ProjectRail";
 import { StatusBar } from "./layout/StatusBar";
-import { TabStrip } from "./layout/TabStrip";
-import { TitleBar } from "./layout/TitleBar";
+import { SessionTabStrip } from "./layout/SessionTabStrip";
+import { EditorTabStrip } from "./layout/EditorTabStrip";
 import { handleMenuCommand } from "./menu-actions";
 import { useAppStore, type AppView } from "./state/app-store";
+import { createFocusResync } from "./state/focus-resync";
+import { systemThemeName, watchSystemTheme } from "./themes/system-theme";
 import { OnboardingWizard } from "./onboarding/OnboardingWizard";
 import { ShortcutDispatcher } from "./shortcuts/ShortcutDispatcher";
 import { ShortcutsHelp } from "./shortcuts/ShortcutsHelp";
 import { Toaster } from "./ui/toaster";
+import { releaseStaleBodyPointerLock } from "./ui/body-pointer-lock";
 import { ForkDialog } from "./sessions/ForkDialog";
 import { SessionBrowserDialog } from "./sessions/SessionBrowser";
 import { SessionTreeDialog } from "./sessions/SessionTree";
@@ -25,9 +33,11 @@ import { ExpandedEditorDialog } from "./sessions/ExpandedEditorDialog";
 import { ConnectionsView } from "./views/ConnectionsView";
 import { DiagnosticsView } from "./views/DiagnosticsView";
 import { ExtensionsView } from "./views/ExtensionsView";
-import { SessionView } from "./views/SessionView";
+import { WorkspaceView } from "./views/WorkspaceView";
 import { WebNavigationDialog } from "./web/WebNavigationDialog";
 import { WebUrlDialog } from "./web/WebUrlDialog";
+import { MuteNotificationDialog } from "./extension-ui/MuteNotificationDialog";
+import { DiffDialog } from "./rail/DiffDialog";
 import { SettingsView } from "./views/SettingsView";
 import { SkillsView } from "./views/SkillsView";
 import { WelcomeView } from "./views/WelcomeView";
@@ -35,15 +45,18 @@ import { WelcomeView } from "./views/WelcomeView";
 /**
  * App shell (plan step 1, IA per D-A4).
  *
- * Regions: title bar, sidebar (projects → sessions, then the product views),
- * session tab strip, the active view, status bar, plus the command palette and
- * the toast host. Global shortcuts belong to the Electron menu (step 1) — the
- * renderer only owns palette-local keys, so nothing fires twice.
+ * Regions: sidebar (projects → sessions, then the product views), session tab
+ * strip (the topmost app row — the OS frame owns the window controls), the
+ * active view, status bar, plus the command palette and the toast host. Global
+ * shortcuts belong to the Electron menu (step 1) — the renderer only owns
+ * palette-local keys, so nothing fires twice. The update offer is a slim
+ * conditional row above the tab strip; it costs no height when there is
+ * nothing to do (the status bar has no update chip).
  */
 
 const VIEWS: Record<AppView, () => ReactElement> = {
   welcome: WelcomeView,
-  session: SessionView,
+  session: WorkspaceView,
   settings: SettingsView,
   extensions: ExtensionsView,
   connections: ConnectionsView,
@@ -51,20 +64,14 @@ const VIEWS: Record<AppView, () => ReactElement> = {
   diagnostics: DiagnosticsView,
 };
 
-function prefersLight(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-color-scheme: light)").matches
-  );
-}
-
 export function App() {
   const view = useAppStore((state) => state.view);
   const theme = useAppStore((state) => state.prefs.theme);
+  const followSystemTheme = useAppStore((state) => state.prefs.followSystemTheme);
   const loadPrefs = useAppStore((state) => state.loadPrefs);
   const loadProjects = useAppStore((state) => state.loadProjects);
   const loadTabs = useAppStore((state) => state.loadTabs);
+  const loadThemes = useAppStore((state) => state.loadThemes);
   const loadUpdateState = useAppStore((state) => state.loadUpdateState);
   const prefsLoaded = useAppStore((state) => state.prefsLoaded);
   const privacyAcknowledged = useAppStore((state) => state.prefs.privacyAcknowledged);
@@ -85,6 +92,38 @@ export function App() {
     void loadPrefs();
     void loadProjects();
   }, [loadPrefs, loadProjects]);
+
+  // Best-effort hot-exit flush when the window is hidden or unloaded. The
+  // debounced backup already covers normal editing; this closes the gap for a
+  // quit that happens immediately after a keystroke.
+  useEffect(() => {
+    const flush = (): void => {
+      void useEditorStore.getState().flushBackups();
+    };
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("blur", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("blur", flush);
+    };
+  }, []);
+
+  // Dropping an OS file on the window must never navigate the renderer to
+  // `file://`. In-app tab drags carry only their typed MIME, so this guard is
+  // deliberately limited to external `Files` drags.
+  useEffect(() => {
+    const guard = (event: DragEvent): void => {
+      if (event.dataTransfer && isExternalFileDrag(event.dataTransfer)) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener("dragover", guard);
+    window.addEventListener("drop", guard);
+    return () => {
+      window.removeEventListener("dragover", guard);
+      window.removeEventListener("drop", guard);
+    };
+  }, []);
 
   useEffect(() => {
     const api = window.pi;
@@ -107,7 +146,7 @@ export function App() {
     // is idempotent and no-ops for the control host.
     void loadTabs().then(() => useAppStore.getState().loadShortcuts());
     // The updater's state (plan step 26): read once, then follow main's pushes
-    // so a check started from the menu or the banner updates everywhere.
+    // so a check started from the menu or the status chip updates everywhere.
     void loadUpdateState();
     const offUpdates = api.updates.onState((state) =>
       useAppStore.getState().applyUpdateState(state),
@@ -123,6 +162,15 @@ export function App() {
     // the Documents panel, `#` mentions and office tool cards stay current.
     const offDocuments = api.office.onDocuments((view) =>
       useAppStore.getState().applyOfficeDocuments(view),
+    );
+    // Source control (git-checkpoint plan step 9) and folder checkpoints (step
+    // 21): main pushes a folder's snapshot only when it changed, so one
+    // subscription per surface keeps the rail live without polling the renderer.
+    const offGit = api.git.onSnapshot((snapshot) =>
+      useAppStore.getState().applyGitSnapshot(snapshot),
+    );
+    const offCheckpoints = api.checkpoints.onState((state) =>
+      useAppStore.getState().applyCheckpointState(state),
     );
     // Web tabs (plan step 21): the live state of each native page view, and the
     // navigations main refused because they leave the review.
@@ -144,6 +192,8 @@ export function App() {
       offState();
       offEvents();
       offDocuments();
+      offGit();
+      offCheckpoints();
       offWebState();
       offWebNav();
       offUpdates();
@@ -153,18 +203,27 @@ export function App() {
 
   useEffect(() => {
     // A laptop that slept, or a window that was hidden, can miss main's tab
-    // pushes. Reconcile on the first real interaction with the window, then
-    // ensure the active session (which repairs a stopped/stale host).
-    const resync = (): void => {
+    // pushes. Alt+Tab emits both `focus` and `visibilitychange`; coalesce the
+    // burst into one reconcile (2026-11-03 plan step 9).
+    const resync = createFocusResync(() => {
       if (document.visibilityState === "hidden") return;
+      // A modal layer that unmounted without restoring the body lock leaves the
+      // renderer clickable-looking but inert; recovering on focus is the last
+      // chance to get the window back (see ui/body-pointer-lock.ts).
+      releaseStaleBodyPointerLock();
       void useAppStore.getState().resyncSessions();
       void useAppStore.getState().syncModelScopesFromDisk();
+    });
+    const request = (): void => {
+      if (document.visibilityState === "hidden") return;
+      resync.request();
     };
-    window.addEventListener("focus", resync);
-    document.addEventListener("visibilitychange", resync);
+    window.addEventListener("focus", request);
+    document.addEventListener("visibilitychange", request);
     return () => {
-      window.removeEventListener("focus", resync);
-      document.removeEventListener("visibilitychange", resync);
+      window.removeEventListener("focus", request);
+      document.removeEventListener("visibilitychange", request);
+      resync.cancel();
     };
   }, []);
 
@@ -172,10 +231,29 @@ export function App() {
     // The appearance preference paints first paint; once the Pi theme loads,
     // the active Pi theme owns the chrome (plan step 15) and this yields.
     if (useAppStore.getState().themesLoaded) return;
-    const resolved = theme === "system" ? (prefersLight() ? "light" : "dark") : theme;
+    const resolved = followSystemTheme || theme === "system" ? systemThemeName() : theme;
     document.documentElement.dataset.theme = resolved;
     document.documentElement.style.colorScheme = resolved;
-  }, [theme]);
+  }, [theme, followSystemTheme]);
+
+  useEffect(() => {
+    // While follow-system is on, the OS appearance re-activates the matching
+    // built-in Pi theme (and writes the `theme` setting so terminal Pi agrees).
+    if (!followSystemTheme) return;
+    return watchSystemTheme(() => {
+      void useAppStore.getState().applySystemTheme();
+    });
+  }, [followSystemTheme]);
+
+  useEffect(() => {
+    // Load the active Pi theme as soon as the prefs are known, instead of
+    // waiting for a visit to Skills → Themes. Without this the Settings theme
+    // picker appeared to do nothing once the catalogue finally loaded
+    // (2026-10-30 theme pass). A failure is surfaced by the store and retried
+    // from the Themes section.
+    if (!prefsLoaded) return;
+    void loadThemes();
+  }, [prefsLoaded, loadThemes]);
 
   useEffect(() => {
     // The first-run flow (plan step 26) opens after the privacy screen and only
@@ -191,7 +269,6 @@ export function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <TitleBar />
       {bridgeMissing ? (
         <div className="banner banner--error m-3">
           The preload bridge is unavailable (window.pi is missing), so no command can reach the main
@@ -253,14 +330,24 @@ export function App() {
       <div className="flex min-h-0 flex-1">
         <Sidebar />
         <main className="flex min-w-0 flex-1 flex-col">
-          <TabStrip />
+          <SessionTabStrip />
+          <EditorTabStrip />
           <section className="min-h-0 flex-1 overflow-hidden">
             <View />
           </section>
         </main>
+        {/*
+          The panel rail is app chrome, not part of a view (2026-10-30
+          project-scoped rail plan): it follows the selected project, so a
+          project with no open session still shows its source control and
+          checkpoints beside Welcome. Product views get the full width.
+        */}
+        <ProjectRail />
       </div>
       <StatusBar />
       <CommandPalette />
+      <QuickOpenDialog />
+      <UnsavedCloseDialog />
       <SessionBrowserDialog />
       <SessionTreeDialog />
       <SessionInfoDialog />
@@ -276,6 +363,8 @@ export function App() {
       <TrustDialog />
       <WebNavigationDialog />
       <WebUrlDialog />
+      <DiffDialog />
+      <MuteNotificationDialog />
       <ShortcutsHelp />
       <ShortcutDispatcher />
       <Toaster theme={theme} />

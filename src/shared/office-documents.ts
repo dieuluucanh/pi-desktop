@@ -11,8 +11,15 @@
  * pane: a version-skewed bridge must degrade to "fewer facts", never to a crash.
  */
 
-import { PI_OFFICE_BRIDGE, officeHostLabel, type OfficeHost } from "./office";
+import {
+  PI_OFFICE_BRIDGE,
+  bridgeSupportsManualLifecycle,
+  officeHostLabel,
+  type OfficeHost,
+} from "./office";
 import { projectBridgeCompatibility, type BridgeCompatibility } from "./office-bridge";
+import { sameFolder } from "./rail-scope";
+import { isHostBackedTab, type TabRecord } from "./session-ipc";
 
 /** One attached task pane, as the Documents panel and the completion source see it. */
 export interface OfficeDocumentPane {
@@ -50,10 +57,32 @@ export interface OfficeDocumentPane {
   mention: string;
 }
 
+/**
+ * Who runs the bridge process, read from `/health.owner` (bridge 0.6+).
+ *
+ * A null `sessionId` means the bridge was not started by a Pi Desktop host
+ * (a terminal Pi session), or an older bridge omitted the field.
+ */
+export interface OfficeBridgeOwner {
+  pid: number | null;
+  sessionId: string | null;
+  client: "desktop" | "cli" | "unknown";
+  cwd: string | null;
+}
+
 /** The Documents panel's whole world: one `/health` probe, projected. */
 export interface OfficeDocumentsView {
   /** True when the bridge answered `/health` (even with zero panes). */
   available: boolean;
+  /**
+   * True when the bridge package is listed in this profile's Pi settings.
+   *
+   * Unlike `available`, this is a **stable, offline fact**: it survives a probe
+   * failure, a host restart and the gap while a promoted session re-binds the
+   * port. The rail uses it to keep the Documents menu on screen (2026-10-30
+   * rail-headers plan) while `available` stays "the bridge answers right now".
+   */
+  configured: boolean;
   /** The port probed — the Office host's bridge port (`PI_OFFICE_BRIDGE.defaultPort`). */
   port: number;
   /** The probe result: `ok`, `unreachable`, `not-our-bridge`, `invalid-response`. */
@@ -63,6 +92,17 @@ export interface OfficeDocumentsView {
   catalogVersion: number | null;
   /** Version-skew verdict (streamed deltas, pane-side Stop). */
   compatibility: BridgeCompatibility | null;
+  /**
+   * The process that owns the live bridge (bridge 0.6+). Null when the payload
+   * did not include an owner (legacy bridge) or the bridge is down.
+   */
+  owner: OfficeBridgeOwner | null;
+  /**
+   * The bridge stays off until `/office connect`. False for a legacy bridge
+   * (which auto-starts) and when the bridge is down. An older bridge cannot be
+   * closed/moved by the app, so the UI must offer an update instead.
+   */
+  manualLifecycle: boolean;
   panes: OfficeDocumentPane[];
   /** ISO timestamp of the probe. */
   fetchedAt: string;
@@ -172,12 +212,26 @@ export function parseOfficeDocumentPane(
  * Project a bridge `/health` payload into the Documents view. `status` is the
  * probe's own verdict; a payload is only parsed when the probe called it `ok`.
  */
+/** Parse the additive `owner` block. Missing/partial data degrades to null. */
+export function parseOfficeBridgeOwner(value: unknown): OfficeBridgeOwner | null {
+  const owner = asRecord(value);
+  if (!owner) return null;
+  const pid = asNumber(owner.pid);
+  const sessionId = asString(owner.sessionId);
+  const cwd = asString(owner.cwd);
+  const client = owner.client === "desktop" || owner.client === "cli" ? owner.client : "unknown";
+  if (pid === null && sessionId === null && cwd === null) return null;
+  return { pid, sessionId, client, cwd };
+}
+
 export function parseOfficeDocumentsView(input: {
   payload: unknown;
   status: string;
   port?: number;
   error?: string | null;
   fetchedAt: string;
+  /** The install fact; see {@link OfficeDocumentsView.configured}. */
+  configured?: boolean;
 }): OfficeDocumentsView {
   const port = input.port ?? PI_OFFICE_BRIDGE.defaultPort;
   const root = asRecord(input.payload);
@@ -195,9 +249,14 @@ export function parseOfficeDocumentsView(input: {
     ? (asString(root.serverVersion) ?? asString(root.serviceVersion))
     : null;
   const available = input.status === "ok" && root !== null;
+  const manualLifecycle = available
+    ? capabilities?.includes("manual-lifecycle") === true ||
+      bridgeSupportsManualLifecycle(serverVersion)
+    : false;
 
   return {
     available,
+    configured: input.configured === true,
     port,
     status: input.status,
     serverVersion,
@@ -211,6 +270,8 @@ export function parseOfficeDocumentsView(input: {
           catalogVersion,
         })
       : null,
+    owner: available ? parseOfficeBridgeOwner(root?.owner) : null,
+    manualLifecycle,
     panes,
     fetchedAt: input.fetchedAt,
     error: input.error ?? null,
@@ -220,15 +281,19 @@ export function parseOfficeDocumentsView(input: {
 /** The view before the first probe: not available, no panes. */
 export function emptyOfficeDocumentsView(
   port: number = PI_OFFICE_BRIDGE.defaultPort,
+  configured = false,
 ): OfficeDocumentsView {
   return {
     available: false,
+    configured,
     port,
     status: "unknown",
     serverVersion: null,
     protocolVersion: null,
     catalogVersion: null,
     compatibility: null,
+    owner: null,
+    manualLifecycle: false,
     panes: [],
     fetchedAt: new Date(0).toISOString(),
     error: null,
@@ -422,4 +487,142 @@ export function parseDocumentListTable(text: string): OfficeDocumentListRow[] {
     });
   }
   return rows;
+}
+
+/**
+ * Which tab owns bridge port 38617 — the **Office host**.
+ *
+ * Main reserves that port for the single `office`-kind tab (`host-supervisor`),
+ * and promotes one tab at a time (`session-service` demotes every other `office`
+ * tab when promotion happens). The renderer needs the same rule to answer "is
+ * *this* session the one that can serve an `office_*` call?", so it lives here
+ * rather than as a third copy of the predicate.
+ *
+ * `status !== "stopped"` matters: a stopped tab keeps its record (and its kind)
+ * until it is closed, but it no longer holds the port, so it is not a host. Note
+ * a `crashed`/`failed` tab is still the host — it is assigned the port, and
+ * whether its process currently answers is a different question from identity.
+ */
+type ScopeTab = Pick<TabRecord, "id" | "kind" | "cwd" | "title" | "status">;
+
+export function officeHostTab(tabs: readonly ScopeTab[]): ScopeTab | null {
+  return tabs.find((tab) => tab.kind === "office" && tab.status !== "stopped") ?? null;
+}
+
+/**
+ * The tab that owns the **live** bridge, from `/health.owner.sessionId`.
+ *
+ * A manual bridge in a terminal has no tab; a legacy bridge (no owner field)
+ * falls back to the old `office`-kind tab so an app updated ahead of its bridge
+ * still shows the right owner. When the bridge is down, there is no owner.
+ */
+export function officeBridgeOwnerTab(
+  view: Pick<OfficeDocumentsView, "available" | "manualLifecycle" | "owner"> | null,
+  tabs: readonly ScopeTab[],
+): ScopeTab | null {
+  if (!view?.available) return null;
+  const sessionId = view.owner?.sessionId ?? null;
+  if (sessionId) {
+    const owner = tabs.find((tab) => tab.id === sessionId);
+    if (owner) return owner;
+  }
+  // A legacy bridge does not publish an owner. Its 38617 holder is the office
+  // tab by construction in that release, so this is display-only compatibility.
+  if (!view.manualLifecycle) return officeHostTab(tabs);
+  return null;
+}
+
+/**
+ * The tab an automatic bridge setup should use: the live owner, then an Office
+ * host, then any host-backed session. An editor or web tab has no Pi host, so
+ * it is never a bridge target even when it is the most recently used tab.
+ */
+export function officeBridgeCandidateTab(
+  view: Pick<OfficeDocumentsView, "available" | "manualLifecycle" | "owner"> | null,
+  tabs: readonly ScopeTab[],
+): ScopeTab | null {
+  return (
+    officeBridgeOwnerTab(view, tabs) ??
+    officeHostTab(tabs) ??
+    tabs.find((tab) => isHostBackedTab(tab.kind)) ??
+    null
+  );
+}
+
+/** The Office host, as the Documents scope line renders it. */
+export interface OfficeHostInfo {
+  id: string;
+  title: string;
+  /** The folder the host session works in — where its documents live. */
+  projectPath: string;
+  status: TabRecord["status"];
+}
+
+export interface OfficeDocumentScope {
+  /** The host tab, or null when no session holds the bridge. */
+  host: OfficeHostInfo | null;
+  /** True when the **active** tab is the host, i.e. its `office_*` calls land. */
+  isHost: boolean;
+  /**
+   * True when the host works in the rail's folder, i.e. the document set belongs
+   * to the project the panel is showing (2026-10-30 project-scoped rail plan).
+   */
+  hostInRailFolder: boolean;
+}
+
+/**
+ * Resolve the Documents menu's scope for the active tab and the rail's folder.
+ *
+ * Since the bridge is app-wide but a *session* is what runs the tools, there are
+ * three states worth distinguishing, and this projection separates the middle
+ * one from nothing: a host exists and you are it, a host exists and you are not,
+ * and no host exists at all. The last one is the only case where "start a
+ * session" is the useful action.
+ *
+ * `railFolder` is optional so a caller that only needs `isHost` (the composer's
+ * `#` mentions) does not have to know where the panel is pointed; without it the
+ * folder comparison is simply reported as `false`.
+ */
+/** Accept a full view (new callers) or the legacy pane array (old tests). */
+export type OfficeScopeSource = OfficeDocumentsView | readonly OfficeDocumentPane[];
+
+function scopeView(source: OfficeScopeSource): OfficeDocumentsView | null {
+  return Array.isArray(source) ? null : (source as OfficeDocumentsView);
+}
+
+export function officeDocumentScope(
+  source: OfficeScopeSource,
+  tabs: readonly ScopeTab[],
+  activeTabId: string | null,
+  railFolder?: string | null,
+): OfficeDocumentScope {
+  const view = scopeView(source);
+  const host = view ? officeBridgeOwnerTab(view, tabs) : officeHostTab(tabs);
+  if (!host) return { host: null, isHost: false, hostInRailFolder: false };
+  return {
+    host: { id: host.id, title: host.title, projectPath: host.cwd, status: host.status },
+    isHost: activeTabId !== null && host.id === activeTabId,
+    hostInRailFolder: railFolder ? sameFolder(host.cwd, railFolder) : false,
+  };
+}
+
+/**
+ * The `#` completion entries for the **active** session.
+ *
+ * Only the host session can serve an `office_*` call: the tool reaches whichever
+ * host owns port 38617, so in any other tab a mention would tag a prompt the
+ * bridge never answers. A list that offers what cannot work is worse than an
+ * empty one, so a non-host session gets `[]` and the UI explains why (plan D10).
+ */
+export function documentMentionsForHost(
+  source: OfficeScopeSource,
+  tabs: readonly ScopeTab[],
+  activeTabId: string | null,
+): DocumentMentionEntry[] {
+  const view = scopeView(source);
+  const panes: readonly OfficeDocumentPane[] = view
+    ? view.panes
+    : (source as readonly OfficeDocumentPane[]);
+  const { isHost } = officeDocumentScope(source, tabs, activeTabId);
+  return isHost ? toDocumentMentions(panes) : [];
 }

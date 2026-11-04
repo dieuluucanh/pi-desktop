@@ -30,3 +30,19 @@ Changing a pin here means changing it there.
 The bundled runtime — not Electron's Node — runs every Pi host process and every
 npm install (plan D3). `resources/runtime/` is gitignored; `npm run runtime:fetch`
 populates it.
+
+## Build provenance (not a dependency)
+
+`afterPack` writes `<resources>/build-info.json` with `channel` (`local` or
+`release`), the packaged `version`, a short git commit and an ISO `builtAt`.
+`PI_BUILD_CHANNEL` is explicit when set; otherwise `GITHUB_ACTIONS="true"` means
+`release` and every other environment means `local`. `src/main/build-info.ts`
+reads it at startup; a missing or malformed file degrades to `unknown` and never
+repairs itself. The app uses the channel to skip automatic update checks for
+local builds (see `docs/architecture/app-shell.md`).
+
+## Published extension (independent version)
+
+`@dieulc/checkpoints` is a separately versioned npm package (`packages/checkpoints`),
+not an app dependency pin. Its version, changelog and tag (`@dieulc/checkpoints@x.y.z`)
+are owned by the package release tool; changing the app version never changes it.

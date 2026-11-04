@@ -4,6 +4,7 @@ import { formatBytes, formatDuration } from "../../../shared/performance";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { useAppStore } from "../state/app-store";
+import { ViewShell } from "./ViewShell";
 
 /**
  * Diagnostics (plan step 22): the evidence a support request needs.
@@ -81,6 +82,11 @@ export function DiagnosticsView() {
     ? [
         ["App", `${info.name} ${info.version}`],
         ["Mode", info.isDev ? "development" : "packaged"],
+        [
+          "Build",
+          `${info.buildChannel ?? "unknown"}${info.buildCommit ? ` · ${info.buildCommit}` : ""}` +
+            `${info.buildVersion && info.buildVersion !== info.version ? ` · built as v${info.buildVersion}` : ""}`,
+        ],
         ["Electron", `${info.electron} (Chromium ${info.chrome})`],
         ["App node", info.node],
         ["Platform", `${info.platform}/${info.arch}`],
@@ -88,7 +94,7 @@ export function DiagnosticsView() {
     : [];
 
   return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col gap-6 overflow-y-auto px-8 py-6">
+    <ViewShell width="narrow" gap={6}>
       <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold">Diagnostics</h1>
@@ -227,10 +233,27 @@ export function DiagnosticsView() {
           <section className="card flex flex-col gap-3" data-testid="diagnostics-hosts">
             <h2 className="text-sm font-semibold">Hosts</h2>
             <p className="text-xs text-ink-muted">
-              {snapshot.capacity.hosts.used}/{snapshot.capacity.hosts.limit} hosts ·{" "}
-              {snapshot.capacity.tabs.used}/{snapshot.capacity.tabs.limit} tabs · per-host budget{" "}
+              {snapshot.capacity.liveHosts}/{snapshot.capacity.targetHosts} live hosts (ceiling{" "}
+              {snapshot.capacity.ceilingHosts}) · {snapshot.capacity.openSessions} open sessions (
+              {snapshot.capacity.asleepSessions} asleep) · {snapshot.capacity.visibleSessions}{" "}
+              visible panes · {snapshot.capacity.editorTabs} editor tabs · host RSS{" "}
+              {formatBytes(snapshot.capacity.hostRssBytes)} /{" "}
+              {formatBytes(snapshot.capacity.hostRssLimitBytes)} · per-host budget{" "}
               {formatBytes(snapshot.memory.budgetBytes)} (recycle at{" "}
               {formatBytes(snapshot.memory.restartBytes)})
+            </p>
+            <p className="flex flex-wrap items-center gap-2 text-xs text-ink-muted">
+              {snapshot.capacity.overTarget ? <Badge tone="warn">over target</Badge> : null}
+              {snapshot.capacity.overMemory ? <Badge tone="warn">over memory</Badge> : null}
+              <span>
+                The live-session target is soft; inactive sessions sleep and wake on first use. A
+                visible pane is never parked, so a grid can legitimately sit above its target.
+              </span>
+            </p>
+            <p className="text-xs text-ink-muted">
+              System memory {formatBytes(snapshot.memory.freeBytes)} free of{" "}
+              {formatBytes(snapshot.memory.totalBytes)} · {snapshot.web.tabs} web tabs ·{" "}
+              {snapshot.web.liveViews}/{snapshot.web.limit} live views
             </p>
             {snapshot.hosts.length === 0 ? (
               <p className="text-sm text-ink-muted">
@@ -356,6 +379,6 @@ export function DiagnosticsView() {
       ) : (
         <p className="text-sm text-ink-muted">Reading diagnostics…</p>
       )}
-    </div>
+    </ViewShell>
   );
 }

@@ -1,5 +1,6 @@
 import { Command } from "cmdk";
 import { useAppStore, type AppView } from "../state/app-store";
+import { useEditorStore } from "../editor/editor-store";
 import { newSessionAction, openProjectAction } from "../menu-actions";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { Kbd } from "../ui/kbd";
@@ -49,6 +50,22 @@ export function CommandPalette() {
     action(tabId);
   };
 
+  // Editor commands are only meaningful with an editor tab on screen; the
+  // palette explains the requirement instead of saving/formatting nothing.
+  const runEditor = (action: (tabId: string) => void): void => {
+    const state = useAppStore.getState();
+    const tab = state.activeTabId
+      ? state.tabs.find((entry) => entry.id === state.activeTabId)
+      : undefined;
+    if (!tab || tab.kind !== "editor") {
+      closePalette();
+      setHint("Open a file first — that action applies to the editor.");
+      return;
+    }
+    closePalette();
+    action(tab.id);
+  };
+
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? undefined : closePalette())}>
       <DialogContent aria-describedby={undefined}>
@@ -85,8 +102,30 @@ export function CommandPalette() {
                 onSelect={() => run(() => void openProjectAction())}
               />
               <PaletteItem
+                label="Go to file…"
+                shortcut="Ctrl+P"
+                onSelect={() =>
+                  run(
+                    () =>
+                      void import("../files/quick-open-store").then((module) =>
+                        module.useQuickOpen.getState().openDialog(),
+                      ),
+                  )
+                }
+              />
+              <PaletteItem
                 label="Open URL in a tab…"
                 onSelect={() => run(() => useAppStore.getState().openWebUrlDialog())}
+              />
+              <PaletteItem
+                label="Save file"
+                shortcut="Ctrl+S"
+                onSelect={() => runEditor((tabId) => void useEditorStore.getState().save(tabId))}
+              />
+              <PaletteItem
+                label="Format document"
+                shortcut="Shift+Alt+F"
+                onSelect={() => runEditor((tabId) => void useEditorStore.getState().format(tabId))}
               />
               <PaletteItem
                 label="Browse sessions…"
@@ -113,6 +152,28 @@ export function CommandPalette() {
                 label="Toggle sidebar"
                 shortcut="Ctrl+B"
                 onSelect={() => run(toggleSidebar)}
+              />
+              {/* Session view grid (2026-11-03 plan): the same five presets the
+                  View menu offers. */}
+              <PaletteItem
+                label="Grid: single tab"
+                onSelect={() => run(() => useAppStore.getState().setGridLayout("single"))}
+              />
+              <PaletteItem
+                label="Grid: two columns"
+                onSelect={() => run(() => useAppStore.getState().setGridLayout("two"))}
+              />
+              <PaletteItem
+                label="Grid: three panes (left tall)"
+                onSelect={() => run(() => useAppStore.getState().setGridLayout("three-left"))}
+              />
+              <PaletteItem
+                label="Grid: three panes (right tall)"
+                onSelect={() => run(() => useAppStore.getState().setGridLayout("three-right"))}
+              />
+              <PaletteItem
+                label="Grid: four panes"
+                onSelect={() => run(() => useAppStore.getState().setGridLayout("four"))}
               />
               <PaletteItem
                 label="Show keyboard shortcuts"

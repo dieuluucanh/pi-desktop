@@ -1,18 +1,31 @@
 import { normalize } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createProjectOps, repoNameFromUrl, validateProjectName } from "../../src/main/project-ops";
+import {
+  createProjectOps,
+  defaultProjectFolderName,
+  repoNameFromUrl,
+  validateProjectName,
+} from "../../src/main/project-ops";
 import { createMemoryFsPort } from "../../src/main/fs-port";
 import { createFakeCommandRunner } from "../../src/main/office/exec";
 
 const PARENT = "C:/work";
+const DOCUMENTS = "C:/Users/test/Documents";
+const DEFAULT_ROOT = `${DOCUMENTS}/Pi-Desktop`;
+const DEFAULT_STAMP = "2026-11-03T10-15-42";
+// Local-time components, matching the formatter's getters on any timezone.
+const DEFAULT_NOW = new Date(2026, 10, 3, 10, 15, 42).getTime();
 
 function harness(
   options: {
     dirs?: readonly string[];
+    files?: Record<string, string>;
     runner?: ReturnType<typeof createFakeCommandRunner>;
+    documentsDir?: () => string | null;
+    now?: () => number;
   } = {},
 ) {
-  const fs = createMemoryFsPort({ dirs: options.dirs ?? [PARENT] });
+  const fs = createMemoryFsPort({ dirs: options.dirs ?? [PARENT], files: options.files });
   const runner =
     options.runner ??
     createFakeCommandRunner([
@@ -26,6 +39,8 @@ function harness(
     openTerminal: vi.fn(async () => true),
     copyText: vi.fn(async () => true),
     join: (...parts) => parts.join("/"),
+    documentsDir: options.documentsDir ?? (() => DOCUMENTS),
+    now: options.now ?? (() => DEFAULT_NOW),
   });
   return { fs, runner, ops };
 }
@@ -54,6 +69,95 @@ describe("repoNameFromUrl", () => {
     expect(repoNameFromUrl("git@github.com:user/pi-desktop.git")).toBe("pi-desktop");
     expect(repoNameFromUrl("ssh://git@host/user/repo")).toBe("repo");
     expect(repoNameFromUrl("C:/repos/local-app/")).toBe("local-app");
+  });
+});
+
+describe("defaultProjectFolderName", () => {
+  it("formats local date and time with zero-padded fields", () => {
+    expect(defaultProjectFolderName(new Date(2026, 0, 2, 3, 4, 5))).toBe("2026-01-02T03-04-05");
+    expect(defaultProjectFolderName(new Date(2026, 10, 23, 14, 5, 9))).toBe("2026-11-23T14-05-09");
+  });
+});
+
+describe("createDefault", () => {
+  it("creates a dated folder under Documents/Pi-Desktop without running git", async () => {
+    const { ops, fs, runner } = harness({ dirs: [DOCUMENTS] });
+
+    const result = await ops.createDefault();
+
+    expect(result).toEqual({ ok: true, path: `${DEFAULT_ROOT}/${DEFAULT_STAMP}` });
+    expect(fs.dirs.has(normalize(`${DEFAULT_ROOT}/${DEFAULT_STAMP}`))).toBe(true);
+    expect(runner.calls).toEqual([]);
+  });
+
+  it("creates both missing folders and reuses an existing Pi-Desktop directory", async () => {
+    const fresh = harness({ dirs: [] });
+    expect(await fresh.ops.createDefault()).toMatchObject({ ok: true });
+    expect(fresh.fs.dirs.has(normalize(DEFAULT_ROOT))).toBe(true);
+
+    const existing = harness({ dirs: [DEFAULT_ROOT] });
+    expect(await existing.ops.createDefault()).toEqual({
+      ok: true,
+      path: `${DEFAULT_ROOT}/${DEFAULT_STAMP}`,
+    });
+  });
+
+  it("suffixes a timestamp folder that already exists", async () => {
+    const { ops } = harness({
+      dirs: [
+        DEFAULT_ROOT,
+        `${DEFAULT_ROOT}/${DEFAULT_STAMP}`,
+        `${DEFAULT_ROOT}/${DEFAULT_STAMP}-2`,
+      ],
+    });
+
+    expect(await ops.createDefault()).toEqual({
+      ok: true,
+      path: `${DEFAULT_ROOT}/${DEFAULT_STAMP}-3`,
+    });
+  });
+
+  it("refuses when Pi-Desktop exists as a file", async () => {
+    const { ops } = harness({
+      dirs: [DOCUMENTS],
+      files: { [DEFAULT_ROOT]: "not a folder" },
+    });
+
+    const result = await ops.createDefault();
+
+    expect(result).toMatchObject({ ok: false, path: null });
+    expect(result.error).toMatch(/not a folder/);
+  });
+
+  it("refuses when the Documents folder is unavailable", async () => {
+    const { ops } = harness({ documentsDir: () => null });
+
+    const result = await ops.createDefault();
+
+    expect(result).toMatchObject({ ok: false, path: null });
+    expect(result.error).toMatch(/Documents folder is unavailable/);
+  });
+
+  it("surfaces a filesystem failure instead of throwing", async () => {
+    const fs = createMemoryFsPort({ dirs: [DOCUMENTS] });
+    fs.ensureDir = async () => {
+      throw new Error("EACCES: permission denied");
+    };
+    const ops = createProjectOps({
+      fs,
+      runner: createFakeCommandRunner([]),
+      reveal: vi.fn(() => true),
+      openTerminal: vi.fn(async () => true),
+      copyText: vi.fn(async () => true),
+      join: (...parts) => parts.join("/"),
+      documentsDir: () => DOCUMENTS,
+      now: () => DEFAULT_NOW,
+    });
+
+    const result = await ops.createDefault();
+
+    expect(result).toMatchObject({ ok: false, path: null });
+    expect(result.error).toMatch(/EACCES/);
   });
 });
 

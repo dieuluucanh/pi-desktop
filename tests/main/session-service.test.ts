@@ -8,6 +8,7 @@ import {
   type SupervisorHostLike,
   type SupervisorLike,
 } from "../../src/main/session-service";
+import type { HostMemoryMetrics } from "../../src/shared/performance";
 
 /**
  * The session service (plan step 3) drives everything the renderer sees, so it is
@@ -34,6 +35,8 @@ class FakeHost implements SupervisorHostLike {
   private readonly state: Record<string, unknown>;
   private readonly createdSessionFile: string | null;
   private readonly fail: { method: string; error: Error } | undefined;
+  private readonly pinnedValue: boolean;
+  private readonly rssBytes: number;
 
   constructor(
     sessionId: string,
@@ -42,6 +45,8 @@ class FakeHost implements SupervisorHostLike {
       state?: Record<string, unknown>;
       createdSessionFile?: string | null;
       fail?: { method: string; error: Error };
+      pinned?: boolean;
+      rssBytes?: number;
     } = {},
   ) {
     this.sessionId = sessionId;
@@ -52,10 +57,27 @@ class FakeHost implements SupervisorHostLike {
         ? "/profile/sessions/s1.jsonl"
         : options.createdSessionFile;
     this.fail = options.fail;
+    this.pinnedValue = options.pinned ?? false;
+    this.rssBytes = options.rssBytes ?? 0;
   }
 
   status(): string {
     return this.statusValue;
+  }
+
+  pinned(): boolean {
+    return this.pinnedValue;
+  }
+
+  metrics(): HostMemoryMetrics | null {
+    if (this.rssBytes <= 0) return null;
+    return {
+      rssBytes: this.rssBytes,
+      heapUsedBytes: this.rssBytes / 2,
+      heapTotalBytes: this.rssBytes,
+      uptimeMs: 1,
+      at: 1,
+    };
   }
 
   setStatus(status: string): void {
@@ -137,20 +159,34 @@ class FakeHost implements SupervisorHostLike {
 
 function createHarness(
   options: {
-    maxTabs?: number;
+    maxLiveHosts?: number;
     failCreate?: Error;
     /** Expected bundle fingerprint; absent disables the stale check. */
     hostBuildId?: () => string | null;
     /** Per-spawn build ids (index 0 = the first host). */
     buildIds?: Array<string | null>;
     /** Extra `state.get` fields (busy flags, session file, …). */
-    state?: Record<string, unknown>;
+    state?: Record<string, unknown> | ((spec: SpawnSpec) => Record<string, unknown>);
+    /** Marks specific hosts as pinned (active tab § bridge owner § control). */
+    pinnedFor?: (spec: SpawnSpec) => boolean;
+    /** Scripted RSS per host (used by the aggregate memory guard tests). */
+    rssBytes?: number | ((spec: SpawnSpec) => number);
+    /** Aggregate host RSS budget passed to the service. */
+    hostRssLimitBytes?: number;
+    /** Controllable clock, so LRU can be tested without real time. */
+    now?: () => number;
     /** The session snapshot's `sessionFile`, or null for a just-created session. */
     createdSessionFile?: string | null;
     /** Makes one host method reject (e.g. a wedged `state.get`). */
     fail?: { method: HostMethod; error: Error };
     /** Awaited inside the fake `supervisor.start`, to hold a spawn in flight. */
     onStart?: (spec: SpawnSpec) => Promise<void> | void;
+    /** Scripts the Office-port reclaimer; absent keeps the pre-2026-10-30 path. */
+    releaseOfficePort?: (input: {
+      port: number;
+      ownPids: readonly number[];
+    }) => Promise<{ ok: boolean; detail?: string }>;
+    ownPids?: () => readonly number[];
   } = {},
 ): {
   service: SessionService;
@@ -173,11 +209,20 @@ function createHarness(
       await options.onStart?.(spec);
       const host = new FakeHost(spec.sessionId, {
         buildId: options.buildIds?.[specs.length - 1] ?? "build-1",
-        ...(options.state ? { state: options.state } : {}),
+        ...(options.state === undefined
+          ? {}
+          : { state: typeof options.state === "function" ? options.state(spec) : options.state }),
         ...(options.createdSessionFile === undefined
           ? {}
           : { createdSessionFile: options.createdSessionFile }),
         ...(options.fail ? { fail: options.fail } : {}),
+        pinned: options.pinnedFor?.(spec) ?? false,
+        ...(options.rssBytes === undefined
+          ? {}
+          : {
+              rssBytes:
+                typeof options.rssBytes === "function" ? options.rssBytes(spec) : options.rssBytes,
+            }),
       });
       if (options.failCreate) {
         host.request = (method: HostMethod, params?: unknown) => {
@@ -214,10 +259,15 @@ function createHarness(
       },
     },
     controlCwd: "C:\\state",
-    now: () => 1_000,
+    now: options.now ?? (() => 1_000),
     newId: () => `tab-${++counter}`,
     ...(options.hostBuildId ? { hostBuildId: options.hostBuildId } : {}),
-    ...(options.maxTabs === undefined ? {} : { maxTabs: options.maxTabs }),
+    ...(options.maxLiveHosts === undefined ? {} : { maxLiveHosts: options.maxLiveHosts }),
+    ...(options.hostRssLimitBytes === undefined
+      ? {}
+      : { hostRssLimitBytes: options.hostRssLimitBytes }),
+    ...(options.releaseOfficePort ? { releaseOfficePort: options.releaseOfficePort } : {}),
+    ...(options.ownPids ? { ownPids: options.ownPids } : {}),
     emit: (channel, payload) => pushes.push({ channel, payload }),
   });
 
@@ -250,6 +300,17 @@ describe("control host", () => {
     await service.controlHost();
     await service.controlHost();
     expect(specs).toEqual([{ sessionId: CONTROL_HOST_ID, cwd: "C:\\state", role: "control" }]);
+  });
+
+  it("replaces a control host that reports stopped", async () => {
+    const { service, specs, hosts } = createHarness();
+    await service.controlHost();
+    hosts.get(CONTROL_HOST_ID)?.emitLifecycle("status", "stopped");
+    await Promise.resolve();
+
+    await service.controlHost();
+
+    expect(specs.filter((spec) => spec.sessionId === CONTROL_HOST_ID)).toHaveLength(2);
   });
 
   it("routes a request addressed to the control host without creating a tab", async () => {
@@ -338,10 +399,12 @@ describe("tab lifecycle", () => {
     expect(tab.error).toMatch(/trust required/i);
   });
 
-  it("refuses to exceed the tab cap", async () => {
-    const { service } = createHarness({ maxTabs: 1 });
-    await service.createTab({ cwd: "C:\\work\\one" });
-    await expect(service.createTab({ cwd: "C:\\work\\two" })).rejects.toThrow(/limit reached/i);
+  it("opens more tabs than the old eight-tab cap", async () => {
+    const { service } = createHarness();
+    for (let index = 0; index < 12; index += 1) {
+      await service.createTab({ cwd: `C:\\work\\project-${index}` });
+    }
+    expect(service.tabs()).toHaveLength(12);
   });
 
   it("stops the host, forgets the tab and moves the active tab on close", async () => {
@@ -355,6 +418,267 @@ describe("tab lifecycle", () => {
     expect(envelope.activeTabId).toBe("tab-1");
     expect(hosts.has("tab-2")).toBe(false);
     expect(stored.tabs.map((tab) => tab.id)).toEqual(["tab-1"]);
+  });
+
+  it("clears the active tab without closing a tab or stopping a host", async () => {
+    // 2026-10-30 project-scoped rail plan: selecting a project with no open
+    // session must leave the session column on Welcome while the rail keeps the
+    // project's scope. Clearing a selection is not closing a tab.
+    const { service, hosts, stored, pushes } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\one" });
+    await service.createTab({ cwd: "C:\\work\\two" });
+    pushes.length = 0;
+
+    const envelope = await service.deactivate();
+
+    expect(envelope.activeTabId).toBeNull();
+    expect(envelope.tabs.map((tab) => tab.id)).toEqual(["tab-1", "tab-2"]);
+    expect(envelope.tabs.map((tab) => tab.status)).toEqual(["idle", "idle"]);
+    expect(hosts.size).toBe(2);
+    expect(stored.activeTabId).toBeNull();
+    expect(stored.tabs).toHaveLength(2);
+    expect(pushes.some((push) => push.channel === "tabs")).toBe(true);
+  });
+
+  it("keeps the cleared selection idempotent", async () => {
+    const { service, stored } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\one" });
+    await service.deactivate();
+    stored.activeTabId = "sentinel";
+
+    const envelope = await service.deactivate();
+
+    expect(envelope.activeTabId).toBeNull();
+    // A second clear is a no-op, so it does not rewrite the persisted document.
+    expect(stored.activeTabId).toBe("sentinel");
+  });
+});
+
+describe("live-host budget and LRU parking", () => {
+  const advance = (clock: { value: number }, ms: number): void => {
+    clock.value += ms;
+  };
+
+  it("parks the least-recently-used idle session before spawning another", async () => {
+    const clock = { value: 1_000 };
+    const harness = createHarness({ maxLiveHosts: 2, now: () => clock.value });
+
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    advance(clock, 1_000);
+    await harness.service.createTab({ cwd: "C:\\work\\two" });
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\three" });
+
+    expect(harness.service.tabs().map((tab) => tab.id)).toEqual(["tab-1", "tab-2", "tab-3"]);
+    const parked = harness.service.tabs().find((tab) => tab.id === "tab-1");
+    expect(parked?.status).toBe("stopped");
+    expect(parked?.sessionFile).toBe("/profile/sessions/s1.jsonl");
+    expect(harness.stopped).toContain("tab-1");
+    expect(harness.hosts.has("tab-1")).toBe(false);
+    expect(harness.hosts.has("tab-2")).toBe(true);
+    expect(harness.hosts.has("tab-3")).toBe(true);
+  });
+
+  it("resumes a parked session on its next activation", async () => {
+    const clock = { value: 1_000 };
+    const harness = createHarness({ maxLiveHosts: 2, now: () => clock.value });
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    advance(clock, 1_000);
+    await harness.service.createTab({ cwd: "C:\\work\\two" });
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\three" });
+
+    await harness.service.activateTab("tab-1");
+
+    const spec = harness.specs.at(-1);
+    expect(spec?.sessionId).toBe("tab-1");
+    expect(spec?.sessionFile).toBe("/profile/sessions/s1.jsonl");
+    expect(harness.hosts.get("tab-1")?.requests.map((request) => request.method)).toContain(
+      "session.resume",
+    );
+    expect(harness.service.tabs().find((tab) => tab.id === "tab-1")?.status).toBe("idle");
+  });
+
+  it("starts anyway when every live session is busy (soft budget)", async () => {
+    const clock = { value: 1_000 };
+    const harness = createHarness({
+      maxLiveHosts: 1,
+      now: () => clock.value,
+      state: { streaming: true },
+    });
+
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\two" });
+
+    expect(harness.service.tabs().find((tab) => tab.id === "tab-1")?.status).toBe("idle");
+    expect(harness.hosts.has("tab-1")).toBe(true);
+    expect(harness.hosts.has("tab-2")).toBe(true);
+    expect(harness.service.capacity().overTarget).toBe(true);
+  });
+
+  it("never parks the active tab to make room for a background request", async () => {
+    const clock = { value: 1_000 };
+    const harness = createHarness({ maxLiveHosts: 1, now: () => clock.value });
+    const record = (id: string, index: number): TabRecord => ({
+      id,
+      kind: "session",
+      cwd: `C:\\work\\${id}`,
+      title: id,
+      sessionFile: `/profile/${id}.jsonl`,
+      status: "stopped",
+      createdAt: index,
+      lastActiveAt: index,
+      model: null,
+    });
+    harness.stored.tabs = [record("tab-1", 1), record("tab-2", 2)];
+    harness.stored.activeTabId = "tab-1";
+    await harness.service.restoreTabs();
+    await harness.service.activateTab("tab-1");
+    advance(clock, 6_000);
+
+    await harness.service.request("tab-2", "state.get");
+
+    expect(harness.service.tabs().find((tab) => tab.id === "tab-1")?.status).toBe("idle");
+    expect(harness.stopped).not.toContain("tab-1");
+    expect(harness.hosts.has("tab-2")).toBe(true);
+  });
+
+  it("never parks an Office host or a pinned session", async () => {
+    const clock = { value: 1_000 };
+    const harness = createHarness({
+      maxLiveHosts: 1,
+      now: () => clock.value,
+      pinnedFor: (spec) => spec.sessionId === "tab-1",
+    });
+    await harness.service.createTab({ cwd: "C:\\work\\office", kind: "office" });
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\two" });
+
+    expect(harness.service.tabs().find((tab) => tab.id === "tab-1")?.status).toBe("idle");
+    expect(harness.stopped).not.toContain("tab-1");
+    expect(harness.hosts.size).toBe(2);
+  });
+
+  it("reports aggregate host RSS, the ceiling and over-memory", async () => {
+    const harness = createHarness({
+      maxLiveHosts: 2,
+      hostRssLimitBytes: 1_000,
+      rssBytes: 600,
+    });
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    await harness.service.createTab({ cwd: "C:\\work\\two" });
+
+    const capacity = harness.service.capacity();
+    expect(capacity.hostRssBytes).toBe(1_200);
+    expect(capacity.hostRssLimitBytes).toBe(1_000);
+    expect(capacity.overMemory).toBe(true);
+    expect(capacity.ceilingHosts).toBe(2);
+  });
+
+  it("reclaims idle hosts when the aggregate RSS is over budget", async () => {
+    const clock = { value: 1_000 };
+    const harness = createHarness({
+      maxLiveHosts: 3,
+      hostRssLimitBytes: 1_000,
+      rssBytes: 400,
+      now: () => clock.value,
+    });
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\two" });
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\three" });
+
+    const capacity = await harness.service.reclaimHosts();
+
+    // The oldest inactive host is parked; the active tab and the other host stay.
+    expect(harness.stopped).toContain("tab-1");
+    expect(harness.hosts.has("tab-2")).toBe(true);
+    expect(harness.hosts.has("tab-3")).toBe(true);
+    expect(capacity.hostRssBytes).toBe(800);
+    expect(capacity.overMemory).toBe(false);
+  });
+
+  it("never reclaims the active or a pinned host even over budget", async () => {
+    const clock = { value: 1_000 };
+    const harness = createHarness({
+      maxLiveHosts: 2,
+      hostRssLimitBytes: 1,
+      rssBytes: 400,
+      pinnedFor: (spec) => spec.sessionId === "tab-1",
+      now: () => clock.value,
+    });
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\two" });
+
+    await harness.service.reclaimHosts();
+
+    expect(harness.stopped).toHaveLength(0);
+    expect(harness.hosts.size).toBe(2);
+  });
+
+  it("never parks a visible pane to make room for another session", async () => {
+    // The grid (2026-11-03 plan): a pane the user is watching must stay awake, so
+    // the LRU budget parks the *other* idle session instead.
+    const clock = { value: 1_000 };
+    const harness = createHarness({ maxLiveHosts: 2, now: () => clock.value });
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    advance(clock, 1_000);
+    await harness.service.createTab({ cwd: "C:\\work\\two" });
+    harness.service.setVisibleTabs(["tab-1"]);
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\three" });
+
+    expect(harness.stopped).toEqual(["tab-2"]);
+    expect(harness.hosts.has("tab-1")).toBe(true);
+    expect(harness.hosts.has("tab-3")).toBe(true);
+  });
+
+  it("reclaims around the visible panes instead of parking them", async () => {
+    const clock = { value: 1_000 };
+    const harness = createHarness({
+      maxLiveHosts: 3,
+      hostRssLimitBytes: 1_000,
+      rssBytes: 400,
+      now: () => clock.value,
+    });
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\two" });
+    advance(clock, 6_000);
+    await harness.service.createTab({ cwd: "C:\\work\\three" });
+    harness.service.setVisibleTabs(["tab-1"]);
+
+    await harness.service.reclaimHosts();
+
+    expect(harness.stopped).toEqual(["tab-2"]);
+    expect(harness.hosts.has("tab-1")).toBe(true);
+  });
+
+  it("reports the visible panes and ignores ids that are not open", async () => {
+    const harness = createHarness();
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    expect(harness.service.capacity().visibleSessions).toBe(0);
+
+    // A close races the renderer push, so a stale id must be dropped quietly.
+    harness.service.setVisibleTabs(["tab-1", "ghost"]);
+    expect(harness.service.visibleTabIds()).toEqual(["tab-1"]);
+    expect(harness.service.capacity().visibleSessions).toBe(1);
+
+    harness.service.setVisibleTabs([]);
+    expect(harness.service.visibleTabIds()).toEqual([]);
+    expect(harness.service.capacity().visibleSessions).toBe(0);
+  });
+
+  it("bounds the visible set to the largest layout plus the focused tab", async () => {
+    const harness = createHarness({ maxLiveHosts: 8 });
+    for (let index = 0; index < 7; index += 1) {
+      await harness.service.createTab({ cwd: `C:\\work\\p${index}` });
+    }
+    harness.service.setVisibleTabs(["tab-1", "tab-2", "tab-3", "tab-4", "tab-5", "tab-6", "tab-7"]);
+    expect(harness.service.visibleTabIds()).toEqual(["tab-1", "tab-2", "tab-3", "tab-4", "tab-5"]);
   });
 });
 
@@ -659,16 +983,25 @@ describe("reliability and recovery (plan step 22)", () => {
     });
   });
 
-  it("reports used/limit for hosts and tabs (plan step 24 backpressure)", async () => {
-    const { service } = createHarness({ maxTabs: 2 });
+  it("reports the soft live-host budget and open-tab counts (plan step 24 backpressure)", async () => {
+    const { service } = createHarness({ maxLiveHosts: 2 });
     await service.controlHost();
     await service.createTab({ cwd: "C:\\work\\app" });
 
     const caps = service.capacity();
-    expect(caps.tabs).toEqual({ used: 1, limit: 2, atCapacity: false });
-    // The control host plus the one session host.
-    expect(caps.hosts.used).toBe(2);
-    expect(caps.hosts.limit).toBe(8);
+    expect(caps).toEqual({
+      liveHosts: 2,
+      targetHosts: 2,
+      ceilingHosts: 2,
+      overTarget: false,
+      hostRssBytes: 0,
+      hostRssLimitBytes: 0,
+      overMemory: false,
+      openSessions: 1,
+      asleepSessions: 0,
+      editorTabs: 0,
+      visibleSessions: 0,
+    });
   });
 
   it("drops a host handle that reports stopped, so the next activation re-spawns", async () => {
@@ -798,6 +1131,42 @@ describe("persistence and restore", () => {
     expect(envelope.tabs).toHaveLength(1);
     expect(envelope.tabs[0]).toMatchObject({ id: "tab-9", status: "stopped" });
     expect(envelope.activeTabId).toBe("tab-9");
+  });
+
+  it("restores more than eight session tabs and more than sixteen editor tabs", async () => {
+    const { service, stored } = createHarness();
+    const sessionTab = (index: number): TabRecord => ({
+      id: `session-${index}`,
+      kind: "session",
+      cwd: `C:\\work\\project-${index}`,
+      title: `project-${index}`,
+      sessionFile: `/profile/s${index}.jsonl`,
+      status: "stopped",
+      createdAt: index,
+      lastActiveAt: index,
+      model: null,
+    });
+    const editorTab = (index: number): TabRecord => ({
+      id: `editor-${index}`,
+      kind: "editor",
+      cwd: "C:\\work\\project-0",
+      title: `file-${index}.ts`,
+      sessionFile: null,
+      status: "idle",
+      createdAt: index,
+      lastActiveAt: index,
+      model: null,
+      filePath: `src/file-${index}.ts`,
+    });
+    stored.tabs = [
+      ...Array.from({ length: 20 }, (_, index) => sessionTab(index)),
+      ...Array.from({ length: 20 }, (_, index) => editorTab(index)),
+    ];
+
+    const envelope = await service.restoreTabs();
+    expect(envelope.tabs).toHaveLength(40);
+    expect(envelope.tabs.filter((tab) => tab.kind === "session")).toHaveLength(20);
+    expect(envelope.tabs.filter((tab) => tab.kind === "editor")).toHaveLength(20);
   });
 
   it("drops unusable persisted tabs instead of trusting the file", async () => {
@@ -1184,6 +1553,129 @@ describe("promoteToOfficeHost (plan step 20)", () => {
     const { service } = createHarness();
     await expect(service.promoteToOfficeHost("tab-nope")).rejects.toThrow(/unknown session tab/);
   });
+
+  it("frees the bridge port after stopping the old host and before the new spawn", async () => {
+    // 2026-10-30 project-scoped rail plan: "Use this session instead" must really
+    // take port 38617, so the reclaimer runs after the old host exited and before
+    // the promoted host binds.
+    const order: string[] = [];
+    const { service } = createHarness({
+      releaseOfficePort: async (input) => {
+        order.push(`release:${input.port}`);
+        return { ok: true };
+      },
+      ownPids: () => [process.pid, 4242],
+    });
+    await service.createTab({ cwd: "C:\\work\\app", kind: "office" });
+    await service.createTab({ cwd: "C:\\work\\app" });
+    // The stop happened first, so the reclaimer never needs to fight a live host.
+    order.push("stopped:tab-1");
+
+    await service.promoteToOfficeHost("tab-2");
+
+    expect(order).toEqual(["stopped:tab-1", "release:38617"]);
+    expect(service.tabs().map((tab) => tab.kind)).toEqual(["session", "office"]);
+  });
+
+  it("passes the app's own PIDs so the reclaimer never kills itself", async () => {
+    let seen: readonly number[] = [];
+    const { service } = createHarness({
+      ownPids: () => [process.pid, 5151],
+      releaseOfficePort: async (input) => {
+        seen = input.ownPids;
+        return { ok: true };
+      },
+    });
+    await service.createTab({ cwd: "C:\\work\\app" });
+    await service.promoteToOfficeHost("tab-1");
+
+    expect(seen).toEqual([process.pid, 5151]);
+  });
+
+  it("samples this app's own PIDs before any host is detached", async () => {
+    // A detached host has already left `hosts.list()`, so sampling later would
+    // let the reclaimer treat our own still-exiting process as a stranger and
+    // signal it (2026-10-30 rail-headers plan).
+    const calls: string[] = [];
+    let seen: readonly number[] = [];
+    const { service, hosts } = createHarness({
+      ownPids: () => {
+        calls.push(`own:${[...hosts.keys()].sort().join(",")}`);
+        return [process.pid, 7001];
+      },
+      releaseOfficePort: async (input) => {
+        calls.push("release");
+        seen = input.ownPids;
+        return { ok: true };
+      },
+    });
+    await service.createTab({ cwd: "C:\\work\\app", kind: "office" });
+    await service.createTab({ cwd: "C:\\work\\app" });
+
+    await service.promoteToOfficeHost("tab-2");
+
+    // Sampled once, while both hosts were still live.
+    expect(calls[0]).toBe("own:tab-1,tab-2");
+    expect(calls).toContain("release");
+    expect(seen).toEqual([process.pid, 7001]);
+  });
+
+  it("rolls back to the previous host when the port cannot be freed", async () => {
+    // The worst outcome would be demoting the working host and leaving the app
+    // with no bridge at all, so a failed takeover restores what was there.
+    const { service, specs } = createHarness({
+      releaseOfficePort: async () => ({
+        ok: false,
+        detail: "port 38617 is held by evil.exe (pid 7)",
+      }),
+    });
+    await service.createTab({ cwd: "C:\\work\\app", kind: "office" });
+    await service.createTab({ cwd: "C:\\work\\app" });
+
+    await expect(service.promoteToOfficeHost("tab-2")).rejects.toThrow(/evil\.exe/);
+
+    // The displaced host is the Office host again and active; the promoted tab
+    // did not silently become a second one.
+    expect(service.tabs().map((tab) => [tab.id, tab.kind])).toEqual([
+      ["tab-1", "office"],
+      ["tab-2", "session"],
+    ]);
+    expect(service.activeTabId()).toBe("tab-1");
+    // It was re-spawned as the office host (a fresh 38617 attempt), and the
+    // promoted tab never got an office spawn.
+    expect(specs.filter((spec) => spec.sessionId === "tab-2").length).toBe(1);
+    expect(
+      specs.filter((spec) => spec.sessionId === "tab-1").map((spec) => spec.officeHost),
+    ).toContain(true);
+  });
+
+  it("gives a readable error when the port is busy and there is nothing to restore", async () => {
+    const { service } = createHarness({
+      releaseOfficePort: async () => ({ ok: false }),
+    });
+    await service.createTab({ cwd: "C:\\work\\app" });
+
+    await expect(service.promoteToOfficeHost("tab-1")).rejects.toThrow(
+      /Office bridge port 38617 is in use/,
+    );
+    // A tab that never held the bridge stays a plain session.
+    expect(service.tabs()[0]!.kind).toBe("session");
+  });
+
+  it("does not call the reclaimer when the tab already owns the bridge", async () => {
+    let calls = 0;
+    const { service } = createHarness({
+      releaseOfficePort: async () => {
+        calls += 1;
+        return { ok: true };
+      },
+    });
+    await service.createTab({ cwd: "C:\\work\\app", kind: "office" });
+
+    await service.promoteToOfficeHost("tab-1");
+
+    expect(calls).toBe(0);
+  });
 });
 
 describe("web tabs (plan step 21)", () => {
@@ -1228,6 +1720,21 @@ describe("web tabs (plan step 21)", () => {
     expect(specs).toHaveLength(1);
 
     await expect(service.request("tab-2", "state.get")).rejects.toThrow(/no Pi host/);
+  });
+
+  it("never starts a host for an editor tab and refuses host requests", async () => {
+    const { service, specs } = createHarness();
+    const envelope = await service.createTab({
+      cwd: "C:/work/app",
+      kind: "editor",
+      filePath: "src/app.ts",
+    });
+    const editorId = envelope.tabs[0]!.id;
+    expect(specs).toHaveLength(0);
+
+    await expect(service.request(editorId, "state.get")).rejects.toThrow(/no Pi host/);
+    await expect(service.restartTab(editorId)).rejects.toThrow(/no Pi host to restart/);
+    expect(specs).toHaveLength(0);
   });
 
   it("restores a web tab as idle (there is no host to stop)", async () => {
@@ -1339,5 +1846,181 @@ describe("web tabs (plan step 21)", () => {
     expect(result).toMatchObject({ sessionId: "session-1" });
     // No new host was spawned for the settled tab.
     expect(harness.specs.length).toBe(before);
+  });
+});
+
+describe("pinned tabs and scoped close", () => {
+  it("pins a tab to the front and persists the flag", async () => {
+    const harness = createHarness();
+    await harness.service.createTab({ cwd: "C:/work/a" });
+    await harness.service.createTab({ cwd: "C:/work/b" });
+    const [first] = harness.service.tabs();
+
+    await harness.service.setPinned(first!.id, true);
+
+    expect(harness.service.tabs().map((tab) => tab.id)).toEqual([
+      first!.id,
+      harness.service.tabs()[1]!.id,
+    ]);
+    expect(harness.service.tabs()[0]?.pinned).toBe(true);
+
+    await harness.service.setPinned(first!.id, false);
+    expect(harness.service.tabs()[0]?.pinned).toBeUndefined();
+  });
+
+  it("restores a persisted pinned tab at the front", async () => {
+    const harness = createHarness();
+    harness.stored.tabs = [
+      {
+        id: "plain",
+        kind: "session",
+        cwd: "C:/work/a",
+        title: "a",
+        sessionFile: null,
+        status: "idle",
+        createdAt: 1,
+        lastActiveAt: 1,
+        model: null,
+      },
+      {
+        id: "pinned",
+        kind: "editor",
+        cwd: "C:/work/a",
+        title: "a.ts",
+        filePath: "a.ts",
+        sessionFile: null,
+        status: "idle",
+        createdAt: 2,
+        lastActiveAt: 2,
+        model: null,
+        pinned: true,
+      },
+    ];
+    harness.stored.activeTabId = "plain";
+
+    await harness.service.restoreTabs();
+
+    expect(harness.service.tabs().map((tab) => tab.id)).toEqual(["pinned", "plain"]);
+    expect(harness.service.tabs()[0]?.pinned).toBe(true);
+  });
+
+  it("closeAll is kind-scoped and leaves pinned tabs open", async () => {
+    const harness = createHarness();
+    await harness.service.createTab({ cwd: "C:/work/a" });
+    await harness.service.createTab({ cwd: "C:/work/b" });
+    await harness.service.createTab({ cwd: "C:/work/a", kind: "editor", filePath: "a.ts" });
+    const [first, second, editor] = harness.service.tabs();
+    await harness.service.setPinned(first!.id, true);
+
+    await harness.service.closeAll("session");
+
+    expect(harness.service.tabs().map((tab) => tab.id)).toEqual([first!.id, editor!.id]);
+    expect(harness.service.tabs().some((tab) => tab.id === first!.id && tab.pinned)).toBe(true);
+    expect(harness.service.tabs().some((tab) => tab.id === second!.id)).toBe(false);
+  });
+
+  it("closeOthers keeps the target, same-kind unpinned tabs only", async () => {
+    const harness = createHarness();
+    await harness.service.createTab({ cwd: "C:/work/a" });
+    await harness.service.createTab({ cwd: "C:/work/b" });
+    await harness.service.createTab({ cwd: "C:/work/a", kind: "editor", filePath: "a.ts" });
+    const [first, second, editor] = harness.service.tabs();
+    await harness.service.setPinned(first!.id, true);
+
+    await harness.service.closeOthers(second!.id);
+
+    expect(harness.service.tabs().map((tab) => tab.id)).toEqual([
+      first!.id,
+      second!.id,
+      editor!.id,
+    ]);
+  });
+
+  it("closeForProject closes every kind and pinned tabs", async () => {
+    const harness = createHarness();
+    await harness.service.createTab({ cwd: "C:/work/a" });
+    await harness.service.createTab({ cwd: "C:/work/b" });
+    await harness.service.createTab({ cwd: "C:/work/a", kind: "editor", filePath: "a.ts" });
+    const [first, second] = harness.service.tabs();
+    await harness.service.setPinned(first!.id, true);
+
+    await harness.service.closeForProject("c:/work/a/");
+
+    expect(harness.service.tabs().map((tab) => tab.id)).toEqual([second!.id]);
+  });
+
+  it("retargets editor tabs inside a renamed folder and across projects", async () => {
+    const harness = createHarness();
+    await harness.service.createTab({ cwd: "C:/work/a", kind: "editor", filePath: "src/app.ts" });
+    await harness.service.createTab({ cwd: "C:/work/a", kind: "editor", filePath: "other.ts" });
+    const [first, second] = harness.service.tabs();
+
+    await harness.service.retargetEditorTabs({
+      fromProjectPath: "C:/work/a",
+      fromPath: "src",
+      toProjectPath: "C:/work/b",
+      toPath: "lib",
+      kind: "directory",
+    });
+
+    expect(harness.service.tabs().find((tab) => tab.id === first!.id)).toMatchObject({
+      cwd: "C:/work/b",
+      filePath: "lib/app.ts",
+      title: "app.ts",
+    });
+    expect(harness.service.tabs().find((tab) => tab.id === second!.id)).toMatchObject({
+      cwd: "C:/work/a",
+      filePath: "other.ts",
+    });
+  });
+
+  it("clamps reorder to the tab's own pin group", async () => {
+    const harness = createHarness();
+    await harness.service.createTab({ cwd: "C:/work/a" });
+    await harness.service.createTab({ cwd: "C:/work/b" });
+    await harness.service.createTab({ cwd: "C:/work/c" });
+    const [first, second, third] = harness.service.tabs();
+    await harness.service.setPinned(first!.id, true);
+
+    await harness.service.reorderTab(third!.id, 0);
+
+    expect(harness.service.tabs().map((tab) => tab.id)).toEqual([first!.id, third!.id, second!.id]);
+  });
+});
+
+describe("tab table publishing", () => {
+  const tabsPushes = (harness: ReturnType<typeof createHarness>): number =>
+    harness.pushes.filter((push) => push.channel === "tabs").length;
+
+  it("skips an identical state frame and emits on a rendered-field change", async () => {
+    const harness = createHarness();
+    await harness.service.createTab({ cwd: "C:/work/a" });
+
+    // The create handshake may leave the status one frame behind; settle it
+    // first so the count measures the dedupe, not the handshake.
+    harness.newest().emit("state", { streaming: false });
+    const before = tabsPushes(harness);
+
+    harness.newest().emit("state", { streaming: false });
+    expect(tabsPushes(harness)).toBe(before);
+
+    harness.newest().emit("state", { streaming: true });
+    expect(tabsPushes(harness)).toBe(before + 1);
+
+    harness.newest().emit("state", { streaming: true });
+    expect(tabsPushes(harness)).toBe(before + 1);
+  });
+
+  it("returns the current table even when no push is needed", async () => {
+    const harness = createHarness();
+    const created = await harness.service.createTab({ cwd: "C:/work/a" });
+    const id = created.tabs[0]!.id;
+
+    const envelope = await harness.service.activateTab(id);
+
+    // The returned envelope is the IPC answer; the dedupe only controls the
+    // push channel.
+    expect(envelope.activeTabId).toBe(id);
+    expect(envelope.tabs.map((tab) => tab.id)).toEqual([id]);
   });
 });

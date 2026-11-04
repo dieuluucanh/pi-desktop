@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEventEntry } from "../../src/shared/session-ipc";
 import { Transcript, toolSummary } from "../../src/renderer/src/session/Transcript";
 import {
@@ -88,6 +88,24 @@ const FIXTURE: SessionEventEntry[] = [
     },
   },
 ];
+
+const originalClipboard = navigator.clipboard;
+const originalExecCommand = document.execCommand;
+
+afterEach(() => {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: originalClipboard,
+  });
+  if (originalExecCommand) {
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: originalExecCommand,
+    });
+  } else {
+    Reflect.deleteProperty(document, "execCommand");
+  }
+});
 
 function fixtureItems(): TranscriptItem[] {
   return reduceSessionEvents(createTranscriptState(), FIXTURE).items;
@@ -221,6 +239,28 @@ describe("transcript rendering", () => {
     expect(writeText).toHaveBeenCalledWith("please fix the bug");
   });
 
+  it("reports a failed copy instead of pretending it worked", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText: vi.fn(async () => {
+          throw new Error("denied");
+        }),
+      },
+      configurable: true,
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: () => false,
+    });
+    render(<Transcript items={fixtureItems()} />);
+
+    const copyButton = screen.getAllByRole("button", { name: /^copy$/ })[0]!;
+    await user.click(copyButton);
+
+    expect(copyButton).toHaveTextContent("copy failed");
+  });
+
   it("uses a plain list for small transcripts and still exposes the rows", () => {
     render(<Transcript items={fixtureItems()} />);
     const list = screen.getByTestId("transcript");
@@ -235,7 +275,23 @@ describe("transcript rendering", () => {
       contents: JSON.stringify({ content: [{ type: "text", text: "the whole 50 MB log" }] }),
     }));
     (handles.bridge.sessions as unknown as { request: unknown }).request = request;
-    useAppStore.setState({ blobs: {} });
+    useAppStore.setState({
+      tabs: [
+        {
+          id: "tab-1",
+          kind: "session",
+          cwd: "C:/work/app",
+          title: "app",
+          sessionFile: null,
+          status: "idle",
+          createdAt: 1,
+          lastActiveAt: 1,
+          model: null,
+        },
+      ],
+      activeTabId: "tab-1",
+      blobs: {},
+    });
 
     const items = reduceSessionEvents(createTranscriptState(), [
       {

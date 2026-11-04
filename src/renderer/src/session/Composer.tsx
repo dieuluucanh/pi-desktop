@@ -2,18 +2,24 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Paperclip, Send, Square, X } from "lucide-react";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
+import { PROMPT_MAX_HEIGHT_PX, useAutoGrowTextarea } from "../ui/auto-grow";
 import { fileToAttachment, isImageFile, type ImageAttachment } from "./image-attachment";
 import { lostPasteIds, shouldCollapsePaste } from "./paste-markers";
 import { useAppStore } from "../state/app-store";
+import { sameFolder } from "../../../shared/rail-scope";
+import type { WorkspaceEntryKind } from "../../../shared/workspace";
+import { insertWorkspaceMention, workspaceMention } from "../../../shared/workspace-drag";
+import { isExternalFileDrag, isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
+import { isTabDrag } from "../layout/tab-drag";
 import {
   parseWorkflowStatus,
   statusLineText,
+  workflowBadgeClass,
   workflowBorderClass,
   workflowModeLabel,
   type WorkflowModeView,
 } from "../../../shared/workflow-mode";
 import type { TranscriptQueue } from "./session-events";
-import type { SendMode } from "../state/app-store";
 import { CompletionOverlay } from "../completion/CompletionOverlay";
 import { matchShortcut } from "../shortcuts/dom-keys";
 import { joinBuffer, offsetToPosition, positionToOffset, splitBuffer } from "../completion/token";
@@ -37,8 +43,9 @@ import type {
  *  - **IME safety**: Enter during composition confirms candidates, it must never
  *    send. Both `isComposing` and the legacy `keyCode === 229` are checked.
  *  - **Streaming delivery**: while the agent runs, a message must be marked
- *    `steer` or `followUp` (the host refuses it otherwise, exactly like RPC), so
- *    the composer makes the choice explicit and remembers it per session.
+ *    `steer` or `followUp` (the host refuses it otherwise, exactly like RPC).
+ *    Enter steers; Alt+Enter / Ctrl+Q queue a follow-up. The choice is the
+ *    chord, not a remembered toggle — the same model as terminal Pi.
  *  - **Escape**: stop the run and put the queued text back in the editor.
  */
 
@@ -55,7 +62,6 @@ export interface ComposerProps {
   focusToken?: number;
   draft: string;
   queue: TranscriptQueue;
-  sendMode: SendMode;
   onDraftChange: (text: string) => void;
   onSend: (
     text: string,
@@ -66,6 +72,17 @@ export interface ComposerProps {
   onClearQueue: () => void;
   /** `clearQueue` and put the queued text back in the draft (Alt+Up, plan step 9). */
   onRestoreQueue: () => void;
+  /** The session workspace root, used to validate a dropped path. */
+  workspaceRoot?: string | null;
+  /** A mention dropped somewhere in the session pane, to insert at the caret. */
+  mentionRequest?: {
+    id: number;
+    tabId: string;
+    path: string;
+    kind: WorkspaceEntryKind;
+  } | null;
+  /** Called after a mention request has been inserted (or refused). */
+  onMentionHandled?: (id: number) => void;
   /** The `workflow` extension status, decoded into a composer border colour. */
   workflowStatus?: string | null;
   /**
@@ -78,12 +95,17 @@ export interface ComposerProps {
   onInvokeShortcut?: (key: string) => void;
   /** Asks the store to load the extension shortcuts (once). */
   onRequestShortcuts?: () => void;
-  onSendModeChange: (mode: SendMode) => void;
   onHistoryStep: (direction: 1 | -1) => string | null;
   /** The completion engine (plan step 7); omit it to disable completion. */
   completion?: ComposerCompletion;
   /** Step 7 attaches the completion overlay here. */
   completionSlot?: React.ReactNode;
+  /**
+   * The session's compact controls (model, thinking level, context ring),
+   * rendered in the blank space above Send (minimal-session-ui step 4). The
+   * composer itself stays presentational: the view owns the pickers.
+   */
+  toolsSlot?: React.ReactNode;
 }
 
 /** What the composer needs from the completion engine (plan step 7). */
@@ -219,22 +241,28 @@ export function Composer({
   focusToken = 0,
   draft,
   queue,
-  sendMode,
   workflowStatus,
   extensionShortcuts,
   onInvokeShortcut,
   onRequestShortcuts,
+  workspaceRoot,
+  mentionRequest,
+  onMentionHandled,
   onDraftChange,
   onSend,
   onStop,
   onClearQueue,
   onRestoreQueue,
-  onSendModeChange,
   onHistoryStep,
   completion,
   completionSlot,
+  toolsSlot,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // The prompt grows with its content up to a fixed cap, then scrolls. A manual
+  // resize would be overwritten by the next keystroke, so the handle is gone.
+  useAutoGrowTextarea(textareaRef, draft, PROMPT_MAX_HEIGHT_PX);
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -250,9 +278,15 @@ export function Composer({
   const [caret, setCaret] = useState<CaretPosition>({ line: 1, column: 1 });
   const completionAbortRef = useRef<AbortController | null>(null);
   const completionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A mention insertion updates the controlled draft and then needs to put the
+  // DOM caret after the new text. The ref survives the React commit; the effect
+  // below applies it once the textarea carries the new value.
+  const pendingCaretRef = useRef<{ text: string; caret: number } | null>(null);
+  const handledMentionRef = useRef<number | null>(null);
 
   const queued = [...queue.steering, ...queue.followUp];
   const bashMode = draft.trimStart().startsWith("!");
+  const shellExcluded = draft.trimStart().startsWith("!!");
   const registerPaste = useAppStore((state) => state.registerPaste);
   const pasteBodies = useAppStore((state) => state.pasteBodies[tabId]);
   // A marker restored from a previous launch has no body: say so, because the
@@ -386,6 +420,22 @@ export function Composer({
     if (node && node.value === draft) syncCaret(node);
   }, [draft, syncCaret]);
 
+  const applyPendingCaret = useCallback(() => {
+    const pending = pendingCaretRef.current;
+    if (!pending) return;
+    const node = textareaRef.current;
+    if (!node || node.value !== pending.text) return;
+    pendingCaretRef.current = null;
+    node.focus();
+    node.setSelectionRange(pending.caret, pending.caret);
+    caretRef.current = pending.caret;
+    setCaret(caretPosition(node.value, pending.caret));
+  }, []);
+
+  useEffect(() => {
+    applyPendingCaret();
+  }, [draft, applyPendingCaret]);
+
   // Clicking the transcript background is an explicit "talk to this session"
   // gesture; the view increments the token instead of reaching into the DOM.
   useEffect(() => {
@@ -437,39 +487,84 @@ export function Composer({
     if (added.length > 0) setAttachments((current) => [...current, ...added]);
   }, []);
 
+  const insertMention = useCallback(
+    (path: string, kind: WorkspaceEntryKind): boolean => {
+      const node = textareaRef.current;
+      if (!node || !enabled) return false;
+      const focused = document.activeElement === node;
+      const start = focused ? (node.selectionStart ?? node.value.length) : node.value.length;
+      const end = focused ? (node.selectionEnd ?? start) : start;
+      const next = insertWorkspaceMention(node.value, start, end, workspaceMention(path, kind));
+      pendingCaretRef.current = { text: next.text, caret: next.caret };
+      onDraftChange(next.text);
+      // The effect above normally applies the caret after the controlled value
+      // commits; the microtask covers a parent that does not re-render.
+      queueMicrotask(applyPendingCaret);
+      return true;
+    },
+    [applyPendingCaret, enabled, onDraftChange],
+  );
+
+  useEffect(() => {
+    if (!mentionRequest || mentionRequest.tabId !== tabId) return;
+    if (handledMentionRef.current === mentionRequest.id) return;
+    handledMentionRef.current = mentionRequest.id;
+    insertMention(mentionRequest.path, mentionRequest.kind);
+    onMentionHandled?.(mentionRequest.id);
+  }, [insertMention, mentionRequest, onMentionHandled, tabId]);
+
   return (
     <div
+      data-testid="composer-drop"
       className={cn(
         "relative shrink-0 border-t border-line bg-surface px-3 py-2",
         dragging && "ring-1 ring-accent",
       )}
       onDragOver={(event) => {
+        if (!isWorkspaceDrag(event.dataTransfer) && !isExternalFileDrag(event.dataTransfer)) {
+          return;
+        }
         event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
         setDragging(true);
       }}
-      onDragLeave={() => setDragging(false)}
+      onDragLeave={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        setDragging(false);
+      }}
       onDrop={(event) => {
+        // A tab drag belongs to the enclosing grid pane, not the composer. Let it
+        // bubble instead of consuming it as an (empty) file drop.
+        if (isTabDrag(event.dataTransfer)) return;
+        const payload = readWorkspaceDrop(event.dataTransfer);
+        if (payload) {
+          event.preventDefault();
+          setDragging(false);
+          if (!enabled) {
+            useAppStore.getState().setHint("This session cannot accept prompts right now.");
+            return;
+          }
+          if (workspaceRoot && !sameFolder(payload.projectPath, workspaceRoot)) {
+            useAppStore.getState().setHint("That file belongs to a different folder.");
+            return;
+          }
+          insertMention(payload.path, payload.kind);
+          return;
+        }
         event.preventDefault();
         setDragging(false);
-        void addFiles([...event.dataTransfer.files]);
+        if (enabled) void addFiles([...event.dataTransfer.files]);
       }}
     >
-      {/* The mode badge rides the composer's top edge, the way Pi's editor shows
-          its border label. It is the primary *textual* indicator of the active
-          mode, so it renders at every width and is announced to assistive tech
-          (`role="status"`) — colour alone must never be the only signal. The
-          full extension status (profile/role/commit policy) stays reachable
-          through `title`. */}
-      {workflowLabel ? (
-        <span
-          data-testid="workflow-mode-badge"
+      {bashMode ? (
+        <p
+          data-testid="composer-shell-mode"
           role="status"
           aria-live="polite"
-          title={statusLineText(workflowStatus)}
-          className="pointer-events-none absolute -top-2 right-3 rounded-xs border border-line bg-surface px-1.5 text-[10px] font-medium text-ink-muted"
+          className="mb-1 text-[11px] text-warn"
         >
-          {workflowLabel}
-        </span>
+          shell · {shellExcluded ? "output excluded from model" : "output kept in context"}
+        </p>
       ) : null}
 
       {lostMarkers.length > 0 ? (
@@ -499,315 +594,327 @@ export function Composer({
         />
       ) : null}
 
-      <div className="flex items-end gap-2">
-        <textarea
-          ref={textareaRef}
-          aria-label="Prompt"
-          rows={2}
-          value={draft}
-          placeholder={
-            bashMode
-              ? "Shell command — ! keeps context, !! excludes it…"
-              : sleeping && enabled
-                ? "This session is asleep — type or press Tab to wake it…"
-                : enabled
-                  ? running
-                    ? `Type to steer the run (${sendMode === "steer" ? "steer" : "follow-up"})…`
-                    : "Ask Pi to change something…  / commands · @ files · # documents"
-                  : "This session is not running — start it above to send a prompt."
-          }
-          disabled={!enabled}
-          className={cn(
-            // The border tracks the workflow mode, mirroring Pi's editor border
-            // (which tracks the thinking level). `border-line` is the neutral
-            // default and the only class the placeholder set assumes.
-            //
-            // Focus is an *outer* ring (a box-shadow), never an outline: the
-            // ring is painted outside the border, so the mode colour stays
-            // readable while the composer is focused. This replaces the global
-            // `:focus-visible` outline, which used to cover it in blue.
-            "max-h-48 min-h-16 flex-1 resize-y rounded-sm border bg-sunken px-2 py-1.5 font-mono text-sm outline-none focus-visible:ring-2 focus-visible:ring-line-strong placeholder:text-ink-faint disabled:opacity-60",
-            // The caret is the app's own accent colour, and a selection is
-            // tinted with it, so the cursor is never lost in a dark buffer
-            // (plan step 1).
-            "caret-accent selection:bg-accent/25",
-            bashMode ? "border-warn" : workflowBorderClass(workflowMode),
-          )}
-          onChange={(event) => {
-            syncCaret(event.target);
-            setPickedSource(undefined);
-            onWake?.();
-            onDraftChange(event.target.value);
-            refreshCompletion(false);
-          }}
-          onFocus={() => {
-            onWake?.();
-          }}
-          onPointerDown={() => {
-            onWake?.();
-          }}
-          onSelect={(event) => {
-            syncCaret(event.currentTarget);
-          }}
-          onClick={(event) => {
-            syncCaret(event.currentTarget);
-          }}
-          onKeyUp={(event) => {
-            syncCaret(event.currentTarget);
-          }}
-          onPaste={(event) => {
-            // Image/file paste keeps the attachment path; only text collapses.
-            const files = [...(event.clipboardData?.files ?? [])];
-            if (files.length > 0) {
-              void addFiles(files);
-              return;
+      <div className="flex items-stretch gap-2">
+        <div data-testid="composer-input" className="relative min-w-0 flex-1">
+          <textarea
+            ref={textareaRef}
+            aria-label="Prompt"
+            rows={2}
+            value={draft}
+            placeholder={
+              bashMode
+                ? "Shell command — runs in this folder; !! keeps output out of model context…"
+                : sleeping && enabled
+                  ? "This session is asleep — type or press Tab to wake it…"
+                  : enabled
+                    ? running
+                      ? "Type to steer the run — Enter steers, Alt+Enter queues a follow-up…"
+                      : "Ask Pi to change something…  / commands · @ files · # documents"
+                    : "This session is not running — start it above to send a prompt."
             }
-            const text = event.clipboardData?.getData("text/plain") ?? "";
-            if (!shouldCollapsePaste(text)) return;
-            event.preventDefault();
-            const marker = registerPaste(tabId, text);
-            const node = event.currentTarget;
-            const start = node.selectionStart ?? node.value.length;
-            const end = node.selectionEnd ?? start;
-            const next = `${node.value.slice(0, start)}${marker}${node.value.slice(end)}`;
-            onDraftChange(next);
-            const caret = start + marker.length;
-            queueMicrotask(() => {
-              node.setSelectionRange(caret, caret);
-              caretRef.current = caret;
-              setCaret(caretPosition(next, caret));
-            });
-          }}
-          onKeyDown={(event) => {
-            // IME guard first: Enter during composition belongs to the input method.
-            if (event.nativeEvent.isComposing) return;
-
-            // Backspace deletes a whole `[paste #N …]` token, never half of it.
-            if (event.key === "Backspace") {
+            disabled={!enabled}
+            className={cn(
+              // The border tracks the workflow mode, mirroring Pi's editor border
+              // (which tracks the thinking level). `border-line` is the neutral
+              // default and the only class the placeholder set assumes.
+              //
+              // Focus is an *outer* ring (a box-shadow), never an outline: the
+              // ring is painted outside the border, so the mode colour stays
+              // readable while the composer is focused. This replaces the global
+              // `:focus-visible` outline, which used to cover it in blue.
+              "min-h-16 w-full overflow-y-auto rounded-sm border bg-sunken px-2 py-1.5 font-mono text-sm outline-none focus-visible:ring-2 focus-visible:ring-line-strong placeholder:text-ink-faint disabled:opacity-60",
+              // The caret is the app's own accent colour, and a selection is
+              // tinted with it, so the cursor is never lost in a dark buffer
+              // (plan step 1).
+              "caret-accent selection:bg-accent/25",
+              bashMode ? "border-warn" : workflowBorderClass(workflowMode),
+              workflowLabel ? "pr-14" : null,
+            )}
+            onChange={(event) => {
+              syncCaret(event.target);
+              setPickedSource(undefined);
+              onWake?.();
+              onDraftChange(event.target.value);
+              refreshCompletion(false);
+            }}
+            onFocus={() => {
+              onWake?.();
+            }}
+            onPointerDown={() => {
+              onWake?.();
+            }}
+            onSelect={(event) => {
+              syncCaret(event.currentTarget);
+            }}
+            onClick={(event) => {
+              syncCaret(event.currentTarget);
+            }}
+            onKeyUp={(event) => {
+              syncCaret(event.currentTarget);
+            }}
+            onPaste={(event) => {
+              // Image/file paste keeps the attachment path; only text collapses.
+              const files = [...(event.clipboardData?.files ?? [])];
+              if (files.length > 0) {
+                void addFiles(files);
+                return;
+              }
+              const text = event.clipboardData?.getData("text/plain") ?? "";
+              if (!shouldCollapsePaste(text)) return;
+              event.preventDefault();
+              const marker = registerPaste(tabId, text);
               const node = event.currentTarget;
-              const start = node.selectionStart ?? 0;
+              const start = node.selectionStart ?? node.value.length;
               const end = node.selectionEnd ?? start;
-              if (start === end) {
-                const before = node.value.slice(0, start);
-                const marker = /\[paste #\d+ [^\]]*\]$/.exec(before);
-                if (marker && marker[0].length > 0) {
-                  const markerStart = start - marker[0].length;
-                  event.preventDefault();
-                  const next = `${node.value.slice(0, markerStart)}${node.value.slice(start)}`;
-                  onDraftChange(next);
-                  queueMicrotask(() => {
-                    node.setSelectionRange(markerStart, markerStart);
-                    caretRef.current = markerStart;
-                    setCaret(caretPosition(next, markerStart));
-                  });
-                  return;
-                }
-              }
-            }
+              const next = `${node.value.slice(0, start)}${marker}${node.value.slice(end)}`;
+              onDraftChange(next);
+              const caret = start + marker.length;
+              queueMicrotask(() => {
+                node.setSelectionRange(caret, caret);
+                caretRef.current = caret;
+                setCaret(caretPosition(next, caret));
+              });
+            }}
+            onKeyDown={(event) => {
+              // IME guard first: Enter during composition belongs to the input method.
+              if (event.nativeEvent.isComposing) return;
 
-            const menu = suggestions;
-            const menuOpen = Boolean(menu && menu.items.length > 0);
-            // The keys an open completion menu owns. Everything *else* still
-            // reaches an extension shortcut, and a closed menu blocks nothing.
-            const menuKey =
-              menuOpen &&
-              (event.key === "ArrowDown" ||
-                event.key === "ArrowUp" ||
-                event.key === "Escape" ||
-                event.key === "Tab" ||
-                event.key === "Enter");
-
-            // Extension shortcuts come first, exactly as in Pi's editor
-            // (`custom-editor.js:60` checks `onExtensionShortcut` before any
-            // editor handling). This is what lets the workflow extension's `tab`
-            // cycle the mode, and its `ctrl+alt+p` alias too. Matching against
-            // the registered chord list is inherently safe for a text input: a
-            // key only fires if the session actually registered it.
-            if (!menuKey) {
-              const matched = matchShortcut(
-                {
-                  key: event.key,
-                  ctrlKey: event.ctrlKey,
-                  altKey: event.altKey,
-                  shiftKey: event.shiftKey,
-                  metaKey: event.metaKey,
-                },
-                shortcuts,
-              );
-              if (matched && onInvokeShortcut) {
-                event.preventDefault();
-                onInvokeShortcut(matched);
-                return;
-              }
-            }
-
-            // The completion menu owns these keys while it is open, so Enter
-            // accepts a suggestion instead of sending half a command.
-            if (menu && menu.items.length > 0) {
-              if (event.key === "ArrowDown") {
-                event.preventDefault();
-                setActiveIndex((index) => Math.min(index + 1, menu.items.length - 1));
-                return;
-              }
-              if (event.key === "ArrowUp") {
-                event.preventDefault();
-                setActiveIndex((index) => Math.max(index - 1, 0));
-                return;
-              }
-              if (event.key === "Escape") {
-                event.preventDefault();
-                closeCompletion();
-                return;
-              }
-              if (event.key === "Tab" || event.key === "Enter") {
-                const item = menu.items[activeIndex];
-                if (item) {
-                  event.preventDefault();
-                  // Pi parity: Enter on a command-name completion applies it
-                  // and submits in one keystroke. Argument completions apply
-                  // only; the user keeps finishing the command line. Tab never
-                  // submits.
-                  if (event.key === "Enter" && menu.prefix.startsWith("/")) {
-                    void (async () => {
-                      const applied = await applySuggestion(item);
-                      if (applied) await submitText(applied.text, applied.source);
-                    })();
-                  } else {
-                    void applySuggestion(item);
+              // Backspace deletes a whole `[paste #N …]` token, never half of it.
+              if (event.key === "Backspace") {
+                const node = event.currentTarget;
+                const start = node.selectionStart ?? 0;
+                const end = node.selectionEnd ?? start;
+                if (start === end) {
+                  const before = node.value.slice(0, start);
+                  const marker = /\[paste #\d+ [^\]]*\]$/.exec(before);
+                  if (marker && marker[0].length > 0) {
+                    const markerStart = start - marker[0].length;
+                    event.preventDefault();
+                    const next = `${node.value.slice(0, markerStart)}${node.value.slice(start)}`;
+                    onDraftChange(next);
+                    queueMicrotask(() => {
+                      node.setSelectionRange(markerStart, markerStart);
+                      caretRef.current = markerStart;
+                      setCaret(caretPosition(next, markerStart));
+                    });
+                    return;
                   }
+                }
+              }
+
+              const menu = suggestions;
+              const menuOpen = Boolean(menu && menu.items.length > 0);
+              // The keys an open completion menu owns. Everything *else* still
+              // reaches an extension shortcut, and a closed menu blocks nothing.
+              const menuKey =
+                menuOpen &&
+                (event.key === "ArrowDown" ||
+                  event.key === "ArrowUp" ||
+                  event.key === "Escape" ||
+                  event.key === "Tab" ||
+                  event.key === "Enter");
+
+              // Extension shortcuts come first, exactly as in Pi's editor
+              // (`custom-editor.js:60` checks `onExtensionShortcut` before any
+              // editor handling). This is what lets the workflow extension's `tab`
+              // cycle the mode, and its `ctrl+alt+p` alias too. Matching against
+              // the registered chord list is inherently safe for a text input: a
+              // key only fires if the session actually registered it.
+              if (!menuKey) {
+                const matched = matchShortcut(
+                  {
+                    key: event.key,
+                    ctrlKey: event.ctrlKey,
+                    altKey: event.altKey,
+                    shiftKey: event.shiftKey,
+                    metaKey: event.metaKey,
+                  },
+                  shortcuts,
+                );
+                if (matched && onInvokeShortcut) {
+                  event.preventDefault();
+                  onInvokeShortcut(matched);
                   return;
                 }
               }
-            } else if (event.key === "Tab") {
-              // No extension shortcut claimed Tab and no menu is open: keep the
-              // original completion behaviour. If the list has not been fetched
-              // yet, ask for it so the *next* Tab can cycle the mode.
-              if (shortcuts.length === 0) onRequestShortcuts?.();
-              if (completion) {
-                // Tab on a path-shaped token asks explicitly (Pi's editor does too).
+
+              // The completion menu owns these keys while it is open, so Enter
+              // accepts a suggestion instead of sending half a command.
+              if (menu && menu.items.length > 0) {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setActiveIndex((index) => Math.min(index + 1, menu.items.length - 1));
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setActiveIndex((index) => Math.max(index - 1, 0));
+                  return;
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  closeCompletion();
+                  return;
+                }
+                if (event.key === "Tab" || event.key === "Enter") {
+                  const item = menu.items[activeIndex];
+                  if (item) {
+                    event.preventDefault();
+                    // Pi parity: Enter on a command-name completion applies it
+                    // and submits in one keystroke. Argument completions apply
+                    // only; the user keeps finishing the command line. Tab never
+                    // submits.
+                    if (event.key === "Enter" && menu.prefix.startsWith("/")) {
+                      void (async () => {
+                        const applied = await applySuggestion(item);
+                        if (applied) await submitText(applied.text, applied.source);
+                      })();
+                    } else {
+                      void applySuggestion(item);
+                    }
+                    return;
+                  }
+                }
+              } else if (event.key === "Tab") {
+                // No extension shortcut claimed Tab and no menu is open: keep the
+                // original completion behaviour. If the list has not been fetched
+                // yet, ask for it so the *next* Tab can cycle the mode.
+                if (shortcuts.length === 0) onRequestShortcuts?.();
+                if (completion) {
+                  // Tab on a path-shaped token asks explicitly (Pi's editor does too).
+                  event.preventDefault();
+                  refreshCompletion(true);
+                  return;
+                }
+              }
+
+              if (event.key === "Escape" && running) {
                 event.preventDefault();
-                refreshCompletion(true);
+                onStop();
                 return;
               }
-            }
-
-            if (event.key === "Escape" && running) {
-              event.preventDefault();
-              onStop();
-              return;
-            }
-            // Pi's dequeue chord (alt+up): take every queued message back into
-            // the editor (plan step 9).
-            if (event.key === "ArrowUp" && event.altKey) {
-              event.preventDefault();
-              onRestoreQueue();
-              return;
-            }
-            // Pi's follow-up chords (alt+enter and ctrl+q, both defaults on
-            // every platform): queue the text when a run is streaming, and act
-            // like Enter when it is not (plan step 9, D8).
-            if ((event.key === "Enter" && event.altKey) || (event.key === "q" && event.ctrlKey)) {
-              event.preventDefault();
-              void (async () => {
-                const text = draft.trim();
-                if (running && text.length > 0) {
-                  await submitText(draft, pickedSource, true);
-                } else {
-                  await submit();
+              // Pi's dequeue chord (alt+up): take every queued message back into
+              // the editor (plan step 9).
+              if (event.key === "ArrowUp" && event.altKey) {
+                event.preventDefault();
+                onRestoreQueue();
+                return;
+              }
+              // Pi's follow-up chords (alt+enter and ctrl+q, both defaults on
+              // every platform): queue the text when a run is streaming, and act
+              // like Enter when it is not (plan step 9, D8).
+              if ((event.key === "Enter" && event.altKey) || (event.key === "q" && event.ctrlKey)) {
+                event.preventDefault();
+                void (async () => {
+                  const text = draft.trim();
+                  if (running && text.length > 0) {
+                    await submitText(draft, pickedSource, true);
+                  } else {
+                    await submit();
+                  }
+                })();
+                return;
+              }
+              // History walks only at the buffer's edges, so the arrow keys keep
+              // their native caret movement inside a multi-line draft. The line is
+              // read from the live selection rather than React state: a keydown
+              // follows a caret move in the same frame, before the state commits.
+              const value = event.currentTarget.value;
+              const offset = event.currentTarget.selectionStart ?? 0;
+              const caretLine = value.slice(0, offset).split("\n").length;
+              const lineCount = value.split("\n").length;
+              if (event.key === "ArrowUp" && caretLine <= 1) {
+                const previous = onHistoryStep(-1);
+                if (previous !== null) {
+                  event.preventDefault();
+                  onDraftChange(previous);
                 }
-              })();
-              return;
-            }
-            // History walks only at the buffer's edges, so the arrow keys keep
-            // their native caret movement inside a multi-line draft. The line is
-            // read from the live selection rather than React state: a keydown
-            // follows a caret move in the same frame, before the state commits.
-            const value = event.currentTarget.value;
-            const offset = event.currentTarget.selectionStart ?? 0;
-            const caretLine = value.slice(0, offset).split("\n").length;
-            const lineCount = value.split("\n").length;
-            if (event.key === "ArrowUp" && caretLine <= 1) {
-              const previous = onHistoryStep(-1);
-              if (previous !== null) {
-                event.preventDefault();
-                onDraftChange(previous);
+                return;
               }
-              return;
-            }
-            if (event.key === "ArrowDown" && caretLine >= lineCount) {
-              const next = onHistoryStep(1);
-              if (next !== null) {
-                event.preventDefault();
-                onDraftChange(next);
+              if (event.key === "ArrowDown" && caretLine >= lineCount) {
+                const next = onHistoryStep(1);
+                if (next !== null) {
+                  event.preventDefault();
+                  onDraftChange(next);
+                }
+                return;
               }
-              return;
-            }
-            if (
-              isSendKey({
-                key: event.key,
-                shiftKey: event.shiftKey,
-                altKey: event.altKey,
-                isComposing: event.nativeEvent.isComposing,
-              })
-            ) {
-              event.preventDefault();
-              void submit();
-            }
-          }}
-        />
+              if (
+                isSendKey({
+                  key: event.key,
+                  shiftKey: event.shiftKey,
+                  altKey: event.altKey,
+                  isComposing: event.nativeEvent.isComposing,
+                })
+              ) {
+                event.preventDefault();
+                void submit();
+              }
+            }}
+          />
 
-        <div className="flex flex-col items-stretch gap-1">
-          {running ? (
-            <div className="flex gap-1">
-              <Button
-                size="sm"
-                variant={sendMode === "steer" ? "secondary" : "ghost"}
-                aria-pressed={sendMode === "steer"}
-                aria-label="steer mode"
-                title="Deliver this message as a steer (interrupts the current turn)"
-                onClick={() => onSendModeChange("steer")}
-              >
-                steer
-              </Button>
-              <Button
-                size="sm"
-                variant={sendMode === "followUp" ? "secondary" : "ghost"}
-                aria-pressed={sendMode === "followUp"}
-                aria-label="follow-up mode"
-                title="Deliver this message once the agent stops"
-                onClick={() => onSendModeChange("followUp")}
-              >
-                follow-up
-              </Button>
+          {workflowLabel ? (
+            <span
+              data-testid="workflow-mode-badge"
+              role="status"
+              aria-live="polite"
+              title={statusLineText(workflowStatus)}
+              className="pointer-events-none absolute right-1.5 top-1 z-10 select-none rounded-xs bg-sunken/90 px-1 text-[10px] font-medium"
+              data-mode={workflowMode?.mode ?? "none"}
+            >
+              <span className={cn(bashMode ? "text-warn" : workflowBadgeClass(workflowMode))}>
+                {workflowLabel}
+              </span>
+            </span>
+          ) : null}
+        </div>
+
+        <div className="flex flex-col self-stretch gap-1">
+          {toolsSlot ? (
+            <div data-testid="composer-tools" className="flex h-7 items-center justify-end gap-1">
+              {toolsSlot}
             </div>
           ) : null}
-          <div className="flex gap-1">
+          <div className="mt-auto flex h-7 items-center gap-1">
             <Button
-              size="sm"
+              size="icon-md"
               variant="primary"
+              aria-label="Send"
               disabled={!enabled || busy}
               onClick={() => void submit()}
-              title="Enter"
+              title={running ? "Enter steers · Alt+Enter queues a follow-up" : "Enter"}
             >
-              <Send className="size-3.5" aria-hidden />
-              {running ? (sendMode === "steer" ? "Steer" : "Follow up") : "Send"}
+              <Send className="size-4" aria-hidden />
             </Button>
             {running ? (
-              <Button size="sm" variant="danger" onClick={onStop} title="Esc">
-                <Square className="size-3.5" aria-hidden />
-                Stop
+              <Button
+                size="icon-md"
+                variant="danger"
+                aria-label="Stop"
+                onClick={onStop}
+                title="Esc"
+              >
+                <Square className="size-4" aria-hidden />
               </Button>
             ) : null}
-            <label className="flex cursor-pointer items-center px-1 text-ink-faint hover:text-ink">
-              <Paperclip className="size-3.5" aria-hidden />
-              <input
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={(event) => void addFiles([...(event.target.files ?? [])])}
-              />
-            </label>
+            <Button
+              size="icon-md"
+              variant="ghost"
+              aria-label="Attach image"
+              title="Attach image"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Paperclip className="size-4" aria-hidden />
+            </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              data-testid="composer-attach-input"
+              onChange={(event) => void addFiles([...(event.target.files ?? [])])}
+            />
           </div>
         </div>
       </div>
@@ -819,6 +926,13 @@ export function Composer({
           <span className="shrink-0">
             <span className="font-mono">/</span> commands
           </span>
+          <span
+            className="shrink-0"
+            data-testid="composer-shell-hint"
+            title="Run a shell command in this folder. Use !! to keep its output out of model context."
+          >
+            <span className="font-mono">!</span> shell
+          </span>
           <span className="shrink-0">
             <span className="font-mono">@</span> files
           </span>
@@ -826,7 +940,8 @@ export function Composer({
             <span className="font-mono">#</span> documents
           </span>
           <span className="shrink-0">
-            Enter sends · Shift+Enter newline{running ? " · Esc stops" : ""}
+            Enter sends · Shift+Enter newline
+            {running ? " · Alt+Enter queues a follow-up · Esc stops" : ""}
           </span>
         </div>
         {/* Where the cursor is. The browser's caret is a thin blinking line that

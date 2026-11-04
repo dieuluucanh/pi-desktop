@@ -8,6 +8,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Kbd } from "../ui/kbd";
 import { Separator } from "../ui/separator";
+import { ViewShell } from "./ViewShell";
 
 /**
  * Skills, themes and keybindings (plan step 15).
@@ -30,7 +31,7 @@ export function SkillsView() {
   }, [loadShortcuts]);
 
   return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col gap-6 overflow-y-auto px-8 py-6">
+    <ViewShell width="narrow" gap={6}>
       <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold">Skills, themes &amp; keybindings</h1>
@@ -100,6 +101,6 @@ export function SkillsView() {
           </ul>
         ) : null}
       </section>
-    </div>
+    </ViewShell>
   );
 }

@@ -19,6 +19,8 @@
 
 export type SettingsScope = "global" | "project";
 
+import { THINKING_LEVELS } from "./thinking";
+
 export type SettingsFieldType =
   | "boolean"
   | "number"
@@ -141,8 +143,6 @@ export const SETTINGS_GROUPS = [
 ] as const;
 
 export type SettingsGroupId = (typeof SETTINGS_GROUPS)[number]["id"];
-
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export const SETTINGS_FIELDS: readonly SettingsField[] = [
   // ---- Model & Thinking -------------------------------------------------

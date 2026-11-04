@@ -166,8 +166,27 @@ function sanitizeWidgetFrames(value: unknown): TuiFrame[] {
   return frames;
 }
 
-/** `tui.resize` params: the renderer's measured surface grid. */
-export interface TuiResizeRequest {
+/**
+ * A widget frame whose whole content is one line can become a footer column
+ * instead of its own strip (2026-10-31 UI plan). Empty frames are deliberately
+ * not "inline": they carry nothing and belong to the strip's lifecycle.
+ */
+export function isSingleLineFrame(frame: TuiFrame): boolean {
+  return frame.lines.length === 1;
+}
+
+/** Splits below-editor widgets into the footer columns and the remaining strip. */
+export function splitSingleLineFrames(frames: readonly TuiFrame[]): {
+  inline: TuiFrame[];
+  stacked: TuiFrame[];
+} {
+  const inline: TuiFrame[] = [];
+  const stacked: TuiFrame[] = [];
+  for (const frame of frames) (isSingleLineFrame(frame) ? inline : stacked).push(frame);
+  return { inline, stacked };
+}
+
+/** `tui.resize` params: the renderer's measured surface grid. */ export interface TuiResizeRequest {
   rows: number;
   cols: number;
 }

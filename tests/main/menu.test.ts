@@ -74,6 +74,37 @@ describe("menuTemplate", () => {
     expect(accelerators).not.toContain("CmdOrCtrl+O");
   });
 
+  it("keeps editor Save/Format menu items out of the accelerator table", () => {
+    const { template } = build();
+    const items = allItems(template);
+    for (const id of ["save-editor", "format-editor"] as const) {
+      const item = items.find((entry) => entry.id === id);
+      expect(item?.label, id).toBeTruthy();
+      // The editor owns Mod-s / Shift-Alt-F locally. A menu accelerator would
+      // fire before the renderer and swallow Pi's selector-local Ctrl+S.
+      expect(item?.accelerator, id).toBeUndefined();
+    }
+  });
+
+  it("binds app zoom to Ctrl+= / Ctrl+- / Ctrl+0, not Electron's roles", () => {
+    const { template } = build();
+    const items = allItems(template);
+    const zoom = items
+      .filter((item) => item.id?.startsWith("zoom-"))
+      .map((item) => [item.id, item.accelerator]);
+
+    expect(zoom).toEqual([
+      ["zoom-in", "CmdOrCtrl+="],
+      ["zoom-out", "CmdOrCtrl+-"],
+      ["zoom-reset", "CmdOrCtrl+0"],
+    ]);
+    // The role binds `Plus` (Ctrl+Shift+=) on Windows/Linux, which is the bug
+    // this menu path replaces (electron#40674).
+    expect(items.some((item) => item.role === "zoomIn")).toBe(false);
+    expect(items.some((item) => item.role === "zoomOut")).toBe(false);
+    expect(items.some((item) => item.role === "resetZoom")).toBe(false);
+  });
+
   it("keeps Pi for Office out of the primary menus", () => {
     const { template } = build();
     const fileIds = collectIds(
@@ -102,6 +133,20 @@ describe("menuTemplate", () => {
     );
     (docs?.click as unknown as () => void)?.();
     expect(onOpenExternal).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes About to the in-app card on Windows/Linux and keeps the native panel on macOS", () => {
+    const winHelp = build(false).template.find((item) => item.label === "Help");
+    const winItems = (winHelp?.submenu as MenuItemConstructorOptions[]) ?? [];
+    expect(winItems.some((item) => item.id === "view-about")).toBe(true);
+    expect(winItems.some((item) => item.role === "about")).toBe(false);
+
+    const mac = build(true).template;
+    const macHelp = mac.find((item) => item.label === "Help");
+    const macItems = (macHelp?.submenu as MenuItemConstructorOptions[]) ?? [];
+    expect(macItems.some((item) => item.id === "view-about")).toBe(false);
+    const macAppItems = (mac[0]?.submenu as MenuItemConstructorOptions[]) ?? [];
+    expect(macAppItems.some((item) => item.role === "about")).toBe(true);
   });
 
   it("adds the macOS application menu only on darwin", () => {

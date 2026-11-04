@@ -1,9 +1,9 @@
 /**
- * The session tab's lifecycle menu, as data (plan step 11).
+ * The tab lifecycle menu, as data.
  *
- * Kept out of `TabStrip.tsx` so the set of lifecycle actions is a pure contract
- * that can be asserted without opening a Radix menu in jsdom — and so the
- * component module exports only components (react-refresh).
+ * The right-click context menu (both strips) and the sidebar's “…” dropdown
+ * render this exact list. Close All/Close Others are kind-scoped: a session menu
+ * never reaches the editor strip, and an editor menu never closes a session.
  */
 
 import type { TabKind } from "../../../shared/session-ipc";
@@ -16,9 +16,15 @@ export type TabMenuActionId =
   | "clone"
   | "export"
   | "reveal"
+  | "save"
+  | "copy-absolute-path"
+  | "copy-relative-path"
   | "close"
   | "close-others"
-  // Web tabs (plan step 21).
+  | "close-all"
+  | "pin"
+  | "unpin"
+  // Web tabs.
   | "reload"
   | "copy-url"
   | "open-browser";
@@ -31,18 +37,49 @@ export interface TabMenuAction {
   separated?: boolean;
 }
 
-export function tabMenuItems(kind: TabKind = "session"): readonly TabMenuAction[] {
+function closeAllLabel(kind: TabKind): string {
+  switch (kind) {
+    case "editor":
+      return "Close all editor tabs";
+    case "web":
+      return "Close all web tabs";
+    case "office":
+      return "Close all Office tabs";
+    default:
+      return "Close all sessions";
+  }
+}
+
+export function tabMenuItems(kind: TabKind = "session", pinned = false): readonly TabMenuAction[] {
+  const pinItem: TabMenuAction = pinned
+    ? { id: "unpin", label: "Unpin", separated: true }
+    : { id: "pin", label: "Pin", separated: true };
+
+  if (kind === "editor") {
+    return [
+      { id: "save", label: "Save" },
+      { id: "copy-absolute-path", label: "Copy Path" },
+      { id: "copy-relative-path", label: "Copy Relative Path" },
+      { id: "reveal", label: "Reveal in File Explorer", separated: true },
+      pinItem,
+      { id: "close", label: "Close", separated: true },
+      { id: "close-others", label: "Close others", destructive: true },
+      { id: "close-all", label: closeAllLabel(kind), destructive: true },
+    ];
+  }
+
   if (kind === "web") {
-    // A web tab has no Pi session, so the lifecycle actions do not apply; the
-    // chrome commands and closing are what remain.
     return [
       { id: "reload", label: "Reload" },
       { id: "copy-url", label: "Copy URL" },
       { id: "open-browser", label: "Open in browser" },
+      pinItem,
       { id: "close", label: "Close", separated: true },
       { id: "close-others", label: "Close others", destructive: true },
+      { id: "close-all", label: closeAllLabel(kind), destructive: true },
     ];
   }
+
   return [
     { id: "rename", label: "Rename…" },
     { id: "duplicate", label: "Duplicate in this project" },
@@ -51,7 +88,9 @@ export function tabMenuItems(kind: TabKind = "session"): readonly TabMenuAction[
     { id: "clone", label: "Clone session" },
     { id: "export", label: "Export to HTML" },
     { id: "reveal", label: "Reveal session file" },
+    pinItem,
     { id: "close", label: "Close", separated: true },
     { id: "close-others", label: "Close others", destructive: true },
+    { id: "close-all", label: closeAllLabel(kind), destructive: true },
   ];
 }

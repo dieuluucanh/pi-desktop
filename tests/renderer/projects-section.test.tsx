@@ -1,14 +1,17 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { ProjectInspection, ProjectRecord } from "../../src/shared/projects";
 import type { TabRecord } from "../../src/shared/session-ipc";
 import { ProjectsSection } from "../../src/renderer/src/projects/ProjectsSection";
+import { TAB_DRAG_MIME, TAB_DRAG_VERSION } from "../../src/shared/tab-drag";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
+import { isTabDragActive } from "../../src/renderer/src/state/tab-drag-session";
 import { installBridge } from "./fixtures";
 
 const PATH = "C:\\work\\pi-desktop";
+const DEFAULT_PATH = "C:\\Users\\test\\Documents\\Pi-Desktop\\2026-11-03T10-15-42";
 
 function record(path: string, overrides: Partial<ProjectRecord> = {}): ProjectRecord {
   return {
@@ -61,6 +64,26 @@ function tab(status: TabRecord["status"]): TabRecord {
   };
 }
 
+function editorTab(): TabRecord {
+  return {
+    ...tab("idle"),
+    id: "editor-1",
+    kind: "editor",
+    title: "a.ts",
+    filePath: "a.ts",
+    sessionFile: null,
+  };
+}
+
+function officeTab(): TabRecord {
+  return {
+    ...tab("idle"),
+    id: "office-1",
+    kind: "office",
+    title: "Excel",
+  };
+}
+
 function resetStore(): void {
   useAppStore.setState({
     view: "welcome",
@@ -86,6 +109,83 @@ beforeEach(() => {
 });
 
 describe("ProjectsSection", () => {
+  it("offers the default project first in the + menu", async () => {
+    installBridge();
+    const user = userEvent.setup();
+    render(<ProjectsSection />);
+
+    screen.getByRole("button", { name: "New project" }).focus();
+    await user.keyboard("{Enter}");
+
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.map((item) => item.textContent?.trim())).toEqual([
+      "New default project",
+      "New project…",
+      "Clone repository…",
+    ]);
+  });
+
+  it("creates a default project and starts a session from the + menu", async () => {
+    const { bridge } = installBridge();
+    const createDefault = vi.spyOn(bridge.projects, "createDefault");
+    const createSession = vi.spyOn(bridge.sessions, "create");
+    const user = userEvent.setup();
+    render(<ProjectsSection />);
+
+    screen.getByRole("button", { name: "New project" }).focus();
+    await user.keyboard("{Enter}");
+    await user.click(await screen.findByRole("menuitem", { name: "New default project" }));
+
+    await waitFor(() => expect(createDefault).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ cwd: DEFAULT_PATH })),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("opens the new-project dialog from the + menu", async () => {
+    installBridge();
+    const user = userEvent.setup();
+    render(<ProjectsSection />);
+
+    expect(screen.getByRole("button", { name: "Open project folder" })).toBeInTheDocument();
+
+    // Keyboard-open the menu: a preceding Radix menu/dialog can leave a pointer
+    // lock that swallows the trigger's pointerdown in jsdom (see the setup
+    // shims note); the keyboard path is the same menu and is deterministic.
+    screen.getByRole("button", { name: "New project" }).focus();
+    await user.keyboard("{Enter}");
+    await user.click(await screen.findByRole("menuitem", { name: /new project/i }));
+    expect(
+      await screen.findByRole("dialog", { name: "Create a blank project" }),
+    ).toBeInTheDocument();
+    // Close it before the test ends: a live Radix dialog leaves a body
+    // pointer-events/aria-hidden lock that would poison the next test.
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("collapses the sidebar from the Projects header", async () => {
+    installBridge();
+    render(<ProjectsSection />);
+    await userEvent.click(screen.getByRole("button", { name: "Hide sidebar" }));
+    expect(useAppStore.getState().prefs.sidebarCollapsed).toBe(true);
+  });
+
+  it("opens the clone dialog from the + menu", async () => {
+    installBridge();
+    const user = userEvent.setup();
+    render(<ProjectsSection />);
+
+    // Keyboard-open the menu: a preceding Radix dialog can leave a pointer
+    // lock that swallows the trigger's pointerdown in jsdom (see the setup
+    // shims note); the keyboard path is the same menu and is deterministic.
+    screen.getByRole("button", { name: "New project" }).focus();
+    await user.keyboard("{Enter}");
+    await user.click(await screen.findByRole("menuitem", { name: /clone repository/i }));
+    expect(await screen.findByRole("dialog", { name: "Clone a repository" })).toBeInTheDocument();
+  });
+
   it("shows the empty state before any project is remembered", () => {
     installBridge();
     render(<ProjectsSection />);
@@ -110,6 +210,88 @@ describe("ProjectsSection", () => {
     expect(screen.getByText(/sessions\\--C--work-pi-desktop--/)).toBeInTheDocument();
     expect(screen.getByText("Fix the sidebar")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /new session here/i })).toBeInTheDocument();
+  });
+
+  it("lists session and Office tabs but not editor tabs under a project", () => {
+    installBridge({ projects: [record(PATH)], activeProject: PATH });
+    useAppStore.setState({
+      projects: [record(PATH)],
+      project: { path: PATH, name: "pi-desktop" },
+      projectInspections: { [PATH]: inspection() },
+      tabs: [tab("idle"), officeTab(), editorTab()],
+    });
+
+    render(<ProjectsSection />);
+
+    expect(screen.getByText("Fix the sidebar")).toBeInTheDocument();
+    expect(screen.getByText("Excel")).toBeInTheDocument();
+    expect(screen.queryByText("a.ts")).toBeNull();
+    expect(screen.queryByTestId("sidebar-session-editor-1")).toBeNull();
+    expect(screen.getByRole("button", { name: /new session here/i })).toBeInTheDocument();
+  });
+
+  it("publishes the typed tab payload from a session row", () => {
+    // The sidebar row is a drag source for the grid panes, exactly like a strip
+    // chip (2026-11-03 plan).
+    installBridge({ projects: [record(PATH)], activeProject: PATH });
+    useAppStore.setState({
+      projects: [record(PATH)],
+      project: { path: PATH, name: "pi-desktop" },
+      projectInspections: { [PATH]: inspection() },
+      tabs: [tab("idle")],
+      activeTabId: "tab-1",
+    });
+    render(<ProjectsSection />);
+
+    const data = new Map<string, string>();
+    const transfer = {
+      types: [] as string[],
+      effectAllowed: "none",
+      setData(type: string, value: string): void {
+        data.set(type, value);
+        if (!this.types.includes(type)) this.types.push(type);
+      },
+      getData(type: string): string {
+        return data.get(type) ?? "";
+      },
+    };
+    const row = screen.getByTestId("sidebar-session-tab-1");
+    fireEvent.dragStart(row, { dataTransfer: transfer });
+
+    expect(transfer.getData(TAB_DRAG_MIME)).toBe(
+      JSON.stringify({ version: TAB_DRAG_VERSION, tabId: "tab-1" }),
+    );
+    expect(row).toHaveAttribute("draggable", "true");
+    expect(isTabDragActive()).toBe(true);
+
+    fireEvent.dragEnd(row, { dataTransfer: transfer });
+    expect(isTabDragActive()).toBe(false);
+  });
+
+  it("opens the session lifecycle menu and renames inline", async () => {
+    installBridge({ projects: [record(PATH)], activeProject: PATH });
+    useAppStore.setState({
+      projects: [record(PATH)],
+      project: { path: PATH, name: "pi-desktop" },
+      projectInspections: { [PATH]: inspection() },
+      tabs: [tab("idle")],
+      activeTabId: "tab-1",
+    });
+    const duplicate = vi.spyOn(useAppStore.getState(), "duplicateTab").mockResolvedValue(undefined);
+    const rename = vi.spyOn(useAppStore.getState(), "renameSession").mockResolvedValue(undefined);
+    render(<ProjectsSection />);
+
+    const trigger = screen.getByRole("button", { name: "Session actions for Fix the sidebar" });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    await userEvent.click(await screen.findByText("Duplicate in this project"));
+    expect(duplicate).toHaveBeenCalledWith("tab-1");
+
+    fireEvent.doubleClick(screen.getByText("Fix the sidebar"));
+    const input = screen.getByRole("textbox", { name: "Rename Fix the sidebar" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "Renamed{Enter}");
+    expect(rename).toHaveBeenCalledWith("tab-1", "Renamed");
   });
 
   it("shows the trust state and asks when it needs a decision", async () => {
@@ -162,7 +344,7 @@ describe("ProjectsSection", () => {
 
     render(<ProjectsSection />);
     await userEvent.click(
-      screen.getByRole("button", { name: /remove pi-desktop from the project list/i }),
+      screen.getByRole("button", { name: /remove pi-desktop and close its tabs/i }),
     );
 
     expect(mutate).toHaveBeenCalledWith({ action: "remove", path: PATH });

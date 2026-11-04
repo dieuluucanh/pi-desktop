@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import type { AppInfo, WebTabOpenInput } from "../../../shared/ipc";
 import type { BlobRef, HostMethod } from "../../../shared/host-protocol";
-import { DEFAULT_PREFS, type UiPrefs, type ViewMode } from "../../../shared/prefs";
+import { DEFAULT_PREFS, type UiPrefs } from "../../../shared/prefs";
 import {
   findProject,
   projectNameOf,
@@ -23,7 +23,33 @@ import {
   type ProviderSummary,
 } from "../../../shared/providers";
 import { normalizeScopePatterns, scopeKeys, scopeStarKeys } from "../../../shared/model-scope";
+import { mostRecentSessionTabForFolder, sameFolder } from "../../../shared/rail-scope";
+import {
+  assignGridPane,
+  gridSurface,
+  nextVisiblePaneTab,
+  normalizeGridPanes,
+  sanitizeGridPrefs,
+  visibleGridTabIds,
+  visiblePaneIds,
+  type GridLayout,
+  type GridPrefs,
+} from "../../../shared/session-grid";
+import type { WorkspaceEntryKind } from "../../../shared/workspace";
+import { workspaceMention } from "../../../shared/workspace-drag";
+import { MAX_BLOB_BYTES, MAX_RETAINED_BLOBS, maxRetainedTranscripts } from "./retention";
+import { isTabDragActive } from "./tab-drag-session";
 import type { CustomProviderInput, CustomProviderSummary } from "../../../shared/custom-providers";
+import {
+  isNotificationMuted,
+  muteRuleFor,
+  normalizeNotificationText,
+  removeMuteRule,
+  removeMutesForNotification,
+  shouldCollapseNotification,
+  withMuteRule,
+  type NotificationMuteScope,
+} from "../../../shared/notifications";
 import {
   findSettingsField,
   getSettingsValue,
@@ -31,6 +57,13 @@ import {
   settingsDefaultsDocument,
   type SettingsValue,
 } from "../../../shared/settings-schema";
+import {
+  sanitizeCheckpointState,
+  type CheckpointAction,
+  type CheckpointActionResult,
+  type CheckpointPreviewState,
+  type CheckpointState,
+} from "../../../shared/checkpoints";
 import type {
   SettingsErrorInfo,
   SettingsFileStatus,
@@ -40,7 +73,10 @@ import type {
 } from "../../../shared/settings";
 import {
   CONTROL_TAB_ID,
+  hostBackedTabs,
+  isHostBackedTab,
   type CreateTabInput,
+  type RetargetEditorTabsInput,
   type SessionEventEnvelope,
   type SessionEventEntry,
   type SessionStateEnvelope,
@@ -63,6 +99,12 @@ import {
   type WebTabBounds,
   type WebTabState,
 } from "../../../shared/web-tabs";
+import {
+  DEFAULT_ZOOM,
+  clampZoomFactor,
+  zoomIn as nextZoomLevel,
+  zoomOut as previousZoomLevel,
+} from "../../../shared/zoom";
 import {
   sanitizeMarkdownTransformResult,
   sanitizeRenderedFrame,
@@ -107,6 +149,7 @@ import {
   type ResourcesSnapshot,
 } from "../../../shared/resources";
 import type { RecommendedPackage } from "../../../shared/recommended-packages";
+import { notifyToast } from "../extension-ui/notify-toast";
 import {
   emptyIntegrationsState,
   officeBridgePackageSource,
@@ -115,17 +158,26 @@ import {
   type OfficeIntegrationRecordPatch,
 } from "../../../shared/integrations";
 import {
+  BUILTIN_THEME_SWATCHES,
   EMPTY_THEMES,
+  THEME_CHROME_VARIABLES,
+  THEME_COLOR_KEYS,
   activeThemeSwatches,
+  normalizeThemeColor,
   sanitizeThemesSnapshot,
   themeCssVariables,
+  type ThemeColorKey,
   type ThemesSnapshot,
 } from "../../../shared/themes";
+import { systemThemeName } from "../themes/system-theme";
 import {
+  officeBridgeOwnerTab,
+  officeDocumentScope,
   officeDocumentTag,
   type OfficeDocumentPane,
   type OfficeDocumentsView,
 } from "../../../shared/office-documents";
+import type { OfficeBridgeControlResult } from "../../../shared/office-bridge";
 import { sanitizeKeybindingsSnapshot, type KeybindingsSnapshot } from "../../../shared/keybindings";
 import {
   EMPTY_SHORTCUTS,
@@ -168,13 +220,34 @@ import {
 } from "../../../shared/commands";
 import {
   findExactModelEntry,
+  sanitizeThinkingByModel,
   thinkingLevelsOf,
   toCatalog,
   type ModelCatalogEntry,
 } from "../session/model-catalog";
+import { orderThinkingLevels } from "../../../shared/thinking";
 import { classifyFailure, isOfflineError } from "../../../shared/diagnostics";
 import type { DiagnosticsSnapshot } from "../../../shared/diagnostics";
-import { sanitizeUpdateState, type UpdateState } from "../../../shared/updates";
+import { describeUpdate, sanitizeUpdateState, type UpdateState } from "../../../shared/updates";
+import {
+  clampRailSplit,
+  clampRailWidth,
+  sanitizeRailMenuOrder,
+  type RailCollapsedGroup,
+  type RailMenuId,
+  type RailSplitPrefs,
+} from "../../../shared/rail";
+import {
+  isNetworkGitAction,
+  sanitizeGitSnapshot,
+  syncVerbLabel,
+  type GitAction,
+  type GitActionResult,
+  type GitCommitEntry,
+  type GitDiff,
+  type GitDiffRequest,
+  type GitSnapshot,
+} from "../../../shared/git";
 import {
   firstOnboardingStep,
   nextOnboardingStep,
@@ -240,20 +313,176 @@ function clearExtensionDialogTimer(id: string): void {
   extensionDialogTimers.delete(id);
 }
 
+/**
+ * Structural equality for tab records.
+ *
+ * `applyTabs` receives a deep copy of the whole table on every publish; reusing
+ * a record whose fields are unchanged is what keeps an open editor from
+ * re-reading its file when a background session produces a message. Compare the
+ * union of own keys so a new `TabRecord` field is always considered.
+ */
+function sameTabRecord(left: TabRecord, right: TabRecord): boolean {
+  const leftRecord = left as unknown as Record<string, unknown>;
+  const rightRecord = right as unknown as Record<string, unknown>;
+  const keys = new Set([...Object.keys(leftRecord), ...Object.keys(rightRecord)]);
+  for (const key of keys) {
+    if (!Object.is(leftRecord[key], rightRecord[key])) return false;
+  }
+  return true;
+}
+
 /** Drop every queued dialog whose tab is no longer open. */
 function purgeClosedTabDialogs(openTabs: ReadonlySet<string>): void {
   for (const dialog of useAppStore.getState().extensionDialogs) {
     if (!openTabs.has(dialog.tabId)) clearExtensionDialogTimer(dialog.id);
   }
-  useAppStore.setState({
-    extensionDialogs: useAppStore
-      .getState()
-      .extensionDialogs.filter((dialog) => openTabs.has(dialog.tabId)),
-  });
+  useAppStore.setState((state) => ({
+    extensionDialogs: state.extensionDialogs.filter((dialog) => openTabs.has(dialog.tabId)),
+    // A closed tab's repeat window is meaningless; a future tab id must not
+    // inherit it. Keys start with `<tabId>\u0000`.
+    notificationCooldowns: Object.fromEntries(
+      Object.entries(state.notificationCooldowns).filter(([key]) =>
+        openTabs.has(key.slice(0, key.indexOf("\u0000"))),
+      ),
+    ),
+  }));
+}
+
+/** Every per-tab record that is keyed by a tab id and must die with the tab. */
+const TAB_SCOPED_RECORDS = [
+  "transcripts",
+  "sessionStates",
+  "extensionUi",
+  "tuiSurfaces",
+  "toolsExpanded",
+  "staleHosts",
+  "thinkingLevels",
+  "completionCommands",
+  "completionFiles",
+  "modelCatalog",
+  "providerAuth",
+  "modelScope",
+  "modelScopePatterns",
+  "modelScopeTarget",
+  "modelScopeBusy",
+  "draftHistory",
+  "historyIndex",
+  "pasteBodies",
+] as const;
+
+/** Drops every per-tab cache entry for a tab that is no longer open. */
+function pruneClosedTabRecords(
+  state: AppStateShape,
+  ids: ReadonlySet<string>,
+): Partial<AppStateShape> | null {
+  const patch: Record<string, unknown> = {};
+  let changed = false;
+  for (const key of TAB_SCOPED_RECORDS) {
+    const current = state[key] as unknown as Record<string, unknown>;
+    const next = Object.fromEntries(Object.entries(current).filter(([tabId]) => ids.has(tabId)));
+    if (Object.keys(next).length !== Object.keys(current).length) {
+      patch[key] = next;
+      changed = true;
+    }
+  }
+  const blobs = Object.fromEntries(
+    Object.entries(state.blobs).filter(
+      ([, blob]) => blob.tabId === undefined || ids.has(blob.tabId),
+    ),
+  );
+  if (Object.keys(blobs).length !== Object.keys(state.blobs).length) {
+    patch.blobs = blobs;
+    changed = true;
+  }
+  return changed ? (patch as Partial<AppStateShape>) : null;
+}
+
+/**
+ * Keeps the active transcript and a few recent ones. Pinned tabs are evicted
+ * only after every unpinned candidate, and a running/starting tab is never
+ * touched. An evicted transcript is reset, not deleted, so `hydrated:false`
+ * tells the activation path to fetch history again.
+ */
+function boundTranscripts(
+  currentTranscripts: AppStateShape["transcripts"],
+  tabs: readonly TabRecord[],
+  activeTabId: string | null,
+  visibleTabIds: readonly string[] = activeTabId === null ? [] : [activeTabId],
+): Partial<AppStateShape> | null {
+  // Every mounted pane keeps its transcript (2026-11-03 grid plan); the cap
+  // widens with the layout so a visible pane is never the eviction victim.
+  const keep = new Set<string>(visibleTabIds);
+  if (activeTabId) keep.add(activeTabId);
+  const limit = maxRetainedTranscripts(keep.size > 0 ? keep.size : activeTabId === null ? 0 : 1);
+  const candidates = tabs
+    .filter((tab) => !keep.has(tab.id))
+    .filter((tab) => tab.status !== "running" && tab.status !== "starting")
+    .filter((tab) => {
+      const transcript = currentTranscripts[tab.id];
+      return transcript !== undefined && (transcript.hydrated || transcript.items.length > 0);
+    })
+    .sort((left, right) => {
+      const leftPinned = left.pinned === true ? 1 : 0;
+      const rightPinned = right.pinned === true ? 1 : 0;
+      if (leftPinned !== rightPinned) return leftPinned - rightPinned;
+      return left.lastActiveAt - right.lastActiveAt;
+    });
+  let retained = keep.size + candidates.length;
+  if (retained <= limit) return null;
+
+  const transcripts = { ...currentTranscripts };
+  let changed = false;
+  for (const tab of candidates) {
+    if (retained <= limit) break;
+    transcripts[tab.id] = createTranscriptState();
+    transcriptHydrating.delete(tab.id);
+    sessionEnsuring.delete(tab.id);
+    retained -= 1;
+    changed = true;
+  }
+  return changed ? { transcripts } : null;
+}
+
+/** Caps the lazy tool-result cache by entry count and approximate size. */
+function boundBlobs(blobs: Record<string, BlobState>): Record<string, BlobState> {
+  let total = Object.values(blobs).reduce((sum, blob) => sum + (blob.bytes ?? 0), 0);
+  if (Object.keys(blobs).length <= MAX_RETAINED_BLOBS && total <= MAX_BLOB_BYTES) {
+    return blobs;
+  }
+  const next = { ...blobs };
+  for (const [path, blob] of Object.entries(blobs)) {
+    if (Object.keys(next).length <= MAX_RETAINED_BLOBS && total <= MAX_BLOB_BYTES) break;
+    // Keep the last entry even when it alone exceeds the byte budget: dropping
+    // it would make the card refetch on every render. The entry cap still
+    // bounds the number of such outliers.
+    if (Object.keys(next).length <= 1) break;
+    // Never drop an in-flight read; the next completion will trim again.
+    if (blob.status === "loading") continue;
+    delete next[path];
+    total -= blob.bytes ?? 0;
+  }
+  return next;
 }
 
 /** In-flight ensures, so focus + click + first keystroke share one activation. */
 const sessionEnsuring = new Map<string, Promise<boolean>>();
+/**
+ * Tab ids observed closed this run. A late event batch can arrive after the tab
+ * table push; without this set it would recreate the transcript/cache that
+ * `applyTabs` just pruned. Bounded so churn cannot grow it. The set is cleared
+ * for an id as soon as it appears in a tab table again (ids are unique, but the
+ * guard keeps tests and a future re-import honest).
+ */
+const closedTabIds = new Set<string>();
+const MAX_CLOSED_TAB_IDS = 100;
+/**
+ * In-flight transcript hydrations. A restored tab mounts and then receives its
+ * first state frame; without this guard both effects call `messages.get` and
+ * `hydrateMessages` appends the same JSONL twice (the duplicate-message bug the
+ * 2026-10-31 header removal exposed: there is no Start button to serialize the
+ * two reads any more).
+ */
+const transcriptHydrating = new Map<string, Promise<void>>();
 /** Last successful interaction-driven activation per tab (throttles keystrokes). */
 const sessionEnsuredAt = new Map<string, number>();
 /** Minimum gap between non-forced ensures; a send/tab switch always forces. */
@@ -261,6 +490,14 @@ export const SESSION_ENSURE_THROTTLE_MS = 2_000;
 /** Minimum gap between window-focus/visibility reconciliations. */
 const SESSION_RESYNC_THROTTLE_MS = 1_000;
 let lastSessionResyncAt = 0;
+/**
+ * The last visible-tab set pushed to main, joined.
+ *
+ * `syncVisibleTabs` runs from an effect on every layout/pane/focus change, and
+ * most of those changes do not alter the set; this key is what keeps the push to
+ * one call per actual change.
+ */
+let lastVisibleTabsKey = "";
 let lastScopeSyncAt = 0;
 export const EDITOR_TEXT_DELAY_MS = 250;
 
@@ -287,11 +524,105 @@ export interface TrustPrompt {
   status: ProjectTrustStatus;
 }
 
+/** One folder's commit-log page (git-checkpoint plan step 9). */
+export interface GitLogPage {
+  entries: GitCommitEntry[];
+  loading: boolean;
+  /** True when the last page filled the window, so "Load more" is useful. */
+  hasMore: boolean;
+  /**
+   * The repo state (`historyKey`) this page was read for. A different live key
+   * invalidates the page: the branch tip, the upstream or the divergence moved.
+   */
+  key: string | null;
+  /** Request sequence, so a superseded read cannot overwrite a newer one. */
+  seq: number;
+}
+
+/** The phase of the last network action in one folder. */
+export type GitSyncPhase = "running" | "ok" | "error";
+
+/** The rail's view of one network action, per folder. */
+export interface GitSyncState {
+  /** The exact action, so Retry can replay it (including a fetch's remote). */
+  action: GitAction;
+  phase: GitSyncPhase;
+  /** The engine's success text, or `message + " " + fix` for a failure. */
+  message: string;
+  /** When the state was written; unique per action, so effects can key on it. */
+  at: number;
+}
+
+/** Most project folders whose snapshot the store keeps. */
+export const MAX_GIT_SNAPSHOTS = 5;
+/** One commit-log page (mirrors the main-process default). */
+export const GIT_LOG_PAGE_SIZE = 30;
+const EMPTY_GIT_LOG_PAGE: GitLogPage = {
+  entries: [],
+  loading: false,
+  hasMore: false,
+  key: null,
+  seq: 0,
+};
+
+/**
+ * Trims a per-folder map to the same bound as the snapshot map. Insertion order
+ * is the recency order here: writing a folder re-inserts its key, so the first
+ * key is the one that has not been touched for longest.
+ */
+function boundByRecent<T>(map: Record<string, T>): Record<string, T> {
+  const keys = Object.keys(map);
+  if (keys.length <= MAX_GIT_SNAPSHOTS) return map;
+  const next = { ...map };
+  for (const stale of keys.slice(0, keys.length - MAX_GIT_SNAPSHOTS)) delete next[stale];
+  return next;
+}
+
+/** One rail line: git's own message plus the fix, when there is one. */
+function gitErrorMessage(error: { message: string; fix?: string }): string {
+  return error.fix ? `${error.message} ${error.fix}` : error.message;
+}
+
+/** Sets (or clears, with null) one folder's rail error, keeping the map bounded. */
+function withGitError(
+  current: Record<string, string>,
+  projectPath: string,
+  message: string | null,
+): Record<string, string> {
+  const next = { ...current };
+  if (message === null) delete next[projectPath];
+  else next[projectPath] = message;
+  return boundByRecent(next);
+}
+
+/**
+ * Network actions in flight, per folder. A second click while one is running
+ * returns the same promise: the engine already serialises, but two clicks would
+ * otherwise mean two pushes.
+ */
+const gitActionInFlight = new Map<string, Promise<GitActionResult>>();
+
+/** Writes one folder's sync state, moving it to the recent end of the map. */
+function withGitSync(
+  current: Record<string, GitSyncState>,
+  projectPath: string,
+  state: GitSyncState,
+): Record<string, GitSyncState> {
+  const next = { ...current };
+  delete next[projectPath];
+  next[projectPath] = state;
+  return boundByRecent(next);
+}
+
 export interface BlobState {
   status: "loading" | "ready" | "error";
   /** The raw spilled JSON, present once `ready`. */
   contents?: string;
   error?: string;
+  /** The tab that requested it, so a closed tab's cache entries can be pruned. */
+  tabId?: string;
+  /** UTF-16 length of `contents`, for the cache byte guard. */
+  bytes?: number;
 }
 
 export interface AppStateShape {
@@ -339,6 +670,8 @@ export interface AppStateShape {
   /** Open session tabs (plan step 3); the main process owns their hosts. */
   tabs: TabRecord[];
   activeTabId: string | null;
+  /** The pane “Browse saved sessions…” will fill, cleared once it does. */
+  panePickerTarget: number | null;
   /** Per-tab event counter/last event: proof the host pipe is live (step 5 renders it). */
   transcripts: Record<string, TranscriptState>;
   /** Latest `state.get` snapshot per tab (opaque to the renderer). */
@@ -433,10 +766,20 @@ export interface AppStateShape {
   /** Opens the Extensions hub on the Integrations card. */
   focusIntegrations: () => void;
   clearExtensionsFocus: () => void;
+  /** The Settings section to reveal after navigation (About & updates). */
+  settingsFocus: "updates" | null;
+  /** Opens Settings on the About & updates card, optionally starting a check. */
+  openUpdateSettings: (options?: { check?: boolean }) => void;
+  clearSettingsFocus: () => void;
   openPalette: () => void;
   closePalette: () => void;
   togglePalette: () => void;
   setPrefs: (patch: Partial<UiPrefs>) => void;
+  /** Persists a display-zoom level (clamped by the shared helper). */
+  setZoomFactor: (factor: number) => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  zoomReset: () => void;
   /** Opens the onboarding wizard at the first step that still matters. */
   startOnboarding: () => void;
   setOnboardingStep: (step: OnboardingStep) => void;
@@ -461,8 +804,21 @@ export interface AppStateShape {
   loadProjects: () => Promise<void>;
   /** Applies a project-list snapshot returned by any `projects.*` call. */
   applyProjects: (snapshot: { projects: ProjectRecord[]; activeProject: string | null }) => void;
-  activateProject: (path: string | null) => Promise<void>;
-  removeProject: (path: string) => Promise<void>;
+  activateProject: (path: string | null, options?: { focusSession?: boolean }) => Promise<void>;
+  /**
+   * Points the rail and the sidebar at `cwd` after a session was chosen (2026-10-30
+   * project-scoped rail plan). A remembered project is activated through main so
+   * the choice persists; a cwd that was never saved stays renderer-local.
+   */
+  selectProjectForCwd: (cwd: string) => Promise<void>;
+  /**
+   * Jumps into a project's most recently active **open** tab, or clears the
+   * selection when the folder has none (the rail keeps the project's scope).
+   */
+  focusProjectSession: (path: string) => Promise<void>;
+  /** Clears the active tab without closing one (`session:deactivate`). */
+  clearActiveTab: () => Promise<void>;
+  removeProject: (path: string) => Promise<boolean>;
   reorderProject: (path: string, toIndex: number) => Promise<void>;
   updateProjectConfig: (path: string, patch: ProjectConfigPatch) => Promise<void>;
   /** Inspects a project folder through the control host (plan step 10). */
@@ -470,6 +826,8 @@ export interface AppStateShape {
   /** Enables/disables project-scoped settings and reloads the affected hosts. */
   setProjectSettingsEnabled: (path: string, enabled: boolean) => Promise<boolean>;
   createBlankProject: (input: CreateProjectInput) => Promise<boolean>;
+  /** One-click dated project in Documents/Pi-Desktop; false on failure. */
+  createDefaultProject: () => Promise<boolean>;
   cloneProject: (input: CloneProjectInput) => Promise<boolean>;
   /** Opens the user's home folder as a project and starts a session there. */
   quickSessionInHome: () => Promise<void>;
@@ -509,11 +867,9 @@ export interface AppStateShape {
   resetTranscript: (tabId: string) => void;
 
   /** Composer (plan step 6). */
-  sendModes: Record<string, SendMode>;
   draftHistory: Record<string, string[]>;
   /** Where the user is browsing history for a tab (-1 = the live draft). */
   historyIndex: Record<string, number>;
-  setSendMode: (tabId: string, mode: SendMode) => void;
   setDraft: (tabId: string, text: string) => void;
   sendPrompt: (
     tabId: string,
@@ -581,6 +937,12 @@ export interface AppStateShape {
   /** The model key a star toggle is currently writing, per tab. */
   modelScopeBusy: Record<string, string | null>;
   picker: PickerKind | null;
+  /**
+   * The tab whose picker is open (2026-11-03 grid plan). The grid can mount
+   * several session views, and `/model` in a background pane must not open the
+   * focused pane's picker.
+   */
+  pickerTabId: string | null;
   pickerError: string | null;
   /** Initial search text for the model picker (`/model <query>`). */
   pickerSearch: string;
@@ -612,8 +974,7 @@ export interface AppStateShape {
   restoreQueue: (tabId: string) => Promise<void>;
   /** Pulls enabledModels from disk into every live tab (focus/reload). */
   syncModelScopesFromDisk: () => Promise<void>;
-  setViewMode: (mode: ViewMode) => void;
-  openPicker: (picker: PickerKind, options?: { search?: string }) => void;
+  openPicker: (picker: PickerKind, options?: { search?: string; tabId?: string }) => void;
   closePicker: () => void;
   /** What `/login <provider>` asked Connections to show, consumed by the view. */
   connectionsFocus: { providerId?: string; query?: string } | null;
@@ -712,16 +1073,29 @@ export interface AppStateShape {
   loadIntegrations: () => Promise<void>;
   /** Records a consented install / completed setup (validated in main). */
   recordOfficeIntegration: (patch: OfficeIntegrationRecordPatch) => Promise<void>;
-  /** Opens (or focuses) the Office session tab, which owns the bridge port. */
+  /** Opens (or focuses) a session and connects the on-demand bridge. */
   openOfficeSession: () => Promise<void>;
   /**
-   * Makes `tabId` the single Office host (plan step 20): demotes any other
-   * `office` tab and restarts this host on port 38617, resuming its session.
+   * Makes `tabId` the single Office host (plan step 20, legacy bridges only):
+   * demotes any other `office` tab and restarts this host on port 38617.
    */
   promoteToOfficeHost: (tabId: string) => Promise<boolean>;
+  /** Starts the bridge in `tabId`; closes another app tab's bridge first. */
+  connectOfficeBridge: (tabId: string, options?: { takeover?: boolean }) => Promise<boolean>;
+  /** Stops the bridge, but only when `tabId` is its live owner. */
+  closeOfficeBridge: (tabId: string) => Promise<boolean>;
+  /** Stops (if owned) and starts again in `tabId`. */
+  restartOfficeBridge: (tabId: string, options?: { takeover?: boolean }) => Promise<boolean>;
 
   /** The live Office pane registry (plan step 20), pushed from main's poll. */
   officeDocuments: OfficeDocumentsView | null;
+  /** True while a Connect/Disconnect/Restart action is in flight. */
+  officeBridgeBusy: boolean;
+  /**
+   * True while a legacy bridge promotion is in flight. The takeover restarts
+   * two hosts and re-binds a port, so a second click must not start it again.
+   */
+  promotingOfficeHost: boolean;
   officeDocumentsLoaded: boolean;
   /** The app-wide diagnostics snapshot (plan step 22), null until first loaded. */
   diagnostics: DiagnosticsSnapshot | null;
@@ -739,6 +1113,10 @@ export interface AppStateShape {
   checkForUpdates: () => Promise<void>;
   downloadUpdate: () => Promise<void>;
   installUpdate: () => Promise<void>;
+  /** Clears a no-feed/error notice without discarding an offer or download. */
+  clearUpdateProblem: () => Promise<void>;
+  /** Hides the status-bar chip for the currently offered version. */
+  dismissUpdateNotification: () => void;
   /**
    * Bodies of spilled large payloads, fetched on demand and cached by blob path
    * (plan step 24). A 50 MB tool result never crosses the event frame; it is
@@ -748,18 +1126,161 @@ export interface AppStateShape {
   /** Fetches a spilled payload's body once and caches it. */
   loadBlob: (tabId: string, ref: BlobRef) => Promise<void>;
   loadDiagnostics: () => Promise<void>;
-  /** Whether the right-rail Documents panel is open. */
-  documentsPanelOpen: boolean;
+  /**
+   * The docked panel rail. Its open/active-menu/width/order state lives in
+   * `prefs.rail`, so the layout survives a relaunch: the strip is always
+   * mounted, and `open` means "the panel body is expanded".
+   */
+  /** Toggles the panel body, leaving `activeMenu` alone (the menu command). */
+  toggleRail: () => void;
+  setRailOpen: (open: boolean) => void;
+  /**
+   * Expands the panel on one menu without toggling it. Used by Go → Source
+   * Control / Checkpoints / Documents and by the palette.
+   */
+  openRailMenu: (id: RailMenuId) => void;
+  /**
+   * The strip's click: switches to that menu and expands, or collapses it when
+   * it is already the active, open menu.
+   */
+  toggleRailMenu: (id: RailMenuId) => void;
+  /** Persists an adjusted strip order (drag-drop or the per-entry menu). */
+  setRailMenuOrder: (order: readonly RailMenuId[]) => void;
+  /** Persists a clamped rail width (the resize handle commits on release). */
+  setRailWidth: (width: number) => void;
+  /**
+   * Persists the Source Control menu's block split (plan step 2). The splitters
+   * call this **once per gesture** — a drag commits on release, a keyboard nudge
+   * commits per key — so the persisted layout never churns mid-drag.
+   */
+  setRailSplit: (split: RailSplitPrefs) => void;
+  /**
+   * Folds one collapsible Source Control group away (or unfolds it). `group` is
+   * the stable key, not an index, so a new group cannot shift the others.
+   */
+  setSourceControlCollapsed: (group: RailCollapsedGroup, collapsed: boolean) => void;
   loadOfficeDocuments: () => Promise<void>;
   applyOfficeDocuments: (view: OfficeDocumentsView) => void;
   refreshOfficeDocuments: () => Promise<void>;
-  toggleDocumentsPanel: () => void;
   /**
    * Starts or appends a `[office:<host> "<name>" id=…]`-tagged prompt in the
    * active session's composer draft (plan step 20). Returns the tab it targeted,
    * or null when no session is open.
    */
   chatAboutDocument: (pane: OfficeDocumentPane) => string | null;
+
+  /**
+   * Source control (git-checkpoint plan step 9).
+   *
+   * Keyed by project folder rather than by tab, because two tabs can share one
+   * folder and a project with no tab open still has a rail. The map is bounded
+   * (`MAX_GIT_SNAPSHOTS`) so a long app session cannot grow it without limit.
+   */
+  git: Record<string, GitSnapshot>;
+  /**
+   * The last failed git operation per folder, ready to render (cleared by a
+   * success, a dismiss, or opening that folder's diff). Keyed by folder so the
+   * rail never shows one project's failure while another is selected.
+   */
+  gitErrors: Record<string, string>;
+  /** The last network action per folder: running, succeeded, or failed. */
+  gitSync: Record<string, GitSyncState>;
+  /** The folder whose snapshot main is polling, or null when none is. */
+  gitWatched: string | null;
+  /** The diff open in the viewer, with the request that produced it. */
+  /** The diff open in the viewer, with the folder and request behind it. */
+  gitDiff: { projectPath: string; request: GitDiffRequest; diff: GitDiff } | null;
+  gitDiffLoading: boolean;
+  /** The commit log per folder, with its paging state. */
+  gitLog: Record<string, GitLogPage>;
+  /** Reads a folder's snapshot (main memoises it). */
+  loadGit: (projectPath: string) => Promise<void>;
+  /** Applies a snapshot pushed from main, or returned by a request. */
+  applyGitSnapshot: (snapshot: unknown) => void;
+  /** Re-reads now, bypassing main's memo. */
+  refreshGit: (projectPath: string) => Promise<void>;
+  /**
+   * Watches one folder and stops watching the previous one, so a tab switch or a
+   * closed rail costs nothing. `null` stops watching.
+   */
+  watchGit: (projectPath: string | null) => Promise<void>;
+  /** Runs an action, then refreshes the snapshot and reports a failure inline. */
+  runGitAction: (projectPath: string, action: GitAction) => Promise<GitActionResult>;
+  /** Opens the diff viewer for one side, loading it into the store. */
+  openGitDiff: (projectPath: string, request: GitDiffRequest) => Promise<void>;
+  closeGitDiff: () => void;
+  /** Loads (or appends to) a folder's commit log. */
+  loadGitLog: (
+    projectPath: string,
+    options?: { more?: boolean; key?: string | null },
+  ) => Promise<void>;
+  /**
+   * HEAD's complete commit message, for the amend box. Resolves null when there
+   * is no commit yet; the box then leaves the message empty rather than
+   * inventing one.
+   */
+  loadHeadCommitMessage: (projectPath: string) => Promise<string | null>;
+  /** Dismisses one folder's rail error line. */
+  clearGitError: (projectPath: string) => void;
+  /** Dismisses one folder's sync status line. */
+  clearGitSync: (projectPath: string) => void;
+
+  /** Local branch names per folder, for the checkout menu. */
+  gitBranches: Record<string, string[]>;
+  loadGitBranches: (projectPath: string) => Promise<void>;
+
+  /**
+   * Folder checkpoints (git-checkpoint plan step 21).
+   *
+   * Keyed by project folder, like `git`, and bounded the same way: only the
+   * recent few folders are ever on screen. The `undoRestore` ref is kept
+   * separately because it belongs to a *toast*, not to a timeline row — the
+   * pre-restore snapshot is real, but offering to restore it from the list
+   * would be confusing.
+   */
+  checkpoints: Record<string, CheckpointState>;
+  /** A failed checkpoint action worth showing in the section. */
+  checkpointsError: string | null;
+  /** Hydrates the section on mount (and after a relaunch, before any push). */
+  loadCheckpoints: (projectPath: string) => Promise<void>;
+  /** Applies a pushed state, or one returned by a request. */
+  applyCheckpointState: (state: unknown) => void;
+  /** Re-reads the timeline now. */
+  refreshCheckpoints: (projectPath: string) => Promise<void>;
+  /** Takes a manual snapshot. */
+  createCheckpoint: (projectPath: string, label?: string) => Promise<CheckpointActionResult>;
+  /** What a restore would change, for the confirm dialog. */
+  previewCheckpoint: (projectPath: string, ref: string) => Promise<CheckpointPreviewState | null>;
+  /**
+   * Restores one checkpoint. Main always snapshots `pre-restore` first, and the
+   * returned ref becomes {@link checkpointsUndoRef} so the toast can offer Undo.
+   */
+  restoreCheckpoint: (
+    projectPath: string,
+    ref: string,
+    options?: { removeAdded?: boolean },
+  ) => Promise<CheckpointActionResult>;
+  /** Restores the pre-restore snapshot from the last restore (the Undo action). */
+  undoRestoreCheckpoint: (projectPath: string) => Promise<CheckpointActionResult>;
+  /** Drops checkpoints past the configured limits. */
+  pruneCheckpoints: (projectPath: string) => Promise<CheckpointActionResult>;
+  /**
+   * The pre-restore ref the last successful restore produced, per folder. Kept
+   * outside the timeline so "Undo restore" survives a refresh.
+   */
+  checkpointsUndoRef: Record<string, string>;
+  /** Dismisses the section's error line. */
+  clearCheckpointsError: () => void;
+  /**
+   * The one path every checkpoint action takes: sends it, refreshes the
+   * timeline, and surfaces a failure without throwing (the section renders the
+   * message). Public because the rail calls it for actions with no dedicated
+   * wrapper, and because a test can assert the single dispatch point.
+   */
+  runCheckpointAction: (
+    projectPath: string,
+    action: CheckpointAction,
+  ) => Promise<CheckpointActionResult>;
 
   /** Web tabs (plan step 21): the live state of each isolated page view. */
   webTabStates: Record<string, WebTabState>;
@@ -824,9 +1345,17 @@ export interface AppStateShape {
   themesError: string | null;
   loadThemes: (options?: { refresh?: boolean }) => Promise<void>;
   /** Activates a theme through the `theme` setting, then recolours the chrome. */
-  setActiveTheme: (name: string) => Promise<boolean>;
+  setActiveTheme: (name: string, options?: { keepFollowSystem?: boolean }) => Promise<boolean>;
+  /** Persists follow-system and, when enabled, applies the matching built-in theme. */
+  setFollowSystemTheme: (enabled: boolean) => void;
+  /** Re-applies the built-in theme that matches the OS, when following. */
+  applySystemTheme: () => Promise<void>;
   /** Imports a `.json` theme file into the profile and selects it. */
   importTheme: (filename: string, content: string) => Promise<boolean>;
+  /** Stores one chrome colour override for a theme and repaints. */
+  setThemeColor: (themeName: string, key: ThemeColorKey, value: string) => void;
+  /** Removes every colour override for a theme and repaints. */
+  resetThemeColors: (themeName: string) => void;
 
   /** Keybindings (plan step 15): the profile's overrides with validation. */
   keybindings: KeybindingsSnapshot | null;
@@ -864,6 +1393,14 @@ export interface AppStateShape {
   extensionDialogs: ExtensionDialogRequest[];
   /** Notification history (the toast centre's backing list). */
   extensionNotifications: ExtensionNotification[];
+  /** The notification the Mute dialog is configuring, or null. */
+  muteTarget: ExtensionNotification | null;
+  /**
+   * Last time an identical notification was seen per tab, keyed by
+   * `tabId\u0000type\u0000normalizedMessage`. Ephemeral: it only decides whether a
+   * repeated toast is suppressed; the history keeps every arrival.
+   */
+  notificationCooldowns: Record<string, number>;
   /** Fetches `oi.state` for a tab (called on activation). */
   loadExtensionUi: (tabId: string) => Promise<void>;
   /** Applies one `oi.*` host event (dialog, notification, state, theme, shutdown). */
@@ -874,6 +1411,17 @@ export interface AppStateShape {
     answer: { value?: string; confirmed?: boolean; cancelled?: boolean },
   ) => Promise<void>;
   clearExtensionNotifications: () => void;
+  /** Opens/closes the Mute dialog for one notification. */
+  openMuteDialog: (notification: ExtensionNotification) => void;
+  closeMuteDialog: () => void;
+  /** Saves an exact/template/type mute rule and closes the dialog. */
+  muteNotification: (notification: ExtensionNotification, scope: NotificationMuteScope) => void;
+  /** Removes every rule that silences this notification (history Unmute). */
+  unmuteNotification: (notification: ExtensionNotification) => void;
+  /** Removes one persisted rule by id (Settings card). */
+  unmuteNotificationRule: (ruleId: string) => void;
+  /** Removes every muted notification rule (Settings card). */
+  unmuteAllNotifications: () => void;
   /** Mirrors the composer text back to the host for `ctx.ui.getEditorText()`. */
   reportEditorText: (tabId: string, text: string) => void;
   /** Runs extension autocomplete providers in the host (plan step 16). */
@@ -915,7 +1463,7 @@ export interface AppStateShape {
   /**
    * The app's expand-all state per tab (plan step 18). `null`/absent means each
    * card keeps its own default (an error card starts open); a boolean forces
-   * every tool card. `app.tools.expand` and the view mode drive it.
+   * every tool card. `app.tools.expand` drives it.
    */
   toolsExpanded: Record<string, boolean | null>;
   /** Flips expand-all for a tab and mirrors it to `ctx.ui.getToolsExpanded()`. */
@@ -923,6 +1471,26 @@ export interface AppStateShape {
 
   createSessionTab: (kind?: TabKind) => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
+
+  /** The session view grid (2026-11-03 plan): preset, panes, focus and solo. */
+  setGridLayout: (layout: GridLayout) => void;
+  /** Assigns (or clears, with null) one pane, swapping when the tab is shown elsewhere. */
+  assignPaneTab: (
+    paneIndex: number,
+    tabId: string | null,
+    options?: { layout?: GridLayout },
+  ) => Promise<void>;
+  /**
+   * Clears one pane without closing its tab. If it held the active tab, focus
+   * moves to the next occupied visible pane (or no tab), so the grid stays up.
+   */
+  clearPane: (paneIndex: number) => Promise<void>;
+  /** Focuses whatever a pane holds, making it the app-wide active tab. */
+  focusPane: (paneIndex: number) => Promise<void>;
+  /** Opens the session browser to fill one pane with a saved session. */
+  browseSessionsForPane: (paneIndex: number) => Promise<void>;
+  /** Pushes the mounted pane tabs to main so their hosts stay warm. */
+  syncVisibleTabs: () => void;
   /**
    * Ensures a tab has a live host and an open session. Interaction calls it
    * without a status gate; `force` bypasses the throttle (send/tab switch).
@@ -933,8 +1501,20 @@ export interface AppStateShape {
   closeTab: (tabId: string) => Promise<void>;
   closeActiveTab: () => Promise<void>;
   cycleTab: (direction: 1 | -1) => Promise<void>;
-  /** Close every other tab, keeping `tabId` active (plan step 11). */
+  /** Close every other non-pinned tab of the same kind, keeping `tabId`. */
   closeOtherTabs: (tabId: string) => Promise<void>;
+  /** Close every non-pinned tab of one kind. */
+  closeAllTabs: (kind: TabKind) => Promise<void>;
+  /** Pin/unpin a tab; main keeps the pinned group first. */
+  setTabPinned: (tabId: string, pinned: boolean) => Promise<void>;
+  /** Retarget open editor tabs after a rename/move; returns the new table. */
+  retargetEditorTabs: (input: RetargetEditorTabsInput) => Promise<SessionTabsEnvelope | null>;
+  /** Append a workspace mention to a session in the same project, if any. */
+  addWorkspaceMention: (
+    projectPath: string,
+    path: string,
+    kind: WorkspaceEntryKind,
+  ) => Promise<boolean>;
   /** Move a tab within the strip; persisted by the session service. */
   moveTab: (tabId: string, toIndex: number) => Promise<void>;
   /** Open a fresh session in the same project as `tabId`. */
@@ -1143,6 +1723,30 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Electron wraps a rejected `ipcRenderer.invoke` in this prefix. */
+const REMOTE_ERROR_PREFIX = /^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/;
+
+/** The message a user should read, without Electron's IPC wrapper. */
+function userFacingError(error: unknown): string {
+  return errorMessage(error).replace(REMOTE_ERROR_PREFIX, "");
+}
+
+/** One sentence for the toast and the transient hint. */
+function officeControlMessage(
+  result: OfficeBridgeControlResult,
+  action: "connect" | "close" | "restart",
+): string {
+  if (!result.ok) return result.message ?? `Office bridge action failed (${result.reason}).`;
+  if (action === "close" || result.reason === "closed" || result.reason === "not-connected") {
+    return "Office bridge is off.";
+  }
+  if (action === "restart") return "Office bridge restarted.";
+  if (result.reason === "already-connected") {
+    return "Office bridge is already connected in this session.";
+  }
+  return "Office bridge connected.";
+}
+
 /** Element-wise comparison for the small string lists the host reports. */
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -1195,13 +1799,9 @@ const EXTENSION_UI_EVENTS = new Set<string>([
   TUI_STATE_EVENT,
 ]);
 
-/**
- * Warnings and errors get transient attention; info output already lands in the
- * transcript (Pi parity). The history panel keeps every notification.
- */
-function notifyToast(message: string, type: ExtensionNotification["type"]): void {
-  if (type === "error") toast.error(message);
-  else if (type === "warning") toast.warning(message);
+/** The per-tab identity used to suppress a repeated toast. */
+function notificationCooldownKey(tabId: string, notification: ExtensionNotification): string {
+  return `${tabId}\u0000${notification.type}\u0000${normalizeNotificationText(notification.message)}`;
 }
 
 /** Records one executed send in the draft history, exactly once. */
@@ -1298,6 +1898,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   onboardingStep: null,
   paletteOpen: false,
   extensionsFocus: null,
+  settingsFocus: null,
   info: null,
   mainOutdated: null,
   hint: null,
@@ -1305,6 +1906,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   staleHosts: {},
   tabs: [],
   activeTabId: null,
+  panePickerTarget: null,
   transcripts: {},
   sessionStates: {},
   sessionBrowserOpen: false,
@@ -1342,7 +1944,6 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   sessionInfoTabId: null,
   sessionInfoData: null,
   sessionInfoError: null,
-  sendModes: {},
   draftHistory: {},
   historyIndex: {},
   completionCommands: {},
@@ -1355,6 +1956,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   modelScopeTarget: {},
   modelScopeBusy: {},
   picker: null,
+  pickerTabId: null,
   pickerError: null,
   pickerSearch: "",
   connectionsFocus: null,
@@ -1393,11 +1995,23 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   integrationsLoaded: false,
   officeDocuments: null,
   officeDocumentsLoaded: false,
+  officeBridgeBusy: false,
+  promotingOfficeHost: false,
   diagnostics: null,
   diagnosticsError: null,
   update: null,
   blobs: {},
-  documentsPanelOpen: false,
+  git: {},
+  gitErrors: {},
+  gitSync: {},
+  gitWatched: null,
+  gitDiff: null,
+  gitDiffLoading: false,
+  gitLog: {},
+  gitBranches: {},
+  checkpoints: {},
+  checkpointsError: null,
+  checkpointsUndoRef: {},
   webTabStates: {},
   webNavigationPrompt: null,
   webUrlDialogOpen: false,
@@ -1418,6 +2032,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   extensionUi: {},
   extensionDialogs: [],
   extensionNotifications: [],
+  muteTarget: null,
+  notificationCooldowns: {},
   tuiSurfaces: {},
   toolsExpanded: {},
 
@@ -1427,9 +2043,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       hint: null,
       // A `/login` focus belongs to the Connections visit that created it.
       ...(view === "connections" ? {} : { connectionsFocus: null }),
+      // A menu-targeted Settings section is consumed by SettingsView.
+      ...(view === "settings" ? {} : { settingsFocus: null }),
     }),
   focusIntegrations: () => set({ view: "extensions", extensionsFocus: "integrations", hint: null }),
   clearExtensionsFocus: () => set({ extensionsFocus: null }),
+  openUpdateSettings: (options) => {
+    set({ view: "settings", settingsFocus: "updates", hint: null });
+    if (options?.check) void get().checkForUpdates();
+  },
+  clearSettingsFocus: () => set({ settingsFocus: null }),
   openPalette: () => set({ paletteOpen: true }),
   closePalette: () => set({ paletteOpen: false }),
   togglePalette: () => set({ paletteOpen: !get().paletteOpen }),
@@ -1439,6 +2062,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     set({ prefs });
     void bridge()?.prefs.set(patch);
   },
+
+  setZoomFactor: (factor) => get().setPrefs({ zoomFactor: clampZoomFactor(factor) }),
+  zoomIn: () => get().setZoomFactor(nextZoomLevel(get().prefs.zoomFactor)),
+  zoomOut: () => get().setZoomFactor(previousZoomLevel(get().prefs.zoomFactor)),
+  zoomReset: () => get().setZoomFactor(DEFAULT_ZOOM),
 
   toggleSidebar: () => get().setPrefs({ sidebarCollapsed: !get().prefs.sidebarCollapsed }),
 
@@ -1488,28 +2116,120 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     });
   },
 
-  activateProject: async (path) => {
+  activateProject: async (path, options = {}) => {
     const api = bridge();
     if (!api?.projects) return;
     try {
       get().applyProjects(await api.projects.mutate({ action: "activate", path }));
-      if (path) {
-        set({ view: "session", hint: null });
-        void get().inspectProject(path);
-      }
+      if (!path) return;
+      set({ view: "session", hint: null });
+      void get().inspectProject(path);
+      // The rail is project-scoped (2026-10-30 plan), so selecting a project also
+      // selects a session in it. `focusSession: false` is for callers that are
+      // about to create a session themselves ("New session here"): clearing the
+      // selection first would flash Welcome.
+      if (options.focusSession !== false) await get().focusProjectSession(path);
     } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  selectProjectForCwd: async (cwd) => {
+    if (cwd.length === 0) return;
+    const current = get().project;
+    if (current && sameFolder(current.path, cwd)) return;
+    const known = findProject(get().projects, cwd);
+    if (!known) {
+      // A session can run in a folder that was never saved as a project; the rail
+      // still needs a scope, so the ref is set locally and never persisted.
+      set({ project: { path: cwd, name: projectNameOf(cwd) } });
+      return;
+    }
+    const api = bridge();
+    if (!api?.projects) {
+      set({ project: { path: known.path, name: known.name } });
+      return;
+    }
+    try {
+      get().applyProjects(await api.projects.mutate({ action: "activate", path: known.path }));
+    } catch (error) {
+      // A session click must still move the rail even if the project write fails.
+      set({ project: { path: known.path, name: known.name } });
+      get().noteFailure(error);
+    }
+  },
+
+  focusProjectSession: async (path) => {
+    const tab = mostRecentSessionTabForFolder(get().tabs, path);
+    if (tab) {
+      await get().activateTab(tab.id);
+      return;
+    }
+    await get().clearActiveTab();
+  },
+
+  clearActiveTab: async () => {
+    const api = bridge();
+    const activeId = get().activeTabId;
+    set({ activeTabId: null });
+    if (!api?.sessions || activeId === null) return;
+    try {
+      get().applyTabs(await api.sessions.deactivate());
+    } catch (error) {
+      // Losing a cleared selection is harmless; the tabs themselves are intact.
       get().noteFailure(error);
     }
   },
 
   removeProject: async (path) => {
     const api = bridge();
-    if (!api?.projects) return;
+    if (!api?.sessions || !api.projects) return false;
+    try {
+      // Close first so the tab table and the project list never disagree. Main
+      // also closes on removal as defense in depth, so this second close is a
+      // no-op for a caller that already did it.
+      get().applyTabs(await api.sessions.closeProject(path));
+    } catch (error) {
+      get().noteFailure(error);
+      return false;
+    }
     try {
       get().applyProjects(await api.projects.mutate({ action: "remove", path }));
     } catch (error) {
       get().noteFailure(error);
+      return false;
     }
+    set((state) => ({
+      projectInspections: Object.fromEntries(
+        Object.entries(state.projectInspections).filter(([key]) => !sameFolder(key, path)),
+      ),
+      projectInspectionErrors: Object.fromEntries(
+        Object.entries(state.projectInspectionErrors).filter(([key]) => !sameFolder(key, path)),
+      ),
+      sessionTrust: state.sessionTrust.filter((entry) => !sameFolder(entry, path)),
+    }));
+    return true;
+  },
+
+  addWorkspaceMention: async (projectPath, path, kind) => {
+    const active = get().tabs.find((tab) => tab.id === get().activeTabId);
+    const target =
+      active && isHostBackedTab(active.kind) && sameFolder(active.cwd, projectPath)
+        ? active
+        : mostRecentSessionTabForFolder(get().tabs, projectPath);
+    if (!target) {
+      get().setHint("Open a session in this project before adding a file to chat.");
+      return false;
+    }
+    if (get().activeTabId !== target.id) await get().activateTab(target.id);
+    const mention = workspaceMention(path, kind);
+    const draft = get().prefs.drafts[target.id] ?? "";
+    if (!draft.includes(mention)) {
+      const separator = draft.length === 0 || /\s$/.test(draft) ? "" : " ";
+      get().setDraft(target.id, `${draft}${separator}${mention} `);
+    }
+    get().setHint("Added to chat.");
+    return true;
   },
 
   reorderProject: async (path, toIndex) => {
@@ -1549,13 +2269,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       if (get().resourcesLoaded) await get().loadResources({ refresh: true });
       if (get().packagesLoaded) await get().loadPackages({ refresh: true });
 
-      // The whole project document changed: reload any live tab rooted there so
-      // non-scope settings (theme, extensions, tools) also take effect.
-      const targets = get().tabs.filter(
-        (tab) =>
-          tab.cwd === path &&
-          tab.kind !== "web" &&
-          (tab.status === "idle" || tab.status === "running"),
+      // The whole project document changed: reload any live host tab rooted
+      // there so non-scope settings (theme, extensions, tools) also take effect.
+      // An editor tab is a file view, not a session, so it must never receive
+      // `session.reload`.
+      const targets = hostBackedTabs(get().tabs).filter(
+        (tab) => tab.cwd === path && (tab.status === "idle" || tab.status === "running"),
       );
       await Promise.all(
         targets.map(async (tab) => {
@@ -1628,6 +2347,28 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       get().applyProjects(result);
       if (!result.ok) {
         set({ hint: result.error ?? "the project could not be created" });
+        return false;
+      }
+      set({ view: "session", hint: null });
+      if (result.path) void get().inspectProject(result.path);
+      return true;
+    } catch (error) {
+      get().noteFailure(error);
+      return false;
+    }
+  },
+
+  createDefaultProject: async () => {
+    const api = bridge();
+    if (!api?.projects) {
+      set({ hint: "The preload bridge is unavailable." });
+      return false;
+    }
+    try {
+      const result = await api.projects.createDefault();
+      get().applyProjects(result);
+      if (!result.ok) {
+        set({ hint: result.error ?? "the default project could not be created" });
         return false;
       }
       set({ view: "session", hint: null });
@@ -1722,9 +2463,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   setHint: (hint) => set({ hint }),
 
   noteFailure: (error) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     set({
-      hint: message,
+      hint: userFacingError(error),
       ...(isOfflineError(message) ? { offlineNotice: message } : {}),
     });
     // Report to main so the failure shows up in Diagnostics (plan step 22).
@@ -1798,26 +2539,99 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   applyTabs: (envelope) => {
-    const ids = new Set(envelope.tabs.map((tab) => tab.id));
+    const state = get();
+    // Main sends a deep copy of the whole table on every publish (including
+    // every session state frame). Reusing a record whose fields did not change
+    // keeps the editor's mount effect from re-reading the file just because a
+    // background session produced a message (2026-11-03 plan step 5). Compare
+    // the union of own keys so a future TabRecord field cannot be forgotten.
+    const previous = new Map(state.tabs.map((tab) => [tab.id, tab]));
+    const tabs = envelope.tabs.map((next) => {
+      const before = previous.get(next.id);
+      return before && sameTabRecord(before, next) ? before : next;
+    });
+    const ids = new Set(tabs.map((tab) => tab.id));
+    const closedIds: string[] = [];
+    for (const tab of state.tabs) {
+      if (ids.has(tab.id)) continue;
+      closedTabIds.add(tab.id);
+      closedIds.push(tab.id);
+      sessionEnsuredAt.delete(tab.id);
+      sessionEnsuring.delete(tab.id);
+      transcriptHydrating.delete(tab.id);
+    }
+    for (const id of ids) closedTabIds.delete(id);
+    while (closedTabIds.size > MAX_CLOSED_TAB_IDS) {
+      const oldest = closedTabIds.values().next().value;
+      if (oldest === undefined) break;
+      closedTabIds.delete(oldest);
+    }
+    const removed = closedIds.length > 0;
+    // A closed tab must not leave a stale pane assignment: clear its slot (never
+    // re-flow the layout), so every reader sees `null` rather than a ghost id.
+    // Only a real change writes prefs, so a normal publish touches nothing.
+    const gridBefore = state.prefs.grid;
+    const currentPanes = normalizeGridPanes(gridBefore.panes);
+    const prunedPanes = currentPanes.map((id) => (id !== null && !ids.has(id) ? null : id));
+    const gridChanged = prunedPanes.some((id, index) => id !== currentPanes[index]);
+    const nextGrid: GridPrefs = { ...gridBefore, panes: prunedPanes };
+    const gridPatch: Partial<AppStateShape> = gridChanged
+      ? { prefs: { ...state.prefs, grid: nextGrid } }
+      : {};
+    if (gridChanged) {
+      // Main owns the durable copy of `prefs`; a prune must survive a relaunch.
+      void bridge()?.prefs.set({ grid: nextGrid });
+    }
+    // Unlimited tabs must not mean unbounded per-tab caches. Prune every record
+    // for a closed tab and keep the transcript cache bounded by recency, always
+    // keeping every visible pane hydrated.
+    const visibleIds = visibleGridTabIds({
+      layout: nextGrid.layout,
+      panes: nextGrid.panes,
+      activeTabId: envelope.activeTabId,
+    });
+    const pruned = pruneClosedTabRecords(state, ids);
+    const bounded = boundTranscripts(
+      pruned?.transcripts ?? state.transcripts,
+      tabs,
+      envelope.activeTabId,
+      visibleIds,
+    );
+    const hasCachePatch = pruned !== null || bounded !== null || gridChanged;
+    const cachePatch: Partial<AppStateShape> = {
+      ...(pruned ?? {}),
+      ...(bounded ?? {}),
+      ...gridPatch,
+    };
+    if (removed) purgeClosedTabDialogs(ids);
+    const prompt = state.webNavigationPrompt;
+    const unchanged =
+      envelope.activeTabId === state.activeTabId &&
+      tabs.length === state.tabs.length &&
+      tabs.every((tab, index) => tab === state.tabs[index]) &&
+      // A prompt for a tab that no longer exists must still be cleared even when
+      // the table itself did not move.
+      (prompt === null || ids.has(prompt.tabId));
     // A tab that went to sleep or errored must re-check on the next interaction;
     // a `ready` state change does not clear an in-flight ensure's timestamp.
-    const previousStatus = new Map(get().tabs.map((tab) => [tab.id, tab.status]));
+    const previousStatus = new Map(state.tabs.map((tab) => [tab.id, tab.status]));
     for (const tab of envelope.tabs) {
       if (previousStatus.get(tab.id) === tab.status) continue;
       if (tab.status === "stopped" || tab.status === "crashed" || tab.status === "failed") {
         sessionEnsuredAt.delete(tab.id);
       }
     }
+    if (unchanged && !hasCachePatch) return;
     // Web-tab state and any pending navigation belong to a tab that still
     // exists; a closed tab must not leave a stale native view or dialog behind.
     const webTabStates = Object.fromEntries(
-      Object.entries(get().webTabStates).filter(([id]) => ids.has(id)),
+      Object.entries(state.webTabStates).filter(([id]) => ids.has(id)),
     );
-    const prompt = get().webNavigationPrompt;
     set({
-      tabs: envelope.tabs,
+      tabs,
       activeTabId: envelope.activeTabId,
       webTabStates,
+      ...cachePatch,
       ...(prompt && !ids.has(prompt.tabId) ? { webNavigationPrompt: null } : {}),
     });
   },
@@ -1827,6 +2641,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // are provider-login progress and prompts (plan step 9).
     if (envelope.tabId === CONTROL_TAB_ID) {
       for (const entry of envelope.events) get().applyControlEvent(entry);
+      return;
+    }
+    // A late batch for a just-closed tab must not recreate its caches. If the id
+    // is open again (a test or a future re-import uses setState directly), the
+    // current table wins over the closed-tab marker.
+    if (closedTabIds.has(envelope.tabId) && !get().tabs.some((tab) => tab.id === envelope.tabId)) {
       return;
     }
     if (envelope.events.some((entry) => entry.event === "session.recovered")) {
@@ -1958,26 +2778,39 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (!api?.sessions) return;
     const current = get().transcripts[tabId];
     if (current?.hydrated) return;
+    const inFlight = transcriptHydrating.get(tabId);
+    if (inFlight) return inFlight;
+    const run = (async () => {
+      try {
+        const result = (await api.sessions.request({ tabId, method: "messages.get" })) as {
+          messages?: unknown[];
+        };
+        // The tab may have been closed while the read was in flight.
+        if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
+        const base = get().transcripts[tabId] ?? createTranscriptState();
+        set({
+          transcripts: {
+            ...get().transcripts,
+            [tabId]: hydrateMessages(base, result.messages ?? [], get().prefs.promptOrigins),
+          },
+        });
+      } catch {
+        // A session that cannot report history still streams, so this is best
+        // effort — but a failed read must not be cached as "no history": after a
+        // relaunch the host may still be starting, and the view retries hydration
+        // when the tab status changes (plan step 25).
+        if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
+        const base = get().transcripts[tabId] ?? createTranscriptState();
+        set({
+          transcripts: { ...get().transcripts, [tabId]: { ...base, hydrated: false } },
+        });
+      }
+    })();
+    transcriptHydrating.set(tabId, run);
     try {
-      const result = (await api.sessions.request({ tabId, method: "messages.get" })) as {
-        messages?: unknown[];
-      };
-      const base = get().transcripts[tabId] ?? createTranscriptState();
-      set({
-        transcripts: {
-          ...get().transcripts,
-          [tabId]: hydrateMessages(base, result.messages ?? [], get().prefs.promptOrigins),
-        },
-      });
-    } catch {
-      // A session that cannot report history still streams, so this is best
-      // effort — but a failed read must not be cached as "no history": after a
-      // relaunch the host may still be starting, and the view retries hydration
-      // when the tab status changes (plan step 25).
-      const base = get().transcripts[tabId] ?? createTranscriptState();
-      set({
-        transcripts: { ...get().transcripts, [tabId]: { ...base, hydrated: false } },
-      });
+      await run;
+    } finally {
+      transcriptHydrating.delete(tabId);
     }
   },
 
@@ -2011,6 +2844,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // the fresh session must be re-listed (the previous list may be stale).
       if (get().activeTabId === tabId) void get().loadShortcuts({ refresh: true });
       get().invalidateCommands(tabId);
+      // A restart is also the documented fix for a bridge that never bound the
+      // port (2026-10-30 rail-headers plan), so read the registry now instead of
+      // leaving the Documents panel on the old probe until the next 5 s poll.
+      void get().refreshOfficeDocuments();
     } catch (error) {
       get().noteFailure(error);
     }
@@ -2081,10 +2918,17 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (entry.event === EXTENSION_UI_NOTIFY_EVENT) {
       const notification = parseExtensionNotification(entry.payload, tabId);
       if (!notification) return;
+      const key = notificationCooldownKey(tabId, notification);
+      const now = Date.now();
+      const muted = isNotificationMuted(notification, get().prefs.notifications);
+      const collapsed = shouldCollapseNotification(get().notificationCooldowns[key], now);
       set({
         extensionNotifications: [notification, ...get().extensionNotifications].slice(0, 100),
+        notificationCooldowns: { ...get().notificationCooldowns, [key]: now },
       });
-      notifyToast(notification.message, notification.type);
+      if (!muted && !collapsed) {
+        notifyToast(notification, () => get().openMuteDialog(notification));
+      }
       // Plannotator notifies its review URL, so the URL arriving in a
       // notification is the signal to open it in an in-app tab (plan step 21)
       // instead of handing it to the system browser.
@@ -2121,6 +2965,35 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   clearExtensionNotifications: () => set({ extensionNotifications: [] }),
+
+  openMuteDialog: (notification) => set({ muteTarget: notification }),
+  closeMuteDialog: () => set({ muteTarget: null }),
+
+  muteNotification: (notification, scope) => {
+    const prefs = get().prefs.notifications;
+    const next = withMuteRule(prefs, muteRuleFor(notification, scope));
+    get().setPrefs({ notifications: next });
+    set({ muteTarget: null });
+  },
+
+  unmuteNotification: (notification) => {
+    const prefs = get().prefs.notifications;
+    const next = removeMutesForNotification(prefs, notification);
+    if (next.muted.length === prefs.muted.length) return;
+    get().setPrefs({ notifications: next });
+  },
+
+  unmuteNotificationRule: (ruleId) => {
+    const prefs = get().prefs.notifications;
+    const next = removeMuteRule(prefs, ruleId);
+    if (next.muted.length === prefs.muted.length) return;
+    get().setPrefs({ notifications: next });
+  },
+
+  unmuteAllNotifications: () => {
+    if (get().prefs.notifications.muted.length === 0) return;
+    get().setPrefs({ notifications: { muted: [] } });
+  },
 
   reportEditorText: (tabId, text) => {
     const request = bridge()?.sessions?.request({
@@ -2252,8 +3125,6 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (request) void request.then(undefined, () => undefined);
   },
 
-  setSendMode: (tabId, mode) => set({ sendModes: { ...get().sendModes, [tabId]: mode } }),
-
   setDraft: (tabId, text) => {
     const drafts = { ...get().prefs.drafts, [tabId]: text };
     set({ prefs: { ...get().prefs, drafts } });
@@ -2279,8 +3150,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   openPicker: (picker, options = {}) =>
-    set({ picker, pickerError: null, pickerSearch: options.search ?? "" }),
-  closePicker: () => set({ picker: null, pickerError: null, pickerSearch: "" }),
+    set({
+      picker,
+      pickerTabId: options.tabId ?? get().activeTabId,
+      pickerError: null,
+      pickerSearch: options.search ?? "",
+    }),
+  closePicker: () => set({ picker: null, pickerTabId: null, pickerError: null, pickerSearch: "" }),
 
   openConnections: (focus) =>
     set({ view: "connections", hint: null, connectionsFocus: focus ?? null }),
@@ -2312,12 +3188,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
             enabledModels?: unknown;
             auth?: Record<string, unknown>;
             thinkingLevels?: unknown[];
+            thinkingByModel?: Record<string, unknown>;
           }
         | undefined;
       set({
         modelCatalog: {
           ...get().modelCatalog,
-          [tabId]: toCatalog(Array.isArray(response?.models) ? response.models : []),
+          [tabId]: toCatalog(
+            Array.isArray(response?.models) ? response.models : [],
+            sanitizeThinkingByModel(response?.thinkingByModel),
+          ),
         },
         providerAuth: { ...get().providerAuth, [tabId]: response?.auth ?? {} },
         thinkingLevels: {
@@ -2469,8 +3349,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.sessions) return;
     if (!mainSupports(get().info, "model.scope.apply")) return;
-    // Office tabs are host-backed sessions too; only a web tab has no Pi host.
-    const targets = get().tabs.filter((tab) => tab.id !== exceptTabId && tab.kind !== "web");
+    // Office tabs are host-backed sessions too; editor and web tabs have no Pi
+    // host, so a fan-out must never address them.
+    const targets = hostBackedTabs(get().tabs, exceptTabId);
     await Promise.all(
       targets.map(async (tab) => {
         try {
@@ -2496,7 +3377,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
    * A Settings write goes through the control host, so the open sessions keep
    * the modes they were constructed with until reload. Terminal Pi applies both
    * live (`setSteeringMode`/`setFollowUpMode`); the fan-out mirrors
-   * `applyModelScopeToTabs`, skipping web tabs and tolerating a dead one.
+   * `applyModelScopeToTabs`, targeting host-backed tabs only and tolerating a
+   * dead one.
    */
   applyQueueModeToTabs: async (exceptTabId) => {
     const api = bridge();
@@ -2509,7 +3391,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const steering = read("steeringMode");
     const followUp = read("followUpMode");
     if (!steering && !followUp) return;
-    const targets = get().tabs.filter((tab) => tab.id !== exceptTabId && tab.kind !== "web");
+    const targets = hostBackedTabs(get().tabs, exceptTabId);
     await Promise.all(
       targets.map(async (tab) => {
         try {
@@ -2563,11 +3445,6 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     await get().applyModelScopeToTabs();
   },
 
-  setViewMode: (mode) => {
-    set({ prefs: { ...get().prefs, viewMode: mode } });
-    void bridge()?.prefs.set({ viewMode: mode });
-  },
-
   sendPromptNow: async (tabId, text, options = {}) => {
     const api = bridge();
     const trimmed = text.trim();
@@ -2592,7 +3469,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // Re-read after the ensure: the host may already be streaming while the
     // renderer still showed idle, and a streamed send needs a delivery mode.
     const running = get().tabs.find((entry) => entry.id === tabId)?.status === "running";
-    const mode = running ? (options.mode ?? get().sendModes[tabId] ?? "steer") : undefined;
+    const mode = running ? (options.mode ?? "steer") : undefined;
     // A `[paste #N …]` marker is display sugar: the model must receive the body
     // (plan step 20).
     const params: Record<string, unknown> = {
@@ -2940,7 +3817,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // `/thinking <level>` sets an exact level; an unknown level is an error
       // with the available list (Pi's handleThinkingCommand).
       if (argument.length > 0) {
-        const levels = get().thinkingLevels[tabId] ?? thinkingLevelsOf(get().sessionStates[tabId]);
+        const levels = orderThinkingLevels(
+          get().thinkingLevels[tabId] ?? thinkingLevelsOf(get().sessionStates[tabId]),
+        );
         const wanted = argument.trim().toLowerCase();
         const level = levels.find((candidate) => candidate.toLowerCase() === wanted);
         if (level) {
@@ -3634,16 +4513,29 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       });
       const themes = sanitizeThemesSnapshot(raw);
       set({ themes, themesLoaded: true, themesBusy: false, themesError: null });
+      // Follow-system wins over the stored theme: switch the built-in theme to
+      // match the OS, then let the normal path cache and paint it.
+      if (get().prefs.followSystemTheme) {
+        const desired = systemThemeName();
+        if (themes.active !== desired) {
+          const ok = await get().setActiveTheme(desired, { keepFollowSystem: true });
+          if (!ok) get().applyChromeTheme();
+          return;
+        }
+      }
+      // Keep the first-paint cache in step with the theme Pi actually loaded.
+      // Only write when it differs: this runs on every launch and on retry.
+      const active = activeThemeSwatches(themes);
+      if (active && get().prefs.theme !== active.variant) {
+        get().setPrefs({ theme: active.variant });
+      }
       get().applyChromeTheme();
     } catch (error) {
       set({ themesBusy: false, themesLoaded: true, themesError: errorMessage(error) });
     }
   },
 
-  setActiveTheme: async (name) => {
-    if (!get().settings) await get().loadSettings();
-    const settings = get().settings;
-    void settings;
+  setActiveTheme: async (name, options) => {
     const scope = settingsTargetForProject(get(), get().project?.path ?? null);
     const ok = await get().setSetting("theme", name, scope as SettingsScope);
     if (ok) {
@@ -3653,9 +4545,53 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         themes: get().themes.themes.map((entry) => ({ ...entry, active: entry.name === name })),
       };
       set({ themes });
+      const active = themes.themes.find((entry) => entry.name === name);
+      const variant = active?.variant ?? (name === "light" ? "light" : null);
+      if (variant && get().prefs.theme !== variant) get().setPrefs({ theme: variant });
+      // Choosing a theme is an explicit choice; follow-system yields. The
+      // follow-system reconciler passes `keepFollowSystem` so it does not turn
+      // itself off.
+      if (!options?.keepFollowSystem && get().prefs.followSystemTheme) {
+        get().setPrefs({ followSystemTheme: false });
+      }
       get().applyChromeTheme();
     }
     return ok;
+  },
+
+  setThemeColor: (themeName, key, value) => {
+    if (!THEME_COLOR_KEYS.includes(key)) return;
+    const color = normalizeThemeColor(value);
+    if (!color) return;
+    const current = get().prefs.themeColors[themeName] ?? {};
+    const themeColors = {
+      ...get().prefs.themeColors,
+      [themeName]: { ...current, [key]: color },
+    };
+    get().setPrefs({ themeColors });
+    get().applyChromeTheme();
+  },
+
+  resetThemeColors: (themeName) => {
+    const themeColors = { ...get().prefs.themeColors };
+    delete themeColors[themeName];
+    get().setPrefs({ themeColors });
+    get().applyChromeTheme();
+  },
+
+  setFollowSystemTheme: (enabled) => {
+    get().setPrefs({ followSystemTheme: enabled });
+    if (enabled) void get().applySystemTheme();
+  },
+
+  applySystemTheme: async () => {
+    if (!get().prefs.followSystemTheme) return;
+    const desired = systemThemeName();
+    if (get().themes.active === desired) {
+      get().applyChromeTheme();
+      return;
+    }
+    await get().setActiveTheme(desired, { keepFollowSystem: true });
   },
 
   importTheme: async (filename, content) => {
@@ -3830,18 +4766,34 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   applyChromeTheme: () => {
-    const snapshot = get().themes;
-    const active = activeThemeSwatches(snapshot);
     if (typeof document === "undefined") return;
     const root = document.documentElement;
+    // Clear every variable first: a custom theme may have set keys the next
+    // theme omits, and leaving them behind means the colours are a blend of two
+    // themes (2026-10-30 theme pass).
+    for (const key of THEME_CHROME_VARIABLES) root.style.removeProperty(key);
+    const followName = get().prefs.followSystemTheme ? systemThemeName() : null;
+    const active = followName
+      ? (get().themes.themes.find((theme) => theme.name === followName) ?? {
+          name: followName,
+          scope: "builtin" as const,
+          active: true,
+          variant: followName,
+          swatches: { ...BUILTIN_THEME_SWATCHES[followName] },
+        })
+      : activeThemeSwatches(get().themes);
     if (!active) {
       root.removeAttribute("data-theme");
       return;
     }
-    const variables: Record<string, string> = themeCssVariables(active.swatches, active.variant);
-    for (const [key, value] of Object.entries(variables)) {
-      if (key === "data-theme") root.setAttribute("data-theme", value);
-      else if (value) root.style.setProperty(key, value);
+    const variables: Record<string, string> = themeCssVariables(
+      active,
+      get().prefs.themeColors[active.name],
+    );
+    root.setAttribute("data-theme", active.variant);
+    for (const key of THEME_CHROME_VARIABLES) {
+      const value = variables[key];
+      if (value) root.style.setProperty(key, value);
     }
   },
 
@@ -3885,26 +4837,126 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   openOfficeSession: async () => {
-    const existing = get().tabs.find((tab) => tab.kind === "office");
-    if (existing) {
-      await get().activateTab(existing.id);
+    const state = get();
+    const owner = officeBridgeOwnerTab(state.officeDocuments, state.tabs);
+    const existingOffice = state.tabs.find((tab) => tab.kind === "office") ?? null;
+    const target = owner ?? existingOffice;
+    if (target) {
+      await get().activateTab(target.id);
       set({ view: "session" });
+      await get().connectOfficeBridge(target.id);
       return;
     }
     await get().createSessionTab("office");
+    set({ view: "session" });
+    const tabId = get().activeTabId;
+    if (tabId) await get().connectOfficeBridge(tabId);
+  },
+
+  connectOfficeBridge: async (tabId, options) => {
+    const api = bridge();
+    if (!api?.office) return false;
+    if (get().officeBridgeBusy) return false;
+    set({ officeBridgeBusy: true });
+    try {
+      const result = await api.office.connectBridge(tabId, options);
+      const message = officeControlMessage(result, "connect");
+      set({ hint: message });
+      if (result.ok) toast.success(message);
+      else toast.error(message);
+      await get().refreshOfficeDocuments();
+      return result.ok;
+    } catch (error) {
+      const message = errorMessage(error);
+      set({ hint: message });
+      toast.error(message);
+      return false;
+    } finally {
+      set({ officeBridgeBusy: false });
+    }
+  },
+
+  closeOfficeBridge: async (tabId) => {
+    const api = bridge();
+    if (!api?.office) return false;
+    if (get().officeBridgeBusy) return false;
+    set({ officeBridgeBusy: true });
+    try {
+      const result = await api.office.closeBridge(tabId);
+      const message = officeControlMessage(result, "close");
+      set({ hint: message });
+      if (result.ok) toast.success(message);
+      else toast.error(message);
+      await get().refreshOfficeDocuments();
+      return result.ok;
+    } catch (error) {
+      const message = errorMessage(error);
+      set({ hint: message });
+      toast.error(message);
+      return false;
+    } finally {
+      set({ officeBridgeBusy: false });
+    }
+  },
+
+  restartOfficeBridge: async (tabId, options) => {
+    const api = bridge();
+    if (!api?.office) return false;
+    if (get().officeBridgeBusy) return false;
+    set({ officeBridgeBusy: true });
+    try {
+      const result = await api.office.restartBridge(tabId, options);
+      const message = officeControlMessage(result, "restart");
+      set({ hint: message });
+      if (result.ok) toast.success(message);
+      else toast.error(message);
+      await get().refreshOfficeDocuments();
+      return result.ok;
+    } catch (error) {
+      const message = errorMessage(error);
+      set({ hint: message });
+      toast.error(message);
+      return false;
+    } finally {
+      set({ officeBridgeBusy: false });
+    }
   },
 
   promoteToOfficeHost: async (tabId) => {
     const api = bridge();
     if (!api?.sessions) return false;
+    // Promotion restarts two hosts and re-binds a port, so a second click while
+    // one is in flight would demote and re-spawn the same tabs twice.
+    if (get().promotingOfficeHost) return false;
+    set({ promotingOfficeHost: true });
     try {
       const envelope = await api.sessions.promoteOfficeHost(tabId);
       get().applyTabs(envelope);
-      set({ hint: "This session is now the Office host (bridge port 38617)." });
+      // The IPC returns when the host is spawned, not when `/health` answers: the
+      // bridge still has to load and bind 38617. Saying the bridge *is* ready was
+      // the promise behind "the Documents menu disappeared" (2026-10-30
+      // rail-headers plan), so the copy states the delay and the panel — not the
+      // toast — is the live truth.
+      const message =
+        "This session is now the Office host. The bridge re-binds port 38617 in a few seconds.";
+      set({ hint: message });
+      toast.success(message);
+      // The pane registry is served by the new host, so the old pane list is
+      // stale until the next probe. Ask for one now rather than waiting 5 s.
+      void get().refreshOfficeDocuments();
       return true;
     } catch (error) {
-      set({ hint: errorMessage(error) });
+      const message = errorMessage(error);
+      // The takeover really terminates the port's owner, so a failure has to be
+      // loud: the hint is transient, the toast is what a user notices.
+      set({ hint: message });
+      toast.error(message);
+      // A failed takeover rolls back to the previous host, so re-probe to show
+      // whatever bridge is actually answering now.
+      void get().refreshOfficeDocuments();
       return false;
+    } finally {
+      set({ promotingOfficeHost: false });
     }
   },
 
@@ -3929,7 +4981,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       set({ update: sanitizeUpdateState(await api.updates.get()) });
     } catch {
       // An updater that cannot be reached is not a user-visible failure: the
-      // banner simply stays absent.
+      // status chip simply stays absent and Settings explains the state.
     }
   },
 
@@ -3940,13 +4992,20 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (!api?.updates) return;
     try {
       const next = sanitizeUpdateState(await api.updates.check());
-      set({ update: next });
-      // A finished check is feedback even when there is nothing to install; the
-      // banner only carries the actionable phases.
-      if (next.phase === "up-to-date") set({ hint: "Pi Desktop is up to date." });
-      else if (next.phase === "unsupported")
-        set({ hint: "Updates are checked in installed builds only." });
-      else if (next.phase === "error") set({ hint: next.error ?? "The update check failed." });
+      // A finished check is feedback even when there is nothing to install. The
+      // status chip carries available/downloaded; everything else is a short
+      // dismissible status-bar hint.
+      if (next.phase === "up-to-date") {
+        set({ update: next, hint: "Pi Desktop is up to date." });
+      } else if (
+        next.phase === "unsupported" ||
+        next.phase === "no-feed" ||
+        next.phase === "error"
+      ) {
+        set({ update: next, hint: describeUpdate(next) });
+      } else {
+        set({ update: next, hint: null });
+      }
     } catch (error) {
       get().noteFailure(error);
     }
@@ -3972,6 +5031,24 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     } catch (error) {
       get().noteFailure(error);
     }
+  },
+
+  clearUpdateProblem: async () => {
+    const api = bridge();
+    if (!api?.updates) return;
+    try {
+      set({ update: sanitizeUpdateState(await api.updates.clearProblem()), hint: null });
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  dismissUpdateNotification: () => {
+    const { update, prefs } = get();
+    const version = update?.version;
+    if (!version || (update.phase !== "available" && update.phase !== "downloaded")) return;
+    get().setPrefs({ updates: { ...prefs.updates, dismissedVersion: version } });
+    set({ hint: null });
   },
 
   // ---- Onboarding (plan step 26) ----
@@ -4046,14 +5123,14 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   loadBlob: async (tabId, ref) => {
     const path = ref.$blob;
     if (get().blobs[path]) return;
-    set((state) => ({ blobs: { ...state.blobs, [path]: { status: "loading" } } }));
+    set((state) => ({ blobs: { ...state.blobs, [path]: { status: "loading", tabId } } }));
     const api = bridge();
     if (!api?.sessions) {
       set((state) => ({
-        blobs: {
+        blobs: boundBlobs({
           ...state.blobs,
-          [path]: { status: "error", error: "Sessions are unavailable." },
-        },
+          [path]: { status: "error", error: "Sessions are unavailable.", tabId },
+        }),
       }));
       return;
     }
@@ -4063,19 +5140,25 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         method: "host.blobs.read",
         params: { path },
       })) as { contents?: unknown } | null;
+      // A closed tab's loading entry was already pruned; do not resurrect it.
+      if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
       const contents = typeof result?.contents === "string" ? result.contents : null;
       set((state) => ({
-        blobs: {
+        blobs: boundBlobs({
           ...state.blobs,
           [path]:
             contents === null
-              ? { status: "error", error: "The spilled result is no longer on disk." }
-              : { status: "ready", contents },
-        },
+              ? { status: "error", error: "The spilled result is no longer on disk.", tabId }
+              : { status: "ready", contents, tabId, bytes: contents.length },
+        }),
       }));
     } catch (error) {
+      if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
       set((state) => ({
-        blobs: { ...state.blobs, [path]: { status: "error", error: errorMessage(error) } },
+        blobs: boundBlobs({
+          ...state.blobs,
+          [path]: { status: "error", error: errorMessage(error), tabId },
+        }),
       }));
     }
   },
@@ -4086,12 +5169,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (get().officeDocumentsLoaded) return;
     try {
       const view = await api.office.documents();
-      set({
-        officeDocuments: view,
-        officeDocumentsLoaded: true,
-        // A bridge that already has panes attached opens the rail on first load.
-        documentsPanelOpen: get().documentsPanelOpen || view.panes.length > 0,
-      });
+      set({ officeDocuments: view, officeDocumentsLoaded: true });
+      // A bridge that already has panes attached opens the rail on Documents.
+      if (view.panes.length > 0) get().openRailMenu("documents");
     } catch {
       // The panel is an enhancement: an unreadable registry must never block
       // the session, so the store keeps its empty view.
@@ -4100,11 +5180,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   applyOfficeDocuments: (view) => {
-    set({
-      officeDocuments: view,
-      officeDocumentsLoaded: true,
-      documentsPanelOpen: get().documentsPanelOpen || view.panes.length > 0,
-    });
+    set({ officeDocuments: view, officeDocumentsLoaded: true });
+    // A bridge that already has panes attached opens the rail on Documents.
+    if (view.panes.length > 0) get().openRailMenu("documents");
   },
 
   refreshOfficeDocuments: async () => {
@@ -4118,7 +5196,427 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  toggleDocumentsPanel: () => set({ documentsPanelOpen: !get().documentsPanelOpen }),
+  // ---- Docked panel rail ----
+
+  toggleRail: () => get().setRailOpen(!get().prefs.rail.open),
+
+  setRailOpen: (open) => {
+    if (get().prefs.rail.open === open) return;
+    get().setPrefs({ rail: { ...get().prefs.rail, open } });
+  },
+
+  openRailMenu: (id) => {
+    const rail = get().prefs.rail;
+    if (rail.open && rail.activeMenu === id) return;
+    get().setPrefs({ rail: { ...rail, open: true, activeMenu: id } });
+  },
+
+  toggleRailMenu: (id) => {
+    const rail = get().prefs.rail;
+    // The active entry collapses the body (the strip stays); any other entry
+    // switches to it and expands.
+    if (rail.open && rail.activeMenu === id) {
+      get().setPrefs({ rail: { ...rail, open: false } });
+      return;
+    }
+    get().setPrefs({ rail: { ...rail, open: true, activeMenu: id } });
+  },
+
+  setRailMenuOrder: (order) => {
+    const rail = get().prefs.rail;
+    const next = sanitizeRailMenuOrder(order);
+    if (next.length === rail.order.length && next.every((id, i) => id === rail.order[i])) return;
+    get().setPrefs({ rail: { ...rail, order: next } });
+  },
+
+  setRailWidth: (width) => {
+    const rail = get().prefs.rail;
+    const clamped = clampRailWidth(width);
+    if (clamped === rail.width) return;
+    get().setPrefs({ rail: { ...rail, width: clamped } });
+  },
+
+  setRailSplit: (split) => {
+    const rail = get().prefs.rail;
+    const clamped = clampRailSplit(split);
+    if (clamped.top === rail.split.top && clamped.middle === rail.split.middle) return;
+    get().setPrefs({ rail: { ...rail, split: clamped } });
+  },
+
+  setSourceControlCollapsed: (group, collapsed) => {
+    const rail = get().prefs.rail;
+    if (rail.collapsed[group] === collapsed) return;
+    get().setPrefs({ rail: { ...rail, collapsed: { ...rail.collapsed, [group]: collapsed } } });
+  },
+
+  // ---- Source control (git-checkpoint plan step 9) ----
+
+  loadGit: async (projectPath) => {
+    const api = bridge()?.git;
+    if (!api) return;
+    try {
+      get().applyGitSnapshot(await api.snapshot(projectPath));
+    } catch (error) {
+      // The rail is an enhancement: an unreadable registry must never block the
+      // session, so the failure is classified and shown, not thrown.
+      get().noteFailure(error);
+    }
+  },
+
+  applyGitSnapshot: (snapshot) => {
+    const parsed = sanitizeGitSnapshot(snapshot);
+    if (parsed.projectPath.length === 0) return;
+    const next: Record<string, GitSnapshot> = { ...get().git, [parsed.projectPath]: parsed };
+    // Bound the map: a long app session visits many folders, and only the recent
+    // few are ever on screen.
+    for (const stale of Object.keys(next).slice(
+      0,
+      Math.max(0, Object.keys(next).length - MAX_GIT_SNAPSHOTS),
+    )) {
+      delete next[stale];
+    }
+    set({
+      git: next,
+      gitErrors: parsed.error
+        ? withGitError(get().gitErrors, parsed.projectPath, gitErrorMessage(parsed.error))
+        : get().gitErrors,
+    });
+  },
+
+  refreshGit: async (projectPath) => {
+    const api = bridge()?.git;
+    if (!api) return;
+    try {
+      get().applyGitSnapshot(await api.refresh(projectPath));
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  watchGit: async (projectPath) => {
+    const api = bridge()?.git;
+    if (!api) return;
+    const previous = get().gitWatched;
+    if (previous === projectPath) return;
+    // Record the new target first: a failure while stopping the old one must not
+    // leave the store believing it is still watching the previous folder.
+    set({ gitWatched: projectPath });
+    try {
+      if (previous) await api.watch(previous, false);
+      if (projectPath) await api.watch(projectPath, true);
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  runGitAction: async (projectPath, action) => {
+    const network = isNetworkGitAction(action.kind);
+    // One network action per folder: a second click joins the one in flight
+    // instead of queueing a second push behind it.
+    if (network) {
+      const running = gitActionInFlight.get(projectPath);
+      if (running) return running;
+    }
+
+    const writeSync = (phase: GitSyncPhase, message: string): void => {
+      set({
+        gitSync: withGitSync(get().gitSync, projectPath, {
+          action,
+          phase,
+          message,
+          at: Date.now(),
+        }),
+      });
+    };
+
+    // The terminal outcome in one place: the folder's error line, the sync
+    // status for network verbs, and the toast that survives a scrolled panel.
+    const finish = (result: GitActionResult): void => {
+      if (result.ok) {
+        const message = result.message ?? `${syncVerbLabel(action.kind)} finished.`;
+        set({ gitErrors: withGitError(get().gitErrors, projectPath, null) });
+        if (network) {
+          writeSync("ok", message);
+          toast.success(message);
+        }
+        return;
+      }
+      const message = result.error
+        ? gitErrorMessage(result.error)
+        : `${syncVerbLabel(action.kind)} failed.`;
+      set({ gitErrors: withGitError(get().gitErrors, projectPath, message) });
+      if (network) {
+        writeSync("error", message);
+        toast.error(`${syncVerbLabel(action.kind)} failed: ${message}`);
+      }
+    };
+
+    const api = bridge()?.git;
+    if (!api) {
+      const result: GitActionResult = {
+        ok: false,
+        error: {
+          code: "not_a_repo",
+          message: "The preload bridge is unavailable in this window.",
+          recoverable: false,
+        },
+      };
+      finish(result);
+      return result;
+    }
+
+    // Clear the previous failure and announce the new attempt before the call:
+    // a stale red line (or a dead button) while a fresh action runs is the same
+    // lie as no line at all.
+    set({ gitErrors: withGitError(get().gitErrors, projectPath, null) });
+    if (network) writeSync("running", "");
+
+    const work = (async (): Promise<GitActionResult> => {
+      try {
+        const result = await api.action(projectPath, action);
+        finish(result);
+        if (result.ok) {
+          // main pushes a refreshed snapshot for a *watched* folder; an explicit
+          // read keeps an unwatched one (a background project) honest too. The
+          // History page keys on the repo state, so it reloads itself when this
+          // snapshot moves HEAD, the upstream or the divergence.
+          await get().refreshGit(projectPath);
+        }
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        get().noteFailure(error);
+        const result: GitActionResult = {
+          ok: false,
+          error: { code: "unknown", message, recoverable: true },
+        };
+        finish(result);
+        return result;
+      } finally {
+        if (network) gitActionInFlight.delete(projectPath);
+      }
+    })();
+
+    if (network) gitActionInFlight.set(projectPath, work);
+    return work;
+  },
+
+  openGitDiff: async (projectPath, request) => {
+    const api = bridge()?.git;
+    if (!api) return;
+    set({ gitDiffLoading: true, gitErrors: withGitError(get().gitErrors, projectPath, null) });
+    try {
+      const diff = await api.diff(projectPath, request);
+      set({ gitDiff: { projectPath, request, diff }, gitDiffLoading: false });
+    } catch (error) {
+      set({ gitDiffLoading: false });
+      get().noteFailure(error);
+    }
+  },
+
+  closeGitDiff: () => set({ gitDiff: null, gitDiffLoading: false }),
+
+  loadGitLog: async (projectPath, options = {}) => {
+    const api = bridge()?.git;
+    if (!api) return;
+    const page = get().gitLog[projectPath] ?? EMPTY_GIT_LOG_PAGE;
+    const more = options.more === true && page.entries.length > 0;
+    // The key is written when the request *starts*: the History effect compares
+    // it to the live repo state, and writing it only on success would let a
+    // re-render start a second read for the same state.
+    const key = options.key !== undefined ? options.key : page.key;
+    const seq = page.seq + 1;
+    set({ gitLog: { ...get().gitLog, [projectPath]: { ...page, loading: true, key, seq } } });
+    try {
+      const entries = await api.log(projectPath, {
+        limit: GIT_LOG_PAGE_SIZE,
+        ...(more ? { skip: page.entries.length } : {}),
+      });
+      // A newer state (or a newer manual refresh) has already replaced this
+      // request; its response would have the wrong offsets or decorations.
+      const current = get().gitLog[projectPath];
+      if (!current || current.seq !== seq) return;
+      set({
+        gitLog: {
+          ...get().gitLog,
+          [projectPath]: {
+            entries: more ? [...page.entries, ...entries] : entries,
+            loading: false,
+            hasMore: entries.length >= GIT_LOG_PAGE_SIZE,
+            key,
+            seq,
+          },
+        },
+      });
+    } catch (error) {
+      const current = get().gitLog[projectPath];
+      if (current?.seq === seq) {
+        set({ gitLog: { ...get().gitLog, [projectPath]: { ...page, loading: false, key, seq } } });
+      }
+      get().noteFailure(error);
+    }
+  },
+
+  clearGitError: (projectPath) => {
+    set({ gitErrors: withGitError(get().gitErrors, projectPath, null) });
+  },
+
+  clearGitSync: (projectPath) => {
+    const next = { ...get().gitSync };
+    delete next[projectPath];
+    set({ gitSync: next });
+  },
+
+  loadGitBranches: async (projectPath) => {
+    const api = bridge()?.git;
+    if (!api) return;
+    try {
+      const branches = await api.branches(projectPath);
+      set({ gitBranches: { ...get().gitBranches, [projectPath]: branches } });
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  loadHeadCommitMessage: async (projectPath) => {
+    const api = bridge()?.git;
+    if (!api) return null;
+    try {
+      return await api.headMessage(projectPath);
+    } catch (error) {
+      get().noteFailure(error);
+      return null;
+    }
+  },
+
+  // ---- Folder checkpoints (git-checkpoint plan step 21) ----
+
+  loadCheckpoints: async (projectPath) => {
+    const api = bridge()?.checkpoints;
+    if (!api) return;
+    // Idempotent: the panel mounts this on expand and the strip seeds it for its
+    // count badge, so a second call for a folder already read must not refetch.
+    // `refreshCheckpoints` is the forced read.
+    if (get().checkpoints[projectPath]) return;
+    try {
+      get().applyCheckpointState(await api.get(projectPath));
+    } catch (error) {
+      // The section is an enhancement: an unreadable store must not block the
+      // session, so the failure is classified and shown, never thrown.
+      get().noteFailure(error);
+    }
+  },
+
+  applyCheckpointState: (state) => {
+    const parsed = sanitizeCheckpointState(state);
+    if (parsed.projectPath.length === 0) return;
+    const next: Record<string, CheckpointState> = {
+      ...get().checkpoints,
+      [parsed.projectPath]: parsed,
+    };
+    for (const stale of Object.keys(next).slice(
+      0,
+      Math.max(0, Object.keys(next).length - MAX_GIT_SNAPSHOTS),
+    )) {
+      delete next[stale];
+    }
+    set({ checkpoints: next });
+  },
+
+  refreshCheckpoints: async (projectPath) => {
+    const api = bridge()?.checkpoints;
+    if (!api) return;
+    try {
+      get().applyCheckpointState(await api.refresh(projectPath));
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  createCheckpoint: async (projectPath, label) => {
+    return get().runCheckpointAction(
+      projectPath,
+      label && label.trim().length > 0
+        ? { kind: "create", label: label.trim() }
+        : { kind: "create" },
+    );
+  },
+
+  previewCheckpoint: async (projectPath, ref) => {
+    const api = bridge()?.checkpoints;
+    if (!api) return null;
+    try {
+      const result = await api.action(projectPath, {
+        kind: "preview",
+        ref,
+      });
+      if (!result.ok || !result.preview) {
+        set({ checkpointsError: result.error ?? "The preview could not be read." });
+        return null;
+      }
+      set({ checkpointsError: null });
+      return result.preview;
+    } catch (error) {
+      get().noteFailure(error);
+      return null;
+    }
+  },
+
+  restoreCheckpoint: async (projectPath, ref, options = {}) => {
+    const result = await get().runCheckpointAction(projectPath, {
+      kind: "restore",
+      ref,
+      ...(options.removeAdded === true ? { removeAdded: true } : {}),
+    });
+    if (result.ok && result.undoRef) {
+      set({
+        checkpointsUndoRef: { ...get().checkpointsUndoRef, [projectPath]: result.undoRef },
+      });
+    }
+    return result;
+  },
+
+  undoRestoreCheckpoint: async (projectPath) => {
+    const ref = get().checkpointsUndoRef[projectPath];
+    if (!ref) return { ok: false, error: "There is no restore to undo." };
+    const result = await get().runCheckpointAction(projectPath, {
+      kind: "restore",
+      ref,
+    });
+    if (result.ok) {
+      const next = { ...get().checkpointsUndoRef };
+      // The undo is itself one level only: a second Undo would restore the
+      // snapshot the undo just took, which is not what the label promises.
+      delete next[projectPath];
+      set({ checkpointsUndoRef: next });
+    }
+    return result;
+  },
+
+  pruneCheckpoints: async (projectPath) => {
+    return get().runCheckpointAction(projectPath, { kind: "prune" });
+  },
+
+  clearCheckpointsError: () => set({ checkpointsError: null }),
+
+  runCheckpointAction: async (projectPath, action) => {
+    const api = bridge()?.checkpoints;
+    if (!api) {
+      return { ok: false, error: "The preload bridge is unavailable in this window." };
+    }
+    try {
+      const result = await api.action(projectPath, action);
+      // Every action can change the timeline (a snapshot adds a row, a restore
+      // rewrites the tree), so one refresh after it keeps the section honest
+      // even when main's push is coalesced.
+      await get().refreshCheckpoints(projectPath);
+      set({ checkpointsError: result.ok ? null : (result.error ?? "The action failed.") });
+      return result;
+    } catch (error) {
+      get().noteFailure(error);
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  },
 
   // ---- Web tabs (plan step 21) ----
 
@@ -4143,7 +5641,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       set({ view: "session", hint: null });
       return true;
     } catch (error) {
-      set({ hint: errorMessage(error) });
+      set({ hint: userFacingError(error) });
       return false;
     }
   },
@@ -4195,6 +5693,19 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const tabId = get().activeTabId;
     if (!tabId) {
       set({ hint: "Open a session before chatting about a document." });
+      return null;
+    }
+    // Only the session that owns bridge port 38617 can serve the `office_*` call
+    // the tag implies. Anywhere else the draft would carry a prompt that cannot
+    // be answered, so point at the Documents scope row instead of writing it.
+    const state = get();
+    const { host, isHost } = officeDocumentScope(state.officeDocuments ?? [], state.tabs, tabId);
+    if (!isHost) {
+      set({
+        hint: host
+          ? `Only the Office host session (“${host.title}”) can use this document. Use “Move bridge here” in the Documents menu to move the bridge here.`
+          : "No session is running the Office bridge. Connect a session from the Documents menu first.",
+      });
       return null;
     }
     const tag = officeDocumentTag(pane);
@@ -4386,10 +5897,15 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       get().applyTabs(await api.sessions.create(input));
       set({ view: "session", hint: null });
     } catch (error) {
-      setHint(error instanceof Error ? error.message : String(error));
+      const message = userFacingError(error);
+      setHint(message);
       // The host emits `project_trust` before it refuses, so the prompt is usually
-      // already up; this is the fallback for a failure without the event.
-      if (!get().trustPrompt) await get().openTrustPrompt(project.path);
+      // already up; this is the fallback for a trust failure without the event.
+      // A spawn or emergency-ceiling failure must not ask the user to trust the
+      // project, which would be a misleading and irreversible-looking action.
+      if (/trust/i.test(message) && !get().trustPrompt) {
+        await get().openTrustPrompt(project.path);
+      }
     }
   },
 
@@ -4405,21 +5921,144 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     return true;
   },
 
+  setGridLayout: (layout) => {
+    const { prefs, activeTabId } = get();
+    let grid: GridPrefs = {
+      layout,
+      lastMultiLayout: layout === "single" ? prefs.grid.lastMultiLayout : layout,
+      panes: normalizeGridPanes(prefs.grid.panes),
+    };
+    // Switching to a multi-pane layout keeps the tab the user is on: an empty
+    // visible slot gets it, and a shrink that would hide it moves it into the
+    // first visible slot. `assignGridPane` swaps, so a hidden assignment cannot
+    // become a duplicate.
+    if (
+      layout !== "single" &&
+      activeTabId !== null &&
+      !visiblePaneIds(layout, grid.panes).includes(activeTabId)
+    ) {
+      const visible = visiblePaneIds(layout, grid.panes);
+      const empty = visible.indexOf(null);
+      grid = assignGridPane(grid, empty >= 0 ? empty : 0, activeTabId);
+    }
+    get().setPrefs({ grid: sanitizeGridPrefs(grid) });
+  },
+
+  assignPaneTab: async (paneIndex, tabId, options) => {
+    if (tabId === null) {
+      await get().clearPane(paneIndex);
+      return;
+    }
+    const { prefs } = get();
+    const layout = options?.layout ?? prefs.grid.layout;
+    const currentPanes = normalizeGridPanes(prefs.grid.panes);
+    const base: GridPrefs = {
+      layout,
+      lastMultiLayout: layout === "single" ? prefs.grid.lastMultiLayout : layout,
+      panes: currentPanes,
+    };
+    const grid = assignGridPane(base, paneIndex, tabId);
+    const changed =
+      grid.layout !== prefs.grid.layout ||
+      grid.lastMultiLayout !== prefs.grid.lastMultiLayout ||
+      currentPanes.some((id, index) => id !== grid.panes[index]);
+    if (!changed) {
+      // A redundant drop is still a focus gesture on that pane.
+      const current = grid.panes[paneIndex] ?? null;
+      if (current !== null && current !== get().activeTabId) await get().activateTab(current);
+      return;
+    }
+    get().setPrefs({ grid });
+    // Assigning a pane focuses the tab the user asked to see.
+    if (tabId !== get().activeTabId) await get().activateTab(tabId);
+  },
+
+  clearPane: async (paneIndex) => {
+    const { prefs, activeTabId } = get();
+    const currentPanes = normalizeGridPanes(prefs.grid.panes);
+    const cleared = currentPanes[paneIndex] ?? null;
+    if (cleared === null) return;
+
+    const panes = [...currentPanes];
+    panes[paneIndex] = null;
+    const grid: GridPrefs = { ...prefs.grid, panes };
+    const survivor =
+      activeTabId === cleared ? nextVisiblePaneTab(grid.layout, grid.panes, paneIndex) : null;
+    get().setPrefs({ grid });
+    if (activeTabId !== cleared) return;
+    // Hand the selection to a pane that is still on screen. If none is left,
+    // clearing the selection keeps a split layout on the empty grid.
+    if (survivor !== null) await get().activateTab(survivor);
+    else await get().clearActiveTab();
+  },
+
+  focusPane: async (paneIndex) => {
+    const tabId = get().prefs.grid.panes[paneIndex] ?? null;
+    if (tabId !== null && tabId !== get().activeTabId) await get().activateTab(tabId);
+  },
+
+  browseSessionsForPane: async (paneIndex) => {
+    set({ panePickerTarget: paneIndex });
+    await get().openSessionBrowser();
+  },
+
+  syncVisibleTabs: () => {
+    const state = get();
+    const surface = gridSurface({
+      layout: state.prefs.grid.layout,
+      lastMultiLayout: state.prefs.grid.lastMultiLayout,
+      panes: state.prefs.grid.panes,
+      activeTabId: state.activeTabId,
+      dragging: isTabDragActive(),
+    });
+    const ids = visibleGridTabIds(
+      {
+        layout: surface.layout,
+        panes: state.prefs.grid.panes,
+        activeTabId: state.activeTabId,
+      },
+      surface.mode,
+    );
+    const key = ids.join("\u0000");
+    if (key === lastVisibleTabsKey) return;
+    lastVisibleTabsKey = key;
+    // Fire-and-forget: pinning a host is a hint, never something to wait on.
+    void bridge()?.sessions.setVisibleTabs(ids);
+  },
+
   activateTab: async (tabId) => {
     const api = bridge();
     if (!api?.sessions) return;
     set({ activeTabId: tabId, view: "session" });
     const tab = get().tabs.find((entry) => entry.id === tabId);
-    if (tab?.kind === "web") return;
+    if (!tab || tab.kind === "web") return;
+    // The rail and the sidebar follow the session that is on screen (2026-10-30
+    // project-scoped rail plan): clicking a session in another project also
+    // selects that project. Fire-and-forget so waking the host is not delayed.
+    void get().selectProjectForCwd(tab.cwd);
+    // An editor tab has no host. It still tells main which tab is active (so the
+    // selection survives a push/relaunch), but skips the host-only refreshes.
+    if (!isHostBackedTab(tab.kind)) {
+      try {
+        get().applyTabs(await api.sessions.activate(tabId));
+      } catch (error) {
+        get().noteFailure(error);
+      }
+      return;
+    }
     // Switching tabs always re-checks; the ensure refreshes extension UI, the
     // TUI surface, shortcuts and the command cache after the host is awake.
     await get().ensureSession(tabId, { force: true });
+    // An evicted transcript is reset to `hydrated:false`; fetch it again now
+    // rather than waiting for a status change that may never happen.
+    const transcript = get().transcripts[tabId];
+    if (!transcript || !transcript.hydrated) void get().hydrateTranscript(tabId);
   },
 
   ensureSession: async (tabId, options = {}) => {
     const api = bridge();
     const tab = get().tabs.find((entry) => entry.id === tabId);
-    if (!api?.sessions || !tab || tab.kind === "web") return false;
+    if (!api?.sessions || !tab || !isHostBackedTab(tab.kind)) return false;
     // A crashed/failed tab needs the explicit Restart action (or the banner),
     // not an accidental spawn from a keystroke.
     if (tab.status === "crashed" || tab.status === "failed") return false;
@@ -4469,7 +6108,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
     const activeId = get().activeTabId;
     const active = activeId ? get().tabs.find((tab) => tab.id === activeId) : undefined;
-    if (activeId && active && active.kind !== "web") {
+    if (activeId && active && isHostBackedTab(active.kind)) {
       await get().ensureSession(activeId, { force: true });
     }
   },
@@ -4510,6 +6149,40 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       get().noteFailure(error);
     }
     purgeClosedTabDialogs(new Set(get().tabs.map((tab) => tab.id)));
+  },
+
+  closeAllTabs: async (kind) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      get().applyTabs(await api.sessions.closeAll(kind));
+    } catch (error) {
+      get().noteFailure(error);
+    }
+    purgeClosedTabDialogs(new Set(get().tabs.map((tab) => tab.id)));
+  },
+
+  setTabPinned: async (tabId, pinned) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      get().applyTabs(await api.sessions.setPinned(tabId, pinned));
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
+  retargetEditorTabs: async (input) => {
+    const api = bridge();
+    if (!api?.sessions) return null;
+    try {
+      const envelope = await api.sessions.retargetEditorTabs(input);
+      get().applyTabs(envelope);
+      return envelope;
+    } catch (error) {
+      get().noteFailure(error);
+      return null;
+    }
   },
 
   moveTab: async (tabId, toIndex) => {
@@ -4579,7 +6252,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     await get().loadProjectSessions();
   },
 
-  closeSessionBrowser: () => set({ sessionBrowserOpen: false }),
+  closeSessionBrowser: () => set({ sessionBrowserOpen: false, panePickerTarget: null }),
 
   setSessionBrowserQuery: (query) => set({ sessionBrowserQuery: query }),
 
@@ -4617,8 +6290,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return;
     }
     try {
-      get().applyTabs(await api.sessions.create({ cwd, sessionFile: session.path }));
+      const envelope = await api.sessions.create({ cwd, sessionFile: session.path });
+      get().applyTabs(envelope);
       set({ sessionBrowserOpen: false, view: "session", hint: null });
+      // “Browse saved sessions…” from a pane: the resumed tab belongs there, not
+      // in a new tab the user then has to place by hand.
+      const targetPane = get().panePickerTarget;
+      set({ panePickerTarget: null });
+      if (targetPane !== null && envelope.activeTabId) {
+        await get().assignPaneTab(targetPane, envelope.activeTabId);
+      }
     } catch (error) {
       get().noteFailure(error);
     }

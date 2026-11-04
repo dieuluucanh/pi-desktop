@@ -192,3 +192,84 @@ describe("DIAGNOSTIC_ENV_KEYS", () => {
     expect(DIAGNOSTIC_ENV_KEYS).not.toContain("HOME");
   });
 });
+
+/**
+ * Source-control failure families (git-checkpoint plan step 28).
+ *
+ * git's messages overlap the generic disk/permission patterns, so these kinds are
+ * classified *first* — otherwise `index.lock` reads as "permission" and
+ * `Permission denied (publickey)` reads as an app permission bug. Each one also
+ * carries a fix, because the message alone does not tell a user what to do.
+ */
+describe("git failure classification", () => {
+  it.each([
+    ["git is not installed, or it is not on this app's PATH.", "git_missing"],
+    ["fatal: Unable to create 'C:/work/app/.git/index.lock': File exists.", "git_locked"],
+    ["fatal: Authentication failed for 'https://github.com/x/y.git/'", "git_auth"],
+    ["git@github.com: Permission denied (publickey).", "git_auth"],
+    ["error: Your local changes would be overwritten... Automatic merge failed", "git_conflict"],
+    [
+      "*** Please tell me who you are.\n\nRun\n\n  git config --global user.email",
+      "git_no_identity",
+    ],
+    ["! [rejected]        main -> main (non-fast-forward)", "git_rejected"],
+    [
+      "EPERM: operation not permitted, open 'C:/reports/Q3.docx' (EBUSY: resource busy)",
+      "checkpoint_locked_file",
+    ],
+  ])("classifies %s", (message, kind) => {
+    expect(classifyFailure(message)).toBe(kind);
+  });
+
+  it("does not mistake a generic permission error for git", () => {
+    // No git-specific marker, so the original classification stands.
+    expect(classifyFailure("EACCES: permission denied, open '/profile/settings.json'")).toBe(
+      "permission",
+    );
+  });
+
+  it("keeps a full-disk error as the disk problem, not a git one", () => {
+    expect(classifyFailure("fatal: write error: No space left on device")).toBe("disk_full");
+  });
+
+  it("gives every git kind a fix", () => {
+    for (const kind of [
+      "git_missing",
+      "git_locked",
+      "git_auth",
+      "git_conflict",
+      "git_no_identity",
+      "git_rejected",
+      "checkpoint_locked_file",
+    ] as const) {
+      expect(incidentFix(kind), kind).toBeTruthy();
+    }
+  });
+
+  it("severities are warnings: the user's work is in flight, not the app broken", () => {
+    expect(incidentSeverity("git_locked")).toBe("warning");
+    expect(incidentSeverity("git_missing")).toBe("warning");
+    expect(incidentSeverity("checkpoint_locked_file")).toBe("warning");
+  });
+
+  it("does not offer a host restart for a git problem", () => {
+    // A restart would fix nothing; the incident must not claim it would.
+    expect(isRecoverable("git_locked")).toBe(false);
+    expect(isRecoverable("git_auth")).toBe(false);
+  });
+
+  it("has a headline for each git kind", () => {
+    for (const kind of ["git_missing", "git_locked", "git_auth", "git_conflict"] as const) {
+      const headline = incidentHeadline(createIncident({ kind, message: "x", id: "i1", at: 0 }));
+      expect(headline).not.toBe("Something went wrong");
+    }
+  });
+
+  it("still accepts a reported incident with a new kind", () => {
+    // `parseReportedIncident` guards on `kind in SEVERITY_BY_KIND`, so a new kind
+    // that was added to one and not the other would be silently reclassified.
+    const incident = parseReportedIncident({ kind: "git_locked", message: "index.lock exists" });
+    expect(incident?.kind).toBe("git_locked");
+    expect(incident?.severity).toBe("warning");
+  });
+});

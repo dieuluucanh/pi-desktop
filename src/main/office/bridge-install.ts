@@ -98,6 +98,43 @@ export function bridgePackageDir(npmRoot: string, packageName: string): string {
   return path.join(npmRoot, "node_modules", ...packageName.split("/"));
 }
 
+/**
+ * True when one settings `packages` entry names the bridge.
+ *
+ * Pi accepts a bare name, a pinned version (`@dieulc/pi-office-bridge@0.5.0`) and
+ * an explicit `npm:` source. A plain prefix match would also accept an unrelated
+ * package whose name merely starts with ours, so the `name` segment is compared
+ * exactly.
+ */
+export function bridgeSourceMatches(
+  source: string,
+  packageName: string = PI_OFFICE_BRIDGE.packageName,
+): boolean {
+  const trimmed = source.trim();
+  if (trimmed.length === 0) return false;
+  const withoutPrefix = trimmed.startsWith("npm:") ? trimmed.slice("npm:".length) : trimmed;
+  return withoutPrefix === packageName || withoutPrefix.startsWith(`${packageName}@`);
+}
+
+/**
+ * Whether the bridge is configured in a Pi settings file (user or project scope).
+ *
+ * Read-only and offline: the rail needs the answer even when nothing is listening
+ * on the bridge port, and the setup wizard is not open. Malformed JSON throws
+ * `SettingsParseError` (AGENTS rule 5) — the caller logs it and treats the bridge
+ * as not configured rather than repairing the file.
+ */
+export async function bridgeConfiguredInSettings(
+  fs: FsPort,
+  settingsPath: string,
+  packageName: string = PI_OFFICE_BRIDGE.packageName,
+): Promise<boolean> {
+  const doc = await readSettingsDocument(fs, settingsPath);
+  return readPackageEntries(doc).some((entry) =>
+    bridgeSourceMatches(typeof entry === "string" ? entry : entry.source, packageName),
+  );
+}
+
 export async function readBridgePackageState(
   fs: FsPort,
   npmRoot: string,

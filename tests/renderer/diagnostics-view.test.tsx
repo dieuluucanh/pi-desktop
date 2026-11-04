@@ -32,10 +32,25 @@ function snapshot(overrides: Partial<DiagnosticsSnapshot> = {}): Partial<Diagnos
       },
     ],
     capacity: {
-      hosts: { used: 1, limit: 8, atCapacity: false },
-      tabs: { used: 1, limit: 8, atCapacity: false },
+      liveHosts: 1,
+      targetHosts: 6,
+      ceilingHosts: 8,
+      overTarget: false,
+      hostRssBytes: 268_435_456,
+      hostRssLimitBytes: 8_589_934_592,
+      overMemory: false,
+      openSessions: 1,
+      asleepSessions: 0,
+      editorTabs: 0,
+      visibleSessions: 0,
     },
-    memory: { budgetBytes: 536_870_912, restartBytes: 1_610_612_736 },
+    memory: {
+      budgetBytes: 536_870_912,
+      restartBytes: 1_073_741_824,
+      totalBytes: 17_179_869_184,
+      freeBytes: 8_589_934_592,
+    },
+    web: { tabs: 1, liveViews: 1, limit: 4 },
     startup: {
       startedAt: 1,
       appReadyAt: 100,
@@ -103,12 +118,15 @@ describe("DiagnosticsView", () => {
     installBridge({ diagnostics: snapshot() });
     render(<DiagnosticsView />);
 
+    expect(screen.getByTestId("view-scroll")).toHaveClass("overflow-y-auto");
+    expect(screen.getByTestId("view-content")).toHaveClass("max-w-3xl");
     expect(await screen.findByTestId("diagnostics-hosts")).toBeInTheDocument();
     expect(screen.getByText(/pid 4242/)).toBeInTheDocument();
     expect(screen.getByText(/resumed session/)).toBeInTheDocument();
-    // Per-host RSS and the used/limit caps (plan step 24).
-    expect(screen.getByText(/RSS 256 MB/)).toBeInTheDocument();
-    expect(screen.getByTestId("diagnostics-hosts")).toHaveTextContent("1/8 hosts");
+    // Per-host RSS and the soft live-host budget (plan step 24).
+    expect(screen.getAllByText(/RSS 256 MB/).length).toBeGreaterThan(0);
+    expect(screen.getByTestId("diagnostics-hosts")).toHaveTextContent("1/6 live hosts");
+    expect(screen.getByTestId("diagnostics-hosts")).toHaveTextContent("1 open sessions (0 asleep)");
     expect(screen.getByTestId("diagnostics-hosts")).toHaveTextContent("512 MB");
     expect(screen.getByTestId("diagnostics-hosts")).toHaveTextContent("build build-1");
     expect(screen.getByTestId("diagnostics-startup")).toHaveTextContent("1.2 s");
@@ -117,6 +135,35 @@ describe("DiagnosticsView", () => {
     expect(screen.getByTestId("diagnostics-extension-errors")).toHaveTextContent("boom");
     expect(screen.getByTestId("diagnostics-office")).toHaveTextContent("38617");
     expect(screen.getByTestId("diagnostics-environment")).toHaveTextContent("PI_OFFLINE");
+  });
+
+  it("shows the live-host target as soft and warns when over it", async () => {
+    installBridge({
+      diagnostics: snapshot({
+        capacity: {
+          liveHosts: 14,
+          targetHosts: 6,
+          ceilingHosts: 8,
+          overTarget: true,
+          hostRssBytes: 9_000_000_000,
+          hostRssLimitBytes: 8_589_934_592,
+          overMemory: true,
+          openSessions: 13,
+          asleepSessions: 1,
+          editorTabs: 2,
+          visibleSessions: 2,
+        },
+      }),
+    });
+    render(<DiagnosticsView />);
+
+    const hosts = await screen.findByTestId("diagnostics-hosts");
+    expect(hosts).toHaveTextContent("14/6 live hosts");
+    expect(hosts).toHaveTextContent("13 open sessions (1 asleep)");
+    expect(hosts).toHaveTextContent("2 editor tabs");
+    expect(hosts).toHaveTextContent("over target");
+    expect(hosts).toHaveTextContent("over memory");
+    expect(hosts).toHaveTextContent("The live-session target is soft");
   });
 
   it("marks a host running an older build", async () => {

@@ -126,6 +126,19 @@ export function workflowBorderClass(mode: WorkflowModeView | null): string {
 }
 
 /**
+ * Text colour for the composer's mode badge: it mirrors the border tone for the
+ * two coloured modes. `Default` keeps the readable faint ink rather than
+ * `text-line`, because `--color-line` is a surface token and is too dim at the
+ * badge's 10 px size.
+ */
+export function workflowBadgeClass(mode: WorkflowModeView | null): string {
+  if (!mode) return "text-ink-faint";
+  if (mode.mode === "build") return "text-accent";
+  if (mode.mode === "plan") return "text-warn";
+  return "text-ink-faint";
+}
+
+/**
  * Short label for the composer's mode badge.
  *
  * Every *recognised* mode has a label, including `Default`: the badge is the
