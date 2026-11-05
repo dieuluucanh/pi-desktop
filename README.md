@@ -3,9 +3,9 @@
 <img src="assets/pi-desktop-logo-full.svg" alt="pi — PI DESKTOP" width="440">
 
 [Website](https://dieuluucanh.github.io/pi-desktop/) ·
-[Downloads](https://dieuluucanh.github.io/pi-desktop/download/) ·
+[Installation](https://dieuluucanh.github.io/pi-desktop/#installation) ·
 [Documentation](https://dieuluucanh.github.io/pi-desktop/docs/) ·
-[Releases](https://dieuluucanh.github.io/pi-desktop/releases/)
+[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.5.0/)
 
 A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global
 installs. Projects, sessions, chat, providers, models, extensions, packages,
@@ -65,7 +65,7 @@ The feature-by-feature comparison with terminal Pi (including the explicit
 
 ## Install
 
-Download the installer for your platform from the [website](https://dieuluucanh.github.io/pi-desktop/download/)
+Download the installer for your platform from the [website](https://dieuluucanh.github.io/pi-desktop/#installation)
 or [GitHub Releases](https://github.com/dieuluucanh/pi-desktop/releases). The Windows NSIS
 installer and portable `.exe` are the primary artefacts; macOS `.dmg`/`.zip`
 (arm64 + x64) and Linux AppImage/`.deb` (x64 + arm64) are beta. Builds are

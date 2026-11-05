@@ -16,10 +16,11 @@ const isCurrent = (link: NavLink): boolean =>
   (link.match ?? []).some((prefix) => pathname === prefix || pathname.startsWith(prefix));
 
 const links: NavLink[] = [
+  { label: "Introduction", href: "/#introduction", spy: "introduction" },
   { label: "Features", href: "/#features", spy: "features" },
   { label: "Screenshots", href: "/#screenshots", spy: "screenshots" },
-  { label: "Download", href: "/download/", match: [withBase("/download/")] },
-  { label: "Releases", href: "/releases/", match: [withBase("/releases/")] },
+  { label: "Installation", href: "/#installation", spy: "installation" },
+  { label: "FAQ", href: "/#faq", spy: "faq" },
   {
     label: "Docs",
     href: "/docs/",
@@ -28,6 +29,7 @@ const links: NavLink[] = [
       withBase("/guide/"),
       withBase("/architecture/"),
       withBase("/product/"),
+      withBase("/releases/"),
       withBase("/privacy/"),
     ],
   },

@@ -161,7 +161,7 @@ public Releases API and rewrites the links to a newer published release when one
 exists; if the request fails, the static links stay. The site is built from `main`
 before the tag is pushed, so in the window between the deploy and the release
 publish the newest version's links can briefly 404 for visitors without
-JavaScript — the API rewrite and the Releases-page link cover the rest. Release
+JavaScript — the API rewrite and the GitHub Releases link cover the rest. Release
 asset names are **not** renamed for the site — they are part of the updater
 manifests and the release guard. The site build checks every internal link and
 anchor against the GitHub Pages base path.

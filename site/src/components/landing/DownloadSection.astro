@@ -14,12 +14,13 @@ const installUrl = (suffix: string): string => staticAssetUrl(version, suffix) |
 ---
 
 <section class="pi-section" id="download" aria-labelledby="pi-download-title">
-  <p class="pi-kicker">Install</p>
+  <p class="pi-kicker">Installation</p>
   <h2 id="pi-download-title">Download for your platform</h2>
   <p class="pi-section__lede">
     Every button downloads the current installer straight from GitHub Releases. No JavaScript is
     needed; the page only uses it to preselect your platform.
   </p>
+  <p data-download-status aria-live="polite" class="pi-download__fine"></p>
   <div class="pi-download-grid pi-platform-grid">
     {PLATFORMS.map((platform) => (
       <article class="pi-download-card" data-platform={platform.id}>
@@ -62,12 +63,12 @@ const installUrl = (suffix: string): string => staticAssetUrl(version, suffix) |
     <a href={RELEASES_FALLBACK} target="_blank" rel="noopener noreferrer">
       All releases, manifests and checksums on GitHub
     </a>
-    · <a href={withBase("/releases/")}>Release notes</a>
+    · <a href={withBase(`/releases/v${version}/`)}>Release notes</a>
   </p>
   <noscript>
     <p>
       The buttons above download the installer directly. Choose the card that matches your machine;
-      the Releases page lists every file.
+      GitHub Releases lists every file.
     </p>
   </noscript>
 </section>

@@ -19,19 +19,25 @@ import manifest from "../data/site.generated.json";
     description:
       "A desktop UI for the Pi coding agent: projects, sessions, an editor, chat, providers, models, extensions and checkpoints, using the same profile as terminal Pi.",
     template: "splash",
+    prev: false,
+    next: false,
   }}
 >
   <div class="pi-landing">
     <Hero version={manifest.version} />
     <TrustStrip />
-    {/* The three menu-linked sections are contiguous and in menu order. */}
-    <FeatureGrid />
+    {/* The product is one page: these wrappers keep the menu anchors grouped. */}
+    <section id="features" aria-label="Features">
+      <FeatureGrid />
+      <ProfileSection />
+    </section>
     <ScreenshotGallery />
-    <DownloadSection version={manifest.version} />
-    <InstallSection />
-    <UpdateTable />
-    <ProfileSection />
-    <FaqSection />
+    <section id="installation" aria-label="Installation">
+      <DownloadSection version={manifest.version} />
+      <InstallSection />
+      <UpdateTable version={manifest.version} />
+    </section>
+    <FaqSection version={manifest.version} />
     <ClosingCta version={manifest.version} />
   </div>
 </StarlightPage>

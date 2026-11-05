@@ -24,8 +24,18 @@ describe("landing page", () => {
     expect(html).toContain("One profile, two front ends");
   });
 
-  it("has feature, screenshot, install and FAQ sections", () => {
-    for (const id of ["features", "screenshots", "download", "install", "faq"]) {
+  it("has introduction, feature, screenshot, installation and FAQ sections", () => {
+    for (const id of [
+      "introduction",
+      "features",
+      "profile",
+      "screenshots",
+      "installation",
+      "download",
+      "install",
+      "updates",
+      "faq",
+    ]) {
       expect(html).toContain(`id="${id}"`);
     }
     expect(html).toContain("Projects and sessions");
@@ -34,36 +44,49 @@ describe("landing page", () => {
     expect(html).toContain("Open Anyway");
     expect(html).toContain("sudo apt install");
     expect(html).toContain("Is Pi Desktop the official Pi app?");
+    expect(html).toContain("Frequently asked questions");
+    expect(html).toContain("data-download-status");
   });
 
   it("orders the landing sections like the product menu", () => {
     let cursor = -1;
     for (const marker of [
+      'id="introduction"',
       'id="features"',
+      'id="profile"',
       'id="screenshots"',
+      'id="installation"',
       'id="download"',
       'id="install"',
+      'id="updates"',
       'id="faq"',
     ]) {
       const index = html.indexOf(marker, cursor + 1);
       expect(index, marker).toBeGreaterThan(cursor);
       cursor = index;
     }
-    expect(html).toContain('id="profile"');
   });
 
   it("links the product surfaces and carries no analytics", () => {
     for (const href of [
-      "/pi-desktop/download/",
+      "/pi-desktop/#introduction",
+      "/pi-desktop/#features",
+      "/pi-desktop/#screenshots",
+      "/pi-desktop/#installation",
+      "/pi-desktop/#faq",
       "/pi-desktop/docs/",
-      "/pi-desktop/releases/",
       "/pi-desktop/privacy/",
+      "/pi-desktop/releases/v0.5.0/",
       "https://github.com/dieuluucanh/pi-desktop",
     ]) {
       expect(html).toContain(href);
     }
+    expect(html).not.toContain('href="/pi-desktop/download/"');
+    expect(html).not.toContain('href="/pi-desktop/releases/"');
     expect(html).toContain('data-download-suffix="win-x64-setup.exe"');
     expect(html).toContain("affiliated");
+    expect(html).not.toContain('rel="prev"');
+    expect(html).not.toContain('rel="next"');
     expect(html).not.toContain("googletagmanager");
     expect(html).not.toContain("goatcounter");
   });

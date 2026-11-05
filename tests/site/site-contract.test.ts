@@ -54,13 +54,34 @@ describe("public site contract", () => {
       "site/src/pages/index.astro",
       "site/src/components/Head.astro",
       "site/src/components/Footer.astro",
-      "site/src/pages/download.astro",
+      "site/src/components/SiteNav.astro",
     ]
       .map(read)
       .join("\n");
     for (const tracker of ["googletagmanager", "plausible", "goatcounter", "gtag("]) {
       expect(siteSource).not.toContain(tracker);
     }
+  });
+
+  it("keeps the product on one page without redirect stubs", () => {
+    expect(exists("site/src/pages/download.astro")).toBe(false);
+    expect(exists("site/src/pages/releases.astro")).toBe(false);
+    expect(exists("site/site")).toBe(false);
+    expect(read("site/astro.config.mjs")).not.toContain("redirects:");
+
+    const index = read("site/src/pages/index.astro");
+    expect(index).toContain('id="installation"');
+    expect(index).toContain("prev: false");
+    expect(index).toContain("next: false");
+
+    const sidebar = read("site/src/data/sidebar.mjs");
+    expect(sidebar).not.toContain('label: "Product"');
+    expect(sidebar).not.toContain('"/download/"');
+    expect(sidebar).not.toContain('"/releases/"');
+
+    const readme = read("README.md");
+    expect(readme).not.toContain("https://dieuluucanh.github.io/pi-desktop/download/");
+    expect(readme).not.toMatch(/pi-desktop\/releases\/(?:[)\s]|$)/);
   });
 
   it("deploys from main and a manual dispatch, not from a release event", () => {

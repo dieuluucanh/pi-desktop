@@ -80,7 +80,7 @@ Next:
 
 ## Public site
 
-Shipped with v0.5.0: the GitHub Pages site in `site/`, the landing/download pages,
+Shipped with v0.5.0: the GitHub Pages site in `site/`, the one-page product site,
 the generated docs and release notes, the privacy page and the Playwright
 screenshot harness. It has no analytics and no custom domain.
 

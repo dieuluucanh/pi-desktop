@@ -24,10 +24,13 @@ describe("docs site UX", () => {
     expect(page).toContain("Edit page");
   });
 
-  it("puts the product nav on docs pages with the base prefix", () => {
+  it("puts the one-page product nav on docs pages with the base prefix", () => {
     const page = readFileSync(join(dist, "guide", "getting-started", "index.html"), "utf8");
     expect(page).toContain('href="/pi-desktop/docs/"');
-    expect(page).toContain('href="/pi-desktop/download/"');
-    expect(page).toContain('href="/pi-desktop/releases/"');
+    expect(page).toContain('href="/pi-desktop/#introduction"');
+    expect(page).toContain('href="/pi-desktop/#installation"');
+    expect(page).toContain('href="/pi-desktop/#faq"');
+    expect(page).not.toContain('href="/pi-desktop/download/"');
+    expect(page).not.toContain('href="/pi-desktop/releases/"');
   });
 });

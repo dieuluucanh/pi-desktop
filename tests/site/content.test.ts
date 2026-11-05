@@ -9,6 +9,7 @@ const read = (relative: string): string =>
 describe("public site content", () => {
   it("ships an accurate hero and status", () => {
     const hero = read("site/src/components/landing/Hero.astro");
+    expect(hero).toContain('id="introduction"');
     expect(hero).toContain("The Pi coding agent");
     expect(hero).toContain("without the terminal");
     expect(hero).toContain("Windows primary");
@@ -49,8 +50,44 @@ describe("public site content", () => {
     expect(install).toContain("apt install");
   });
 
+  it("groups the one-page product into Features, Installation and FAQ", () => {
+    const index = read("site/src/pages/index.astro");
+    expect(index).toContain('id="features"');
+    expect(index).toContain('id="installation"');
+
+    const profile = index.indexOf("<ProfileSection />");
+    const screenshots = index.indexOf("<ScreenshotGallery />");
+    expect(profile).toBeGreaterThan(-1);
+    expect(profile).toBeLessThan(screenshots);
+
+    const download = index.indexOf("<DownloadSection");
+    const install = index.indexOf("<InstallSection />");
+    const updates = index.indexOf("<UpdateTable");
+    const faq = index.indexOf("<FaqSection");
+    expect(download).toBeGreaterThan(-1);
+    expect(download).toBeLessThan(install);
+    expect(install).toBeLessThan(updates);
+    expect(updates).toBeLessThan(faq);
+  });
+
+  it("no longer links the removed product routes from the landing", () => {
+    for (const file of [
+      "site/src/components/landing/Hero.astro",
+      "site/src/components/landing/DownloadSection.astro",
+      "site/src/components/landing/UpdateTable.astro",
+      "site/src/components/Footer.astro",
+    ]) {
+      const source = read(file);
+      expect(source, file).not.toContain('withBase("/download/")');
+      expect(source, file).not.toContain('withBase("/releases/")');
+    }
+  });
+
   it("has a complete FAQ and a clear closing action", () => {
     const faq = read("site/src/components/landing/FaqSection.astro");
+    expect(faq).toContain('<p class="pi-kicker">FAQ</p>');
+    expect(faq).toContain("Frequently asked questions");
+    expect(faq).not.toContain(">Questions<");
     for (const question of [
       "Is Pi Desktop the official Pi app?",
       "Do I need terminal Pi installed?",

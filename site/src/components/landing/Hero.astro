@@ -9,7 +9,7 @@ interface Props {
 const { version } = Astro.props;
 ---
 
-<section class="pi-hero" aria-labelledby="pi-hero-title">
+<section class="pi-hero" id="introduction" aria-labelledby="pi-hero-title">
   <div class="pi-hero__glow" aria-hidden="true"></div>
   <div class="pi-hero__inner">
     <p class="pi-eyebrow">Pi Desktop · v{version}</p>
@@ -33,9 +33,9 @@ const { version } = Astro.props;
       npm or Pi install required
     </p>
     <div class="pi-hero__meta">
-      <a href={withBase("/download/")}>All installers</a>
+      <a href={withBase("/#installation")}>All installers</a>
       <span aria-hidden="true">·</span>
-      <a href={withBase("/releases/")}>Release notes</a>
+      <a href={withBase(`/releases/v${version}/`)}>Release notes</a>
       <span aria-hidden="true">·</span>
       <a href="https://github.com/dieuluucanh/pi-desktop" target="_blank" rel="noopener noreferrer">
         View source

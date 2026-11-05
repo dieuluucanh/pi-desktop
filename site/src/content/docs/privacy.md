@@ -17,7 +17,7 @@ behaviour of the website and the app; it is not a legal contract.
   The page also makes one anonymous, best-effort request to the public GitHub Releases API to pick
   up a newer release. That request carries no account token and no identifier beyond a normal
   HTTPS request; if it fails, the static links still download the build the site was published
-  with, and a Releases link lists every other file.
+  with, and the GitHub Releases link lists every other file.
 - The site loads no remote fonts or CDN assets.
 
 ## The app

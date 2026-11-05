@@ -19,9 +19,9 @@ describe("privacy and footer", () => {
   it("links every support surface from the global footer", () => {
     const footer = read("src/components/Footer.astro");
     for (const href of [
-      "/download/",
+      "/#installation",
+      "/#faq",
       "/docs/",
-      "/releases/",
       "/privacy/",
       "REPO_URL",
       "RELEASES_URL",
@@ -31,5 +31,7 @@ describe("privacy and footer", () => {
       expect(footer).toContain(href);
     }
     expect(footer).toContain("affiliated");
+    expect(footer).not.toContain('withBase("/download/")');
+    expect(footer).not.toContain('withBase("/releases/")');
   });
 });

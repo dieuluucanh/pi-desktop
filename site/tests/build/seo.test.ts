@@ -31,6 +31,12 @@ describe("built SEO output", () => {
       "Sitemap: https://dieuluucanh.github.io/pi-desktop/sitemap-index.xml",
     );
     expect(read("sitemap-index.xml")).toContain("/pi-desktop/");
+    const sitemap = read("sitemap-0.xml");
+    for (const removed of ["download", "features", "screenshots"]) {
+      expect(sitemap).not.toContain(`/pi-desktop/${removed}/</loc>`);
+    }
+    expect(sitemap).not.toContain("/pi-desktop/releases/</loc>");
+    expect(sitemap).toContain("/pi-desktop/releases/v0.5.0/</loc>");
   });
 
   it("ships a 1200x630 OG image", () => {

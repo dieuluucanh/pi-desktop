@@ -25,14 +25,14 @@ function releaseVersion(html: string): string {
   return /<meta name="pi-desktop-release" content="([^"]+)"/.exec(html)?.[1] ?? "";
 }
 
-describe("download page", () => {
-  it("is generated with a direct release-asset link for every installer", () => {
-    expect(existsSync(join(dist, "download", "index.html"))).toBe(true);
-    const html = read("download/index.html");
+describe("installation section", () => {
+  it("is the only page, with a direct release-asset link for every installer", () => {
+    const html = read("index.html");
     const version = releaseVersion(html);
     expect(version).toMatch(/^\d+\.\d+\.\d+$/);
 
     expect(html).toContain('id="download"');
+    expect(html).toContain('id="installation"');
     for (const suffix of SUFFIXES) {
       expect(html).toContain(`data-download-suffix="${suffix}"`);
       expect(html).toContain(
@@ -42,6 +42,14 @@ describe("download page", () => {
     expect(html).toContain("data-download-status");
     expect(html).toContain("https://github.com/dieuluucanh/pi-desktop/releases");
     expect(html).not.toContain('href="https://api.github.com');
+  });
+
+  it("does not ship the removed product pages or redirect stubs", () => {
+    expect(existsSync(join(dist, "download"))).toBe(false);
+    expect(existsSync(join(dist, "features"))).toBe(false);
+    expect(existsSync(join(dist, "screenshots"))).toBe(false);
+    expect(existsSync(join(dist, "releases", "index.html"))).toBe(false);
+    expect(existsSync(join(dist, "releases", "v0.5.0", "index.html"))).toBe(true);
   });
 
   it("gives the landing CTAs the primary installer without JavaScript", () => {
@@ -56,20 +64,16 @@ describe("download page", () => {
   });
 
   it("marks the detected platform on both card grids", () => {
-    for (const page of ["index.html", "download/index.html"]) {
-      const html = read(page);
-      expect(html).toContain('class="pi-download-grid pi-platform-grid"');
-      expect(html).toContain('class="pi-grid pi-grid--three pi-platform-grid"');
-      expect((html.match(/data-platform="/g) ?? []).length).toBe(6);
-      expect((html.match(/class="pi-badge pi-badge--gold pi-platform-flag"/g) ?? []).length).toBe(
-        6,
-      );
-      expect(html).toContain("dataset.detectedOs");
-    }
+    const html = read("index.html");
+    expect(html).toContain('class="pi-download-grid pi-platform-grid"');
+    expect(html).toContain('class="pi-grid pi-grid--three pi-platform-grid"');
+    expect((html.match(/data-platform="/g) ?? []).length).toBe(6);
+    expect((html.match(/class="pi-badge pi-badge--gold pi-platform-flag"/g) ?? []).length).toBe(6);
+    expect(html).toContain("dataset.detectedOs");
   });
 
   it("carries the install and update warnings", () => {
-    const html = read("download/index.html");
+    const html = read("index.html");
     expect(html).toContain("SmartScreen");
     expect(html).toContain("Open Anyway");
     expect(html).toContain("appimage-extract-and-run");

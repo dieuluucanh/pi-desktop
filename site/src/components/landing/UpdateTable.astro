@@ -1,8 +1,14 @@
 ---
 import { withBase } from "../../../site.config.mjs";
+
+interface Props {
+  version: string;
+}
+
+const { version } = Astro.props;
 ---
 
-<section class="pi-section" aria-labelledby="pi-updates-title">
+<section class="pi-section" id="updates" aria-labelledby="pi-updates-title">
   <p class="pi-kicker">Updates</p>
   <h2 id="pi-updates-title">How updates work</h2>
   <div class="pi-table-wrap">
@@ -40,6 +46,6 @@ import { withBase } from "../../../site.config.mjs";
   </div>
   <p class="pi-section__more">
     The reason macOS is manual is the ad-hoc signature: Squirrel.Mac requires a stable signing
-    identity. See <a href={withBase("/releases/v0.5.0/")}>the v0.5.0 notes</a>.
+    identity. See <a href={withBase(`/releases/v${version}/`)}>the v{version} notes</a>.
   </p>
 </section>

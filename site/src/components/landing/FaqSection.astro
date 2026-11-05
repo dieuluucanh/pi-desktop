@@ -1,6 +1,12 @@
 ---
 import { withBase } from "../../../site.config.mjs";
 
+interface Props {
+  version: string;
+}
+
+const { version } = Astro.props;
+
 const faqs = [
   {
     question: "Is Pi Desktop the official Pi app?",
@@ -24,8 +30,7 @@ const faqs = [
   },
   {
     question: "Why does Windows or macOS warn when I install it?",
-    answer:
-      "The v0.5.0 builds are unsigned. Windows SmartScreen: More info → Run anyway. macOS: open the app once, then System Settings → Privacy & Security → Open Anyway. Signing is backlog.",
+    answer: `The v${version} builds are unsigned. Windows SmartScreen: More info → Run anyway. macOS: open the app once, then System Settings → Privacy & Security → Open Anyway. Signing is backlog.`,
   },
   {
     question: "Can extensions do anything they want?",
@@ -41,8 +46,8 @@ const faqs = [
 ---
 
 <section class="pi-section" id="faq" aria-labelledby="pi-faq-title">
-  <p class="pi-kicker">Questions</p>
-  <h2 id="pi-faq-title">The short answers</h2>
+  <p class="pi-kicker">FAQ</p>
+  <h2 id="pi-faq-title">Frequently asked questions</h2>
   <div class="pi-faq">
     {faqs.map((faq) => (
       <details>

@@ -34,19 +34,6 @@ function itemForSource(source) {
 
 export const sidebar = [
   {
-    label: "Product",
-    items: [
-      { label: "Home", link: "/" },
-      // Both are static redirect pages (astro.config.mjs `redirects`) that land
-      // on the home-page sections, because Starlight appends a trailing slash to
-      // a `link` path and would corrupt a `#features` fragment.
-      { label: "Features", link: "/features" },
-      { label: "Screenshots", link: "/screenshots" },
-      { label: "Download", link: "/download/" },
-      { label: "Releases", link: "/releases/" },
-    ],
-  },
-  {
     label: "Documentation",
     items: [
       { label: "Documentation index", slug: slugForSource(DOCS_INDEX_SOURCE) },

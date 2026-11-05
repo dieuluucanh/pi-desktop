@@ -1,7 +1,7 @@
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 import sitemap from "@astrojs/sitemap";
-import { BASE_PATH, SITE_URL, withBase } from "./site.config.mjs";
+import { BASE_PATH, SITE_URL } from "./site.config.mjs";
 import { remarkBase } from "./scripts/remark-base.mjs";
 import { sidebar } from "./src/data/sidebar.mjs";
 
@@ -12,13 +12,6 @@ export default defineConfig({
   site: SITE_URL,
   base: BASE_PATH,
   trailingSlash: "always",
-  // The docs sidebar's Features/Screenshots entries land on home-page sections.
-  // Starlight appends a trailing slash to a sidebar `link`, which would corrupt
-  // `#features`, so the sidebar links to these static redirect pages instead.
-  redirects: {
-    "/features": withBase("/#features"),
-    "/screenshots": withBase("/#screenshots"),
-  },
   markdown: {
     remarkPlugins: [[remarkBase, { base: BASE_PATH }]],
   },

@@ -1,8 +1,7 @@
 # Pi Desktop docs
 
 > **On the web:** [Pi Desktop product site](https://dieuluucanh.github.io/pi-desktop/) ·
-> [Downloads](https://dieuluucanh.github.io/pi-desktop/download/) ·
-> [All release notes](https://dieuluucanh.github.io/pi-desktop/releases/)
+> [Installation](https://dieuluucanh.github.io/pi-desktop/#installation)
 
 ## Product
 
@@ -13,7 +12,7 @@
 - [`product/traceability.md`](product/traceability.md) — requirement → plan step → test/doc
   evidence, so a claim can be traced to something that runs.
 
-## Releases
+## Release notes
 
 - [`releases/v0.5.0.md`](releases/v0.5.0.md) — v0.5.0 release notes (first public,
   cross-platform, auto-updating release: the tag-driven pipeline, the macOS artefacts,
