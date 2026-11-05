@@ -231,6 +231,9 @@ export async function readDiff(
   request: DiffRequest = {},
   options: ReadDiffOptions = {},
 ): Promise<GitDiff> {
+  if (request.untracked) {
+    throw new DiffParseError("git: an untracked diff is read from the work tree");
+  }
   const scope = scopeOf(request);
   const context = options.context ?? 3;
   const core = [

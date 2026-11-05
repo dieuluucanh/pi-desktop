@@ -123,6 +123,22 @@ describe("snapshot", () => {
     expect(callsStartingWith(runner, "rev-list")).toBe(1);
   });
 
+  it("reports a status timeout as timeout, not as a missing repository", async () => {
+    const { service } = serviceWith(
+      repoSpecs({
+        status: { args: ["status"], code: 1, timedOut: true, durationMs: 10_000 },
+      }),
+    );
+
+    const snapshot = await service.snapshot(ROOT);
+
+    expect(snapshot.available).toBe(false);
+    expect(snapshot.reason).toBe("timeout");
+    expect(snapshot.message).toMatch(/did not answer/i);
+    expect(snapshot.message).not.toMatch(/not a git repository/i);
+    expect(snapshot.message).not.toMatch(/credential/i);
+  });
+
   it("reports a plain folder as unavailable with a reason", async () => {
     const { service } = serviceWith([
       { args: ["rev-parse", "--show-toplevel"], code: 128, stderr: "fatal: not a git repository" },
@@ -205,6 +221,44 @@ describe("snapshot", () => {
     const snapshot = await service.snapshot(ROOT);
     expect(snapshot.available).toBe(false);
     expect(typeof snapshot.message).toBe("string");
+  });
+});
+
+describe("untracked diff", () => {
+  it("builds a full-file diff from the injected reader", async () => {
+    const { service } = serviceWith(repoSpecs(), {
+      readUntrackedFile: async (root, path) => {
+        expect(root).toBe(ROOT);
+        expect(path).toBe("feature/new/deep.ts");
+        return { ok: true, text: "export const deep = 1;\n" };
+      },
+    });
+
+    const diff = await service.diff(ROOT, {
+      path: "feature/new/deep.ts",
+      untracked: true,
+    });
+
+    expect(diff.scope).toBe("working");
+    expect(diff.files[0]?.status).toBe("untracked");
+    expect(diff.files[0]?.added).toBe(1);
+    expect(diff.files[0]?.hunks[0]?.header).toBe("-0,0 +1,1");
+  });
+
+  it("refuses when no reader is wired", async () => {
+    const { service } = serviceWith(repoSpecs());
+    await expect(service.diff(ROOT, { path: "new.ts", untracked: true })).rejects.toThrow(
+      /cannot be read here/,
+    );
+  });
+
+  it("throws when the file vanished", async () => {
+    const { service } = serviceWith(repoSpecs(), {
+      readUntrackedFile: async () => ({ ok: false, reason: "missing" }),
+    });
+    await expect(service.diff(ROOT, { path: "new.ts", untracked: true })).rejects.toThrow(
+      /no longer there/,
+    );
   });
 });
 
@@ -850,5 +904,29 @@ describe("against a real repository", () => {
     const staged = await fixture.git(["diff", "--cached", "--", "hunks.txt"]);
     expect(staged).toContain("+line TWO");
     expect(staged).not.toContain("+line THIRTY-EIGHT");
+  });
+
+  it("lists and stages a file inside a brand-new folder", async () => {
+    if (fixture.skipReason) return;
+    const runner = createNodeGitRunner();
+    const service = createGitService({ runner, now: () => Date.now() });
+
+    await fixture.write("feature/new/deep.ts", "export const deep = 1;\n");
+
+    const snapshot = await service.snapshot(fixture.root, { fresh: true });
+    expect(snapshot.changed).toContainEqual(
+      expect.objectContaining({ path: "feature/new/deep.ts", status: "untracked" }),
+    );
+
+    // `knownPaths` re-reads status with the same argv; a folder record would
+    // have made this a `pathspec` refusal.
+    const staged = await service.action(fixture.root, {
+      kind: "stage",
+      paths: ["feature/new/deep.ts"],
+    });
+    expect(staged.ok, JSON.stringify(staged.error)).toBe(true);
+    expect(
+      (await service.snapshot(fixture.root, { fresh: true })).staged.map((entry) => entry.path),
+    ).toContain("feature/new/deep.ts");
   });
 });

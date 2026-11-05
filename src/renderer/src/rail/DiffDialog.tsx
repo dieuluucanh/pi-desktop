@@ -65,7 +65,9 @@ function Hunk({ file, hunkIndex }: { file: GitDiffFile; hunkIndex: number }) {
   const hunk = file.hunks[hunkIndex];
   if (!hunk || !state) return null;
   const staged = state.diff.scope === "staged";
-  const readOnly = state.diff.scope === "commit";
+  // A new file has no index side, so there is no hunk to apply: only the
+  // Changes row's whole-file Stage action is meaningful for an untracked file.
+  const readOnly = state.diff.scope === "commit" || file.status === "untracked";
 
   const apply = async (): Promise<void> => {
     const result = await runGitAction(state.projectPath, {

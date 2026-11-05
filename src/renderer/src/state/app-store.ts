@@ -5409,7 +5409,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       const diff = await api.diff(projectPath, request);
       set({ gitDiff: { projectPath, request, diff }, gitDiffLoading: false });
     } catch (error) {
-      set({ gitDiffLoading: false });
+      // Clearing the diff also closes the dialog: leaving the previous file's
+      // diff up would show content the click did not ask for. The failure is
+      // visible in the rail's error line instead.
+      set({ gitDiff: null, gitDiffLoading: false });
       get().noteFailure(error);
     }
   },

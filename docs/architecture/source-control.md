@@ -28,6 +28,45 @@ everything platform-shaped arrives as a port:
 (`BrowserWindow.isFocused`, the live Office registry, the tab table,
 `window-all-closed` teardown).
 
+## Reading `git status`
+
+The rail asks git for **`status --porcelain=v2 --branch -z --untracked-files=all`**
+(plus `--ignore-submodules=dirty`). `-uall` is not an optimisation detail: git's
+default `-unormal` collapses every untracked directory into one `? <dir>/`
+record, and a trailing-slash path is refused by `isSafeRepoPath` (an empty final
+segment), so a file an agent just created in a brand-new folder would disappear
+before the renderer saw it. VS Code passes `-uall` for the same reason. A
+remaining `? <path>/` record can only be a **nested repository** (git refuses to
+descend into another repository); `parseStatus` skips it deliberately. This app
+does not discover nested repositories, so listing a non-diffable folder row that
+stages a gitlink would be worse than leaving it to the Explorer.
+
+The snapshot is capped at `MAX_STATUS_PATHS` (2 000) with `truncated: true`, and
+the Changes block says so instead of pretending the list is complete. The status
+read has its own **10 s budget** (`GIT_STATUS_READ_TIMEOUT_MS`); the cheap
+`rev-parse`/config/stash probes keep their 2 s budget. A read that times out is
+reported as `GitUnavailableReason: "timeout"` — never as `not_a_repo` — so the
+empty state says _Git did not answer_ and does **not** offer _Initialize
+repository_ to a folder that is already a repository.
+
+**An untracked file's diff is synthesised.** `git diff` has no index side for it,
+so `src/git/untracked.ts` reads the work-tree bytes through the editor's own
+`readWorkspaceContent` (realpath containment, the 2 MB `MAX_DIFF_BYTES` product
+cap, UTF-8 BOM stripping, and binary/UTF-16 detection all live there once) and
+builds one all-added file section: header `-0,0 +1,N`, every line an `add`, a
+trailing `\ No newline at end of file` when the file has none, and no
+`patchOldPath`/`patchNewPath`. Binary files become one honest "binary" row;
+an oversized file becomes the viewer's existing too-large notice. No hunk
+staging is offered for an untracked file: a partial new file is not a sound index
+state, so staging is whole-file from the Changes row. The engine only sees the
+read through the injected `readUntrackedFile` port (`src/main/index.ts` wires the
+shared `createNodeWorkspaceIo`), so `src/git/**` stays filesystem-free.
+
+The two groups are rendered in **path order** (`orderFiles` in
+`rail/changes-view.ts`), not git's order. Sorting is a view decision: the engine
+stays faithful to git's output, while the rail matches VS Code's SCM list and
+stops untracked files from being appended below a long list of modifications.
+
 ## Never touch the project's `.git`
 
 A checkpoint is a commit in a **bare repository under the Pi profile**:
@@ -233,6 +272,16 @@ _Stage all_ never doubles as a fold. Stashes start collapsed — three stashes u
 to cost four rows in a column that also has to show changed files — while
 _Stash changes_ stays outside the fold, because stashing is what you do while
 looking at a change.
+
+**Rows act where they read.** Clicking a row's path (or its _Show diff_ icon)
+opens the diff for the side that group represents: the index side under _Staged
+Changes_, the work tree under _Changes_, and the synthesised full-file addition
+for an untracked file. The hover actions are _Show diff_, _Open file_,
+_Stage_/_Unstage_, and _Discard_. _Open file_ is hidden for a `deleted` path,
+because there is no work-tree file to open; _Discard_ is hidden on a staged-only
+row, because the service's revert has no work-tree edit to undo. The rows are
+rendered in path order (`orderFiles`), not git's order, so a newly created file
+cannot sink below a long list of modifications.
 
 ## Network actions: one status, one toast
 

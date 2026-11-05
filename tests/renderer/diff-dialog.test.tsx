@@ -203,4 +203,13 @@ describe("hunk staging", () => {
     expect(screen.queryByRole("button", { name: /Stage hunk/i })).not.toBeInTheDocument();
     expect(screen.getByText("Commit")).toBeInTheDocument();
   });
+
+  it("offers no hunk action for an untracked file", () => {
+    seed({ files: [file({ status: "untracked" })] });
+    render(<DiffDialog />);
+    // The badge is U and the content is readable, but a new file has no index
+    // side, so only the row's whole-file Stage action is meaningful.
+    expect(screen.getByTestId("diff-file-src/a.ts")).toHaveTextContent("U");
+    expect(screen.queryByRole("button", { name: /stage hunk/i })).not.toBeInTheDocument();
+  });
 });

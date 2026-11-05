@@ -182,12 +182,12 @@ describe("readRepo with a fake runner", () => {
     expect(result.repo?.head).toBe("deadbee");
   });
 
-  it("reports a timeout as not_a_repo with a detail", async () => {
+  it("reports a timeout as timeout with a detail", async () => {
     const runner = createFakeGitRunner([
       { args: ["rev-parse", "--show-toplevel"], timedOut: true, code: 1 },
     ]);
     const result = await readRepo(runner, "/repo");
-    expect(result.reason).toBe("not_a_repo");
+    expect(result.reason).toBe("timeout");
     expect(result.detail).toMatch(/timed out/);
   });
 });

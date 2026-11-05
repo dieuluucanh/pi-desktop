@@ -66,7 +66,7 @@ export async function readRepo(
   const top = await runner.run(cwd, ["rev-parse", "--show-toplevel"], { timeoutMs });
   if (top.missing) return { available: false, reason: "git_missing" };
   if (top.timedOut) {
-    return { available: false, reason: "not_a_repo", detail: "git rev-parse timed out" };
+    return { available: false, reason: "timeout", detail: "git rev-parse timed out" };
   }
   const root = line(top.stdout);
   if (top.code !== 0 || root === null) {

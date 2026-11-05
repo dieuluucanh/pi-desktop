@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { launchFakeApp, type FakeApp } from "./fixtures/fake-app";
@@ -251,6 +251,60 @@ test.describe("source control", () => {
       // the only way it disappears is the trash.
       expect(existsSync(target)).toBe(false);
     }
+  });
+
+  test("lists, diffs and stages a file inside a brand-new folder", async () => {
+    app = await launchFakeApp();
+    initRepo(app.projectDir);
+
+    await app.window
+      .getByRole("button", { name: /new session/i })
+      .first()
+      .click();
+    await expect(app.window.getByLabel("Prompt")).toBeVisible({ timeout: 30_000 });
+    await openRail(app, "source-control");
+
+    // Create the folder *after* the rail has settled, so the poll is what finds
+    // it — exactly the "agent created a new module" case.
+    mkdirSync(join(app.projectDir, "feature", "new"), { recursive: true });
+    writeFileSync(join(app.projectDir, "feature", "new", "deep.ts"), "export const deep = 1;\n");
+
+    const row = app.window.getByTestId("change-row-feature/new/deep.ts");
+    await expect(row).toBeVisible({ timeout: 20_000 });
+    await expect(row.getByTestId("status-feature/new/deep.ts")).toHaveText("U");
+
+    // The count is derived from the same sanitized list, so it must include the
+    // new file. Compare against the rendered rows (the seeded project also has
+    // a `.pi/` directory, so an absolute number would be environment-dependent).
+    const rendered = await app.window.locator('[data-testid^="change-row-"]').count();
+    await expect(app.window.getByTestId("changes-count")).toHaveText(String(rendered));
+
+    // The untracked diff is the whole file, and it offers no hunk staging.
+    await app.window.getByTestId("change-path-feature/new/deep.ts").click();
+    const diff = app.window.getByTestId("diff-file-feature/new/deep.ts");
+    await expect(diff).toBeVisible({ timeout: 15_000 });
+    await expect(diff).toContainText("export const deep = 1;");
+    await expect(app.window.getByRole("button", { name: /stage hunk/i })).toHaveCount(0);
+    await app.window.getByRole("button", { name: "Close diff" }).click();
+
+    // Stage and commit through the rail, then verify the real repository.
+    await app.window.getByRole("button", { name: "Stage feature/new/deep.ts" }).click();
+    await expect(
+      app.window.getByTestId("changes-group-staged").getByTestId("change-row-feature/new/deep.ts"),
+    ).toBeVisible({ timeout: 15_000 });
+
+    await app.window.getByLabel(/commit message/i).fill("feat: add the deep module");
+    await app.window
+      .getByRole("button", { name: /commit (all|staged)|^commit$/i })
+      .first()
+      .click();
+
+    await expect
+      .poll(() => git(app!.projectDir, ["log", "-1", "--format=%B"]).trim(), { timeout: 20_000 })
+      .toBe("feat: add the deep module");
+    expect(git(app.projectDir, ["ls-files", "--error-unmatch", "feature/new/deep.ts"])).toContain(
+      "feature/new/deep.ts",
+    );
   });
 });
 

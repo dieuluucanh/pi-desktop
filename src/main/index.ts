@@ -92,6 +92,7 @@ import { projectConfigFromPrefs, readConfig } from "../checkpoints/config";
 import { DEFAULT_CHECKPOINT_CONFIG, checkpointsRoot } from "../shared/checkpoints";
 import { createNodeGitRunner } from "../git/runner";
 import { createGitService } from "../git/service";
+import { readUntrackedSource } from "../git/untracked";
 import { requireProjectPath } from "../shared/git";
 import { createDiagnosticsService } from "./diagnostics-service";
 import { createElectronUpdatePort } from "./electron-updater";
@@ -1071,6 +1072,17 @@ const checkpointService = createCheckpointService({
  * `shell.trashItem` makes an untracked discard recoverable, and a plain `stat`
  * is the folder probe the availability reasons need.
  */
+/**
+ * One Node filesystem adapter shared by the editor and the untracked-file diff.
+ * Both go through the same containment guard and the same binary heuristic, so
+ * a new file cannot be text in one view and binary in the other.
+ */
+const workspaceIo = createNodeWorkspaceIo({
+  trash: async (target) => {
+    await shell.trashItem(target);
+  },
+});
+
 const gitEngine = createGitService({
   runner: createNodeGitRunner(),
   pathKind: async (target) => {
@@ -1097,6 +1109,9 @@ const gitEngine = createGitService({
   // D11: a destructive action snapshots first. A throw aborts the action — a
   // safety snapshot that cannot be taken must not be silently skipped.
   preOpSnapshot: (projectPath, note) => checkpointService.snapshotBefore(projectPath, note),
+  // The synthetic untracked diff reuses the editor's reader: containment,
+  // binary/UTF-16 detection and the read cap all live in one place.
+  readUntrackedFile: (root, path) => readUntrackedSource(workspaceIo, root, path),
 });
 
 const gitPush = createGitPushService({
@@ -1116,11 +1131,7 @@ const gitPush = createGitPushService({
  * injected port so the service stays Electron-free and unit-testable.
  */
 const workspaceService = createWorkspaceService({
-  io: createNodeWorkspaceIo({
-    trash: async (target) => {
-      await shell.trashItem(target);
-    },
-  }),
+  io: workspaceIo,
   backupsDir: paths.editorBackups,
   reveal: (target) => {
     shell.showItemInFolder(target);

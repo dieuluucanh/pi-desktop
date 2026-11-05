@@ -362,6 +362,16 @@ describe("sanitizeGitSnapshot", () => {
     expect(snapshot.message).toMatch(/not installed/i);
   });
 
+  it("keeps a timeout reason and fills in its message", () => {
+    const snapshot = sanitizeGitSnapshot({
+      projectPath: "/x",
+      available: false,
+      reason: "timeout",
+    });
+    expect(snapshot.reason).toBe("timeout");
+    expect(snapshot.message).toMatch(/did not answer/i);
+  });
+
   it("drops unsafe files and preserves the cap", () => {
     const snapshot = sanitizeGitSnapshot({
       projectPath: "/repo",
