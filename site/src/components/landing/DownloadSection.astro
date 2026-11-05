@@ -17,8 +17,10 @@ const installUrl = (suffix: string): string => staticAssetUrl(version, suffix) |
   <p class="pi-kicker">Installation</p>
   <h2 id="pi-download-title">Download for your platform</h2>
   <p class="pi-section__lede">
-    Every button downloads the current installer straight from GitHub Releases. No JavaScript is
-    needed; the page only uses it to preselect your platform.
+    Every button downloads an installer straight from GitHub Releases. No JavaScript is needed to
+    download; the page uses it to preselect your platform and to follow the newest published
+    release. While a new release is still publishing, the buttons keep the current published
+    installer and the status line says so.
   </p>
   <p data-download-status aria-live="polite" class="pi-download__fine"></p>
   <div class="pi-download-grid pi-platform-grid">

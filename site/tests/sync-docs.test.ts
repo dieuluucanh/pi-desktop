@@ -14,9 +14,9 @@ import {
 } from "../scripts/sync-docs.mjs";
 
 const source = "docs/guide/getting-started.md";
-const packageJson = JSON.parse(
-  readFileSync(join(DEFAULT_REPO_ROOT, "package.json"), "utf8"),
-) as { version: string };
+const packageJson = JSON.parse(readFileSync(join(DEFAULT_REPO_ROOT, "package.json"), "utf8")) as {
+  version: string;
+};
 const currentVersion = packageJson.version;
 
 describe("docs sync", () => {
@@ -54,9 +54,9 @@ describe("docs sync", () => {
     );
     expect(rewriteLink("projects.md", source, DEFAULT_REPO_ROOT)).toBe("/guide/projects/");
     expect(rewriteLink("../README.md", source, DEFAULT_REPO_ROOT)).toBe("/docs/");
-    expect(rewriteLink("../../LICENSE", `docs/releases/v${currentVersion}.md`, DEFAULT_REPO_ROOT)).toBe(
-      "https://github.com/dieuluucanh/pi-desktop/blob/main/LICENSE",
-    );
+    expect(
+      rewriteLink("../../LICENSE", `docs/releases/v${currentVersion}.md`, DEFAULT_REPO_ROOT),
+    ).toBe("https://github.com/dieuluucanh/pi-desktop/blob/main/LICENSE");
     expect(rewriteLink("https://pi.dev", source, DEFAULT_REPO_ROOT)).toBe("https://pi.dev");
     expect(rewriteLink("#updates", source, DEFAULT_REPO_ROOT)).toBe("#updates");
   });

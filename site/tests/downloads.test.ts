@@ -4,11 +4,13 @@ import { PLATFORMS } from "../src/data/platforms";
 import {
   assetFileName,
   assetSuffixes,
+  compareReleaseVersions,
   detectTarget,
   isAllowedAssetUrl,
   isValidReleaseVersion,
   parseLatestRelease,
   selectAssets,
+  shouldCacheLatestRelease,
   staticAssetUrl,
   DOWNLOAD_PREFIX,
   type ReleaseAsset,
@@ -93,6 +95,35 @@ describe("static installer URLs", () => {
       expect(staticAssetUrl(invalid, "win-x64-setup.exe"), invalid).toBe("");
     }
     expect(isValidReleaseVersion("1.0.0-beta.2")).toBe(true);
+  });
+});
+
+describe("release version ordering", () => {
+  it("does not treat an older published release as an upgrade", () => {
+    expect(compareReleaseVersions("0.6.0", "0.5.0")).toBeGreaterThan(0);
+    expect(compareReleaseVersions("0.5.0", "0.6.0")).toBeLessThan(0);
+    expect(compareReleaseVersions("0.6.0", "0.6.0")).toBe(0);
+    // Numeric, not lexical: the reported failure involved a comparison of this shape.
+    expect(compareReleaseVersions("0.10.0", "0.9.0")).toBeGreaterThan(0);
+    // A final release is newer than its own prerelease.
+    expect(compareReleaseVersions("1.0.0", "1.0.0-beta.2")).toBeGreaterThan(0);
+    expect(compareReleaseVersions("1.0.0-beta.2", "1.0.0")).toBeLessThan(0);
+  });
+
+  it("only caches the build version or a newer published release", () => {
+    expect(shouldCacheLatestRelease("0.6.0", "0.6.0")).toBe(true);
+    expect(shouldCacheLatestRelease("0.6.0", "0.7.0")).toBe(true);
+    // The exact reported case: the site built for 0.6.0, the API still said 0.5.0.
+    expect(shouldCacheLatestRelease("0.6.0", "0.5.0")).toBe(false);
+    expect(shouldCacheLatestRelease("0.6.0", "v0.6.0")).toBe(false);
+    expect(shouldCacheLatestRelease("0.6.0", "1.0")).toBe(false);
+  });
+
+  it("returns null for versions it cannot order", () => {
+    for (const invalid of ["", "v0.6.0", "1.0", "0.6", "../x", "0.6.0/extra"]) {
+      expect(compareReleaseVersions(invalid, "0.6.0"), invalid).toBeNull();
+      expect(compareReleaseVersions("0.6.0", invalid), invalid).toBeNull();
+    }
   });
 });
 

@@ -1,16 +1,20 @@
 import {
   assetSuffixes,
+  compareReleaseVersions,
   detectTarget,
   isAllowedAssetUrl,
   parseLatestRelease,
   selectAssets,
+  shouldCacheLatestRelease,
   staticAssetUrl,
   type DetectedTarget,
   type ReleaseAsset,
 } from "../lib/downloads";
 
 const API_URL = "https://api.github.com/repos/dieuluucanh/pi-desktop/releases/latest";
-const CACHE_KEY = "pi-desktop:latest-release:v1";
+// v2 discards every v1 value written before the version gate existed. A v1
+// visitor would otherwise keep a behind-build answer for the full TTL.
+const CACHE_KEY = "pi-desktop:latest-release:v2";
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const RELEASE_META = 'meta[name="pi-desktop-release"]';
 
@@ -30,12 +34,17 @@ interface UserAgentData {
   }>;
 }
 
-function readCache(): unknown | null {
+function readCache(buildVersion: string): unknown | null {
   try {
     const raw = sessionStorage.getItem(CACHE_KEY);
     if (!raw) return null;
     const cached = JSON.parse(raw) as CachedRelease;
     if (Date.now() - cached.fetchedAt > CACHE_TTL_MS) return null;
+    // A behind-build answer is never cached by this script, but defend against
+    // one written by an older page in the same tab: it must be re-fetched, not
+    // reused, or the next load would keep the old release after publish.
+    const release = parseLatestRelease(cached.value);
+    if (release && !shouldCacheLatestRelease(buildVersion, release.version)) return null;
     return cached.value;
   } catch {
     return null;
@@ -97,11 +106,13 @@ function applyTarget(target: DetectedTarget | null, version: string): void {
 
 /**
  * Phase 2: replace the build-time links with the newest *published* release.
- * Every URL is allowlisted before it reaches an `href`.
+ * Every URL is allowlisted before it reaches an `href`. `status` is computed by
+ * the caller so the normal and publishing states cannot drift.
  */
 function applyAssets(
   release: { version: string; assets: ReleaseAsset[] },
   target: DetectedTarget | null,
+  status: string,
 ): void {
   for (const element of document.querySelectorAll<HTMLAnchorElement>("[data-download-suffix]")) {
     const suffix = element.dataset.downloadSuffix ?? "";
@@ -122,7 +133,7 @@ function applyAssets(
     element.dataset.downloadResolved = "true";
   }
 
-  setStatus(`Latest release v${release.version}${target ? ` · ${target.label}` : ""}`);
+  setStatus(status);
 }
 
 /**
@@ -145,11 +156,14 @@ async function fetchLatest(): Promise<unknown | null> {
     const response = await fetch(API_URL, {
       headers: { Accept: "application/vnd.github+json" },
       credentials: "omit",
+      // GitHub's API is cacheable for a minute; a stale HTTP response would
+      // delay the switch to the newly published release just like the session
+      // cache used to. The behind-build answer is not written to sessionStorage,
+      // so the next load always revalidates.
+      cache: "no-store",
     });
     if (!response.ok) return null;
-    const value: unknown = await response.json();
-    writeCache(value);
-    return value;
+    return (await response.json()) as unknown;
   } catch {
     return null;
   }
@@ -159,9 +173,31 @@ async function enhance(version: string, initial: DetectedTarget | null): Promise
   const target = (await refineTarget(initial)) ?? initial;
   if (target) applyTarget(target, version);
 
-  const raw = readCache() ?? (await fetchLatest());
+  // A cached behind-build answer is rejected by readCache, so this fetches
+  // again while the release is still publishing. Once latest >= build, the
+  // answer is cached for the normal ten minutes.
+  const raw = readCache(version) ?? (await fetchLatest());
   const release = parseLatestRelease(raw);
-  if (release) applyAssets(release, target);
+  if (!release) return;
+
+  const comparison = compareReleaseVersions(version, release.version);
+  if (comparison === null) return;
+
+  const platform = target ? ` · ${target.label}` : "";
+  if (comparison < 0) {
+    // The build version is ahead of the newest published release: the release
+    // is still publishing. Keep the newest installer that actually exists and
+    // say so; do not cache it, so the next load sees the new release.
+    applyAssets(
+      release,
+      target,
+      `Latest published v${release.version} · v${version} is publishing${platform}`,
+    );
+    return;
+  }
+
+  if (shouldCacheLatestRelease(version, release.version)) writeCache(raw);
+  applyAssets(release, target, `Latest release v${release.version}${platform}`);
 }
 
 if (typeof window !== "undefined") {

@@ -157,14 +157,20 @@ deploy already carries the release content.
 The site's installer buttons link directly at the versioned release assets
 (`…/releases/download/v<version>/Pi-Desktop-<version>-<suffix>`), so they download
 without JavaScript. A small client script then makes one anonymous request to the
-public Releases API and rewrites the links to a newer published release when one
-exists; if the request fails, the static links stay. The site is built from `main`
-before the tag is pushed, so in the window between the deploy and the release
-publish the newest version's links can briefly 404 for visitors without
-JavaScript — the API rewrite and the GitHub Releases link cover the rest. Release
-asset names are **not** renamed for the site — they are part of the updater
-manifests and the release guard. The site build checks every internal link and
-anchor against the GitHub Pages base path.
+public Releases API and applies the newest **published** release. It never treats
+an older release as an upgrade: if `releases/latest` is behind the version the
+page was built for (the normal window between the Pages deploy and the release
+publish), the buttons keep the newest installer that actually exists and the
+status line says `Latest published v<old> · v<new> is publishing`. That
+behind-build answer is deliberately not cached, so the next load after `publish`
+switches to the new release; a release at or ahead of the build is cached for ten
+minutes. If the request fails, the static build links stay. The site is built
+from `main` before the tag is pushed, so in that window the newest version's links
+can briefly 404 for visitors without JavaScript; with JavaScript the page offers
+the previous published installer and names the pending version instead of
+silently presenting it as latest. Release asset names are **not** renamed for the
+site — they are part of the updater manifests and the release guard. The site
+build checks every internal link and anchor against the GitHub Pages base path.
 
 One-time setup: Settings → Pages → Source = **GitHub Actions**. The site build
 regenerates docs from `docs/`; never edit generated content under
@@ -185,9 +191,13 @@ beta`, `Upstream` and `Verified structurally, not on a live machine`; update the
    a moved tag.
 7. Install from the published URL on each platform you can reach and record what you did
    not verify.
-8. Confirm the site shows the new version and its release-notes page, and that the primary
-   download resolves to the new installer. If the site lags (for example a tag was cut from a
-   commit that never reached `main`), run the Pages `workflow_dispatch` and investigate why.
+8. Confirm `https://api.github.com/repos/dieuluucanh/pi-desktop/releases/latest` returns
+   the new tag first, then the site shows the new version and its release-notes page, and the
+   primary download resolves to the new installer. If the release run is still uploading, the
+   site intentionally keeps the previous published installer and says `v<new> is publishing`;
+   that is not a site failure. If the site lags after `releases/latest` has advanced (for example
+   a tag was cut from a commit that never reached `main`), run the Pages `workflow_dispatch`
+   and investigate why.
 
 ## Failure modes this pipeline is built against
 

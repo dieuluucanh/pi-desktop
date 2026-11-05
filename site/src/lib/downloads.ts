@@ -34,6 +34,60 @@ export function isValidReleaseVersion(value: string): boolean {
   return RELEASE_VERSION_PATTERN.test(value);
 }
 
+const RELEASE_VERSION_PARTS = /^(\d+)\.(\d+)\.(\d+)(?:[-.]([0-9A-Za-z.-]+))?$/;
+
+interface ParsedReleaseVersion {
+  core: readonly [number, number, number];
+  prerelease: string | null;
+}
+
+function parseReleaseVersion(value: string): ParsedReleaseVersion | null {
+  const match = RELEASE_VERSION_PARTS.exec(value);
+  if (!match) return null;
+  const [, major = "", minor = "", patch = "", prerelease] = match;
+  return {
+    core: [Number.parseInt(major, 10), Number.parseInt(minor, 10), Number.parseInt(patch, 10)],
+    prerelease: prerelease ?? null,
+  };
+}
+
+/**
+ * Orders two release versions (`major.minor.patch`, optional `-prerelease`).
+ * Returns <0 when `left` is older, 0 when equal, >0 when newer, and null when
+ * either value is not a release version this repository publishes.
+ *
+ * The numeric core is compared first, so `0.10.0` is newer than `0.9.0`; a
+ * release without a prerelease is newer than the same core with one. This is
+ * intentionally small: the site only needs to know whether an API answer is
+ * behind the version it was built for.
+ */
+export function compareReleaseVersions(left: string, right: string): number | null {
+  const a = parseReleaseVersion(left);
+  const b = parseReleaseVersion(right);
+  if (!a || !b) return null;
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (a.core[index] ?? 0) - (b.core[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  if (a.prerelease === b.prerelease) return 0;
+  if (a.prerelease === null) return 1;
+  if (b.prerelease === null) return -1;
+  return a.prerelease.localeCompare(b.prerelease);
+}
+
+/**
+ * True when a published release may be cached. A release older than the page's
+ * build version is still applied (it is the newest installer that actually
+ * exists), but it must not be cached: the next load has to see the new release
+ * once the publishing run finishes.
+ */
+export function shouldCacheLatestRelease(buildVersion: string, latestVersion: string): boolean {
+  // `compareReleaseVersions(build, latest)` is negative when the API release is
+  // newer than the build, zero when equal, positive when it is older.
+  const comparison = compareReleaseVersions(buildVersion, latestVersion);
+  return comparison !== null && comparison <= 0;
+}
+
 /** The file name the release workflow publishes for an installer suffix. */
 export function assetFileName(version: string, suffix: string): string {
   return `Pi-Desktop-${version}-${suffix}`;
