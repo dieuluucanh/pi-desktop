@@ -49,33 +49,33 @@ drift from the terminal.
 
 ## Gap matrix (terminal 1.4.0 → desktop)
 
-| Area                     | Terminal                                     | Desktop before this work                                                    | Owning step |
-| ------------------------ | -------------------------------------------- | --------------------------------------------------------------------------- | ----------- |
-| Turn plumbing            | no rows                                      | ✅ silent, state-only (step 3)                                              | 3           |
-| Stop reasons             | aborted/error/length notes                   | ✅ rendered once per turn                                                   | 3           |
-| Resume roles             | compaction/branch/bash/toolResult            | ✅ every role mapped; toolResult hidden                                     | 4           |
-| Tool calls               | one row                                      | ✅ visible in content order; one record per call                            | 5           |
-| Aborted tools            | cancelled rows                               | ✅ swept + cancelled, with previews                                         | 6           |
-| Tool previews            | read/grep/bash previews                      | ✅ 10-line preview + "N more lines"                                         | 6           |
-| Bash `!`/`!!`            | host-executed, streams                       | ✅ `user_bash` → `executeBash`, `!!` excluded                               | 7           |
-| Command prompts          | skill blocks collapse; injected prompts full | ✅ host-tagged command row collapsed by default; setting/Ctrl+O/row reveals | 2026-10-26  |
-| Retry                    | countdown + cancel                           | ✅ countdown row + Esc/Cancel                                               | 8           |
-| Compaction               | spinner + cancel                             | ✅ status row + `session.abortCompaction`                                   | 8           |
-| Queue                    | pending rows + Alt+Up                        | ✅ pending rows, Alt+Up, Ctrl+Q/Alt+Enter, live modes                       | 9           |
-| Streaming follow         | pinned + jump-to-latest                      | ✅ content-size follow + jump pill + Ctrl+End                               | 10          |
-| Find                     | Ctrl+Shift+F                                 | ✅ Ctrl+F, inline marks, next/prev (remappable)                             | 11          |
-| Copy last / session info | `/copy`, `/session`                          | ✅ `/copy`, Ctrl+X outside editor, `/session`                               | 12          |
-| Clone / extension switch | works                                        | ✅ leaf fork fallback; replaced sessions rehydrate                          | 13          |
-| JSONL                    | export/import                                | ✅ `/export jsonl`, `/import` with confirmation                             | 14          |
-| Changelog/hotkeys/quit   | commands                                     | ✅ `/changelog`, `/hotkeys`, `/quit`                                        | 15          |
-| Session browser          | scope/sort/named/path/regex                  | ✅ scope tabs, sort cycle, named/path, re:/phrase                           | 16          |
-| Session tree             | filters/fold/labels/search                   | ✅ filters, fold, search, label times, summary prompt                       | 17          |
-| Share/bug                | gist or Radius; zip                          | ✅ secret gist + local redacted zip (no Radius)                             | 18          |
-| Mermaid/LaTeX            | setting + renderer                           | ✅ KaTeX + lazy Mermaid (off/final/streaming)                               | 19          |
-| Paste markers            | collapsed pastes                             | ✅ marker + memory body + content-lost hint                                 | 20          |
-| External editor          | Ctrl+G                                       | ✅ in-app editor + shell-free OS editor                                     | 21          |
-| Keybindings              | all actions remappable                       | ✅ Pi actions + desktop registry + capture UI                               | 22-24       |
-| Updates                  | self + extensions                            | 🚧 Phase G deferred (desktop app only)                                      | 25-28       |
+| Area                     | Terminal                                     | Desktop before this work                                                                                    | Owning step |
+| ------------------------ | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ----------- |
+| Turn plumbing            | no rows                                      | ✅ silent, state-only (step 3)                                                                              | 3           |
+| Stop reasons             | aborted/error/length notes                   | ✅ rendered once per turn                                                                                   | 3           |
+| Resume roles             | compaction/branch/bash/toolResult            | ✅ every role mapped; toolResult hidden                                                                     | 4           |
+| Tool calls               | one row                                      | ✅ visible in content order; one record per call                                                            | 5           |
+| Aborted tools            | cancelled rows                               | ✅ swept + cancelled, with previews                                                                         | 6           |
+| Tool previews            | read/grep/bash previews                      | ✅ 10-line preview + "N more lines"                                                                         | 6           |
+| Bash `!`/`!!`            | host-executed, streams                       | ✅ `user_bash` → `executeBash`, `!!` excluded; no built-in shell menu, extension providers may still answer | 7           |
+| Command prompts          | skill blocks collapse; injected prompts full | ✅ host-tagged command row collapsed by default; setting/Ctrl+O/row reveals                                 | 2026-10-26  |
+| Retry                    | countdown + cancel                           | ✅ countdown row + Esc/Cancel                                                                               | 8           |
+| Compaction               | spinner + cancel                             | ✅ status row + `session.abortCompaction`                                                                   | 8           |
+| Queue                    | pending rows + Alt+Up                        | ✅ pending rows, Alt+Up, Ctrl+Q/Alt+Enter, live modes                                                       | 9           |
+| Streaming follow         | pinned + jump-to-latest                      | ✅ content-size follow + jump pill + Ctrl+End                                                               | 10          |
+| Find                     | Ctrl+Shift+F                                 | ✅ Ctrl+F, inline marks, next/prev (remappable)                                                             | 11          |
+| Copy last / session info | `/copy`, `/session`                          | ✅ `/copy`, Ctrl+X outside editor, `/session`                                                               | 12          |
+| Clone / extension switch | works                                        | ✅ leaf fork fallback; replaced sessions rehydrate                                                          | 13          |
+| JSONL                    | export/import                                | ✅ `/export jsonl`, `/import` with confirmation                                                             | 14          |
+| Changelog/hotkeys/quit   | commands                                     | ✅ `/changelog`, `/hotkeys`, `/quit`                                                                        | 15          |
+| Session browser          | scope/sort/named/path/regex                  | ✅ scope tabs, sort cycle, named/path, re:/phrase                                                           | 16          |
+| Session tree             | filters/fold/labels/search                   | ✅ filters, fold, search, label times, summary prompt                                                       | 17          |
+| Share/bug                | gist or Radius; zip                          | ✅ secret gist + local redacted zip (no Radius)                                                             | 18          |
+| Mermaid/LaTeX            | setting + renderer                           | ✅ KaTeX + lazy Mermaid (off/final/streaming)                                                               | 19          |
+| Paste markers            | collapsed pastes                             | ✅ marker + memory body + content-lost hint                                                                 | 20          |
+| External editor          | Ctrl+G                                       | ✅ in-app editor + shell-free OS editor                                                                     | 21          |
+| Keybindings              | all actions remappable                       | ✅ Pi actions + desktop registry + capture UI                                                               | 22-24       |
+| Updates                  | self + extensions                            | 🚧 Phase G deferred (desktop app only)                                                                      | 25-28       |
 
 ## Terminal reference anchors
 

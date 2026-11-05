@@ -38,6 +38,7 @@ import {
 } from "../../../shared/session-grid";
 import type { WorkspaceEntryKind } from "../../../shared/workspace";
 import { workspaceMention } from "../../../shared/workspace-drag";
+import { isExcludedShellCommand, isShellCommand } from "../../../shared/shell-command";
 import { MAX_BLOB_BYTES, MAX_RETAINED_BLOBS, maxRetainedTranscripts } from "./retention";
 import { isTabDragActive } from "./tab-drag-session";
 import type { CustomProviderInput, CustomProviderSummary } from "../../../shared/custom-providers";
@@ -3519,8 +3520,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
    */
   sendPrompt: async (tabId, text, options = {}) => {
     const trimmedInput = text.trim();
-    if (trimmedInput.startsWith("!")) {
-      const excludeFromContext = trimmedInput.startsWith("!!");
+    if (isShellCommand(trimmedInput)) {
+      const excludeFromContext = isExcludedShellCommand(trimmedInput);
       const command = trimmedInput.slice(excludeFromContext ? 2 : 1).trim();
       if (command.length === 0) return false;
       const api = bridge();

@@ -18,7 +18,6 @@ import { useTuiViewport } from "../tui/use-tui-viewport";
 import { createCommandProvider } from "../completion/command-source";
 import { createDocumentProvider } from "../completion/document-source";
 import { createFileProvider } from "../completion/file-source";
-import { createShellProvider } from "../completion/shell-source";
 import { documentMentionsForHost } from "../../../shared/office-documents";
 import { createCompletionProvider } from "../completion/stack";
 import type { CompletionItem, CompletionSuggestions } from "../completion/types";
@@ -160,7 +159,6 @@ export function SessionView({ tabId }: { tabId: string }) {
             completeAppCommandArguments(tabId, request.name, request.prefix),
         }),
         file: createFileProvider({ loadFiles: () => loadFiles(tabId) }),
-        shell: createShellProvider({ loadFiles: () => loadFiles(tabId) }),
         document: createDocumentProvider(documentMentionSource(tabId)),
         extension: {
           suggest: (request) => extensionCompletion(tabId, request),

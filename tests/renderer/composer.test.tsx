@@ -649,6 +649,28 @@ describe("caret readout", () => {
 });
 
 describe("shell mode", () => {
+  it("advertises ! shell in the idle placeholder", () => {
+    renderComposer();
+    expect(screen.getByLabelText("Prompt")).toHaveAttribute(
+      "placeholder",
+      "Ask Pi to change something…  / commands · ! shell · @ files · # documents",
+    );
+  });
+
+  it("lets Tab cycle a shortcut on a shell line when no menu is open", () => {
+    const onInvokeShortcut = vi.fn();
+    renderComposer({
+      draft: "!git status",
+      extensionShortcuts: [{ key: "tab" }],
+      onInvokeShortcut,
+    });
+
+    fireEvent.keyDown(screen.getByLabelText("Prompt"), { key: "Tab" });
+    expect(onInvokeShortcut).toHaveBeenCalledTimes(1);
+    expect(onInvokeShortcut).toHaveBeenCalledWith("tab");
+    expect(screen.queryByTestId("completion-overlay")).toBeNull();
+  });
+
   it("names the mode and explains whether output stays in context", () => {
     const { rerender, props } = renderComposer({ draft: "!git status" });
     expect(screen.getByTestId("composer-shell-mode")).toHaveTextContent(

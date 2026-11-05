@@ -9,6 +9,7 @@ import { useAppStore } from "../state/app-store";
 import { sameFolder } from "../../../shared/rail-scope";
 import type { WorkspaceEntryKind } from "../../../shared/workspace";
 import { insertWorkspaceMention, workspaceMention } from "../../../shared/workspace-drag";
+import { isExcludedShellCommand, isShellCommand } from "../../../shared/shell-command";
 import { isExternalFileDrag, isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
 import { isTabDrag } from "../layout/tab-drag";
 import {
@@ -285,8 +286,8 @@ export function Composer({
   const handledMentionRef = useRef<number | null>(null);
 
   const queued = [...queue.steering, ...queue.followUp];
-  const bashMode = draft.trimStart().startsWith("!");
-  const shellExcluded = draft.trimStart().startsWith("!!");
+  const bashMode = isShellCommand(draft);
+  const shellExcluded = isExcludedShellCommand(draft);
   const registerPaste = useAppStore((state) => state.registerPaste);
   const pasteBodies = useAppStore((state) => state.pasteBodies[tabId]);
   // A marker restored from a previous launch has no body: say so, because the
@@ -609,7 +610,7 @@ export function Composer({
                   : enabled
                     ? running
                       ? "Type to steer the run — Enter steers, Alt+Enter queues a follow-up…"
-                      : "Ask Pi to change something…  / commands · @ files · # documents"
+                      : "Ask Pi to change something…  / commands · ! shell · @ files · # documents"
                     : "This session is not running — start it above to send a prompt."
             }
             disabled={!enabled}

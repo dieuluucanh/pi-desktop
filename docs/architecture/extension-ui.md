@@ -32,7 +32,7 @@ of the SDK's `ExtensionUIContext` appears here.
 | `getToolsExpanded` / `setToolsExpanded`                           | transcript tool-card expansion (`oi.state` + `oi.setToolsExpanded`)                                     | the app owns `Ctrl+O`; the host’s copy stays truthful                                                                                                                                                                  |
 | `pasteToEditor` / `setEditorText`                                 | composer mirror (`oi.editorText`)                                                                       | renderer reports its buffer back, debounced per tab                                                                                                                                                                    |
 | `getEditorText`                                                   | the mirror                                                                                              | **eventually consistent** — the host cannot read a textarea synchronously                                                                                                                                              |
-| `addAutocompleteProvider`                                         | the composer’s completion stack (`completion.suggest` / `apply`)                                        | the host runs `factory(current)`; the renderer sends its `/`, `@`, `#` result as `current`                                                                                                                             |
+| `addAutocompleteProvider`                                         | the composer’s completion stack (`completion.suggest` / `apply`)                                        | the host runs `factory(current)`; the renderer sends its `/`, `@`, `#` result as `current` (or `null` on a shell line)                                                                                                 |
 | `onTerminalInput`                                                 | first shot at keys in the TUI surface                                                                   | runs before the surface’s own handling                                                                                                                                                                                 |
 | `custom(factory, opts)`                                           | the TUI surface (`tui.state` frames)                                                                    | `overlay`/`overlayOptions`/`onHandle` supported; returns `undefined` when nothing is shown                                                                                                                             |
 | `setFooter` / `setHeader`                                         | `setFooter` replaces the built-in session footer; `setHeader` renders a TUI frame in the session column | the factory’s component is rendered per frame; a custom footer owns the statuses (it receives the `FooterDataProvider`)                                                                                                |
@@ -40,6 +40,13 @@ of the SDK's `ExtensionUIContext` appears here.
 | `theme` / `getAllThemes` / `getTheme` / `setTheme`                | host theme + `oi.theme`                                                                                 | `setTheme` installs the theme in the host process and persists Pi’s `theme` setting                                                                                                                                    |
 
 | `shortcuts` (registered via `pi.registerShortcut`) | the composer’s Tab cycle and the session’s other chords (`shortcuts.list` / `shortcuts.invoke`) | checked before the editor’s own handling, as in Pi; the list is listed per tab on activation |
+
+A `!` / `!!` shell line intentionally has **no built-in completion source**,
+matching terminal Pi. The extension chain is still called with the built-in
+result `null`, so an extension that supports `!` still opens its menu; otherwise
+the composer shows no list and Tab reaches a registered shortcut (the Workflow
+mode cycle). This is not a shell-line block on extensions: `/`, `@`, `#` and `!`
+all still flow through `factory(current)`.
 
 `ExtensionContextActions` (`getModel`, `getScopedModels`, `isIdle`,
 `isProjectTrusted`, `getSignal`, `getContextUsage`, `compact`, `getSystemPrompt`,

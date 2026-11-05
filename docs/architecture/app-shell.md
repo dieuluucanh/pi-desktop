@@ -668,9 +668,9 @@ and the renderer all read it, so a budget change is one edit.
   the mode now).
 - `tests/renderer/composer.test.tsx` — Enter vs Shift+Enter, IME safety, the
   one-Send streaming model (Enter steers, Alt+Enter queues a follow-up), the hint
-  row, the workflow mode border/badge (always visible, announced, focus ring does
-  not mask it) and Tab dispatch to a registered extension shortcut before
-  completion.
+  row, the `! shell` placeholder, the workflow mode border/badge (always visible,
+  announced, focus ring does not mask it), Tab dispatch to a registered extension
+  shortcut before completion, and no built-in completion menu on a shell line.
 - `tests/renderer/session-events.test.ts` — the reducer, including the
   hidden-item boundary: a `display: false` custom message is dropped (live and on
   reload), and the rule never keys on `customType`.

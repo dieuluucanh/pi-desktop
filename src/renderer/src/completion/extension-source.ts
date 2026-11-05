@@ -9,7 +9,10 @@
  * returns whatever the renderer's built-in sources produced for this keystroke.
  *
  * The renderer's own `/`, `@` and `#` sources still run first and locally; the
- * host is consulted after them and wins only when it returns suggestions.
+ * host is consulted after them and wins only when it returns suggestions. A
+ * `!`/`!!` shell line has no built-in source (the local result is null), but the
+ * host is still consulted so an extension can opt into `!` completion just as it
+ * can in terminal Pi.
  */
 
 import {
