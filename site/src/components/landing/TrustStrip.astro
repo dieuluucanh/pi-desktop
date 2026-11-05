@@ -19,15 +19,20 @@ const items = [
 <style>
   .pi-trust {
     border-block: 1px solid var(--sl-color-hairline, #d8d2c2);
+    column-gap: 0.75rem;
     display: grid;
-    gap: 0.75rem;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     margin: 2rem 0;
     padding: 1rem 0;
+    row-gap: 0.15rem;
   }
   .pi-trust__item {
     display: grid;
-    gap: 0.15rem;
+    /* Subgrid keeps the label row and detail row aligned across items, even
+       when "Same profile as terminal Pi" wraps to two lines. The row rhythm
+       comes from .pi-trust's row-gap, so the item must not set its own gap. */
+    grid-row: span 2;
+    grid-template-rows: subgrid;
   }
   .pi-trust__item strong {
     color: var(--pi-text);
@@ -40,6 +45,7 @@ const items = [
   @media (max-width: 42rem) {
     .pi-trust {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+      row-gap: 0.75rem;
     }
   }
 </style>

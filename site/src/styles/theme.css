@@ -130,6 +130,22 @@ body:has(.pi-landing) .content-panel:has(> .sl-container > h1#_top) {
   padding-inline: 1rem;
 }
 
+/* Starlight's markdown flow adds margin-top to adjacent non-inline siblings.
+   Our grid/flex containers use gap for spacing, so reset it there; otherwise
+   the first card or trust item sits 1rem higher than its neighbours. */
+.pi-hero > *,
+.pi-trust > *,
+.pi-grid > *,
+.pi-download-grid > *,
+.pi-gallery > *,
+.pi-faq > *,
+.pi-profile > *,
+.pi-closing > *,
+.pi-download-card__head > *,
+.pi-download-card__alternates > * {
+  margin-top: 0;
+}
+
 .pi-kicker,
 .pi-eyebrow {
   color: var(--pi-link);
@@ -143,6 +159,8 @@ body:has(.pi-landing) .content-panel:has(> .sl-container > h1#_top) {
 .pi-hero {
   overflow: hidden;
   padding: 4.5rem 0 3rem;
+  /* The glow is the banner background; keep the copy off its left/right edges. */
+  padding-inline: clamp(1.25rem, 4vw, 3rem);
   position: relative;
 }
 
@@ -289,6 +307,14 @@ body:has(.pi-landing) .content-panel:has(> .sl-container > h1#_top) {
   gap: 1rem;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-top: 2rem;
+}
+
+/* Share the tallest card across every row so the first row cannot be taller
+   than the rest. Single-column mobile keeps natural card heights. */
+@media (min-width: 40.0625rem) {
+  .pi-grid {
+    grid-auto-rows: 1fr;
+  }
 }
 
 .pi-grid--three {
@@ -711,11 +737,40 @@ header.header > .header {
 }
 
 .site-title {
-  height: calc(var(--pi-nav-bar-height) - 2 * var(--sl-nav-pad-y));
+  --pi-logo-size: calc(var(--pi-nav-bar-height) - 2 * var(--sl-nav-pad-y));
+  height: var(--pi-logo-size);
+}
+
+/* Starlight sizes the logo against --sl-nav-height, which includes the second
+   product-nav row. That makes the image taller than the 4rem bar and the title
+   wrapper clips its top and bottom. Override only the height; Starlight's
+   width/max-width/object-fit declarations still apply because this file is
+   unlayered. */
+.site-title img {
+  height: var(--pi-logo-size);
 }
 
 .sl-menu-button {
   top: calc((var(--pi-nav-bar-height) - var(--sl-menu-button-size)) / 2);
+}
+
+/* Starlight 0.42.8 puts search in the flexible middle grid column and the theme
+   group in the right column. Move the theme group into the flexible column and
+   pin search to the rightmost column, so search sits to its right. */
+@media (min-width: 50em) {
+  header.header > .header > .right-group {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  header.header > .header > div:has(> site-search) {
+    grid-column: 3;
+    grid-row: 1;
+    justify-self: end;
+    min-width: 0;
+    width: min(22rem, 34vw);
+  }
 }
 
 .pi-site-nav {
