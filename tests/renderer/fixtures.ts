@@ -1,4 +1,7 @@
 import type { AppInfo, PiDesktopBridge, WebTabOpenInput } from "../../src/shared/ipc";
+import type { CreateTabInput } from "../../src/shared/session-ipc";
+import type { TerminalCreateInput } from "../../src/shared/terminal-ipc";
+import type { TerminalProfileSnapshot } from "../../src/shared/terminal-profiles";
 import { HOST_METHODS } from "../../src/shared/host-protocol";
 import type { DiagnosticsSnapshot } from "../../src/shared/diagnostics";
 import type {
@@ -143,6 +146,8 @@ export interface BridgeOptions {
   /** Folder checkpoints (git-checkpoint plan step 21). */
   checkpoints?: CheckpointState;
   checkpointsAction?: CheckpointActionResult;
+  /** Shell profiles the terminal bridge reports. */
+  terminalProfiles?: TerminalProfileSnapshot;
 }
 
 export interface BridgeHandles {
@@ -157,6 +162,10 @@ export interface BridgeHandles {
   updateCalls: string[];
   /** Every git bridge call, in order, with its payload. */
   gitCalls: Array<{ kind: string; projectPath: string; payload?: unknown }>;
+  /** Every terminal:create request, in order. */
+  terminalCalls: TerminalCreateInput[];
+  /** Every session:create request, in order. */
+  sessionCreateCalls: CreateTabInput[];
   checkpointCalls: Array<{ kind: string; projectPath: string; payload?: unknown }>;
   emitCheckpointState: (state: CheckpointState) => void;
   emitWebState(state: WebTabState): void;
@@ -194,6 +203,13 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
 
   const gitListeners = new Set<(snapshot: GitSnapshot) => void>();
   const gitCalls: Array<{ kind: string; projectPath: string; payload?: unknown }> = [];
+  const terminalCalls: TerminalCreateInput[] = [];
+  const sessionCreateCalls: CreateTabInput[] = [];
+  const terminalProfiles: TerminalProfileSnapshot = options.terminalProfiles ?? {
+    profiles: [],
+    defaultProfileId: null,
+    problems: [],
+  };
   const checkpointCalls: Array<{ kind: string; projectPath: string; payload?: unknown }> = [];
   const checkpointListeners = new Set<(state: CheckpointState) => void>();
   const checkpointValue: CheckpointState =
@@ -231,6 +247,21 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
     relaunch: async () => true,
     onWindowState: () => () => undefined,
     onMenuCommand: () => () => undefined,
+    terminal: {
+      create: async (input) => {
+        terminalCalls.push(input);
+        return { kind: "unavailable", message: "unused", profiles: [] };
+      },
+      attach: async () => null,
+      write: async () => undefined,
+      resize: async () => undefined,
+      close: async () => false,
+      ack: () => undefined,
+      list: async () => [],
+      profiles: async () => terminalProfiles,
+      setFocus: () => undefined,
+      onEvent: () => () => undefined,
+    },
     prefs: {
       get: async () => ({ ...prefs }),
       set: async (patch) => {
@@ -240,7 +271,10 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
     },
     sessions: {
       list: async () => ({ tabs: [], activeTabId: null }),
-      create: async () => ({ tabs: [], activeTabId: null }),
+      create: async (input) => {
+        sessionCreateCalls.push(input);
+        return { tabs: [], activeTabId: null };
+      },
       close: async () => ({ tabs: [], activeTabId: null }),
       closeAll: async (kind) => ({
         tabs: useAppStore.getState().tabs.filter((tab) => tab.kind !== kind || tab.pinned === true),
@@ -602,6 +636,8 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
   return {
     bridge,
     prefs,
+    terminalCalls,
+    sessionCreateCalls,
     gitCalls,
     emitGitSnapshot: (snapshot: GitSnapshot) => {
       for (const listener of gitListeners) listener(snapshot);

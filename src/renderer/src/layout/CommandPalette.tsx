@@ -97,6 +97,15 @@ export function CommandPalette() {
                 onSelect={() => run(newSessionAction)}
               />
               <PaletteItem
+                label="New terminal"
+                shortcut="Ctrl+Shift+T"
+                onSelect={() => run(() => void useAppStore.getState().createSessionTab("terminal"))}
+              />
+              <PaletteItem
+                label="Terminal: select default profile…"
+                onSelect={() => run(() => useAppStore.getState().openTerminalSettings())}
+              />
+              <PaletteItem
                 label="Open project…"
                 shortcut="Ctrl+O"
                 onSelect={() => run(() => void openProjectAction())}

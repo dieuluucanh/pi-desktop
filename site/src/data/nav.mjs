@@ -34,6 +34,7 @@ export const NAV_GROUPS = [
     label: "Architecture",
     sources: [
       "docs/architecture/app-shell.md",
+      "docs/architecture/terminal.md",
       "docs/architecture/editor-and-explorer.md",
       "docs/architecture/host-protocol.md",
       "docs/architecture/extension-ui.md",

@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import type { AppInfo, WebTabOpenInput } from "../../../shared/ipc";
 import type { BlobRef, HostMethod } from "../../../shared/host-protocol";
 import { DEFAULT_PREFS, type UiPrefs } from "../../../shared/prefs";
+import { mergeTerminalPrefs, type TerminalPrefs } from "../../../shared/terminal-prefs";
 import {
   findProject,
   projectNameOf,
@@ -766,15 +767,19 @@ export interface AppStateShape {
   /** Opens the Extensions hub on the Integrations card. */
   focusIntegrations: () => void;
   clearExtensionsFocus: () => void;
-  /** The Settings section to reveal after navigation (About & updates). */
-  settingsFocus: "updates" | null;
+  /** The Settings section to reveal after navigation. */
+  settingsFocus: "updates" | "terminal" | null;
   /** Opens Settings on the About & updates card, optionally starting a check. */
   openUpdateSettings: (options?: { check?: boolean }) => void;
+  /** Opens Settings on the Terminal card. */
+  openTerminalSettings: () => void;
   clearSettingsFocus: () => void;
   openPalette: () => void;
   closePalette: () => void;
   togglePalette: () => void;
   setPrefs: (patch: Partial<UiPrefs>) => void;
+  /** Merges and persists terminal prefs, resolving after main has applied them. */
+  setTerminalPrefs: (patch: Partial<TerminalPrefs>) => Promise<TerminalPrefs>;
   /** Persists a display-zoom level (clamped by the shared helper). */
   setZoomFactor: (factor: number) => void;
   zoomIn: () => void;
@@ -1469,7 +1474,7 @@ export interface AppStateShape {
   /** Flips expand-all for a tab and mirrors it to `ctx.ui.getToolsExpanded()`. */
   toggleToolsExpanded: (tabId: string) => void;
 
-  createSessionTab: (kind?: TabKind) => Promise<void>;
+  createSessionTab: (kind?: TabKind, options?: { profileId?: string }) => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
 
   /** The session view grid (2026-11-03 plan): preset, panes, focus and solo. */
@@ -2052,6 +2057,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     set({ view: "settings", settingsFocus: "updates", hint: null });
     if (options?.check) void get().checkForUpdates();
   },
+  openTerminalSettings: () => set({ view: "settings", settingsFocus: "terminal", hint: null }),
   clearSettingsFocus: () => set({ settingsFocus: null }),
   openPalette: () => set({ paletteOpen: true }),
   closePalette: () => set({ paletteOpen: false }),
@@ -2061,6 +2067,21 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const prefs = { ...get().prefs, ...patch };
     set({ prefs });
     void bridge()?.prefs.set(patch);
+  },
+
+  setTerminalPrefs: async (patch) => {
+    const terminal = mergeTerminalPrefs(get().prefs.terminal, patch);
+    set({ prefs: { ...get().prefs, terminal } });
+    const api = bridge();
+    if (!api?.prefs) return terminal;
+    try {
+      const saved = await api.prefs.set({ terminal });
+      set({ prefs: saved });
+      return saved.terminal;
+    } catch (error) {
+      get().noteFailure(error);
+      return get().prefs.terminal;
+    }
   },
 
   setZoomFactor: (factor) => get().setPrefs({ zoomFactor: clampZoomFactor(factor) }),
@@ -5878,7 +5899,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (source) get().requestPackageInstall(source, summary.scope, cwd);
   },
 
-  createSessionTab: async (kind) => {
+  createSessionTab: async (kind, options) => {
     const { project, setHint } = get();
     const api = bridge();
     if (!project) {
@@ -5891,6 +5912,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
     const input: CreateTabInput = { cwd: project.path };
     if (kind && kind !== "session") input.kind = kind;
+    if (kind === "terminal" && options?.profileId) input.profileId = options.profileId;
     // Project defaults now live in the project's `.pi/settings.json` when its
     // settings toggle is on; the session manager reads them at creation.
     // A project answered “Trust once” this run is passed the session-only grant so

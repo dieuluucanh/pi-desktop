@@ -21,6 +21,12 @@ files:
   - package.json
   - "!**/*.map"
 
+# `node-pty` 1.x is N-API, so its prebuilt binaries are ABI-stable across the
+# bundled Node 24 and Electron. Rebuilding would produce unsigned binaries that
+# some antivirus engines flag, and would overwrite the prebuild the bundled
+# runtime loads. `afterPack` prunes the tarball to this platform/arch.
+npmRebuild: false
+
 # The Pi host runs under the *bundled* Node (never Electron), which has no asar
 # support: `require()`/`import` inside the host resolve against real paths only.
 # So every module the host can load at runtime has to be a real file on disk —

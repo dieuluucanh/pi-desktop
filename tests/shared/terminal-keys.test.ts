@@ -4,6 +4,8 @@ import {
   bracketedPaste,
   domKeyToTerminalData,
   domWheelToTerminalData,
+  terminalKeyDecision,
+  type TerminalKeyContext,
 } from "../../src/shared/terminal-keys";
 
 /**
@@ -78,5 +80,150 @@ describe("domWheelToTerminalData", () => {
 
   it("clamps negative pointer cells to the first row/column", () => {
     expect(domWheelToTerminalData({ deltaY: 1, col: -5, row: -5 })).toBe("\x1b[<65;1;1M");
+  });
+});
+
+describe("terminalKeyDecision", () => {
+  const win: TerminalKeyContext = {
+    platform: "win32",
+    hasSelection: false,
+    copyOnSelection: false,
+  };
+  const mac: TerminalKeyContext = { ...win, platform: "darwin" };
+  const decision = (input: Parameters<typeof terminalKeyDecision>[0], context = win) =>
+    terminalKeyDecision(input, context);
+
+  it("sends the shell's own chords to the pty on Windows/Linux", () => {
+    for (const key of ["n", "p", "b", "g", "l", "r", "d", "z", "k", "a", "e"]) {
+      expect(decision({ key, ctrlKey: true })).toEqual({ kind: "pty" });
+    }
+    expect(decision({ key: "Tab" })).toEqual({ kind: "pty" });
+    expect(decision({ key: "Escape" })).toEqual({ kind: "pty" });
+    expect(decision({ key: "b", altKey: true })).toEqual({ kind: "pty" });
+    expect(decision({ key: "[", ctrlKey: true })).toEqual({ kind: "pty" });
+  });
+
+  it("claims only the curated Windows/Linux app chords", () => {
+    expect(decision({ key: "c", ctrlKey: true, shiftKey: true })).toEqual({
+      kind: "app",
+      action: "copy",
+    });
+    expect(decision({ key: "v", ctrlKey: true, shiftKey: true })).toEqual({
+      kind: "app",
+      action: "paste",
+    });
+    expect(decision({ key: "v", ctrlKey: true })).toEqual({ kind: "app", action: "paste" });
+    expect(decision({ key: "Insert", ctrlKey: true })).toEqual({ kind: "app", action: "copy" });
+    expect(decision({ key: "Insert", shiftKey: true })).toEqual({ kind: "app", action: "paste" });
+    expect(decision({ key: "f", ctrlKey: true, shiftKey: true })).toEqual({
+      kind: "app",
+      action: "find",
+    });
+    expect(decision({ key: "p", ctrlKey: true, shiftKey: true })).toEqual({
+      kind: "app",
+      action: "command-palette",
+    });
+    expect(decision({ key: "k", ctrlKey: true, shiftKey: true })).toEqual({
+      kind: "app",
+      action: "clear",
+    });
+    expect(decision({ key: "w", ctrlKey: true })).toEqual({
+      kind: "app",
+      action: "close-terminal",
+    });
+    expect(decision({ key: "Tab", ctrlKey: true })).toEqual({
+      kind: "app",
+      action: "next-tab",
+    });
+    expect(decision({ key: "Tab", ctrlKey: true, shiftKey: true })).toEqual({
+      kind: "app",
+      action: "previous-tab",
+    });
+    expect(decision({ key: "`", ctrlKey: true })).toEqual({
+      kind: "app",
+      action: "toggle-terminal",
+    });
+    expect(decision({ key: "`", ctrlKey: true, shiftKey: true })).toEqual({
+      kind: "app",
+      action: "new-terminal",
+    });
+    expect(decision({ key: "=", ctrlKey: true })).toEqual({ kind: "app", action: "zoom-in" });
+    expect(decision({ key: "-", ctrlKey: true })).toEqual({ kind: "app", action: "zoom-out" });
+    expect(decision({ key: "0", ctrlKey: true })).toEqual({ kind: "app", action: "zoom-reset" });
+  });
+
+  it("copies Ctrl+C only when a selection is there and copyOnSelection is on", () => {
+    expect(decision({ key: "c", ctrlKey: true })).toEqual({ kind: "pty" });
+    expect(decision({ key: "c", ctrlKey: true }, { ...win, hasSelection: true })).toEqual({
+      kind: "pty",
+    });
+    expect(
+      decision({ key: "c", ctrlKey: true }, { ...win, hasSelection: true, copyOnSelection: true }),
+    ).toEqual({ kind: "app", action: "copy" });
+    expect(
+      decision({ key: "c", ctrlKey: true }, { ...win, hasSelection: false, copyOnSelection: true }),
+    ).toEqual({ kind: "pty" });
+  });
+
+  it("leaves Meta chords to the OS on Windows/Linux", () => {
+    expect(decision({ key: "c", metaKey: true })).toEqual({ kind: "ignore" });
+    expect(decision({ key: "n", metaKey: true })).toEqual({ kind: "ignore" });
+  });
+
+  it("uses Cmd for the app chords on macOS", () => {
+    expect(decision({ key: "c", metaKey: true }, mac)).toEqual({ kind: "app", action: "copy" });
+    expect(decision({ key: "v", metaKey: true }, mac)).toEqual({ kind: "app", action: "paste" });
+    expect(decision({ key: "a", metaKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "select-all",
+    });
+    expect(decision({ key: "f", metaKey: true }, mac)).toEqual({ kind: "app", action: "find" });
+    expect(decision({ key: "k", metaKey: true }, mac)).toEqual({ kind: "app", action: "clear" });
+    expect(decision({ key: "w", metaKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "close-terminal",
+    });
+    expect(decision({ key: "`", metaKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "toggle-terminal",
+    });
+    expect(decision({ key: "`", metaKey: true, shiftKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "new-terminal",
+    });
+    expect(decision({ key: "+", metaKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "zoom-in",
+    });
+    expect(decision({ key: "0", metaKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "zoom-reset",
+    });
+    expect(decision({ key: "p", metaKey: true, shiftKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "command-palette",
+    });
+  });
+
+  it("leaves Cmd+N, Cmd+Q and Cmd+Tab with the menu and the OS", () => {
+    expect(decision({ key: "n", metaKey: true }, mac)).toEqual({ kind: "ignore" });
+    expect(decision({ key: "q", metaKey: true }, mac)).toEqual({ kind: "ignore" });
+    expect(decision({ key: "Tab", metaKey: true }, mac)).toEqual({ kind: "ignore" });
+    expect(decision({ key: "p", metaKey: true }, mac)).toEqual({ kind: "ignore" });
+  });
+
+  it("sends Ctrl chords to the shell on macOS, including SIGINT", () => {
+    expect(decision({ key: "c", ctrlKey: true }, mac)).toEqual({ kind: "pty" });
+    expect(decision({ key: "n", ctrlKey: true }, mac)).toEqual({ kind: "pty" });
+    expect(decision({ key: "b", ctrlKey: true }, mac)).toEqual({ kind: "pty" });
+    expect(decision({ key: "Tab", ctrlKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "next-tab",
+    });
+    expect(decision({ key: "c", ctrlKey: true, shiftKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "copy",
+    });
+    expect(decision({ key: "b", altKey: true }, mac)).toEqual({ kind: "pty" });
   });
 });

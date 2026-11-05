@@ -36,6 +36,10 @@ interface ItemSpec {
 
 const FILE_ITEMS: readonly ItemSpec[] = [
   { command: "new-session", label: "New Session", accelerator: "CmdOrCtrl+N" },
+  { command: "new-terminal", label: "New Terminal", accelerator: "CmdOrCtrl+Shift+T" },
+  // Menu accelerators are suppressed while a terminal has focus, so Ctrl+J can
+  // also be the shell's newline without ambiguity.
+  { command: "toggle-terminal", label: "Toggle Terminal", accelerator: "CmdOrCtrl+J" },
   // `Ctrl+O` is Pi's `app.tools.expand` (plan step 18), so Open Project moves to
   // Shift+O; otherwise the menu accelerator would swallow the expand key before
   // the renderer ever sees it.

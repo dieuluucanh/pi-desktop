@@ -55,6 +55,8 @@ export interface RuntimeResolution {
   npmCommand: string[] | null;
   /** The `out/host/index.mjs` bundle the shims and the supervisor execute. */
   piHostPath: string;
+  /** The `out/host/terminal.mjs` bundle the PTY supervisor executes. */
+  terminalHostPath: string;
   problems: string[];
   hint: string | null;
 }
@@ -82,6 +84,18 @@ function resolveHostEntry(env: RuntimeEnvironment): string {
   return env.isPackaged
     ? join(env.resourcesPath, "app.asar.unpacked", "out", "host", "index.mjs")
     : join(env.appRoot, "out", "host", "index.mjs");
+}
+
+/**
+ * The terminal host has its own bundle (it must never link the Pi SDK). It ships
+ * beside the Pi host and resolves through the same packaged/dev rule.
+ */
+function resolveTerminalEntry(env: RuntimeEnvironment): string {
+  const override = env.env.PI_DESKTOP_TERMINAL_ENTRY?.trim();
+  if (override) return override;
+  return env.isPackaged
+    ? join(env.resourcesPath, "app.asar.unpacked", "out", "host", "terminal.mjs")
+    : join(env.appRoot, "out", "host", "terminal.mjs");
 }
 
 function buildCandidates(
@@ -145,6 +159,7 @@ export function resolveRuntime(env: RuntimeEnvironment): RuntimeResolution {
   const binDir = join(runtimeDir, "bin");
   const nodeDir = join(runtimeDir, "node", target);
   const piHostPath = resolveHostEntry(env);
+  const terminalHostPath = resolveTerminalEntry(env);
   const problems: string[] = [];
 
   let selected: Candidate | null = null;
@@ -185,6 +200,7 @@ export function resolveRuntime(env: RuntimeEnvironment): RuntimeResolution {
       npmCliPath: null,
       npmCommand: null,
       piHostPath,
+      terminalHostPath,
       problems,
       hint: "Run `npm run runtime:fetch` to install the bundled Node runtime (add --force to repair an existing one).",
     };
@@ -217,6 +233,7 @@ export function resolveRuntime(env: RuntimeEnvironment): RuntimeResolution {
     npmCliPath: selected.npmCliPath,
     npmCommand: selected.npmCommand,
     piHostPath,
+    terminalHostPath,
     problems,
     hint: null,
   };
@@ -239,6 +256,7 @@ export function runtimeEnvOverrides(
 ): Record<string, string> {
   const overrides: Record<string, string> = {
     PI_DESKTOP_HOST_ENTRY: resolution.piHostPath,
+    PI_DESKTOP_TERMINAL_ENTRY: resolution.terminalHostPath,
     PATH: joinPathEntries(
       [resolution.binDir, resolution.nodeBinDir, input.basePath],
       input.platform,

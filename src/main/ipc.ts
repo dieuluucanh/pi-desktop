@@ -40,6 +40,15 @@ import {
 import type { DiagnosticsSaveResult } from "../shared/ipc";
 import type { UpdateState } from "../shared/updates";
 import { isTrustAnswer } from "../shared/projects";
+import {
+  isTerminalId,
+  isTerminalSize,
+  type TerminalAttachResult,
+  type TerminalInfo,
+} from "../shared/terminal-protocol";
+import type { TerminalCreateInput, TerminalCreateOutcome } from "../shared/terminal-ipc";
+import type { TerminalProfileSnapshot } from "../shared/terminal-profiles";
+import { isTerminalProfileId } from "../shared/terminal-prefs";
 import type { OfficeBridgeControlResult, OfficeStopResult } from "../shared/office-bridge";
 import type {
   EditorBackup,
@@ -139,6 +148,23 @@ export interface IpcSessionDeps {
   deleteSession(sessionFile: string): Promise<SessionDeleteResult>;
 }
 
+/**
+ * The per-window terminal surface. `windowId` is the WebContents id, so one
+ * window's terminals can never be addressed from another window.
+ */
+export interface IpcTerminalDeps {
+  create(windowId: number, input: TerminalCreateInput): Promise<TerminalCreateOutcome>;
+  attach(windowId: number, terminalId: string): Promise<TerminalAttachResult | null>;
+  write(windowId: number, terminalId: string, data: string): Promise<void>;
+  resize(windowId: number, terminalId: string, cols: number, rows: number): Promise<void>;
+  close(windowId: number, terminalId: string): Promise<boolean>;
+  ack(windowId: number, terminalId: string, bytes: number): void;
+  list(windowId: number): Promise<TerminalInfo[]>;
+  profiles(windowId: number, force: boolean): Promise<TerminalProfileSnapshot>;
+  /** Suppresses menu accelerators while a terminal has focus (Windows/Linux). */
+  setFocus(windowId: number, focused: boolean): void;
+}
+
 export interface IpcDependencies {
   appInfo: () => AppInfo;
   openExternal: (url: unknown) => Promise<boolean>;
@@ -163,6 +189,8 @@ export interface IpcDependencies {
     set: (patch: unknown) => Promise<UiPrefs>;
   };
   sessions: IpcSessionDeps;
+  /** Native terminal surface (2026-11-05 terminal plan). */
+  terminal: IpcTerminalDeps;
   /** Projects and workspace management (plan step 10). */
   projects: {
     get(): Promise<ProjectsSnapshot>;
@@ -567,6 +595,15 @@ function parseCreateTab(value: unknown): CreateTabInput {
   }
   const input: CreateTabInput = { cwd };
   if (isTabKind(kind)) input.kind = kind;
+  if (record.profileId !== undefined && record.profileId !== null) {
+    if (kind !== "terminal") {
+      throw new Error("session: profileId is only valid for a terminal tab");
+    }
+    if (!isTerminalProfileId(record.profileId)) {
+      throw new Error("session: invalid terminal profile id");
+    }
+    input.profileId = record.profileId;
+  }
   if (kind === "editor") {
     if (typeof record.filePath !== "string" || !isWorkspaceRelativePath(record.filePath)) {
       throw new Error("session: an editor tab requires a project-relative file");
@@ -585,6 +622,58 @@ function parseCreateTab(value: unknown): CreateTabInput {
     input.trust = record.trust;
   }
   return input;
+}
+
+export function parseTerminalCreateInput(value: unknown): TerminalCreateInput {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const tabId = record.tabId;
+  if (typeof tabId !== "string" || tabId.length === 0) {
+    throw new Error("terminal: a tab id is required");
+  }
+  if (!isTerminalSize(record.cols, record.rows)) {
+    throw new Error("terminal: invalid terminal size");
+  }
+  const profileId = record.profileId;
+  if (profileId !== undefined && profileId !== null && !isTerminalProfileId(profileId)) {
+    throw new Error("terminal: invalid profile id");
+  }
+  const trust = isTrustAnswer(record.trust) ? record.trust : undefined;
+  return {
+    tabId,
+    cols: record.cols as number,
+    rows: record.rows as number,
+    ...(typeof profileId === "string" ? { profileId } : {}),
+    ...(trust ? { trust } : {}),
+  };
+}
+
+function parseTerminalId(value: unknown): string {
+  if (!isTerminalId(value)) throw new Error("terminal: invalid terminal id");
+  return value;
+}
+
+function parseTerminalWrite(value: unknown): { terminalId: string; data: string } {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const terminalId = parseTerminalId(record.terminalId);
+  if (typeof record.data !== "string") throw new Error("terminal: invalid input");
+  return { terminalId, data: record.data };
+}
+
+function parseTerminalResize(value: unknown): { terminalId: string; cols: number; rows: number } {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const terminalId = parseTerminalId(record.terminalId);
+  if (!isTerminalSize(record.cols, record.rows)) throw new Error("terminal: invalid size");
+  return { terminalId, cols: record.cols as number, rows: record.rows as number };
+}
+
+function parseTerminalAck(value: unknown): { terminalId: string; bytes: number } {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const terminalId = parseTerminalId(record.terminalId);
+  const bytes = record.bytes;
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= 0) {
+    throw new Error("terminal: invalid credit");
+  }
+  return { terminalId, bytes };
 }
 
 export function registerIpcHandlers(deps: IpcDependencies): void {
@@ -666,6 +755,41 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
       return { ok: false, error: "session: a session file is required" } as SessionDeleteResult;
     }
     return deps.sessions.deleteSession(sessionFile);
+  });
+
+  ipcMain.handle(IPC.terminalCreate, (event, input: unknown) =>
+    deps.terminal.create(event.sender.id, parseTerminalCreateInput(input)),
+  );
+  ipcMain.handle(IPC.terminalAttach, (event, terminalId: unknown) =>
+    deps.terminal.attach(event.sender.id, parseTerminalId(terminalId)),
+  );
+  ipcMain.handle(IPC.terminalWrite, (event, input: unknown) => {
+    const parsed = parseTerminalWrite(input);
+    return deps.terminal.write(event.sender.id, parsed.terminalId, parsed.data);
+  });
+  ipcMain.handle(IPC.terminalResize, (event, input: unknown) => {
+    const parsed = parseTerminalResize(input);
+    return deps.terminal.resize(event.sender.id, parsed.terminalId, parsed.cols, parsed.rows);
+  });
+  ipcMain.handle(IPC.terminalClose, (event, terminalId: unknown) =>
+    deps.terminal.close(event.sender.id, parseTerminalId(terminalId)),
+  );
+  ipcMain.handle(IPC.terminalList, (event) => deps.terminal.list(event.sender.id));
+  ipcMain.handle(IPC.terminalProfiles, (event, force: unknown) =>
+    deps.terminal.profiles(event.sender.id, force === true),
+  );
+  // Flow control and focus are fire-and-forget: a keystroke must not wait for a
+  // round trip, and a malformed credit frame is dropped rather than surfaced.
+  ipcMain.on(IPC.terminalAck, (event, input: unknown) => {
+    try {
+      const parsed = parseTerminalAck(input);
+      deps.terminal.ack(event.sender.id, parsed.terminalId, parsed.bytes);
+    } catch {
+      // An invalid credit frame only delays the PTY; it is not user-facing.
+    }
+  });
+  ipcMain.on(IPC.terminalFocus, (event, focused: unknown) => {
+    if (typeof focused === "boolean") deps.terminal.setFocus(event.sender.id, focused);
   });
 
   ipcMain.handle(IPC.projectsGet, () => deps.projects.get());

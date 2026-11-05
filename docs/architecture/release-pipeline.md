@@ -212,3 +212,16 @@ beta`, `Upstream` and `Verified structurally, not on a live machine`; update the
 | Broken mac signature                     | `codesign --verify` + the `damaged` check                                |
 | Feed not actually public                 | anonymous `curl` in the publish job, no token                            |
 | Two releases racing                      | `concurrency: release-<ref>`, `cancel-in-progress: false`                |
+
+## Native terminal (`node-pty`)
+
+`node-pty` 1.x is N-API, so its prebuilt binaries are ABI-stable across the
+bundled Node 24 and Electron; `electron-builder.yml` sets `npmRebuild: false`
+so packaging never replaces them. `afterPack` prunes `node-pty` to the target
+platform/arch (`scripts/electron-builder-after-pack.mjs`).
+
+Linux has no upstream prebuild, so the `linux` job is a matrix: x64 on
+`ubuntu-latest`, arm64 on `ubuntu-24.04-arm`; each run fetches only its own
+runtime and packages one arch (`--${{ matrix.arch }}`). The publish job still
+gates on `[prepare, windows, linux, macos]` because the matrix aggregates under
+`linux`.

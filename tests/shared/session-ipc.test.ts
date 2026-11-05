@@ -20,9 +20,10 @@ import {
  */
 
 describe("tab kinds", () => {
-  it("knows session, office and web", () => {
-    expect(TAB_KINDS).toEqual(["session", "office", "web", "editor"]);
+  it("knows session, office, web, editor and terminal", () => {
+    expect(TAB_KINDS).toEqual(["session", "office", "web", "editor", "terminal"]);
     expect(isTabKind("web")).toBe(true);
+    expect(isTabKind("terminal")).toBe(true);
     expect(isTabKind("popup")).toBe(false);
   });
 });
@@ -85,6 +86,40 @@ describe("sanitizeTabRecord", () => {
     expect(sanitizeTabRecord(null)).toBeNull();
   });
 
+  it("keeps a terminal tab's last cwd and profile, dropping a relative cwd", () => {
+    const tab = sanitizeTabRecord({
+      id: "term-1",
+      kind: "terminal",
+      cwd: "C:\\work\\app",
+      lastCwd: "C:\\work\\app\\packages\\api",
+      profileId: "git-bash",
+      title: "bash",
+    });
+    expect(tab).toMatchObject({
+      id: "term-1",
+      kind: "terminal",
+      cwd: "C:\\work\\app",
+      lastCwd: "C:\\work\\app\\packages\\api",
+      profileId: "git-bash",
+      title: "bash",
+      status: "idle",
+    });
+
+    const relative = sanitizeTabRecord({
+      id: "term-2",
+      kind: "terminal",
+      cwd: "/work/app",
+      lastCwd: "packages/api",
+    });
+    expect(relative?.lastCwd).toBeNull();
+    expect(relative?.title).toBe("app");
+  });
+
+  it("drops a terminal tab without a folder", () => {
+    expect(sanitizeTabRecord({ id: "t", kind: "terminal" })).toBeNull();
+    expect(sanitizeTabRecord({ id: "t", kind: "terminal", cwd: "" })).toBeNull();
+  });
+
   it("keeps a pinned tab pinned and drops a malformed flag", () => {
     const pinned = sanitizeTabRecord({ id: "t", cwd: "C:\\x", pinned: true });
     expect(pinned?.pinned).toBe(true);
@@ -118,6 +153,7 @@ describe("hostBackedTabs", () => {
     expect(isHostBackedTab("office")).toBe(true);
     expect(isHostBackedTab("web")).toBe(false);
     expect(isHostBackedTab("editor")).toBe(false);
+    expect(isHostBackedTab("terminal")).toBe(false);
   });
 
   it("keeps host-backed tabs in order and excludes a target id", () => {
@@ -126,6 +162,7 @@ describe("hostBackedTabs", () => {
       record("editor", "editor-1"),
       record("office", "office-1"),
       record("web", "web-1"),
+      record("terminal", "term-1"),
       record("session", "tab-2"),
     ];
 
@@ -154,6 +191,7 @@ describe("isSessionTab", () => {
     expect(isSessionTab(record("session"))).toBe(true);
     expect(isSessionTab(record("office"))).toBe(true);
     expect(isSessionTab(record("web"))).toBe(true);
+    expect(isSessionTab(record("terminal"))).toBe(true);
     expect(isSessionTab(record("editor"))).toBe(false);
   });
 

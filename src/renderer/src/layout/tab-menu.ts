@@ -45,6 +45,8 @@ function closeAllLabel(kind: TabKind): string {
       return "Close all web tabs";
     case "office":
       return "Close all Office tabs";
+    case "terminal":
+      return "Close all terminal tabs";
     default:
       return "Close all sessions";
   }
@@ -73,6 +75,15 @@ export function tabMenuItems(kind: TabKind = "session", pinned = false): readonl
       { id: "reload", label: "Reload" },
       { id: "copy-url", label: "Copy URL" },
       { id: "open-browser", label: "Open in browser" },
+      pinItem,
+      { id: "close", label: "Close", separated: true },
+      { id: "close-others", label: "Close others", destructive: true },
+      { id: "close-all", label: closeAllLabel(kind), destructive: true },
+    ];
+  }
+
+  if (kind === "terminal") {
+    return [
       pinItem,
       { id: "close", label: "Close", separated: true },
       { id: "close-others", label: "Close others", destructive: true },

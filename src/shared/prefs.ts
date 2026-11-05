@@ -30,6 +30,12 @@ import {
 import { DEFAULT_ZOOM, clampZoomFactor } from "./zoom";
 import { sanitizeThemeColorPrefs, type ThemeColorPrefs } from "./themes";
 import {
+  DEFAULT_TERMINAL_PREFS,
+  mergeTerminalPrefs,
+  sanitizeTerminalPrefs,
+  type TerminalPrefs,
+} from "./terminal-prefs";
+import {
   DEFAULT_EDITOR_PREFS,
   mergeEditorPrefs,
   sanitizeEditorPrefs,
@@ -66,6 +72,7 @@ export const PREF_KEYS = [
   "promptOrigins",
   "rail",
   "editor",
+  "terminal",
   "explorer",
   "checkpoints",
   "updates",
@@ -165,6 +172,12 @@ export interface UiPrefs {
   rail: RailPrefs;
   /** Desktop editor preferences (font, wrap, format-on-save, formatters). */
   editor: EditorPrefs;
+  /**
+   * Integrated-terminal preferences (2026-11-05 terminal plan): font, scrollback,
+   * cursor, shell profile and the two shell-behaviour switches. These are app
+   * preferences; Pi's `shellPath` stays the agent's, never the terminal's.
+   */
+  terminal: TerminalPrefs;
   /** File-explorer view preferences (hidden/ignored visibility, sort order). */
   explorer: ExplorerPrefs;
   /**
@@ -222,6 +235,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   // caller mutating one prefs value cannot mutate the module-level default.
   rail: { ...DEFAULT_RAIL_PREFS, order: [...DEFAULT_RAIL_PREFS.order] },
   editor: { ...DEFAULT_EDITOR_PREFS, formatters: {} },
+  terminal: { ...DEFAULT_TERMINAL_PREFS },
   explorer: { ...DEFAULT_EXPLORER_PREFS },
   // A fresh object for the same reason as `rail`: a caller mutating one prefs
   // value must not mutate the module-level default (nor the shared config).
@@ -307,6 +321,9 @@ export function sanitizePrefs(input: unknown): UiPrefs {
     // New in 2026-11: an older app-state.json has neither block; the sanitizer
     // supplies the defaults, so no version bump is needed.
     editor: sanitizeEditorPrefs(source.editor),
+    // New in 2026-11: an older app-state.json has no block; the sanitizer
+    // supplies the defaults, so no version bump is needed.
+    terminal: sanitizeTerminalPrefs(source.terminal),
     explorer: sanitizeExplorerPrefs(source.explorer),
     // Checkpoints are **on by default** (D14); the caps are what make that
     // defensible, so an older app-state.json without the key gets the defaults
@@ -335,6 +352,10 @@ export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
     "editor" in source ? mergeEditorPrefs(current.editor, source.editor) : current.editor;
   const explorer =
     "explorer" in source ? mergeExplorerPrefs(current.explorer, source.explorer) : current.explorer;
+  // Every terminal preference is flat, so a patch that names only the font must
+  // keep the chosen profile and shell path.
+  const terminal =
+    "terminal" in source ? mergeTerminalPrefs(current.terminal, source.terminal) : current.terminal;
   // `checkpoints` is flat, but it must not lose keys present in the patch's
   // absence: a `{ checkpoints: { enabled: false } }` patch keeps the retention
   // values the user set earlier. The sanitizer fills the rest.
@@ -361,6 +382,7 @@ export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
     ...source,
     rail,
     editor,
+    terminal,
     explorer,
     checkpoints,
     notifications,

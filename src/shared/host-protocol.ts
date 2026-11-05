@@ -9,6 +9,8 @@
  * Both sides share this module: it is the only place that knows the wire shape.
  */
 
+import { JsonlDecoder } from "./jsonl";
+
 export const HOST_PROTOCOL_VERSION = 1;
 
 /** Requests and responses larger than this are refused (blobs are the answer). */
@@ -305,56 +307,23 @@ export function isBlobRef(value: unknown): value is BlobRef {
 }
 
 /**
- * Splits a byte stream into frames.
+ * Splits a byte stream into Pi host frames.
  *
- * Guards against a single frame exceeding `maxBytes` (a bug or a hostile
- * payload): the oversized line is discarded and reported once, and the decoder
- * resynchronises on the next newline.
+ * The overflow/resync logic lives in the generic `JsonlDecoder` (shared with the
+ * terminal host); this class keeps the host-specific decode and result shape so
+ * existing call sites and tests are unchanged.
  */
 export class JsonlFrameDecoder {
-  private buffer = "";
-  private dropping = false;
-  private readonly maxBytes: number;
+  private readonly decoder: JsonlDecoder<HostFrame>;
 
   constructor(maxBytes: number = MAX_FRAME_BYTES) {
-    this.maxBytes = maxBytes;
+    this.decoder = new JsonlDecoder<HostFrame>(decodeFrame, maxBytes);
   }
 
   /** Feeds a chunk and returns every complete frame it produced. */
   push(chunk: string): { frames: HostFrame[]; overflow: boolean } {
-    this.buffer += chunk;
-    const frames: HostFrame[] = [];
-    let overflow = false;
-
-    for (;;) {
-      const newline = this.buffer.indexOf("\n");
-      if (newline === -1) break;
-      const line = this.buffer.slice(0, newline);
-      this.buffer = this.buffer.slice(newline + 1);
-      if (this.dropping) {
-        this.dropping = false;
-        overflow = true;
-        continue;
-      }
-      if (line.length > this.maxBytes) {
-        overflow = true;
-        continue;
-      }
-      frames.push(...toFrames(decodeFrame(line)));
-    }
-
-    if (this.buffer.length > this.maxBytes) {
-      this.buffer = "";
-      this.dropping = true;
-      overflow = true;
-    }
-
-    return { frames, overflow };
+    return this.decoder.push(chunk);
   }
-}
-
-function toFrames(frame: HostFrame | null): HostFrame[] {
-  return frame === null ? [] : [frame];
 }
 
 /** True when a value cannot be sent as-is inside a frame. */

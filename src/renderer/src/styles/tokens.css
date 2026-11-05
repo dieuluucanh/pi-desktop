@@ -33,6 +33,33 @@
    */
   --color-selected: color-mix(in srgb, var(--color-accent) 20%, var(--color-raised));
 
+  /*
+   * Terminal palette (2026-11-05 terminal plan). xterm paints on a canvas, so
+   * these are resolved to concrete colours by `terminalThemeFromCssVariables`.
+   * The 16 ANSI slots mirror the Pi TUI palette; the surface tokens keep the
+   * terminal readable in both themes without a component knowing a hex value.
+   */
+  --terminal-bg: #080a0e;
+  --terminal-fg: #eef2f8;
+  --terminal-cursor: #eef2f8;
+  --terminal-selection: #2a3550;
+  --ansi-0: #1c1c1c;
+  --ansi-1: #d75f5f;
+  --ansi-2: #5faf5f;
+  --ansi-3: #d7af5f;
+  --ansi-4: #5f87d7;
+  --ansi-5: #af5fd7;
+  --ansi-6: #5fafaf;
+  --ansi-7: #d0d0d0;
+  --ansi-8: #6c6c6c;
+  --ansi-9: #ff8787;
+  --ansi-10: #87d787;
+  --ansi-11: #ffd787;
+  --ansi-12: #87afff;
+  --ansi-13: #d787ff;
+  --ansi-14: #87d7d7;
+  --ansi-15: #ffffff;
+
   --radius-xs: 6px;
   --radius-sm: 8px;
   --radius-md: 10px;
@@ -70,4 +97,24 @@
   --color-warn: #9a6700;
   --color-ok: #3f7d2c;
   --color-info: #16689b;
+  --terminal-bg: #ffffff;
+  --terminal-fg: #1c2128;
+  --terminal-cursor: #1c2128;
+  --terminal-selection: #cfe0ff;
+  --ansi-0: #1c2128;
+  --ansi-1: #c33c54;
+  --ansi-2: #3f7d2c;
+  --ansi-3: #9a6700;
+  --ansi-4: #3b6fd4;
+  --ansi-5: #8250b8;
+  --ansi-6: #16689b;
+  --ansi-7: #5b6472;
+  --ansi-8: #57606a;
+  --ansi-9: #a5283f;
+  --ansi-10: #2f6b1f;
+  --ansi-11: #7d5300;
+  --ansi-12: #2a5cb8;
+  --ansi-13: #6b3fa0;
+  --ansi-14: #0f587f;
+  --ansi-15: #1c2128;
 }

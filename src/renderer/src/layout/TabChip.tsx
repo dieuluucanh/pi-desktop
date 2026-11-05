@@ -1,5 +1,5 @@
 import type { DragEvent } from "react";
-import { Globe, Pin, X } from "lucide-react";
+import { Globe, Pin, SquareTerminal, X } from "lucide-react";
 
 import { SESSION_STATUS_LABEL, type TabRecord, type TabStatus } from "../../../shared/session-ipc";
 import { languageBadge, languageIdForPath } from "../../../shared/languages";
@@ -125,6 +125,14 @@ export function TabChip({
               </span>
             ) : tab.kind === "web" ? (
               <Globe className="size-3 shrink-0 text-ink-faint" aria-hidden />
+            ) : tab.kind === "terminal" ? (
+              <span className="flex items-center gap-1" aria-hidden>
+                <SquareTerminal className="size-3 shrink-0 text-ink-faint" />
+                <span
+                  className={`size-1.5 rounded-full ${STATUS_DOT[tab.status]}`}
+                  data-status={tab.status}
+                />
+              </span>
             ) : (
               <span
                 className={`size-1.5 rounded-full ${STATUS_DOT[tab.status]}`}

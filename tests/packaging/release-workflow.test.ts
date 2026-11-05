@@ -49,7 +49,7 @@ describe("release workflow", () => {
 
   it("builds each platform on its own OS", () => {
     expect(job("windows")).toMatch(/runs-on: windows-latest/);
-    expect(job("linux")).toMatch(/runs-on: ubuntu-latest/);
+    expect(job("linux")).toContain("runs-on: ${{ matrix.runner }}");
     expect(job("macos")).toMatch(/runs-on: macos-latest/);
     for (const name of ["windows", "linux", "macos"]) {
       expect(job(name), name).toMatch(/needs: prepare/);
@@ -94,8 +94,9 @@ describe("release workflow", () => {
   it("uploads every manifest from the job that produced it", () => {
     expect(job("windows")).toContain("release/latest.yml");
     const linux = job("linux");
-    expect(linux).toContain("release/latest-linux.yml");
-    expect(linux).toContain("release/latest-linux-arm64.yml");
+    expect(linux).toContain("release/latest-linux*.yml");
+    // node-pty has no Linux prebuild, so arm64 must build on an arm64 runner.
+    expect(linux).toContain("ubuntu-24.04-arm");
     expect(job("macos")).toContain("release/latest-mac.yml");
     // The NSIS blockmap is what makes a differential update possible.
     expect(job("windows")).toContain("release/*.blockmap");

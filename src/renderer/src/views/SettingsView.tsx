@@ -27,6 +27,7 @@ import {
   SourceControlSettingsCard,
 } from "../settings/SourceControlSettings";
 import { NotificationsSettingsCard } from "../settings/NotificationsSettings";
+import { TerminalSettingsCard } from "../settings/TerminalSettings";
 import { UpdateSettingsCard } from "../settings/UpdateSettingsCard";
 import { setSidebarWidth } from "../state/sidebar-width";
 import { ViewShell } from "./ViewShell";
@@ -74,13 +75,14 @@ export function SettingsView() {
   const settingsFocus = useAppStore((state) => state.settingsFocus);
   const clearSettingsFocus = useAppStore((state) => state.clearSettingsFocus);
   const updateCardRef = useRef<HTMLDivElement | null>(null);
+  const terminalCardRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    // The Help menu routes here (`check-updates` / `view-about`): scroll to the
-    // card and consume the target so a later unrelated Settings visit starts at
-    // the top.
-    if (settingsFocus !== "updates") return;
-    updateCardRef.current?.scrollIntoView?.({ block: "start" });
+    // The Help menu and the terminal profile menu route here: scroll to the
+    // target card, then consume it so a later Settings visit starts at the top.
+    if (!settingsFocus) return;
+    const target = settingsFocus === "updates" ? updateCardRef.current : terminalCardRef.current;
+    target?.scrollIntoView?.({ block: "start" });
     clearSettingsFocus();
   }, [settingsFocus, clearSettingsFocus]);
   const writeRawSettings = useAppStore((state) => state.writeRawSettings);
@@ -322,6 +324,10 @@ export function SettingsView() {
           </div>
         </Row>
       </section>
+
+      <div ref={terminalCardRef}>
+        <TerminalSettingsCard />
+      </div>
 
       {/*
         Source control and checkpoints (git-checkpoint plan step 27). Both cards edit

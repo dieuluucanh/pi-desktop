@@ -363,6 +363,18 @@ describe("tab lifecycle", () => {
     expect(pushes.some((push) => push.channel === "state")).toBe(true);
   });
 
+  it("stores a terminal tab's shell profile", async () => {
+    const { service, stored } = createHarness();
+    const envelope = await service.createTab({
+      cwd: "C:\\work\\app",
+      kind: "terminal",
+      profileId: "git-bash",
+    });
+
+    expect(envelope.tabs[0]).toMatchObject({ kind: "terminal", profileId: "git-bash" });
+    expect(stored.tabs[0]?.profileId).toBe("git-bash");
+  });
+
   it("passes per-project model and thinking defaults into session.create", async () => {
     const { service, newest } = createHarness();
     await service.createTab({

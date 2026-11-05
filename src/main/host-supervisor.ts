@@ -20,7 +20,7 @@ import {
   type HostRole,
 } from "../shared/host-protocol";
 import { createNodeFsPort, type FsPort } from "./fs-port";
-import { joinPathEntries } from "./runtime/layout";
+import { composeChildEnv } from "./runtime/child-env";
 import { SESSION_ID_ENV, SERVICE_ENV, SERVICE_FLAG } from "../host/index";
 import {
   HOST_RSS_RESTART_BYTES,
@@ -457,22 +457,22 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         typeof options.telemetryEnabled === "function"
           ? options.telemetryEnabled()
           : options.telemetryEnabled === true;
-      const env: Record<string, string | undefined> = {
-        ...(options.env ?? process.env),
-        [SESSION_ID_ENV]: this.sessionId,
-        [HOST_ROLE_ENV]: this.spec.role ?? "session",
-        [SAFE_MODE_ENV]: options.safeMode ? "1" : "0",
-        [TELEMETRY_ENV]: telemetry ? "1" : "0",
-        [BLOB_DIR_ENV]: options.blobDir,
-        [SERVICE_ENV]: "service",
-        PI_CODING_AGENT_DIR: options.profileDir,
-        PI_OFFICE_BRIDGE_PORT: String(this.port),
-      };
-      const basePath = env.PATH ?? (process.platform === "win32" ? env.Path : undefined) ?? "";
-      env.PATH = joinPathEntries([options.binDir, options.nodeBinDir, basePath], process.platform);
-      // Windows environment names are case-insensitive; passing both PATH and
-      // Path lets the child pick either one, so keep a single canonical key.
-      if (process.platform === "win32") delete env.Path;
+      const env = composeChildEnv({
+        baseEnv: options.env ?? process.env,
+        platform: process.platform,
+        binDir: options.binDir,
+        nodeBinDir: options.nodeBinDir,
+        extra: {
+          [SESSION_ID_ENV]: this.sessionId,
+          [HOST_ROLE_ENV]: this.spec.role ?? "session",
+          [SAFE_MODE_ENV]: options.safeMode ? "1" : "0",
+          [TELEMETRY_ENV]: telemetry ? "1" : "0",
+          [BLOB_DIR_ENV]: options.blobDir,
+          [SERVICE_ENV]: "service",
+          PI_CODING_AGENT_DIR: options.profileDir,
+          PI_OFFICE_BRIDGE_PORT: String(this.port),
+        },
+      });
       env[NODE_BIN_ENV] = options.nodePath;
       env.PI_DESKTOP_HOST_ENTRY = options.hostPath;
       const buildId = options.hostBuildId?.() ?? null;

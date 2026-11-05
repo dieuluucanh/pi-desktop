@@ -13,6 +13,7 @@ import {
   nativeImage,
   powerMonitor,
   shell,
+  webContents,
 } from "electron";
 import {
   IPC,
@@ -43,6 +44,10 @@ import { APP_COPYRIGHT, APP_NAME, APP_USER_MODEL_ID, resolveBranding } from "./b
 import { createAppStore } from "./app-store";
 import { createNodeFsPort } from "./fs-port";
 import { createHostBuildId } from "./host-build";
+import { TerminalHost } from "./terminal-host";
+import { createTerminalService, type TerminalService } from "./terminal-service";
+import { detectTerminalProfiles } from "./terminal-profiles";
+import { DEFAULT_TERMINAL_PREFS, type TerminalPrefs } from "../shared/terminal-prefs";
 import { createHostSupervisor } from "./host-supervisor";
 import { keepHostAlive } from "./host-policy";
 import { createQuitTeardown } from "./lifecycle";
@@ -441,6 +446,96 @@ const webTabs = createWebTabManager({
 });
 
 /**
+ * One terminal service per window (2026-11-05 terminal plan). Terminal tabs are
+ * not Pi hosts: they have no session, no Office port and no idle recycling, so
+ * they are owned by a separate, lazily created supervisor per window.
+ */
+const terminalServices = new Map<number, TerminalService>();
+
+/** The prefs the terminal reads synchronously; kept in step with `prefs.set`. */
+let terminalPrefs: TerminalPrefs = DEFAULT_TERMINAL_PREFS;
+
+/**
+ * The terminal service for one window, created on first use. The window's
+ * WebContents id is the key, so a second window can never address the first
+ * window's PTYs and a destroyed window disposes its own host.
+ */
+function terminalServiceFor(windowId: number): TerminalService {
+  const existing = terminalServices.get(windowId);
+  if (existing) return existing;
+  const contents = webContents.fromId(windowId);
+  if (!contents || contents.isDestroyed()) {
+    throw new Error("terminal: the window is gone");
+  }
+  if (!runtime.ok || !runtime.nodePath) {
+    throw new Error("The bundled Pi runtime is unavailable, so no terminal can start.");
+  }
+
+  const send = (frame: unknown): void => {
+    if (!contents.isDestroyed()) contents.send(IPC.terminalEvent, frame);
+  };
+  const host = new TerminalHost({
+    nodePath: runtime.nodePath,
+    hostPath: runtime.terminalHostPath,
+    cwd: process.cwd(),
+    profileDir: paths.profileDir,
+    binDir: runtime.binDir,
+    nodeBinDir: runtime.nodeBinDir,
+    env: process.env,
+    log: (line) => console.error(`[terminal] ${line}`),
+    onEvent: send,
+    onExit: () => terminalServices.get(windowId)?.handleHostExit(),
+  });
+
+  const platform =
+    process.platform === "win32" ? "win32" : process.platform === "darwin" ? "darwin" : "linux";
+  const service = createTerminalService({
+    host,
+    tabs: () => sessions?.tabs() ?? [],
+    isProjectTrusted: (cwd) => projectTrustFile.isProjectTrusted(cwd),
+    preferences: () => ({
+      defaultProfile: terminalPrefs.defaultProfile,
+      shellPath: terminalPrefs.shellPath,
+    }),
+    detectProfiles: (preferences) =>
+      detectTerminalProfiles({
+        platform,
+        env: process.env,
+        fs: createNodeFsPort(),
+        runner: createCommandRunner(),
+        preferences,
+      }),
+    isDirectory: async (path) => (await createNodeFsPort().pathKind(path)) === "directory",
+    emit: (frame) => send(frame),
+    env: process.env,
+    platform: process.platform,
+    profileDir: paths.profileDir,
+    termProgramVersion: app.getVersion(),
+    log: (line) => console.error(`[terminal] ${line}`),
+  });
+
+  terminalServices.set(windowId, service);
+  const releaseFocus = (): void => {
+    if (process.platform !== "darwin" && !contents.isDestroyed()) {
+      contents.setIgnoreMenuShortcuts(false);
+    }
+  };
+  contents.on("blur", releaseFocus);
+  contents.once("destroyed", () => {
+    terminalServices.delete(windowId);
+    void service.dispose().catch(() => undefined);
+  });
+  return service;
+}
+
+/** Kills every window's PTY host before the app exits. */
+async function disposeTerminalServices(): Promise<void> {
+  const services = [...terminalServices.values()];
+  terminalServices.clear();
+  await Promise.all(services.map((service) => service.dispose().catch(() => undefined)));
+}
+
+/**
  * The session service (plan step 3): the app's only path to a Pi host. It needs a
  * supervisor, so it is absent when the bundled runtime could not be resolved —
  * in which case the renderer gets a precise error instead of a silent no-op.
@@ -473,6 +568,9 @@ const sessions: SessionService | null = hosts
           // The tab table is the web-tab service's reconciliation input: a web
           // tab opened, closed, reordered or restored is reflected in one place.
           webTabs.sync(envelope);
+          // And the terminal service's: every close path (close, close-others,
+          // close-project, restore) lands here, so a PTY cannot outlive its tab.
+          for (const service of terminalServices.values()) service.syncTabs();
         }
       },
     })
@@ -1469,6 +1567,8 @@ if (!app.requestSingleInstanceLock()) {
           // A telemetry change applies to hosts spawned from now on; a running
           // session keeps its environment until it restarts.
           telemetryEnabled = prefs.telemetryEnabled;
+          // Terminal preferences are read synchronously when a shell spawns.
+          terminalPrefs = prefs.terminal;
           // A desktop-keymap edit rebuilds the menu so its accelerators match
           // the new chords (plan step 23).
           if (patch && typeof patch === "object" && "desktopKeybindings" in patch) {
@@ -1502,6 +1602,24 @@ if (!app.requestSingleInstanceLock()) {
         },
       },
       sessions: sessionsIpc,
+      terminal: {
+        create: (windowId, input) => terminalServiceFor(windowId).create(input),
+        attach: (windowId, terminalId) => terminalServiceFor(windowId).attach(terminalId),
+        write: (windowId, terminalId, data) => terminalServiceFor(windowId).write(terminalId, data),
+        resize: (windowId, terminalId, cols, rows) =>
+          terminalServiceFor(windowId).resize(terminalId, cols, rows),
+        close: (windowId, terminalId) => terminalServiceFor(windowId).close(terminalId),
+        ack: (windowId, terminalId, bytes) => terminalServiceFor(windowId).ack(terminalId, bytes),
+        list: async (windowId) => terminalServiceFor(windowId).list(),
+        profiles: (windowId, force) => terminalServiceFor(windowId).profiles(force),
+        setFocus: (windowId, focused) => {
+          const contents = webContents.fromId(windowId);
+          if (!contents || contents.isDestroyed()) return;
+          // macOS accelerators are Cmd-based and do not collide with the shell's
+          // Ctrl keys; on Windows/Linux the shell must receive Ctrl+N/W/B/G.
+          if (process.platform !== "darwin") contents.setIgnoreMenuShortcuts(focused);
+        },
+      },
       projects: {
         get: () => projectsService.snapshot(),
         mutate: async (input: ProjectMutation) => {
@@ -1686,6 +1804,7 @@ if (!app.requestSingleInstanceLock()) {
     // Load the persisted display zoom before the window paints; `applyZoom`
     // after creation covers the already-loaded case and every extra window.
     const startupPrefs = (await appState.read()).prefs;
+    terminalPrefs = startupPrefs.terminal;
     windowZoomFactor = clampZoomFactor(startupPrefs.zoomFactor);
     mainWindow = createWindow();
     applyZoom(windowZoomFactor);
@@ -1764,6 +1883,9 @@ if (!app.requestSingleInstanceLock()) {
       gitPush.dispose();
       checkpointService.dispose();
       webTabs.dispose();
+      // PTYs first: the terminal host owns shell processes, and a session host
+      // shutdown must not race a shell that is still writing to its tab.
+      await disposeTerminalServices();
       await (sessions ? sessions.dispose() : hosts?.stopAll());
     },
     quit: () => app.quit(),

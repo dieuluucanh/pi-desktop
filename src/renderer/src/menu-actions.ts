@@ -56,6 +56,15 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "new-session":
       newSessionAction();
       return;
+    case "new-terminal":
+      void store.createSessionTab("terminal");
+      return;
+    case "toggle-terminal": {
+      const existing = store.tabs.find((tab) => tab.kind === "terminal");
+      if (existing) void store.activateTab(existing.id);
+      else void store.createSessionTab("terminal");
+      return;
+    }
     case "open-project":
       void openProjectAction(deps);
       return;

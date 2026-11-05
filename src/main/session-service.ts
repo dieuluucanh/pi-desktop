@@ -156,6 +156,13 @@ export interface SessionServiceDeps {
   /** Pushes to the renderer; the main process maps these to IPC channels. */
   emit(channel: SessionEmitChannel, payload: unknown): void;
   /**
+   * Called with the full tab table after every publish (2026-11-05 terminal
+   * plan). The terminal service uses it to close PTYs whose tab disappeared,
+   * including close-others/close-project paths it does not own. A listener must
+   * never break publishing.
+   */
+  onTabsChanged?: (tabs: readonly TabRecord[]) => void;
+  /**
    * Fingerprint of the host bundle currently on disk (2026-10-24 stale-host
    * plan). Absent in tests and when the bundle cannot be read; the stale check
    * is then skipped.
@@ -473,6 +480,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     const signature = JSON.stringify(next);
     if (!force && signature === lastPublishedTabs) return;
     lastPublishedTabs = signature;
+    try {
+      deps.onTabsChanged?.(next.tabs);
+    } catch {
+      // A tab-table observer must never break the table itself.
+    }
     deps.emit("tabs", next);
   };
 
@@ -1256,6 +1268,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         model: null,
         ...(kind === "web" ? { url: webUrl, sessionTabId: input.sessionTabId ?? null } : {}),
         ...(isEditor ? { filePath } : {}),
+        ...(kind === "terminal" && input.profileId ? { profileId: input.profileId } : {}),
       };
       tabs.set(id, tab);
       activeId = id;

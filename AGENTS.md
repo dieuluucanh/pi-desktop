@@ -71,6 +71,10 @@ tests/           vitest: node project (tests/**) + jsdom renderer project (tests
     files are gitignored; edit `docs/` and run `npm run site:sync`. The site
     never imports app/Electron code and its dependencies stay in
     `site/package-lock.json`.
+11. **`node-pty` is imported only by `src/host/pty-node.ts`.** The terminal host
+    (`src/host/terminal-main.ts`) must not import the Pi SDK, and a `terminal`
+    tab is never `isHostBackedTab`. Packaging must keep `npmRebuild: false` and
+    let `afterPack` prune the prebuilds to the target platform/arch.
 
 ## Style
 

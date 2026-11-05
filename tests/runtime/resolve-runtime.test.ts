@@ -58,6 +58,7 @@ describe("resolveRuntime — bundled runtime", () => {
     expect(resolution.binDir).toBe(join(RESOURCES, "runtime", "bin"));
     expect(resolution.nodeBinDir).toBe(NODE_DIR);
     expect(resolution.piHostPath).toBe(join(APP_ROOT, "out", "host", "index.mjs"));
+    expect(resolution.terminalHostPath).toBe(join(APP_ROOT, "out", "host", "terminal.mjs"));
     expect(resolution.hint).toBeNull();
     expect(resolution.problems).toEqual([]);
   });
@@ -85,6 +86,9 @@ describe("resolveRuntime — bundled runtime", () => {
     expect(resolution.runtimeDir).toBe(join(RESOURCES, "runtime"));
     expect(resolution.piHostPath).toBe(
       join(RESOURCES, "app.asar.unpacked", "out", "host", "index.mjs"),
+    );
+    expect(resolution.terminalHostPath).toBe(
+      join(RESOURCES, "app.asar.unpacked", "out", "host", "terminal.mjs"),
     );
   });
 
@@ -242,6 +246,7 @@ describe("runtimeEnvOverrides", () => {
 
     expect(overrides.PI_DESKTOP_NODE).toBe(NODE);
     expect(overrides.PI_DESKTOP_HOST_ENTRY).toBe(resolution.piHostPath);
+    expect(overrides.PI_DESKTOP_TERMINAL_ENTRY).toBe(resolution.terminalHostPath);
     expect(overrides.PATH).toBe(`${resolution.binDir};${NODE_DIR};C:\\Windows\\System32`);
   });
 

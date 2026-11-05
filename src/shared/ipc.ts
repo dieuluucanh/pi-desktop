@@ -16,6 +16,7 @@ import type {
 } from "./git";
 import type { CheckpointAction, CheckpointActionResult, CheckpointState } from "./checkpoints";
 import type { HostMethod } from "./host-protocol";
+import type { TerminalBridge } from "./terminal-ipc";
 import type { UpdateState } from "./updates";
 import type { BuildChannel } from "./build-info";
 import type {
@@ -150,6 +151,21 @@ export const IPC = {
   sessionState: "session:state",
   /** Main → renderer: the tab table changed (created, closed, status). */
   sessionTabsChanged: "session:tabs-changed",
+
+  /** Native terminal (2026-11-05 terminal plan): a PTY-backed tab. */
+  terminalCreate: "terminal:create",
+  terminalAttach: "terminal:attach",
+  terminalWrite: "terminal:write",
+  terminalResize: "terminal:resize",
+  terminalClose: "terminal:close",
+  /** Fire-and-forget output credit (renderer → main). */
+  terminalAck: "terminal:ack",
+  terminalList: "terminal:list",
+  terminalProfiles: "terminal:profiles",
+  /** Renderer → main: whether a terminal has keyboard focus. */
+  terminalFocus: "terminal:focus",
+  /** Main → renderer: a `terminal.data` / `terminal.exit` / `terminal.error`. */
+  terminalEvent: "terminal:event",
 
   /** Projects and workspace management (plan step 10). */
   projectsGet: "projects:get",
@@ -291,6 +307,8 @@ export type IpcChannel = (typeof IPC)[keyof typeof IPC];
 /** Commands the application menu can send to the renderer. */
 export const MENU_COMMANDS = [
   "new-session",
+  "new-terminal",
+  "toggle-terminal",
   "open-project",
   "open-file",
   // Editor surface (2026-11-02 plan). Menu items only: Save/Format are
@@ -744,6 +762,7 @@ export interface PiDesktopBridge {
   onMenuCommand(listener: (command: MenuCommand) => void): () => void;
   prefs: PrefsBridge;
   sessions: SessionsBridge;
+  terminal: TerminalBridge;
   share: ShareBridge;
   projects: ProjectsBridge;
   office: OfficeBridge;

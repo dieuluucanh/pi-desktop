@@ -73,12 +73,22 @@ describe("SettingsView", () => {
     await waitFor(() => expect(useAppStore.getState().settingsFocus).toBeNull());
   });
 
+  it("reveals the Terminal card when Settings is focused there", async () => {
+    stubRequest();
+    useAppStore.setState({ settingsFocus: "terminal" });
+    render(<SettingsView />);
+
+    expect(screen.getByTestId("settings-terminal")).toBeInTheDocument();
+    await waitFor(() => expect(useAppStore.getState().settingsFocus).toBeNull());
+  });
+
   it("renders every schema group with its fields", async () => {
     stubRequest();
     render(<SettingsView />);
 
     expect(screen.getByTestId("view-scroll")).toHaveClass("overflow-y-auto");
     expect(screen.getByTestId("view-content")).toHaveClass("max-w-4xl");
+    expect(screen.getByTestId("settings-terminal")).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByTestId("settings-group-compaction")).toBeInTheDocument(),
     );

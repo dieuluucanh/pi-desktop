@@ -72,6 +72,21 @@ describe("gridLayoutChoices", () => {
 });
 
 describe("the strip control", () => {
+  it("orders New session, New terminal, the profile chevron and the layout switcher", () => {
+    render(<SessionTabStrip />);
+    const order = [
+      screen.getByRole("button", { name: "New session" }),
+      screen.getByRole("button", { name: "New terminal" }),
+      screen.getByRole("button", { name: "Terminal profiles" }),
+      screen.getByRole("button", { name: "Grid layout" }),
+    ];
+    for (let index = 0; index < order.length - 1; index += 1) {
+      expect(
+        order[index]!.compareDocumentPosition(order[index + 1]!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
+  });
+
   it("renders the switcher at the far right of the session strip", () => {
     render(<SessionTabStrip />);
 

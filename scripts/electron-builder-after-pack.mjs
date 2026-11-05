@@ -24,7 +24,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** `Arch` from `builder-util`, inlined so the hook needs no extra dependency. */
@@ -148,6 +148,43 @@ function gitCommit(projectDir) {
   }
 }
 
+export function pruneNodePty(resourcesDir, target) {
+  const root = join(resourcesDir, "app.asar.unpacked", "node_modules", "node-pty");
+  if (!existsSync(root)) return { found: false, removed: [], kept: null };
+
+  const removed = [];
+  // Sources, vendored deps and the prebuild scripts are build-time only; the
+  // tarball is ~64 MB unpacked and every installer would otherwise carry all of
+  // it. `lib/` and the target platform's binaries are what actually runs.
+  for (const name of ["deps", "src", "third_party", "scripts", "typings"]) {
+    const candidate = join(root, name);
+    if (!existsSync(candidate)) continue;
+    rmSync(candidate, { recursive: true, force: true });
+    removed.push(name);
+  }
+  for (const name of readdirSync(root)) {
+    if (!name.endsWith(".pdb")) continue;
+    rmSync(join(root, name), { force: true });
+    removed.push(name);
+  }
+
+  const prebuilds = join(root, "prebuilds");
+  if (existsSync(prebuilds)) {
+    for (const entry of readdirSync(prebuilds, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === target) continue;
+      rmSync(join(prebuilds, entry.name), { recursive: true, force: true });
+      removed.push(`prebuilds/${entry.name}`);
+    }
+  }
+
+  // A copy/repack can drop the executable bit, and macOS fails at spawn time
+  // rather than at package time. Re-apply it here.
+  const helper = join(root, "prebuilds", target, "spawn-helper");
+  if (existsSync(helper)) chmodSync(helper, 0o755);
+
+  return { found: true, removed: removed.sort(), kept: target };
+}
+
 /**
  * Rewrites the shims inside the packaged app. Only the platform being packed has
  * to have a fetched runtime, so a missing one is named rather than silently
@@ -170,6 +207,13 @@ export default async function afterPack(context) {
   if (pruned.length > 0) {
     process.stdout.write(
       `afterPack: pruned foreign runtime(s) ${pruned.join(", ")} (keeping ${target})\n`,
+    );
+  }
+
+  const pty = pruneNodePty(resourcesDir, target);
+  if (pty.found) {
+    process.stdout.write(
+      `afterPack: node-pty pruned (${pty.removed.length} entries, keeping prebuilds/${pty.kept})\n`,
     );
   }
 

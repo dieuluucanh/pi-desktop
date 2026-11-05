@@ -59,6 +59,25 @@ changed while off, the current file is kept and the app reports it.
   banner appears (detected by mtime) with **Reload from disk**.
 - `/reload` reloads extensions and settings in a live session.
 
+## Terminal (app-owned)
+
+**Settings → Terminal** controls the integrated terminal, separately from Pi's
+`shellPath` (which drives the agent's tools and `!` commands):
+
+- **Default shell profile** — `Auto` or any detected shell (PowerShell 7,
+  Windows PowerShell, Command Prompt, Git Bash and WSL distros on Windows; the
+  platform login shells elsewhere). A custom absolute executable can override
+  the list; the conventional Git Bash layouts keep their login-shell arguments.
+  Existing terminals keep their shell when the default changes.
+- **Appearance** — font size and family with a live preview, cursor style and
+  blink, scrollback lines, copy-on-selection, a visual bell and (on macOS)
+  Option-as-Meta. Changes apply to open terminals without losing scrollback.
+
+The strip's **New terminal** button opens the saved default. The chevron beside
+it opens a one-off terminal with another detected profile; **Select default
+profile…** opens this card. Ctrl/Cmd + = / - changes the terminal's font size,
+and Ctrl/Cmd + 0 resets it.
+
 ## Preferences that are _not_ Pi settings
 
 A few things live in app state on purpose, so they never change terminal Pi’s

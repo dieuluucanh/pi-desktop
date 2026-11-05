@@ -200,3 +200,165 @@ function namedKeyOf(key: string): string | null {
 export function bracketedPaste(text: string): string {
   return `${ESC}[200~${text}${ESC}[201~`;
 }
+
+/**
+ * Integrated-terminal key ownership (2026-11-05 native-terminal plan, step 2).
+ *
+ * An embedded terminal must not steal the shell's keys. VSCode solves this with
+ * `terminal.integrated.commandsToSkipShell`: a curated allowlist of app commands
+ * whose shortcuts still fire while the terminal has focus; everything else is
+ * sent to the PTY. This module is that policy, as a pure table so it can be
+ * tested without a DOM or a shell.
+ *
+ * The renderer feeds the decision into xterm's `attachCustomKeyEventHandler`:
+ * `pty` lets xterm encode the key natively (correct for IME, Alt-as-Meta and
+ * every VT sequence), `app` performs the action and returns `false`, and
+ * `ignore` returns `false` so the OS/menu keeps the chord.
+ *
+ * Menu accelerators are suppressed by main while a terminal has focus on
+ * Windows/Linux (`setIgnoreMenuShortcuts`), which is why the shell-modifier
+ * chords below can reach the PTY at all. On macOS the menu accelerators are
+ * Cmd-based and never collide with the shell's Ctrl keys.
+ */
+
+export type TerminalKeyPlatform = "win32" | "darwin" | "linux";
+
+export type TerminalAppAction =
+  | "copy"
+  | "paste"
+  | "select-all"
+  | "find"
+  | "clear"
+  | "new-terminal"
+  | "close-terminal"
+  | "toggle-terminal"
+  | "next-tab"
+  | "previous-tab"
+  | "command-palette"
+  | "zoom-in"
+  | "zoom-out"
+  | "zoom-reset";
+
+export interface TerminalKeyContext {
+  platform: TerminalKeyPlatform;
+  /** A selection exists in the terminal buffer. */
+  hasSelection: boolean;
+  /** The `copyOnSelection` preference: Ctrl+C copies instead of sending SIGINT. */
+  copyOnSelection: boolean;
+}
+
+export type TerminalKeyDecision =
+  { kind: "app"; action: TerminalAppAction } | { kind: "pty" } | { kind: "ignore" };
+
+const PTY: TerminalKeyDecision = { kind: "pty" };
+const IGNORE: TerminalKeyDecision = { kind: "ignore" };
+
+function app(action: TerminalAppAction): TerminalKeyDecision {
+  return { kind: "app", action };
+}
+
+/**
+ * Decides who owns one key event while a terminal has focus.
+ *
+ * Defaults to the PTY: ordinary typing, Tab completion, Esc, Ctrl+C (SIGINT),
+ * Ctrl+D/Z/L/N/P/B/G and every Ctrl+Shift combination we do not claim all reach
+ * the shell. Only the curated chords below are app actions.
+ */
+export function terminalKeyDecision(
+  input: TerminalKeyInput,
+  context: TerminalKeyContext,
+): TerminalKeyDecision {
+  const mac = context.platform === "darwin";
+  const key = input.key;
+  // Named keys are matched case-insensitively (`Tab`, `Insert`, `F1`), and a
+  // single character is lowercased so Shift+C still reads as the copy chord.
+  const lower = key.toLowerCase();
+
+  // The Windows/Alt/Win key is the OS's; never hand it to a shell.
+  if (input.metaKey && !mac) return IGNORE;
+  // Alt is xterm's concern (macOptionIsMeta / compose).
+  if (input.altKey) return PTY;
+
+  if (input.metaKey) {
+    switch (lower) {
+      case "c":
+        return app("copy");
+      case "v":
+        return app("paste");
+      case "a":
+        return app("select-all");
+      case "f":
+        return app("find");
+      case "k":
+        return app("clear");
+      case "w":
+        return app("close-terminal");
+      case "`":
+        return input.shiftKey ? app("new-terminal") : app("toggle-terminal");
+      case "=":
+      case "+":
+        return app("zoom-in");
+      case "-":
+      case "_":
+        return app("zoom-out");
+      case "0":
+        return app("zoom-reset");
+      case "p":
+        return input.shiftKey ? app("command-palette") : IGNORE;
+      default:
+        // Cmd+N / Cmd+Q / Cmd+R and friends stay with the menu and the OS.
+        return IGNORE;
+    }
+  }
+
+  if (!input.ctrlKey) {
+    // Shift+Insert is the Windows/Linux paste convention.
+    return input.shiftKey && lower === "insert" ? app("paste") : PTY;
+  }
+
+  if (lower === "tab") return input.shiftKey ? app("previous-tab") : app("next-tab");
+  if (lower === "`") return input.shiftKey ? app("new-terminal") : app("toggle-terminal");
+
+  if (input.shiftKey) {
+    switch (lower) {
+      case "c":
+        return app("copy");
+      case "v":
+        return app("paste");
+      case "f":
+        return app("find");
+      case "p":
+        return app("command-palette");
+      case "k":
+        return app("clear");
+      default:
+        return PTY;
+    }
+  }
+
+  if (!mac) {
+    switch (lower) {
+      case "insert":
+        return app("copy");
+      case "v":
+        return app("paste");
+      case "w":
+        return app("close-terminal");
+      case "=":
+      case "+":
+        return app("zoom-in");
+      case "-":
+      case "_":
+        return app("zoom-out");
+      case "0":
+        return app("zoom-reset");
+      case "c":
+        // VSCode's rule: copy only when the selection is there to copy.
+        return context.hasSelection && context.copyOnSelection ? app("copy") : PTY;
+      default:
+        return PTY;
+    }
+  }
+
+  return context.hasSelection && context.copyOnSelection && lower === "c" ? app("copy") : PTY;
+}

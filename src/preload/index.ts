@@ -22,6 +22,13 @@ import {
   type WindowState,
 } from "../shared/ipc";
 import type { UiPrefs } from "../shared/prefs";
+import type { TerminalBridge, TerminalCreateInput } from "../shared/terminal-ipc";
+import type {
+  TerminalAttachResult,
+  TerminalEventFrame,
+  TerminalInfo,
+} from "../shared/terminal-protocol";
+import type { TerminalProfileSnapshot } from "../shared/terminal-profiles";
 import type { IntegrationsState, OfficeIntegrationRecordPatch } from "../shared/integrations";
 import type {
   CloneProjectInput,
@@ -341,6 +348,27 @@ const workspace: WorkspaceBridge = {
     >,
 };
 
+const terminal: TerminalBridge = {
+  create: (input: TerminalCreateInput) =>
+    ipcRenderer.invoke(IPC.terminalCreate, input) as ReturnType<TerminalBridge["create"]>,
+  attach: (terminalId: string) =>
+    ipcRenderer.invoke(IPC.terminalAttach, terminalId) as Promise<TerminalAttachResult | null>,
+  write: (terminalId: string, data: string) =>
+    ipcRenderer.invoke(IPC.terminalWrite, { terminalId, data }) as Promise<void>,
+  resize: (terminalId: string, cols: number, rows: number) =>
+    ipcRenderer.invoke(IPC.terminalResize, { terminalId, cols, rows }) as Promise<void>,
+  close: (terminalId: string) =>
+    ipcRenderer.invoke(IPC.terminalClose, terminalId) as Promise<boolean>,
+  ack: (terminalId: string, bytes: number) =>
+    ipcRenderer.send(IPC.terminalAck, { terminalId, bytes }),
+  list: () => ipcRenderer.invoke(IPC.terminalList) as Promise<TerminalInfo[]>,
+  profiles: (force = false) =>
+    ipcRenderer.invoke(IPC.terminalProfiles, force) as Promise<TerminalProfileSnapshot>,
+  setFocus: (focused: boolean) => ipcRenderer.send(IPC.terminalFocus, focused),
+  onEvent: (listener: (frame: TerminalEventFrame) => void) =>
+    subscribe<TerminalEventFrame>(IPC.terminalEvent, listener),
+};
+
 const bridge: PiDesktopBridge = {
   getAppInfo: () => ipcRenderer.invoke(IPC.appInfo) as Promise<AppInfo>,
   openExternal: (url: string) => ipcRenderer.invoke(IPC.openExternal, url) as Promise<boolean>,
@@ -387,6 +415,7 @@ const bridge: PiDesktopBridge = {
     subscribe<MenuCommand>(IPC.appMenuCommand, listener),
   prefs,
   sessions,
+  terminal,
   projects,
   office,
   integrations,

@@ -66,13 +66,16 @@ describe("IPC allowlist", () => {
     expect(subscribed.size).toBeGreaterThan(3);
   });
 
-  it("covers every declared channel with an invoke or a subscribe", async () => {
+  it("covers every declared channel with an invoke, a send or a subscribe", async () => {
     const preload = await readFile(join(repoRoot, "src/preload/index.ts"), "utf8");
     const invoked = new Set(matchAll(preload, /ipcRenderer\.invoke\(\s*IPC\.([A-Za-z0-9_]+)/g));
+    // Fire-and-forget channels (terminal ack/focus) intentionally use `send`;
+    // their `ipcMain.on` handlers are the counterpart, not an invoke.
+    const sent = new Set(matchAll(preload, /ipcRenderer\.send\(\s*IPC\.([A-Za-z0-9_]+)/g));
     const subscribed = new Set(
       matchAll(preload, /subscribe(?:<[^(]*>)?\(\s*IPC\.([A-Za-z0-9_]+)/g),
     );
-    const covered = new Set([...invoked, ...subscribed]);
+    const covered = new Set([...invoked, ...sent, ...subscribed]);
     const uncovered = Object.keys(IPC).filter((key) => !covered.has(key));
     expect(uncovered).toEqual([]);
   });

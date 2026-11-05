@@ -4,6 +4,7 @@ import type { TabRecord } from "../../../shared/session-ipc";
 import { useAppStore } from "../state/app-store";
 import { WebTabView } from "../web/WebTabView";
 import { SessionView } from "./SessionView";
+import { TerminalView } from "./TerminalView";
 import { WelcomeView } from "./WelcomeView";
 
 const EditorTabView = lazy(async () => {
@@ -34,6 +35,7 @@ export function TabSurface({ tabId }: { tabId: string | null }): React.JSX.Eleme
 /** The kind switch, split out so the hook above is never called conditionally. */
 function TabSurfaceBody({ tab }: { tab: TabRecord }): React.JSX.Element {
   if (tab.kind === "web") return <WebTabView tab={tab} />;
+  if (tab.kind === "terminal") return <TerminalView tab={tab} />;
   if (tab.kind === "editor") {
     return (
       <Suspense fallback={<p className="p-4 text-xs text-ink-muted">Opening editor…</p>}>

@@ -7,7 +7,8 @@ steps must extend it rather than re-invent it.
 
 ```text
 tab strip        session tabs (the topmost app row; the OS frame owns the window
-                 controls) + the "+" action
+                 controls) + New session, New terminal + its profile chevron,
+                 and the grid-layout switcher at the right
 editor tab strip editor tabs in a second row under the session strip; it
                  renders only while at least one file is open
 sidebar          Projects (+ menu: default · new · clone · open folder) ·
@@ -65,7 +66,8 @@ and the panel rail stay global chrome; only the content area splits.
   Tailwind placement literals (`col-start`, `row-start`, `row-span`) so CSS
   auto-placement cannot push a pane into an implicit row. The geometry is unit
   tested without a DOM.
-- **A pane is one `TabRecord`** (`session`, `office`, `web` or `editor`, from any
+- **A pane is one `TabRecord`** (`session`, `office`, `web`, `editor` or
+  `terminal`, from any
   project), rendered by `views/TabSurface.tsx` — the same kind dispatcher the
   solo view uses. `editor-store`, `editor-registry` and the web-tab service are
   keyed by tab id, so **one tab may be visible in one pane only**: assigning a tab
@@ -106,7 +108,10 @@ and the panel rail stay global chrome; only the content area splits.
 
 Entry points: the icon-only layout switcher at the far right of the session strip
 (`layout/GridLayoutMenu.tsx`), View ▸ Layout in the menu, and the command palette.
-The switcher trigger shows the current preset. Its five icons run widest to
+The switcher trigger shows the current preset. To its left sit New Terminal,
+the Terminal profiles chevron (`layout/TerminalProfileMenu.tsx`) and New Session,
+in that order; the chevron opens a one-off terminal with another detected shell
+without changing the default. Its five icons run widest to
 narrowest — four panes at the far left, then the two three-pane shapes, two
 columns, and single at the far right. They have accessible names, not visible
 labels. Each pane has **one controlled

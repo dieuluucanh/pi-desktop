@@ -25,6 +25,7 @@ import { requireProjectPath } from "../../src/shared/git";
 type Handler = (...args: unknown[]) => unknown;
 
 const handlers = new Map<string, Handler>();
+const listeners = new Map<string, Handler>();
 
 vi.mock("electron", () => ({
   BrowserWindow: { getAllWindows: (): unknown[] => [] },
@@ -32,6 +33,10 @@ vi.mock("electron", () => ({
     handle: (channel: string, handler: Handler): void => {
       handlers.set(channel, handler);
     },
+    on: (channel: string, handler: Handler): void => {
+      listeners.set(channel, handler);
+    },
+    removeListener: (): void => undefined,
   },
   shell: { showItemInFolder: (): void => undefined },
 }));
@@ -89,10 +94,24 @@ async function register(recording: Recording): Promise<void> {
     setTitle: () => true,
     relaunch: () => true,
     prefs: { get: async () => DEFAULT_PREFS, set: async () => DEFAULT_PREFS },
+    terminal: {
+      create: async () => ({ kind: "error", code: "not_found", message: "unused" }) as never,
+      attach: async () => null,
+      write: async () => undefined,
+      resize: async () => undefined,
+      close: async () => false,
+      ack: () => undefined,
+      list: async () => [],
+      profiles: async () => ({ profiles: [], defaultProfileId: null, problems: [] }),
+      setFocus: () => undefined,
+    },
     sessions: {
       knownTabIds: () => ["t1"],
       list: envelope,
-      create: async () => envelope(),
+      create: async (input) => {
+        recording.sessionCalls.push({ kind: "create", arg: input });
+        return envelope();
+      },
       close: async () => envelope(),
       closeAll: async (kind) => {
         recording.sessionCalls.push({ kind: "closeAll", arg: kind });
@@ -507,6 +526,27 @@ describe("checkpoint action validation", () => {
 });
 
 describe("session tab lifecycle channels", () => {
+  it("forwards a terminal profile id and rejects it elsewhere", async () => {
+    await invoke(IPC.sessionCreate, {
+      cwd: OPEN_PROJECT,
+      kind: "terminal",
+      profileId: "git-bash",
+    });
+    expect(recording.sessionCalls).toEqual([
+      {
+        kind: "create",
+        arg: { cwd: OPEN_PROJECT, kind: "terminal", profileId: "git-bash" },
+      },
+    ]);
+
+    expect(() =>
+      invoke(IPC.sessionCreate, { cwd: OPEN_PROJECT, kind: "session", profileId: "git-bash" }),
+    ).toThrow(/only valid for a terminal/);
+    expect(() =>
+      invoke(IPC.sessionCreate, { cwd: OPEN_PROJECT, kind: "terminal", profileId: "../x" }),
+    ).toThrow(/invalid terminal profile/);
+  });
+
   it("forwards kind-scoped close, project close, pin and retarget", async () => {
     await invoke(IPC.sessionCloseAll, "editor");
     await invoke(IPC.sessionCloseProject, "/work/app/");

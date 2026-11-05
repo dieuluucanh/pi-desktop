@@ -105,6 +105,9 @@ describe("electron-builder config (plan step 26)", () => {
     const unpacked = block("asarUnpack");
     expect(unpacked).toContain('"**/node_modules/**"');
     expect(unpacked).toContain("resources/runtime/**");
+    // node-pty is N-API: a rebuild would replace the prebuild the bundled Node
+    // loads, so packaging must never run one.
+    expect(builderYaml).toMatch(/npmRebuild:\s*false/);
     // A narrower list must not creep back in as a replacement.
     expect(unpacked).not.toContain('"**/node_modules/@earendil-works/**"');
   });

@@ -43,6 +43,7 @@ describe("sanitizePrefs", () => {
         "sidebarCollapsed",
         "sidebarWidth",
         "telemetryEnabled",
+        "terminal",
         "theme",
         "themeColors",
         "updates",
