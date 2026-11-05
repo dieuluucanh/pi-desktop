@@ -755,18 +755,11 @@ header.header > .header {
 }
 
 /* Starlight 0.42.8 puts search in the flexible middle grid column and the theme
-   group in the right column. Move the theme group into the flexible column and
-   pin search to the rightmost column, so search sits to its right. */
+   group in the right column. Keep that column order: right-align search inside
+   its column so it sits immediately left of the theme icons, which stay at the
+   far right. */
 @media (min-width: 50em) {
-  header.header > .header > .right-group {
-    grid-column: 2;
-    grid-row: 1;
-    justify-self: end;
-  }
-
   header.header > .header > div:has(> site-search) {
-    grid-column: 3;
-    grid-row: 1;
     justify-self: end;
     min-width: 0;
     width: min(22rem, 34vw);
