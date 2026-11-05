@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { PanelLeftOpen, Plus, SquareTerminal } from "lucide-react";
+import { PanelLeftOpen, Plus } from "lucide-react";
 
 import { isSessionTab } from "../../../shared/session-ipc";
 
@@ -8,7 +8,7 @@ import { useAppStore } from "../state/app-store";
 import { Button } from "../ui/button";
 import { GridLayoutMenu } from "./GridLayoutMenu";
 import { TabList } from "./TabList";
-import { TerminalProfileMenu } from "./TerminalProfileMenu";
+import { TerminalSplitButton } from "./TerminalSplitButton";
 
 /**
  * Session tabs (the app's original strip).
@@ -17,15 +17,14 @@ import { TerminalProfileMenu } from "./TerminalProfileMenu";
  * deliberately excluded and rendered by `EditorTabStrip` in the row below, so a
  * file never competes with a running session for the same strip. The row keeps
  * the chrome controls that belong to the session workspace: the
- * collapsed-sidebar escape hatch, New Session, New Terminal (with a one-off
- * profile chevron) and the grid switcher.
+ * collapsed-sidebar escape hatch, New Session, a joined New Terminal chip
+ * (default shell + one-off profile menu) and the grid switcher.
  */
 export function SessionTabStrip(): React.JSX.Element {
   const allTabs = useAppStore((state) => state.tabs);
   const project = useAppStore((state) => state.project);
   const collapsed = useAppStore((state) => state.prefs.sidebarCollapsed);
   const toggleSidebar = useAppStore((state) => state.toggleSidebar);
-  const createSessionTab = useAppStore((state) => state.createSessionTab);
   const tabs = useMemo(() => allTabs.filter(isSessionTab), [allTabs]);
 
   return (
@@ -59,16 +58,7 @@ export function SessionTabStrip(): React.JSX.Element {
         >
           <Plus className="size-3.5" aria-hidden />
         </Button>
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          onClick={() => void createSessionTab("terminal")}
-          aria-label="New terminal"
-          title="New terminal (Ctrl+Shift+T)"
-        >
-          <SquareTerminal className="size-3.5" aria-hidden />
-        </Button>
-        <TerminalProfileMenu />
+        <TerminalSplitButton />
         {/* Far right: the layout switcher (2026-11-03 plan). */}
         <GridLayoutMenu />
       </div>

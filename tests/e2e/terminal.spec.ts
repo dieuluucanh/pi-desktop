@@ -29,6 +29,17 @@ test("@smoke opens a terminal tab, starts a real shell and accepts input", async
   const host = app.window.getByTestId("terminal-host");
   await expect(host.locator(".xterm")).toBeVisible({ timeout: 30_000 });
 
+  // The xterm surface must fill the pane, not just the initial 24 rows. FitAddon
+  // measures the mount div's parent, so this catches a broken height chain.
+  await expect
+    .poll(async () => {
+      const hostBox = await host.boundingBox();
+      const xtermBox = await host.locator(".xterm").boundingBox();
+      if (!hostBox || !xtermBox || hostBox.height === 0) return 0;
+      return xtermBox.height / hostBox.height;
+    })
+    .toBeGreaterThan(0.85);
+
   await host.click();
   await app.window.keyboard.type("echo terminal-e2e");
   await app.window.keyboard.press("Enter");

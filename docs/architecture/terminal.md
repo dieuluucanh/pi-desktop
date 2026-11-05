@@ -14,6 +14,28 @@ this" command runner; the terminal is the "I am driving a shell" surface.
   terminal, so scrollback and alt-screen state survive.
 - Lazy start: the shell spawns when the view first mounts (the active tab or a
   visible pane), never for every restored tab at launch.
+- The strip's New Terminal control is one joined chip: the left segment opens a
+  terminal with the saved default shell, the right chevron opens the one-off
+  profile menu. The two segments keep separate accessible names.
+
+### Sizing
+
+`@xterm/addon-fit` measures **`term.element.parentElement`**, not the app's
+`terminal-host`. The pool therefore keeps a definite-height chain:
+
+```text
+terminal-host (h-full)
+  └─ .terminal-container (h-full min-h-0 w-full overflow-hidden)
+      └─ xterm mount div (h-full w-full)
+          └─ .terminal.xterm
+```
+
+If any wrapper loses its definite height, the mount div's `100%` resolves to
+auto, FitAddon measures the terminal's own content, and xterm locks to its
+initial `rows: 24` — painting only the top of the pane even though the tab
+chrome is full height. `TerminalView` also skips fitting while the host has no
+layout box, so minimizing a window cannot resize the PTY to FitAddon's 2×1
+floor.
 
 ## Process layout
 
@@ -66,9 +88,9 @@ decoder, so a multi-byte character split across chunks is safe.
   (including when the user enters it as a custom path).
 - **Settings → Terminal** is the profile picker. It lists the detected shells,
   offers `Auto` (the first detected profile, preserving the order above) and a
-  validated absolute custom path. The strip's New Terminal button uses the
-  saved default; its chevron opens a one-off terminal with another detected
-  profile without changing the default.
+  validated absolute custom path. The strip's joined New Terminal chip uses the
+  saved default for its main segment; its chevron opens a one-off terminal with
+  another detected profile without changing the default.
 - A terminal opened with a one-off profile stores `profileId` on its `TabRecord`,
   so restore and restart keep the same shell. Changing the default only affects
   new terminals; existing tabs keep the shell they were opened with.

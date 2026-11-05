@@ -94,7 +94,11 @@ export class TerminalPool {
     const existing = this.entries.get(terminalId);
     if (existing) return existing;
     const container = document.createElement("div");
-    container.className = "terminal-container";
+    // FitAddon measures `term.element.parentElement` (the xterm mount div), not
+    // the host. The mount div is `h-full`, so this container must also have a
+    // definite height; without it the percentage resolves to auto and the
+    // terminal locks to its initial 24 rows in the top of the pane.
+    container.className = "terminal-container h-full min-h-0 w-full overflow-hidden";
     container.dataset.terminalId = terminalId;
     const term = this.factory.create(options);
     if (term.element) container.append(term.element);

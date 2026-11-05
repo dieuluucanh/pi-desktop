@@ -194,8 +194,15 @@ export function TerminalView({
     const host = hostRef.current;
     if (!terminalId || !host || !pool.has(terminalId)) return;
     pool.mount(terminalId, host);
-    const size = pool.fit(terminalId);
-    if (size) store.getState().resize(tab.id, size.cols, size.rows);
+
+    // A hidden pane or a minimized window has no layout box; FitAddon would
+    // propose its 2x1 floor and resize the PTY to that. Wait for a real box.
+    const fitHost = (): void => {
+      if (host.clientWidth <= 0 || host.clientHeight <= 0) return;
+      const next = pool.fit(terminalId);
+      if (next) store.getState().resize(tab.id, next.cols, next.rows);
+    };
+    fitHost();
 
     const term: PoolTerminal | undefined = pool.get(terminalId)?.term;
     if (!term) return;
@@ -238,13 +245,7 @@ export function TerminalView({
     host.addEventListener("focusin", onFocus);
     host.addEventListener("focusout", onBlur);
 
-    const observer =
-      typeof ResizeObserver === "undefined"
-        ? null
-        : new ResizeObserver(() => {
-            const next = pool.fit(terminalId);
-            if (next) store.getState().resize(tab.id, next.cols, next.rows);
-          });
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fitHost);
     observer?.observe(host);
     term.focus();
 

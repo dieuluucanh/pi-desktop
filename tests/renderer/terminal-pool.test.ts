@@ -120,6 +120,12 @@ describe("TerminalPool", () => {
     expect(first.container.dataset.terminalId).toBe("t-1");
     expect(first.container.contains(terms[0]!.element)).toBe(true);
     expect(pool.has("t-1")).toBe(true);
+    // FitAddon measures the mount div's parent; the container must be a
+    // definite-height box or the terminal locks to its initial 24 rows.
+    expect(first.container.className).toContain("terminal-container");
+    expect(first.container.className).toContain("h-full");
+    expect(first.container.className).toContain("min-h-0");
+    expect(first.container.className).toContain("w-full");
   });
 
   it("moves the container between hosts instead of recreating the terminal", () => {

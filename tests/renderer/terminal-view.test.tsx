@@ -1,5 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TerminalView } from "../../src/renderer/src/views/TerminalView";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { createTerminalStore } from "../../src/renderer/src/state/terminal-store";
@@ -44,6 +44,8 @@ class FakeTerm implements PoolTerminal {
   private readonly bellListeners = new Set<() => void>();
   selection = "";
   keyHandler: ((event: KeyboardEvent) => boolean) | null = null;
+  fitCalls = 0;
+  fitSize = { cols: 80, rows: 24 };
 
   write(bytes: Uint8Array, callback?: () => void): void {
     this.writes.push(bytes);
@@ -52,7 +54,8 @@ class FakeTerm implements PoolTerminal {
   focus(): void {}
   dispose(): void {}
   fit(): { cols: number; rows: number } {
-    return { cols: 80, rows: 24 };
+    this.fitCalls += 1;
+    return this.fitSize;
   }
   getSelection(): string {
     return this.selection;
@@ -114,6 +117,7 @@ function setup(outcome?: TerminalCreateOutcome) {
     },
   });
   const writes: Array<[string, string]> = [];
+  const resizes: Array<[string, number, number]> = [];
   const info: TerminalInfo = {
     id: "t-1",
     pid: 100,
@@ -139,7 +143,9 @@ function setup(outcome?: TerminalCreateOutcome) {
     async write(terminalId, data) {
       writes.push([terminalId, data]);
     },
-    async resize() {},
+    async resize(terminalId, cols, rows) {
+      resizes.push([terminalId, cols, rows]);
+    },
     async close() {
       return true;
     },
@@ -161,12 +167,16 @@ function setup(outcome?: TerminalCreateOutcome) {
     options: poolOptions,
     requestTrust: async () => false,
   });
-  return { store, pool, terms, writes, creates };
+  return { store, pool, terms, writes, resizes, creates };
 }
 
 describe("TerminalView", () => {
   beforeEach(() => {
     useAppStore.setState({ prefs: { ...DEFAULT_PREFS } });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   function setTerminalPrefs(patch: Partial<typeof DEFAULT_PREFS.terminal>): void {
@@ -337,5 +347,53 @@ describe("TerminalView", () => {
 
     expect(await screen.findByText("no shell found")).toBeTruthy();
     expect(screen.getByText("Retry")).toBeTruthy();
+  });
+
+  it("skips fitting while the host has no layout box", async () => {
+    class FakeResizeObserver {
+      static latest: FakeResizeObserver | undefined;
+      private readonly callback: ResizeObserverCallback;
+
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+        FakeResizeObserver.latest = this;
+      }
+
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+      trigger(): void {
+        this.callback([], this as unknown as ResizeObserver);
+      }
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+
+    const { store, pool, terms, resizes } = setup();
+    render(
+      <TerminalView
+        tab={TAB}
+        store={store}
+        pool={pool}
+        requestTrust={async () => false}
+        platform="linux"
+      />,
+    );
+    await waitFor(() => expect(store.getState().forTab(TAB.id)?.status).toBe("attached"));
+
+    const host = screen.getByTestId("terminal-host");
+    Object.defineProperty(host, "clientWidth", { configurable: true, value: 0 });
+    Object.defineProperty(host, "clientHeight", { configurable: true, value: 0 });
+    const observer = FakeResizeObserver.latest!;
+    const before = terms[0]!.fitCalls;
+    act(() => observer.trigger());
+    expect(terms[0]!.fitCalls).toBe(before);
+    expect(resizes).toHaveLength(0);
+
+    Object.defineProperty(host, "clientWidth", { configurable: true, value: 800 });
+    Object.defineProperty(host, "clientHeight", { configurable: true, value: 600 });
+    terms[0]!.fitSize = { cols: 100, rows: 40 };
+    act(() => observer.trigger());
+    expect(terms[0]!.fitCalls).toBe(before + 1);
+    await waitFor(() => expect(resizes).toEqual([["t-1", 100, 40]]));
   });
 });

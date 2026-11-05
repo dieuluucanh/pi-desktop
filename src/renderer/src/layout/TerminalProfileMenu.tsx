@@ -21,7 +21,14 @@ import {
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
 
-export function TerminalProfileMenu(): React.JSX.Element {
+export interface TerminalProfileMenuProps {
+  /** Segment geometry when the trigger lives inside the joined chip. */
+  triggerClassName?: string;
+}
+
+export function TerminalProfileMenu({
+  triggerClassName,
+}: TerminalProfileMenuProps = {}): React.JSX.Element {
   const prefs = useAppStore((state) => state.prefs.terminal);
   const createSessionTab = useAppStore((state) => state.createSessionTab);
   const openTerminalSettings = useAppStore((state) => state.openTerminalSettings);
@@ -41,6 +48,7 @@ export function TerminalProfileMenu(): React.JSX.Element {
         <Button
           size="icon-sm"
           variant="ghost"
+          className={triggerClassName}
           aria-label="Terminal profiles"
           title="New terminal with a profile"
           data-testid="terminal-profile-menu"

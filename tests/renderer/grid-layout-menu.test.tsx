@@ -72,7 +72,7 @@ describe("gridLayoutChoices", () => {
 });
 
 describe("the strip control", () => {
-  it("orders New session, New terminal, the profile chevron and the layout switcher", () => {
+  it("orders New session, the joined terminal chip and the layout switcher", () => {
     render(<SessionTabStrip />);
     const order = [
       screen.getByRole("button", { name: "New session" }),
@@ -80,6 +80,9 @@ describe("the strip control", () => {
       screen.getByRole("button", { name: "Terminal profiles" }),
       screen.getByRole("button", { name: "Grid layout" }),
     ];
+    const terminalChip = screen.getByRole("group", { name: "Terminal actions" });
+    expect(terminalChip).toContainElement(order[1]!);
+    expect(terminalChip).toContainElement(order[2]!);
     for (let index = 0; index < order.length - 1; index += 1) {
       expect(
         order[index]!.compareDocumentPosition(order[index + 1]!) & Node.DOCUMENT_POSITION_FOLLOWING,

@@ -34,6 +34,8 @@ export function createXtermFactory(): TerminalFactory {
         allowProposedApi: true,
       });
 
+      // FitAddon measures this element's parent (the pool container), so both
+      // this mount div and `.terminal-container` must have a definite height.
       const container = document.createElement("div");
       container.className = "h-full w-full";
       term.open(container);

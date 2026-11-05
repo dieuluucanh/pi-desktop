@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
-import { TerminalProfileMenu } from "../../src/renderer/src/layout/TerminalProfileMenu";
+import { TerminalSplitButton } from "../../src/renderer/src/layout/TerminalSplitButton";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { TerminalProfileSnapshot } from "../../src/shared/terminal-profiles";
@@ -42,8 +42,10 @@ beforeEach(() => {
 describe("TerminalProfileMenu", () => {
   it("opens a one-off terminal with the chosen detected profile", async () => {
     const handles = installBridge({ terminalProfiles: PROFILES });
-    render(<TerminalProfileMenu />);
+    render(<TerminalSplitButton />);
 
+    // The chevron lives inside the joined chip; its menu is the same one-off
+    // profile menu the standalone trigger used to own.
     await userEvent.click(screen.getByRole("button", { name: "Terminal profiles" }));
     expect(
       await screen.findByRole("menuitem", { name: "Select default profile…" }),
