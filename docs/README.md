@@ -14,6 +14,10 @@
 
 ## Release notes
 
+- [`releases/v0.6.0.md`](releases/v0.6.0.md) — v0.6.0 release notes (new files in
+  brand-new folders now appear in Changes with a full-file diff, honest status
+  timeouts, and the one-page product site), install table, the known-limitations
+  list and the verification status.
 - [`releases/v0.5.0.md`](releases/v0.5.0.md) — v0.5.0 release notes (first public,
   cross-platform, auto-updating release: the tag-driven pipeline, the macOS artefacts,
   the live update feed and the macOS manual-update rule), install table, the

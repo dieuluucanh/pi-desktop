@@ -82,10 +82,29 @@ Nothing fails silently.
 ## Changes and History
 
 - **Changes** shows two collapsible groups, _Staged Changes_ and _Changes_, with
-  `M`/`A`/`D`/`R`/`U` badges, a per-file hover menu (stage, unstage, discard, open
-  diff), and group-level _Stage all_ / _Unstage all_. A discard of a tracked file
-  is a `git checkout --`; a discard of an **untracked** file moves it to the OS
-  trash, not to oblivion.
+  `M`/`A`/`D`/`R`/`C`/`U` badges, a per-file hover menu (_Show diff_, _Open file_,
+  _Stage_/_Unstage_, _Discard_), and group-level _Stage all_ / _Unstage all_.
+  Clicking the path (or the diff icon) opens the side that group represents: the
+  index side under _Staged Changes_, the work tree under _Changes_. Rows are
+  sorted by path rather than git's order, so a newly created file cannot sink
+  below a long list of modifications. A discard of a tracked file is a `git
+checkout --`; a discard of an **untracked** file moves it to the OS trash, not
+  to oblivion.
+- **New files are first-class rows.** A file created in a folder that did not
+  exist yet — the common case when an agent scaffolds a feature — appears with
+  its own `U` row, within one poll, and the header count and _Stage all_ include
+  it. Click its path for a full-file diff: every line is shown as added, and
+  there is no _Stage hunk_ button, because a new file has no index side to apply
+  one hunk to. _Stage_ on the row stages the whole file. A binary file shows one
+  "binary file changed" row; an oversized file shows the viewer's too-large
+  notice. A nested git repository is deliberately not listed here (the Explorer
+  still sees it), which matches VS Code's SCM list.
+- **_Open file_ opens an editor tab** at that path and is hidden for a deleted
+  row, because there is no work-tree file to open.
+- **A slow repository says so.** `git status` is given 10 s while the panel
+  polls; if it still does not answer, the panel says _Git did not answer_ and
+  offers no _Initialize repository_ button. Use a terminal for a repository that
+  large.
 - **History** lists commits, newest first, with _Load more_. Each commit is one
   line: its message, then the refs it carries at the right. A local branch and
   its matching remote-tracking branch fold into one chip — `main` with a cloud —

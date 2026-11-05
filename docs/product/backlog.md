@@ -23,7 +23,7 @@ it matters, a workaround that ships today.
 
 | Item                                                                    | Where it was deferred                             | Why, and what remains                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ----------------------------------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Code signing / notarization** (Windows SmartScreen, macOS Gatekeeper) | Release engineering (AGENTS.md backlog B1/B2)     | Signing needs certificates and a release pipeline. v0.5.0 ships unsigned; the guide documents the first-run prompts, including the macOS 15+ System Settings approval.                                                                                                                                                                                                                                                                                                                                                                              |
+| **Code signing / notarization** (Windows SmartScreen, macOS Gatekeeper) | Release engineering (AGENTS.md backlog B1/B2)     | Signing needs certificates and a release pipeline. v0.6.0 ships unsigned; the guide documents the first-run prompts, including the macOS 15+ System Settings approval.                                                                                                                                                                                                                                                                                                                                                                              |
 | **External-editor launcher (Ctrl+G)**                                   | ✅ shipped (session-parity step 21)               | `Ctrl+G` opens the guaranteed in-app expanded editor; a configured `externalEditor`/`$VISUAL`/`$EDITOR` is spawned **without a shell** and awaited, with a temp-file round trip and a "reload from file" path when a GUI editor forks. Terminal editors (vim/nano) stay unsupported because the app has no TTY.                                                                                                                                                                                                                                     |
 | **A UI caller for `files.read` / `files.write`**                        | Step 7 deferred, step 23 implemented the handlers | The secure, cwd-rooted handlers exist and are tested (and are what the security suite attacks), but no view uses them yet.                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **Backups for `models.json`, `keybindings.json`, imported themes**      | Step 12 (settings backup only)                    | Writes are atomic and `fsync`'d; only `settings.json` gets a pre-write backup today.                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
@@ -67,9 +67,9 @@ Next:
   certificate keeps Squirrel.Mac's designated requirement constant across builds; it
   needs one Mac + Keychain to mint and two workflow secrets. Then set
   `PI_MAC_SIGNING=developer-id` and the `inAppUpdatesAllowed` gate opens by itself.
-- **Prove one update cycle.** v0.5.0 is the first published feed, so the download →
-  restart → install path has no prior version to upgrade from yet; the next release is
-  its first real test.
+- **Prove one update cycle.** v0.6.0 is the first version an installed v0.5.0
+  build can see on the published feed, so the download → restart → install path
+  gets its first real test here (Windows and Linux AppImage; macOS stays manual).
 - **Acceptance matrices.** Run the step-27 matrix on a clean Windows VM with real
   providers and a real Office install; install the Linux `.deb` and AppImage on a real
   desktop (launcher entry, window association, first session) and promote Linux out of
@@ -80,7 +80,7 @@ Next:
 
 ## Public site
 
-Shipped with v0.5.0: the GitHub Pages site in `site/`, the one-page product site,
+Shipped with v0.6.0: the GitHub Pages site in `site/`, the one-page product site,
 the generated docs and release notes, the privacy page and the Playwright
 screenshot harness. It has no analytics and no custom domain.
 

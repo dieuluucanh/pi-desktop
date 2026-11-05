@@ -17,7 +17,13 @@ const HREFS = [
   "https://github.com/dieuluucanh/pi-desktop",
 ];
 const LABELS = ["Introduction", "Features", "Screenshots", "Installation", "FAQ", "Docs", "GitHub"];
-const PAGES = ["index.html", "guide/getting-started/index.html", "releases/v0.5.0/index.html"];
+const currentVersion =
+  /<meta name="pi-desktop-release" content="([^"]+)"/.exec(read("index.html"))?.[1] ?? "";
+const PAGES = [
+  "index.html",
+  "guide/getting-started/index.html",
+  `releases/v${currentVersion}/index.html`,
+];
 
 function navSlice(html: string): string {
   const start = html.indexOf('class="pi-site-nav__inner"');
@@ -52,7 +58,10 @@ describe("product navigation", () => {
   });
 
   it("marks Docs as the current page on docs and release-note pages", () => {
-    for (const page of ["guide/getting-started/index.html", "releases/v0.5.0/index.html"]) {
+    for (const page of [
+      "guide/getting-started/index.html",
+      `releases/v${currentVersion}/index.html`,
+    ]) {
       expect(navSlice(read(page)), page).toMatch(
         /href="\/pi-desktop\/docs\/"[^>]*aria-current="page"/,
       );

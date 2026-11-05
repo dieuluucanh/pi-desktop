@@ -25,6 +25,8 @@ function releaseVersion(html: string): string {
   return /<meta name="pi-desktop-release" content="([^"]+)"/.exec(html)?.[1] ?? "";
 }
 
+const currentVersion = releaseVersion(read("index.html"));
+
 describe("installation section", () => {
   it("is the only page, with a direct release-asset link for every installer", () => {
     const html = read("index.html");
@@ -49,7 +51,7 @@ describe("installation section", () => {
     expect(existsSync(join(dist, "features"))).toBe(false);
     expect(existsSync(join(dist, "screenshots"))).toBe(false);
     expect(existsSync(join(dist, "releases", "index.html"))).toBe(false);
-    expect(existsSync(join(dist, "releases", "v0.5.0", "index.html"))).toBe(true);
+    expect(existsSync(join(dist, "releases", `v${currentVersion}`, "index.html"))).toBe(true);
   });
 
   it("gives the landing CTAs the primary installer without JavaScript", () => {

@@ -12,6 +12,8 @@ function pngSize(path: string): { width: number; height: number } {
 const siteRoot = fileURLToPath(new URL("../../", import.meta.url));
 const dist = join(siteRoot, "dist");
 const read = (relative: string) => readFileSync(join(dist, relative), "utf8");
+const currentVersion =
+  /<meta name="pi-desktop-release" content="([^"]+)"/.exec(read("index.html"))?.[1] ?? "";
 
 describe("built SEO output", () => {
   it("has one canonical, an OG image and theme metadata", () => {
@@ -36,7 +38,7 @@ describe("built SEO output", () => {
       expect(sitemap).not.toContain(`/pi-desktop/${removed}/</loc>`);
     }
     expect(sitemap).not.toContain("/pi-desktop/releases/</loc>");
-    expect(sitemap).toContain("/pi-desktop/releases/v0.5.0/</loc>");
+    expect(sitemap).toContain(`/pi-desktop/releases/v${currentVersion}/</loc>`);
   });
 
   it("ships a 1200x630 OG image", () => {

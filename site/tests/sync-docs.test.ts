@@ -14,22 +14,27 @@ import {
 } from "../scripts/sync-docs.mjs";
 
 const source = "docs/guide/getting-started.md";
+const packageJson = JSON.parse(
+  readFileSync(join(DEFAULT_REPO_ROOT, "package.json"), "utf8"),
+) as { version: string };
+const currentVersion = packageJson.version;
 
 describe("docs sync", () => {
   it("maps every docs source and keeps the release routes dotted", () => {
     const manifest = syncDocs({ validate: true });
-    expect(manifest.docs).toHaveLength(33);
-    expect(manifest.releases).toHaveLength(5);
-    expect(manifest.version).toBe("0.5.0");
+    expect(manifest.docs).toHaveLength(34);
+    expect(manifest.releases).toHaveLength(6);
+    expect(manifest.version).toBe(currentVersion);
     expect(manifest.docs.map((doc: { route: string }) => doc.route)).toEqual(
       expect.arrayContaining([
         "/docs/",
         "/guide/getting-started/",
         "/architecture/app-shell/",
-        "/releases/v0.5.0/",
+        `/releases/v${currentVersion}/`,
       ]),
     );
     expect(manifest.releases.map((release: { version: string }) => release.version)).toEqual([
+      currentVersion,
       "0.5.0",
       "0.4.0",
       "0.3.0",
@@ -49,7 +54,7 @@ describe("docs sync", () => {
     );
     expect(rewriteLink("projects.md", source, DEFAULT_REPO_ROOT)).toBe("/guide/projects/");
     expect(rewriteLink("../README.md", source, DEFAULT_REPO_ROOT)).toBe("/docs/");
-    expect(rewriteLink("../../LICENSE", "docs/releases/v0.5.0.md", DEFAULT_REPO_ROOT)).toBe(
+    expect(rewriteLink("../../LICENSE", `docs/releases/v${currentVersion}.md`, DEFAULT_REPO_ROOT)).toBe(
       "https://github.com/dieuluucanh/pi-desktop/blob/main/LICENSE",
     );
     expect(rewriteLink("https://pi.dev", source, DEFAULT_REPO_ROOT)).toBe("https://pi.dev");

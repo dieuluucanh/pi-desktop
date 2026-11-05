@@ -5,18 +5,21 @@
 [Website](https://dieuluucanh.github.io/pi-desktop/) ·
 [Installation](https://dieuluucanh.github.io/pi-desktop/#installation) ·
 [Documentation](https://dieuluucanh.github.io/pi-desktop/docs/) ·
-[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.5.0/)
+[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.6.0/)
 
 A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global
 installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
 `~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
-> **Status:** v0.5.0 — the first public release. Windows, Linux and macOS
+> **Status:** v0.6.0 — the second public release. A new file created in a
+> brand-new folder is now a first-class `U` row in Source Control, with a
+> full-file diff, _Open file_ and whole-file staging; a slow repository reports
+> a timeout instead of looking like "not a repository". Windows, Linux and macOS
 > installers are built and published from CI on a version tag. The Windows
 > installer is the primary artefact; macOS and Linux are beta, and builds are
 > unsigned. Known limitations and the deferred backlog are recorded in
-> [docs/releases/v0.5.0.md](docs/releases/v0.5.0.md) and
+> [docs/releases/v0.6.0.md](docs/releases/v0.6.0.md) and
 > [docs/product/backlog.md](docs/product/backlog.md).
 >
 > **Pi for Office is an optional integration.** It installs from Extensions →
@@ -131,7 +134,7 @@ the Markdown in `docs/` remains the source.
   host protocol + RPC mapping, extension UI host + TUI surface, Office
   integration, runtime, pinned versions).
 - **Parity** — [docs/product/parity.md](docs/product/parity.md).
-- **Release notes** — [docs/releases/v0.5.0.md](docs/releases/v0.5.0.md)
+- **Release notes** — [docs/releases/v0.6.0.md](docs/releases/v0.6.0.md)
   (install table, known limitations, verification status).
 - **Backlog** — [docs/product/backlog.md](docs/product/backlog.md).
 - **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md) and

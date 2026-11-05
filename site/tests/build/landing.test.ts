@@ -5,12 +5,13 @@ import { describe, expect, it } from "vitest";
 
 const siteRoot = fileURLToPath(new URL("../../", import.meta.url));
 const html = readFileSync(join(siteRoot, "dist", "index.html"), "utf8");
+const version = /<meta name="pi-desktop-release" content="([^"]+)"/.exec(html)?.[1] ?? "";
 
 describe("landing page", () => {
   it("has the hero, product claim and status", () => {
     expect(html).toContain("The Pi coding agent,");
     expect(html).toContain("without the terminal.");
-    expect(html).toContain("v0.5.0");
+    expect(html).toContain(`v${version}`);
     expect(html).toContain("Windows primary");
     expect(html).toContain("macOS/Linux beta");
     expect(html).toContain("unsigned");
@@ -76,7 +77,7 @@ describe("landing page", () => {
       "/pi-desktop/#faq",
       "/pi-desktop/docs/",
       "/pi-desktop/privacy/",
-      "/pi-desktop/releases/v0.5.0/",
+      `/pi-desktop/releases/v${version}/`,
       "https://github.com/dieuluucanh/pi-desktop",
     ]) {
       expect(html).toContain(href);
