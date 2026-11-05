@@ -71,6 +71,11 @@ function resetStore(): void {
     projectSessions: [],
     projectSessionsLoaded: true,
     projectSessionsError: null,
+    projectSessionsErrorKind: null,
+    projectSessionsSearching: false,
+    projectSessionsTotal: 0,
+    projectSessionsMatched: 0,
+    projectSessionsTruncated: false,
     sessionTreeOpen: false,
     sessionTreeTabId: null,
     sessionTree: null,
@@ -114,8 +119,20 @@ describe("SessionBrowserDialog", () => {
     });
   });
 
-  it("filters the list with the search box", async () => {
-    installBridge();
+  it("asks the host for a filtered page and renders its rows", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async (input: { method: string }) =>
+      input.method === "session.list"
+        ? {
+            sessions: [summary({ path: "/p/a.jsonl", id: "a", name: "Alpha task" })],
+            total: 2,
+            matched: 1,
+            truncated: false,
+            error: null,
+          }
+        : {},
+    );
+    (bridge.sessions as unknown as { request: unknown }).request = request;
     useAppStore.setState({
       sessionBrowserOpen: true,
       projectSessions: [
@@ -123,13 +140,39 @@ describe("SessionBrowserDialog", () => {
         summary({ path: "/p/b.jsonl", id: "b", name: "Beta task" }),
       ],
       projectSessionsLoaded: true,
+      projectSessionsTotal: 2,
+      projectSessionsMatched: 2,
     });
 
     render(<SessionBrowserDialog />);
     await userEvent.type(screen.getByLabelText("Search sessions"), "alpha");
 
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: "session.list",
+          params: expect.objectContaining({ query: "alpha" }),
+        }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByText("Beta task")).not.toBeInTheDocument());
     expect(screen.getByText("Alpha task")).toBeInTheDocument();
-    expect(screen.queryByText("Beta task")).not.toBeInTheDocument();
+  });
+
+  it("shows a query error instead of an empty list", () => {
+    installBridge();
+    useAppStore.setState({
+      sessionBrowserOpen: true,
+      projectSessions: [],
+      projectSessionsLoaded: true,
+      projectSessionsError: "Unterminated group",
+      projectSessionsErrorKind: "query",
+      projectSessionsTotal: 4,
+    });
+
+    render(<SessionBrowserDialog />);
+    expect(screen.getByRole("alert")).toHaveTextContent(/Invalid regular expression/);
+    expect(screen.queryByText(/No sessions yet/)).not.toBeInTheDocument();
   });
 
   it("asks before deleting, then trashes the session", async () => {

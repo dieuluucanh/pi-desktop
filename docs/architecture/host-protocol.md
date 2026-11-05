@@ -38,8 +38,22 @@ truth and supersedes the group table's implications.
   `failed` instead of pretending nothing happened.
 - A result at or above `BLOB_SPILL_THRESHOLD_BYTES` (1 MiB) is written to the
   host's blob cache and replaced by `{"$blob":"<path>","bytes":N}`; read it back
-  with `host.blobs.read`. That method is deliberately exempt from spilling again,
-  and it refuses any path outside the blob directory.
+  with `host.blobs.read`. **Every response consumer must resolve that reference.**
+  Treating the missing field as an empty result is a bug (the 2026-11-05 empty
+  `/resume` browser was exactly that). The renderer does this once, for all
+  `sessions.request` calls, in `src/renderer/src/state/host-response.ts`.
+- `host.blobs.read` is deliberately exempt from spilling again, refuses any path
+  outside the blob directory, and returns **UTF-8-safe byte-range chunks**:
+  `{ path, contents, offset, nextOffset, size, done }`. Pass `offset` (and
+  optionally `maxBytes`, default 2 MiB) and concatenate until `done`; the host
+  never returns a frame above `MAX_FRAME_BYTES`. A legacy host that answers with
+  the whole blob and no `done` is read as a single final chunk.
+- `session.list` is a bounded projection, not the raw `SessionInfo[]`: it accepts
+  `query`, `scope`, `cwd`, `sort`, `namedOnly`, `limit` and `refresh`, filters and
+  sorts in the control host over the full message text, and returns
+  `{ sessions, total, matched, truncated, error }` with no `allMessagesText`. The
+  page stays under the spill threshold; `truncated` tells the browser it is
+  showing the newest subset.
 - An **event** payload over the threshold is spilled _in place_: each oversized
   top-level field (a tool `result`, a message body) becomes a `BlobRef` while the
   event keeps its identity, so the renderer can still render the card and fetch

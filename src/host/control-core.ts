@@ -21,6 +21,12 @@ import { createThemeHandlers, THEME_METHODS, type ThemePort } from "./themes";
 import { resolveListedSession, SessionFileError } from "./session-files";
 import { createSettingsHandlers, SETTINGS_METHODS, type SettingsPort } from "./settings";
 import type { HostHandler } from "./service";
+import {
+  parseSessionListQuery,
+  type SessionListEntry,
+  type SessionListPage,
+  type SessionListQuery,
+} from "../shared/session-browser";
 
 /**
  * The control core (plan step 3, decision D-A3).
@@ -43,6 +49,14 @@ export interface ControlCoreDeps {
   settings: SettingsPort;
   /** Lists every session of the profile (all projects), for the session browser. */
   listSessions(): Promise<unknown[]>;
+  /**
+   * Answers `session.list` with a filtered, sorted, bounded page (session
+   * browser fix). The full listing above stays the authority for delete/rename
+   * validation; without this port a control host keeps the legacy raw answer.
+   */
+  listSessionPage?(query: SessionListQuery): Promise<SessionListPage<SessionListEntry>>;
+  /** Drops any cached session listing (the control host's shutdown path). */
+  disposeCatalog?(): void;
   /**
    * The Extensions hub's loader source (plan step 13). Optional like the other
    * ports: a control host without it answers `resources.list` with
@@ -124,7 +138,21 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
 
     handlers: () => ({
       ...createSettingsHandlers({ resolvePort: () => deps.settings }).handlers(),
-      "session.list": async () => ({ sessions: await deps.listSessions() }),
+      "session.list": async (params) => {
+        const query = parseSessionListQuery(params);
+        if (deps.listSessionPage) return deps.listSessionPage(query);
+        // Legacy fallback: a host without the catalog still answers, and the
+        // renderer can read the raw rows (it clamps text itself). Production
+        // control hosts always take the projected path above.
+        const sessions = await deps.listSessions();
+        return {
+          sessions,
+          total: sessions.length,
+          matched: sessions.length,
+          truncated: false,
+          error: null,
+        };
+      },
       // Validation only: the app performs the recoverable delete with the OS
       // trash API, which a host process does not have (see `session-files.ts`).
       "session.delete": async (params) =>
@@ -197,6 +225,7 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
       } catch {
         // Intentionally ignored: the write path already surfaces its own errors.
       }
+      deps.disposeCatalog?.();
     },
   };
 }

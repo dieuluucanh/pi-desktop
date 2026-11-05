@@ -1,10 +1,13 @@
 import { PassThrough } from "node:stream";
 import { join, normalize } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createHostService, type HostServiceOptions } from "../../src/host/service";
+import { createHostService, readBlobChunk, type HostServiceOptions } from "../../src/host/service";
 import {
+  BLOB_CHUNK_BYTES,
+  MAX_FRAME_BYTES,
   decodeFrame,
   isBlobRef,
+  type BlobReadResult,
   type HostFrame,
   type HostResponseFrame,
 } from "../../src/shared/host-protocol";
@@ -16,14 +19,9 @@ import {
 
 const BLOB_DIR = normalize("C:/blobs");
 
-interface BlobReadResult {
-  path: string;
-  contents: string | null;
-}
-
 function isBlobReadResult(value: unknown): value is BlobReadResult {
   if (typeof value !== "object" || value === null || !("contents" in value)) return false;
-  return typeof value.contents === "string" || value.contents === null;
+  return typeof value.contents === "string";
 }
 
 function harness(options: Partial<HostServiceOptions> = {}) {
@@ -307,6 +305,67 @@ describe("host service blob cache", () => {
     const host = harness();
     await host.request(1, "host.blobs.read", {});
     expect(host.last()).toMatchObject({ ok: false, error: { code: "bad_request" } });
+  });
+
+  it("reports a blob that is no longer on disk with a coded error", async () => {
+    const host = harness();
+    await host.request(1, "host.blobs.read", { path: join(BLOB_DIR, "missing.json") });
+    expect(host.last()).toMatchObject({ ok: false, error: { code: "not_found" } });
+  });
+
+  it("chunks on UTF-8 code-point boundaries", () => {
+    const text = "a😀b€c";
+    let offset = 0;
+    let rebuilt = "";
+    for (let index = 0; index < 16; index++) {
+      const chunk = readBlobChunk(text, "/blobs/x.json", offset, 1);
+      rebuilt += chunk.contents;
+      expect(chunk.contents).not.toContain("�");
+      if (chunk.done) break;
+      expect(chunk.nextOffset).toBeGreaterThan(offset);
+      offset = chunk.nextOffset;
+    }
+    expect(rebuilt).toBe(text);
+  });
+
+  it("rejects an offset that lands inside a multi-byte character", () => {
+    expect(() => readBlobChunk("a😀b", "/blobs/x.json", 2, 16)).toThrow(/UTF-8 boundary/);
+  });
+
+  it("returns an empty final chunk for an offset past the end", () => {
+    expect(readBlobChunk("abc", "/blobs/x.json", 99, 16)).toMatchObject({
+      contents: "",
+      offset: 3,
+      nextOffset: 3,
+      size: 3,
+      done: true,
+    });
+  });
+
+  it("reads a 3 MiB blob back in frames below the frame limit", async () => {
+    const text = "z".repeat(3 * 1024 * 1024);
+    const serialized = JSON.stringify({ text });
+    const host = harness({ handlers: { "messages.get": () => ({ text }) } });
+    await host.request(1, "messages.get");
+    const ref = host.lastResult();
+    if (!isBlobRef(ref)) throw new Error("expected a blob reference");
+
+    let offset = 0;
+    let rebuilt = "";
+    for (let index = 0; index < 8; index++) {
+      await host.request(2 + index, "host.blobs.read", {
+        path: ref.$blob,
+        offset,
+        maxBytes: BLOB_CHUNK_BYTES,
+      });
+      expect(Buffer.byteLength(JSON.stringify(host.last()), "utf8")).toBeLessThan(MAX_FRAME_BYTES);
+      const result = host.lastResult() as BlobReadResult;
+      rebuilt += result.contents;
+      if (result.done) break;
+      expect(result.nextOffset).toBeGreaterThan(offset);
+      offset = result.nextOffset;
+    }
+    expect(rebuilt).toBe(serialized);
   });
 });
 

@@ -7,8 +7,13 @@ import {
   parseSessionQuery,
   groupSessionsByProject,
   matchesSessionQuery,
+  MAX_SESSION_LIST_BYTES,
   MAX_SESSION_SUMMARIES,
   mostRecentSessionForProject,
+  parseSessionListPage,
+  parseSessionListQuery,
+  projectSessionListEntry,
+  projectSessionListPage,
   sanitizeSessionList,
   sanitizeSessionSummary,
   sessionDisplayTitle,
@@ -16,6 +21,7 @@ import {
   sortSessionsByRecency,
   visibleSessionTreeRows,
 } from "../../src/shared/session-browser";
+import { BLOB_SPILL_THRESHOLD_BYTES } from "../../src/shared/host-protocol";
 
 /**
  * The session browser's pure model (plan step 11): untrusted `SessionInfo`
@@ -451,5 +457,162 @@ describe("session tree view (plan step 17)", () => {
     ).toEqual(["b1"]);
     expect(sessionTreeHasChildren(rows, "u1")).toBe(true);
     expect(sessionTreeHasChildren(rows, "c1")).toBe(false);
+  });
+});
+
+describe("projected session list (session.list wire shape)", () => {
+  const projected = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    path: "/p/a.jsonl",
+    id: "a",
+    cwd: "/work/a",
+    name: null,
+    created: 1,
+    modified: 2,
+    messageCount: 3,
+    title: "A title",
+    ...overrides,
+  });
+
+  it("prefers a host-computed title over the name and first message", () => {
+    const session = sanitizeSessionSummary(
+      rawSession({ title: "Host title", name: "Name", firstMessage: "First" }),
+    )!;
+    expect(sessionDisplayTitle(session)).toBe("Host title");
+  });
+
+  it("sanitizes a projected row without transcript text", () => {
+    const session = sanitizeSessionSummary(projected())!;
+    expect(session).toMatchObject({
+      path: "/p/a.jsonl",
+      id: "a",
+      cwd: "/work/a",
+      messageCount: 3,
+      title: "A title",
+      firstMessage: "",
+      allMessagesText: "",
+      parentSessionPath: null,
+    });
+    expect(sessionDisplayTitle(session)).toBe("A title");
+  });
+
+  it("projects only the rendered fields and bounds a long name", () => {
+    const session = sanitizeSessionSummary(
+      rawSession({ name: "n".repeat(300), firstMessage: "first", allMessagesText: "deep text" }),
+    )!;
+    const entry = projectSessionListEntry(session);
+    expect(entry.title.length).toBe(90);
+    expect(entry.title.endsWith("…")).toBe(true);
+    expect(entry).not.toHaveProperty("allMessagesText");
+    expect(entry).not.toHaveProperty("firstMessage");
+    expect(entry).not.toHaveProperty("parentSessionPath");
+  });
+
+  it("searches message text that is not on the wire", () => {
+    const all = sanitizeSessionList([
+      rawSession({ path: "/p/a.jsonl", id: "a", allMessagesText: "alpha hidden phrase" }),
+      rawSession({ path: "/p/b.jsonl", id: "b", allMessagesText: "beta" }),
+    ]);
+    const page = projectSessionListPage(all, { query: "hidden" });
+    expect(page.sessions.map((entry) => entry.id)).toEqual(["a"]);
+    expect(JSON.stringify(page.sessions)).not.toContain("hidden phrase");
+  });
+
+  it("applies scope, named-only and sort before capping", () => {
+    const all = sanitizeSessionList([
+      rawSession({ path: "/p/a.jsonl", id: "a", cwd: "/work/a", modified: 1 }),
+      rawSession({ path: "/p/b.jsonl", id: "b", cwd: "/work/a", modified: 3 }),
+      rawSession({ path: "/p/c.jsonl", id: "c", cwd: "/work/b", modified: 2 }),
+      rawSession({ path: "/p/d.jsonl", id: "d", name: undefined, cwd: "/work/a", modified: 0 }),
+    ]);
+    expect(
+      projectSessionListPage(all, { scope: "current", cwd: "/work/a" }).sessions.map(
+        (entry) => entry.id,
+      ),
+    ).toEqual(["b", "a", "d"]);
+    expect(projectSessionListPage(all, { namedOnly: true }).sessions.map((e) => e.id)).toEqual([
+      "b",
+      "c",
+      "a",
+    ]);
+    expect(projectSessionListPage(all, { limit: 2 }).sessions.map((e) => e.id)).toEqual(["b", "c"]);
+  });
+
+  it("returns a query error instead of rows", () => {
+    const all = sanitizeSessionList([rawSession()]);
+    const page = projectSessionListPage(all, { query: "re:(" });
+    expect(page.sessions).toEqual([]);
+    expect(page.error).toMatch(/regular expression/i);
+  });
+
+  it("keeps the page under the spill threshold even with long names and 2000 rows", () => {
+    const many = Array.from({ length: MAX_SESSION_SUMMARIES }, (_, index) =>
+      sanitizeSessionSummary(
+        rawSession({
+          path: `/p/${index}/${"x".repeat(180)}.jsonl`,
+          id: `${index}`.padStart(6, "0"),
+          cwd: `/work/${"y".repeat(100)}`,
+          name: "n".repeat(400),
+          modified: 10_000 - index,
+        }),
+      )!,
+    );
+    const page = projectSessionListPage(many);
+    expect(page.sessions.length).toBeGreaterThan(0);
+    expect(page.sessions.length).toBeLessThan(many.length);
+    expect(page.truncated).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(page), "utf8")).toBeLessThan(
+      BLOB_SPILL_THRESHOLD_BYTES,
+    );
+    expect(Buffer.byteLength(JSON.stringify(page), "utf8")).toBeLessThanOrEqual(
+      MAX_SESSION_LIST_BYTES + 4 * 1024,
+    );
+  });
+
+  it("parses a page and rejects anything without a sessions array", () => {
+    const page = parseSessionListPage({
+      sessions: [projected(), { nope: true }],
+      total: 9,
+      matched: 1,
+      truncated: true,
+      error: null,
+    });
+    expect(page.sessions).toHaveLength(1);
+    expect(page).toMatchObject({ total: 9, matched: 1, truncated: true, error: null });
+    expect(() => parseSessionListPage({ $blob: "/blobs/1.json", bytes: 99 })).toThrow(
+      /unreadable session list/i,
+    );
+    expect(() => parseSessionListPage(undefined)).toThrow(/unreadable session list/i);
+  });
+
+  it("parses and clamps the host query", () => {
+    expect(parseSessionListQuery(undefined)).toMatchObject({
+      scope: "all",
+      sort: "recent",
+      namedOnly: false,
+      cwd: null,
+    });
+    expect(
+      parseSessionListQuery({
+        query: "q".repeat(9000),
+        scope: "current",
+        cwd: "/work",
+        sort: "relevance",
+        namedOnly: true,
+        limit: 99_999,
+        refresh: true,
+      }),
+    ).toMatchObject({
+      query: "q".repeat(4000),
+      scope: "current",
+      cwd: "/work",
+      sort: "relevance",
+      namedOnly: true,
+      limit: MAX_SESSION_SUMMARIES,
+      refresh: true,
+    });
+    expect(parseSessionListQuery({ sort: "nonsense", limit: 0 })).toMatchObject({
+      sort: "recent",
+      limit: 1,
+    });
   });
 });

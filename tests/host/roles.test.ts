@@ -104,14 +104,68 @@ describe("control core", () => {
     expect(settings.read).toHaveBeenCalledTimes(2);
   });
 
-  it("lists every session of the profile", async () => {
+  it("lists every session of the profile (legacy raw fallback)", async () => {
     const listSessions = vi.fn(async () => [{ sessionId: "a" }, { sessionId: "b" }]);
     const core = createControlCore({ settings: fakeSettings(), listSessions });
     const result = (await core.handlers()["session.list"]?.({}, {} as never)) as {
       sessions: unknown[];
+      total: number;
+      matched: number;
+      truncated: boolean;
+      error: string | null;
     };
     expect(result.sessions).toHaveLength(2);
+    expect(result).toMatchObject({ total: 2, matched: 2, truncated: false, error: null });
     expect(listSessions).toHaveBeenCalledTimes(1);
+  });
+
+  it("delegates session.list to the page port with parsed filters", async () => {
+    const listSessionPage = vi.fn(async () => ({
+      sessions: [],
+      total: 0,
+      matched: 0,
+      truncated: false,
+      error: null,
+    }));
+    const core = createControlCore({
+      settings: fakeSettings(),
+      listSessions: async () => [],
+      listSessionPage,
+    });
+
+    await core.handlers()["session.list"]?.(
+      {
+        query: "deep term",
+        scope: "current",
+        cwd: "/work/a",
+        sort: "relevance",
+        namedOnly: true,
+        limit: 50,
+        refresh: true,
+      },
+      {} as never,
+    );
+
+    expect(listSessionPage).toHaveBeenCalledWith({
+      query: "deep term",
+      scope: "current",
+      cwd: "/work/a",
+      sort: "relevance",
+      namedOnly: true,
+      limit: 50,
+      refresh: true,
+    });
+  });
+
+  it("disposes the catalog with the core", async () => {
+    const disposeCatalog = vi.fn();
+    const core = createControlCore({
+      settings: fakeSettings(),
+      listSessions: async () => [],
+      disposeCatalog,
+    });
+    await core.dispose();
+    expect(disposeCatalog).toHaveBeenCalledTimes(1);
   });
 
   it("resolves a listed session for deletion and refuses anything else", async () => {

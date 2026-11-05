@@ -77,7 +77,12 @@ at still sleep after a long idle period, and wake on the next click or keystroke
 
 `Ctrl/Cmd+Shift+O` opens the **Sessions** browser, also reachable with `/resume`.
 It lists every session of the profile from Pi’s own index, grouped by project,
-searchable by title or first prompt, newest first.
+newest first. Search runs in the control host over the full transcript, not just
+the visible title: a word from an old assistant message still finds its session.
+The host keeps that text out of the UI process and returns a bounded page, so the
+browser may show “Showing N of M matches — narrow the search” on very large
+profiles. **Refresh** re-reads the profile; the host caches the listing for a few
+seconds while you type.
 
 From there you can:
 

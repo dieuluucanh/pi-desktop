@@ -49,6 +49,11 @@ beforeEach(() => {
     projectSessions: [SESSION],
     projectSessionsLoaded: true,
     projectSessionsError: null,
+    projectSessionsErrorKind: null,
+    projectSessionsSearching: false,
+    projectSessionsTotal: 1,
+    projectSessionsMatched: 1,
+    projectSessionsTruncated: false,
     project: { path: "C:/work/pi-desktop", name: "pi-desktop" },
     tabs: [tab()],
     activeTabId: "tab-1",
@@ -72,5 +77,15 @@ describe("session browser controls", () => {
     render(<SessionBrowserDialog />);
     fireEvent.click(screen.getByLabelText("Delete session"));
     expect(screen.getByText(/Closes "Fix host protocol"/)).toBeInTheDocument();
+  });
+
+  it("says when the host capped the page", () => {
+    useAppStore.setState({
+      projectSessionsTotal: 10,
+      projectSessionsMatched: 8,
+      projectSessionsTruncated: true,
+    });
+    render(<SessionBrowserDialog />);
+    expect(screen.getByTestId("session-truncated")).toHaveTextContent("Showing 1 of 8 matches");
   });
 });

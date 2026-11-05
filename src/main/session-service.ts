@@ -1,4 +1,5 @@
 import type { HostMethod, HostRole } from "../shared/host-protocol";
+import { DEFAULT_REQUEST_TIMEOUT_MS } from "./host-supervisor";
 import type { CommandCompleteResult } from "../shared/commands";
 import {
   appendIncident,
@@ -44,6 +45,25 @@ import {
   type TabRecord,
   type TabStatus,
 } from "../shared/session-ipc";
+
+/**
+ * Methods whose answer scans the whole profile get more than the supervisor's
+ * 30 s default. `session.list` reads every session JSONL once (and the control
+ * host then caches it), so a several-hundred-megabyte profile can legitimately
+ * take longer than an ordinary request.
+ */
+const REQUEST_TIMEOUT_OVERRIDES: Readonly<Partial<Record<HostMethod, number>>> = {
+  "session.list": 120_000,
+  "messages.get": 60_000,
+  "tree.get": 60_000,
+};
+
+export function requestTimeoutFor(
+  method: HostMethod,
+  fallbackMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+): number {
+  return REQUEST_TIMEOUT_OVERRIDES[method] ?? fallbackMs;
+}
 
 /**
  * The session service (plan step 3): the app's only way to reach a Pi host.
@@ -1518,7 +1538,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // for every host (plan D-A3); it simply has no per-session state.
       if (tabId === CONTROL_TAB_ID) {
         const host = await service.controlHost();
-        return host.request(method, params);
+        return host.request(method, params, { timeoutMs: requestTimeoutFor(method) });
       }
       const tab = requireTab(tabId);
       // LRU is about real use, not merely an open tab: every user request keeps
@@ -1537,7 +1557,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         const inFlight = opening.get(tab.id);
         if (inFlight) await inFlight.catch(() => undefined);
         const host = await ensureProcess(tab);
-        const result = await host.request(method, params);
+        const result = await host.request(method, params, { timeoutMs: requestTimeoutFor(method) });
         if (isSessionSnapshot(result)) {
           applySnapshot(tab, result);
           sessionReady.add(tab.id);
@@ -1555,7 +1575,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         }
       }
       try {
-        return await host.request(method, params);
+        return await host.request(method, params, { timeoutMs: requestTimeoutFor(method) });
       } catch (error) {
         if (method === "commands.complete" && isMissingCommandComplete(error)) {
           return { items: null, unsupported: true } satisfies CommandCompleteResult;
@@ -1567,7 +1587,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           recovering.add(tab.id);
           try {
             host = await ensureSession(tab);
-            if (READ_ONLY_RETRY_METHODS.has(method)) return await host.request(method, params);
+            if (READ_ONLY_RETRY_METHODS.has(method)) {
+              return await host.request(method, params, { timeoutMs: requestTimeoutFor(method) });
+            }
           } catch {
             // Keep the original error: it names the operation that failed.
           }

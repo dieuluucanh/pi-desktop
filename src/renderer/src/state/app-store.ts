@@ -136,7 +136,8 @@ import {
 } from "../../../shared/extension-ui";
 import {
   mostRecentSessionForProject,
-  sanitizeSessionList,
+  parseSessionListPage,
+  type SessionListQuery,
   type SessionSummary,
 } from "../../../shared/session-browser";
 import {
@@ -257,6 +258,7 @@ import {
   type OnboardingStep,
 } from "../../../shared/onboarding";
 import type { ProfileMode } from "../../../shared/profile";
+import { readBlobText, wrapBridgeWithBlobResolution } from "./host-response";
 
 /**
  * The renderer's view state (plan step 1).
@@ -438,6 +440,7 @@ function boundTranscripts(
     if (retained <= limit) break;
     transcripts[tab.id] = createTranscriptState();
     transcriptHydrating.delete(tab.id);
+    transcriptHydrateNoted.delete(tab.id);
     sessionEnsuring.delete(tab.id);
     retained -= 1;
     changed = true;
@@ -485,6 +488,11 @@ const MAX_CLOSED_TAB_IDS = 100;
  * two reads any more).
  */
 const transcriptHydrating = new Map<string, Promise<void>>();
+/**
+ * Tabs whose hydration failure was already reported. The view retries on every
+ * status change; without this a broken read would toast on each retry.
+ */
+const transcriptHydrateNoted = new Set<string>();
 /** Last successful interaction-driven activation per tab (throttles keystrokes). */
 const sessionEnsuredAt = new Map<string, number>();
 /** Minimum gap between non-forced ensures; a send/tab switch always forces. */
@@ -500,6 +508,11 @@ let lastSessionResyncAt = 0;
  * one call per actual change.
  */
 let lastVisibleTabsKey = "";
+/**
+ * Guards the session browser against out-of-order search responses: typing
+ * "alp" then "alpha" must never let the older page win.
+ */
+let sessionBrowserRequestId = 0;
 let lastScopeSyncAt = 0;
 export const EDITOR_TEXT_DELAY_MS = 250;
 
@@ -686,6 +699,14 @@ export interface AppStateShape {
   projectSessions: SessionSummary[];
   projectSessionsLoaded: boolean;
   projectSessionsError: string | null;
+  /** A query/regex error is separate from a transport failure. */
+  projectSessionsErrorKind: "host" | "query" | null;
+  projectSessionsSearching: boolean;
+  /** Sessions in the profile and sessions matching the current filters. */
+  projectSessionsTotal: number;
+  projectSessionsMatched: number;
+  /** The host dropped rows to keep the page under its wire budget. */
+  projectSessionsTruncated: boolean;
   /** The session tree of the tab the tree dialog is showing. */
   sessionTreeOpen: boolean;
   sessionTreeTabId: string | null;
@@ -1534,7 +1555,7 @@ export interface AppStateShape {
   openSessionBrowser: () => Promise<void>;
   closeSessionBrowser: () => void;
   setSessionBrowserQuery: (query: string) => void;
-  loadProjectSessions: (options?: { refresh?: boolean }) => Promise<SessionSummary[]>;
+  loadProjectSessions: (options?: SessionListQuery) => Promise<SessionSummary[]>;
   /** Resume a listed session in a new tab and focus it. */
   resumeSession: (session: SessionSummary) => Promise<void>;
   /** Continue the newest session of a project. */
@@ -1722,7 +1743,9 @@ export interface PackageConsentRequest {
 }
 
 function bridge(): Window["pi"] | undefined {
-  return typeof window === "undefined" ? undefined : window.pi;
+  if (typeof window === "undefined" || !window.pi) return undefined;
+  // One wrapper per preload bridge: every host response resolves its BlobRef.
+  return wrapBridgeWithBlobResolution(window.pi);
 }
 
 function errorMessage(error: unknown): string {
@@ -1920,6 +1943,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   projectSessions: [],
   projectSessionsLoaded: false,
   projectSessionsError: null,
+  projectSessionsErrorKind: null,
+  projectSessionsSearching: false,
+  projectSessionsTotal: 0,
+  projectSessionsMatched: 0,
+  projectSessionsTruncated: false,
   sessionTreeOpen: false,
   sessionTreeTabId: null,
   sessionTree: null,
@@ -2581,6 +2609,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       sessionEnsuredAt.delete(tab.id);
       sessionEnsuring.delete(tab.id);
       transcriptHydrating.delete(tab.id);
+      transcriptHydrateNoted.delete(tab.id);
     }
     for (const id of ids) closedTabIds.delete(id);
     while (closedTabIds.size > MAX_CLOSED_TAB_IDS) {
@@ -2809,6 +2838,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         };
         // The tab may have been closed while the read was in flight.
         if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
+        transcriptHydrateNoted.delete(tabId);
         const base = get().transcripts[tabId] ?? createTranscriptState();
         set({
           transcripts: {
@@ -2816,12 +2846,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
             [tabId]: hydrateMessages(base, result.messages ?? [], get().prefs.promptOrigins),
           },
         });
-      } catch {
-        // A session that cannot report history still streams, so this is best
-        // effort — but a failed read must not be cached as "no history": after a
-        // relaunch the host may still be starting, and the view retries hydration
-        // when the tab status changes (plan step 25).
+      } catch (error) {
+        // A failed read must not be cached as "no history": after a relaunch the
+        // host may still be starting, and the view retries hydration when the tab
+        // status changes (plan step 25). It must also not look like an empty
+        // session: report the first failure for this tab, then stay quiet.
         if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
+        if (!transcriptHydrateNoted.has(tabId)) {
+          transcriptHydrateNoted.add(tabId);
+          get().noteFailure(error);
+        }
         const base = get().transcripts[tabId] ?? createTranscriptState();
         set({
           transcripts: { ...get().transcripts, [tabId]: { ...base, hydrated: false } },
@@ -5157,21 +5191,14 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return;
     }
     try {
-      const result = (await api.sessions.request({
-        tabId,
-        method: "host.blobs.read",
-        params: { path },
-      })) as { contents?: unknown } | null;
+      // Chunked, so even a result larger than one frame can be read back.
+      const contents = await readBlobText(api, tabId, ref);
       // A closed tab's loading entry was already pruned; do not resurrect it.
       if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
-      const contents = typeof result?.contents === "string" ? result.contents : null;
       set((state) => ({
         blobs: boundBlobs({
           ...state.blobs,
-          [path]:
-            contents === null
-              ? { status: "error", error: "The spilled result is no longer on disk.", tabId }
-              : { status: "ready", contents, tabId, bytes: contents.length },
+          [path]: { status: "ready", contents, tabId, bytes: contents.length },
         }),
       }));
     } catch (error) {
@@ -6275,7 +6302,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   openSessionBrowser: async () => {
     set({ sessionBrowserOpen: true, view: "session", hint: null });
-    await get().loadProjectSessions();
+    await get().loadProjectSessions({ query: get().sessionBrowserQuery });
   },
 
   closeSessionBrowser: () => set({ sessionBrowserOpen: false, panePickerTarget: null }),
@@ -6285,21 +6312,64 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   loadProjectSessions: async (options = {}) => {
     const api = bridge();
     if (!api?.sessions) return get().projectSessions;
+
+    const params: Record<string, unknown> = {};
+    if (options.query !== undefined) params.query = options.query;
+    if (options.scope !== undefined) params.scope = options.scope;
+    if (options.cwd !== undefined) params.cwd = options.cwd;
+    if (options.sort !== undefined) params.sort = options.sort;
+    if (options.namedOnly !== undefined) params.namedOnly = options.namedOnly;
+    if (options.limit !== undefined) params.limit = options.limit;
+    if (options.refresh === true) params.refresh = true;
+
+    const requestId = ++sessionBrowserRequestId;
+    set({ projectSessionsSearching: true });
     try {
-      const response = (await api.sessions.request({
+      const response = await api.sessions.request({
         tabId: CONTROL_TAB_ID,
         method: "session.list",
-      })) as { sessions?: unknown } | undefined;
-      const sessions = sanitizeSessionList(response?.sessions);
+        params,
+      });
+      // A newer keystroke already asked for a different page.
+      if (requestId !== sessionBrowserRequestId) return get().projectSessions;
+
+      const page = parseSessionListPage(response);
+      if (page.error) {
+        set({
+          projectSessions: [],
+          projectSessionsLoaded: true,
+          projectSessionsError: page.error,
+          projectSessionsErrorKind: "query",
+          projectSessionsSearching: false,
+          projectSessionsTotal: page.total,
+          projectSessionsMatched: page.matched,
+          projectSessionsTruncated: page.truncated,
+        });
+        return [];
+      }
+
       set({
-        projectSessions: sessions,
+        projectSessions: page.sessions,
         projectSessionsLoaded: true,
         projectSessionsError: null,
+        projectSessionsErrorKind: null,
+        projectSessionsSearching: false,
+        projectSessionsTotal: page.total,
+        projectSessionsMatched: page.matched,
+        projectSessionsTruncated: page.truncated,
       });
-      return sessions;
+      return page.sessions;
     } catch (error) {
+      if (requestId !== sessionBrowserRequestId) return get().projectSessions;
       const message = error instanceof Error ? error.message : String(error);
-      set({ projectSessionsLoaded: true, projectSessionsError: message });
+      // Keep any rows already on screen: a transient host failure should not
+      // pretend the profile is empty (the original bug's most confusing part).
+      set({
+        projectSessionsLoaded: true,
+        projectSessionsError: message,
+        projectSessionsErrorKind: "host",
+        projectSessionsSearching: false,
+      });
       if (options.refresh) set({ hint: message });
       return get().projectSessions;
     }
@@ -6853,6 +6923,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   closeChangelog: () => set({ changelogOpen: false }),
 
   resetTranscript: (tabId) => {
+    transcriptHydrateNoted.delete(tabId);
     set({
       transcripts: { ...get().transcripts, [tabId]: createTranscriptState() },
     });

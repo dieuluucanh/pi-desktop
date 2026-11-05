@@ -19,6 +19,13 @@ export const MAX_FRAME_BYTES = 5 * 1024 * 1024;
 /** Values at or above this size are spilled to the blob cache instead of the frame. */
 export const BLOB_SPILL_THRESHOLD_BYTES = 1024 * 1024;
 
+/**
+ * Largest chunk `host.blobs.read` returns in one response. It leaves ample
+ * headroom under {@link MAX_FRAME_BYTES}, so even a large spilled response can be
+ * read back without dropping the frame.
+ */
+export const BLOB_CHUNK_BYTES = 2 * 1024 * 1024;
+
 /** Environment variable telling a host where to spill oversized payloads. */
 export const BLOB_DIR_ENV = "PI_DESKTOP_BLOB_DIR";
 
@@ -115,6 +122,31 @@ export interface BlobRef {
   $blob: string;
   bytes: number;
   sha256?: string;
+}
+
+/**
+ * One chunk of a spilled blob. `offset` and `nextOffset` are **byte** offsets;
+ * `contents` always starts and ends on a UTF-8 code-point boundary, so a caller
+ * can simply concatenate the chunks and parse the result.
+ */
+export interface BlobReadResult {
+  path: string;
+  contents: string;
+  offset: number;
+  nextOffset: number;
+  size: number;
+  done: boolean;
+}
+
+/**
+ * A chunked read (or, for an older host, a legacy full read with just
+ * `path`/`contents`). Callers treat a missing `done` as "this was the whole
+ * blob", which keeps the reader compatible across a host rebuild.
+ */
+export function isBlobReadResult(value: unknown): value is BlobReadResult {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.path === "string" && typeof record.contents === "string";
 }
 
 /** Methods a host must understand. Session semantics land in plan step 5. */

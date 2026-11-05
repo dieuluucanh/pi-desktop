@@ -14,14 +14,19 @@
  * real provider and the network.
  */
 
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { createHostSupervisor, type HostSupervisor } from "../../src/main/host-supervisor";
-import { createSessionService, type SessionService } from "../../src/main/session-service";
+import {
+  CONTROL_HOST_ID,
+  createSessionService,
+  type SessionService,
+} from "../../src/main/session-service";
 import { resolveAppRuntime } from "../../src/main/runtime/environment";
+import { isBlobRef } from "../../src/shared/host-protocol";
 import type { SessionEventEnvelope, TabRecord } from "../../src/shared/session-ipc";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -134,5 +139,102 @@ describe.skipIf(!buildReady)("live session service", () => {
 
     await service.dispose();
     expect(supervisor.list()).toHaveLength(0);
+  }, 300_000);
+});
+
+describe.skipIf(!buildReady)("live session list projection", () => {
+  it("returns a bounded page and chunked blobs for a profile that would spill", async () => {
+    const nodePath = resolution.nodePath;
+    if (!nodePath) throw new Error("no bundled runtime resolved");
+
+    const profileDir = mkdtempSync(join(scratch, "profile-large-"));
+    const blobDir = mkdtempSync(join(scratch, "blobs-large-"));
+    const liveSupervisor = createHostSupervisor({
+      nodePath,
+      hostPath: resolution.piHostPath,
+      binDir: resolution.binDir,
+      nodeBinDir: resolution.nodeBinDir,
+      logDir: join(scratch, "logs-large"),
+      blobDir,
+      profileDir,
+      requestTimeoutMs: 120_000,
+    });
+    const liveService = createSessionService({
+      supervisor: liveSupervisor,
+      store: {
+        read: async () => ({ tabs: [], activeTabId: null }),
+        update: async () => ({ tabs: [], activeTabId: null }),
+      },
+      controlCwd: scratch,
+      coalesceMs: 10,
+      emit: () => {},
+    });
+
+    try {
+      // 60 sessions x ~30 KB of message text: the raw SessionInfo[] the old
+      // implementation returned is >1 MiB, i.e. it would have been spilled.
+      const sessionsDir = join(profileDir, "sessions", "--C--work-large--");
+      mkdirSync(sessionsDir, { recursive: true });
+      for (let index = 0; index < 60; index++) {
+        const text =
+          index === 7
+            ? `deep hidden-needle ${"x".repeat(30_000)}`
+            : `session ${index} ${"text ".repeat(6_000)}`;
+        const header = {
+          type: "session",
+          version: 3,
+          id: `large-${index}`,
+          timestamp: "2026-11-05T00:00:00.000Z",
+          cwd: "C:\\work\\large",
+        };
+        const message = {
+          type: "message",
+          id: `m-${index}`,
+          parentId: null,
+          timestamp: "2026-11-05T00:00:00.000Z",
+          message: { role: "user", content: text },
+        };
+        writeFileSync(
+          join(sessionsDir, `s${index}.jsonl`),
+          `${JSON.stringify(header)}\n${JSON.stringify(message)}\n`,
+        );
+      }
+
+      await liveService.controlHost();
+      const page = await liveService.request(CONTROL_HOST_ID, "session.list", {
+        query: "hidden-needle",
+      });
+      expect(isBlobRef(page)).toBe(false);
+      const result = page as {
+        sessions: Array<{ id: string; title: string }>;
+        total: number;
+        matched: number;
+      };
+      expect(result.total).toBeGreaterThanOrEqual(60);
+      expect(result.sessions.map((session) => session.id)).toEqual(["large-7"]);
+      expect(result.sessions[0]).not.toHaveProperty("allMessagesText");
+
+      // The same host reads a genuinely large blob back in chunks.
+      const blobPath = join(blobDir, "large.json");
+      const blobText = JSON.stringify({ text: "z".repeat(3 * 1024 * 1024) });
+      writeFileSync(blobPath, blobText, "utf8");
+      const first = (await liveService.request(CONTROL_HOST_ID, "host.blobs.read", {
+        path: blobPath,
+        offset: 0,
+        maxBytes: 2 * 1024 * 1024,
+      })) as { contents: string; nextOffset: number; done: boolean };
+      expect(isBlobRef(first)).toBe(false);
+      expect(first.done).toBe(false);
+      const second = (await liveService.request(CONTROL_HOST_ID, "host.blobs.read", {
+        path: blobPath,
+        offset: first.nextOffset,
+        maxBytes: 2 * 1024 * 1024,
+      })) as { contents: string; done: boolean };
+      expect(second.done).toBe(true);
+      expect(first.contents + second.contents).toBe(blobText);
+    } finally {
+      await liveService.dispose();
+      await liveSupervisor.stopAll();
+    }
   }, 300_000);
 });

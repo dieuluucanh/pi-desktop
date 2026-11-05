@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen, Pencil, Play, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
@@ -6,7 +6,6 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dia
 import { useAppStore } from "../state/app-store";
 import {
   groupSessionsByProject,
-  listSessions,
   sessionDisplayTitle,
   type SessionScope,
   type SessionSort,
@@ -34,6 +33,11 @@ export function SessionBrowserDialog() {
   const sessions = useAppStore((state) => state.projectSessions);
   const loaded = useAppStore((state) => state.projectSessionsLoaded);
   const error = useAppStore((state) => state.projectSessionsError);
+  const errorKind = useAppStore((state) => state.projectSessionsErrorKind);
+  const searching = useAppStore((state) => state.projectSessionsSearching);
+  const total = useAppStore((state) => state.projectSessionsTotal);
+  const matched = useAppStore((state) => state.projectSessionsMatched);
+  const truncated = useAppStore((state) => state.projectSessionsTruncated);
   const resume = useAppStore((state) => state.resumeSession);
   const remove = useAppStore((state) => state.deleteSession);
   const rename = useAppStore((state) => state.renameStoredSession);
@@ -49,19 +53,26 @@ export function SessionBrowserDialog() {
   const [showPath, setShowPath] = useState(false);
   const activeCwd = useAppStore((state) => state.project?.path ?? null);
   const tabs = useAppStore((state) => state.tabs);
+  // The host owns filtering/search/sort (it has the full message text and a
+  // short catalog cache), so the dialog debounces instead of filtering locally.
+  const initialFilters = useRef(true);
+  useEffect(() => {
+    if (!open) {
+      initialFilters.current = true;
+      return;
+    }
+    if (initialFilters.current) {
+      // `openSessionBrowser` already loaded the current query.
+      initialFilters.current = false;
+      return;
+    }
+    const timer = setTimeout(() => {
+      void refresh({ query, scope, cwd: activeCwd, sort, namedOnly });
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [open, query, scope, activeCwd, sort, namedOnly, refresh]);
 
-  const listing = useMemo(
-    () =>
-      listSessions(sessions, {
-        query,
-        scope,
-        cwd: activeCwd,
-        sort,
-        namedOnly,
-      }),
-    [sessions, query, scope, activeCwd, sort, namedOnly],
-  );
-  const groups = useMemo(() => groupSessionsByProject(listing.sessions), [listing.sessions]);
+  const groups = useMemo(() => groupSessionsByProject(sessions), [sessions]);
 
   /** Tabs that point at this file; deleting it closes them (the store does it). */
   const openTabsFor = (sessionPath: string): string[] =>
@@ -102,7 +113,9 @@ export function SessionBrowserDialog() {
             variant="ghost"
             aria-label="Refresh session list"
             title="Refresh"
-            onClick={() => void refresh({ refresh: true })}
+            onClick={() =>
+              void refresh({ refresh: true, query, scope, cwd: activeCwd, sort, namedOnly })
+            }
           >
             <RefreshCw className="size-3.5" aria-hidden />
           </Button>
@@ -180,20 +193,34 @@ export function SessionBrowserDialog() {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4" data-testid="session-list">
-          {error ? <div className="banner banner--error mb-2">{error}</div> : null}
-          {listing.error ? (
+          {searching ? (
+            <p className="mb-1 text-[10px] text-ink-faint" data-testid="session-searching">
+              Searching…
+            </p>
+          ) : null}
+          {error && errorKind === "query" ? (
             <div className="banner banner--error mb-2" role="alert">
-              Invalid regular expression: {listing.error}
+              Invalid regular expression: {error}
+            </div>
+          ) : null}
+          {error && errorKind !== "query" ? (
+            <div className="banner banner--error mb-2" role="alert">
+              {error}
             </div>
           ) : null}
           {!loaded ? <p className="py-6 text-center text-xs text-ink-muted">Loading…</p> : null}
-          {loaded && (groups.length === 0 || listing.error) && !listing.error ? (
+          {loaded && !error && sessions.length === 0 ? (
             <p className="py-6 text-center text-xs text-ink-muted">
-              {query.length > 0
-                ? "No session matches that search."
-                : scope === "current"
+              {total === 0
+                ? "No sessions yet — start one with Ctrl+N."
+                : scope === "current" && query.length === 0
                   ? "No sessions in this project yet."
-                  : "No sessions yet — start one with Ctrl+N."}
+                  : "No session matches that search."}
+            </p>
+          ) : null}
+          {loaded && !error && truncated ? (
+            <p className="mb-2 text-[10px] text-ink-faint" data-testid="session-truncated">
+              Showing {sessions.length} of {matched} matches — narrow the search.
             </p>
           ) : null}
 

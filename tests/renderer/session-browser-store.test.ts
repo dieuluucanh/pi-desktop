@@ -64,6 +64,11 @@ function resetStore(): void {
     projectSessions: [],
     projectSessionsLoaded: false,
     projectSessionsError: null,
+    projectSessionsErrorKind: null,
+    projectSessionsSearching: false,
+    projectSessionsTotal: 0,
+    projectSessionsMatched: 0,
+    projectSessionsTruncated: false,
     sessionTreeOpen: false,
     sessionTree: null,
     sessionTreeLeafId: null,
@@ -86,12 +91,163 @@ describe("session browser", () => {
 
     await useAppStore.getState().openSessionBrowser();
 
-    expect(request).toHaveBeenCalledWith({ tabId: CONTROL_TAB_ID, method: "session.list" });
+    expect(request).toHaveBeenCalledWith({
+      tabId: CONTROL_TAB_ID,
+      method: "session.list",
+      params: { query: "" },
+    });
     const state = useAppStore.getState();
     expect(state.sessionBrowserOpen).toBe(true);
     expect(state.projectSessions).toHaveLength(1);
     expect(state.projectSessions[0]?.name).toBe("Fix host protocol");
     expect(state.projectSessionsLoaded).toBe(true);
+    expect(state.projectSessionsSearching).toBe(false);
+  });
+
+  it("sends every filter and stores the page metadata", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async () => ({
+      sessions: [rawSession()],
+      total: 12,
+      matched: 3,
+      truncated: true,
+      error: null,
+    }));
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+
+    await useAppStore.getState().loadProjectSessions({
+      query: "deep",
+      scope: "current",
+      cwd: WORK,
+      sort: "relevance",
+      namedOnly: true,
+      limit: 25,
+      refresh: true,
+    });
+
+    expect(request).toHaveBeenCalledWith({
+      tabId: CONTROL_TAB_ID,
+      method: "session.list",
+      params: {
+        query: "deep",
+        scope: "current",
+        cwd: WORK,
+        sort: "relevance",
+        namedOnly: true,
+        limit: 25,
+        refresh: true,
+      },
+    });
+    expect(useAppStore.getState()).toMatchObject({
+      projectSessionsTotal: 12,
+      projectSessionsMatched: 3,
+      projectSessionsTruncated: true,
+      projectSessionsError: null,
+      projectSessionsErrorKind: null,
+    });
+  });
+
+  it("resolves a spilled session.list response through host.blobs.read", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async (input: { method: string }) => {
+      if (input.method === "session.list") {
+        return { $blob: "C:\\blobs\\sessions.json", bytes: 120 };
+      }
+      if (input.method === "host.blobs.read") {
+        return {
+          path: "C:\\blobs\\sessions.json",
+          contents: JSON.stringify({ sessions: [rawSession()], total: 1, matched: 1 }),
+          offset: 0,
+          nextOffset: 120,
+          size: 120,
+          done: true,
+        };
+      }
+      return {};
+    });
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+
+    await useAppStore.getState().openSessionBrowser();
+
+    expect(useAppStore.getState().projectSessions).toHaveLength(1);
+    expect(useAppStore.getState().projectSessions[0]?.name).toBe("Fix host protocol");
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: "host.blobs.read" }));
+  });
+
+  it("records an unreadable response instead of showing an empty profile", async () => {
+    const { bridge } = installBridge();
+    (bridge.sessions as unknown as { request: unknown }).request = vi.fn(async () => ({}));
+    useAppStore.setState({
+      projectSessions: [
+        {
+          path: `${WORK}\\sessions\\s1.jsonl`,
+          id: "s1",
+          cwd: WORK,
+          name: "Fix host protocol",
+          created: 1,
+          modified: 2,
+          messageCount: 4,
+          firstMessage: "",
+          allMessagesText: "",
+          parentSessionPath: null,
+        },
+      ],
+    });
+
+    await useAppStore.getState().loadProjectSessions();
+
+    const state = useAppStore.getState();
+    expect(state.projectSessionsError).toMatch(/unreadable session list/i);
+    expect(state.projectSessionsErrorKind).toBe("host");
+    expect(state.projectSessions).toHaveLength(1);
+  });
+
+  it("separates a query error from a transport error", async () => {
+    const { bridge } = installBridge();
+    (bridge.sessions as unknown as { request: unknown }).request = vi.fn(async () => ({
+      sessions: [],
+      total: 5,
+      matched: 0,
+      truncated: false,
+      error: "Invalid regular expression",
+    }));
+
+    await useAppStore.getState().loadProjectSessions({ query: "re:(" });
+
+    expect(useAppStore.getState()).toMatchObject({
+      projectSessions: [],
+      projectSessionsError: "Invalid regular expression",
+      projectSessionsErrorKind: "query",
+      projectSessionsTotal: 5,
+      projectSessionsMatched: 0,
+    });
+  });
+
+  it("ignores an older response that arrives after a newer one", async () => {
+    const { bridge } = installBridge();
+    const deferred = (): { promise: Promise<unknown>; resolve: (value: unknown) => void } => {
+      let resolve!: (value: unknown) => void;
+      const promise = new Promise<unknown>((done) => {
+        resolve = done;
+      });
+      return { promise, resolve };
+    };
+    const firstPage = deferred();
+    const secondPage = deferred();
+    const request = vi
+      .fn()
+      .mockImplementationOnce(() => firstPage.promise)
+      .mockImplementationOnce(() => secondPage.promise);
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+
+    const first = useAppStore.getState().loadProjectSessions({ query: "a" });
+    const second = useAppStore.getState().loadProjectSessions({ query: "ab" });
+    secondPage.resolve({ sessions: [rawSession({ path: "/p/2.jsonl", id: "2" })] });
+    await second;
+    firstPage.resolve({ sessions: [rawSession({ path: "/p/1.jsonl", id: "1" })] });
+    await first;
+
+    expect(useAppStore.getState().projectSessions.map((session) => session.id)).toEqual(["2"]);
   });
 
   it("records a listing failure without throwing", async () => {

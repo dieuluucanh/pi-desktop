@@ -38,6 +38,7 @@ import { SAFE_MODE_PACKAGE_REFUSAL } from "./safe-mode";
 import type { CustomProviderStore } from "./custom-providers";
 import type { ProviderPort } from "./providers";
 import { createSessionCore, type SessionCore } from "./session-core";
+import { createSessionCatalog } from "./session-catalog";
 import { createHostService, type HostHandler, type HostService } from "./service";
 import {
   ProjectTrustStore,
@@ -275,6 +276,9 @@ function createControlHostCore(options: {
   const projectIo = createNodeProjectIo();
   const modelsIo = createNodeModelsFileIo();
   const fileListingIo = createNodeFileListingIo();
+  // One cache and one host-side search path for the session browser. The full
+  // text stays here; `session.list` only sends the bounded projection.
+  const sessionCatalog = createSessionCatalog({ loadAll: () => listAllSessions() });
 
   return createControlCore({
     // One port; it resolves a `SettingsManager` per project cwd on demand, so a
@@ -288,7 +292,9 @@ function createControlHostCore(options: {
       ...(options.backupDir ? { backupDir: options.backupDir } : {}),
       isProjectTrusted: (cwd) => trust.status(cwd).trusted,
     }),
-    listSessions: () => listAllSessions(),
+    listSessions: () => sessionCatalog.all(),
+    listSessionPage: (query) => sessionCatalog.page(query),
+    disposeCatalog: () => sessionCatalog.dispose(),
     // Renaming a closed session goes through `SessionManager`, the SDK's own
     // writer — the control host still never builds an `AgentSession`.
     renameSession: async (sessionFile, name) => renameStoredSession(sessionFile, name),

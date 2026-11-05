@@ -170,7 +170,10 @@ describe("applyTabs", () => {
       .mockResolvedValue({ messages: [] });
     await useAppStore.getState().activateTab("session-1");
 
-    expect(useAppStore.getState().transcripts["session-1"]?.hydrated).toBe(true);
+    // `activateTab` starts hydration fire-and-forget; wait for the async read.
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().transcripts["session-1"]?.hydrated).toBe(true);
+    });
     expect(request).toHaveBeenCalledWith({ tabId: "session-1", method: "messages.get" });
   });
 
@@ -260,5 +263,59 @@ describe("applyTabs", () => {
     }
 
     expect(Object.keys(useAppStore.getState().blobs)).toHaveLength(MAX_RETAINED_BLOBS);
+  });
+});
+
+describe("transcript hydration from a spilled response", () => {
+  it("hydrates a large messages.get answer through the blob reader", async () => {
+    const handles = installBridge();
+    const first = tab({ id: "session-spilled" });
+    useAppStore.getState().applyTabs({ tabs: [first], activeTabId: first.id });
+    const request = vi
+      .spyOn(handles.bridge.sessions, "request")
+      .mockImplementation(async (input: { method: string }) => {
+        if (input.method === "messages.get") {
+          return { $blob: "C:/blobs/messages.json", bytes: 120 };
+        }
+        if (input.method === "host.blobs.read") {
+          return {
+            path: "C:/blobs/messages.json",
+            contents: JSON.stringify({
+              messages: [{ role: "assistant", content: "recovered history" }],
+            }),
+            offset: 0,
+            nextOffset: 120,
+            size: 120,
+            done: true,
+          };
+        }
+        return {};
+      });
+
+    await useAppStore.getState().hydrateTranscript(first.id);
+
+    const transcript = useAppStore.getState().transcripts[first.id];
+    expect(transcript?.hydrated).toBe(true);
+    expect(transcript?.items.length).toBeGreaterThan(0);
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: "host.blobs.read" }));
+  });
+
+  it("reports a failed hydration instead of showing an empty session", async () => {
+    const handles = installBridge();
+    const first = tab({ id: "session-failed" });
+    useAppStore.getState().applyTabs({ tabs: [first], activeTabId: first.id });
+    const request = vi
+      .spyOn(handles.bridge.sessions, "request")
+      .mockRejectedValueOnce(new Error("the spilled result is gone"));
+
+    await useAppStore.getState().hydrateTranscript(first.id);
+
+    expect(useAppStore.getState().transcripts[first.id]?.hydrated).toBe(false);
+    expect(useAppStore.getState().hint).toMatch(/spilled result is gone/);
+
+    // The failure is not cached as success: the next attempt can recover.
+    request.mockResolvedValueOnce({ messages: [] });
+    await useAppStore.getState().hydrateTranscript(first.id);
+    expect(useAppStore.getState().transcripts[first.id]?.hydrated).toBe(true);
   });
 });

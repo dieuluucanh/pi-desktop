@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
+  BLOB_CHUNK_BYTES,
   BLOB_DIR_ENV,
   HOST_PROTOCOL_VERSION,
   JsonlFrameDecoder,
+  MAX_FRAME_BYTES,
   encodeFrame,
   exceedsThreshold,
   isBlobRef,
   isHostMethod,
+  type BlobReadResult,
   type BlobRef,
   type HostErrorBody,
   type HostFrame,
@@ -108,6 +111,63 @@ class HostError extends Error {
     super(message);
     this.code = code;
   }
+}
+
+function isUtf8Continuation(byte: number | undefined): boolean {
+  return byte !== undefined && (byte & 0xc0) === 0x80;
+}
+
+/** Bytes in the code point starting with `lead` (1 for ASCII/invalid bytes). */
+function utf8LeadLength(lead: number | undefined): number {
+  if (lead === undefined || lead < 0xc0) return 1;
+  if (lead < 0xe0) return 2;
+  if (lead < 0xf0) return 3;
+  return 4;
+}
+
+/**
+ * One UTF-8-safe chunk of a spilled blob (session browser fix, 2026-11-05).
+ *
+ * `host.blobs.read` used to answer with the whole file. That is a dead end for
+ * a blob larger than `MAX_FRAME_BYTES`: the line is dropped and the request
+ * times out. Byte offsets keep the read O(n) for the caller, and moving the end
+ * back to a code-point boundary means concatenating the chunks reproduces the
+ * original text exactly.
+ */
+export function readBlobChunk(
+  text: string,
+  path: string,
+  offset = 0,
+  maxBytes = BLOB_CHUNK_BYTES,
+): BlobReadResult {
+  const bytes = Buffer.from(text, "utf8");
+  const size = bytes.length;
+  const requested = Number.isFinite(offset) ? Math.floor(offset) : 0;
+  const start = Math.min(Math.max(0, requested), size);
+  if (start > 0 && start < size && isUtf8Continuation(bytes[start])) {
+    throw new HostError("host.blobs.read offset is not on a UTF-8 boundary", "bad_request");
+  }
+  if (start >= size) {
+    return { path, contents: "", offset: start, nextOffset: size, size, done: true };
+  }
+
+  const limit = Math.min(
+    Math.max(1, Math.floor(Number.isFinite(maxBytes) ? maxBytes : BLOB_CHUNK_BYTES)),
+    MAX_FRAME_BYTES - 64 * 1024,
+  );
+  let end = Math.min(size, start + limit);
+  while (end < size && isUtf8Continuation(bytes[end])) end--;
+  // A limit smaller than one code point still has to make progress.
+  if (end <= start) end = Math.min(size, start + utf8LeadLength(bytes[start]));
+
+  return {
+    path,
+    contents: bytes.subarray(start, end).toString("utf8"),
+    offset: start,
+    nextOffset: end,
+    size,
+    done: end >= size,
+  };
 }
 
 function toErrorBody(error: unknown): HostErrorBody {
@@ -270,10 +330,9 @@ export function createHostService(options: HostServiceOptions): HostService {
     capabilities: options.info.capabilities ?? { checkpointsExtension: false },
   });
 
-  handlers["host.blobs.read"] = async (
-    params: unknown,
-  ): Promise<{ path: string; contents: string | null }> => {
-    const path = (params as { path?: unknown } | null)?.path;
+  handlers["host.blobs.read"] = async (params: unknown): Promise<BlobReadResult> => {
+    const input = params && typeof params === "object" ? (params as Record<string, unknown>) : {};
+    const path = input.path;
     if (typeof path !== "string" || path.length === 0) {
       throw new HostError("host.blobs.read requires a path", "bad_request");
     }
@@ -284,7 +343,13 @@ export function createHostService(options: HostServiceOptions): HostService {
     if (blobDir.length === 0 || !isPathInside(blobDir, path)) {
       throw new HostError(`refusing to read outside the blob cache: ${path}`, "forbidden");
     }
-    return { path, contents: await readBlob(path) };
+    const text = await readBlob(path);
+    if (text === null) {
+      throw new HostError(`The spilled result is no longer on disk: ${path}`, "not_found");
+    }
+    const offset = typeof input.offset === "number" ? input.offset : 0;
+    const maxBytes = typeof input.maxBytes === "number" ? input.maxBytes : BLOB_CHUNK_BYTES;
+    return readBlobChunk(text, path, offset, maxBytes);
   };
 
   handlers["host.shutdown"] = () => {

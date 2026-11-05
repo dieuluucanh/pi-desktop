@@ -76,6 +76,22 @@ resource. The window shows a safe-mode banner.
   from _idle_ sleep). The 1 GB RSS guardrail still applies to the active tab.
   Both show up in the host log and Diagnostics.
 
+## The Sessions browser is empty
+
+- **A large profile used to look empty.** Host responses at or above 1 MiB are
+  spilled to a blob cache and replaced by `{$blob, bytes}`. Older builds read the
+  missing `sessions` field as an empty profile, so `/resume` showed nothing even
+  though the files existed. Current builds read the blob back in chunks, project
+  the list in the host and show an error instead of a silent empty state — update
+  if you still see this.
+- **Check the control host log.** Open **Diagnostics → Hosts** and look at the
+  control host (or `logs/control.log`). A healthy large list has no “frame
+  exceeded the size limit” and no `session.list` timeout. The first open can take
+  a moment while Pi reads every session JSONL; later searches use the short cache.
+- **Search covers the full transcript**, so a match can appear on a row whose
+  title does not contain the word. Typing is debounced by ~150 ms; wait for
+  “Searching…” to clear.
+
 ## The app's memory keeps growing, or a Pi terminal gets slow
 
 - Open **Diagnostics** first. The Hosts card reports `live/target (ceiling)`,

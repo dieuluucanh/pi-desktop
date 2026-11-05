@@ -4,6 +4,7 @@ import type { TabRecord } from "../../src/shared/session-ipc";
 import {
   CONTROL_HOST_ID,
   createSessionService,
+  requestTimeoutFor,
   type SessionService,
   type SupervisorHostLike,
   type SupervisorLike,
@@ -27,7 +28,7 @@ interface SpawnSpec {
 
 class FakeHost implements SupervisorHostLike {
   readonly sessionId: string;
-  readonly requests: Array<{ method: string; params?: unknown }> = [];
+  readonly requests: Array<{ method: string; params?: unknown; timeoutMs?: number }> = [];
   shutdownCount = 0;
   buildId: string | null;
   private statusValue = "ready";
@@ -84,8 +85,16 @@ class FakeHost implements SupervisorHostLike {
     this.statusValue = status;
   }
 
-  request(method: HostMethod, params?: unknown): Promise<unknown> {
-    this.requests.push(params === undefined ? { method } : { method, params });
+  request(
+    method: HostMethod,
+    params?: unknown,
+    options?: { timeoutMs?: number },
+  ): Promise<unknown> {
+    this.requests.push({
+      method,
+      ...(params === undefined ? {} : { params }),
+      ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    });
     if (this.fail?.method === method) return Promise.reject(this.fail.error);
     return Promise.resolve(this.reply(method));
   }
@@ -225,8 +234,18 @@ function createHarness(
             }),
       });
       if (options.failCreate) {
-        host.request = (method: HostMethod, params?: unknown) => {
-          host.requests.push(params === undefined ? { method } : { method, params });
+        host.request = (
+          method: HostMethod,
+          params?: unknown,
+          requestOptions?: { timeoutMs?: number },
+        ) => {
+          host.requests.push({
+            method,
+            ...(params === undefined ? {} : { params }),
+            ...(requestOptions?.timeoutMs === undefined
+              ? {}
+              : { timeoutMs: requestOptions.timeoutMs }),
+          });
           return method === "session.create" || method === "session.resume"
             ? Promise.reject(options.failCreate)
             : Promise.resolve(host.reply(method));
@@ -318,7 +337,7 @@ describe("control host", () => {
     const result = await service.request(CONTROL_HOST_ID, "providers.list");
 
     const control = hosts.get(CONTROL_HOST_ID)!;
-    expect(control.requests).toEqual([{ method: "providers.list" }]);
+    expect(control.requests).toEqual([{ method: "providers.list", timeoutMs: 30_000 }]);
     expect(result).toEqual({});
     // Only the control host was spawned; no session tab exists.
     expect(specs.map((spec) => spec.role)).toEqual(["control"]);
@@ -1252,6 +1271,33 @@ describe("requests", () => {
   it("rejects an unknown tab", async () => {
     const { service } = createHarness();
     await expect(service.request("tab-nope", "state.get")).rejects.toThrow(/unknown session tab/);
+  });
+
+  it("gives scan-heavy methods a longer timeout", async () => {
+    const { service, hosts, newest } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const sessionHost = newest();
+
+    await service.request("tab-1", "messages.get");
+    expect(sessionHost.requests.at(-1)).toMatchObject({
+      method: "messages.get",
+      timeoutMs: 60_000,
+    });
+
+    await service.request("tab-1", "state.get");
+    expect(sessionHost.requests.at(-1)).toMatchObject({
+      method: "state.get",
+      timeoutMs: 30_000,
+    });
+
+    await service.request(CONTROL_HOST_ID, "session.list");
+    expect(hosts.get(CONTROL_HOST_ID)?.requests.at(-1)).toMatchObject({
+      method: "session.list",
+      timeoutMs: 120_000,
+    });
+    expect(requestTimeoutFor("session.list")).toBe(120_000);
+    expect(requestTimeoutFor("tree.get")).toBe(60_000);
+    expect(requestTimeoutFor("state.get")).toBe(30_000);
   });
 
   it("repairs a lost session and retries a read-only request once", async () => {
