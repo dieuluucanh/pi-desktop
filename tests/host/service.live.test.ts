@@ -49,6 +49,7 @@ describe.skipIf(!buildReady)("live host process", () => {
       nodePath,
       hostPath: resolution.piHostPath,
       binDir: resolution.binDir,
+      nodeBinDir: resolution.nodeBinDir,
       logDir: join(scratch, "logs"),
       blobDir: join(scratch, "blobs"),
       profileDir: join(scratch, "profile"),

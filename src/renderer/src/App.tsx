@@ -273,6 +273,13 @@ export function App() {
         <div className="banner banner--error m-3">
           The preload bridge is unavailable (window.pi is missing), so no command can reach the main
           process. This build is broken — reinstall or run from source.
+          {typeof window !== "undefined" && window.location.protocol === "http:" ? (
+            <span className="mt-1 block" data-testid="bridge-missing-hint">
+              This page is Pi Desktop&apos;s own renderer dev server ({window.location.origin}). A
+              browser cannot reach the main process: open the app window, and use your
+              project&apos;s dev-server URL for the project UI.
+            </span>
+          ) : null}
         </div>
       ) : null}
       {safeMode ? (

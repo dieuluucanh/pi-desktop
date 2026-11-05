@@ -20,10 +20,12 @@ packaging. `npm run doctor` probes the runtime, profile, extensions, bridge, git
 and Office state on the current machine.
 
 `npm run dev` starts `vite build --watch` for the host bundle and
-`electron-vite dev` together through `scripts/dev.mjs`. The app compares the
-running host's build id with the bundle on disk and recycles an idle stale host
-before the next request, so editing `src/host/**` takes effect without a manual
-restart. `npm run build:host` remains the one-shot build.
+`electron-vite dev` together through `scripts/dev.mjs`. The renderer dev server
+is `http://127.0.0.1:5273`, deliberately not Vite's default 5173, which every
+project dev server takes; `PI_DESKTOP_RENDERER_PORT` moves it when needed. The
+app compares the running host's build id with the bundle on disk and recycles an
+idle stale host before the next request, so editing `src/host/**` takes effect
+without a manual restart. `npm run build:host` remains the one-shot build.
 
 ## Gates
 

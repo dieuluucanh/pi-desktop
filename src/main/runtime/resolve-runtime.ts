@@ -1,11 +1,11 @@
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import {
   MINIMUM_NODE_VERSION,
   meetsMinimumNodeVersion,
   nodeBinaryRelativePath,
   npmCliRelativePath,
   parseNodeVersion,
-  prependToPath,
+  joinPathEntries,
   runtimeTarget,
   type RuntimeSource,
 } from "./layout";
@@ -42,6 +42,12 @@ export interface RuntimeResolution {
   runtimeDir: string;
   binDir: string;
   nodeDir: string;
+  /**
+   * Directory containing the selected Node executable, or null when the
+   * selected path is a bare command name. Prepended to a host's PATH after
+   * `binDir` so `node` resolves to the same binary the host runs.
+   */
+  nodeBinDir: string | null;
   nodePath: string | null;
   nodeVersion: string | null;
   npmCliPath: string | null;
@@ -173,6 +179,7 @@ export function resolveRuntime(env: RuntimeEnvironment): RuntimeResolution {
       runtimeDir,
       binDir,
       nodeDir,
+      nodeBinDir: null,
       nodePath: null,
       nodeVersion: null,
       npmCliPath: null,
@@ -194,6 +201,9 @@ export function resolveRuntime(env: RuntimeEnvironment): RuntimeResolution {
     );
   }
 
+  const nodeBinDir =
+    selected.nodePath && isAbsolute(selected.nodePath) ? dirname(selected.nodePath) : null;
+
   return {
     ok: true,
     source: selected.source,
@@ -201,6 +211,7 @@ export function resolveRuntime(env: RuntimeEnvironment): RuntimeResolution {
     runtimeDir,
     binDir,
     nodeDir,
+    nodeBinDir,
     nodePath: selected.nodePath,
     nodeVersion: selectedVersion,
     npmCliPath: selected.npmCliPath,
@@ -217,9 +228,10 @@ export interface RuntimeEnvOverridesInput {
 }
 
 /**
- * Environment overrides for spawning a host process: the shim directory first on
- * PATH (so extensions shelling out to `pi` hit our runtime), and the exact node
- * and host entry so shims never have to guess (plan D16, risk R4).
+ * Environment overrides for spawning a host process: the shim directory and the
+ * selected Node directory first on PATH (so extensions shelling out to
+ * `pi`/`npm`/`npx` hit our runtime and `node` is a real executable), plus the
+ * exact node and host entry so shims never have to guess (plan D16, risk R4).
  */
 export function runtimeEnvOverrides(
   resolution: RuntimeResolution,
@@ -227,7 +239,10 @@ export function runtimeEnvOverrides(
 ): Record<string, string> {
   const overrides: Record<string, string> = {
     PI_DESKTOP_HOST_ENTRY: resolution.piHostPath,
-    PATH: prependToPath(resolution.binDir, input.basePath, input.platform),
+    PATH: joinPathEntries(
+      [resolution.binDir, resolution.nodeBinDir, input.basePath],
+      input.platform,
+    ),
   };
   if (resolution.nodePath) overrides.PI_DESKTOP_NODE = resolution.nodePath;
   return overrides;

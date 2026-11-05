@@ -369,6 +369,7 @@ const hosts = runtime.nodePath
       nodePath: runtime.nodePath,
       hostPath: runtime.piHostPath,
       binDir: runtime.binDir,
+      nodeBinDir: runtime.nodeBinDir,
       logDir: paths.logs,
       blobDir: paths.blobCache,
       backupDir: join(paths.userData, "backups"),

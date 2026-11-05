@@ -2,21 +2,33 @@
 
 Pi Desktop ships its own Node runtime instead of relying on the user's machine or
 on Electron's Node (plan D3/D21/D22). It is what runs every Pi host process and
-every npm install, and the PATH shims make extensions that shell out to `pi`
-(workflow's `explore` subagent, reviewer subagents) work with no global install.
+every npm install, and the PATH shims make extensions that shell out to
+`pi`/`node`/`npm` (workflow's `explore` subagent, reviewer subagents) work with
+no global install.
 
 ## Layout
 
 ```text
 resources/runtime/
   node.lock.json          pinned version + sha256 per platform (checked in)
-  node/win32-x64/         installed Node 24 LTS (gitignored)
+  node/<platform>-<arch>/ installed Node 24 LTS (gitignored)
   bin/                    generated shims (gitignored)
-    pi  pi.cmd            -> <node> out/host/index.mjs        (the `pi` CLI)
-    node  node.cmd        -> the bundled node
-    npm  npm.cmd          -> <node> .../npm/bin/npm-cli.js
-    npx  npx.cmd          -> <node> .../npm/bin/npx-cli.js
+
+    Windows (win32-*):
+      pi  pi.cmd          -> <node> out/host/index.mjs        (the `pi` CLI)
+      node                -> the bundled node (Git Bash; cmd/PowerShell use
+                             the real node.exe from node/<platform>-<arch>/)
+      npm  npm.cmd        -> <node> .../npm/bin/npm-cli.js
+      npx  npx.cmd        -> <node> .../npm/bin/npx-cli.js
+
+    macOS / Linux:
+      pi  node  npm  npx  -> the same targets, no .cmd twins
 ```
+
+On Windows there is deliberately **no `node.cmd`**. The host PATH is `bin` first
+and `node/<platform>-<arch>` second, so `node` resolves to a real executable that
+cmd, PowerShell and `spawn("node")` can all start. `bin` also keeps the
+extensionless `node` script for Git Bash.
 
 In a packaged build the same layout sits under `<resources>/runtime`, and the
 host entry is `<resources>/app.asar.unpacked/out/host/index.mjs`; the
@@ -82,11 +94,52 @@ For npm installs the resolved runtime is injected as a **runtime settings
 override** — `SettingsManager.applyOverrides({ npmCommand: [node, npmCliJs] })` —
 so the shared `~/.pi/agent/settings.json` is never rewritten (plan D20).
 
-`runtimeEnvOverrides()` is the hook the host supervisor uses: shim directory
-first on `PATH`, plus `PI_DESKTOP_NODE` / `PI_DESKTOP_HOST_ENTRY`.
+`runtimeEnvOverrides()` is the pure resolution-to-environment contract. It sets
+`PI_DESKTOP_NODE` / `PI_DESKTOP_HOST_ENTRY` and prefixes both the shim directory
+and the selected Node's directory (`nodeBinDir`, the `dirname()` of the resolved
+binary). The host supervisor composes the same directories through the shared
+`joinPathEntries()` helper, so the order is always `binDir`, `nodeBinDir`, then
+the inherited PATH. `binDir` wins for `pi`/`npm`/`npx`; `nodeBinDir` supplies the
+real `node`, which is why no Windows `node.cmd` is needed.
+
+## Development renderer server
+
+`electron-vite dev` serves the renderer from `http://127.0.0.1:5273`. The port is
+not Vite's default on purpose: 5173 is what every project Vite takes, and the
+earlier implicit `localhost` bind landed on `::1` only, so a project server could
+bind `127.0.0.1:5173` as well or silently fall back to 5174 — and a browser
+opening `http://localhost:5173` showed Pi Desktop's renderer without its preload
+bridge, which reads as a broken build.
+
+The rules live in `src/main/runtime/dev-server.ts` and are consumed by
+`electron.vite.config.ts`:
+
+| Setting      | Value       | Why                                                                 |
+| ------------ | ----------- | ------------------------------------------------------------------- |
+| `host`       | `127.0.0.1` | one explicit loopback family; no `localhost`/`::1` split            |
+| `port`       | `5273`      | outside Vite's 5173+ fallback family and the common framework ports |
+| `strictPort` | `true`      | a busy port must fail loudly, never move                            |
+
+`PI_DESKTOP_RENDERER_PORT` overrides the port (a process environment variable,
+not a project `.env` value) and must be an integer between 1024 and 65535; a
+malformed value fails the config load by name. `strictPort` matters beyond the
+port itself: `electron-vite@5` derives `ELECTRON_RENDERER_URL` from the
+**configured** port, not Vite's actual port, so a silent fallback would point the
+Electron window at whichever server owns the configured port.
+
+`npm run doctor` prints the address and whether it is free. Only `dev` starts a
+server: `build`, `preview` and packaged apps load `out/renderer/index.html`.
 
 ## Notes from the field
 
+- **Windows `.cmd` shims.** When cmd starts a batch by bare name through PATH
+  (the npm cmd-shim pattern, e.g. `pnpm.cmd` invoking `"node"`), `%~dp0` is the
+  **current directory**, not the batch file's directory. The `pi.cmd` /
+  `npm.cmd` / `npx.cmd` prologues therefore locate themselves on PATH when the
+  runtime is not beside `%~dp0`, and they treat `PI_DESKTOP_NODE` as an optional
+  override rather than a requirement. `gen-shims.mjs` writes only the target
+  platform's files and prunes retired/foreign names (including an older
+  `node.cmd`).
 - **Windows `tar`.** `fetch-runtime.mjs` calls `%SystemRoot%\System32\tar.exe`
   explicitly: a Git-Bash GNU tar earlier on PATH reads `C:\…` as a remote host and
   fails with _Cannot connect to C_. PowerShell `Expand-Archive` is the fallback.
@@ -112,7 +165,9 @@ not depend on the packager's host arch. Foreign runtimes are verified statically
 binary, so it is per platform — and `resources/runtime/bin` is gitignored. All
 three package scripts therefore run `npm run runtime:shims` before
 `runtime:verify`, which is what makes a fresh clone able to verify the runtime it
-is about to ship.
+is about to ship. The generator writes only the target platform's shim set and
+prunes any known shim name it did not write, so a shared dev `bin/` cannot keep a
+stale `node.cmd` or a foreign-platform `.cmd` twin.
 
 `electron-builder.yml` copies the directory into the app as
 `extraResources/runtime` (the app reads it by path, outside the asar) and lists

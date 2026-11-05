@@ -4,6 +4,7 @@ import {
   firstLoopbackUrl,
   isLoopbackHost,
   isLoopbackUrl,
+  isSameOriginUrl,
   loopbackUrlsIn,
   parseReviewDecision,
   parseWebCommand,
@@ -58,6 +59,27 @@ describe("web URL policy", () => {
     expect(webTabTitle("http://127.0.0.1:19432/review/abc")).toBe("127.0.0.1:19432");
     expect(webTabTitle("https://example.com")).toBe("example.com");
     expect(webTabTitle("nonsense")).toBe("Web");
+  });
+});
+
+describe("isSameOriginUrl", () => {
+  it("recognises the page's own origin, including a default port", () => {
+    expect(isSameOriginUrl("http://127.0.0.1:5273/review", "http://127.0.0.1:5273")).toBe(true);
+    expect(isSameOriginUrl("http://localhost/x", "http://localhost:80")).toBe(true);
+    expect(isSameOriginUrl("https://example.com/a", "https://example.com")).toBe(true);
+  });
+
+  it("separates another port, host or scheme", () => {
+    expect(isSameOriginUrl("http://127.0.0.1:5173/", "http://127.0.0.1:5273")).toBe(false);
+    expect(isSameOriginUrl("http://localhost:5273/", "http://127.0.0.1:5273")).toBe(false);
+    expect(isSameOriginUrl("https://127.0.0.1:5273/", "http://127.0.0.1:5273")).toBe(false);
+  });
+
+  it("refuses a non-web URL or a malformed origin", () => {
+    expect(isSameOriginUrl("file:///tmp/x", "file:///tmp")).toBe(false);
+    expect(isSameOriginUrl("javascript:alert(1)", "http://127.0.0.1:5273")).toBe(false);
+    expect(isSameOriginUrl(42, "http://127.0.0.1:5273")).toBe(false);
+    expect(isSameOriginUrl("http://127.0.0.1:5273", "not an origin")).toBe(false);
   });
 });
 

@@ -20,6 +20,7 @@ import {
   type HostRole,
 } from "../shared/host-protocol";
 import { createNodeFsPort, type FsPort } from "./fs-port";
+import { joinPathEntries } from "./runtime/layout";
 import { SESSION_ID_ENV, SERVICE_ENV, SERVICE_FLAG } from "../host/index";
 import {
   HOST_RSS_RESTART_BYTES,
@@ -152,6 +153,12 @@ export interface HostSupervisorOptions {
   nodePath: string;
   hostPath: string;
   binDir: string;
+  /**
+   * Directory containing the selected Node executable, or null when the runtime
+   * was resolved from a bare command name. It goes on PATH after `binDir` so
+   * `node` resolves to a real executable; `binDir` has no `node.cmd`.
+   */
+  nodeBinDir: string | null;
   logDir: string;
   blobDir: string;
   /**
@@ -461,11 +468,11 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         PI_CODING_AGENT_DIR: options.profileDir,
         PI_OFFICE_BRIDGE_PORT: String(this.port),
       };
-      const basePath = env.PATH ?? env.Path ?? "";
-      env.PATH =
-        basePath.length > 0
-          ? `${options.binDir}${process.platform === "win32" ? ";" : ":"}${basePath}`
-          : options.binDir;
+      const basePath = env.PATH ?? (process.platform === "win32" ? env.Path : undefined) ?? "";
+      env.PATH = joinPathEntries([options.binDir, options.nodeBinDir, basePath], process.platform);
+      // Windows environment names are case-insensitive; passing both PATH and
+      // Path lets the child pick either one, so keep a single canonical key.
+      if (process.platform === "win32") delete env.Path;
       env[NODE_BIN_ENV] = options.nodePath;
       env.PI_DESKTOP_HOST_ENTRY = options.hostPath;
       const buildId = options.hostBuildId?.() ?? null;

@@ -2,16 +2,21 @@
  * Runtime acceptance check — `npm run runtime:verify`.
  *
  * Proves the bundled runtime is installed, verifiable and usable *without any
- * system Node/npm*: the shims are executed with a PATH that contains nothing but
- * the shim directory, which is exactly the situation on a machine that has never
- * seen Node (plan step 2 acceptance).
+ * system Node/npm*: the shims are executed with a PATH that contains only the
+ * app's runtime directories, which is exactly the situation on a machine that
+ * has never seen Node (plan step 2 acceptance).
+ *
+ * It also pins the Windows failure mode: a `.cmd` started by bare name through
+ * PATH sees `%~dp0` as the current directory, so the runtime must expose a real
+ * `node.exe` and the remaining shims must locate themselves.
  *
  *   npx vitest run tests/runtime/runtime.live.test.ts --disable-console-intercept
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { resolveAppRuntime } from "../../src/main/runtime/environment";
@@ -76,9 +81,15 @@ const SPAWN_TIMEOUT_MS = 90_000;
 const runtimeReady = resolution.ok && existsSync(resolution.piHostPath);
 const runtimeRequired = process.env.PI_DESKTOP_REQUIRE_RUNTIME === "1";
 
-/** A PATH containing only the shim directory: no system node, no system npm. */
+/** A PATH containing only the app's runtime directories: no system node/npm. */
 function strippedEnv(): NodeJS.ProcessEnv {
-  return { ...withoutAppEnv(process.env), PATH: resolution.binDir };
+  const env = withoutAppEnv(process.env);
+  // Windows may spell the key `Path`; the runtime PATH is the only one we want.
+  delete env.Path;
+  env.PATH = [resolution.binDir, resolution.nodeBinDir]
+    .filter((entry): entry is string => Boolean(entry))
+    .join(delimiter);
+  return env;
 }
 
 interface ShimResult {
@@ -105,6 +116,25 @@ function runShim(name: ShimName, args: string[]): ShimResult {
   }
 
   const result = spawnSync(file, args, { env, encoding: "utf8", timeout: SPAWN_TIMEOUT_MS });
+  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+}
+
+/** Runs a command the way a shell/cmd-shim does: by bare name, through PATH. */
+function runBare(name: string, args: string[] = []): ShimResult {
+  const env = strippedEnv();
+  const command = [name, ...args].join(" ");
+  const result =
+    process.platform === "win32"
+      ? spawnSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", command], {
+          env,
+          encoding: "utf8",
+          timeout: SPAWN_TIMEOUT_MS,
+        })
+      : spawnSync("sh", ["-c", command], {
+          env,
+          encoding: "utf8",
+          timeout: SPAWN_TIMEOUT_MS,
+        });
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
@@ -223,17 +253,32 @@ describe.skipIf(!runtimeReady)("resolved runtime (live)", () => {
 });
 
 describe.skipIf(!runtimeReady)("PATH shims (live)", () => {
-  it(`installs all four shims for ${target}`, () => {
-    for (const name of ["pi", "node", "npm", "npx"] as ShimName[]) {
-      expect(
-        existsSync(join(resolution.binDir, shimFileName(name, process.platform))),
-        `${name} shim`,
-      ).toBe(true);
-    }
+  const knownShims = ["node", "node.cmd", "npm", "npm.cmd", "npx", "npx.cmd", "pi", "pi.cmd"];
+
+  function installedShims(): string[] {
+    return readdirSync(resolution.binDir)
+      .filter((name) => knownShims.includes(name))
+      .sort();
+  }
+
+  it(`installs the ${target} shims without a node.cmd`, () => {
+    const expected =
+      process.platform === "win32"
+        ? ["node", "npm", "npm.cmd", "npx", "npx.cmd", "pi", "pi.cmd"]
+        : ["node", "npm", "npx", "pi"];
+    expect(installedShims()).toEqual(expected);
+    expect(existsSync(join(resolution.binDir, "node.cmd"))).toBe(false);
+
+    // `node` comes from the selected Node distribution's own directory, not a
+    // .cmd shim, so cmd, PowerShell and spawn('node') all see an executable.
+    expect(resolution.nodeBinDir).not.toBeNull();
+    const nodeFile = process.platform === "win32" ? "node.exe" : "node";
+    expect(existsSync(join(resolution.nodeBinDir ?? "", nodeFile))).toBe(true);
   });
 
-  it("resolves `node --version` through the shim with no system Node on PATH", () => {
-    const result = expectShimOk("node", ["--version"]);
+  it("resolves `node --version` by bare name with no system Node on PATH", () => {
+    const result = runBare("node", ["--version"]);
+    expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim()).toBe(`v${lock.node.version}`);
   });
 
@@ -263,4 +308,57 @@ describe.skipIf(!runtimeReady)("PATH shims (live)", () => {
     },
     SPAWN_TIMEOUT_MS,
   );
+
+  it("resolves `npm --version` by bare name with no system Node on PATH", () => {
+    const result = runBare("npm", ["--version"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  it("resolves `npx --version` by bare name with no system Node on PATH", () => {
+    const result = runBare("npx", ["--version"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  it("resolves `pi --version` by bare name with no system Node on PATH", () => {
+    const result = runBare("pi", ["--version"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  describe.runIf(process.platform === "win32")("Windows cmd-shim child (live)", () => {
+    it("runs node, npm and pi by bare name from a .cmd in another directory", () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-cmd-shim-"));
+      try {
+        writeFileSync(
+          join(dir, "probe.cmd"),
+          [
+            "@echo off",
+            'node -p "process.execPath"',
+            "call npm --version",
+            "call pi --version",
+          ].join("\r\n") + "\r\n",
+        );
+        const result = spawnSync(
+          process.env.ComSpec ?? "cmd.exe",
+          ["/d", "/s", "/c", "probe.cmd"],
+          {
+            cwd: dir,
+            env: strippedEnv(),
+            encoding: "utf8",
+            timeout: SPAWN_TIMEOUT_MS,
+          },
+        );
+
+        expect(result.status, result.stderr).toBe(0);
+        const lines = result.stdout.trim().split(/\r?\n/);
+        expect(lines[0]?.toLowerCase()).toBe((resolution.nodePath ?? "").toLowerCase());
+        expect(lines[1] ?? "").toMatch(/^\d+\.\d+\.\d+/);
+        expect(lines[2] ?? "").toMatch(/^\d+\.\d+\.\d+/);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
 });

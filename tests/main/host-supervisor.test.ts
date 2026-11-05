@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { normalize } from "node:path";
+import { normalize, delimiter } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   HostTimeoutError,
@@ -26,6 +26,7 @@ import { hostProcessCeiling } from "../../src/shared/performance";
 
 const HOST_PATH = normalize("C:/app/out/host/index.mjs");
 const NODE_PATH = normalize("C:/app/runtime/node/node.exe");
+const NODE_BIN_DIR = normalize("C:/app/runtime/node");
 
 interface FakeBehaviour {
   /** Methods that never get an answer (timeout tests). */
@@ -139,6 +140,7 @@ function harness(
     sessionFile?: string | null;
     maxHosts?: number;
     npmCliPath?: string;
+    env?: Record<string, string | undefined>;
     safeMode?: boolean;
     telemetryEnabled?: boolean | (() => boolean);
     hostBuildId?: () => string | null;
@@ -169,10 +171,11 @@ function harness(
     nodePath: NODE_PATH,
     hostPath: HOST_PATH,
     binDir: normalize("C:/app/resources/runtime/bin"),
+    nodeBinDir: NODE_BIN_DIR,
     logDir: normalize("C:/user-data/logs"),
     blobDir: normalize("C:/user-data/blob-cache"),
     profileDir: normalize("C:/Users/Test/.pi/agent"),
-    env: { PATH: normalize("C:/Windows/System32") },
+    env: options.env ?? { PATH: normalize("C:/Windows/System32") },
     ...(options.npmCliPath ? { npmCliPath: options.npmCliPath } : {}),
     spawner,
     fs,
@@ -208,9 +211,30 @@ describe("host supervisor startup", () => {
     expect(host.port).toBe(38618);
     expect(supervisor.list()).toHaveLength(1);
 
-    // The host learns where the bundled runtime is (plan step 14).
+    // The host learns where the bundled runtime is (plan step 14), and PATH
+    // carries the shim dir then the real node dir, so `node` is an executable.
     expect(spawnCalls[0]?.env.PI_DESKTOP_NODE).toBe(NODE_PATH);
     expect(spawnCalls[0]?.env.PI_DESKTOP_HOST_MODE).toBe("service");
+    expect(spawnCalls[0]?.env.PATH).toBe(
+      [
+        normalize("C:/app/resources/runtime/bin"),
+        NODE_BIN_DIR,
+        normalize("C:/Windows/System32"),
+      ].join(delimiter),
+    );
+  });
+
+  it("keeps one path-like env key and merges a base Path spelling on Windows", async () => {
+    const { supervisor, spawnCalls } = harness({
+      env: { Path: normalize("C:/Windows/System32") },
+    });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    const pathKeys = Object.keys(spawnCalls[0]?.env ?? {}).filter(
+      (key) => key.toLowerCase() === "path",
+    );
+    expect(pathKeys).toHaveLength(1);
+    expect(spawnCalls[0]?.env[pathKeys[0] ?? ""]).toContain(normalize("C:/Windows/System32"));
   });
 
   it("stamps the spawn with the host bundle fingerprint", async () => {

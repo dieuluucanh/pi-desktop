@@ -61,6 +61,7 @@ describe.skipIf(!buildReady)("live session service", () => {
       nodePath,
       hostPath: resolution.piHostPath,
       binDir: resolution.binDir,
+      nodeBinDir: resolution.nodeBinDir,
       logDir: join(scratch, "logs"),
       blobDir: join(scratch, "blobs"),
       profileDir: join(scratch, "profile"),

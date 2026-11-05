@@ -52,9 +52,18 @@ export function npxCliRelativePath(platform: string): string {
 
 export type ShimName = "pi" | "node" | "npm" | "npx";
 
-/** Shims exist for both shells; Windows only ever uses the `.cmd` twin. */
+/**
+ * The shim a shell uses on `platform`.
+ *
+ * Windows uses `.cmd` for `pi`/`npm`/`npx`. `node` is deliberately **not** a
+ * `.cmd` shim: the real `node.exe` is put on PATH instead, so cmd, PowerShell
+ * and `spawn("node")` all get an executable rather than a batch file that can
+ * only be started through a shell. The extensionless `node` script still ships
+ * on Windows for Git Bash.
+ */
 export function shimFileName(name: ShimName, platform: string): string {
-  return platform === "win32" ? `${name}.cmd` : name;
+  if (platform !== "win32") return name;
+  return name === "node" ? name : `${name}.cmd`;
 }
 
 /** `"v24.21.0\n"` → `"24.21.0"`; anything unparseable → `null`. */
@@ -74,8 +83,18 @@ export function meetsMinimumNodeVersion(
   return semver.gte(parsed, minimum);
 }
 
-/** Prepends the shim directory to PATH using the target platform's separator. */
-export function prependToPath(binDir: string, basePath: string, platform: string): string {
+/**
+ * Joins PATH entries with the target platform's separator, dropping empty ones.
+ *
+ * Callers pass the app's directories first so they win over whatever the user's
+ * shell already had; the inherited PATH stays last as one entry.
+ */
+export function joinPathEntries(
+  entries: readonly (string | null | undefined)[],
+  platform: string,
+): string {
   const separator = platform === "win32" ? ";" : ":";
-  return basePath.length > 0 ? `${binDir}${separator}${basePath}` : binDir;
+  return entries
+    .filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    .join(separator);
 }

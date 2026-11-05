@@ -113,6 +113,40 @@ resource. The window shows a safe-mode banner.
   builds call the SDK method with its session receiver.
 - `!` needs Bash on `PATH` (Git Bash on Windows). If Bash or `git` is missing,
   the app reports it rather than hanging. `Esc` cancels a running command.
+- A project tool that starts its own `node` through `cmd` (for example
+  `npm run dev` → turbo → `pnpm.cmd`) can fail with **“The system cannot find the
+  path specified”** before any project code runs. That was the old Windows
+  `node.cmd` shim, which used the batch file's `%~dp0` even when cmd had started
+  it by bare name; the shim now locates itself and the real `node.exe` is on
+  `PATH`. Update Pi Desktop, or run `npm run runtime:shims` in a development
+  tree. On 0.6.0 the stopgap is adding `PI_DESKTOP_NODE` to turbo's
+  `globalPassThroughEnv`. `npm run doctor` prints the runtime and shim paths.
+
+## A localhost URL shows Pi Desktop instead of my app
+
+A project's dev server prints a URL, the browser opens it, and the page is Pi
+Desktop — usually with **The preload bridge is unavailable (window.pi is
+missing)**.
+
+- **Cause.** Older Pi Desktop builds served their own renderer on
+  `localhost:5173`, Vite's default. A project Vite that also uses 5173 either
+  falls back to 5174 or binds the other loopback address (`127.0.0.1` while the
+  app held `::1`), so `http://localhost:5173` can be the app, not the project.
+  A renderer served outside Electron has no preload bridge, so that banner is
+  all it can show.
+- **Find out which server owns the port.** `netstat -ano | findstr :5173`
+  (Windows) or `lsof -nP -iTCP:5173 -sTCP:LISTEN` (macOS, Linux), then
+  `curl -s http://127.0.0.1:5173/ | grep -i "<title>"`: `Pi Desktop` is the app;
+  anything else is the project. `npm run doctor` prints the app's own dev-server
+  address and whether it is free.
+- **Fix.** Update Pi Desktop: the renderer dev server is
+  `http://127.0.0.1:5273` and never takes 5173. If a stale process holds a port,
+  stop it (`taskkill /PID <pid> /T /F` on Windows, `kill <pid>` elsewhere). To run
+  the app elsewhere, set `PI_DESKTOP_RENDERER_PORT=5274` for `npm run dev`. For
+  the project, enable `strictPort: true` in its Vite config (or give it a
+  distinct `VITE_PORT`) so a taken port fails loudly instead of drifting.
+- 0.6.0 still uses 5173; the dedicated port arrives with the next development
+  build.
 
 ## Slash-command suggestions stopped working after a host edit
 

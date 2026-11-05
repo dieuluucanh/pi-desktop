@@ -86,7 +86,7 @@ packages are stamped `local`, skip automatic checks, and say so in that card.
 ```bash
 npm ci
 npm run runtime:fetch      # bundled Node + npm + shims (~37 MB, not committed)
-npm run dev                # Electron with main/preload + host watch and the renderer dev server
+npm run dev                # Electron + watch builds; renderer dev server on 127.0.0.1:5273
 ```
 
 Gates (run before every commit; CI runs the same set):

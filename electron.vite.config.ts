@@ -4,6 +4,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import type { Plugin } from "vite";
 import { CSP_PLACEHOLDER, rendererCspFor } from "./src/main/security";
+import { rendererDevServer } from "./src/main/runtime/dev-server";
 
 /**
  * electron-vite config for the three Electron targets.
@@ -73,6 +74,11 @@ export default defineConfig({
   },
   renderer: {
     root: resolve("./src/renderer"),
+    // Dev only. A dedicated loopback port keeps the app off Vite's default 5173,
+    // which every project dev server takes. `strictPort` is deliberate:
+    // electron-vite derives ELECTRON_RENDERER_URL from the configured port, so a
+    // silent fallback would point Electron at another server.
+    server: rendererDevServer(process.env),
     plugins: [rendererCspPlugin(), react(), tailwindcss()],
     build: {
       outDir: "out/renderer",

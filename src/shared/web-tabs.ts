@@ -118,6 +118,23 @@ export function isLoopbackUrl(value: unknown): boolean {
   return url ? isLoopbackHost(url.hostname) : false;
 }
 
+/**
+ * True when `value` has the same origin as `origin`.
+ *
+ * A browser tab pointed at Pi Desktop's own renderer dev server is the same
+ * origin as this page; a project's dev server is a different port. Used to tell
+ * the two apart when someone pastes a localhost URL (2026-11-05 port plan).
+ */
+export function isSameOriginUrl(value: unknown, origin: string): boolean {
+  const url = parseWebUrl(value);
+  if (!url) return false;
+  try {
+    return url.origin === new URL(origin).origin;
+  } catch {
+    return false;
+  }
+}
+
 /** Trailing punctuation a sentence may attach to a URL. */
 const TRAILING_PUNCTUATION = /[.,;:!?)\]}>"']+$/;
 

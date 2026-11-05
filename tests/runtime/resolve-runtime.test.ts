@@ -56,6 +56,7 @@ describe("resolveRuntime — bundled runtime", () => {
     expect(resolution.target).toBe("win32-x64");
     expect(resolution.runtimeDir).toBe(join(RESOURCES, "runtime"));
     expect(resolution.binDir).toBe(join(RESOURCES, "runtime", "bin"));
+    expect(resolution.nodeBinDir).toBe(NODE_DIR);
     expect(resolution.piHostPath).toBe(join(APP_ROOT, "out", "host", "index.mjs"));
     expect(resolution.hint).toBeNull();
     expect(resolution.problems).toEqual([]);
@@ -110,6 +111,7 @@ describe("resolveRuntime — bundled runtime", () => {
 
     expect(resolution.ok).toBe(true);
     expect(resolution.npmCommand).toEqual([node, npmCli]);
+    expect(resolution.nodeBinDir).toBe(join(RESOURCES, "runtime", "node", "linux-x64", "bin"));
   });
 });
 
@@ -141,6 +143,7 @@ describe("resolveRuntime — overrides", () => {
 
     expect(resolution.source).toBe("override");
     expect(resolution.nodePath).toBe(custom);
+    expect(resolution.nodeBinDir).toBe(normalize("C:/tools/node"));
     expect(resolution.npmCommand).toEqual([custom, normalize("C:/tools/node/npm-cli.js")]);
   });
 
@@ -165,6 +168,7 @@ describe("resolveRuntime — system fallback and failure", () => {
 
     expect(resolution.ok).toBe(true);
     expect(resolution.source).toBe("system");
+    expect(resolution.nodeBinDir).toBeNull();
     expect(resolution.npmCommand).toEqual(["npm"]);
     expect(resolution.problems.join(" ")).toContain("no bundled runtime");
     expect(resolution.problems.join(" ")).toContain("system Node");
@@ -181,6 +185,7 @@ describe("resolveRuntime — system fallback and failure", () => {
 
     expect(resolution.ok).toBe(false);
     expect(resolution.nodePath).toBeNull();
+    expect(resolution.nodeBinDir).toBeNull();
     expect(resolution.npmCommand).toBeNull();
     expect(resolution.problems.join(" ")).toContain("below the required 22.19.0");
     expect(resolution.hint).toContain("npm run runtime:fetch");
@@ -237,7 +242,7 @@ describe("runtimeEnvOverrides", () => {
 
     expect(overrides.PI_DESKTOP_NODE).toBe(NODE);
     expect(overrides.PI_DESKTOP_HOST_ENTRY).toBe(resolution.piHostPath);
-    expect(overrides.PATH).toBe(`${resolution.binDir};C:\\Windows\\System32`);
+    expect(overrides.PATH).toBe(`${resolution.binDir};${NODE_DIR};C:\\Windows\\System32`);
   });
 
   it("omits PI_DESKTOP_NODE when no runtime resolved", () => {

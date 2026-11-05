@@ -7,7 +7,7 @@ import {
   npmCliRelativePath,
   npxCliRelativePath,
   parseNodeVersion,
-  prependToPath,
+  joinPathEntries,
   runtimeTarget,
   shimFileName,
 } from "../../src/main/runtime/layout";
@@ -53,6 +53,13 @@ describe("distribution paths", () => {
     expect(shimFileName("pi", "linux")).toBe("pi");
     expect(shimFileName("npm", "darwin")).toBe("npm");
   });
+
+  it("never uses a node.cmd shim, on any platform", () => {
+    // `node` must be the real executable on PATH; the extensionless script is
+    // the Git Bash shim, not the cmd one.
+    expect(shimFileName("node", "win32")).toBe("node");
+    expect(shimFileName("node", "linux")).toBe("node");
+  });
 });
 
 describe("version gate", () => {
@@ -78,13 +85,20 @@ describe("version gate", () => {
   });
 });
 
-describe("prependToPath", () => {
-  it("puts the shim directory first with the platform separator", () => {
-    expect(prependToPath("C:\\bin", "C:\\Windows", "win32")).toBe("C:\\bin;C:\\Windows");
-    expect(prependToPath("/opt/bin", "/usr/bin", "linux")).toBe("/opt/bin:/usr/bin");
+describe("joinPathEntries", () => {
+  it("puts the runtime directories first with the platform separator", () => {
+    expect(joinPathEntries(["C:\\bin", "C:\\node", "C:\\Windows"], "win32")).toBe(
+      "C:\\bin;C:\\node;C:\\Windows",
+    );
+    expect(joinPathEntries(["/opt/bin", "/opt/node/bin", "/usr/bin"], "linux")).toBe(
+      "/opt/bin:/opt/node/bin:/usr/bin",
+    );
   });
 
-  it("handles an empty base path", () => {
-    expect(prependToPath("/opt/bin", "", "linux")).toBe("/opt/bin");
+  it("drops empty and missing entries", () => {
+    expect(joinPathEntries(["/opt/bin", "", null, undefined, "/usr/bin"], "linux")).toBe(
+      "/opt/bin:/usr/bin",
+    );
+    expect(joinPathEntries(["C:\\bin", null, ""], "win32")).toBe("C:\\bin");
   });
 });
