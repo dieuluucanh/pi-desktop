@@ -34,6 +34,16 @@
   --color-selected: color-mix(in srgb, var(--color-accent) 20%, var(--color-raised));
 
   /*
+   * Inline code background (2026-11-06 transcript-markdown-parity).
+   *
+   * Derived from the ink colour, not `raised`: the light palette makes `raised`
+   * white and the user bubble is white too. A 10% ink wash stays visible on
+   * `canvas` (assistant prose), `surface` (user bubble) and `raised` cards in
+   * every theme, and follows a custom Pi theme without a second literal.
+   */
+  --color-code-bg: color-mix(in srgb, var(--color-ink) 10%, transparent);
+
+  /*
    * Terminal palette (2026-11-05 terminal plan). xterm paints on a canvas, so
    * these are resolved to concrete colours by `terminalThemeFromCssVariables`.
    * The 16 ANSI slots mirror the Pi TUI palette; the surface tokens keep the
@@ -67,6 +77,15 @@
 
   --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, "SF Mono", monospace;
+
+  /*
+   * The transcript's readable measure (2026-11-06 transcript-markdown-parity).
+   * Terminal Pi is bounded by its pane width; the desktop transcript is not, so
+   * a maximised window would otherwise produce 140+ character prose lines. The
+   * cap is applied to the content column (not the scroll area), and it only
+   * bites on wide panes.
+   */
+  --transcript-measure: 110ch;
 }
 
 /* Light palette: same token names, different values. */

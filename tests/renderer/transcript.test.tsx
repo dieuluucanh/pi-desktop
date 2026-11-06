@@ -126,6 +126,36 @@ describe("transcript rendering", () => {
     expect(screen.getByText("todo")).toBeInTheDocument();
   });
 
+  it("keeps an inline code span inside its sentence", () => {
+    // The user-reported regression: `never` used to become a block-level <pre>
+    // inside this paragraph, splitting the sentence across three lines.
+    const items = reduceSessionEvents(createTranscriptState(), [
+      { event: "message_start", payload: { message: { role: "assistant" } } },
+      {
+        event: "message_end",
+        payload: {
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: "Executed the plan and left every change uncommitted (commit policy `never`).",
+              },
+            ],
+          },
+        },
+      },
+    ]).items;
+
+    const { container } = render(<Transcript items={items} />);
+
+    expect(container.querySelectorAll("[data-testid='transcript-row'] pre")).toHaveLength(0);
+    expect(container.querySelector("p code")?.textContent).toBe("never");
+    expect(container.querySelector("p")?.textContent).toBe(
+      "Executed the plan and left every change uncommitted (commit policy never).",
+    );
+  });
+
   it("shows a diff for an edit tool and marks a failing tool", async () => {
     const user = userEvent.setup();
     const { container } = render(<Transcript items={fixtureItems()} />);
@@ -156,6 +186,17 @@ describe("transcript rendering", () => {
       const item = row.firstElementChild as HTMLElement | null;
       expect(item?.className ?? "").not.toMatch(/\bmy-\d/);
     }
+  });
+
+  it("caps and centers the content column at the transcript measure", () => {
+    // Wide windows otherwise give terminal-unlike 140+ character lines. The cap
+    // lives on the content column, not the scroll area, so the scrollbar and the
+    // find/jump chrome stay pane-wide (2026-11-06 transcript-markdown-parity).
+    const { container } = render(<Transcript items={fixtureItems()} />);
+
+    const content = container.querySelector("[data-testid='transcript-content']");
+    expect(content?.className).toContain("mx-auto");
+    expect(content?.className).toContain("max-w-[var(--transcript-measure)]");
   });
 
   it("names the speaker on a user turn", () => {
@@ -344,6 +385,10 @@ describe("transcript rendering", () => {
     const spacer = list.firstElementChild as HTMLElement | null;
     expect(spacer).not.toBeNull();
     expect(Number.parseInt(spacer?.style.height ?? "0", 10)).toBeGreaterThan(100_000);
+    // The virtualized path carries the same measure cap as the plain list.
+    expect(screen.getByTestId("transcript-content").className).toContain(
+      "max-w-[var(--transcript-measure)]",
+    );
     // A row far outside the window never mounts, however large the session is.
     expect(container.textContent).not.toContain("notice 9999");
   });

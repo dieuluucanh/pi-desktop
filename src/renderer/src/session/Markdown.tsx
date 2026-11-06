@@ -9,6 +9,7 @@ import { normalizeLanguage } from "./code-language";
 import { useFindPattern } from "./find-context";
 import { rehypeFindHighlight } from "./transcript-search";
 import { MermaidBlock } from "./MermaidBlock";
+import { blockCodeOf } from "./markdown-code";
 
 /**
  * Markdown and code rendering (plan step 5).
@@ -33,6 +34,15 @@ interface HighlighterLike {
 }
 
 const HIGHLIGHT_THEME = "github-dark";
+
+/**
+ * Inline code's pill (2026-11-06 transcript-markdown-parity).
+ *
+ * `bg-code-bg` is a derived ink wash rather than `bg-raised`: the light palette
+ * makes `raised` white, and the user bubble is white too. See `tokens.css`.
+ */
+const INLINE_CODE_CLASS =
+  "rounded-xs bg-code-bg px-1 py-0.5 font-mono text-[0.9em] text-ink break-words";
 
 let highlighterPromise: Promise<HighlighterLike | null> | null = null;
 const loadedLanguages = new Set<string>();
@@ -140,17 +150,26 @@ export function Markdown({
               {label}
             </a>
           ),
-          code: ({ className: codeClass, children: code }) => {
-            const text = String(code ?? "").replace(/\n$/, "");
-            const language = /language-([\w+#-]+)/.exec(codeClass ?? "")?.[1];
+          // A span is a bare `code`; a block is `pre > code`. react-markdown 10
+          // has no `inline` prop, and a `language-*` class is not a reliable
+          // discriminator (a fence without an info string has none), so the
+          // block renderer below owns the AST-shape decision.
+          code: ({ children: content }) => <code className={INLINE_CODE_CLASS}>{content}</code>,
+          pre: ({ node, children: content }) => {
+            const block = blockCodeOf(node);
+            if (!block) return <pre>{content}</pre>;
             // A mermaid fence is a diagram, not source (plan step 19); the
-            // component falls back to this same code block when it cannot draw.
-            if (language?.toLowerCase() === "mermaid") {
-              return <MermaidBlock code={text} streaming={streaming} />;
+            // component falls back to the same code block when it cannot draw.
+            if (block.language?.toLowerCase() === "mermaid") {
+              return <MermaidBlock code={block.code} streaming={streaming} />;
             }
-            return <CodeBlock code={text} {...(language ? { language } : {})} />;
+            return (
+              <CodeBlock
+                code={block.code}
+                {...(block.language ? { language: block.language } : {})}
+              />
+            );
           },
-          pre: ({ children: content }) => <>{content}</>,
           table: ({ children: content }) => (
             <div className="my-2 overflow-x-auto">
               <table className="w-full border-collapse text-xs [&_td]:border [&_td]:border-line [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-line [&_th]:bg-raised [&_th]:px-2 [&_th]:py-1">

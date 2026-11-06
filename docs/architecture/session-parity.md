@@ -46,6 +46,15 @@ drift from the terminal.
     revealed by the row toggle, Ctrl+O, or `prefs.showExpandedPrompts`. Search
     and copy follow the visible state; hydration looks the origin up in the
     bounded `app-state.json` hash map, never by inventing a renderer row.
+11. **Markdown is structural: a span is inline, a block is a block.** A code
+    span renders as an inline `<code>` inside the paragraph that contains it;
+    only a fenced or indented code block renders as a `<pre>`. The discriminator
+    is the hast shape `pre > code`, never a `language-*` class (a fence with no
+    info string has no class). Block text is read from the AST, not from
+    stringified React children, so a find `<mark>` inside a fence cannot corrupt
+    the source. Inline code carries the token-driven `--color-code-bg` pill;
+    the transcript content column is capped at `--transcript-measure` (110ch) so
+    a wide window keeps a readable line length.
 
 ## Gap matrix (terminal 1.4.0 → desktop)
 
@@ -101,7 +110,12 @@ drift from the terminal.
 - `tests/renderer/fixtures/session-events.ts` — deterministic turn/tool/bash
   fixtures used by every later test.
 - `tests/renderer/transcript.test.tsx` — content order, one card per call,
-  previews, images, auto-follow, find, collapsed command rows.
+  previews, images, auto-follow, find, collapsed command rows, the
+  inline-code sentence and the transcript measure cap.
+- `tests/renderer/markdown-code.test.ts` — the pure `pre > code` extractor
+  (language-less fences, `mark` flattening, the trailing-newline rule).
+- `tests/renderer/markdown.test.tsx` — inline spans stay inside their paragraph,
+  fenced/indented blocks stay blocks, and find marks never reach block code.
 - `tests/renderer/composer.test.tsx` — `!`/`!!`, chords, paste markers, queue.
 - `tests/host/session-core.test.ts` — bash run/abort, clone, export/import,
   replacement.
@@ -120,3 +134,6 @@ drift from the terminal.
 - **Paste markers** are persisted with a bounded paste map; the terminal keeps
   them in memory only.
 - **Mermaid** renders SVG in the desktop (terminal renders Unicode diagrams).
+- **Transcript measure.** Assistant prose is capped at `--transcript-measure`
+  (110ch) on wide windows; terminal Pi is bounded by its pane width. Code blocks
+  and tables keep their own horizontal scroll inside the capped column.

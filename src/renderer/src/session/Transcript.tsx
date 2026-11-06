@@ -1040,7 +1040,11 @@ export function Transcript({
             onScroll={(event) => trackScroll(event.currentTarget)}
             data-testid="transcript"
           >
-            <div ref={contentRef}>
+            <div
+              ref={contentRef}
+              data-testid="transcript-content"
+              className="mx-auto w-full max-w-[var(--transcript-measure)]"
+            >
               {items.map((item, index) => (
                 <div key={item.id} data-row-index={index} data-item-id={item.id}>
                   <TranscriptRow>{row(item)}</TranscriptRow>
@@ -1064,7 +1068,12 @@ export function Transcript({
           onScroll={(event) => trackScroll(event.currentTarget)}
           data-testid="transcript"
         >
-          <div ref={contentRef} className="relative" style={{ height: virtualizer.getTotalSize() }}>
+          <div
+            ref={contentRef}
+            data-testid="transcript-content"
+            className="relative mx-auto w-full max-w-[var(--transcript-measure)]"
+            style={{ height: virtualizer.getTotalSize() }}
+          >
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const item = items[virtualRow.index];
               if (!item) return null;
