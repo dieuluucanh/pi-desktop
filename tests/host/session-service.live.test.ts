@@ -200,6 +200,30 @@ describe.skipIf(!buildReady)("live session list projection", () => {
         );
       }
 
+      // A second project bucket proves scope filtering and path identity.
+      const otherDir = join(profileDir, "sessions", "--C--work-other--");
+      mkdirSync(otherDir, { recursive: true });
+      for (let index = 0; index < 2; index++) {
+        const header = {
+          type: "session",
+          version: 3,
+          id: `other-${index}`,
+          timestamp: "2026-11-06T00:00:00.000Z",
+          cwd: "C:\\work\\other",
+        };
+        const message = {
+          type: "message",
+          id: `other-m-${index}`,
+          parentId: null,
+          timestamp: "2026-11-06T00:00:00.000Z",
+          message: { role: "user", content: `other project session ${index}` },
+        };
+        writeFileSync(
+          join(otherDir, `s${index}.jsonl`),
+          `${JSON.stringify(header)}\n${JSON.stringify(message)}\n`,
+        );
+      }
+
       await liveService.controlHost();
       const page = await liveService.request(CONTROL_HOST_ID, "session.list", {
         query: "hidden-needle",
@@ -213,6 +237,23 @@ describe.skipIf(!buildReady)("live session list projection", () => {
       expect(result.total).toBeGreaterThanOrEqual(60);
       expect(result.sessions.map((session) => session.id)).toEqual(["large-7"]);
       expect(result.sessions[0]).not.toHaveProperty("allMessagesText");
+
+      // Timestamps survive the projection as epoch ms (never a Date / 1970).
+      const allPage = (await liveService.request(CONTROL_HOST_ID, "session.list", {})) as {
+        sessions: Array<{ id: string; modified: number }>;
+        matched: number;
+      };
+      expect(allPage.sessions.every((session) => session.modified > 0)).toBe(true);
+      expect(allPage.sessions.some((session) => session.id === "other-0")).toBe(true);
+
+      // "This project" filters, and a Windows path matches across case.
+      const current = (await liveService.request(CONTROL_HOST_ID, "session.list", {
+        scope: "current",
+        cwd: "c:\\WORK\\LARGE",
+      })) as { sessions: Array<{ id: string }>; matched: number };
+      expect(current.matched).toBeGreaterThan(0);
+      expect(current.matched).toBeLessThan(allPage.matched);
+      expect(current.sessions.every((session) => session.id.startsWith("large-"))).toBe(true);
 
       // The same host reads a genuinely large blob back in chunks.
       const blobPath = join(blobDir, "large.json");

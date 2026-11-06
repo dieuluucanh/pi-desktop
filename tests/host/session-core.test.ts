@@ -160,7 +160,6 @@ function harness(deps: Partial<SessionCoreDeps> = {}) {
     createRuntime: async () => ({ runtime, session: runtime.session }),
     newSessionManager: () => ({ id: "new" }),
     openSessionManager: () => ({ id: "opened" }),
-    listSessions: async () => [{ id: "s1", name: "Budget work" }],
     trustStore: {
       get: (cwd) => trustStore.get(cwd) ?? null,
       set: (cwd, decision) => {
@@ -409,9 +408,9 @@ describe("session core configuration", () => {
     });
   });
 
-  it("lists sessions for the browser", async () => {
-    const { call } = harness();
-    expect(await call("session.list")).toEqual({ sessions: [{ id: "s1", name: "Budget work" }] });
+  it("leaves the profile-wide session listing to the control host", () => {
+    const { core } = harness();
+    expect(core.handlers()["session.list"]).toBeUndefined();
   });
 });
 

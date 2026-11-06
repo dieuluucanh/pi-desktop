@@ -12,7 +12,6 @@ import { installBridge } from "./fixtures";
  */
 
 const WORK = "C:\\work\\pi-desktop";
-const OTHER = "C:\\work\\other";
 
 function rawSession(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -61,6 +60,10 @@ function resetStore(): void {
     sessionStates: {},
     sessionBrowserOpen: false,
     sessionBrowserQuery: "",
+    sessionBrowserScope: "all",
+    sessionBrowserSort: "recent",
+    sessionBrowserNamedOnly: false,
+    projectSessionsQuery: null,
     projectSessions: [],
     projectSessionsLoaded: false,
     projectSessionsError: null,
@@ -94,7 +97,7 @@ describe("session browser", () => {
     expect(request).toHaveBeenCalledWith({
       tabId: CONTROL_TAB_ID,
       method: "session.list",
-      params: { query: "" },
+      params: { query: "", scope: "all", sort: "recent", namedOnly: false },
     });
     const state = useAppStore.getState();
     expect(state.sessionBrowserOpen).toBe(true);
@@ -145,6 +148,53 @@ describe("session browser", () => {
       projectSessionsError: null,
       projectSessionsErrorKind: null,
     });
+  });
+
+  it("opens on the current project and records the loaded query", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async () => ({
+      sessions: [],
+      total: 0,
+      matched: 0,
+      truncated: false,
+      error: null,
+    }));
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+    useAppStore.setState({ project: { path: WORK, name: "pi-desktop" } });
+
+    await useAppStore.getState().openSessionBrowser();
+
+    expect(request).toHaveBeenCalledWith({
+      tabId: CONTROL_TAB_ID,
+      method: "session.list",
+      params: { query: "", scope: "current", cwd: WORK, sort: "recent", namedOnly: false },
+    });
+    expect(useAppStore.getState().sessionBrowserScope).toBe("current");
+    expect(useAppStore.getState().projectSessionsQuery).toEqual({
+      query: "",
+      scope: "current",
+      cwd: WORK,
+      sort: "recent",
+      namedOnly: false,
+    });
+  });
+
+  it("records the query even when the host fails, so it cannot retry in a loop", async () => {
+    const { bridge } = installBridge();
+    (bridge.sessions as unknown as { request: unknown }).request = vi.fn(async () => {
+      throw new Error("host is gone");
+    });
+
+    await useAppStore.getState().loadProjectSessions({ query: "x", scope: "all" });
+
+    expect(useAppStore.getState().projectSessionsQuery).toEqual({
+      query: "x",
+      scope: "all",
+      cwd: null,
+      sort: "recent",
+      namedOnly: false,
+    });
+    expect(useAppStore.getState().projectSessionsErrorKind).toBe("host");
   });
 
   it("resolves a spilled session.list response through host.blobs.read", async () => {
@@ -280,20 +330,36 @@ describe("session browser", () => {
     expect(useAppStore.getState().tabs).toHaveLength(1);
   });
 
-  it("continues the most recent session of a project", async () => {
+  it("continues the most recent session with a one-row query", async () => {
     const { bridge } = installBridge();
     const create = vi.fn(async () => ({ tabs: [], activeTabId: null }));
     (bridge.sessions as unknown as { create: unknown }).create = create;
-    (bridge.sessions as unknown as { request: unknown }).request = vi.fn(async () => ({
+    const request = vi.fn(async () => ({
+      // The host sorts by recency and applies `limit`, so the page is one row.
       sessions: [
-        rawSession({ path: `${WORK}\\a.jsonl`, id: "a", modified: "2026-09-01T00:00:00Z" }),
         rawSession({ path: `${WORK}\\b.jsonl`, id: "b", modified: "2026-09-09T00:00:00Z" }),
-        rawSession({ path: `${OTHER}\\c.jsonl`, id: "c", cwd: OTHER }),
       ],
+      total: 2,
+      matched: 1,
+      truncated: false,
+      error: null,
     }));
+    (bridge.sessions as unknown as { request: unknown }).request = request;
 
     await useAppStore.getState().continueMostRecent(WORK);
 
+    expect(request).toHaveBeenCalledWith({
+      tabId: CONTROL_TAB_ID,
+      method: "session.list",
+      params: {
+        query: "",
+        scope: "current",
+        cwd: WORK,
+        sort: "recent",
+        namedOnly: false,
+        limit: 1,
+      },
+    });
     expect(create).toHaveBeenCalledWith({ cwd: WORK, sessionFile: `${WORK}\\b.jsonl` });
   });
 
@@ -306,6 +372,52 @@ describe("session browser", () => {
     await useAppStore.getState().continueMostRecent(WORK);
 
     expect(useAppStore.getState().hint).toMatch(/No saved session/);
+  });
+
+  it("refreshes with the last filters instead of resetting to all sessions", async () => {
+    const { bridge } = installBridge();
+    const list = vi.fn(async () => ({ sessions: [rawSession()] }));
+    (bridge.sessions as unknown as { request: unknown }).request = list;
+    (bridge.sessions as unknown as { deleteSession: unknown }).deleteSession = vi.fn(async () => ({
+      ok: true,
+      path: `${WORK}\\sessions\\s1.jsonl`,
+    }));
+    useAppStore.setState({
+      projectSessionsQuery: {
+        query: "x",
+        scope: "current",
+        cwd: WORK,
+        sort: "relevance",
+        namedOnly: true,
+      },
+    });
+
+    const session = {
+      path: `${WORK}\\sessions\\s1.jsonl`,
+      id: "s1",
+      cwd: WORK,
+      name: null,
+      created: 0,
+      modified: 0,
+      messageCount: 0,
+      firstMessage: "",
+      allMessagesText: "",
+      parentSessionPath: null,
+    };
+    await useAppStore.getState().deleteSession(session);
+
+    expect(list).toHaveBeenLastCalledWith({
+      tabId: CONTROL_TAB_ID,
+      method: "session.list",
+      params: {
+        query: "x",
+        scope: "current",
+        cwd: WORK,
+        sort: "relevance",
+        namedOnly: true,
+        refresh: true,
+      },
+    });
   });
 
   it("trashes a session, closes its tabs and refreshes the list", async () => {

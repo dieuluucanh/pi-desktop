@@ -135,9 +135,12 @@ import {
   type ExtensionUiSnapshot,
 } from "../../../shared/extension-ui";
 import {
-  mostRecentSessionForProject,
+  normalizeSessionListQuery,
   parseSessionListPage,
+  type SessionListPage,
   type SessionListQuery,
+  type SessionScope,
+  type SessionSort,
   type SessionSummary,
 } from "../../../shared/session-browser";
 import {
@@ -695,6 +698,12 @@ export interface AppStateShape {
   /** Session browser and tree (plan step 11). */
   sessionBrowserOpen: boolean;
   sessionBrowserQuery: string;
+  /** The scope/sort/toggles the dialog shows; the load uses the same values. */
+  sessionBrowserScope: SessionScope;
+  sessionBrowserSort: SessionSort;
+  sessionBrowserNamedOnly: boolean;
+  /** The normalized query that produced `projectSessions`; null until loaded. */
+  projectSessionsQuery: SessionListQuery | null;
   /** Every session of the profile, from the control host's `session.list`. */
   projectSessions: SessionSummary[];
   projectSessionsLoaded: boolean;
@@ -1555,6 +1564,9 @@ export interface AppStateShape {
   openSessionBrowser: () => Promise<void>;
   closeSessionBrowser: () => void;
   setSessionBrowserQuery: (query: string) => void;
+  setSessionBrowserScope: (scope: SessionScope) => void;
+  setSessionBrowserSort: (sort: SessionSort) => void;
+  setSessionBrowserNamedOnly: (namedOnly: boolean) => void;
   loadProjectSessions: (options?: SessionListQuery) => Promise<SessionSummary[]>;
   /** Resume a listed session in a new tab and focus it. */
   resumeSession: (session: SessionSummary) => Promise<void>;
@@ -1911,6 +1923,30 @@ function packageCwd(state: AppStateShape): string | null {
   return state.project?.path ?? active?.cwd ?? null;
 }
 
+/** One `session.list` round trip; callers decide whether it updates the dialog. */
+async function requestSessionPage(
+  api: NonNullable<Window["pi"]>,
+  query: SessionListQuery,
+  options: { refresh?: boolean } = {},
+): Promise<SessionListPage> {
+  const normalized = normalizeSessionListQuery(query);
+  const params: Record<string, unknown> = {
+    query: normalized.query,
+    scope: normalized.scope,
+    sort: normalized.sort,
+    namedOnly: normalized.namedOnly,
+  };
+  if (normalized.cwd !== null) params.cwd = normalized.cwd;
+  if (normalized.limit !== undefined) params.limit = normalized.limit;
+  if (options.refresh === true) params.refresh = true;
+  const response = await api.sessions.request({
+    tabId: CONTROL_TAB_ID,
+    method: "session.list",
+    params,
+  });
+  return parseSessionListPage(response);
+}
+
 export const useAppStore = create<AppStateShape>()((set, get) => ({
   view: "welcome",
   project: null,
@@ -1940,6 +1976,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   sessionStates: {},
   sessionBrowserOpen: false,
   sessionBrowserQuery: "",
+  sessionBrowserScope: "all",
+  sessionBrowserSort: "recent",
+  sessionBrowserNamedOnly: false,
+  projectSessionsQuery: null,
   projectSessions: [],
   projectSessionsLoaded: false,
   projectSessionsError: null,
@@ -6301,39 +6341,47 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   // ---- Session browser (plan step 11) ----
 
   openSessionBrowser: async () => {
-    set({ sessionBrowserOpen: true, view: "session", hint: null });
-    await get().loadProjectSessions({ query: get().sessionBrowserQuery });
+    const project = get().project;
+    const scope: SessionScope = project ? "current" : "all";
+    set({
+      sessionBrowserOpen: true,
+      view: "session",
+      hint: null,
+      sessionBrowserScope: scope,
+    });
+    await get().loadProjectSessions({
+      query: get().sessionBrowserQuery,
+      scope,
+      cwd: project?.path ?? null,
+      sort: get().sessionBrowserSort,
+      namedOnly: get().sessionBrowserNamedOnly,
+    });
   },
 
   closeSessionBrowser: () => set({ sessionBrowserOpen: false, panePickerTarget: null }),
 
   setSessionBrowserQuery: (query) => set({ sessionBrowserQuery: query }),
 
+  setSessionBrowserScope: (scope) => set({ sessionBrowserScope: scope }),
+
+  setSessionBrowserSort: (sort) => set({ sessionBrowserSort: sort }),
+
+  setSessionBrowserNamedOnly: (namedOnly) => set({ sessionBrowserNamedOnly: namedOnly }),
+
   loadProjectSessions: async (options = {}) => {
     const api = bridge();
     if (!api?.sessions) return get().projectSessions;
 
-    const params: Record<string, unknown> = {};
-    if (options.query !== undefined) params.query = options.query;
-    if (options.scope !== undefined) params.scope = options.scope;
-    if (options.cwd !== undefined) params.cwd = options.cwd;
-    if (options.sort !== undefined) params.sort = options.sort;
-    if (options.namedOnly !== undefined) params.namedOnly = options.namedOnly;
-    if (options.limit !== undefined) params.limit = options.limit;
-    if (options.refresh === true) params.refresh = true;
-
+    const query = normalizeSessionListQuery(options);
     const requestId = ++sessionBrowserRequestId;
-    set({ projectSessionsSearching: true });
+    // Record the query at request start: the dialog compares against it, so it
+    // must not fire a duplicate load while this one is in flight.
+    set({ projectSessionsSearching: true, projectSessionsQuery: query });
     try {
-      const response = await api.sessions.request({
-        tabId: CONTROL_TAB_ID,
-        method: "session.list",
-        params,
-      });
+      const page = await requestSessionPage(api, query, { refresh: options.refresh === true });
       // A newer keystroke already asked for a different page.
       if (requestId !== sessionBrowserRequestId) return get().projectSessions;
 
-      const page = parseSessionListPage(response);
       if (page.error) {
         set({
           projectSessions: [],
@@ -6402,13 +6450,26 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   continueMostRecent: async (cwd) => {
-    const sessions = await get().loadProjectSessions();
-    const latest = mostRecentSessionForProject(sessions, cwd);
-    if (!latest) {
-      set({ hint: "No saved session in this project yet — start a new one (Ctrl+N)." });
-      return;
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      // Ask for exactly one row instead of scanning a possibly truncated page.
+      // This is a read-only lookup: it must not overwrite the dialog's rows.
+      const page = await requestSessionPage(api, {
+        scope: "current",
+        cwd,
+        sort: "recent",
+        limit: 1,
+      });
+      const latest = page.sessions[0] ?? null;
+      if (!latest) {
+        set({ hint: "No saved session in this project yet — start a new one (Ctrl+N)." });
+        return;
+      }
+      await get().resumeSession(latest);
+    } catch (error) {
+      get().noteFailure(error);
     }
-    await get().resumeSession(latest);
   },
 
   deleteSession: async (session) => {
@@ -6419,13 +6480,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       if (!result.ok) {
         set({ hint: result.error ?? "The session could not be deleted." });
         // A stale row is the usual cause: refresh so the list tells the truth.
-        await get().loadProjectSessions({ refresh: true });
+        await get().loadProjectSessions({ ...(get().projectSessionsQuery ?? {}), refresh: true });
         return false;
       }
       // No tab should keep pointing at a file that is now in the trash.
       const open = get().tabs.filter((tab) => tab.sessionFile === session.path);
       for (const tab of open) await get().closeTab(tab.id);
-      await get().loadProjectSessions({ refresh: true });
+      await get().loadProjectSessions({ ...(get().projectSessionsQuery ?? {}), refresh: true });
       set({ hint: "Session moved to the trash." });
       return true;
     } catch (error) {
@@ -6456,7 +6517,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
           params: { sessionFile: session.path, name: trimmed },
         });
       }
-      await get().loadProjectSessions({ refresh: true });
+      await get().loadProjectSessions({ ...(get().projectSessionsQuery ?? {}), refresh: true });
       set({ hint: null });
     } catch (error) {
       get().noteFailure(error);

@@ -16,6 +16,7 @@ export type TabMenuActionId =
   | "clone"
   | "export"
   | "reveal"
+  | "copy-session-path"
   | "save"
   | "copy-absolute-path"
   | "copy-relative-path"
@@ -35,6 +36,14 @@ export interface TabMenuAction {
   destructive?: boolean;
   /** Render a separator above this item. */
   separated?: boolean;
+  /** The action is visible but unavailable (e.g. a session with no file yet). */
+  disabled?: boolean;
+}
+
+/** The per-tab facts an action may depend on; defaults keep the menu pure. */
+export interface TabMenuState {
+  /** The tab's session JSONL; absent until a new session's first message. */
+  sessionFile?: string | null;
 }
 
 function closeAllLabel(kind: TabKind): string {
@@ -52,7 +61,11 @@ function closeAllLabel(kind: TabKind): string {
   }
 }
 
-export function tabMenuItems(kind: TabKind = "session", pinned = false): readonly TabMenuAction[] {
+export function tabMenuItems(
+  kind: TabKind = "session",
+  pinned = false,
+  state: TabMenuState = {},
+): readonly TabMenuAction[] {
   const pinItem: TabMenuAction = pinned
     ? { id: "unpin", label: "Unpin", separated: true }
     : { id: "pin", label: "Pin", separated: true };
@@ -99,6 +112,11 @@ export function tabMenuItems(kind: TabKind = "session", pinned = false): readonl
     { id: "clone", label: "Clone session" },
     { id: "export", label: "Export to HTML" },
     { id: "reveal", label: "Reveal session file" },
+    {
+      id: "copy-session-path",
+      label: "Copy Path",
+      disabled: state.sessionFile == null,
+    },
     pinItem,
     { id: "close", label: "Close", separated: true },
     { id: "close-others", label: "Close others", destructive: true },

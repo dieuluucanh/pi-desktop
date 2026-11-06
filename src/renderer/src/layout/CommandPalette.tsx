@@ -138,7 +138,7 @@ export function CommandPalette() {
               />
               <PaletteItem
                 label="Browse sessions…"
-                shortcut="Ctrl+Shift+O"
+                shortcut="Ctrl+Alt+O"
                 onSelect={() => run(() => void openSessionBrowser())}
               />
               <PaletteItem

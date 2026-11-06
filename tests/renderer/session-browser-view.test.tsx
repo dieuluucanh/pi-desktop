@@ -1,9 +1,9 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionBrowserDialog } from "../../src/renderer/src/sessions/SessionBrowser";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
-import type { SessionSummary } from "../../src/shared/session-browser";
+import { normalizeSessionListQuery, type SessionSummary } from "../../src/shared/session-browser";
 import type { TabRecord } from "../../src/shared/session-ipc";
 import { installBridge } from "./fixtures";
 
@@ -18,8 +18,8 @@ const SESSION: SessionSummary = {
   id: "s1",
   cwd: "C:/work/pi-desktop",
   name: "Fix host protocol",
-  created: 1,
-  modified: 2,
+  created: Date.parse("2026-11-05T10:00:00.000Z"),
+  modified: Date.parse("2026-11-06T01:34:08.798Z"),
   messageCount: 4,
   firstMessage: "Fix host protocol",
   allMessagesText: "Fix host protocol",
@@ -40,12 +40,35 @@ function tab(): TabRecord {
   };
 }
 
+const originalClipboard = navigator.clipboard;
+
+function stubClipboard(writeText: ((text: string) => Promise<void>) | null): void {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: writeText ? { writeText } : undefined,
+  });
+}
+
+afterEach(() => {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: originalClipboard,
+  });
+});
+
 beforeEach(() => {
   installBridge();
   useAppStore.setState({
     prefs: { ...DEFAULT_PREFS },
     sessionBrowserOpen: true,
     sessionBrowserQuery: "",
+    sessionBrowserScope: "current",
+    sessionBrowserSort: "recent",
+    sessionBrowserNamedOnly: false,
+    projectSessionsQuery: normalizeSessionListQuery({
+      scope: "current",
+      cwd: "C:/work/pi-desktop",
+    }),
     projectSessions: [SESSION],
     projectSessionsLoaded: true,
     projectSessionsError: null,
@@ -64,7 +87,7 @@ describe("session browser controls", () => {
   it("offers scope tabs, a sort cycle and named/path toggles", () => {
     render(<SessionBrowserDialog />);
     expect(screen.getByRole("tablist", { name: "Scope" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "All sessions" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "This project" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
@@ -77,6 +100,27 @@ describe("session browser controls", () => {
     render(<SessionBrowserDialog />);
     fireEvent.click(screen.getByLabelText("Delete session"));
     expect(screen.getByText(/Closes "Fix host protocol"/)).toBeInTheDocument();
+  });
+
+  it("never renders an unknown timestamp as 1970", () => {
+    useAppStore.setState({ projectSessions: [{ ...SESSION, modified: 0 }] });
+    render(<SessionBrowserDialog />);
+    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(screen.queryByText(/1970/)).not.toBeInTheDocument();
+  });
+
+  it("copies the session path and shows success on the button", async () => {
+    const writeText = vi.fn(async () => undefined);
+    stubClipboard(writeText);
+    render(<SessionBrowserDialog />);
+    const button = screen.getByTestId("session-copy-path");
+
+    fireEvent.click(button);
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(SESSION.path));
+    await waitFor(() => expect(button).toHaveAttribute("title", "Copied"));
+    expect(button).toHaveTextContent("Copy session path: copied");
+    expect(button.className).toContain("text-ok");
   });
 
   it("says when the host capped the page", () => {

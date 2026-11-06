@@ -59,11 +59,6 @@ export interface ClearedQueue {
   followUp?: readonly string[];
 }
 
-/** One row of the session browser (passed through from the SDK's listing). */
-export interface SessionListEntry {
-  [key: string]: unknown;
-}
-
 /**
  * Opaque, Pi-owned payloads forwarded verbatim (session tree nodes, `Settings`
  * objects, statistics). Their fields belong to the SDK, so the host hands them
@@ -326,8 +321,6 @@ export interface SessionCoreDeps {
   newSessionManager?(cwd: string, sessionDir?: string): SessionManagerHandle;
   trustStore?: TrustStoreLike;
   requiresTrust?(cwd: string): boolean;
-  /** Session browser listing (plan step 11 surfaces it). */
-  listSessions?(cwd: string): Promise<SessionListEntry[]>;
   /**
    * Workspace files for `@` completion (plan step 7). The root is this host's
    * own cwd, never a renderer-supplied path, so the listing cannot escape the
@@ -890,11 +883,6 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       }
       const sessionFile = requireString(input.sessionFile ?? input.path, "sessionFile");
       return startSession({ cwd, sessionManager: openManager(deps, sessionFile, cwd) });
-    },
-
-    "session.list": async () => {
-      if (!deps.listSessions) return { sessions: [] };
-      return { sessions: await deps.listSessions(cwd) };
     },
 
     "session.fork": async (params) => {

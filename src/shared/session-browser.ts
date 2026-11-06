@@ -10,7 +10,7 @@
  * covers the rules without a DOM.
  */
 
-import { projectNameOf } from "./projects";
+import { normalizeProjectPath, projectNameOf } from "./projects";
 
 /** One session as the browser shows it (a projection of Pi's `SessionInfo`). */
 export interface SessionSummary {
@@ -21,7 +21,10 @@ export interface SessionSummary {
   cwd: string;
   /** The user's display name from `session_info` entries, when present. */
   name: string | null;
-  /** Epoch milliseconds; Pi historically serialises these as ISO strings. */
+  /**
+   * Epoch milliseconds. Pi's `SessionInfo` carries `Date` objects; this module
+   * converts them (and the ISO strings older payloads use) to epoch ms.
+   */
   created: number;
   modified: number;
   messageCount: number;
@@ -57,12 +60,16 @@ export interface SanitizeSessionOptions {
   maxTextChars?: number;
 }
 
-/** Parses a Pi timestamp, accepting an ISO string or an epoch number. */
+/** Parses a Pi timestamp, accepting a `Date`, an ISO string or an epoch number. */
 function toEpoch(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) && time > 0 ? time : 0;
+  }
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
   if (typeof value === "string" && value.length > 0) {
     const parsed = Date.parse(value);
-    if (Number.isFinite(parsed)) return parsed;
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
   return 0;
 }
@@ -140,6 +147,28 @@ export function sessionDisplayTitle(session: SessionSummary): string {
 
 function shortId(id: string): string {
   return id.length > 8 ? id.slice(0, 8) : id;
+}
+
+/** The one-line “last activity” label; an unknown timestamp is never shown as 1970. */
+export function formatSessionTime(epoch: number, locale?: string): string {
+  if (!Number.isFinite(epoch) || epoch <= 0) return "—";
+  const date = new Date(epoch);
+  if (Number.isNaN(date.getTime())) return "—";
+  try {
+    return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(
+      date,
+    );
+  } catch {
+    // An unknown locale must not make a session row unrenderable.
+    return date.toLocaleString();
+  }
+}
+
+/** The tooltip for {@link formatSessionTime}: the full ISO timestamp, or empty. */
+export function formatSessionTimeTitle(epoch: number): string {
+  if (!Number.isFinite(epoch) || epoch <= 0) return "";
+  const date = new Date(epoch);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
 }
 
 /**
@@ -292,6 +321,25 @@ export function sortSessionsThreaded(sessions: readonly SessionSummary[]): Sessi
   );
 }
 
+/**
+ * A session's project identity, as Pi wrote it in the JSONL header. It starts
+ * from the project list's trimming rule, then unifies separators and folds case
+ * for Windows drive/UNC paths only. POSIX paths stay case-sensitive.
+ */
+export function normalizeSessionProjectPath(value: string): string {
+  const trimmed = normalizeProjectPath(value);
+  if (trimmed.length === 0) return "";
+  const unified = trimmed.replace(/\\/g, "/");
+  const windows = /^[A-Za-z]:\//.test(unified) || unified.startsWith("//");
+  return windows ? unified.toLowerCase() : unified;
+}
+
+/** True when two session cwds identify the same project (empty never matches). */
+export function sameSessionProject(left: string, right: string): boolean {
+  if (left.length === 0 || right.length === 0) return false;
+  return normalizeSessionProjectPath(left) === normalizeSessionProjectPath(right);
+}
+
 /** The full browser pipeline: filter (scope/query/named) then order. */
 export function listSessions(
   sessions: readonly SessionSummary[],
@@ -302,7 +350,7 @@ export function listSessions(
   const scope = options.scope ?? "all";
   const cwd = options.cwd ?? null;
   const filtered = sessions.filter((session) => {
-    if (scope === "current" && (cwd === null || session.cwd !== cwd)) return false;
+    if (scope === "current" && !sameSessionProject(session.cwd, cwd ?? "")) return false;
     if (options.namedOnly === true && !session.name) return false;
     return matchesParsedQuery(session, parsed);
   });
@@ -476,6 +524,42 @@ export function parseSessionListQuery(value: unknown): SessionListQuery {
 }
 
 /**
+ * The query as the browser composes it and the store records it. Defaults are
+ * filled in, `cwd` only exists for the current-project scope, and `refresh` is
+ * not part of the identity (it is a one-shot instruction, not a filter).
+ */
+export function normalizeSessionListQuery(query: SessionListQuery = {}): SessionListQuery {
+  const scope: SessionScope = query.scope === "current" ? "current" : "all";
+  const limit = toCount(query.limit);
+  return {
+    query: query.query ?? "",
+    scope,
+    cwd: scope === "current" ? (query.cwd ?? null) : null,
+    sort: query.sort === "threaded" || query.sort === "relevance" ? query.sort : "recent",
+    namedOnly: query.namedOnly === true,
+    ...(limit === null ? {} : { limit: clampSessionListLimit(limit) }),
+  };
+}
+
+/** True when two queries would produce the same page (refresh ignored). */
+export function sameSessionListQuery(
+  left: SessionListQuery,
+  right: SessionListQuery | null,
+): boolean {
+  if (!right) return false;
+  const a = normalizeSessionListQuery(left);
+  const b = normalizeSessionListQuery(right);
+  return (
+    a.query === b.query &&
+    a.scope === b.scope &&
+    a.cwd === b.cwd &&
+    a.sort === b.sort &&
+    a.namedOnly === b.namedOnly &&
+    a.limit === b.limit
+  );
+}
+
+/**
  * Parses an untrusted `session.list` response into the renderer's shape.
  *
  * Unlike `sanitizeSessionList`, this **throws** when `sessions` is not an
@@ -511,15 +595,15 @@ export interface SessionGroup {
 
 /** Groups by project, newest project first (by its most recent session). */
 export function groupSessionsByProject(sessions: readonly SessionSummary[]): SessionGroup[] {
-  const byCwd = new Map<string, SessionSummary[]>();
+  const byCwd = new Map<string, { cwd: string; sessions: SessionSummary[] }>();
   for (const session of sessions) {
-    const key = session.cwd.length > 0 ? session.cwd : "";
-    const list = byCwd.get(key) ?? [];
-    list.push(session);
-    byCwd.set(key, list);
+    const key = normalizeSessionProjectPath(session.cwd);
+    const group = byCwd.get(key) ?? { cwd: session.cwd, sessions: [] };
+    group.sessions.push(session);
+    byCwd.set(key, group);
   }
   const groups: SessionGroup[] = [];
-  for (const [cwd, list] of byCwd) {
+  for (const { cwd, sessions: list } of byCwd.values()) {
     const ordered = sortSessionsByRecency(list);
     groups.push({
       cwd,
@@ -529,19 +613,6 @@ export function groupSessionsByProject(sessions: readonly SessionSummary[]): Ses
     });
   }
   return groups.sort((left, right) => (right.latest?.modified ?? 0) - (left.latest?.modified ?? 0));
-}
-
-/** The most recent session started in `cwd`, or null when there is none. */
-export function mostRecentSessionForProject(
-  sessions: readonly SessionSummary[],
-  cwd: string,
-): SessionSummary | null {
-  let best: SessionSummary | null = null;
-  for (const session of sessions) {
-    if (session.cwd !== cwd) continue;
-    if (!best || session.modified > best.modified) best = session;
-  }
-  return best;
 }
 
 // ---------------------------------------------------------------------------

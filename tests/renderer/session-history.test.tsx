@@ -1,9 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { TabRecord } from "../../src/shared/session-ipc";
-import type { SessionSummary } from "../../src/shared/session-browser";
+import { normalizeSessionListQuery, type SessionSummary } from "../../src/shared/session-browser";
 import { ForkDialog } from "../../src/renderer/src/sessions/ForkDialog";
 import { SessionBrowserDialog } from "../../src/renderer/src/sessions/SessionBrowser";
 import { SessionTreeDialog } from "../../src/renderer/src/sessions/SessionTree";
@@ -68,6 +68,10 @@ function resetStore(): void {
     sessionStates: {},
     sessionBrowserOpen: false,
     sessionBrowserQuery: "",
+    sessionBrowserScope: "all",
+    sessionBrowserSort: "recent",
+    sessionBrowserNamedOnly: false,
+    projectSessionsQuery: normalizeSessionListQuery(),
     projectSessions: [],
     projectSessionsLoaded: true,
     projectSessionsError: null,
@@ -157,6 +161,58 @@ describe("SessionBrowserDialog", () => {
     );
     await waitFor(() => expect(screen.queryByText("Beta task")).not.toBeInTheDocument());
     expect(screen.getByText("Alpha task")).toBeInTheDocument();
+  });
+
+  it("switches scope with the request, not just the tab", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async (input: { method: string; params?: Record<string, unknown> }) => {
+      if (input.method !== "session.list") return {};
+      const current = input.params?.scope === "current";
+      return {
+        sessions: current
+          ? [summary({ path: `${WORK}\\sessions\\cur.jsonl`, id: "cur", name: "Current only" })]
+          : [
+              summary({ path: `${WORK}\\sessions\\cur.jsonl`, id: "cur", name: "Current only" }),
+              summary({
+                path: "C:\\work\\other\\sessions\\other.jsonl",
+                id: "other",
+                cwd: "C:\\work\\other",
+                name: "Other project",
+              }),
+            ],
+        total: 2,
+        matched: current ? 1 : 2,
+        truncated: false,
+        error: null,
+      };
+    });
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+    useAppStore.setState({
+      sessionBrowserOpen: true,
+      project: { path: WORK, name: "pi-desktop" },
+      sessionBrowserScope: "current",
+      projectSessionsQuery: normalizeSessionListQuery({ scope: "current", cwd: WORK }),
+      projectSessions: [
+        summary({ path: `${WORK}\\sessions\\cur.jsonl`, id: "cur", name: "Current only" }),
+      ],
+      projectSessionsLoaded: true,
+    });
+
+    render(<SessionBrowserDialog />);
+    expect(screen.getByRole("tab", { name: "This project" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "All sessions" }));
+
+    await waitFor(() => expect(screen.getByText("Other project")).toBeInTheDocument());
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "session.list",
+        params: expect.objectContaining({ scope: "all" }),
+      }),
+    );
   });
 
   it("shows a query error instead of an empty list", () => {

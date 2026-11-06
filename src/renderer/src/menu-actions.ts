@@ -37,6 +37,11 @@ export function newSessionAction(): void {
   void useAppStore.getState().createSessionTab();
 }
 
+/** Opens the same Sessions dialog as `/resume`, the menu and the strip button. */
+export function openSessionBrowserAction(): void {
+  void useAppStore.getState().openSessionBrowser();
+}
+
 export async function openProjectAction(deps?: Partial<MenuActionDeps>): Promise<void> {
   const api = window.pi;
   const pick = deps?.pickDirectory ?? (api ? () => api.pickDirectory() : null);

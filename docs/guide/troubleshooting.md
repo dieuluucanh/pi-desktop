@@ -91,6 +91,11 @@ resource. The window shows a safe-mode banner.
 - **Search covers the full transcript**, so a match can appear on a row whose
   title does not contain the word. Typing is debounced by ~150 ms; wait for
   “Searching…” to clear.
+- **The history still shows old data after an update.** The control host is
+  long-lived and pinned, like a session host; a renderer reload does not restart
+  it. Restart the app after rebuilding `out/host` so it runs the new
+  `session.list` (scope filtering, real timestamps). Diagnostics marks a host
+  whose bundle is older than the app as `stale build`.
 
 ## The app's memory keeps growing, or a Pi terminal gets slow
 

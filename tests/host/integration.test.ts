@@ -110,7 +110,6 @@ async function startHarness(
       SessionManager.create(cwd, sessionDir ?? profile.sessionsDir) as never,
     openSessionManager: (sessionFile, cwd, sessionDir) =>
       SessionManager.open(sessionFile, sessionDir ?? profile.sessionsDir, cwd) as never,
-    listSessions: (cwd) => SessionManager.list(cwd) as Promise<never[]>,
     createRuntime: async (request) => {
       const created = await createSdkSessionRuntime({
         cwd: request.cwd,

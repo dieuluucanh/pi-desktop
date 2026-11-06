@@ -1,14 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FolderOpen, Pencil, Play, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
+import { CopyIconButton } from "../ui/copy-button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { useAppStore } from "../state/app-store";
 import {
+  formatSessionTime,
+  formatSessionTimeTitle,
   groupSessionsByProject,
+  normalizeSessionListQuery,
+  sameSessionListQuery,
   sessionDisplayTitle,
-  type SessionScope,
-  type SessionSort,
   type SessionSummary,
 } from "../../../shared/session-browser";
 
@@ -46,31 +49,31 @@ export function SessionBrowserDialog() {
   const create = useAppStore((state) => state.createSessionTab);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
-  // Scope/sort/toggles mirror terminal Pi's session selector (plan step 16).
-  const [scope, setScope] = useState<SessionScope>("all");
-  const [sort, setSort] = useState<SessionSort>("recent");
-  const [namedOnly, setNamedOnly] = useState(false);
+  // Scope/sort/toggles mirror terminal Pi's session selector (plan step 16). The
+  // store owns them so the tab, the request and the recorded query cannot drift.
+  const scope = useAppStore((state) => state.sessionBrowserScope);
+  const sort = useAppStore((state) => state.sessionBrowserSort);
+  const namedOnly = useAppStore((state) => state.sessionBrowserNamedOnly);
+  const setScope = useAppStore((state) => state.setSessionBrowserScope);
+  const setSort = useAppStore((state) => state.setSessionBrowserSort);
+  const setNamedOnly = useAppStore((state) => state.setSessionBrowserNamedOnly);
+  const recordedQuery = useAppStore((state) => state.projectSessionsQuery);
   const [showPath, setShowPath] = useState(false);
   const activeCwd = useAppStore((state) => state.project?.path ?? null);
   const tabs = useAppStore((state) => state.tabs);
   // The host owns filtering/search/sort (it has the full message text and a
   // short catalog cache), so the dialog debounces instead of filtering locally.
-  const initialFilters = useRef(true);
+  // `openSessionBrowser` records the query it loaded, so opening never duplicates.
+  const composed = useMemo(
+    () => normalizeSessionListQuery({ query, scope, cwd: activeCwd, sort, namedOnly }),
+    [query, scope, activeCwd, sort, namedOnly],
+  );
   useEffect(() => {
-    if (!open) {
-      initialFilters.current = true;
-      return;
-    }
-    if (initialFilters.current) {
-      // `openSessionBrowser` already loaded the current query.
-      initialFilters.current = false;
-      return;
-    }
-    const timer = setTimeout(() => {
-      void refresh({ query, scope, cwd: activeCwd, sort, namedOnly });
-    }, 150);
+    if (!open) return;
+    if (sameSessionListQuery(composed, recordedQuery)) return;
+    const timer = setTimeout(() => void refresh(composed), 150);
     return () => clearTimeout(timer);
-  }, [open, query, scope, activeCwd, sort, namedOnly, refresh]);
+  }, [open, composed, recordedQuery, refresh]);
 
   const groups = useMemo(() => groupSessionsByProject(sessions), [sessions]);
 
@@ -81,9 +84,7 @@ export function SessionBrowserDialog() {
       .map((tab) => tab.title);
 
   const nextSort = (): void =>
-    setSort((current) =>
-      current === "recent" ? "threaded" : current === "threaded" ? "relevance" : "recent",
-    );
+    setSort(sort === "recent" ? "threaded" : sort === "threaded" ? "relevance" : "recent");
 
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? undefined : close())}>
@@ -94,7 +95,9 @@ export function SessionBrowserDialog() {
       >
         <DialogTitle>Sessions</DialogTitle>
         <DialogDescription>
-          Every session in this Pi profile, newest first. Resuming one opens it in a new tab.
+          {scope === "current"
+            ? "Sessions saved for this project, newest first. Resuming one opens it in a new tab."
+            : "Every session in this Pi profile, newest first. Resuming one opens it in a new tab."}
         </DialogDescription>
 
         <div className="flex items-center gap-2 px-4 pb-2">
@@ -113,9 +116,7 @@ export function SessionBrowserDialog() {
             variant="ghost"
             aria-label="Refresh session list"
             title="Refresh"
-            onClick={() =>
-              void refresh({ refresh: true, query, scope, cwd: activeCwd, sort, namedOnly })
-            }
+            onClick={() => void refresh({ ...composed, refresh: true })}
           >
             <RefreshCw className="size-3.5" aria-hidden />
           </Button>
@@ -171,7 +172,7 @@ export function SessionBrowserDialog() {
               "rounded-sm border border-line px-2 py-0.5",
               namedOnly ? "bg-accent/15 text-accent" : "text-ink-muted hover:text-ink",
             )}
-            onClick={() => setNamedOnly((value) => !value)}
+            onClick={() => setNamedOnly(!namedOnly)}
           >
             named only
           </button>
@@ -210,13 +211,25 @@ export function SessionBrowserDialog() {
           ) : null}
           {!loaded ? <p className="py-6 text-center text-xs text-ink-muted">Loading…</p> : null}
           {loaded && !error && sessions.length === 0 ? (
-            <p className="py-6 text-center text-xs text-ink-muted">
-              {total === 0
-                ? "No sessions yet — start one with Ctrl+N."
-                : scope === "current" && query.length === 0
-                  ? "No sessions in this project yet."
-                  : "No session matches that search."}
-            </p>
+            <div className="py-6 text-center text-xs text-ink-muted">
+              <p>
+                {total === 0
+                  ? "No sessions yet — start one with Ctrl+N."
+                  : scope === "current" && query.length === 0
+                    ? "No sessions in this project yet."
+                    : "No session matches that search."}
+              </p>
+              {scope === "current" && query.length === 0 && total > 0 ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="mt-2"
+                  onClick={() => setScope("all")}
+                >
+                  Show all sessions
+                </Button>
+              ) : null}
+            </div>
           ) : null}
           {loaded && !error && truncated ? (
             <p className="mb-2 text-[10px] text-ink-faint" data-testid="session-truncated">
@@ -341,7 +354,9 @@ function SessionRow({
           </button>
         )}
         <div className="flex gap-2 text-[10px] text-ink-faint">
-          <span>{new Date(session.modified).toLocaleString()}</span>
+          <time title={formatSessionTimeTitle(session.modified)}>
+            {formatSessionTime(session.modified)}
+          </time>
           <span>{session.messageCount} messages</span>
           {showPath ? (
             <span className="truncate font-mono" title={session.path}>
@@ -375,6 +390,12 @@ function SessionRow({
           <Button size="sm" variant="ghost" aria-label="Rename session" onClick={onStartRename}>
             <Pencil className="size-3" aria-hidden />
           </Button>
+          <CopyIconButton
+            value={session.path}
+            label="Copy session path"
+            title={session.path}
+            testId="session-copy-path"
+          />
           <Button size="sm" variant="ghost" aria-label="Delete session" onClick={onAskDelete}>
             <Trash2 className="size-3" aria-hidden />
           </Button>

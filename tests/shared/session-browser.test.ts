@@ -3,17 +3,20 @@ import {
   filterSessionTreeRows,
   filterSessions,
   flattenSessionTree,
+  formatSessionTime,
+  formatSessionTimeTitle,
   listSessions,
   parseSessionQuery,
   groupSessionsByProject,
   matchesSessionQuery,
   MAX_SESSION_LIST_BYTES,
   MAX_SESSION_SUMMARIES,
-  mostRecentSessionForProject,
   parseSessionListPage,
   parseSessionListQuery,
   projectSessionListEntry,
   projectSessionListPage,
+  normalizeSessionListQuery,
+  sameSessionListQuery,
   sanitizeSessionList,
   sanitizeSessionSummary,
   sessionDisplayTitle,
@@ -52,9 +55,23 @@ describe("sanitizeSessionSummary", () => {
     expect(session?.modified).toBe(Date.parse("2026-09-02T10:00:00.000Z"));
   });
 
+  it("converts the SDK's Date timestamps to epoch milliseconds", () => {
+    const session = sanitizeSessionSummary(
+      rawSession({
+        created: new Date("2026-09-01T10:00:00.000Z"),
+        modified: new Date("2026-09-02T10:00:00.000Z"),
+      }),
+    );
+    expect(session?.created).toBe(Date.parse("2026-09-01T10:00:00.000Z"));
+    expect(session?.modified).toBe(Date.parse("2026-09-02T10:00:00.000Z"));
+  });
+
   it("keeps numeric timestamps and drops unusable ones", () => {
     expect(sanitizeSessionSummary(rawSession({ created: 1234 }))?.created).toBe(1234);
     expect(sanitizeSessionSummary(rawSession({ modified: "not-a-date" }))?.modified).toBe(0);
+    expect(sanitizeSessionSummary(rawSession({ created: new Date("nope") }))?.created).toBe(0);
+    expect(sanitizeSessionSummary(rawSession({ modified: -5 }))?.modified).toBe(0);
+    expect(sanitizeSessionSummary(rawSession({ modified: Number.NaN }))?.modified).toBe(0);
   });
 
   it("fills a missing id from the path and nulls a blank name", () => {
@@ -75,6 +92,24 @@ describe("sanitizeSessionSummary", () => {
     );
     expect(session?.messageCount).toBe(0);
     expect(session?.firstMessage.length).toBe(4000);
+  });
+});
+
+describe("formatSessionTime", () => {
+  const modified = Date.parse("2026-11-06T01:34:08.798Z");
+
+  it("never renders an unknown timestamp as 1970", () => {
+    expect(formatSessionTime(0)).toBe("—");
+    expect(formatSessionTime(-1)).toBe("—");
+    expect(formatSessionTime(Number.NaN)).toBe("—");
+    expect(formatSessionTimeTitle(0)).toBe("");
+  });
+
+  it("renders a real timestamp in the requested locale", () => {
+    const label = formatSessionTime(modified, "en-US");
+    expect(label).toContain("2026");
+    expect(label).not.toContain("1970");
+    expect(formatSessionTimeTitle(modified)).toBe("2026-11-06T01:34:08.798Z");
   });
 });
 
@@ -180,10 +215,50 @@ describe("search, sort and grouping", () => {
     expect(groups[0]?.name).toBe("No project directory");
   });
 
-  it("finds the most recent session for a project", () => {
-    expect(mostRecentSessionForProject(sessions, "/work/alpha")?.id).toBe("b");
-    expect(mostRecentSessionForProject(sessions, "/work/beta")?.id).toBe("c");
-    expect(mostRecentSessionForProject(sessions, "/work/missing")).toBeNull();
+  it("groups Windows separator/case variants as one project", () => {
+    const rows = sanitizeSessionList([
+      rawSession({ path: "/p/a.jsonl", id: "a", cwd: "C:\\work\\App", modified: 2 }),
+      rawSession({ path: "/p/b.jsonl", id: "b", cwd: "c:/WORK/app/", modified: 3 }),
+      rawSession({ path: "/p/c.jsonl", id: "c", cwd: "C:/work/other", modified: 1 }),
+    ]);
+    const groups = groupSessionsByProject(rows);
+    expect(groups).toHaveLength(2);
+    const app = groups.find((group) => group.name.toLowerCase() === "app");
+    expect(app?.sessions.map((row) => row.id)).toEqual(["b", "a"]);
+    // The heading keeps the first spelling Pi recorded, for copy/paste fidelity.
+    expect(app?.cwd).toBe("C:\\work\\App");
+  });
+});
+
+describe("normalizeSessionListQuery", () => {
+  it("fills defaults and drops cwd for the all-sessions scope", () => {
+    expect(normalizeSessionListQuery()).toEqual({
+      query: "",
+      scope: "all",
+      cwd: null,
+      sort: "recent",
+      namedOnly: false,
+    });
+    expect(normalizeSessionListQuery({ scope: "all", cwd: "/work/a" }).cwd).toBeNull();
+  });
+
+  it("keeps the current-project cwd and clamps the limit", () => {
+    expect(normalizeSessionListQuery({ scope: "current", cwd: "/work/a", limit: 0 })).toMatchObject(
+      { scope: "current", cwd: "/work/a", limit: 1 },
+    );
+  });
+
+  it("ignores refresh in comparisons", () => {
+    const left = {
+      query: "x",
+      scope: "current" as const,
+      cwd: "/w",
+      sort: "recent" as const,
+      namedOnly: false,
+    };
+    expect(sameSessionListQuery(left, { ...left, refresh: true })).toBe(true);
+    expect(sameSessionListQuery(left, null)).toBe(false);
+    expect(sameSessionListQuery(left, { ...left, scope: "all" })).toBe(false);
   });
 });
 
@@ -305,6 +380,25 @@ describe("session browser parity (plan step 16)", () => {
     expect(listSessions(rows, { scope: "current", cwd: "C:/work" }).sessions).toHaveLength(1);
     expect(listSessions(rows, { scope: "all" }).sessions).toHaveLength(2);
     expect(listSessions(rows, { scope: "current", cwd: null }).sessions).toHaveLength(0);
+  });
+
+  it("matches a Windows project across separator and case variants", () => {
+    const rows = [
+      session({ id: "a", cwd: "C:\\work\\App" })!,
+      session({ id: "b", cwd: "c:/WORK/app/" })!,
+      session({ id: "c", cwd: "C:/work/other" })!,
+    ];
+    expect(
+      listSessions(rows, { scope: "current", cwd: "c:\\work\\app" }).sessions.map((row) => row.id),
+    ).toEqual(["a", "b"]);
+  });
+
+  it("keeps POSIX project paths case-sensitive", () => {
+    const rows = [session({ id: "a", cwd: "/work/App" })!, session({ id: "b", cwd: "/work/app" })!];
+    expect(
+      listSessions(rows, { scope: "current", cwd: "/work/App" }).sessions.map((row) => row.id),
+    ).toEqual(["a"]);
+    expect(groupSessionsByProject(rows)).toHaveLength(2);
   });
 
   it("filters to named sessions only", () => {

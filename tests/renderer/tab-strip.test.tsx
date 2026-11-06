@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { TabRecord } from "../../src/shared/session-ipc";
 import { SessionTabStrip } from "../../src/renderer/src/layout/SessionTabStrip";
@@ -23,6 +23,22 @@ import { installBridge } from "./fixtures";
  */
 
 const WORK = "C:\\work\\pi-desktop";
+
+const originalClipboard = navigator.clipboard;
+
+function stubClipboard(writeText: ((text: string) => Promise<void>) | null): void {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: writeText ? { writeText } : undefined,
+  });
+}
+
+afterEach(() => {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: originalClipboard,
+  });
+});
 
 /** jsdom has no `DataTransfer`; the strip only needs these members. */
 function fakeTransfer() {
@@ -86,6 +102,7 @@ describe("tabMenuItems", () => {
       "clone",
       "export",
       "reveal",
+      "copy-session-path",
       "pin",
       "close",
       "close-others",
@@ -99,6 +116,7 @@ describe("tabMenuItems", () => {
       "Clone session",
       "Export to HTML",
       "Reveal session file",
+      "Copy Path",
       "Pin",
       "Close",
       "Close others",
@@ -122,6 +140,17 @@ describe("tabMenuItems", () => {
     ]);
     expect(items.find((item) => item.id === "close-all")?.label).toBe("Close all editor tabs");
     expect(tabMenuItems("editor", true).map((item) => item.id)).toContain("unpin");
+  });
+
+  it("enables Copy Path only once the session has a file", () => {
+    const withFile = tabMenuItems("session", false, { sessionFile: `${WORK}\\s1.jsonl` });
+    expect(withFile.find((item) => item.id === "copy-session-path")).toMatchObject({
+      label: "Copy Path",
+      disabled: false,
+    });
+
+    const withoutFile = tabMenuItems("session", false, { sessionFile: null });
+    expect(withoutFile.find((item) => item.id === "copy-session-path")?.disabled).toBe(true);
   });
 });
 
@@ -243,6 +272,20 @@ describe("SessionTabStrip", () => {
     fireEvent.click(screen.getByText("Close others"));
 
     await waitFor(() => expect(closeOthers).toHaveBeenCalledWith("tab-1"));
+  });
+
+  it("copies the session path from its context menu", async () => {
+    const writeText = vi.fn(async () => undefined);
+    stubClipboard(writeText);
+    installBridge();
+    render(<SessionTabStrip />);
+
+    fireEvent.contextMenu(screen.getByTestId("tab-tab-1"));
+    await waitFor(() => expect(screen.getByText("Copy Path")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Copy Path"));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(`${WORK}\\sessions\\s1.jsonl`));
+    expect(useAppStore.getState().hint).toMatch(/Session path copied/);
   });
 
   it("renders no per-tab overflow trigger", () => {

@@ -75,14 +75,19 @@ at still sleep after a long idle period, and wake on the next click or keystroke
 
 ## Resuming and the session browser
 
-`Ctrl/Cmd+Shift+O` opens the **Sessions** browser, also reachable with `/resume`.
-It lists every session of the profile from Pi’s own index, grouped by project,
-newest first. Search runs in the control host over the full transcript, not just
-the visible title: a word from an old assistant message still finds its session.
-The host keeps that text out of the UI process and returns a bounded page, so the
-browser may show “Showing N of M matches — narrow the search” on very large
-profiles. **Refresh** re-reads the profile; the host caches the listing for a few
-seconds while you type.
+Click the **History** button in the session strip (between **New terminal** and the
+layout switcher), press `Ctrl/Cmd+Alt+O`, choose **Sessions…** from the app menu,
+run `/resume`, or click **Browse saved sessions…** in an empty grid pane. The
+browser opens on **This project** (the sessions saved for the folder you are in);
+**All sessions** shows every project in the Pi profile. (`Ctrl/Cmd+Shift+O` is
+**Open Project…**, not Sessions.) Sessions come from Pi’s own index, grouped by
+project, newest first. Each row shows its last activity in your local timezone;
+an unreadable timestamp shows `—` instead of a fake 1970 date. Search runs in the
+control host over the full transcript, not just the visible title: a word from an
+old assistant message still finds its session. The host keeps that text out of
+the UI process and returns a bounded page, so the browser may show “Showing N of
+M matches — narrow the search” on very large profiles. **Refresh** re-reads the
+profile; the host caches the listing for a few seconds while you type.
 
 From there you can:
 
@@ -91,6 +96,10 @@ From there you can:
 - **Rename** or **delete** a stored session — deletion goes to the OS trash, is
   validated against Pi’s index in the host and contained to the profile in the
   main process, and is recoverable;
+- **Copy Path** from a tab’s right-click menu, the sidebar `…`, or a row in the
+  browser to put the absolute session JSONL path on the clipboard (the item is
+  disabled until a new session has persisted its first message), ready to paste
+  into the composer;
 - see sessions created by **terminal Pi** — they are the same files.
 
 ## History tree, fork and clone

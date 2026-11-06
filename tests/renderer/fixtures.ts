@@ -329,7 +329,10 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
       reconcile: async () => ({ tabs: [], activeTabId: null }),
       restore: async () => ({ tabs: [], activeTabId: null }),
       restart: async () => ({ tabs: [], activeTabId: null }),
-      request: async () => ({}),
+      request: async (input: { method: string }) =>
+        input.method === "session.list"
+          ? { sessions: [], total: 0, matched: 0, truncated: false, error: null }
+          : {},
       deleteSession: async (sessionFile: string) => ({ ok: true, path: sessionFile }),
       onEvent: () => () => undefined,
       onState: () => () => undefined,

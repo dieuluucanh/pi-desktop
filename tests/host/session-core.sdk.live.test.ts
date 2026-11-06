@@ -54,7 +54,6 @@ function buildCore(): SessionCore {
     },
     openSessionManager: (sessionFile, cwd, sessionDir) =>
       SessionManager.open(sessionFile, sessionDir, cwd) as never,
-    listSessions: (cwd) => SessionManager.list(cwd) as Promise<never[]>,
     createRuntime: async (request) => {
       const created = await createSdkSessionRuntime({
         cwd: request.cwd,
@@ -124,9 +123,6 @@ describe("session core against the real SDK", () => {
 
     const tools = (await call(core, "tools.list")) as { tools: unknown[] };
     expect(Array.isArray(tools.tools)).toBe(true);
-
-    const listed = (await call(core, "session.list")) as { sessions: unknown[] };
-    expect(Array.isArray(listed.sessions)).toBe(true);
   }, 180_000);
 
   it("switches model mid-session, records a model_change entry, and resumes with it", async () => {

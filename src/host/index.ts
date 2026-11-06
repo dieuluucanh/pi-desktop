@@ -187,7 +187,6 @@ function createCore(options: {
     newSessionManager: (cwd, sessionDir) => SessionManager.create(cwd, sessionDir) as never,
     openSessionManager: (sessionFile, cwd, sessionDir) =>
       SessionManager.open(sessionFile, sessionDir, cwd) as never,
-    listSessions: (cwd) => SessionManager.list(cwd) as Promise<never[]>,
     listFiles: (cwd, options) => listWorkspaceFiles(createNodeFileListingIo(), cwd, options),
     // Workspace file access (plan step 23): one node adapter, rooted at the
     // session cwd by the guard inside `workspace-files.ts`.

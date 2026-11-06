@@ -104,19 +104,53 @@ describe("control core", () => {
     expect(settings.read).toHaveBeenCalledTimes(2);
   });
 
-  it("lists every session of the profile (legacy raw fallback)", async () => {
-    const listSessions = vi.fn(async () => [{ sessionId: "a" }, { sessionId: "b" }]);
+  it("projects the same page when no catalog is wired (legacy fallback)", async () => {
+    const listSessions = vi.fn(async () => [
+      {
+        path: "C:\\p\\a.jsonl",
+        id: "a",
+        cwd: "C:\\work\\A",
+        created: new Date("2026-09-01T10:00:00.000Z"),
+        modified: new Date("2026-09-02T10:00:00.000Z"),
+        messageCount: 1,
+        firstMessage: "alpha",
+        allMessagesText: "alpha",
+      },
+      {
+        path: "C:\\p\\b.jsonl",
+        id: "b",
+        cwd: "C:\\work\\B",
+        created: new Date("2026-09-01T10:00:00.000Z"),
+        modified: new Date("2026-09-03T10:00:00.000Z"),
+        messageCount: 1,
+        firstMessage: "beta",
+        allMessagesText: "beta",
+      },
+    ]);
     const core = createControlCore({ settings: fakeSettings(), listSessions });
-    const result = (await core.handlers()["session.list"]?.({}, {} as never)) as {
-      sessions: unknown[];
+    type Page = {
+      sessions: Array<{ id: string; modified: number }>;
       total: number;
       matched: number;
       truncated: boolean;
       error: string | null;
     };
-    expect(result.sessions).toHaveLength(2);
-    expect(result).toMatchObject({ total: 2, matched: 2, truncated: false, error: null });
-    expect(listSessions).toHaveBeenCalledTimes(1);
+    const call = async (params: Record<string, unknown>): Promise<Page> =>
+      (await core.handlers()["session.list"]?.(params, {} as never)) as Page;
+
+    const all = await call({});
+    expect(all.sessions.map((session) => session.id)).toEqual(["b", "a"]);
+    expect(all.sessions[0]?.modified).toBe(Date.parse("2026-09-03T10:00:00.000Z"));
+    expect(all).toMatchObject({ total: 2, matched: 2, truncated: false, error: null });
+
+    const current = await call({ scope: "current", cwd: "c:\\WORK\\a" });
+    expect(current.sessions.map((session) => session.id)).toEqual(["a"]);
+    expect(current).toMatchObject({ total: 2, matched: 1, truncated: false, error: null });
+
+    const bad = await call({ query: "re:(" });
+    expect(bad.sessions).toEqual([]);
+    expect(bad.error).toMatch(/group|parenth|unterminated/i);
+    expect(listSessions).toHaveBeenCalledTimes(3);
   });
 
   it("delegates session.list to the page port with parsed filters", async () => {

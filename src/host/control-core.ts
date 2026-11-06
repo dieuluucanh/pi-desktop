@@ -23,6 +23,8 @@ import { createSettingsHandlers, SETTINGS_METHODS, type SettingsPort } from "./s
 import type { HostHandler } from "./service";
 import {
   parseSessionListQuery,
+  projectSessionListPage,
+  sanitizeSessionList,
   type SessionListEntry,
   type SessionListPage,
   type SessionListQuery,
@@ -52,7 +54,8 @@ export interface ControlCoreDeps {
   /**
    * Answers `session.list` with a filtered, sorted, bounded page (session
    * browser fix). The full listing above stays the authority for delete/rename
-   * validation; without this port a control host keeps the legacy raw answer.
+   * validation; without this port the control host projects the same page from
+   * `listSessions()` locally — it never returns raw `SessionInfo[]`.
    */
   listSessionPage?(query: SessionListQuery): Promise<SessionListPage<SessionListEntry>>;
   /** Drops any cached session listing (the control host's shutdown path). */
@@ -141,17 +144,13 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
       "session.list": async (params) => {
         const query = parseSessionListQuery(params);
         if (deps.listSessionPage) return deps.listSessionPage(query);
-        // Legacy fallback: a host without the catalog still answers, and the
-        // renderer can read the raw rows (it clamps text itself). Production
-        // control hosts always take the projected path above.
-        const sessions = await deps.listSessions();
-        return {
-          sessions,
-          total: sessions.length,
-          matched: sessions.length,
-          truncated: false,
-          error: null,
-        };
+        // A host without a catalog still answers the same projected shape: the
+        // query filters/sorts the rows and the byte budget keeps the page under
+        // the spill threshold. The full text stays here so search is complete.
+        const sessions = sanitizeSessionList(await deps.listSessions(), {
+          maxTextChars: Number.MAX_SAFE_INTEGER,
+        });
+        return projectSessionListPage(sessions, query);
       },
       // Validation only: the app performs the recoverable delete with the OS
       // trash API, which a host process does not have (see `session-files.ts`).
