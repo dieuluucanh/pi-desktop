@@ -62,7 +62,13 @@ export type ScopeSource = "global" | "project";
 export interface ScopeDiagnosticInfo {
   type: "warning";
   message: string;
-  code?: "no-match" | "invalid-thinking-level" | "ambiguous" | "resolve-failed";
+  code?:
+    | "no-match"
+    | "invalid-thinking-level"
+    | "ambiguous"
+    | "resolve-failed"
+    /** The id contains a colon, which Pi's pattern grammar reads as a suffix. */
+    | "unrepresentable";
   pattern?: string;
 }
 
@@ -194,6 +200,40 @@ export function hasExactScopeRef(patterns: readonly string[] | unknown, ref: str
 }
 
 /**
+ * The one rule for turning an exact model ref into a persisted scope pattern.
+ *
+ * Pi parses a pattern by splitting at its **last colon** and reading the tail as
+ * a thinking level. When the tail is not one, it keeps the whole string as an id
+ * and fails to match — so a model whose own id contains a colon (`hf:deepseek-…`)
+ * can never be star-scoped in `enabledModels`. Writing `${provider}/${id}`
+ * anyway is what produced the per-session
+ * `Invalid thinking level "deepseek-ai/…" in pattern "synthetic/hf:…"` warning
+ * while the model silently dropped out of the scope (2026-11-06 plan).
+ *
+ * Callers must use this instead of building the string themselves, and must
+ * surface a rejection rather than dropping it.
+ */
+export function scopePatternFor(
+  provider: string,
+  id: string,
+  thinkingLevel?: ScopeThinkingLevel,
+): { ok: true; pattern: string } | { ok: false; reason: "unrepresentable" } {
+  const ref = scopeKeyOf(provider, id);
+  const pattern = thinkingLevel ? `${ref}:${thinkingLevel}` : ref;
+  // Mirror Pi's parser exactly: it splits at the LAST colon, and a tail that is
+  // not a thinking level makes the whole pattern an unresolvable id.
+  const slash = pattern.indexOf("/");
+  const colon = pattern.lastIndexOf(":");
+  if (colon > slash && !isScopeThinkingLevel(pattern.slice(colon + 1))) {
+    return { ok: false, reason: "unrepresentable" };
+  }
+  if (thinkingLevel && parseScopePattern(pattern).thinkingLevel !== thinkingLevel) {
+    return { ok: false, reason: "unrepresentable" };
+  }
+  return { ok: true, pattern };
+}
+
+/**
  * Materialises the live scope into explicit patterns, keeping the thinking
  * level a pattern pinned. The live scope is the user-visible truth: it also
  * contains models Pi appended through `setModel`, which a rewrite must not
@@ -213,11 +253,16 @@ export function materialiseScopePatterns(scoped: readonly unknown[]): ScopeRef[]
     if (seen.has(ref)) continue;
     seen.add(ref);
     const thinking = record.thinkingLevel;
-    if (typeof thinking === "string" && isScopeThinkingLevel(thinking)) {
-      refs.push({ ref, pattern: `${ref}:${thinking}`, thinkingLevel: thinking });
-    } else {
-      refs.push({ ref, pattern: ref });
-    }
+    const pinned = typeof thinking === "string" && isScopeThinkingLevel(thinking);
+    // A ref the grammar cannot express is left out of the rewrite (it is
+    // reported by `nextScopePatterns` on the toggle that tried to add it).
+    const pattern = scopePatternFor(provider, id, pinned ? thinking : undefined);
+    if (!pattern.ok) continue;
+    refs.push(
+      pinned && pattern.pattern.endsWith(`:${thinking}`)
+        ? { ref, pattern: pattern.pattern, thinkingLevel: thinking }
+        : { ref, pattern: pattern.pattern },
+    );
   }
   return refs;
 }
@@ -268,6 +313,13 @@ export interface NextScopeInput {
   enabled: boolean;
 }
 
+export interface NextScopeResult {
+  /** The rewritten list, or `undefined` for "no scope". */
+  patterns: string[] | undefined;
+  /** Refs the pattern grammar cannot express; the caller must report these. */
+  rejected: ScopeRef[];
+}
+
 /**
  * The toggle rewrite: resolved persisted scope + one key change + the patterns
  * that currently match nothing.
@@ -279,14 +331,35 @@ export interface NextScopeInput {
  *   offline provider or a typo is not destroyed by an unrelated star click.
  * - An empty result means "no scope" (`undefined` → the caller deletes
  *   `enabledModels`); starring every model stays an explicit list.
+ * - A key that cannot be written down is returned in `rejected` **and left
+ *   out** of the patterns, so a click never writes a pattern the resolver will
+ *   warn about and drop.
  */
-export function nextScopePatterns(input: NextScopeInput): string[] | undefined {
+export function nextScopePatterns(input: NextScopeInput): NextScopeResult {
   const ref = scopeKeyOf(input.provider, input.id);
-  const baseKeys = scopeKeys(input.baseScoped);
-  const nextKeys = toggleScopeKey(baseKeys, ref, input.enabled);
-  const materialised = new Map(
-    materialiseScopePatterns(input.baseScoped).map((entry) => [entry.ref, entry.pattern]),
-  );
+  const basePatterns = materialiseScopePatterns(input.baseScoped);
+  // The one rule: a ref the grammar cannot express is never written down. Keep
+  // the stored list exactly as it is and report the refusal (2026-11-06 plan).
+  const addition = input.enabled ? scopePatternFor(input.provider, input.id) : null;
+  if (addition && !addition.ok) {
+    const unchanged: string[] = [];
+    const seen = new Set<string>();
+    for (const pattern of [
+      ...basePatterns.map((entry) => entry.pattern),
+      ...normalizeScopePatterns(input.preserved),
+    ]) {
+      if (seen.has(pattern)) continue;
+      seen.add(pattern);
+      unchanged.push(pattern);
+    }
+    return {
+      patterns: unchanged.length === 0 ? undefined : unchanged,
+      rejected: [{ ref, pattern: ref }],
+    };
+  }
+
+  const nextKeys = toggleScopeKey(scopeKeys(input.baseScoped), ref, input.enabled);
+  const materialised = new Map(basePatterns.map((entry) => [entry.ref, entry.pattern]));
 
   const patterns: string[] = [];
   const seen = new Set<string>();
@@ -301,5 +374,5 @@ export function nextScopePatterns(input: NextScopeInput): string[] | undefined {
     seen.add(pattern);
     patterns.push(pattern);
   }
-  return patterns.length === 0 ? undefined : patterns;
+  return { patterns: patterns.length === 0 ? undefined : patterns, rejected: [] };
 }

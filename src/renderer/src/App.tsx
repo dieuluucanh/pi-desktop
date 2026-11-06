@@ -151,7 +151,11 @@ export function App() {
     const offUpdates = api.updates.onState((state) =>
       useAppStore.getState().applyUpdateState(state),
     );
-    const offTabs = api.sessions.onTabs((envelope) => useAppStore.getState().applyTabs(envelope));
+    const offTabs = api.sessions.onTabs((envelope) =>
+      // A push updates facts, never focus: the window moves only when the user
+      // (or an explicit call this renderer made) says so.
+      useAppStore.getState().applyTabs(envelope, { adoptSelection: false }),
+    );
     const offState = api.sessions.onState((envelope) =>
       useAppStore.getState().applySessionState(envelope),
     );

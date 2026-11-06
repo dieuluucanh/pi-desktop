@@ -23,6 +23,8 @@ import { createNodeFsPort, type FsPort } from "./fs-port";
 import { composeChildEnv } from "./runtime/child-env";
 import { SESSION_ID_ENV, SERVICE_ENV, SERVICE_FLAG } from "../host/index";
 import {
+  HOST_MEMORY_GRACE_MS,
+  HOST_RSS_OVER_BUDGET_SAMPLES,
   HOST_RSS_RESTART_BYTES,
   IDLE_HOST_TIMEOUT_MS,
   capacity,
@@ -32,7 +34,7 @@ import {
   type Capacity,
   type HostMemoryMetrics,
 } from "../shared/performance";
-import { isSessionBusyState } from "../shared/session-ipc";
+import { isSessionBusyState, type TabStopReason } from "../shared/session-ipc";
 
 /**
  * Supervises Pi host processes (plan step 4): one per session tab, spawned with
@@ -120,6 +122,8 @@ export interface HostInfo {
 export interface HostEvent {
   event: string;
   sessionId?: string;
+  /** Monotonic attachment counter; a reload keeps the id but bumps this. */
+  sessionEpoch?: number;
   payload?: unknown;
 }
 
@@ -139,14 +143,28 @@ export interface HostHandle {
   metrics(): HostMemoryMetrics | null;
   /** The tail of the host's own log, oldest first — the Diagnostics view reads it. */
   logs(): string[];
+  /**
+   * Adds one line to that log. Optional so a test double stays small; the real
+   * host uses it for service-level events ("retrying the open…") that only the
+   * session service knows about.
+   */
+  note?(message: string): void;
   request(method: HostMethod, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
   on(event: string, listener: HostEventListener): () => void;
   /** True when the injected policy says this host must stay alive. */
   pinned(): boolean;
   /** True when the host is ready and has no request in flight. */
   isIdle(): boolean;
+  /** Why the last shutdown stopped the host (idle/RSS/park/manual/restart). */
+  stopReason?(): TabStopReason | null;
+  /** True when a protected host is over the RSS budget but was not recycled. */
+  overMemory?(): boolean;
+  /** Crash auto-restarts in this process lifetime. */
+  restartCount?(): number;
+  /** The last restart reason (`crash`, `manual`, …). */
+  lastRestartReason?(): string | null;
   restart(reason?: string): Promise<HostInfo>;
-  shutdown(): Promise<void>;
+  shutdown(reason?: TabStopReason): Promise<void>;
 }
 
 export interface HostSupervisorOptions {
@@ -187,6 +205,15 @@ export interface HostSupervisorOptions {
   fs?: FsPort;
   now?: () => number;
   requestTimeoutMs?: number;
+  /**
+   * Log a completed request once it took at least this long, so a slow open or a
+   * wedged SDK call is visible in `<logs>/<tab>.log` (2026-11-06 hang plan).
+   * Defaults to {@link DEFAULT_SLOW_REQUEST_LOG_MS}; `0` logs every request and a
+   * negative value disables the line.
+   */
+  slowRequestLogMs?: number;
+  /** Rotate the per-session log after this many characters (0 disables). */
+  maxLogFileChars?: number;
   maxHosts?: number;
   idleTimeoutMs?: number;
   maxRestarts?: number;
@@ -197,6 +224,10 @@ export interface HostSupervisorOptions {
   maxRssBytes?: number;
   /** How often to poll `host.metrics`; `0` disables polling (tests). */
   memoryPollMs?: number;
+  /** Do not consider an RSS recycle before the host has lived this long. */
+  memoryGraceMs?: number;
+  /** Consecutive over-budget samples required before a background recycle. */
+  memoryOverBudgetSamples?: number;
   /**
    * A session that must not be idle-recycled right now (the active tab, the
    * control host or the Office bridge owner). Evaluated at every idle tick, so a
@@ -204,9 +235,9 @@ export interface HostSupervisorOptions {
    */
   isPinned?: (sessionId: string) => boolean;
   /**
-   * The session hosting the on-demand Office bridge. Unlike `isPinned`, this is
-   * also exempt from the RSS watchdog: stopping it would drop port 38617 and any
-   * attached pane. The active tab is deliberately **not** offered this exemption.
+   * The session hosting the on-demand Office bridge. Stopping it would drop port
+   * 38617 and any attached pane, so it is exempt from both idle and RSS recycles.
+   * The active/visible tab is protected by `isPinned`, not by this exemption.
    */
   isBridgeOwner?: (sessionId: string) => boolean;
   /**
@@ -238,6 +269,8 @@ export interface HostSupervisor {
 export const OFFICE_BRIDGE_PORT = 38617;
 export const FIRST_GENERAL_PORT = 38618;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+/** A request slower than this is worth a line in the per-tab host log. */
+export const DEFAULT_SLOW_REQUEST_LOG_MS = 2_000;
 export const DEFAULT_MAX_HOSTS = hostProcessCeiling();
 export const DEFAULT_IDLE_TIMEOUT_MS = IDLE_HOST_TIMEOUT_MS;
 /**
@@ -247,11 +280,23 @@ export const DEFAULT_IDLE_TIMEOUT_MS = IDLE_HOST_TIMEOUT_MS;
  */
 export const MAX_HOST_LOG_LINES = 200;
 export const MAX_HOST_LOG_CHARS = 64_000;
+/**
+ * One log segment before rotation. The file is appended to (never rewritten), so
+ * a hang can be reconstructed; kept bounded by rotating once to `<id>.1.log`
+ * (2026-11-06 plan, step 16).
+ */
+export const MAX_HOST_LOG_FILE_CHARS = 1_000_000;
+/** Segments kept across spawns (`.1`–`.3`); a loop cannot fill the log dir. */
+export const MAX_HOST_LOG_SEGMENTS = 3;
 export const DEFAULT_METRICS_POLL_MS = 15_000;
 export const RESTART_BACKOFF_MS = [0, 500, 2_000] as const;
 
 interface Pending {
   method: HostMethod;
+  /** The child this request was written to, so a replacement's work is never drained. */
+  child: SpawnedHostProcess;
+  /** When the frame was written, for the slow-request log line. */
+  startedAt: number;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout> | null;
@@ -261,6 +306,26 @@ interface Pending {
 export class HostTimeoutError extends Error {
   constructor(method: string, timeoutMs: number) {
     super(`host request "${method}" timed out after ${timeoutMs} ms`);
+  }
+}
+
+/**
+ * The host was stopped or replaced while the request was in flight.
+ *
+ * This is a *lifetime* answer, not a timeout: the child that would have answered
+ * is gone, so waiting for it is pointless. Carries a stable `code` so the
+ * session service can fail fast and retry instead of showing a 30 s hang.
+ */
+export class HostStoppedError extends Error {
+  readonly code = "host_stopped";
+
+  constructor(sessionId: string, method?: string) {
+    super(
+      method
+        ? `host for ${sessionId} stopped during "${method}"`
+        : `host for ${sessionId} was stopped`,
+    );
+    this.name = "host_stopped";
   }
 }
 
@@ -292,8 +357,15 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
   const spawner = options.spawner ?? defaultSpawner;
   const now = options.now ?? ((): number => Date.now());
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const slowRequestLogMs = options.slowRequestLogMs ?? DEFAULT_SLOW_REQUEST_LOG_MS;
+  const maxLogFileChars = options.maxLogFileChars ?? MAX_HOST_LOG_FILE_CHARS;
   const maxHosts = options.maxHosts ?? DEFAULT_MAX_HOSTS;
   const maxRestarts = options.maxRestarts ?? RESTART_BACKOFF_MS.length;
+  const memoryGraceMs = options.memoryGraceMs ?? HOST_MEMORY_GRACE_MS;
+  const memoryOverBudgetSamples = Math.max(
+    1,
+    options.memoryOverBudgetSamples ?? HOST_RSS_OVER_BUDGET_SAMPLES,
+  );
   const hosts = new Map<string, SupervisorHost>();
   const ports = new Set<number>();
 
@@ -325,9 +397,19 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     private memoryTimer: ReturnType<typeof setInterval> | null = null;
     private memoryInFlight = false;
     private lastMemory: HostMemoryMetrics | null = null;
+    private overBudgetSamples = 0;
+    private overMemoryValue = false;
+    private stopReasonValue: TabStopReason | null = null;
+    private lastRestartReasonValue: string | null = null;
     private lastActivityAt: number;
     private intentionalStop = false;
+    /** Set while the child is being stopped/replaced: every new request fails fast. */
+    private stopping = false;
     private logBuffer: string[] = [];
+    /** Serializes file writes, so a rotation cannot interleave with an append. */
+    private logWrite: Promise<void> = Promise.resolve();
+    /** Characters in the current log segment (rotation counter). */
+    private logFileChars = 0;
     private lastInfo: HostInfo | null = null;
     private readyResolve: ((info: HostInfo) => void) | null = null;
     private readyReject: ((error: Error) => void) | null = null;
@@ -336,7 +418,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     constructor(
       spec: HostSpawnSpec,
       port: number,
-      private readonly onIdle?: () => void,
+      private readonly onIdle?: (reason: "idle" | "memory") => void,
     ) {
       this.spec = spec;
       this.sessionId = spec.sessionId;
@@ -402,6 +484,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
             if (!pending) continue;
             this.pending.delete(frame.id);
             if (pending.timer) clearTimeout(pending.timer);
+            this.logDuration(pending);
             if (frame.ok) pending.resolve(frame.result);
             else {
               const error = new Error(frame.error.message);
@@ -416,6 +499,9 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
             const event: HostEvent = {
               event: frame.event,
               ...(frame.sessionId ? { sessionId: frame.sessionId } : {}),
+              ...(typeof frame.sessionEpoch === "number"
+                ? { sessionEpoch: frame.sessionEpoch }
+                : {}),
               ...(frame.payload !== undefined ? { payload: frame.payload } : {}),
             };
             this.emitter.emit(frame.event, event.payload);
@@ -436,7 +522,56 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         chars -= oldest.length;
         this.logBuffer.shift();
       }
-      void fs.writeTextFile(join(options.logDir, `${this.sessionId}.log`), this.logBuffer.join(""));
+      // Append instead of rewriting the bounded buffer: the in-memory tail is
+      // for the Diagnostics view, the file is the record that survives a hang.
+      this.logWrite = this.logWrite.then(() => this.writeLogLine(line)).catch(() => undefined);
+    }
+
+    /** The file half of {@link appendLog}: append, rotating one segment. */
+    private async writeLogLine(line: string): Promise<void> {
+      const target = this.logPath();
+      if (maxLogFileChars > 0 && this.logFileChars + line.length > maxLogFileChars) {
+        const previous = await fs.readTextFile(target);
+        if (previous !== null && previous.length > 0) {
+          await fs
+            .writeTextFile(join(options.logDir, `${this.sessionId}.1.log`), previous)
+            .catch(() => undefined);
+        }
+        this.logFileChars = 0;
+        await fs.writeTextFile(target, "").catch(() => undefined);
+      }
+      this.logFileChars += line.length;
+      await fs.appendTextFile(target, line);
+    }
+
+    /**
+     * Shifts `<id>.log` to `<id>.1.log`, `.1`→`.2`, `.2`→`.3` before a new run.
+     * One segment is dropped when the cap is reached.
+     */
+    private async rotateLogOnSpawn(): Promise<void> {
+      const target = this.logPath();
+      const segment = (index: number): string =>
+        join(options.logDir, `${this.sessionId}.${index}.log`);
+      const current = await fs.readTextFile(target);
+      if (current === null || current.length === 0) {
+        await fs.writeTextFile(target, "").catch(() => undefined);
+        return;
+      }
+      await fs.remove(segment(MAX_HOST_LOG_SEGMENTS)).catch(() => undefined);
+      for (let index = MAX_HOST_LOG_SEGMENTS - 1; index >= 1; index -= 1) {
+        await fs.rename(segment(index), segment(index + 1)).catch(() => undefined);
+      }
+      await fs.rename(target, segment(1)).catch(async () => {
+        // A platform/filesystem that refuses to replace: keep the bytes in the
+        // segment instead of losing the run.
+        await fs.writeTextFile(segment(1), current).catch(() => undefined);
+      });
+      await fs.writeTextFile(target, "").catch(() => undefined);
+    }
+
+    /** The log file this host is writing (Diagnostics and tests read it). */
+    logPath(): string {
+      return join(options.logDir, `${this.sessionId}.log`);
     }
 
     private captureStderr(): void {
@@ -452,6 +587,8 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         // file. `restart()` terminates the old child before calling this.
         throw new Error(`host for ${this.sessionId} is already running`);
       }
+      // A replacement is a live host again; only `shutdown()` keeps it stopped.
+      this.stopping = false;
       this.stopMetricsPolling();
       const telemetry =
         typeof options.telemetryEnabled === "function"
@@ -493,6 +630,15 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       ];
       const child = spawner(options.nodePath, args, { cwd: this.spec.cwd, env, windowsHide: true });
       this.child = child;
+      // Rotate, never truncate: a restart loop used to erase the very evidence
+      // that explained it. Clear the in-memory tail and memory sample too, so
+      // Diagnostics never mixes two processes.
+      this.logBuffer.length = 0;
+      this.lastMemory = null;
+      this.overBudgetSamples = 0;
+      this.overMemoryValue = false;
+      this.logFileChars = 0;
+      this.logWrite = this.logWrite.then(() => this.rotateLogOnSpawn()).catch(() => undefined);
 
       this.appendLog(
         "info",
@@ -514,11 +660,58 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
 
     /** Rejects every in-flight request against the process being replaced. */
     private rejectPending(reason: string): void {
+      this.drainPending((pending) => new Error(`${reason} during "${pending.method}"`));
+    }
+
+    /**
+     * Fails in-flight requests, optionally only those written to one child.
+     *
+     * One drain point exists so a stop can never leave a request waiting for a
+     * process that is already gone: that is exactly the 30 s "the session host
+     * stopped responding" the user sees after a recycle or a restart.
+     */
+    private drainPending(
+      error: (pending: Pending) => Error,
+      match?: (pending: Pending) => boolean,
+    ): Pending[] {
+      const drained: Pending[] = [];
       for (const [id, pending] of this.pending) {
+        if (match && !match(pending)) continue;
         if (pending.timer) clearTimeout(pending.timer);
-        pending.reject(new Error(`${reason} during "${pending.method}"`));
         this.pending.delete(id);
+        drained.push(pending);
+        pending.reject(error(pending));
       }
+      return drained;
+    }
+
+    /** Fails everything in flight because the host itself is going away. */
+    private drainStopped(match?: (pending: Pending) => boolean): number {
+      const drained = this.drainPending(
+        (pending) => new HostStoppedError(this.sessionId, pending.method),
+        match,
+      );
+      if (drained.length > 0) {
+        const methods = [...new Set(drained.map((pending) => pending.method))];
+        this.appendLog(
+          "info",
+          `stopped ${drained.length} in-flight request(s): ${methods.join(", ")}`,
+        );
+      }
+      return drained.length;
+    }
+
+    /** One line when a request was slow enough to matter (`slowRequestLogMs`). */
+    private logDuration(pending: Pending): void {
+      if (slowRequestLogMs < 0) return;
+      const elapsed = now() - pending.startedAt;
+      if (elapsed < slowRequestLogMs) return;
+      this.appendLog("info", `request "${pending.method}" took ${elapsed} ms`);
+    }
+
+    /** Service-level context (retry reasons) in the same per-tab log. */
+    note(message: string): void {
+      this.appendLog("info", message);
     }
 
     private handleExit(child: SpawnedHostProcess, code: number, signal: string): void {
@@ -588,6 +781,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
      * service owns the JSONL and reopens it after `status: ready`.
      */
     async restart(reason: string = "manual"): Promise<HostInfo> {
+      this.lastRestartReasonValue = reason;
       if (this.restartTimer) {
         clearTimeout(this.restartTimer);
         this.restartTimer = null;
@@ -629,6 +823,10 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
      */
     private async terminateChild(child: SpawnedHostProcess): Promise<void> {
       if (this.child === child) this.child = null;
+      // The child is being replaced or stopped: everything it was asked to do is
+      // already lost. Fail it now (typed, so the caller can retry) instead of
+      // letting each request sit until its own 30 s timer fires.
+      this.drainStopped((pending) => pending.child === child);
       const exited = new Promise<void>((resolve) => {
         child.on("exit", () => resolve());
       });
@@ -643,6 +841,9 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         // Already gone.
       }
       await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 1_000))]);
+      // A wedged child may never answer `host.shutdown`; that request is ours to
+      // drain too, so no entry outlives the process it was written to.
+      this.drainStopped((pending) => pending.child === child);
     }
 
     /** Sends one frame to a specific child (used while replacing the current one). */
@@ -660,7 +861,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
           reject(new HostTimeoutError(method, timeoutMs));
         }, timeoutMs);
         if (typeof timer === "object" && timer && "unref" in timer) timer.unref();
-        this.pending.set(id, { method, resolve, reject, timer });
+        this.pending.set(id, { method, child, startedAt: now(), resolve, reject, timer });
         child.stdin.write(encodeFrame(frame));
       });
     }
@@ -744,7 +945,8 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         return;
       }
       this.appendLog("info", `recycling idle host after ${Math.round(since / 1000)} s`);
-      this.onIdle?.();
+      this.stopReasonValue = "idle";
+      this.onIdle?.("idle");
     }
 
     /** Polls `host.metrics` for the Diagnostics RSS readout and the restart cap. */
@@ -775,38 +977,59 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         }
         this.lastMemory = sample;
         const threshold = options.maxRssBytes ?? HOST_RSS_RESTART_BYTES;
-        // `pending` is empty here (the metrics response was just consumed), so a
-        // host with an in-flight user request is never recycled under the user.
-        // A recycle is a stop, not an in-place restart: the old process is gone
-        // and the next interaction/ensure resumes from JSONL. This is the same
-        // path as an idle recycle, so it cannot orphan a child or race a handshake.
-        if (threshold > 0 && shouldRestartForMemory(sample, threshold) && this.pending.size === 0) {
-          // Never recycle the Office bridge owner or the Office host: stopping
-          // it would drop port 38617. The active tab is pinned for idle purposes
-          // but is deliberately NOT exempt here — it is the session most likely
-          // to hold a large transcript, and this watchdog is the only per-host
-          // guard against a leak. The busy probe below still protects a working
-          // session.
-          if (this.officeHost || this.bridgeOwner()) return;
-          let busy: boolean;
-          try {
-            busy = isSessionBusyState(
-              await this.request("state.get", undefined, { timeoutMs: 1_500 }),
-            );
-          } catch {
-            busy = true;
-          }
-          if (busy) {
-            this.appendLog("info", "keeping host alive: the session is still working");
-            return;
-          }
-          const mb = (bytes: number): number => Math.round(bytes / (1024 * 1024));
+        const over = threshold > 0 && shouldRestartForMemory(sample, threshold);
+        if (!over) {
+          this.overBudgetSamples = 0;
+          this.overMemoryValue = false;
+          return;
+        }
+        // A single 15 s spike is not a leak, and a cold host spends its first
+        // seconds loading extensions/LSP caches. Require consecutive samples
+        // and a grace window before a background recycle.
+        this.overBudgetSamples += 1;
+        if (this.overBudgetSamples < memoryOverBudgetSamples) return;
+        const mb = (bytes: number): number => Math.round(bytes / (1024 * 1024));
+        if (sample.uptimeMs < memoryGraceMs) {
           this.appendLog(
             "info",
-            `recycling host: RSS ${mb(sample.rssBytes)} MB is over the ${mb(threshold)} MB threshold`,
+            `RSS ${mb(sample.rssBytes)} MB is over the ${mb(threshold)} MB threshold; waiting out the startup grace period`,
           );
-          this.onIdle?.();
+          return;
         }
+        // Never recycle the Office bridge owner or the Office host: stopping
+        // it would drop port 38617. The active/visible tab is protected for the
+        // same reason an idle sleep would be surprising: the user is looking at
+        // this session. Warn instead; the user owns the Restart action.
+        if (this.officeHost || this.bridgeOwner() || this.pinned()) {
+          if (!this.overMemoryValue) {
+            this.overMemoryValue = true;
+            this.appendLog(
+              "info",
+              `memory high: RSS ${mb(sample.rssBytes)} MB is over the ${mb(threshold)} MB threshold; the session is active, so it is not recycled`,
+            );
+          }
+          return;
+        }
+        if (this.pending.size > 0) return;
+        let busy: boolean;
+        try {
+          busy = isSessionBusyState(
+            await this.request("state.get", undefined, { timeoutMs: 1_500 }),
+          );
+        } catch {
+          busy = true;
+        }
+        if (busy) {
+          this.appendLog("info", "keeping host alive: the session is still working");
+          return;
+        }
+        this.overMemoryValue = false;
+        this.appendLog(
+          "info",
+          `recycling host: RSS ${mb(sample.rssBytes)} MB is over the ${mb(threshold)} MB threshold`,
+        );
+        this.stopReasonValue = "memory";
+        this.onIdle?.("memory");
       } catch {
         // A metrics poll is best effort; a failure is not a host failure.
       } finally {
@@ -826,6 +1049,9 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     ): Promise<unknown> {
       const child = this.child;
       if (!child) return Promise.reject(new HostNotRunningError(this.sessionId));
+      // A stopping host will never answer. Reject now, with the reason, rather
+      // than arming a timer that fires 30 s after the process died.
+      if (this.stopping) return Promise.reject(new HostStoppedError(this.sessionId, method));
       const id = this.nextId++;
       const timeoutMs = requestOptions.timeoutMs ?? requestTimeoutMs;
       const frame: HostRequestFrame = { id, method, ...(params === undefined ? {} : { params }) };
@@ -848,13 +1074,15 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
           reject(new HostTimeoutError(method, timeoutMs));
         }, timeoutMs);
         if (typeof timer === "object" && timer && "unref" in timer) timer.unref();
-        this.pending.set(id, { method, resolve, reject, timer });
+        this.pending.set(id, { method, child, startedAt: now(), resolve, reject, timer });
         child.stdin.write(encodeFrame(frame));
       });
     }
 
-    async shutdown(): Promise<void> {
+    async shutdown(reason: TabStopReason = "manual"): Promise<void> {
+      this.stopReasonValue = reason;
       this.intentionalStop = true;
+      this.stopping = true;
       if (this.idleTimer) clearTimeout(this.idleTimer);
       if (this.restartTimer) clearTimeout(this.restartTimer);
       // The metrics interval is unref'd, but it must not keep asking a host that
@@ -863,10 +1091,16 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       const child = this.child;
       if (!child) {
         this.state = "stopped";
+        this.emitter.emit("status", "stopped");
         return;
       }
+      // Nothing in flight can be answered any more. Fail it now: this is the
+      // difference between an immediate, actionable error and a 30 s freeze
+      // that looks like a wedged model.
+      this.drainStopped();
       try {
-        await this.request("host.shutdown", {}, { timeoutMs: 2_000 });
+        // `requestOn` (not `request`) because the host is already `stopping`.
+        await this.requestOn(child, "host.shutdown", {}, 2_000);
       } catch {
         // Fall through to a hard kill.
       }
@@ -881,16 +1115,32 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       this.emitter.emit("status", "stopped");
     }
 
+    stopReason(): TabStopReason | null {
+      return this.stopReasonValue;
+    }
+
+    overMemory(): boolean {
+      return this.overMemoryValue;
+    }
+
+    restartCount(): number {
+      return this.restarts;
+    }
+
+    lastRestartReason(): string | null {
+      return this.lastRestartReasonValue;
+    }
+
     disposeHere(): void {
       this.stopMetricsPolling();
       this.emitter.removeAllListeners();
     }
   }
 
-  const stopHost = async (sessionId: string): Promise<void> => {
+  const stopHost = async (sessionId: string, reason: TabStopReason = "manual"): Promise<void> => {
     const host = hosts.get(sessionId);
     if (!host) return;
-    await host.shutdown();
+    await host.shutdown(reason);
     hosts.delete(sessionId);
     ports.delete(host.port);
     host.disposeHere();
@@ -900,7 +1150,11 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     async start(spec: HostSpawnSpec): Promise<HostHandle> {
       if (hosts.size >= maxHosts) throw new HostLimitError(maxHosts);
       const port = allocatePort(spec.officeHost ?? false);
-      const host = new SupervisorHost(spec, port, () => void stopHost(spec.sessionId));
+      const host = new SupervisorHost(
+        spec,
+        port,
+        (reason) => void stopHost(spec.sessionId, reason),
+      );
       hosts.set(spec.sessionId, host);
       try {
         await host.start();

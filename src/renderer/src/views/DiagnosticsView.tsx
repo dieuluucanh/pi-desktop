@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { DiagnosticsExport, Incident } from "../../../shared/diagnostics";
+import type { DiagnosticsExport, DiagnosticsHostInfo, Incident } from "../../../shared/diagnostics";
 import { formatBytes, formatDuration } from "../../../shared/performance";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -59,6 +59,18 @@ export function DiagnosticsView() {
       setNotice(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setBusy(false);
+    }
+  }, []);
+
+  /** One host's request/stop timeline, ready for an issue or a diff (step 16). */
+  const copyTimeline = useCallback(async (host: DiagnosticsHostInfo) => {
+    const text = host.logLines.join("");
+    if (text.length === 0) return;
+    try {
+      await navigator.clipboard?.writeText(text);
+      setNotice(`Copied ${text.length} characters from ${host.tabId}.`);
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : String(cause));
     }
   }, []);
 
@@ -283,9 +295,19 @@ export function DiagnosticsView() {
                     {host.cwd}
                   </span>
                   {host.logLines.length > 0 ? (
-                    <pre className="max-h-40 overflow-auto rounded bg-surface-sunken p-2 text-[11px] leading-4">
-                      {host.logLines.slice(-12).join("")}
-                    </pre>
+                    <div className="flex flex-col gap-1">
+                      <pre className="max-h-40 overflow-auto rounded bg-surface-sunken p-2 text-[11px] leading-4">
+                        {host.logLines.slice(-12).join("")}
+                      </pre>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        data-testid="diagnostics-copy-timeline"
+                        onClick={() => void copyTimeline(host)}
+                      >
+                        Copy timeline
+                      </Button>
+                    </div>
                   ) : null}
                 </div>
               ))

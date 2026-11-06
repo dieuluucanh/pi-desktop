@@ -146,6 +146,12 @@ export interface TranscriptState {
   /** True once history has been loaded from `messages.get`. */
   hydrated: boolean;
   /**
+   * The session id whose "Session started" row is already in `items`. A host
+   * recycle re-announces the same session; one row per session boundary is the
+   * rule, not one per process (2026-11-06 plan, step 15).
+   */
+  lastStartedSessionId: string | null;
+  /**
    * Every session entry id this transcript knows about (git-checkpoint plan step
    * 25). A checkpoint carries the entry id of the turn it was taken for, and the
    * rail offers *Conversation rewind* only when that id exists here. Collected
@@ -167,6 +173,7 @@ export function createTranscriptState(): TranscriptState {
     usage: null,
     lastSeq: 0,
     hydrated: false,
+    lastStartedSessionId: null,
     entryIds: {},
   };
 }
@@ -970,6 +977,20 @@ export function reduceSessionEvents(
       default: {
         const severity = NOTICE_SEVERITY[entry.event];
         if (severity) {
+          if (entry.event === "session_started") {
+            const sessionId = asString(payload.sessionId);
+            // Same session, announced again (resume/reload/recycle): keep the
+            // first row. A new session id is a real boundary and gets its own.
+            if (sessionId.length > 0 && sessionId === next.lastStartedSessionId) break;
+            next = appendNotice(
+              next,
+              entry.event,
+              severity,
+              NOTICE_TEXT[entry.event] ?? entry.event,
+            );
+            if (sessionId.length > 0) next = { ...next, lastStartedSessionId: sessionId };
+            break;
+          }
           next = appendNotice(
             next,
             entry.event,

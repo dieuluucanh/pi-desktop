@@ -133,6 +133,8 @@ const sessions: SessionsBridge = {
     ipcRenderer.invoke(IPC.sessionPromoteOffice, tabId) as Promise<SessionTabsEnvelope>,
   activate: (tabId: string) =>
     ipcRenderer.invoke(IPC.sessionActivate, tabId) as Promise<SessionTabsEnvelope>,
+  ensure: (tabId: string) =>
+    ipcRenderer.invoke(IPC.sessionEnsure, tabId) as Promise<SessionTabsEnvelope>,
   setVisibleTabs: (ids: readonly string[]) =>
     ipcRenderer.invoke(IPC.sessionSetVisible, ids) as Promise<void>,
   deactivate: () => ipcRenderer.invoke(IPC.sessionDeactivate) as Promise<SessionTabsEnvelope>,
@@ -140,6 +142,8 @@ const sessions: SessionsBridge = {
   restore: () => ipcRenderer.invoke(IPC.sessionRestore) as Promise<SessionTabsEnvelope>,
   restart: (tabId: string) =>
     ipcRenderer.invoke(IPC.sessionRestart, tabId) as Promise<SessionTabsEnvelope>,
+  stop: (tabId: string) =>
+    ipcRenderer.invoke(IPC.sessionStop, tabId) as Promise<SessionTabsEnvelope>,
   request: (input: SessionRequestInput) =>
     ipcRenderer.invoke(IPC.sessionRequest, input) as Promise<unknown>,
   deleteSession: (sessionFile: string) =>

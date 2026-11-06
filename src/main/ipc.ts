@@ -130,6 +130,8 @@ export interface IpcSessionDeps {
   /** Makes one tab the single Office host (plan step 20). */
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Wakes the host/session without moving the selection. */
+  ensure(tabId: string): Promise<SessionTabsEnvelope>;
   /** Declares the tabs the renderer shows; advisory, parks and spawns nothing. */
   setVisibleTabs(ids: readonly string[]): void;
   /** Clears the active tab without closing or stopping any host. */
@@ -139,6 +141,8 @@ export interface IpcSessionDeps {
   restore(): Promise<SessionTabsEnvelope>;
   /** Stops and re-spawns a tab's host, resuming its session (plan step 22). */
   restart(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Stops a tab's host without closing it; the next activation resumes. */
+  stop(tabId: string): Promise<SessionTabsEnvelope>;
   request(input: { tabId: string; method: HostMethod; params?: unknown }): Promise<unknown>;
   /**
    * Deletes a session file to the OS trash (plan step 11). The session service's
@@ -595,6 +599,12 @@ function parseCreateTab(value: unknown): CreateTabInput {
   }
   const input: CreateTabInput = { cwd };
   if (isTabKind(kind)) input.kind = kind;
+  if (record.activate !== undefined) {
+    if (typeof record.activate !== "boolean") {
+      throw new Error("session: activate must be a boolean");
+    }
+    input.activate = record.activate;
+  }
   if (record.profileId !== undefined && record.profileId !== null) {
     if (kind !== "terminal") {
       throw new Error("session: profileId is only valid for a terminal tab");
@@ -737,6 +747,9 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.sessionActivate, (_event, tabId: unknown) =>
     deps.sessions.activate(requireTabId(deps, tabId)),
   );
+  ipcMain.handle(IPC.sessionEnsure, (_event, tabId: unknown) =>
+    deps.sessions.ensure(requireTabId(deps, tabId)),
+  );
   ipcMain.handle(IPC.sessionDeactivate, () => deps.sessions.deactivate());
   ipcMain.handle(IPC.sessionSetVisible, (_event, ids: unknown) => {
     // Advisory by design: a close or a drop races this push, so an unknown id or
@@ -746,6 +759,9 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.sessionReconcile, () => deps.sessions.reconcile());
   ipcMain.handle(IPC.sessionRestart, (_event, tabId: unknown) =>
     deps.sessions.restart(requireTabId(deps, tabId)),
+  );
+  ipcMain.handle(IPC.sessionStop, (_event, tabId: unknown) =>
+    deps.sessions.stop(requireTabId(deps, tabId)),
   );
   ipcMain.handle(IPC.sessionRequest, (_event, input: unknown) =>
     deps.sessions.request(parseSessionRequest(deps, input)),

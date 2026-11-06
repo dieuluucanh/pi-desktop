@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HostMethod, HostRole } from "../../src/shared/host-protocol";
-import type { TabRecord } from "../../src/shared/session-ipc";
+import {
+  SESSION_ASLEEP_MESSAGE,
+  type SessionTabsEnvelope,
+  type TabRecord,
+  type TabStopReason,
+} from "../../src/shared/session-ipc";
 import {
   CONTROL_HOST_ID,
+  HOST_OPEN_TIMEOUT_MS,
   createSessionService,
   requestTimeoutFor,
   type SessionService,
@@ -10,6 +16,7 @@ import {
   type SupervisorLike,
 } from "../../src/main/session-service";
 import type { HostMemoryMetrics } from "../../src/shared/performance";
+import { HostStoppedError, HostTimeoutError } from "../../src/main/host-supervisor";
 
 /**
  * The session service (plan step 3) drives everything the renderer sees, so it is
@@ -38,6 +45,8 @@ class FakeHost implements SupervisorHostLike {
   private readonly fail: { method: string; error: Error } | undefined;
   private readonly pinnedValue: boolean;
   private readonly rssBytes: number;
+  stopReasonValue: TabStopReason | null = null;
+  overMemoryValue = false;
 
   constructor(
     sessionId: string,
@@ -68,6 +77,14 @@ class FakeHost implements SupervisorHostLike {
 
   pinned(): boolean {
     return this.pinnedValue;
+  }
+
+  stopReason(): TabStopReason | null {
+    return this.stopReasonValue;
+  }
+
+  overMemory(): boolean {
+    return this.overMemoryValue;
   }
 
   metrics(): HostMemoryMetrics | null {
@@ -156,8 +173,17 @@ class FakeHost implements SupervisorHostLike {
   }
 
   /** Pushes a protocol event (the supervisor forwards the named event and `event`). */
-  emit(event: string, payload?: unknown): void {
-    const entry = payload === undefined ? { event } : { event, payload };
+  emit(
+    event: string,
+    payload?: unknown,
+    identity?: { sessionId?: string | null; sessionEpoch?: number },
+  ): void {
+    const entry = {
+      event,
+      ...(payload === undefined ? {} : { payload }),
+      ...(identity?.sessionId ? { sessionId: identity.sessionId } : {}),
+      ...(identity?.sessionEpoch === undefined ? {} : { sessionEpoch: identity.sessionEpoch }),
+    };
     for (const listener of this.listeners.get("event") ?? []) listener(entry);
   }
 
@@ -169,7 +195,7 @@ class FakeHost implements SupervisorHostLike {
 function createHarness(
   options: {
     maxLiveHosts?: number;
-    failCreate?: Error;
+    failCreate?: Error | ((spawnIndex: number) => Error | undefined);
     /** Expected bundle fingerprint; absent disables the stale check. */
     hostBuildId?: () => string | null;
     /** Per-spawn build ids (index 0 = the first host). */
@@ -233,7 +259,11 @@ function createHarness(
                 typeof options.rssBytes === "function" ? options.rssBytes(spec) : options.rssBytes,
             }),
       });
-      if (options.failCreate) {
+      const createFailure =
+        typeof options.failCreate === "function"
+          ? options.failCreate(specs.length - 1)
+          : options.failCreate;
+      if (createFailure) {
         host.request = (
           method: HostMethod,
           params?: unknown,
@@ -247,7 +277,7 @@ function createHarness(
               : { timeoutMs: requestOptions.timeoutMs }),
           });
           return method === "session.create" || method === "session.resume"
-            ? Promise.reject(options.failCreate)
+            ? Promise.reject(createFailure)
             : Promise.resolve(host.reply(method));
         };
       }
@@ -416,6 +446,27 @@ describe("tab lifecycle", () => {
     expect(newest().requests.map((request) => request.method)).toEqual(["session.resume"]);
   });
 
+  it("opens a background web tab without stealing the session selection", async () => {
+    const { service, specs } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const spawned = specs.length;
+
+    const envelope = await service.createTab({
+      kind: "web",
+      url: "http://127.0.0.1:8080/review",
+      sessionTabId: "tab-1",
+      activate: false,
+    });
+
+    expect(envelope.activeTabId).toBe("tab-1");
+    expect(envelope.tabs.find((tab) => tab.kind === "web")).toMatchObject({
+      status: "idle",
+      sessionTabId: "tab-1",
+      url: "http://127.0.0.1:8080/review",
+    });
+    expect(specs).toHaveLength(spawned);
+  });
+
   it("marks the tab failed and rethrows when the session cannot start", async () => {
     const failure = Object.assign(new Error("trust required for this project"), {
       name: "trust_required",
@@ -428,6 +479,212 @@ describe("tab lifecycle", () => {
     const tab = service.tabs()[0]!;
     expect(tab.status).toBe("failed");
     expect(tab.error).toMatch(/trust required/i);
+  });
+
+  it("retries once on a fresh process when the host stopped mid-open", async () => {
+    // 2026-11-06 hang plan, step 2. A stop is a process failure, so the session
+    // is worth one automatic retry: before this the tab went `failed` and the
+    // user had to restart the app.
+    const { service, specs } = createHarness({
+      failCreate: (index) =>
+        index === 0 ? new HostStoppedError("tab-1", "session.create") : undefined,
+    });
+
+    await service.createTab({ cwd: "C:\\work\\app" });
+
+    const tab = service.tabs()[0]!;
+    expect(tab.status).toBe("idle");
+    expect(tab.error).toBeUndefined();
+    expect(specs.filter((spec) => spec.sessionId === tab.id)).toHaveLength(2);
+  });
+
+  it("coalesces a second ensure during the retry's detach/ensureProcess window", async () => {
+    // The duplicate-resume production log: the first open fails with a stop,
+    // its retry detaches (bumping the host generation), and a second ensure
+    // used to start a third open because `detachHost` deleted the coalescer.
+    let spawns = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const harness = createHarness({
+      failCreate: (index) =>
+        index === 0 ? new HostStoppedError("tab-1", "session.resume") : undefined,
+      onStart: async () => {
+        spawns += 1;
+        if (spawns === 2) await gate;
+      },
+    });
+    harness.stored.tabs = [
+      {
+        id: "tab-1",
+        kind: "session",
+        cwd: "C:\\work\\app",
+        title: "app",
+        sessionFile: "/profile/sessions/s1.jsonl",
+        status: "stopped",
+        createdAt: 1,
+        lastActiveAt: 1,
+        model: null,
+      },
+    ];
+    harness.stored.activeTabId = "tab-1";
+    await harness.service.restoreTabs();
+
+    const first = harness.service.ensureTab("tab-1");
+    await vi.waitFor(() => expect(spawns).toBe(2));
+    const second = harness.service.ensureTab("tab-1");
+    release();
+    await Promise.all([first, second]);
+
+    expect(harness.specs.filter((spec) => spec.sessionId === "tab-1")).toHaveLength(2);
+  });
+
+  it("retries once when the open request timed out", async () => {
+    const { service, specs } = createHarness({
+      failCreate: (index) =>
+        index === 0 ? new HostTimeoutError("session.create", 90_000) : undefined,
+    });
+
+    await service.createTab({ cwd: "C:\\work\\app" });
+
+    expect(service.tabs()[0]?.status).toBe("idle");
+    expect(specs.filter((spec) => spec.sessionId === "tab-1")).toHaveLength(2);
+  });
+
+  it("leaves the tab retryable when every attempt stops mid-open", async () => {
+    const failure = new HostStoppedError("tab-1", "session.create");
+    const { service, specs } = createHarness({ failCreate: failure });
+
+    await expect(service.createTab({ cwd: "C:\\work\\app" })).rejects.toThrow(/stopped/);
+
+    const tab = service.tabs()[0]!;
+    // `stopped`, not `failed`: the next interaction respawns instead of asking
+    // the user to restart the app.
+    expect(tab.status).toBe("stopped");
+    expect(tab.error).toBeUndefined();
+    // Exactly one retry, so a permanently broken host cannot spawn in a loop.
+    expect(specs.filter((spec) => spec.sessionId === "tab-1")).toHaveLength(2);
+  });
+
+  it("keeps an explicit create retryable when the host stops mid-flight", async () => {
+    // The trust-retry path calls `session.create` directly; a stop there used to
+    // leave the tab on `starting` forever.
+    const { service } = createHarness({
+      failCreate: new HostStoppedError("tab-1", "session.create"),
+    });
+    await expect(service.createTab({ cwd: "C:\\work\\app" })).rejects.toThrow(/stopped/);
+    const tab = service.tabs()[0]!;
+
+    await expect(service.request(tab.id, "session.create", { cwd: tab.cwd })).rejects.toThrow(
+      /stopped/,
+    );
+
+    expect(service.tabs()[0]?.status).toBe("stopped");
+    expect(service.tabs()[0]?.error).toBeUndefined();
+  });
+
+  it("stops a tab without closing it and resumes it on the next activation", async () => {
+    // Cancel for a slow open (2026-11-06 hang plan, step 4): the host goes away,
+    // the tab and its session file stay, so nothing the user had is lost.
+    const { service, hosts, specs, stored, newest } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    expect(hosts.size).toBe(1);
+
+    const envelope = await service.stopTab("tab-1");
+
+    expect(envelope.tabs[0]?.status).toBe("stopped");
+    expect(hosts.size).toBe(0);
+    // Nothing respawned behind the user's back.
+    expect(specs).toHaveLength(1);
+    expect(stored.tabs[0]?.status).toBe("stopped");
+    expect(service.tabs()[0]?.sessionFile).toBe("/profile/sessions/s1.jsonl");
+
+    await service.activateTab("tab-1");
+    expect(specs).toHaveLength(2);
+    expect(newest().requests.map((request) => request.method)).toEqual(["session.resume"]);
+  });
+
+  it("drops the start notice for a routine resume and keeps it for a new session", async () => {
+    // 2026-11-06 plan, step 15: a recycle resumes the same conversation, so the
+    // service does not even forward the event. A genuinely new session does.
+    const { service, newest, pushes } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const before = eventsOf(pushes).length;
+
+    newest().emit("session_started", { reason: "resume", sessionId: "session-1" });
+    await Promise.resolve();
+    expect(eventsOf(pushes)).toHaveLength(before);
+
+    newest().emit("session_started", { reason: "new", sessionId: "session-1" });
+    await vi.waitFor(() => expect(eventsOf(pushes).length).toBeGreaterThan(before));
+    expect(
+      eventsOf(pushes)
+        .at(-1)
+        ?.events.map((entry) => entry.event),
+    ).toContain("session_started");
+  });
+
+  it("wakes a tab without moving the active tab", async () => {
+    // A background pane, a reconcile or a resync calls `ensure`; only a real
+    // gesture may reassign the selection (2026-11-06 tab-switch plan).
+    const { service, specs, stored } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\one" });
+    await service.createTab({ cwd: "C:\\work\\two" });
+    expect(stored.activeTabId).toBe("tab-2");
+    await service.stopTab("tab-1");
+
+    const envelope = await service.ensureTab("tab-1");
+
+    expect(envelope.activeTabId).toBe("tab-2");
+    expect(service.activeTabId()).toBe("tab-2");
+    expect(stored.activeTabId).toBe("tab-2");
+    // It did wake the host: a second spawn for tab-1, now idle again.
+    expect(specs.filter((spec) => spec.sessionId === "tab-1")).toHaveLength(2);
+    expect(service.tabs().find((tab) => tab.id === "tab-1")?.status).toBe("idle");
+  });
+
+  it("versions the table and the selection separately", async () => {
+    // 2026-11-06 tab-switch plan, step 6. A wake must not look like a selection
+    // change, and a selection change must be distinguishable from a stale push.
+    const { service, pushes } = createHarness();
+    const lastTabs = (): SessionTabsEnvelope =>
+      pushes.filter((push) => push.channel === "tabs").at(-1)?.payload as SessionTabsEnvelope;
+
+    await service.createTab({ cwd: "C:\\work\\one" });
+    const created = lastTabs();
+    expect(created.revision).toBeGreaterThan(0);
+    expect(created.selectionSeq).toBeGreaterThan(0);
+
+    await service.ensureTab("tab-1");
+    const ensured = lastTabs();
+    expect(ensured.revision).toBe(created.revision);
+    expect(ensured.selectionSeq).toBe(created.selectionSeq);
+
+    await service.activateTab("tab-1");
+    // Re-selecting the same tab publishes nothing (the table is unchanged), but
+    // the envelope's sequence still moved, which is what the renderer compares.
+    expect(service.envelope().selectionSeq).toBeGreaterThan(created.selectionSeq ?? 0);
+    expect(service.envelope().activeTabId).toBe("tab-1");
+  });
+
+  it("keeps the user's tab through background wakes (2026-11-06 regression)", async () => {
+    // The reported sequence: the user is in the Strata session while other
+    // projects' sessions are open and waking in the background.
+    const { service, stored } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\Strata" });
+    await service.createTab({ cwd: "C:\\work\\pi-desktop" });
+    await service.createTab({ cwd: "C:\\work\\third" });
+    await service.activateTab("tab-1");
+    expect(service.activeTabId()).toBe("tab-1");
+
+    // A resync / pane wake for the other two sessions.
+    await service.ensureTab("tab-2");
+    await service.ensureTab("tab-3");
+
+    expect(service.activeTabId()).toBe("tab-1");
+    expect(stored.activeTabId).toBe("tab-1");
+    expect(service.envelope().activeTabId).toBe("tab-1");
   });
 
   it("opens more tabs than the old eight-tab cap", async () => {
@@ -1035,6 +1292,68 @@ describe("reliability and recovery (plan step 22)", () => {
     });
   });
 
+  it("records the supervisor's stop reason and memory warning", async () => {
+    const { service, hosts } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const host = hosts.get("tab-1");
+    if (!host) throw new Error("no host");
+    host.stopReasonValue = "memory";
+    host.overMemoryValue = true;
+    host.setStatus("ready");
+    host.emitLifecycle("status", "ready");
+    host.setStatus("stopped");
+    host.emitLifecycle("status", "stopped");
+    await Promise.resolve();
+
+    const tab = service.tabs()[0]!;
+    expect(tab.status).toBe("stopped");
+    expect(tab.stopReason).toBe("memory");
+    expect(tab.memoryOverBudget).toBe(true);
+    expect(tab.stoppedAt).toBe(1_000);
+  });
+
+  it("drops an event from the outgoing session after a replacement", async () => {
+    const { service, hosts, pushes } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const host = hosts.get("tab-1");
+    if (!host) throw new Error("no host");
+
+    host.emit(
+      "session_started",
+      { reason: "new", sessionId: "s1" },
+      { sessionId: "s1", sessionEpoch: 1 },
+    );
+    host.emit("session_replaced", { sessionId: "s2" }, { sessionId: "s2", sessionEpoch: 2 });
+    // A late frame from the invalidated runner: same tab, old identity.
+    host.emit(
+      "message_start",
+      { message: { id: "old", role: "assistant", content: [] } },
+      { sessionId: "s1", sessionEpoch: 1 },
+    );
+    host.emit(
+      "message_start",
+      { message: { id: "new", role: "assistant", content: [] } },
+      { sessionId: "s2", sessionEpoch: 2 },
+    );
+    await Promise.resolve();
+
+    const events = pushes
+      .filter((push) => push.channel === "event")
+      .flatMap(
+        (push) =>
+          (
+            push.payload as {
+              events: Array<{ event: string; payload?: { message?: { id?: string } } }>;
+            }
+          ).events,
+      );
+    const messageIds = events
+      .filter((entry) => entry.event === "message_start")
+      .map((entry) => entry.payload?.message?.id);
+    expect(messageIds).not.toContain("old");
+    expect(messageIds).toContain("new");
+  });
+
   it("drops a host handle that reports stopped, so the next activation re-spawns", async () => {
     const { service, hosts, specs } = createHarness();
     await service.createTab({ cwd: "C:\\work\\app" });
@@ -1137,9 +1456,93 @@ describe("reconcile (sleep/resume and stale pushes)", () => {
     expect(envelope.tabs[0]!.status).toBe("stopped");
     expect(specs).toHaveLength(spawnedBefore);
   });
+
+  it("refuses passive reads from a stopped tab without spawning", async () => {
+    const { service, hosts, specs } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const host = hosts.get("tab-1");
+    if (!host) throw new Error("no host");
+    host.setStatus("stopped");
+    host.emitLifecycle("status", "stopped");
+    await Promise.resolve();
+    const spawnedBefore = specs.length;
+
+    for (const method of ["tui.resize", "tui.state", "messages.get", "shortcuts.list"] as const) {
+      await expect(service.request("tab-1", method)).rejects.toMatchObject({
+        code: "host_stopped",
+        message: SESSION_ASLEEP_MESSAGE,
+      });
+    }
+    expect(specs).toHaveLength(spawnedBefore);
+
+    // Explicit activation is the one thing that may wake it.
+    await service.ensureTab("tab-1");
+    expect(specs).toHaveLength(spawnedBefore + 1);
+    expect(service.tabs()[0]!.status).toBe("idle");
+  });
+
+  it("still wakes a stopped tab for a prompt or an explicit ensure", async () => {
+    const { service, hosts, specs } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const host = hosts.get("tab-1");
+    if (!host) throw new Error("no host");
+    host.setStatus("stopped");
+    host.emitLifecycle("status", "stopped");
+    await Promise.resolve();
+    const spawnedBefore = specs.length;
+
+    await service.request("tab-1", "prompt", { text: "hello" });
+    expect(specs).toHaveLength(spawnedBefore + 1);
+    expect(await service.request("tab-1", "state.get")).toMatchObject({
+      sessionId: "session-1",
+    });
+  });
 });
 
 describe("persistence and restore", () => {
+  it("falls back to the most recent session when the saved active tab is gone", async () => {
+    // `app-state.json` can name a tab that was removed by another window or a
+    // hand edit. Opening on an empty shell hides the work that is still there.
+    const { service, stored } = createHarness();
+    const record = (id: string, lastActiveAt: number): TabRecord => ({
+      id,
+      kind: "session",
+      cwd: `C:\\work\\${id}`,
+      title: id,
+      sessionFile: `/profile/${id}.jsonl`,
+      status: "stopped",
+      createdAt: 1,
+      lastActiveAt,
+      model: null,
+    });
+    stored.tabs = [record("older", 10), record("newer", 20)];
+    stored.activeTabId = "tab-that-no-longer-exists";
+
+    const envelope = await service.restoreTabs();
+
+    expect(envelope.activeTabId).toBe("newer");
+  });
+
+  it("keeps a deliberately cleared selection cleared", async () => {
+    const { service, stored } = createHarness();
+    stored.tabs = [
+      {
+        id: "tab-1",
+        kind: "session",
+        cwd: "C:\\work\\one",
+        title: "one",
+        sessionFile: "/profile/one.jsonl",
+        status: "stopped",
+        createdAt: 1,
+        lastActiveAt: 5,
+        model: null,
+      },
+    ];
+    stored.activeTabId = null;
+
+    expect((await service.restoreTabs()).activeTabId).toBeNull();
+  });
+
   it("restores the tab table without spawning any host", async () => {
     const { service, hosts, stored } = createHarness();
     stored.tabs = [
@@ -1298,6 +1701,12 @@ describe("requests", () => {
     expect(requestTimeoutFor("session.list")).toBe(120_000);
     expect(requestTimeoutFor("tree.get")).toBe(60_000);
     expect(requestTimeoutFor("state.get")).toBe(30_000);
+    // Opening a session loads its JSONL and the extension stack; 30 s timed out
+    // healthy hosts (2026-11-06 hang plan).
+    expect(requestTimeoutFor("session.create")).toBe(HOST_OPEN_TIMEOUT_MS);
+    expect(requestTimeoutFor("session.resume")).toBe(HOST_OPEN_TIMEOUT_MS);
+    expect(requestTimeoutFor("session.open")).toBe(HOST_OPEN_TIMEOUT_MS);
+    expect(HOST_OPEN_TIMEOUT_MS).toBe(90_000);
   });
 
   it("repairs a lost session and retries a read-only request once", async () => {

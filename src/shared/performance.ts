@@ -24,8 +24,16 @@ export const WINDOW_INTERACTIVE_BUDGET_MS = 2_500;
 export const SESSION_READY_BUDGET_MS = 5_000;
 /** Soft per-host RSS budget the Diagnostics view colours against. */
 export const HOST_RSS_BUDGET_BYTES = 512 * 1024 * 1024;
-/** Hard per-host RSS threshold: an *idle* host over this is recycled. */
+/** Hard per-host RSS threshold: an *idle, unpinned* host over this is recycled. */
 export const HOST_RSS_RESTART_BYTES = 1024 * 1024 * 1024;
+/**
+ * A host must stay over the RSS threshold for this many consecutive samples
+ * before it is eligible for a background recycle. One 15 s spike is not a leak,
+ * and a cold session spends its first seconds loading extensions/LSP caches.
+ */
+export const HOST_RSS_OVER_BUDGET_SAMPLES = 2;
+/** Do not even consider an RSS recycle during the host's first minute. */
+export const HOST_MEMORY_GRACE_MS = 60_000;
 /**
  * Fallback live-host target when the OS total-memory reading is unavailable.
  * A target is soft: idle sessions sleep before a new host is spawned, and a
@@ -119,6 +127,13 @@ export interface HostMemoryMetrics {
   rssBytes: number;
   heapUsedBytes: number;
   heapTotalBytes: number;
+  /**
+   * Memory held outside the V8 heap (native/WASM/typed arrays). Optional so a
+   * legacy host or a small test double still satisfies the shape; the current
+   * host reports it to explain a large RSS on a brand-new session.
+   */
+  externalBytes?: number;
+  arrayBuffersBytes?: number;
   /** Wall-clock ms the host process has been alive. */
   uptimeMs: number;
   /** When the sample was taken (epoch ms, host clock). */

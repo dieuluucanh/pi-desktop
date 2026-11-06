@@ -268,6 +268,23 @@ export function SettingsView() {
           </div>
         </Row>
         <Row
+          label="Background dialogs"
+          hint="An extension in another tab can ask a question while you work here. Blocking: only a question that waits for you takes the window, and never while you type or a run is streaming; otherwise the tab shows a dot. Never: only the dot."
+        >
+          <div className="flex items-center gap-2" data-testid="dialog-focus-policy">
+            <Switch
+              checked={prefs.dialogs.autoFocus === "blocking"}
+              onCheckedChange={(blocking) =>
+                setPrefs({ dialogs: { autoFocus: blocking ? "blocking" : "never" } })
+              }
+              aria-label="Let a blocking background dialog take the window"
+            />
+            <span className="text-xs text-ink-faint">
+              {prefs.dialogs.autoFocus === "blocking" ? "blocking only" : "never switch"}
+            </span>
+          </div>
+        </Row>
+        <Row
           label="Expanded command prompts"
           hint="Commands such as /commit send a long instruction to the model. Off: the transcript names the command you sent and hides the instruction; Ctrl+O or the row's Show button reveals it."
         >

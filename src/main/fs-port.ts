@@ -6,7 +6,17 @@
  * unit-tested with an in-memory filesystem and audited in one place.
  */
 
-import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  copyFile,
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import * as path from "node:path";
 
 export type ExistingPathKind = "file" | "directory";
@@ -14,6 +24,12 @@ export type ExistingPathKind = "file" | "directory";
 export interface FsPort {
   readTextFile(target: string): Promise<string | null>;
   writeTextFile(target: string, contents: string): Promise<void>;
+  /**
+   * Appends one chunk. The host's per-session log uses this so a hang can be
+   * reconstructed after the fact: rewriting the file from a bounded buffer kept
+   * only the last few lines (2026-11-06 plan, step 16).
+   */
+  appendTextFile(target: string, contents: string): Promise<void>;
   /** Binary write (bug-report zips); the text port cannot carry arbitrary bytes. */
   writeBinaryFile(target: string, contents: Uint8Array): Promise<void>;
   copyFile(from: string, to: string): Promise<void>;
@@ -38,6 +54,10 @@ export function createNodeFsPort(): FsPort {
     async writeTextFile(target, contents) {
       await mkdir(path.dirname(target), { recursive: true });
       await writeFile(target, contents, "utf8");
+    },
+    async appendTextFile(target, contents) {
+      await mkdir(path.dirname(target), { recursive: true });
+      await appendFile(target, contents, "utf8");
     },
     async writeBinaryFile(target, contents) {
       await mkdir(path.dirname(target), { recursive: true });
@@ -134,6 +154,11 @@ export function createMemoryFsPort(initial?: {
     },
     async writeTextFile(target, contents) {
       files.set(key(target), contents);
+      ensureDir(path.dirname(target));
+    },
+    async appendTextFile(target, contents) {
+      const normalized = key(target);
+      files.set(normalized, `${files.get(normalized) ?? ""}${contents}`);
       ensureDir(path.dirname(target));
     },
     async writeBinaryFile(target, contents) {

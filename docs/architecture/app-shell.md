@@ -594,17 +594,19 @@ and the renderer all read it, so a budget change is one edit.
   replaced in place so the card keeps its identity, and the renderer fetches the
   body through `host.blobs.read` only when the card is opened.
 - **Per-host memory.** Every host answers `host.metrics` with its own RSS (no
-  OS-specific process query). The supervisor polls it, Diagnostics shows it
-  against the soft budget, and an idle host over the hard threshold (1 GB) is
-  recycled by **stopping** it (the same path as an idle recycle), not by
-  restarting in place. The session service drops a handle that reports
-  `stopped`, so the next interaction spawns a fresh process and resumes from
-  JSONL. The 15-minute time-based idle recycler is **on by default**. The active
-  tab, the control host, an Office host and the bridge owner are protected from
-  _idle_ sleep; the active tab is deliberately **not** exempt from the RSS
-  watchdog (it is the session most likely to hold a large transcript). Only the
-  Office host and the bridge owner are RSS-exempt, because stopping them drops
-  port 38617.
+  OS-specific process query), plus heap/external/array-buffer counters so a large
+  RSS can be attributed. The supervisor polls it and Diagnostics shows it against
+  the soft budget. A **background idle** host over the hard threshold (1 GB) is
+  recycled by **stopping** it, but only after two consecutive over-budget samples
+  and a one-minute startup grace period. The session service drops a handle that
+  reports `stopped`, so the next activation spawns a fresh process and resumes
+  from JSONL. The 15-minute time-based idle recycler is **on by default**. The
+  active tab, every visible pane, the control host, an Office host, the bridge
+  owner and a session linked to an active/visible web tab are protected from
+  **both** idle sleep and the RSS watchdog: an over-budget active host gets a
+  warning and a manual Restart action instead of being killed. Passive reads
+  (`tui.resize`, `messages.get`, `oi.state`, `shortcuts.list`, …) never wake a
+  stopped host; only activation/ensure, a prompt or a lifecycle command does.
 - **Open tabs vs live hosts.** A tab is a resumable JSONL record, not a process,
   so session, Office, web and editor tabs are **unlimited**. The only resource
   budget is live host processes: `liveHostBudget(totalMemory)` reserves 20% of

@@ -47,6 +47,37 @@ function renderPicker(overrides: Partial<Parameters<typeof ModelPicker>[0]> = {}
 }
 
 describe("ModelPicker", () => {
+  it("warns when the saved default is not in the catalogue", () => {
+    renderPicker({
+      defaultProblem: {
+        provider: "synthetic",
+        id: "hf:gone",
+        message: "Saved default model synthetic/hf:gone is not in the catalogue.",
+      },
+    });
+
+    expect(screen.getByTestId("model-default-missing")).toHaveTextContent(
+      "synthetic/hf:gone is not in the catalogue",
+    );
+  });
+
+  it("shows resolver diagnostics instead of swallowing them", () => {
+    renderPicker({
+      diagnostics: [
+        {
+          type: "warning",
+          code: "unrepresentable",
+          message: "synthetic/hf:x cannot be added to the model scope",
+          pattern: "synthetic/hf:x",
+        },
+      ],
+    });
+
+    const box = screen.getByTestId("model-scope-diagnostics");
+    expect(box).toHaveTextContent("cannot be added to the model scope");
+    expect(box).toHaveTextContent("synthetic/hf:x");
+  });
+
   it("groups models by provider and marks the current one", () => {
     renderPicker();
     expect(screen.getByText("anthropic")).toBeInTheDocument();

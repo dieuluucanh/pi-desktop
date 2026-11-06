@@ -320,6 +320,11 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
         tabs: useAppStore.getState().tabs,
         activeTabId: tabId,
       }),
+      // Liveness only: never moves the selection in the fake either.
+      ensure: async () => ({
+        tabs: useAppStore.getState().tabs,
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
       deactivate: async () => ({ tabs: useAppStore.getState().tabs, activeTabId: null }),
       // Advisory pinning hint (2026-11-03 grid plan): recorded so a test can
       // assert what the renderer told main was on screen.
@@ -329,6 +334,7 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
       reconcile: async () => ({ tabs: [], activeTabId: null }),
       restore: async () => ({ tabs: [], activeTabId: null }),
       restart: async () => ({ tabs: [], activeTabId: null }),
+      stop: async () => ({ tabs: [], activeTabId: null }),
       request: async (input: { method: string }) =>
         input.method === "session.list"
           ? { sessions: [], total: 0, matched: 0, truncated: false, error: null }

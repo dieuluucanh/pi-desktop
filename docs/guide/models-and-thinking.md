@@ -70,6 +70,35 @@ from the project panel (the Settings switch and **Edit JSON…**).
 `/scoped-models` opens the same picker (Pi’s terminal command name); the star
 remains the only persisted scope state.
 
+### Model ids, scope patterns and the saved default
+
+Three rules explain most “the wrong model started” reports, so they are stated
+here for anyone editing this area:
+
+1. **A model id may contain a colon.** The synthetic gateway uses `hf:` ids such
+   as `hf:deepseek-ai/DeepSeek-V4.1-Flash-1017`.
+2. **Pi reads a scope pattern from its last colon.** `provider/id:level` is
+   parsed by splitting at the last `:`; if the tail is not a thinking level, Pi
+   keeps the whole string as an id and fails to match it. A colon-bearing id
+   therefore cannot be written as a scope pattern — writing one produces
+   `Invalid thinking level … in pattern …` and silently drops the model from the
+   scope. The app never writes such a pattern: it goes through one rule
+   (`scopePatternFor` in `src/shared/model-scope.ts`), refuses the write, and
+   shows the resolver warning in the picker instead of swallowing it.
+3. **A saved default that does not resolve is a silent fallback, so the app says
+   it out loud.** For a brand-new session Pi prefers the **first scoped model**,
+   then `defaultProvider`/`defaultModel` if the catalogue resolves it, then the
+   first available model. When the catalogue does not contain the saved id (for
+   example before the provider’s live model list has loaded, or after a provider
+   renames a snapshot), the session starts somewhere the user never chose. The
+   picker then shows “Saved default model … is not in the catalogue”, Diagnostics
+   records one incident, and picking a model replaces the default. The app never
+   rewrites `defaultModel` behind the user’s back.
+
+If a provider publishes a new snapshot id, declare it in the profile’s model
+list (`models.ts`) so the offline/startup fallback agrees with the live list; the
+app itself never edits that catalogue.
+
 ## Thinking level
 
 `/thinking`, the composer's brain icon, or `Ctrl/Cmd+Alt+T` cycles the level. The

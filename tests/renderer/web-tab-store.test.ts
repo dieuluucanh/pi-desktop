@@ -94,6 +94,13 @@ describe("openWebTab", () => {
     expect(useAppStore.getState().view).toBe("session");
   });
 
+  it("passes background mode through to main", async () => {
+    const handles = installBridge();
+    await useAppStore.getState().openWebTab({ url: "http://localhost:2/review", activate: false });
+
+    expect(handles.webOpened).toEqual([{ url: "http://localhost:2/review", activate: false }]);
+  });
+
   it("focuses an existing tab for the same URL instead of opening a second", async () => {
     const handles = installBridge();
     const existing = webRecord();
@@ -218,7 +225,7 @@ describe("automatic loopback detection (plan step 21)", () => {
 
     await vi.waitFor(() =>
       expect(handles.webOpened).toEqual([
-        { url: "http://127.0.0.1:19432/review/abc", sessionTabId: "s1" },
+        { url: "http://127.0.0.1:19432/review/abc", sessionTabId: "s1", activate: false },
       ]),
     );
   });
@@ -272,7 +279,9 @@ describe("automatic loopback detection (plan step 21)", () => {
     });
 
     await vi.waitFor(() =>
-      expect(handles.webOpened).toEqual([{ url: "http://localhost:5173/app", sessionTabId: "s1" }]),
+      expect(handles.webOpened).toEqual([
+        { url: "http://localhost:5173/app", sessionTabId: "s1", activate: false },
+      ]),
     );
   });
 

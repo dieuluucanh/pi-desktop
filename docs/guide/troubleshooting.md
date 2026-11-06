@@ -72,9 +72,18 @@ resource. The window shows a safe-mode banner.
 - **A tab that says `asleep`** has no running host. Clicking it, focusing the
   composer or typing wakes it; you do not need the Start session link.
 - The time-based 15-minute idle recycler is **on by default**; only inactive
-  tabs sleep (the active tab, the control host and the bridge owner are protected
-  from _idle_ sleep). The 1 GB RSS guardrail still applies to the active tab.
-  Both show up in the host log and Diagnostics.
+  tabs sleep. The active tab, visible panes, the control host, the bridge owner
+  and a session linked to an active/visible review tab are protected from idle
+  sleep and from the 1 GB RSS guardrail. An active host over 1 GB shows a memory
+  warning with a **Restart** action; it is not killed automatically. Background
+  hosts are recycled only after two consecutive over-budget samples and a
+  one-minute startup grace period. Both reasons show in the host log and
+  Diagnostics.
+- **A session that keeps reconnecting** (the badge alternates `starting` and
+  `ready`, and the footer statuses reload) is not fixed by typing harder. Passive
+  reads no longer wake a stopped host; activate the tab to resume it. If it
+  repeats, open **Diagnostics** — the host log and the `host_restart_loop`
+  incident name the stop reason, and the previous run is kept in `logs/<tab>.1.log`.
 
 ## The Sessions browser is empty
 

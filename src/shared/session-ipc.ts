@@ -59,6 +59,19 @@ export function isEditorTab(tab: TabRecord): tab is TabRecord & { filePath: stri
 /** Host/tab lifecycle as the UI needs to show it. */
 export type TabStatus = "starting" | "idle" | "running" | "crashed" | "failed" | "stopped";
 
+/** Why a host-backed tab is currently stopped (Diagnostics and the tab tooltip). */
+export type TabStopReason = "idle" | "memory" | "park" | "crash" | "manual" | "restart" | "closed";
+
+const TAB_STOP_REASONS: readonly TabStopReason[] = [
+  "idle",
+  "memory",
+  "park",
+  "crash",
+  "manual",
+  "restart",
+  "closed",
+];
+
 /** One open session tab (host id === tab id). */
 export interface TabRecord {
   id: string;
@@ -92,6 +105,15 @@ export interface TabRecord {
   sessionTabId?: string | null;
   /** Last failure, surfaced inline in the tab instead of only in a log. */
   error?: string;
+  /** Why the host was stopped; set only while `status` is `stopped`/`crashed`. */
+  stopReason?: TabStopReason | null;
+  /** When the stop happened (epoch ms), for Diagnostics. */
+  stoppedAt?: number | null;
+  /**
+   * The host is over the RSS budget but protected (active/visible), so it was
+   * warned instead of recycled. Cleared on restart/below budget/replacement.
+   */
+  memoryOverBudget?: boolean;
   /**
    * Pinned tabs form a stable group at the front of the strip and are skipped by
    * Close Others/Close All. Omitted for a normal, unpinned tab.
@@ -135,12 +157,43 @@ export function isSessionTab(tab: TabRecord): tab is SessionTab {
   return isSessionTabKind(tab.kind);
 }
 
-export type SessionTabsEnvelope = { tabs: TabRecord[]; activeTabId: string | null };
+/**
+ * The tab table plus the selection it belongs to.
+ *
+ * `revision` is monotonic per main process and increases whenever a publish
+ * actually changes the table, so a late or reordered push can never overwrite a
+ * newer one. `selectionSeq` increases only when the *selection* changes; the
+ * renderer ignores an older selection echo, which is what keeps a background
+ * ensure or a slow `activate` from moving the user's tab (2026-11-06 plan).
+ *
+ * Both are optional so a legacy sender (or a test double) still applies: an
+ * absent number means "unknown, apply as before".
+ */
+export type SessionTabsEnvelope = {
+  tabs: TabRecord[];
+  activeTabId: string | null;
+  revision?: number;
+  selectionSeq?: number;
+};
+
+/**
+ * Stable refusal for a passive read when the tab's host is asleep.
+ *
+ * Electron's IPC wrapper preserves only the message, not a custom error `code`,
+ * so the renderer matches this text. It must stay a single stable sentence: the
+ * renderer uses it to distinguish "the tab is asleep" from a real failure and
+ * to avoid surfacing a toast for a resize/hydration read.
+ */
+export const SESSION_ASLEEP_MESSAGE = "The session is asleep. Activate the tab to wake its host.";
 
 /** One host event frame, as forwarded from a host process. */
 export interface SessionEventEntry {
   event: string;
   payload?: unknown;
+  /** The session that produced the frame; absent on a legacy host. */
+  sessionId?: string | null;
+  /** Monotonic per-host session attachment counter (id can repeat on reload). */
+  sessionEpoch?: number;
 }
 
 /**
@@ -152,6 +205,9 @@ export interface SessionEventEnvelope {
   tabId: string;
   seq: number;
   events: SessionEventEntry[];
+  /** Session identity at the time main pushed the batch; absent on legacy hosts. */
+  sessionId?: string | null;
+  sessionEpoch?: number;
 }
 
 /** The latest `state.get` snapshot for a tab. */
@@ -159,6 +215,9 @@ export interface SessionStateEnvelope {
   tabId: string;
   /** Opaque to shared: the host's `SessionSnapshot` (see `src/host/events.ts`). */
   state: unknown;
+  /** Session identity for this snapshot; absent on legacy hosts. */
+  sessionId?: string | null;
+  sessionEpoch?: number;
 }
 
 export interface CreateTabInput {
@@ -175,6 +234,8 @@ export interface CreateTabInput {
   sessionTabId?: string;
   /** The shell profile to open when `kind` is `terminal`. */
   profileId?: string;
+  /** Select the new tab (default true). False opens a background web tab. */
+  activate?: boolean;
   model?: string;
   thinking?: string;
   /**
@@ -236,6 +297,12 @@ function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function stopReasonOrNull(value: unknown): TabStopReason | null {
+  return typeof value === "string" && TAB_STOP_REASONS.includes(value as TabStopReason)
+    ? (value as TabStopReason)
+    : null;
+}
+
 /**
  * Coerces one untrusted entry into a `TabRecord`, or null when unusable. A web
  * tab is only usable with a permitted URL; a host-backed tab needs a folder.
@@ -278,6 +345,13 @@ export function sanitizeTabRecord(value: unknown): TabRecord | null {
         }
       : {}),
     ...(typeof source.error === "string" ? { error: source.error } : {}),
+    ...(stopReasonOrNull(source.stopReason)
+      ? { stopReason: stopReasonOrNull(source.stopReason) }
+      : {}),
+    ...(typeof source.stoppedAt === "number" && Number.isFinite(source.stoppedAt)
+      ? { stoppedAt: source.stoppedAt }
+      : {}),
+    ...(source.memoryOverBudget === true ? { memoryOverBudget: true } : {}),
     ...(source.pinned === true ? { pinned: true } : {}),
   };
 }

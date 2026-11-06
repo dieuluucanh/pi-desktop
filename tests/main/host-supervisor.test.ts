@@ -3,6 +3,7 @@ import { PassThrough } from "node:stream";
 import { normalize, delimiter } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  HostStoppedError,
   HostTimeoutError,
   MAX_HOST_LOG_LINES,
   OFFICE_BRIDGE_PORT,
@@ -144,9 +145,15 @@ function harness(
     safeMode?: boolean;
     telemetryEnabled?: boolean | (() => boolean);
     hostBuildId?: () => string | null;
+    /** Log every completed request (0 = log all); absent keeps the 2 s default. */
+    slowRequestLogMs?: number;
+    /** Rotate the per-session log after this many characters (0 disables). */
+    maxLogFileChars?: number;
     /** Enable `host.metrics` polling; disabled by default so request order is stable. */
     memoryPollMs?: number;
     maxRssBytes?: number;
+    memoryGraceMs?: number;
+    memoryOverBudgetSamples?: number;
     idleTimeoutMs?: number;
     maxRestarts?: number;
     isPinned?: (sessionId: string) => boolean;
@@ -180,11 +187,19 @@ function harness(
     spawner,
     fs,
     requestTimeoutMs: 1_000,
+    ...(options.slowRequestLogMs === undefined
+      ? {}
+      : { slowRequestLogMs: options.slowRequestLogMs }),
+    ...(options.maxLogFileChars === undefined ? {} : { maxLogFileChars: options.maxLogFileChars }),
     maxHosts: options.maxHosts ?? hostProcessCeiling(),
     idleTimeoutMs: options.idleTimeoutMs ?? 0,
     ...(options.maxRestarts === undefined ? {} : { maxRestarts: options.maxRestarts }),
     memoryPollMs: options.memoryPollMs ?? 0,
     ...(options.maxRssBytes ? { maxRssBytes: options.maxRssBytes } : {}),
+    ...(options.memoryGraceMs === undefined ? {} : { memoryGraceMs: options.memoryGraceMs }),
+    ...(options.memoryOverBudgetSamples === undefined
+      ? {}
+      : { memoryOverBudgetSamples: options.memoryOverBudgetSamples }),
     safeMode: options.safeMode ?? false,
     telemetryEnabled: options.telemetryEnabled ?? false,
     ...(options.hostBuildId ? { hostBuildId: options.hostBuildId } : {}),
@@ -519,13 +534,149 @@ describe("host supervisor shutdown", () => {
     expect(spawned).toHaveLength(1);
   });
 
+  it("fails in-flight requests when the host stops, not when their timer expires", async () => {
+    // 2026-11-06 hang plan, step 1. A request that outlives its process used to
+    // sit in `pending` until its own 30 s timer fired, which the user saw as
+    // "the session stopped responding".
+    const { supervisor, spawned, fs } = harness({ behaviours: [{ silent: ["session.resume"] }] });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    const started = Date.now();
+    const inFlight = host
+      .request("session.resume", { sessionFile: "s.jsonl" })
+      .catch((error) => error);
+    await vi.waitFor(() =>
+      expect(spawned[0]?.requests.some((request) => request.method === "session.resume")).toBe(
+        true,
+      ),
+    );
+
+    await host.shutdown();
+
+    const error = await inFlight;
+    expect(error).toBeInstanceOf(HostStoppedError);
+    expect((error as HostStoppedError).code).toBe("host_stopped");
+    expect((error as HostStoppedError).message).toContain('during "session.resume"');
+    // The harness timeout is 1 s; the stop must settle far sooner than that.
+    expect(Date.now() - started).toBeLessThan(900);
+    const log = [...fs.files.entries()].find(([path]) => path.endsWith("s1.log"))?.[1] ?? "";
+    expect(log).not.toContain("timed out after");
+  });
+
+  it("rejects a request issued while the host is still stopping", async () => {
+    // `host.shutdown` never answers, so the stop is still in progress when the
+    // second request arrives: it must fail fast instead of arming a timer.
+    const { supervisor, spawned } = harness({ behaviours: [{ silent: ["host.shutdown"] }] });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    const stopping = host.shutdown();
+    await vi.waitFor(() =>
+      expect(spawned[0]?.requests.some((request) => request.method === "host.shutdown")).toBe(true),
+    );
+
+    const error = await host.request("state.get").catch((failure) => failure);
+    expect(error).toBeInstanceOf(HostStoppedError);
+    expect((error as HostStoppedError).code).toBe("host_stopped");
+
+    await stopping;
+  });
+
+  it("drains only the replaced child's requests", async () => {
+    // A restart stops child 0 and handshakes child 1. Draining by child keeps the
+    // replacement usable, so a retry after the stop cannot be rejected by the
+    // process it replaced.
+    const { supervisor, spawned } = harness({ behaviours: [{ silent: ["session.resume"] }, {}] });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    const stale = host
+      .request("session.resume", { sessionFile: "s.jsonl" })
+      .catch((error) => error);
+    await vi.waitFor(() =>
+      expect(spawned[0]?.requests.some((request) => request.method === "session.resume")).toBe(
+        true,
+      ),
+    );
+
+    await host.restart("test");
+
+    expect(await stale).toBeInstanceOf(HostStoppedError);
+    await expect(host.request("host.ping")).resolves.toEqual({ pong: true });
+    expect(spawned).toHaveLength(2);
+  });
+
+  it("logs a slow request with its duration, and stays quiet about fast ones", async () => {
+    // 2026-11-06 hang plan, step 3: the per-tab log must answer "how long did the
+    // open take?" without a debugger.
+    const loud = harness({ slowRequestLogMs: 0 });
+    await loud.supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    const loudFile = [...loud.fs.files.keys()].find((path) => path.endsWith("s1.log")) ?? "";
+    await vi.waitFor(() =>
+      expect(loud.fs.files.get(loudFile) ?? "").toContain('request "host.hello" took '),
+    );
+
+    const quiet = harness();
+    await quiet.supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    const quietFile = [...quiet.fs.files.keys()].find((path) => path.endsWith("s1.log")) ?? "";
+    // Wait for the log to prove it is written at all before asserting an absence.
+    await vi.waitFor(() => expect(quiet.fs.files.get(quietFile) ?? "").toContain("spawned"));
+    expect(quiet.fs.files.get(quietFile) ?? "").not.toContain("took ");
+  });
+
+  it("appends to the per-session log instead of rewriting the bounded tail", async () => {
+    // 2026-11-06 plan, step 16: the file used to be rewritten from a 200-line
+    // buffer, so a long run lost the evidence that would explain a hang.
+    const { supervisor, fs } = harness({ maxLogFileChars: 0 });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    host.note?.("first marker");
+    host.note?.("second marker");
+
+    const target = normalize("C:/user-data/logs/s1.log");
+    await vi.waitFor(() => {
+      const text = fs.files.get(target) ?? "";
+      expect(text).toContain("first marker");
+      expect(text).toContain("second marker");
+      // Order matters for a timeline.
+      expect(text.indexOf("first marker")).toBeLessThan(text.indexOf("second marker"));
+    });
+  });
+
+  it("rotates one segment when the log passes its budget", async () => {
+    const { supervisor, fs } = harness({ maxLogFileChars: 120 });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    for (let index = 0; index < 12; index += 1) {
+      host.note?.(`marker ${index} ${"x".repeat(20)}`);
+    }
+
+    await vi.waitFor(() =>
+      expect(fs.files.get(normalize("C:/user-data/logs/s1.1.log"))?.length ?? 0).toBeGreaterThan(0),
+    );
+    // The current segment is bounded by the budget plus one line.
+    expect((fs.files.get(normalize("C:/user-data/logs/s1.log")) ?? "").length).toBeLessThan(400);
+  });
+
+  it("rotates the previous run's log instead of truncating it on a restart", async () => {
+    const { supervisor, fs } = harness();
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    host.note?.("before restart");
+    const target = normalize("C:/user-data/logs/s1.log");
+    await vi.waitFor(() => expect(fs.files.get(target) ?? "").toContain("before restart"));
+
+    await host.restart("manual");
+
+    await vi.waitFor(() => {
+      expect(fs.files.get(normalize("C:/user-data/logs/s1.1.log")) ?? "").toContain(
+        "before restart",
+      );
+      expect(fs.files.get(target) ?? "").toContain("spawned");
+    });
+    expect(host.lastRestartReason?.()).toBe("manual");
+  });
+
   it("writes a per-session log", async () => {
     const { supervisor, fs } = harness();
     await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
 
     const logFile = [...fs.files.keys()].find((file) => file.endsWith("s1.log"));
     expect(logFile, "a log file per session").toBeDefined();
-    expect(fs.files.get(logFile ?? "") ?? "").toContain("spawned");
+    await vi.waitFor(() => expect(fs.files.get(logFile ?? "") ?? "").toContain("spawned"));
   });
 
   it("bounds the in-memory and on-disk log", async () => {
@@ -701,6 +852,8 @@ describe("host supervisor resource guardrails (plan step 24)", () => {
     const { supervisor, spawned } = harness({
       memoryPollMs: 5,
       maxRssBytes: 1_000,
+      memoryGraceMs: 0,
+      memoryOverBudgetSamples: 1,
       behaviours: [{ answer: metricsAnswer(5_000) }],
     });
     const host = await supervisor.start({
@@ -716,6 +869,7 @@ describe("host supervisor resource guardrails (plan step 24)", () => {
     expect(spawned[0]?.killed).toBe(true);
     expect(host.logs().join("\n")).toContain("over the 0 MB threshold");
     expect(host.status()).toBe("stopped");
+    expect(host.stopReason?.()).toBe("memory");
 
     // A recycle never resumes by itself; re-starting the id is a fresh process
     // and `session-service` performs the resume.
@@ -729,6 +883,8 @@ describe("host supervisor resource guardrails (plan step 24)", () => {
     const { supervisor, spawned } = harness({
       memoryPollMs: 5,
       maxRssBytes: 1_000,
+      memoryGraceMs: 0,
+      memoryOverBudgetSamples: 1,
       isPinned: () => true,
       behaviours: [
         {
@@ -754,18 +910,51 @@ describe("host supervisor resource guardrails (plan step 24)", () => {
     expect(spawned[0]?.killed).toBe(false);
   });
 
-  it("recycles a pinned active host when it is idle and over the RSS threshold", async () => {
+  it("never recycles a pinned active host; it reports high memory instead", async () => {
     const { supervisor, spawned } = harness({
       memoryPollMs: 5,
       maxRssBytes: 1_000,
+      memoryGraceMs: 0,
+      memoryOverBudgetSamples: 1,
       isPinned: () => true,
+      behaviours: [{ answer: metricsAnswer(5_000) }],
+    });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    await vi.waitFor(() => expect(host.overMemory?.()).toBe(true));
+    expect(supervisor.get("s1")).toBe(host);
+    expect(host.status()).toBe("ready");
+    expect(spawned[0]?.killed).toBe(false);
+    expect(host.logs().join("\n")).toContain("the session is active, so it is not recycled");
+  });
+
+  it("keeps a host alive during the startup memory grace period", async () => {
+    const { supervisor, spawned } = harness({
+      memoryPollMs: 5,
+      maxRssBytes: 1_000,
+      memoryGraceMs: 60_000,
+      memoryOverBudgetSamples: 1,
       behaviours: [{ answer: metricsAnswer(5_000) }],
     });
     await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
 
-    await vi.waitFor(() => {
-      expect(supervisor.get("s1")).toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(supervisor.get("s1")?.status()).toBe("ready");
+    expect(spawned[0]?.killed).toBe(false);
+  });
+
+  it("requires consecutive over-budget samples before recycling", async () => {
+    const { supervisor, spawned } = harness({
+      memoryPollMs: 5,
+      maxRssBytes: 1_000,
+      memoryGraceMs: 0,
+      memoryOverBudgetSamples: 2,
+      behaviours: [{ answer: metricsAnswer(5_000) }],
     });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    await vi.waitFor(() => expect(supervisor.get("s1")).toBeUndefined());
+    expect(host.stopReason?.()).toBe("memory");
     expect(spawned[0]?.killed).toBe(true);
   });
 
@@ -773,6 +962,8 @@ describe("host supervisor resource guardrails (plan step 24)", () => {
     const { supervisor, spawned } = harness({
       memoryPollMs: 5,
       maxRssBytes: 1_000,
+      memoryGraceMs: 0,
+      memoryOverBudgetSamples: 1,
       isBridgeOwner: () => true,
       behaviours: [{ answer: metricsAnswer(5_000) }],
     });
@@ -787,6 +978,8 @@ describe("host supervisor resource guardrails (plan step 24)", () => {
     const { supervisor, spawned } = harness({
       memoryPollMs: 5,
       maxRssBytes: 1_000,
+      memoryGraceMs: 0,
+      memoryOverBudgetSamples: 1,
       behaviours: [{ answer: metricsAnswer(5_000) }],
     });
     await supervisor.start({

@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { SessionView } from "../../src/renderer/src/views/SessionView";
@@ -464,6 +464,24 @@ describe("two panes at once", () => {
     expect(composers).toHaveLength(2);
     expect(composers[0]).toHaveValue("first");
     expect(composers[1]).toHaveValue("second");
+  });
+
+  it("explains a slow open and cancels it", async () => {
+    resetStore();
+    useAppStore.setState({
+      tabs: [{ ...useAppStore.getState().tabs[0]!, status: "starting" }],
+    });
+    const stop = vi.fn(async () => ({
+      tabs: useAppStore.getState().tabs,
+      activeTabId: TAB,
+    }));
+    (window.pi as unknown as { sessions: { stop: unknown } }).sessions.stop = stop;
+
+    render(<SessionView tabId={TAB} />);
+
+    expect(screen.getByTestId("session-starting")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("session-starting-cancel"));
+    await waitFor(() => expect(stop).toHaveBeenCalledWith(TAB));
   });
 
   it("opens the model picker only in the pane that asked", () => {

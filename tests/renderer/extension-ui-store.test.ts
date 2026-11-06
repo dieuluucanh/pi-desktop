@@ -64,6 +64,60 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+describe("dialog focus policy (2026-11-06 tab-switch plan)", () => {
+  const OTHER = "tab-2";
+
+  function twoTabs(): void {
+    useAppStore.setState({
+      tabs: [
+        ...useAppStore.getState().tabs,
+        {
+          id: OTHER,
+          kind: "session",
+          cwd: "C:/work/other",
+          title: "other",
+          sessionFile: null,
+          status: "idle",
+          createdAt: 1,
+          lastActiveAt: 1,
+          model: null,
+        },
+      ],
+    });
+  }
+
+  it("badges a background dialog instead of taking the window while streaming", () => {
+    twoTabs();
+    useAppStore.setState({ sessionStates: { [TAB]: { streaming: true } }, dialogAttention: {} });
+
+    useAppStore.getState().applySessionEvents({
+      tabId: OTHER,
+      seq: 1,
+      events: [
+        {
+          event: "oi.request",
+          payload: { id: "d1", method: "confirm", params: { title: "?", message: "?" } },
+        },
+      ],
+    });
+
+    expect(useAppStore.getState().activeTabId).toBe(TAB);
+    expect(useAppStore.getState().dialogAttention[OTHER]).toBe(true);
+    // The dialog itself still belongs to the tab that asked, so answering it
+    // never gets mixed up with the visible session.
+    expect(useAppStore.getState().extensionDialogs.map((dialog) => dialog.tabId)).toEqual([OTHER]);
+  });
+
+  it("clears the badge when the user opens the tab", async () => {
+    twoTabs();
+    useAppStore.setState({ dialogAttention: { [OTHER]: true } });
+
+    await useAppStore.getState().activateTab(OTHER);
+
+    expect(useAppStore.getState().dialogAttention[OTHER]).toBeUndefined();
+  });
+});
+
 describe("extension UI state", () => {
   it("stores an oi.state snapshot and applies an editor command exactly once", () => {
     const store = useAppStore.getState();

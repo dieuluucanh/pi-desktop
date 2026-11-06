@@ -17,7 +17,7 @@ import checkpointExtension, {
   type CheckpointExtensionApi,
   type CheckpointExtensionContext,
 } from "../../src/extensions/pi-checkpoints";
-import type { CheckpointStore, SnapshotRequest } from "../../src/checkpoints/store";
+import type { CheckpointStore, SnapshotRequest, SnapshotResult } from "../../src/checkpoints/store";
 import {
   DEFAULT_CHECKPOINT_CONFIG,
   type Checkpoint,
@@ -81,7 +81,7 @@ function harness(
   options: {
     config?: Partial<CheckpointConfig>;
     entries?: unknown[];
-    snapshot?: (request: SnapshotRequest) => Awaited<ReturnType<CheckpointStore["snapshot"]>>;
+    snapshot?: (request: SnapshotRequest) => SnapshotResult | Promise<SnapshotResult>;
     restore?: () => Awaited<ReturnType<CheckpointStore["restore"]>>;
     navigationCancelled?: boolean;
   } = {},
@@ -379,6 +379,38 @@ describe("the prompt snapshot", () => {
       "e1",
       "e2",
     ]);
+  });
+
+  it("drops a snapshot that resolves after a session replacement", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let calls = 0;
+    const h = harness({
+      snapshot: async () => {
+        calls += 1;
+        if (calls === 1) {
+          started();
+          await gate;
+        }
+        return { ok: true, checkpoint: checkpoint() };
+      },
+    });
+    await h.fire("session_start", { reason: "new" });
+
+    const slowInput = h.fire("input", { text: "slow prompt", source: "rpc" });
+    await firstStarted;
+    // The old session is replaced while its git snapshot is still running.
+    await h.fire("session_start", { reason: "new" });
+    release();
+    await slowInput;
+
+    expect(h.appended.filter((entry) => entry.customType === CHECKPOINT_ENTRY_TYPE)).toEqual([]);
   });
 
   it("links the oldest pending snapshot when a steer arrives before the turn ends", async () => {

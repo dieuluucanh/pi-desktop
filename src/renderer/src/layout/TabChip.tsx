@@ -4,6 +4,7 @@ import { Globe, Pin, SquareTerminal, X } from "lucide-react";
 import { SESSION_STATUS_LABEL, type TabRecord, type TabStatus } from "../../../shared/session-ipc";
 import { languageBadge, languageIdForPath } from "../../../shared/languages";
 import { useEditorStore } from "../editor/editor-store";
+import { useAppStore } from "../state/app-store";
 import { InlineRename } from "../ui/inline-rename";
 import { TabContextMenu } from "./TabMenu";
 import { openTabContextMenuFromKeyboard } from "./tab-menu-keyboard";
@@ -71,6 +72,7 @@ export function TabChip({
   onClose,
 }: TabChipProps): React.JSX.Element {
   const dirty = useEditorStore((state) => state.meta[tab.id]?.dirty === true);
+  const needsInput = useAppStore((state) => state.dialogAttention[tab.id] === true);
   const pinned = tab.pinned === true;
 
   return (
@@ -90,6 +92,7 @@ export function TabChip({
         data-tab-kind={tab.kind}
         data-dirty={dirty ? "true" : undefined}
         data-pinned={pinned ? "true" : undefined}
+        data-attention={needsInput ? "true" : undefined}
       >
         {renaming ? (
           <InlineRename
@@ -112,7 +115,9 @@ export function TabChip({
             title={
               tab.kind === "editor"
                 ? `${tab.filePath ?? tab.title}${dirty ? " · unsaved" : ""}`
-                : `${tab.error ?? `${tab.cwd} · ${SESSION_STATUS_LABEL[tab.status]}`}`
+                : `${tab.error ?? `${tab.cwd} · ${SESSION_STATUS_LABEL[tab.status]}`}${
+                    needsInput ? " · waiting for your input" : ""
+                  }`
             }
             className="flex items-center gap-2"
           >
@@ -141,6 +146,14 @@ export function TabChip({
               />
             )}
             <span className={`max-w-48 truncate ${dirty ? "italic" : ""}`}>{tab.title}</span>
+            {needsInput ? (
+              <span
+                className="size-1.5 shrink-0 rounded-full bg-accent"
+                data-testid="tab-attention"
+                title="Waiting for your input"
+                aria-label="Waiting for your input"
+              />
+            ) : null}
             {pinned ? <Pin className="size-3 shrink-0 text-ink-faint" aria-hidden /> : null}
           </button>
         )}

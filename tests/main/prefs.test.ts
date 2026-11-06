@@ -28,6 +28,7 @@ describe("sanitizePrefs", () => {
       [
         "checkpoints",
         "desktopKeybindings",
+        "dialogs",
         "drafts",
         "editor",
         "explorer",

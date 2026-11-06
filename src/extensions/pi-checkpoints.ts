@@ -310,6 +310,13 @@ export default function checkpointExtension(
   const notifiedFailures = new Set<string>();
   /** The session id, kept for the entry payload and for Diagnostics. */
   let sessionId = "";
+  /**
+   * Bumped at every `session_start`. Work that crosses an `await` captures it
+   * and drops its result when a replacement happened in between: the old `ctx`
+   * is invalid after `ctx.newSession`/`fork`/`switchSession`/`reload`, and a
+   * snapshot for the old session must not land in the new one.
+   */
+  let sessionEpoch = 0;
 
   const notify = (ctx: CheckpointExtensionContext, message: string): void => {
     const ui = (ctx as { ui?: { notify?: (m: string, t?: string) => void } }).ui;
@@ -352,18 +359,24 @@ export default function checkpointExtension(
   };
 
   pi.on("session_start", async (event, ctx) => {
+    sessionEpoch += 1;
+    const epoch = sessionEpoch;
+    const cwd = ctx.cwd;
     sessionId = ctx.sessionManager.getSessionId();
     inputSeen = false;
     pending.length = 0;
     notifiedFailures.clear();
     rehydrate(ctx);
     const settings = await config();
+    if (epoch !== sessionEpoch) return;
     // A reload must not re-run the sweep: it is a 30-day maintenance pass, not a
     // per-event cost.
     if (event.reason === "reload") return;
     const fs = createNodeCheckpointFs();
     await sweepOldShadowRepos(fs, profileDir, store, now(), settings.retentionDays).catch(() => 0);
-    const probe = await store.ensure(ctx.cwd).catch(() => null);
+    if (epoch !== sessionEpoch) return;
+    const probe = await store.ensure(cwd).catch(() => null);
+    if (epoch !== sessionEpoch) return;
     if (probe && !probe.ok && probe.reason === "git_missing") {
       notify(ctx, "Folder checkpoints need git; /checkpoint is unavailable in this folder.");
     }
@@ -375,15 +388,21 @@ export default function checkpointExtension(
    * without git does not produce a notification for every prompt.
    */
   const takeSnapshot = async (ctx: CheckpointExtensionContext, prompt: string): Promise<void> => {
+    const epoch = sessionEpoch;
+    const cwd = ctx.cwd;
+    const snapshotSessionId = sessionId;
     const settings = await config();
-    if (!settings.enabled) return;
-    const result = await store.snapshot(ctx.cwd, {
+    if (epoch !== sessionEpoch || !settings.enabled) return;
+    const result = await store.snapshot(cwd, {
       kind: "run",
       label: prompt || "Before the prompt",
-      sessionId,
+      sessionId: snapshotSessionId,
       maxFileBytes: settings.maxFileBytes,
       exclude: settings.exclude,
     });
+    // A replacement during the (potentially slow) git snapshot owns a different
+    // session now; this result belongs to the outgoing one.
+    if (epoch !== sessionEpoch) return;
     if (result.ok && result.checkpoint) {
       pending.push({ ref: result.checkpoint.ref, prompt, createdAt: now() });
       return;
@@ -477,6 +496,9 @@ export default function checkpointExtension(
   pi.registerCommand("checkpoint", {
     description: "Restore the folder (and optionally the conversation) to an earlier checkpoint",
     async handler(_args, ctx) {
+      const epoch = sessionEpoch;
+      const cwd = ctx.cwd;
+      const commandSessionId = sessionId;
       rehydrate(ctx);
       if (tracked.length === 0) {
         ctx.ui.notify("No checkpoints for this session yet.", "info");
@@ -488,7 +510,7 @@ export default function checkpointExtension(
           ` · ${entry.ref.slice(0, 8)}${index === 0 ? " (newest)" : ""}`,
       );
       const chosen = await ctx.ui.select("Restore to which checkpoint?", labels);
-      if (!chosen) return;
+      if (epoch !== sessionEpoch || !chosen) return;
       const index = labels.indexOf(chosen);
       const target = tracked[index];
       if (!target) return;
@@ -499,17 +521,18 @@ export default function checkpointExtension(
         ? ["Files and conversation", "Files only", "Conversation only"]
         : ["Files only"];
       const mode = await ctx.ui.select("What should be restored?", modes);
-      if (!mode) return;
+      if (epoch !== sessionEpoch || !mode) return;
 
       let filesRestored = false;
       if (mode !== "Conversation only") {
         // A pre-restore snapshot keeps the restore undoable, exactly as the rail's
         // restore does (D10).
-        const safety = await store.snapshot(ctx.cwd, {
+        const safety = await store.snapshot(cwd, {
           kind: "pre-restore",
           label: `Before restoring to ${target.ref.slice(0, 8)}`,
-          sessionId,
+          sessionId: commandSessionId,
         });
+        if (epoch !== sessionEpoch) return;
         if (!safety.ok && safety.reason !== "same_tree") {
           ctx.ui.notify(
             `A safety snapshot is required before restoring, and it failed: ${
@@ -519,7 +542,8 @@ export default function checkpointExtension(
           );
           return;
         }
-        const restored = await store.restore(ctx.cwd, target.ref);
+        const restored = await store.restore(cwd, target.ref);
+        if (epoch !== sessionEpoch) return;
         if (!restored.ok) {
           ctx.ui.notify(
             `The files could not be restored: ${restored.detail ?? "unknown error"}`,
@@ -533,6 +557,7 @@ export default function checkpointExtension(
       let conversationRestored = false;
       if (mode !== "Files only" && target.entryId) {
         const navigation = await ctx.navigateTree(target.entryId, { summarize: false });
+        if (epoch !== sessionEpoch) return;
         if (navigation.cancelled) {
           ctx.ui.notify("The conversation was not restored.", "info");
         } else {

@@ -24,6 +24,8 @@ export type IncidentKind =
   | "host_spawn"
   | "host_failed"
   | "host_stale"
+  | "host_recycled"
+  | "host_restart_loop"
   | "extension_error"
   | "unhandled_rejection"
   | "uncaught_exception"
@@ -151,6 +153,8 @@ const SEVERITY_BY_KIND: Record<IncidentKind, IncidentSeverity> = {
   host_spawn: "error",
   host_failed: "error",
   host_stale: "warning",
+  host_recycled: "warning",
+  host_restart_loop: "warning",
   extension_error: "error",
   unhandled_rejection: "error",
   uncaught_exception: "error",
@@ -210,6 +214,10 @@ export function incidentFix(kind: IncidentKind): string | null {
       return "The host crashed repeatedly and was stopped. Restart it, or launch with --safe-mode to rule out an extension.";
     case "host_stale":
       return "Restart the session tab to load the current host build; history comes back from the JSONL.";
+    case "host_recycled":
+      return "The host was parked or recycled. Activate the session to resume it; Diagnostics shows the exact reason.";
+    case "host_restart_loop":
+      return "The host is restarting repeatedly. Restart the app or open Diagnostics; the log shows the last stop reason.";
     case "extension_error":
       return "Disable the extension in Extensions, or start with --safe-mode, then reload the session.";
     case "offline":
@@ -345,6 +353,14 @@ export interface DiagnosticsHostInfo {
   buildId: string | null;
   /** True when the running host predates the bundle on disk. */
   stale: boolean;
+  /** Why the host last stopped (idle/RSS/park/manual/restart/crash). */
+  stopReason?: string | null;
+  /** Crash auto-restarts in this process lifetime. */
+  restartCount?: number;
+  /** The last restart reason (`crash`, `manual`, …). */
+  lastRestartReason?: string | null;
+  /** True when a protected host is over its RSS budget but was not recycled. */
+  overMemory?: boolean;
   /** The tail of the host's own log file, oldest first. */
   logLines: string[];
 }
@@ -489,6 +505,10 @@ export function incidentHeadline(incident: Incident): string {
       return "The session host was stopped after repeated crashes";
     case "host_stale":
       return "The session host is running an older build";
+    case "host_recycled":
+      return "The session host slept to reclaim memory";
+    case "host_restart_loop":
+      return "The session host is restarting repeatedly";
     case "extension_error":
       return "An extension raised an error";
     case "offline":

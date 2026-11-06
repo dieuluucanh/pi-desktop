@@ -375,8 +375,20 @@ export function runService(
     // The core is built before the service (which owns the frame writer), so the
     // emitter is forwarded through this small indirection.
     const forward = {
-      emit: (_event: string, _payload?: unknown, _sessionId?: string): void => undefined,
+      emit: (
+        _event: string,
+        _payload?: unknown,
+        _sessionId?: string,
+        _sessionEpoch?: number,
+      ): void => undefined,
     };
+    // Filled after the core exists. Extension UI events are process-global, so
+    // without this default every `oi.*` frame would arrive with no session id
+    // and could be mistaken for the replacement session (2026-11-06 loop).
+    let coreIdentity = (): { sessionId: string | null; epoch: number } => ({
+      sessionId: null,
+      epoch: 0,
+    });
 
     // The control host owns the app-wide credential surface, so its provider port
     // is shared by the `providers.*` handlers and the login bridge below.
@@ -484,6 +496,10 @@ export function runService(
             emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
           });
 
+    if ("identity" in core && typeof core.identity === "function") {
+      coreIdentity = () => core.identity();
+    }
+
     const handlers: Partial<Record<string, HostHandler>> = { ...core.handlers() };
     // Safe mode (plan step 22) is enforced at the composition root: installing or
     // removing a package is the one mutation that could re-introduce third-party
@@ -551,7 +567,15 @@ export function runService(
       },
     });
 
-    forward.emit = (event, payload, sessionId) => service.emit(event, payload, sessionId);
+    forward.emit = (event, payload, sessionId, sessionEpoch) => {
+      const identity = coreIdentity();
+      service.emit(
+        event,
+        payload,
+        sessionId ?? identity.sessionId ?? undefined,
+        sessionEpoch ?? identity.epoch,
+      );
+    };
     service.start();
   });
 }

@@ -109,6 +109,8 @@ export type HostResponseFrame =
 export interface HostEventFrame {
   event: string;
   sessionId?: string;
+  /** Monotonic attachment counter; a reload keeps the id but bumps this. */
+  sessionEpoch?: number;
   payload?: unknown;
 }
 

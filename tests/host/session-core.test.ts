@@ -201,6 +201,12 @@ describe("session core lifecycle", () => {
     expect(events()).toContain("session_started");
     expect(events()).toContain("state");
     expect(emitted.find((entry) => entry.event === "session_started")?.sessionId).toBe("session-1");
+    // The renderer and the service dedupe on the reason, so the payload says it
+    // (2026-11-06 plan, step 15).
+    expect(emitted.find((entry) => entry.event === "session_started")?.payload).toMatchObject({
+      reason: "new",
+      sessionId: "session-1",
+    });
     expect(core.cwd()).toBe(CWD);
   });
 

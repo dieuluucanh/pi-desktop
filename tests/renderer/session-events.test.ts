@@ -243,6 +243,28 @@ describe("queue and notices", () => {
     expect(notices[2]).toMatchObject({ severity: "error", detail: "kaboom" });
   });
 
+  it('keeps one "Session started" row per session, not per host recycle', () => {
+    // 2026-11-06 plan, step 15: idle/RSS/stale-build recycles resumed the same
+    // session and each one appended the notice again.
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "session_started", payload: { sessionId: "s1", reason: "new" } },
+      { event: "session_started", payload: { sessionId: "s1", reason: "resume" } },
+      { event: "session_started", payload: { sessionId: "s1", reason: "reload" } },
+    ]);
+
+    expect(items(state).filter((item) => item.kind === "notice")).toHaveLength(1);
+    expect(state.lastStartedSessionId).toBe("s1");
+  });
+
+  it("announces a different session as a new boundary", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "session_started", payload: { sessionId: "s1", reason: "new" } },
+      { event: "session_started", payload: { sessionId: "s2", reason: "new" } },
+    ]);
+
+    expect(items(state).filter((item) => item.kind === "notice")).toHaveLength(2);
+  });
+
   it("turns oi.notify into a transcript notice with the full message and severity", () => {
     const state = reduceSessionEvents(createTranscriptState(), [
       { event: "oi.notify", payload: { message: "line one\nline two", type: "warning" } },

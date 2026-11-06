@@ -76,12 +76,36 @@ export const PREF_KEYS = [
   "explorer",
   "checkpoints",
   "updates",
+  "dialogs",
   "grid",
 ] as const;
 
 export type PrefKey = (typeof PREF_KEYS)[number];
 
 export type ThemeSetting = "dark" | "light" | "system";
+
+/**
+ * How a background tab's extension dialog may take the window (2026-11-06
+ * tab-switch plan).
+ *
+ * `blocking` focuses the owning tab only when the dialog waits for the user and
+ * the user is not typing or watching a run; `never` only badges the tab. The
+ * active tab answers a *background* tab's question, so silently moving the
+ * window is never the right default.
+ */
+export type DialogFocusPolicy = "blocking" | "never";
+
+export interface DialogPrefs {
+  autoFocus: DialogFocusPolicy;
+}
+
+export const DEFAULT_DIALOG_PREFS: DialogPrefs = { autoFocus: "blocking" };
+
+/** Unknown/missing values keep the conservative default. */
+export function sanitizeDialogPrefs(input: unknown): DialogPrefs {
+  const source = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  return { autoFocus: source.autoFocus === "never" ? "never" : "blocking" };
+}
 
 export interface UiPrefs {
   theme: ThemeSetting;
@@ -148,6 +172,8 @@ export interface UiPrefs {
    * and suppress its toast until the user unmutes it (2026-10-31 UI plan).
    */
   notifications: NotificationPrefs;
+  /** How a background tab's extension dialog may take the window. */
+  dialogs: DialogPrefs;
   /**
    * Whether the transcript shows the expanded body of a command prompt — a
    * prompt template, a `/skill:*` command, or a user message injected by an
@@ -229,6 +255,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   // A fresh array so a caller mutating one prefs value cannot mutate the
   // module-level default.
   notifications: { ...DEFAULT_NOTIFICATION_PREFS, muted: [] },
+  dialogs: { ...DEFAULT_DIALOG_PREFS },
   showExpandedPrompts: false,
   promptOrigins: {},
   // A fresh object *and* a fresh order array (not the shared default) so a
@@ -310,6 +337,7 @@ export function sanitizePrefs(input: unknown): UiPrefs {
         : null,
     desktopKeybindings: sanitizeDesktopKeybindings(source.desktopKeybindings),
     notifications: sanitizeNotificationPrefs(source.notifications),
+    dialogs: sanitizeDialogPrefs(source.dialogs),
     // Missing means off: a fresh app-state.json must not reveal command
     // prompts by omission (the plan's default).
     showExpandedPrompts:

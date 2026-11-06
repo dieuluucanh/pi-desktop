@@ -7,8 +7,10 @@ instead of your system browser.
 ## Opening one
 
 - **Automatically**: when a notification or a tool result mentions a loopback
-  URL, a web tab opens (deduplicated — a repeated notification never re-focuses a
-  tab you are typing in).
+  URL, a web tab opens **in the background** (it does not steal the session you
+  are reading) and is deduplicated — a repeated notification never re-focuses a
+  tab you are typing in. The owning session stays protected from idle/RSS
+  recycling while its review tab is active or visible.
 - **Manually**: the command palette or `File → Open URL in Tab…`.
 - A session tab that a web tab came from shows a **Review:** chip linking back.
 

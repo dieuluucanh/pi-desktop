@@ -43,6 +43,81 @@ beforeEach(() => {
   });
 });
 
+describe("tab revisions (2026-11-06 tab-switch plan)", () => {
+  // The counters are process-lifetime by design (main's revision only grows), so
+  // these cases use strictly increasing revisions instead of resetting them.
+  it("ignores a table older than the newest applied revision", () => {
+    const a = tab({ id: "a" });
+    useAppStore.getState().applyTabs({ tabs: [a], activeTabId: "a", revision: 1, selectionSeq: 1 });
+
+    const stale = tab({ id: "stale", title: "stale" });
+    useAppStore
+      .getState()
+      .applyTabs({ tabs: [stale], activeTabId: "stale", revision: 0, selectionSeq: 1 });
+
+    expect(useAppStore.getState().tabs.map((entry) => entry.id)).toEqual(["a"]);
+    expect(useAppStore.getState().activeTabId).toBe("a");
+  });
+
+  it("keeps the user's tab when a push carries an older selection", async () => {
+    const a = tab({ id: "a" });
+    const b = tab({ id: "b" });
+    useAppStore.setState({ tabs: [a, b], activeTabId: "a" });
+
+    // A real gesture: this window's selection sequence moves past main's.
+    await useAppStore.getState().activateTab("b");
+    // A push that main published before it processed the gesture (a background
+    // wake, a reconcile, a late response) must not move the window back.
+    useAppStore.getState().applyTabs(
+      { tabs: [a, b], activeTabId: "a", revision: 2, selectionSeq: 0 },
+      {
+        adoptSelection: true,
+      },
+    );
+
+    expect(useAppStore.getState().activeTabId).toBe("b");
+  });
+
+  it("adopts a newer selection made elsewhere", () => {
+    const a = tab({ id: "a" });
+    const b = tab({ id: "b" });
+    useAppStore.setState({ tabs: [a, b], activeTabId: "a" });
+
+    useAppStore.getState().applyTabs(
+      { tabs: [a, b], activeTabId: "b", revision: 3, selectionSeq: 3 },
+      {
+        adoptSelection: true,
+      },
+    );
+
+    expect(useAppStore.getState().activeTabId).toBe("b");
+  });
+});
+
+describe("web tab selection (2026-11-06 tab-switch plan)", () => {
+  it("reports a web tab selection to main so the next push cannot revert it", async () => {
+    const session = tab({ id: "session-1" });
+    const web = tab({
+      id: "web-1",
+      kind: "web",
+      title: "127.0.0.1:8080",
+      url: "http://127.0.0.1:8080/",
+      sessionTabId: session.id,
+    });
+    useAppStore.setState({ tabs: [session, web], activeTabId: session.id });
+    const activate = vi.fn(async (tabId: string) => ({
+      tabs: useAppStore.getState().tabs,
+      activeTabId: tabId,
+    }));
+    (window.pi as unknown as { sessions: { activate: unknown } }).sessions.activate = activate;
+
+    await useAppStore.getState().activateTab(web.id);
+
+    expect(activate).toHaveBeenCalledWith(web.id);
+    expect(useAppStore.getState().activeTabId).toBe(web.id);
+  });
+});
+
 describe("applyTabs", () => {
   it("reuses unchanged records and skips the state write entirely", () => {
     const first = tab();

@@ -91,6 +91,26 @@ describe("tui surface store", () => {
     expect(useAppStore.getState().tuiSurfaces[TAB]).toEqual(EMPTY_TUI_SURFACE);
   });
 
+  it("never resizes a stopped tab into a host spawn", () => {
+    const request = stubRequest(async () => ({ ok: true }));
+    useAppStore.setState({
+      tabs: useAppStore.getState().tabs.map((tab) => ({ ...tab, status: "stopped" })),
+    });
+
+    useAppStore.getState().resizeTuiSurface(TAB, 12, 80);
+    expect(request).not.toHaveBeenCalled();
+
+    useAppStore.setState({
+      tabs: useAppStore.getState().tabs.map((tab) => ({ ...tab, status: "idle" })),
+    });
+    useAppStore.getState().resizeTuiSurface(TAB, 12, 80);
+    expect(request).toHaveBeenCalledWith({
+      tabId: TAB,
+      method: "tui.resize",
+      params: { rows: 12, cols: 80 },
+    });
+  });
+
   it("sends resize and input requests", () => {
     const request = stubRequest(async () => ({ ok: true }));
     useAppStore.getState().resizeTuiSurface(TAB, 12, 80);
@@ -105,6 +125,20 @@ describe("tui surface store", () => {
       method: "tui.input",
       params: { data: "\x1b[A" },
     });
+  });
+
+  it("treats a sleeping host as a normal status, not a shortcut error", async () => {
+    const request = stubRequest(async () => {
+      throw new Error(
+        "Error invoking remote method 'pi:sessions:request': Error: The session is asleep. Activate the tab to wake its host.",
+      );
+    });
+    useAppStore.setState({ shortcutsLoaded: false, shortcutsTabId: null });
+
+    await useAppStore.getState().loadShortcuts();
+    expect(request).toHaveBeenCalledWith({ tabId: TAB, method: "shortcuts.list" });
+    expect(useAppStore.getState().shortcutsError).toBeNull();
+    expect(useAppStore.getState().shortcutsLoaded).toBe(false);
   });
 
   it("never routes a surface frame into the transcript", () => {

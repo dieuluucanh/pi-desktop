@@ -40,7 +40,7 @@ export interface HostRequestContext {
   method: HostMethod;
   requestId: number;
   /** Emits an unsolicited event frame to the supervisor. */
-  emit(event: string, payload?: unknown, sessionId?: string): void;
+  emit(event: string, payload?: unknown, sessionId?: string, sessionEpoch?: number): void;
   /** Reads a previously spilled payload back from the blob cache. */
   readBlob(path: string): Promise<string | null>;
 }
@@ -101,7 +101,7 @@ export interface HostService {
   start(): void;
   stop(): void;
   /** Pushes an unsolicited event frame (session events, extension UI requests). */
-  emit(event: string, payload?: unknown, sessionId?: string): void;
+  emit(event: string, payload?: unknown, sessionId?: string, sessionEpoch?: number): void;
 }
 
 class HostError extends Error {
@@ -241,11 +241,21 @@ export function createHostService(options: HostServiceOptions): HostService {
    * relative to one another (plan step 24).
    */
   let emitChain: Promise<void> = Promise.resolve();
-  const emit = (event: string, payload?: unknown, sessionId?: string): void => {
+  const emit = (
+    event: string,
+    payload?: unknown,
+    sessionId?: string,
+    sessionEpoch?: number,
+  ): void => {
     emitChain = emitChain
       .then(async () => {
         const spilled = await spillEvent(payload);
-        send(sessionId ? { event, sessionId, payload: spilled } : { event, payload: spilled });
+        send({
+          event,
+          ...(sessionId ? { sessionId } : {}),
+          ...(typeof sessionEpoch === "number" ? { sessionEpoch } : {}),
+          payload: spilled,
+        });
       })
       .catch(() => undefined);
   };
@@ -305,6 +315,8 @@ export function createHostService(options: HostServiceOptions): HostService {
         rssBytes: usage.rss,
         heapUsedBytes: usage.heapUsed,
         heapTotalBytes: usage.heapTotal,
+        externalBytes: usage.external,
+        arrayBuffersBytes: usage.arrayBuffers,
         uptimeMs: Math.round(process.uptime() * 1_000),
         at: Date.now(),
       };

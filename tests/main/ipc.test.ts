@@ -143,6 +143,8 @@ async function register(recording: Recording): Promise<void> {
       reconcile: async () => envelope(),
       restore: async () => envelope(),
       restart: async () => envelope(),
+      stop: async () => envelope(),
+      ensure: async () => envelope(),
       request: async () => null,
       deleteSession: async () => ({ ok: true }) as never,
     },

@@ -142,6 +142,10 @@ export const IPC = {
   sessionReconcile: "session:reconcile",
   /** Stops and re-spawns a tab's host, resuming its session (plan step 22). */
   sessionRestart: "session:restart",
+  /** Stops a tab's host and leaves the tab `stopped` (Cancel an open). */
+  sessionStop: "session:stop",
+  /** Wakes a tab's host and session without changing the active tab. */
+  sessionEnsure: "session:ensure",
   sessionRequest: "session:request",
   /** Deletes a session to the OS trash (plan step 11; validated in main). */
   sessionDelete: "session:delete",
@@ -450,6 +454,12 @@ export interface SessionsBridge {
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
   /**
+   * Wakes a tab's host and session without changing the selection. This is the
+   * call a background pane/reconcile makes; `activate` stays the gesture that
+   * moves the app (2026-11-06 tab-switch plan).
+   */
+  ensure(tabId: string): Promise<SessionTabsEnvelope>;
+  /**
    * Declares the tabs the renderer currently shows. Advisory: unknown ids are
    * ignored, nothing is parked or spawned, and no tab table is published.
    */
@@ -461,6 +471,8 @@ export interface SessionsBridge {
   restore(): Promise<SessionTabsEnvelope>;
   /** Recovers a crashed/wedged host by re-spawning it (plan step 22). */
   restart(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Stops a host and leaves the tab `stopped`; the next activation resumes. */
+  stop(tabId: string): Promise<SessionTabsEnvelope>;
   /** Runs any host protocol method against a tab's host. */
   request(input: SessionRequestInput): Promise<unknown>;
   /**
@@ -568,6 +580,12 @@ export interface WebTabOpenInput {
   cwd?: string;
   /** The session tab this web tab links back to (Plannotator). */
   sessionTabId?: string | null;
+  /**
+   * Whether opening the tab also selects it. Default true for a user gesture;
+   * false for a URL discovered in a tool result/notification, so a background
+   * review cannot steal the session the user is reading (2026-11-06 Strata loop).
+   */
+  activate?: boolean;
 }
 
 export interface WebBridge {

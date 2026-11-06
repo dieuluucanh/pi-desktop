@@ -23,7 +23,12 @@ import {
   type ProviderLoginEvent,
   type ProviderSummary,
 } from "../../../shared/providers";
-import { normalizeScopePatterns, scopeKeys, scopeStarKeys } from "../../../shared/model-scope";
+import {
+  normalizeScopePatterns,
+  scopeKeys,
+  scopeStarKeys,
+  type ScopeDiagnosticInfo,
+} from "../../../shared/model-scope";
 import { mostRecentSessionTabForFolder, sameFolder } from "../../../shared/rail-scope";
 import {
   assignGridPane,
@@ -75,6 +80,7 @@ import type {
 } from "../../../shared/settings";
 import {
   CONTROL_TAB_ID,
+  SESSION_ASLEEP_MESSAGE,
   hostBackedTabs,
   isHostBackedTab,
   type CreateTabInput,
@@ -231,6 +237,11 @@ import {
   toCatalog,
   type ModelCatalogEntry,
 } from "../session/model-catalog";
+import { composerHasFocus, shouldFocusDialog } from "../session/dialog-focus";
+import {
+  defaultModelProblem as defaultModelProblemOf,
+  type DefaultModelProblem,
+} from "../../../shared/model-default";
 import { orderThinkingLevels } from "../../../shared/thinking";
 import { classifyFailure, isOfflineError } from "../../../shared/diagnostics";
 import type { DiagnosticsSnapshot } from "../../../shared/diagnostics";
@@ -359,6 +370,7 @@ function purgeClosedTabDialogs(openTabs: ReadonlySet<string>): void {
 const TAB_SCOPED_RECORDS = [
   "transcripts",
   "sessionStates",
+  "sessionEpochs",
   "extensionUi",
   "tuiSurfaces",
   "toolsExpanded",
@@ -496,6 +508,22 @@ const transcriptHydrating = new Map<string, Promise<void>>();
  * status change; without this a broken read would toast on each retry.
  */
 const transcriptHydrateNoted = new Set<string>();
+
+/**
+ * The newest tab-table revision and selection sequence this window has applied
+ * (2026-11-06 tab-switch plan).
+ *
+ * Main is authoritative about facts (tabs, status, session files); the user's
+ * gesture is authoritative about focus. Comparing both counters is what stops a
+ * slow `activate` response, a reordered push, or a background wake from moving
+ * the window to another project's session.
+ */
+let appliedTabsRevision = 0;
+let localSelectionSeq = 0;
+/** `tabId\u0000code\u0000pattern` keys already reported this run (step 11). */
+const reportedScopeDiagnostics = new Set<string>();
+/** The default-model problem already recorded this run (step 12). */
+let reportedDefaultModelProblem: string | null = null;
 /** Last successful interaction-driven activation per tab (throttles keystrokes). */
 const sessionEnsuredAt = new Map<string, number>();
 /** Minimum gap between non-forced ensures; a send/tab switch always forces. */
@@ -694,6 +722,8 @@ export interface AppStateShape {
   transcripts: Record<string, TranscriptState>;
   /** Latest `state.get` snapshot per tab (opaque to the renderer). */
   sessionStates: Record<string, unknown>;
+  /** Monotonic host attachment epoch per tab, used to fence stale event batches. */
+  sessionEpochs: Record<string, number>;
 
   /** Session browser and tree (plan step 11). */
   sessionBrowserOpen: boolean;
@@ -890,7 +920,12 @@ export interface AppStateShape {
   loadPrefs: () => Promise<void>;
   /** Sessions (plan step 3). */
   loadTabs: () => Promise<void>;
-  applyTabs: (envelope: SessionTabsEnvelope) => void;
+  /**
+   * Applies a tab table. `adoptSelection: false` is the push path: facts are
+   * applied, focus is not (2026-11-06 tab-switch plan). Default is the answer to
+   * an explicit call, which may move the selection.
+   */
+  applyTabs: (envelope: SessionTabsEnvelope, options?: { adoptSelection?: boolean }) => void;
   applySessionEvents: (envelope: SessionEventEnvelope) => void;
   applySessionState: (envelope: SessionStateEnvelope) => void;
   /** Loads history from `messages.get` once per tab (plan step 5). */
@@ -899,6 +934,11 @@ export interface AppStateShape {
   abortTab: (tabId: string) => Promise<void>;
   /** Stops and re-spawns a tab's host, resuming its session (plan step 22). */
   restartTab: (tabId: string) => Promise<void>;
+  /**
+   * Cancels an in-flight start: stops the host and leaves the tab `stopped`.
+   * The session file is untouched, so activating the tab resumes it.
+   */
+  cancelSession: (tabId: string) => Promise<void>;
   /** Drops a tab's transcript so the next hydrate rebuilds it (branch navigation). */
   resetTranscript: (tabId: string) => void;
 
@@ -968,6 +1008,19 @@ export interface AppStateShape {
   modelScope: Record<string, string[]>;
   /** Persisted patterns behind each tab's stars. */
   modelScopePatterns: Record<string, string[]>;
+  /**
+   * Warnings Pi's resolver produced for those patterns (invalid thinking level,
+   * unrepresentable id, no match). Shown in the picker instead of being dropped
+   * (2026-11-06 plan, step 11).
+   */
+  modelScopeDiagnostics: Record<string, ScopeDiagnosticInfo[]>;
+  /**
+   * The saved default names a model the catalogue does not contain, so a new
+   * session will start on another one. Visible in the picker, recorded once
+   * (2026-11-06 plan, step 12).
+   */
+  defaultModelProblem: DefaultModelProblem | null;
+  noteDefaultModelProblem: (problem: DefaultModelProblem | null) => void;
   /** The project toggle's write target for each tab. */
   modelScopeTarget: Record<string, "global" | "project">;
   /** The model key a star toggle is currently writing, per tab. */
@@ -986,7 +1039,7 @@ export interface AppStateShape {
   /** Applies a host/model-scope snapshot to one tab. */
   setModelScopeSnapshot: (
     tabId: string,
-    payload: { enabledModels?: unknown; scoped?: unknown },
+    payload: { enabledModels?: unknown; scoped?: unknown; diagnostics?: unknown },
   ) => void;
   setModel: (
     tabId: string,
@@ -1427,6 +1480,13 @@ export interface AppStateShape {
   extensionUi: Record<string, ExtensionUiSnapshot>;
   /** Dialogs waiting for an answer, oldest first. */
   extensionDialogs: ExtensionDialogRequest[];
+  /**
+   * Tabs whose extension asked for input while the user was elsewhere. The tab
+   * chip shows a dot until the tab is activated (2026-11-06 tab-switch plan).
+   */
+  dialogAttention: Record<string, boolean>;
+  markDialogAttention: (tabId: string) => void;
+  clearDialogAttention: (tabId: string) => void;
   /** Notification history (the toast centre's backing list). */
   extensionNotifications: ExtensionNotification[];
   /** The notification the Mute dialog is configuring, or null. */
@@ -1764,6 +1824,37 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** True for the main process's "this tab is asleep" refusal. */
+function isSessionAsleepError(error: unknown): boolean {
+  return errorMessage(error).includes(SESSION_ASLEEP_MESSAGE);
+}
+
+const STALE_EXTENSION_CONTEXT = "This extension ctx is stale after session replacement or reload.";
+
+/** The SDK's expected invalidation error, not a new extension bug. */
+function isStaleExtensionContextError(entry: SessionEventEntry): boolean {
+  if (entry.event !== "extension_error") return false;
+  const payload = entry.payload as { error?: unknown } | undefined;
+  return typeof payload?.error === "string" && payload.error.includes(STALE_EXTENSION_CONTEXT);
+}
+
+/** Drops every extension-owned fact for a tab before its replacement attaches. */
+function clearTabSessionUi(state: AppStateShape, tabId: string): Partial<AppStateShape> {
+  const drop = <T>(record: Record<string, T>): Record<string, T> => {
+    const next = { ...record };
+    delete next[tabId];
+    return next;
+  };
+  return {
+    extensionUi: drop(state.extensionUi),
+    tuiSurfaces: drop(state.tuiSurfaces),
+    toolsExpanded: drop(state.toolsExpanded),
+    staleHosts: drop(state.staleHosts),
+    dialogAttention: drop(state.dialogAttention),
+    extensionDialogs: state.extensionDialogs.filter((dialog) => dialog.tabId !== tabId),
+  };
+}
+
 /** Electron wraps a rejected `ipcRenderer.invoke` in this prefix. */
 const REMOTE_ERROR_PREFIX = /^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/;
 
@@ -1974,6 +2065,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   panePickerTarget: null,
   transcripts: {},
   sessionStates: {},
+  sessionEpochs: {},
   sessionBrowserOpen: false,
   sessionBrowserQuery: "",
   sessionBrowserScope: "all",
@@ -2027,6 +2119,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   thinkingLevels: {},
   modelScope: {},
   modelScopePatterns: {},
+  modelScopeDiagnostics: {},
+  defaultModelProblem: null,
   modelScopeTarget: {},
   modelScopeBusy: {},
   picker: null,
@@ -2105,6 +2199,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   shortcutsHelpOpen: false,
   extensionUi: {},
   extensionDialogs: [],
+  dialogAttention: {},
   extensionNotifications: [],
   muteTarget: null,
   notificationCooldowns: {},
@@ -2264,7 +2359,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     set({ activeTabId: null });
     if (!api?.sessions || activeId === null) return;
     try {
-      get().applyTabs(await api.sessions.deactivate());
+      get().applyTabs(await api.sessions.deactivate(), { adoptSelection: true });
     } catch (error) {
       // Losing a cleared selection is harmless; the tabs themselves are intact.
       get().noteFailure(error);
@@ -2278,7 +2373,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // Close first so the tab table and the project list never disagree. Main
       // also closes on removal as defense in depth, so this second close is a
       // no-op for a caller that already did it.
-      get().applyTabs(await api.sessions.closeProject(path));
+      get().applyTabs(await api.sessions.closeProject(path), { adoptSelection: true });
     } catch (error) {
       get().noteFailure(error);
       return false;
@@ -2571,6 +2666,23 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   clearOffline: () => set({ offlineNotice: null }),
 
+  noteDefaultModelProblem: (problem) => {
+    set({ defaultModelProblem: problem });
+    if (!problem) return;
+    const key = `${problem.provider}\u0000${problem.id}`;
+    if (reportedDefaultModelProblem === key) return;
+    reportedDefaultModelProblem = key;
+    // One line in Diagnostics: the next session is going to start somewhere the
+    // user did not choose, and the fix is a pick, not a log hunt.
+    void bridge()
+      ?.diagnostics?.record({
+        kind: "bad_request",
+        message: problem.message,
+        detail: `defaultModel: ${problem.provider}/${problem.id}`,
+      })
+      .catch(() => undefined);
+  },
+
   noteStaleHost: (tabId) => {
     if (get().staleHosts[tabId]) return;
     set({ staleHosts: { ...get().staleHosts, [tabId]: HOST_STALE_MESSAGE } });
@@ -2622,14 +2734,27 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.sessions) return;
     try {
-      get().applyTabs(await api.sessions.list());
+      get().applyTabs(await api.sessions.list(), { adoptSelection: true });
     } catch {
       // Reading the tab table must never break the shell.
     }
   },
 
-  applyTabs: (envelope) => {
+  applyTabs: (envelope, options) => {
     const state = get();
+    // Ignore a push that predates the newest table we have already applied.
+    const revision = typeof envelope.revision === "number" ? envelope.revision : null;
+    if (revision !== null && revision < appliedTabsRevision) return;
+    if (revision !== null) appliedTabsRevision = revision;
+    // Only the answer to an explicit selection call may move the window. A
+    // background push (a state frame, a resync, a wake) updates facts and never
+    // focus, which is what makes "the app jumped by itself" structurally
+    // impossible rather than a race to get right (2026-11-06 tab-switch plan).
+    const selectionSeq = typeof envelope.selectionSeq === "number" ? envelope.selectionSeq : null;
+    const adoptSelection =
+      options?.adoptSelection !== false &&
+      (selectionSeq === null || selectionSeq >= localSelectionSeq);
+    const effectiveActiveTabId = adoptSelection ? envelope.activeTabId : state.activeTabId;
     // Main sends a deep copy of the whole table on every publish (including
     // every session state frame). Reusing a record whose fields did not change
     // keeps the editor's mount effect from re-reading the file just because a
@@ -2679,13 +2804,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const visibleIds = visibleGridTabIds({
       layout: nextGrid.layout,
       panes: nextGrid.panes,
-      activeTabId: envelope.activeTabId,
+      activeTabId: effectiveActiveTabId,
     });
     const pruned = pruneClosedTabRecords(state, ids);
     const bounded = boundTranscripts(
       pruned?.transcripts ?? state.transcripts,
       tabs,
-      envelope.activeTabId,
+      effectiveActiveTabId,
       visibleIds,
     );
     const hasCachePatch = pruned !== null || bounded !== null || gridChanged;
@@ -2697,7 +2822,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (removed) purgeClosedTabDialogs(ids);
     const prompt = state.webNavigationPrompt;
     const unchanged =
-      envelope.activeTabId === state.activeTabId &&
+      effectiveActiveTabId === state.activeTabId &&
       tabs.length === state.tabs.length &&
       tabs.every((tab, index) => tab === state.tabs[index]) &&
       // A prompt for a tab that no longer exists must still be cleared even when
@@ -2720,11 +2845,23 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     );
     set({
       tabs,
-      activeTabId: envelope.activeTabId,
+      activeTabId: effectiveActiveTabId,
       webTabStates,
       ...cachePatch,
       ...(prompt && !ids.has(prompt.tabId) ? { webNavigationPrompt: null } : {}),
     });
+  },
+
+  markDialogAttention: (tabId) => {
+    if (get().dialogAttention[tabId] === true) return;
+    set({ dialogAttention: { ...get().dialogAttention, [tabId]: true } });
+  },
+
+  clearDialogAttention: (tabId) => {
+    if (get().dialogAttention[tabId] !== true) return;
+    const next = { ...get().dialogAttention };
+    delete next[tabId];
+    set({ dialogAttention: next });
   },
 
   applySessionEvents: (envelope) => {
@@ -2734,6 +2871,22 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       for (const entry of envelope.events) get().applyControlEvent(entry);
       return;
     }
+    // A batch from an older attachment (the runner a replacement invalidated)
+    // must not append to the new session, even when the session id is unchanged
+    // after a reload. Use the highest identity in the batch so a replacement
+    // frame and its new rows still apply.
+    const batchEpoch = Math.max(
+      typeof envelope.sessionEpoch === "number" ? envelope.sessionEpoch : 0,
+      ...envelope.events.map((entry) =>
+        typeof entry.sessionEpoch === "number" ? entry.sessionEpoch : 0,
+      ),
+    );
+    const currentEpoch = get().sessionEpochs[envelope.tabId] ?? 0;
+    if (batchEpoch > 0 && batchEpoch < currentEpoch) return;
+    const identityChanged = batchEpoch > currentEpoch;
+    if (identityChanged) {
+      set({ sessionEpochs: { ...get().sessionEpochs, [envelope.tabId]: batchEpoch } });
+    }
     // A late batch for a just-closed tab must not recreate its caches. If the id
     // is open again (a test or a future re-import uses setState directly), the
     // current table wins over the closed-tab marker.
@@ -2741,6 +2894,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return;
     }
     if (envelope.events.some((entry) => entry.event === "session.recovered")) {
+      set(clearTabSessionUi(get(), envelope.tabId));
       get().clearStaleHost(envelope.tabId);
       get().invalidateCommands(envelope.tabId);
     }
@@ -2759,11 +2913,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       const previousId = typeof previous === "string" ? previous : null;
       if (nextId !== null && nextId !== previousId) {
         get().resetTranscript(envelope.tabId);
+        set(clearTabSessionUi(get(), envelope.tabId));
         get().invalidateCommands(envelope.tabId);
         void get().hydrateTranscript(envelope.tabId);
         replacedReset = true;
       }
     }
+    // A reload keeps the session id but replaces the extension runner. Its
+    // statuses/widgets/dialogs belong to the outgoing runner too.
+    if (identityChanged && !replacedReset) set(clearTabSessionUi(get(), envelope.tabId));
+    const suppressStaleExtensionError = replacedReset || identityChanged;
     // A trust refusal is a project-level question, not transcript content: raise
     // the prompt and keep it out of the message list (plan step 10).
     const trustEntry = envelope.events.find((entry) => entry.event === "project_trust");
@@ -2808,6 +2967,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         // hydration and read as if something went wrong; the rows themselves
         // are the announcement (plan step 13).
         !(replacedReset && entry.event === "session_replaced") &&
+        !(suppressStaleExtensionError && isStaleExtensionContextError(entry)) &&
         !EXTENSION_UI_EVENTS.has(entry.event),
     );
     if (rest.length === 0) return;
@@ -2847,6 +3007,17 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   applySessionState: (envelope) => {
+    if (
+      typeof envelope.sessionEpoch === "number" &&
+      envelope.sessionEpoch < (get().sessionEpochs[envelope.tabId] ?? 0)
+    ) {
+      return;
+    }
+    if (typeof envelope.sessionEpoch === "number") {
+      set({
+        sessionEpochs: { ...get().sessionEpochs, [envelope.tabId]: envelope.sessionEpoch },
+      });
+    }
     // A model switch can change the thinking levels a session accepts. The host
     // sends them in every snapshot, but `ThinkingPicker` prefers this cache, so
     // refresh it here — and only when the list actually changed, because this
@@ -2892,7 +3063,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         // status changes (plan step 25). It must also not look like an empty
         // session: report the first failure for this tab, then stay quiet.
         if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
-        if (!transcriptHydrateNoted.has(tabId)) {
+        // A sleeping tab is normal after a recycle. Do not report it and do not
+        // latch an error: the explicit activation/ensure passes this again.
+        if (!isSessionAsleepError(error) && !transcriptHydrateNoted.has(tabId)) {
           transcriptHydrateNoted.add(tabId);
           get().noteFailure(error);
         }
@@ -2920,6 +3093,19 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
+  cancelSession: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      get().applyTabs(await api.sessions.stop(tabId), { adoptSelection: false });
+      // The next interaction must re-check readiness rather than trusting a
+      // timestamp from the attempt that was just cancelled.
+      sessionEnsuredAt.delete(tabId);
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
   restartTab: async (tabId) => {
     const api = bridge();
     if (!api?.sessions) return;
@@ -2939,6 +3125,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // A restarted host rebinds its extensions, so any shortcut registered by
       // the fresh session must be re-listed (the previous list may be stale).
       if (get().activeTabId === tabId) void get().loadShortcuts({ refresh: true });
+      set(clearTabSessionUi(get(), tabId));
+      void get().loadExtensionUi(tabId);
       get().invalidateCommands(tabId);
       // A restart is also the documented fix for a bridge that never bound the
       // port (2026-10-30 rail-headers plan), so read the registry now instead of
@@ -3006,9 +3194,24 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         }, dialog.timeout);
         extensionDialogTimers.set(dialog.id, timer);
       }
-      // A dialog belongs to its tab, so bring that tab forward rather than
-      // letting the extension block behind a background tab (plan risk R5).
-      if (get().activeTabId !== tabId) void get().activateTab(tabId);
+      // A dialog belongs to its tab, but taking the window is a *decision*: a
+      // background question must not yank the user out of another project's
+      // session while they type or watch a run (2026-11-06 tab-switch plan).
+      if (get().activeTabId !== tabId) {
+        const active = get().activeTabId;
+        const activeState = active ? get().sessionStates[active] : undefined;
+        const focus = shouldFocusDialog({
+          policy: get().prefs.dialogs.autoFocus,
+          blocking: dialog.timeout === null,
+          // `hasFocus()` is unreliable across jsdom/OS states, but visibility is
+          // the fact that matters: a hidden window must only badge.
+          windowFocused: typeof document === "undefined" || document.visibilityState !== "hidden",
+          composerFocused: composerHasFocus(),
+          streaming: (activeState as { streaming?: unknown } | undefined)?.streaming === true,
+        });
+        if (focus) void get().activateTab(tabId);
+        else get().markDialogAttention(tabId);
+      }
       return;
     }
     if (entry.event === EXTENSION_UI_NOTIFY_EVENT) {
@@ -3157,6 +3360,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   resizeTuiSurface: (tabId, rows, cols) => {
+    // A status change re-runs the viewport effect. A stopped/crashed tab must
+    // not turn that into a spawn request; activation/ensure owns waking it.
+    const status = get().tabs.find((tab) => tab.id === tabId)?.status;
+    if (!status || status === "stopped" || status === "crashed" || status === "failed") return;
     // Fire-and-forget: a resize must never block a keystroke.
     const request = bridge()?.sessions?.request({
       tabId,
@@ -3263,14 +3470,36 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const patterns = Array.isArray(payload.enabledModels)
       ? normalizeScopePatterns(payload.enabledModels)
       : scopeKeys(scoped);
+    const diagnostics = Array.isArray(payload.diagnostics)
+      ? (payload.diagnostics as ScopeDiagnosticInfo[])
+      : [];
     set({
       modelScope: { ...get().modelScope, [tabId]: scopeStarKeys(patterns, scoped) },
       modelScopePatterns: { ...get().modelScopePatterns, [tabId]: patterns },
+      modelScopeDiagnostics: { ...get().modelScopeDiagnostics, [tabId]: diagnostics },
       modelScopeTarget: {
         ...get().modelScopeTarget,
         [tabId]: settingsTargetForTab(get(), tabId),
       },
     });
+    // One Diagnostics incident per distinct pattern per run: the same broken
+    // entry is re-reported on every reconcile, and a log full of duplicates is
+    // not more actionable than one line.
+    for (const diagnostic of diagnostics) {
+      const key = `${tabId}\u0000${diagnostic.code ?? ""}\u0000${
+        diagnostic.pattern ?? diagnostic.message
+      }`;
+      if (reportedScopeDiagnostics.has(key)) continue;
+      reportedScopeDiagnostics.add(key);
+      void bridge()
+        ?.diagnostics?.record({
+          kind: "bad_request",
+          message: diagnostic.message,
+          ...(diagnostic.pattern ? { detail: `pattern: ${diagnostic.pattern}` } : {}),
+          tabId,
+        })
+        .catch(() => undefined);
+    }
   },
 
   loadModels: async (tabId) => {
@@ -3302,6 +3531,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         },
       });
       get().setModelScopeSnapshot(tabId, response ?? {});
+      // Pi silently falls back to another model when the saved default is not in
+      // the catalogue; say so instead of letting the next session surprise the
+      // user (2026-11-06 plan, step 12).
+      get().noteDefaultModelProblem(
+        defaultModelProblemOf(get().settings, get().modelCatalog[tabId] ?? []),
+      );
     } catch (error) {
       get().noteFailure(error);
     }
@@ -4374,6 +4609,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         params: { cwd },
       })) as SettingsSnapshot;
       set(settingsStateFrom(snapshot, cwd));
+      const active = get().activeTabId;
+      get().noteDefaultModelProblem(
+        defaultModelProblemOf(get().settings, active ? (get().modelCatalog[active] ?? []) : []),
+      );
     } catch (error) {
       set({ settingsBusy: false, settingsLoaded: true, settingsError: errorMessage(error) });
     }
@@ -4824,6 +5063,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         shortcutsTabId: target,
       });
     } catch (error) {
+      if (isSessionAsleepError(error)) {
+        // This was a passive status-change retry against a recycled host. Leave
+        // the list unlatched so activation/ensure retries it once the host is
+        // awake; do not show an error or wipe a list the previous session had.
+        set({ shortcutsBusy: false, shortcutsLoaded: false, shortcutsError: null });
+        return;
+      }
       set({
         shortcutsBusy: false,
         shortcutsLoaded: true,
@@ -5027,7 +5273,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     set({ promotingOfficeHost: true });
     try {
       const envelope = await api.sessions.promoteOfficeHost(tabId);
-      get().applyTabs(envelope);
+      get().applyTabs(envelope, { adoptSelection: true });
       // The IPC returns when the host is spawned, not when `/health` answers: the
       // bridge still has to load and bind 38617. Saying the bridge *is* ready was
       // the promise behind "the Documents menu disappeared" (2026-10-30
@@ -5725,11 +5971,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // repeated notification cannot spawn a second review view.
     const existing = get().tabs.find((tab) => tab.kind === "web" && tab.url === input.url);
     if (existing) {
-      await get().activateTab(existing.id);
+      if (input.activate !== false) await get().activateTab(existing.id);
       return true;
     }
     try {
-      get().applyTabs(await api.web.open(input));
+      get().applyTabs(await api.web.open(input), { adoptSelection: true });
       set({ view: "session", hint: null });
       return true;
     } catch (error) {
@@ -5745,7 +5991,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // on every repeated mention.
     const existing = get().tabs.find((tab) => tab.kind === "web" && tab.url === parsed);
     if (existing) return;
-    void get().openWebTab({ url: parsed, ...(sessionTabId ? { sessionTabId } : {}) });
+    void get().openWebTab({
+      url: parsed,
+      activate: false,
+      ...(sessionTabId ? { sessionTabId } : {}),
+    });
   },
 
   webCommand: (tabId, command) => {
@@ -5987,7 +6237,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // a second tab never re-prompts.
     if (get().sessionTrust.includes(project.path)) input.trust = "session";
     try {
-      get().applyTabs(await api.sessions.create(input));
+      get().applyTabs(await api.sessions.create(input), { adoptSelection: true });
       set({ view: "session", hint: null });
     } catch (error) {
       const message = userFacingError(error);
@@ -6122,22 +6372,35 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   activateTab: async (tabId) => {
     const api = bridge();
     if (!api?.sessions) return;
+    // This is the gesture: it owns the selection, and every later push with an
+    // older sequence is ignored (see `applyTabs`).
+    localSelectionSeq += 1;
     set({ activeTabId: tabId, view: "session" });
+    get().clearDialogAttention(tabId);
     const tab = get().tabs.find((entry) => entry.id === tabId);
-    if (!tab || tab.kind === "web") return;
+    if (!tab) return;
     // The rail and the sidebar follow the session that is on screen (2026-10-30
     // project-scoped rail plan): clicking a session in another project also
     // selects that project. Fire-and-forget so waking the host is not delayed.
     void get().selectProjectForCwd(tab.cwd);
-    // An editor tab has no host. It still tells main which tab is active (so the
-    // selection survives a push/relaunch), but skips the host-only refreshes.
+    // An editor or web tab has no host. It still tells main which tab is active,
+    // so the durable selection cannot disagree with this window and a later push
+    // cannot snap the view back to the previous tab (2026-11-06 tab-switch plan).
     if (!isHostBackedTab(tab.kind)) {
       try {
-        get().applyTabs(await api.sessions.activate(tabId));
+        get().applyTabs(await api.sessions.activate(tabId), { adoptSelection: true });
       } catch (error) {
         get().noteFailure(error);
       }
       return;
+    }
+    // The gesture owns the selection: `activate` is the only call that moves
+    // the app. Waking the host is a separate `ensure`, so a background pane or
+    // a resync can never reassign the active tab (2026-11-06 tab-switch plan).
+    try {
+      get().applyTabs(await api.sessions.activate(tabId), { adoptSelection: true });
+    } catch {
+      // `ensureSession` below is the retry path and reports the failure once.
     }
     // Switching tabs always re-checks; the ensure refreshes extension UI, the
     // TUI surface, shortcuts and the command cache after the host is awake.
@@ -6163,7 +6426,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
     const run = (async () => {
       try {
-        get().applyTabs(await api.sessions.activate(tabId));
+        get().applyTabs(await api.sessions.ensure(tabId), { adoptSelection: false });
         await Promise.all([
           get().loadShortcuts({ refresh: true }),
           get().loadExtensionUi(tabId),
@@ -6194,7 +6457,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (now - lastSessionResyncAt < SESSION_RESYNC_THROTTLE_MS) return;
     lastSessionResyncAt = now;
     try {
-      get().applyTabs(await api.sessions.reconcile());
+      get().applyTabs(await api.sessions.reconcile(), { adoptSelection: false });
     } catch {
       // A failed reconcile must not break the shell; fall back to the plain list.
       await get().loadTabs();
@@ -6210,7 +6473,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.sessions) return;
     try {
-      get().applyTabs(await api.sessions.close(tabId));
+      get().applyTabs(await api.sessions.close(tabId), { adoptSelection: true });
     } catch (error) {
       get().noteFailure(error);
     }
@@ -6237,7 +6500,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.sessions) return;
     try {
-      get().applyTabs(await api.sessions.closeOthers(tabId));
+      get().applyTabs(await api.sessions.closeOthers(tabId), { adoptSelection: true });
     } catch (error) {
       get().noteFailure(error);
     }
@@ -6248,7 +6511,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.sessions) return;
     try {
-      get().applyTabs(await api.sessions.closeAll(kind));
+      get().applyTabs(await api.sessions.closeAll(kind), { adoptSelection: true });
     } catch (error) {
       get().noteFailure(error);
     }
@@ -6270,7 +6533,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (!api?.sessions) return null;
     try {
       const envelope = await api.sessions.retargetEditorTabs(input);
-      get().applyTabs(envelope);
+      get().applyTabs(envelope, { adoptSelection: false });
       return envelope;
     } catch (error) {
       get().noteFailure(error);
@@ -6306,7 +6569,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const input: CreateTabInput = { cwd: tab.cwd };
     if (get().sessionTrust.includes(tab.cwd)) input.trust = "session";
     try {
-      get().applyTabs(await api.sessions.create(input));
+      get().applyTabs(await api.sessions.create(input), { adoptSelection: true });
       set({ view: "session", hint: null });
     } catch (error) {
       get().noteFailure(error);
@@ -6435,7 +6698,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
     try {
       const envelope = await api.sessions.create({ cwd, sessionFile: session.path });
-      get().applyTabs(envelope);
+      get().applyTabs(envelope, { adoptSelection: true });
       set({ sessionBrowserOpen: false, view: "session", hint: null });
       // “Browse saved sessions…” from a pane: the resumed tab belongs there, not
       // in a new tab the user then has to place by hand.
@@ -6985,6 +7248,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   resetTranscript: (tabId) => {
     transcriptHydrateNoted.delete(tabId);
+    // An in-flight `messages.get` for the outgoing session must not resolve into
+    // the fresh transcript; the next hydration owns the new session.
+    transcriptHydrating.delete(tabId);
     set({
       transcripts: { ...get().transcripts, [tabId]: createTranscriptState() },
     });

@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Cpu } from "lucide-react";
 import { Composer } from "../session/Composer";
+import { StartingBanner } from "../session/StartingBanner";
 import { SessionFooter } from "../session/SessionFooter";
 import { Transcript } from "../session/Transcript";
 import { Button } from "../ui/button";
 import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
+import { selectDefaultModelProblem } from "../state/selectors";
 import { WidgetStrip } from "../extension-ui/WidgetStrip";
 import { ExtensionDialogDock } from "../extension-ui/ExtensionDialog";
 import { WorkingRow } from "../extension-ui/WorkingRow";
@@ -26,6 +28,7 @@ import { ModelPicker } from "../session/ModelPicker";
 import { ThinkingPicker } from "../session/ThinkingPicker";
 import { ThinkingLevelIcon } from "../session/ThinkingLevelIcon";
 import { thinkingLevelTitle } from "../../../shared/thinking";
+import type { ScopeDiagnosticInfo } from "../../../shared/model-scope";
 import { contextUsageOf, modelKeyOf, thinkingLevelsOf } from "../session/model-catalog";
 import { sameFolder } from "../../../shared/rail-scope";
 import type { WorkspaceEntryKind } from "../../../shared/workspace";
@@ -43,6 +46,7 @@ import { isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
 
 /** Stable empty scope for a tab whose scope has not loaded yet. */
 const EMPTY_SCOPE: readonly string[] = [];
+const EMPTY_DIAGNOSTICS: readonly ScopeDiagnosticInfo[] = [];
 
 /**
  * The `#` completion source.
@@ -84,6 +88,7 @@ export function SessionView({ tabId }: { tabId: string }) {
   const transcripts = useAppStore((state) => state.transcripts);
   const ensureSession = useAppStore((state) => state.ensureSession);
   const restartTab = useAppStore((state) => state.restartTab);
+  const cancelSession = useAppStore((state) => state.cancelSession);
   const hydrateTranscript = useAppStore((state) => state.hydrateTranscript);
   const sendPrompt = useAppStore((state) => state.sendPrompt);
   const stopRun = useAppStore((state) => state.stopRun);
@@ -117,6 +122,10 @@ export function SessionView({ tabId }: { tabId: string }) {
   const scopedPatterns = useAppStore((state) => state.modelScopePatterns[tabId]);
   const scopeTarget = useAppStore((state) => state.modelScopeTarget[tabId]);
   const scopeBusyKey = useAppStore((state) => state.modelScopeBusy[tabId] ?? null);
+  const scopeDiagnostics = useAppStore(
+    (state) => state.modelScopeDiagnostics[tabId] ?? EMPTY_DIAGNOSTICS,
+  );
+  const defaultModelIssue = useAppStore(selectDefaultModelProblem);
   const extensionUi = useAppStore((state) => state.extensionUi[tabId]);
   const extensionDialogs = useAppStore((state) => state.extensionDialogs);
   const toolsExpandedState = useAppStore((state) => state.toolsExpanded[tabId]);
@@ -140,6 +149,8 @@ export function SessionView({ tabId }: { tabId: string }) {
   const [composerFocusToken, setComposerFocusToken] = useState(0);
   const [surfaceFocusToken, setSurfaceFocusToken] = useState(0);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  /** The one explicit wake per mounted pane; status changes never re-trigger it. */
+  const ensuredPaneRef = useRef<string | null>(null);
 
   /**
    * The completion stack for this tab (plan step 7): commands from the host's
@@ -253,6 +264,17 @@ export function SessionView({ tabId }: { tabId: string }) {
       void loadShortcuts();
     }
   }, [activeId, focusedTabId, active?.kind, active?.status, loadShortcuts]);
+
+  // Mounting a pane is the gesture that may wake a stopped host. This replaces
+  // the old accidental wake through `tui.resize`: the viewport effect still
+  // reports while the host is live, but a status change can no longer spawn a
+  // host that was just recycled (2026-11-06 Strata loop).
+  useEffect(() => {
+    if (!activeId || active?.kind === "web") return;
+    if (ensuredPaneRef.current === activeId) return;
+    ensuredPaneRef.current = activeId;
+    if (active?.status === "stopped") void ensureSession(activeId);
+  }, [activeId, active?.kind, active?.status, ensureSession]);
 
   // Git polling and the checkpoint timeline are seeded by `ProjectRail` (the
   // rail follows the selected project, not this tab — 2026-10-30 plan), so the
@@ -374,6 +396,26 @@ export function SessionView({ tabId }: { tabId: string }) {
           <p className="rounded-md border border-accent bg-surface px-3 py-2 text-xs text-ink shadow-lg">
             Drop to mention this file in the prompt
           </p>
+        </div>
+      ) : null}
+
+      {active.status === "starting" && !active.error ? (
+        <StartingBanner key={active.id} onCancel={() => void cancelSession(active.id)} />
+      ) : null}
+
+      {active.memoryOverBudget && active.status !== "crashed" && active.status !== "failed" ? (
+        <div
+          data-testid="session-memory-warning"
+          className="banner banner--warn mx-4 mt-2 flex items-start justify-between gap-3"
+          role="status"
+        >
+          <span>
+            This session is using more than the 1 GB host memory budget. It is protected from
+            automatic recycling while you are viewing it; restart it to free memory.
+          </span>
+          <Button size="sm" variant="secondary" onClick={() => void restartTab(active.id)}>
+            Restart
+          </Button>
         </div>
       ) : null}
 
@@ -645,6 +687,8 @@ export function SessionView({ tabId }: { tabId: string }) {
         initialQuery={pickerSearch}
         scoped={scopedModels ?? EMPTY_SCOPE}
         patterns={scopedPatterns ?? EMPTY_SCOPE}
+        diagnostics={scopeDiagnostics}
+        defaultProblem={defaultModelIssue}
         scopeTarget={scopeTarget ?? "global"}
         scopeBusyKey={scopeBusyKey}
         error={pickerError}

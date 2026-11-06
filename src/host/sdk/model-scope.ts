@@ -199,20 +199,28 @@ export async function toggleScope(
     id: input.id,
     enabled: input.enabled,
   });
-  if (next === undefined) {
-    return { patterns: undefined, scopedModels: [], diagnostics: [] };
+  // A ref the pattern grammar cannot express is a visible warning, never a
+  // silent drop: the star click did not do what the user asked (2026-11-06 plan).
+  const rejected = next.rejected.map((entry) => ({
+    type: "warning" as const,
+    code: "unrepresentable" as const,
+    message: `${entry.ref} cannot be added to the model scope: Pi reads the text after the last colon as a thinking level, and this model id contains one.`,
+    pattern: entry.ref,
+  }));
+  if (next.patterns === undefined) {
+    return { patterns: undefined, scopedModels: [], diagnostics: rejected };
   }
 
   let after: ModelScopeResolution;
   try {
-    after = await resolve(next, input.runtime, { signal });
+    after = await resolve(next.patterns, input.runtime, { signal });
   } catch (error) {
     throw new ModelScopeError(`Could not resolve the new model scope: ${messageOf(error)}.`);
   }
   return {
-    patterns: next,
+    patterns: next.patterns,
     scopedModels: [...after.scopedModels],
-    diagnostics: after.diagnostics.map(toInfo),
+    diagnostics: [...after.diagnostics.map(toInfo), ...rejected],
   };
 }
 

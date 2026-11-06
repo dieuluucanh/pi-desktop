@@ -423,6 +423,8 @@ export interface SessionCore {
   handlers(): Partial<Record<HostMethod, HostHandler>>;
   snapshot(): SessionSnapshot;
   session(): HostSession | null;
+  /** Current session identity for event fencing (id + attachment epoch). */
+  identity(): { sessionId: string | null; epoch: number };
   cwd(): string;
   dispose(): Promise<void>;
 }
@@ -455,6 +457,8 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
   let cwd = deps.cwd;
   let session: HostSession | null = null;
+  /** Monotonic per-host attachment counter; a reload keeps the id but bumps this. */
+  let sessionEpoch = 0;
   let runtime: RuntimeLike | null = null;
   let manager: SessionManagerHandle | null = null;
   let unsubscribe: (() => void) | null = null;
@@ -721,6 +725,10 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     unsubscribeModelChanges?.();
     promptOrigins.reset();
     session = next;
+    sessionEpoch += 1;
+    // The Extensions hub reads this list; errors from the outgoing runner must
+    // not be attributed to the replacement session.
+    runtimeErrors.length = 0;
     unsubscribeErrors = next.extensionRunner?.onError?.(recordRuntimeError) ?? null;
     // A broken observer must not prevent the session from opening; the state
     // still refreshes on the ordinary SDK events above.
@@ -748,6 +756,26 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     await reconcileModelScope({ reload: true });
     deps.emit("session_replaced", snapshot(), runtime.session.sessionId ?? undefined);
     emitState();
+  };
+
+  /**
+   * Session replacement is one transition at a time.
+   *
+   * Main coalesces opens per tab, but a host can still receive two lifecycle
+   * requests from different callers (an explicit resume plus a repair path, or
+   * an extension command mid-restart). Running `runtime.switchSession` twice
+   * concurrently replaces the session under one caller and invalidates the
+   * extension runner it is about to use. Serializing here makes the second call
+   * wait for the first and observe its snapshot, instead of replacing again.
+   */
+  let sessionTransition: Promise<void> = Promise.resolve();
+  const serializeSessionTransition = <T>(run: () => Promise<T>): Promise<T> => {
+    const next = sessionTransition.then(run, run);
+    sessionTransition = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
   };
 
   const snapshot = (): SessionSnapshot => {
@@ -792,6 +820,12 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     cwd: string;
     sessionManager: SessionManagerHandle;
     trustAnswer?: TrustAnswer;
+    /**
+     * Why this session exists, carried to the renderer so a routine host
+     * recycle (`resume`) is not announced as a new conversation (2026-11-06
+     * plan, step 15).
+     */
+    reason?: "new" | "open" | "resume" | "reload";
     /** Per-project default applied only to a brand-new session (plan step 10). */
     model?: string;
     /** Per-project default thinking level for a brand-new session. */
@@ -834,7 +868,17 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     scopeFingerprint = null;
     await reconcileModelScope({ reload: true });
 
-    deps.emit("session_started", snapshot(), created.session.sessionId ?? undefined);
+    deps.emit(
+      "session_started",
+      {
+        ...snapshot(),
+        // Additive: the transcript dedupes on (sessionId) and the service drops a
+        // routine `resume`, so nine recycles of one session read as one start.
+        reason: options.reason ?? "new",
+        sessionId: created.session.sessionId ?? null,
+      },
+      created.session.sessionId ?? undefined,
+    );
     emitState();
     return snapshot();
   };
@@ -860,6 +904,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       return startSession({
         cwd: targetCwd,
         sessionManager,
+        reason: "new",
         ...(trustAnswer ? { trustAnswer } : {}),
         ...(model ? { model } : {}),
         ...(thinking ? { thinking } : {}),
@@ -872,6 +917,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       return startSession({
         cwd: typeof input.cwd === "string" && input.cwd.length > 0 ? input.cwd : deps.cwd,
         sessionManager: openManager(deps, sessionFile, cwd),
+        reason: "open",
       });
     },
 
@@ -882,7 +928,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         return snapshot();
       }
       const sessionFile = requireString(input.sessionFile ?? input.path, "sessionFile");
-      return startSession({ cwd, sessionManager: openManager(deps, sessionFile, cwd) });
+      return startSession({
+        cwd,
+        sessionManager: openManager(deps, sessionFile, cwd),
+        reason: "resume",
+      });
     },
 
     "session.fork": async (params) => {
@@ -1846,10 +1896,33 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     },
   };
 
+  // These handlers replace the runtime/session or rebuild its extension runner.
+  // The wrapper is applied here rather than in every handler body so a future
+  // lifecycle method is covered by adding one id to this list.
+  const SESSION_TRANSITION_METHODS = [
+    "session.create",
+    "session.open",
+    "session.resume",
+    "session.new",
+    "session.switch",
+    "session.clone",
+    "session.fork",
+    "session.reload",
+    "session.importJsonl",
+    "session.navigateTree",
+  ] as const;
+  for (const method of SESSION_TRANSITION_METHODS) {
+    const handler = handlers[method];
+    if (!handler) continue;
+    handlers[method] = (params, context) =>
+      serializeSessionTransition(() => Promise.resolve().then(() => handler(params, context)));
+  }
+
   return {
     handlers: () => handlers,
     snapshot,
     session: () => session,
+    identity: () => ({ sessionId: session?.sessionId ?? null, epoch: sessionEpoch }),
     cwd: () => cwd,
     dispose: async () => {
       promptOrigins.reset();

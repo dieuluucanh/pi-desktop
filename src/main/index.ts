@@ -360,6 +360,23 @@ const activeSessionId: { current: string | null } = { current: null };
 const visibleSessionIds: { current: ReadonlySet<string> } = { current: new Set<string>() };
 
 /**
+ * Sessions whose Plannotator/web tab is active or visible. The web tab is a view
+ * of that session, so its host must be protected like the session tab itself.
+ * The closure reads `sessions` after it is initialized; the supervisor only
+ * calls it from its own timers.
+ */
+function linkedWebSessionIds(): ReadonlySet<string> {
+  const linked = new Set<string>();
+  const active = activeSessionId.current;
+  const visible = visibleSessionIds.current;
+  for (const tab of sessions?.tabs() ?? []) {
+    if (tab.kind !== "web" || !tab.sessionTabId) continue;
+    if (tab.id === active || visible.has(tab.id)) linked.add(tab.sessionTabId);
+  }
+  return linked;
+}
+
+/**
  * The soft live-host target for this machine. Total memory is stable for the
  * app's lifetime; the control host is included in the count, and the value is
  * never a hard session limit (see `liveHostBudget`).
@@ -392,18 +409,18 @@ const hosts = runtime.nodePath
       // only a protocol/port sanity guard, never a session limit.
       maxHosts: hostProcessLimit,
       // Sleep a session after 15 minutes without real traffic. The active tab,
-      // the control host, an Office host and the bridge owner are protected
-      // from *idle* sleep; the active tab is not protected from the RSS
-      // watchdog (see `isBridgeOwner`).
+      // every visible pane, the control host, an Office host and the bridge
+      // owner are protected from idle sleep and from the RSS watchdog.
       idleTimeoutMs: IDLE_HOST_TIMEOUT_MS,
       isPinned: (sessionId) =>
         keepHostAlive(sessionId, {
           activeSessionId: activeSessionId.current,
           visibleSessionIds: visibleSessionIds.current,
           bridgeOwnerSessionId: bridgeOwnerSessionId.current(),
+          linkedSessionIds: linkedWebSessionIds(),
         }),
-      // The bridge owner keeps port 38617 alive; only it and the Office host
-      // are exempt from RSS recycling. The active tab is deliberately not.
+      // The bridge owner keeps port 38617 alive; the RSS guard never stops an
+      // active/visible host either (it warns instead).
       isBridgeOwner: (sessionId) => bridgeOwnerSessionId.current() === sessionId,
     })
   : null;
@@ -627,6 +644,7 @@ const sessionsIpc: IpcSessionDeps = {
     return envelope;
   },
   activate: (tabId: string) => requireSessions().activateTab(tabId),
+  ensure: (tabId: string) => requireSessions().ensureTab(tabId),
   setVisibleTabs: (ids: readonly string[]) => {
     // Mirror the push into the supervisor's holder before the service stores it:
     // the idle reaper reads the holder on its own timer, so a visible pane must
@@ -638,6 +656,7 @@ const sessionsIpc: IpcSessionDeps = {
   reconcile: () => requireSessions().reconcile(),
   restore: () => requireSessions().restoreTabs(),
   restart: (tabId: string) => requireSessions().restartTab(tabId),
+  stop: (tabId: string) => requireSessions().stopTab(tabId),
   request: (input) => requireSessions().request(input.tabId, input.method, input.params),
   deleteSession: deleteSessionFile,
 };
@@ -1760,12 +1779,17 @@ if (!app.requestSingleInstanceLock()) {
           const existing = sessions
             ?.tabs()
             .find((tab) => tab.kind === "web" && tab.url === input.url);
-          if (existing) return requireSessions().activateTab(existing.id);
+          if (existing) {
+            return input.activate === false
+              ? requireSessions().envelope()
+              : requireSessions().activateTab(existing.id);
+          }
           return requireSessions().createTab({
             kind: "web",
             cwd: webTabCwd(input.cwd),
             url: input.url,
             ...(input.sessionTabId ? { sessionTabId: input.sessionTabId } : {}),
+            ...(input.activate === false ? { activate: false } : {}),
           });
         },
         setBounds: (tabId, bounds) => {

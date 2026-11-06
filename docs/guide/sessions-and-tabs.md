@@ -72,6 +72,8 @@ area — the tab strips, the sidebar and the panel rail stay where they are.
 
 Every visible pane keeps its session awake. Sessions in panes you are not looking
 at still sleep after a long idle period, and wake on the next click or keystroke.
+A background review/web tab does not steal the selection: it opens beside the
+session and keeps that session's host protected while the review is open.
 
 ## Resuming and the session browser
 
