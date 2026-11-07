@@ -4,6 +4,10 @@ import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { Composer, isSendKey } from "../../src/renderer/src/session/Composer";
 import type { ImageAttachment } from "../../src/renderer/src/session/image-attachment";
+import {
+  stepPromptHistory,
+  type PromptHistoryBrowse,
+} from "../../src/renderer/src/session/prompt-history";
 import type { CompletionProvider } from "../../src/renderer/src/completion/types";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import {
@@ -41,7 +45,7 @@ function renderComposer(overrides: Partial<Parameters<typeof Composer>[0]> = {})
     onStop,
     onClearQueue,
     onRestoreQueue,
-    onHistoryStep: () => null,
+    onHistoryStep: () => ({ kind: "none" }),
     ...overrides,
   };
   const rendered = render(<Composer {...props} />);
@@ -210,50 +214,100 @@ describe("queue and attachments", () => {
   });
 });
 
+/**
+ * A parent that behaves like the store: a history step writes the draft and the
+ * browse record. The composer is presentational for history, so this is where
+ * "the step wrote the text" happens.
+ */
+function HistoryHarness({
+  entries,
+  initialDraft = "",
+}: {
+  entries: string[];
+  initialDraft?: string;
+}) {
+  const [draft, setDraft] = useState(initialDraft);
+  const [browse, setBrowse] = useState<PromptHistoryBrowse | undefined>(undefined);
+  return (
+    <Composer
+      tabId="tab-1"
+      running={false}
+      draft={draft}
+      queue={{ steering: [], followUp: [] }}
+      onDraftChange={setDraft}
+      onSend={async () => true}
+      onStop={() => undefined}
+      onClearQueue={() => undefined}
+      onRestoreQueue={() => undefined}
+      onHistoryStep={(direction, caret) => {
+        const step = stepPromptHistory({ direction, entries, browse, draft, caret });
+        if (step.kind === "applied") {
+          setBrowse(step.browse ?? undefined);
+          setDraft(step.text);
+        }
+        return step;
+      }}
+    />
+  );
+}
+
 describe("history", () => {
-  it("walks back through previous prompts from an empty draft", async () => {
+  it("recalls a prompt and restores the draft and caret on the way back", async () => {
     const user = userEvent.setup();
-    const onDraftChange = vi.fn();
-    renderComposer({
-      draft: "",
-      onDraftChange,
-      onHistoryStep: (direction: 1 | -1) => (direction === -1 ? "earlier prompt" : null),
-    });
-    await user.click(screen.getByLabelText("Prompt"));
+    render(<HistoryHarness entries={["earlier prompt"]} initialDraft="pending draft" />);
+    const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(box);
+    box.setSelectionRange(7, 7);
+
     await user.keyboard("{ArrowUp}");
-    expect(onDraftChange).toHaveBeenCalledWith("earlier prompt");
+    expect(box).toHaveValue("earlier prompt");
+    expect(box.selectionStart).toBe("earlier prompt".length);
+
+    await user.keyboard("{ArrowDown}");
+    expect(box).toHaveValue("pending draft");
+    expect(box.selectionStart).toBe(7);
+  });
+
+  it("clears the composer when the pending draft was empty", async () => {
+    const user = userEvent.setup();
+    render(<HistoryHarness entries={["earlier prompt"]} />);
+    const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(box);
+
+    await user.keyboard("{ArrowUp}");
+    expect(box).toHaveValue("earlier prompt");
+
+    // Regression: returning to "" must be applied, not treated as "no step".
+    await user.keyboard("{ArrowDown}");
+    expect(box).toHaveValue("");
   });
 
   it("leaves a multi-line draft's caret movement native inside the buffer", async () => {
     const user = userEvent.setup();
-    const onDraftChange = vi.fn();
-    renderComposer({ draft: "first line\nsecond line", onDraftChange });
+    const onHistoryStep = vi.fn(() => ({ kind: "none" as const }));
+    renderComposer({ draft: "first line\nsecond line", onHistoryStep });
     const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
     await user.click(box);
     // Caret on the second line: Up must move the caret, not recall history.
     box.setSelectionRange(box.value.length, box.value.length);
     fireEvent.keyDown(box, { key: "ArrowUp" });
-    expect(onDraftChange).not.toHaveBeenCalled();
+    expect(onHistoryStep).not.toHaveBeenCalled();
   });
 
-  it("walks forward only at the last line", async () => {
+  it("walks the history only from the last line and passes the caret", async () => {
     const user = userEvent.setup();
-    const onDraftChange = vi.fn();
-    renderComposer({
-      draft: "first line\nsecond line",
-      onDraftChange,
-      onHistoryStep: (direction: 1 | -1) => (direction === 1 ? "newer prompt" : null),
-    });
+    const onHistoryStep = vi.fn(() => ({ kind: "none" as const }));
+    renderComposer({ draft: "first line\nsecond line", onHistoryStep });
     const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
     await user.click(box);
     // Middle of the first line: Down stays native.
     box.setSelectionRange(2, 2);
     fireEvent.keyDown(box, { key: "ArrowDown" });
-    expect(onDraftChange).not.toHaveBeenCalled();
-    // Last line: Down walks history.
+    expect(onHistoryStep).not.toHaveBeenCalled();
+    // Last line: Down walks history, and the offset is the live caret.
     box.setSelectionRange(box.value.length, box.value.length);
     fireEvent.keyDown(box, { key: "ArrowDown" });
-    expect(onDraftChange).toHaveBeenCalledWith("newer prompt");
+    expect(onHistoryStep).toHaveBeenCalledWith(1, box.value.length);
   });
 });
 
@@ -498,7 +552,7 @@ describe("extension shortcut dispatch (Tab)", () => {
           onStop={() => undefined}
           onClearQueue={() => undefined}
           onRestoreQueue={() => undefined}
-          onHistoryStep={() => null}
+          onHistoryStep={() => ({ kind: "none" })}
           extensionShortcuts={[{ key: "tab" }]}
           onInvokeShortcut={onInvokeShortcut}
           completion={{ provider }}
@@ -566,7 +620,7 @@ describe("sleeping session (2026-10-24 plan)", () => {
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onHistoryStep={() => null}
+        onHistoryStep={() => ({ kind: "none" })}
         focusToken={1}
       />,
     );
@@ -605,7 +659,7 @@ describe("caret readout", () => {
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onHistoryStep={() => null}
+        onHistoryStep={() => ({ kind: "none" })}
       />
     );
   }

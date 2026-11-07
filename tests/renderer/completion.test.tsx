@@ -89,7 +89,7 @@ function renderComposer(
         onStop={onStop}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onHistoryStep={() => null}
+        onHistoryStep={() => ({ kind: "none" })}
         completion={{
           provider: options.provider ?? fakeProvider(),
           ...(options.apply ? { apply: options.apply } : {}),

@@ -71,6 +71,9 @@ function resetStore(): void {
     extensionUi: {},
     tuiSurfaces: {},
     picker: null,
+    draftHistory: {},
+    historySeed: {},
+    historyBrowse: {},
   });
 }
 
@@ -442,6 +445,9 @@ describe("two panes at once", () => {
       tuiSurfaces: {},
       picker: null,
       pickerTabId: null,
+      draftHistory: {},
+      historySeed: {},
+      historyBrowse: {},
     });
   }
 
@@ -464,6 +470,34 @@ describe("two panes at once", () => {
     expect(composers).toHaveLength(2);
     expect(composers[0]).toHaveValue("first");
     expect(composers[1]).toHaveValue("second");
+  });
+
+  it("keeps history browsing in the pane that pressed the arrow", async () => {
+    const user = userEvent.setup();
+    twoTabs();
+    useAppStore.setState({
+      prefs: { ...DEFAULT_PREFS, drafts: { [TAB]: "first draft", [OTHER]: "second draft" } },
+      draftHistory: { [TAB]: ["first history"], [OTHER]: ["second history"] },
+      historyBrowse: {},
+    });
+
+    render(
+      <>
+        <SessionView tabId={TAB} />
+        <SessionView tabId={OTHER} />
+      </>,
+    );
+
+    const [first, second] = screen.getAllByLabelText("Prompt") as HTMLTextAreaElement[];
+    await user.click(first!);
+    first!.setSelectionRange(first!.value.length, first!.value.length);
+
+    await user.keyboard("{ArrowUp}");
+
+    expect(first).toHaveValue("first history");
+    expect(second).toHaveValue("second draft");
+    expect(useAppStore.getState().prefs.drafts[OTHER]).toBe("second draft");
+    expect(useAppStore.getState().historyBrowse[OTHER]).toBeUndefined();
   });
 
   it("explains a slow open and cancels it", async () => {
@@ -499,5 +533,104 @@ describe("two panes at once", () => {
     fireEvent.click(within(tools[0]!).getByRole("button", { name: "Change model" }));
 
     expect(useAppStore.getState().pickerTabId).toBe(TAB);
+  });
+});
+
+/**
+ * Prompt history (2026-11-07 plan): `ArrowUp` recalls a sent prompt and
+ * `ArrowDown` must restore the draft that was being typed, including its caret.
+ */
+describe("prompt history", () => {
+  it("restores the pending draft after recalling a previous prompt", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({ draftHistory: { [TAB]: ["older prompt"] }, historyBrowse: {} });
+    render(<SessionView tabId={TAB} />);
+
+    const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(prompt);
+    await user.type(prompt, "pending prompt");
+
+    await user.keyboard("{ArrowUp}");
+    expect(prompt).toHaveValue("older prompt");
+
+    await user.keyboard("{ArrowDown}");
+    expect(prompt).toHaveValue("pending prompt");
+    expect(useAppStore.getState().prefs.drafts[TAB]).toBe("pending prompt");
+  });
+
+  it("restores the caret inside a multi-line draft", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({ draftHistory: { [TAB]: ["older prompt"] }, historyBrowse: {} });
+    render(<SessionView tabId={TAB} />);
+
+    const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(prompt);
+    fireEvent.change(prompt, { target: { value: "first line\nsecond line" } });
+    prompt.setSelectionRange(4, 4);
+
+    await user.keyboard("{ArrowUp}");
+    expect(prompt).toHaveValue("older prompt");
+
+    await user.keyboard("{ArrowDown}");
+    expect(prompt).toHaveValue("first line\nsecond line");
+    expect(prompt.selectionStart).toBe(4);
+  });
+
+  it("recalls a resumed session's prompts after hydration", async () => {
+    const user = userEvent.setup();
+    (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = vi.fn(
+      async (input: { method: string }) =>
+        input.method === "messages.get"
+          ? {
+              messages: [{ id: "m1", role: "user", content: "prompt from before the restart" }],
+            }
+          : {},
+    );
+
+    render(<SessionView tabId={TAB} />);
+    await waitFor(() => expect(useAppStore.getState().transcripts[TAB]?.hydrated).toBe(true));
+
+    const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(prompt);
+    await user.type(prompt, "pending draft");
+
+    // The session-derived seed is what makes this work after a restart.
+    await user.keyboard("{ArrowUp}");
+    expect(prompt).toHaveValue("prompt from before the restart");
+
+    await user.keyboard("{ArrowDown}");
+    expect(prompt).toHaveValue("pending draft");
+  });
+
+  it("leaves the draft alone when Up is pressed before hydration finishes", async () => {
+    const user = userEvent.setup();
+    let resolveMessages: (messages: unknown[]) => void = () => undefined;
+    const pending = new Promise<unknown[]>((resolve) => {
+      resolveMessages = resolve;
+    });
+    (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = vi.fn(
+      async (input: { method: string }) =>
+        input.method === "messages.get" ? { messages: await pending } : {},
+    );
+
+    render(<SessionView tabId={TAB} />);
+    const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(prompt);
+    await user.type(prompt, "pending draft");
+
+    // No seed yet: Up must stay a native caret move and keep the draft.
+    await user.keyboard("{ArrowUp}");
+    expect(prompt).toHaveValue("pending draft");
+
+    await act(async () => {
+      resolveMessages([{ id: "m1", role: "user", content: "older prompt" }]);
+      await pending;
+    });
+    await waitFor(() => expect(useAppStore.getState().transcripts[TAB]?.hydrated).toBe(true));
+
+    await user.keyboard("{ArrowUp}");
+    expect(prompt).toHaveValue("older prompt");
+    await user.keyboard("{ArrowDown}");
+    expect(prompt).toHaveValue("pending draft");
   });
 });

@@ -224,6 +224,14 @@ import type { HostCommandEntry } from "../completion/command-source";
 import type { FileListSnapshot } from "../completion/file-source";
 import { appArgumentItems } from "../completion/app-arguments";
 import { collapsePastes, expandPasteMarkers, pasteMarkerText } from "../session/paste-markers";
+import {
+  MAX_PROMPT_HISTORY,
+  mergePromptHistory,
+  promptHistoryFromTranscript,
+  stepPromptHistory,
+  type PromptHistoryBrowse,
+  type PromptHistoryStep,
+} from "../session/prompt-history";
 import type { CompletionItem, CompletionSource } from "../completion/types";
 import {
   isUnsupportedCommandComplete,
@@ -386,7 +394,8 @@ const TAB_SCOPED_RECORDS = [
   "modelScopeTarget",
   "modelScopeBusy",
   "draftHistory",
-  "historyIndex",
+  "historySeed",
+  "historyBrowse",
   "pasteBodies",
 ] as const;
 
@@ -990,8 +999,20 @@ export interface AppStateShape {
 
   /** Composer (plan step 6). */
   draftHistory: Record<string, string[]>;
-  /** Where the user is browsing history for a tab (-1 = the live draft). */
-  historyIndex: Record<string, number>;
+  /**
+   * Prompts rebuilt from the hydrated transcript, newest first (2026-11-07
+   * restart plan). `historyStep` walks this merged below `draftHistory`, so a
+   * resumed session recalls its old prompts exactly like terminal Pi.
+   * Renderer only; never persisted.
+   */
+  historySeed: Record<string, string[]>;
+  /**
+   * Where the user is browsing a tab's sent prompts (2026-11-07 prompt-history
+   * plan). Absence means the composer shows the live draft; the record also
+   * stashes that draft and its caret so walking back restores them. Renderer
+   * only; never persisted.
+   */
+  historyBrowse: Record<string, PromptHistoryBrowse>;
   setDraft: (tabId: string, text: string) => void;
   sendPrompt: (
     tabId: string,
@@ -1014,7 +1035,11 @@ export interface AppStateShape {
   clearQueue: (tabId: string) => Promise<void>;
   abortRetry: (tabId: string) => Promise<void>;
   abortCompaction: (tabId: string) => Promise<void>;
-  historyStep: (tabId: string, direction: 1 | -1) => string | null;
+  /**
+   * Steps a tab's prompt history. The store writes the returned text (the
+   * preview or the restored draft); the composer only places the caret.
+   */
+  historyStep: (tabId: string, direction: 1 | -1, caret?: number) => PromptHistoryStep;
 
   /** Completion engine (plan step 7). */
   completionCommands: Record<string, HostCommandEntry[]>;
@@ -1982,17 +2007,106 @@ function notificationCooldownKey(tabId: string, notification: ExtensionNotificat
   return `${tabId}\u0000${notification.type}\u0000${normalizeNotificationText(notification.message)}`;
 }
 
-/** Records one executed send in the draft history, exactly once. */
+/**
+ * The draft that belongs to the user for a tab. While a history preview is on
+ * screen the stashed draft wins: a recall is a view, never the user's unfinished
+ * prompt (2026-11-07 prompt-history plan, D7).
+ */
+function liveDraftOf(state: AppStateShape, tabId: string): string {
+  return state.historyBrowse[tabId]?.draftText ?? state.prefs.drafts[tabId] ?? "";
+}
+
+/** The whole draft map with every browsing tab's stashed draft substituted. */
+function draftsForPersist(state: AppStateShape): Record<string, string> {
+  const drafts = { ...state.prefs.drafts };
+  for (const [tabId, browse] of Object.entries(state.historyBrowse)) {
+    drafts[tabId] = browse.draftText;
+  }
+  return drafts;
+}
+
+/**
+ * Writes the composer's visible text: state, the debounced prefs persist and
+ * the host mirror. It never touches prompt-history state. The public `setDraft`
+ * exits a history browse first (pi-tui's `setText`), while `historyStep` writes
+ * a preview through here (pi-tui's `setTextInternal`).
+ */
+function writeComposerDraft(tabId: string, text: string): void {
+  const current = useAppStore.getState();
+  const drafts = { ...current.prefs.drafts, [tabId]: text };
+  useAppStore.setState({ prefs: { ...current.prefs, drafts } });
+  if (draftPersistTimer) clearTimeout(draftPersistTimer);
+  draftPersistTimer = setTimeout(() => {
+    draftPersistTimer = null;
+    // A preview is on screen during a history walk; persist the stashed draft,
+    // not the recalled prompt the user is only looking at.
+    void bridge()?.prefs.set({ drafts: draftsForPersist(useAppStore.getState()) });
+  }, DRAFT_PERSIST_DELAY_MS);
+  // Mirror the composer back to the host so `ctx.ui.getEditorText()` is
+  // truthful (plan step 16). Debounced per tab, never per keystroke.
+  const pending = editorTextTimers.get(tabId);
+  if (pending) clearTimeout(pending);
+  editorTextTimers.set(
+    tabId,
+    setTimeout(() => {
+      editorTextTimers.delete(tabId);
+      // The host's `getEditorText()` must see the body, not the marker
+      // (plan step 20, D15: the textarea is the display) and, while browsing, it
+      // must see the stashed draft rather than the preview.
+      const state = useAppStore.getState();
+      state.reportEditorText(tabId, state.expandPastes(tabId, liveDraftOf(state, tabId)));
+    }, EDITOR_TEXT_DELAY_MS),
+  );
+}
+
+/**
+ * Leaves history mode without writing the draft (pi-tui's
+ * `exitHistoryBrowsing`). A real write calls this first; a history step must
+ * not, or it would drop the browse record it just set.
+ */
+function exitHistoryBrowsing(tabId: string): void {
+  const browse = useAppStore.getState().historyBrowse;
+  if (!browse[tabId]) return;
+  useAppStore.setState({ historyBrowse: omitKey(browse, tabId) });
+}
+
+/**
+ * Records one executed send in the tab's prompt history, matching pi-tui's
+ * `addToHistory` (`editor.js:308-319`): empty text is ignored, a prompt
+ * identical to the newest entry is not duplicated, and the list is capped.
+ * Submitting always ends a history browse (pi-tui's `submitValue` calls
+ * `exitHistoryBrowsing` before clearing the editor).
+ */
 function rememberDraft(tabId: string, text: string): void {
   const trimmed = text.trim();
-  const history = useAppStore.getState().draftHistory[tabId] ?? [];
+  const state = useAppStore.getState();
+  const historyBrowse = state.historyBrowse[tabId]
+    ? omitKey(state.historyBrowse, tabId)
+    : state.historyBrowse;
+  if (trimmed.length === 0) {
+    if (historyBrowse !== state.historyBrowse) useAppStore.setState({ historyBrowse });
+    return;
+  }
+  const history = state.draftHistory[tabId] ?? [];
+  const next =
+    history[0] === trimmed ? history : [trimmed, ...history].slice(0, MAX_PROMPT_HISTORY);
   useAppStore.setState({
-    draftHistory: {
-      ...useAppStore.getState().draftHistory,
-      [tabId]: [trimmed, ...history].slice(0, 50),
-    },
-    historyIndex: { ...useAppStore.getState().historyIndex, [tabId]: -1 },
+    draftHistory: { ...state.draftHistory, [tabId]: next },
+    historyBrowse,
   });
+}
+
+/**
+ * The session-derived prompt history for a tab, newest first. Terminal Pi
+ * rebuilds its editor history from the rendered user messages on every resume
+ * (`interactive-mode.js:3264-3266`); this is the same read over the desktop's
+ * hydrated transcript. `historyStep` merges it below the live prompts.
+ */
+function promptHistorySeed(transcript: TranscriptState | undefined): string[] {
+  if (!transcript?.hydrated) return [];
+  return promptHistoryFromTranscript(
+    transcript.items.flatMap((item) => (item.kind === "message" ? [item.message] : [])),
+  );
 }
 
 /**
@@ -2158,7 +2272,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   sessionInfoData: null,
   sessionInfoError: null,
   draftHistory: {},
-  historyIndex: {},
+  historySeed: {},
+  historyBrowse: {},
   completionCommands: {},
   completionFiles: {},
   modelCatalog: {},
@@ -2763,14 +2878,21 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // history load independently). Re-annotate it, so a reopened command
       // prompt is collapsed without fetching history again.
       if (Object.keys(prefs.promptOrigins).length > 0) {
-        set((state) => ({
-          transcripts: Object.fromEntries(
+        set((state) => {
+          const transcripts = Object.fromEntries(
             Object.entries(state.transcripts).map(([tabId, transcript]) => [
               tabId,
               applyPromptOrigins(transcript, prefs.promptOrigins),
             ]),
-          ),
-        }));
+          );
+          // A command prompt seeded before prefs arrived holds its expanded
+          // body; rebuild from the annotated transcript so Up shows the command.
+          const historySeed = { ...state.historySeed };
+          for (const [tabId, transcript] of Object.entries(transcripts)) {
+            if (transcript.hydrated) historySeed[tabId] = promptHistorySeed(transcript);
+          }
+          return { transcripts, historySeed };
+        });
       }
     } catch {
       set({ prefsLoaded: true });
@@ -3105,11 +3227,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
         transcriptHydrateNoted.delete(tabId);
         const base = get().transcripts[tabId] ?? createTranscriptState();
+        const hydrated = hydrateMessages(base, result.messages ?? [], get().prefs.promptOrigins);
         set({
-          transcripts: {
-            ...get().transcripts,
-            [tabId]: hydrateMessages(base, result.messages ?? [], get().prefs.promptOrigins),
-          },
+          transcripts: { ...get().transcripts, [tabId]: hydrated },
+          // A resumed session rebuilds history from its user messages, exactly
+          // like terminal Pi's `renderInitialMessages` + `populateHistory`.
+          historySeed: { ...get().historySeed, [tabId]: promptHistorySeed(hydrated) },
         });
       } catch (error) {
         // A failed read must not be cached as "no history": after a relaunch the
@@ -3482,28 +3605,15 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (request) void request.then(undefined, () => undefined);
   },
 
+  /**
+   * The public draft writer (typing, mentions, queue restore, sends). Any real
+   * write ends history mode first, exactly like pi-tui's `setText` calling
+   * `exitHistoryBrowsing`: the stashed draft is dropped and this text becomes
+   * the draft (2026-11-07 prompt-history plan, D6).
+   */
   setDraft: (tabId, text) => {
-    const drafts = { ...get().prefs.drafts, [tabId]: text };
-    set({ prefs: { ...get().prefs, drafts } });
-    if (draftPersistTimer) clearTimeout(draftPersistTimer);
-    draftPersistTimer = setTimeout(() => {
-      draftPersistTimer = null;
-      void bridge()?.prefs.set({ drafts: useAppStore.getState().prefs.drafts });
-    }, DRAFT_PERSIST_DELAY_MS);
-    // Mirror the composer back to the host so `ctx.ui.getEditorText()` is
-    // truthful (plan step 16). Debounced per tab, never per keystroke.
-    const pending = editorTextTimers.get(tabId);
-    if (pending) clearTimeout(pending);
-    editorTextTimers.set(
-      tabId,
-      setTimeout(() => {
-        editorTextTimers.delete(tabId);
-        // The host's `getEditorText()` must see the body, not the marker
-        // (plan step 20, D15: the textarea is the display).
-        const draft = useAppStore.getState().prefs.drafts[tabId] ?? "";
-        get().reportEditorText(tabId, get().expandPastes(tabId, draft));
-      }, EDITOR_TEXT_DELAY_MS),
-    );
+    exitHistoryBrowsing(tabId);
+    writeComposerDraft(tabId, text);
   },
 
   openPicker: (picker, options = {}) =>
@@ -4386,15 +4496,25 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  historyStep: (tabId, direction) => {
-    const history = get().draftHistory[tabId] ?? [];
-    if (history.length === 0) return null;
-    const current = get().historyIndex[tabId] ?? -1;
-    // -1 means "the live draft"; older entries walk forward through the list.
-    const next =
-      direction === -1 ? Math.min(current + 1, history.length - 1) : Math.max(current - 1, -1);
-    set({ historyIndex: { ...get().historyIndex, [tabId]: next } });
-    return next === -1 ? null : (history[next] ?? null);
+  historyStep: (tabId, direction, caret = 0) => {
+    const state = get();
+    const step = stepPromptHistory({
+      direction,
+      entries: mergePromptHistory(state.draftHistory[tabId] ?? [], state.historySeed[tabId] ?? []),
+      browse: state.historyBrowse[tabId],
+      draft: state.prefs.drafts[tabId] ?? "",
+      caret,
+    });
+    if (step.kind === "none") return step;
+    set({
+      historyBrowse: step.browse
+        ? { ...state.historyBrowse, [tabId]: step.browse }
+        : omitKey(state.historyBrowse, tabId),
+    });
+    // pi-tui's `navigateHistory` writes through `setTextInternal`, which must not
+    // exit the browsing state it just set; do not route this through `setDraft`.
+    writeComposerDraft(tabId, step.text);
+    return step;
   },
 
   // ---- Connections: providers, credentials and sign-in (plan step 9) ----
@@ -7378,6 +7498,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     transcriptHydrating.delete(tabId);
     set({
       transcripts: { ...get().transcripts, [tabId]: createTranscriptState() },
+      // The outgoing branch's seed must not leak into the next hydrate; live
+      // prompts (`draftHistory`) and the stashed draft survive, as in Pi.
+      historySeed: omitKey(get().historySeed, tabId),
     });
   },
 }));

@@ -51,7 +51,7 @@ beforeEach(() => {
     transcripts: {},
     sessionStates: {},
     draftHistory: {},
-    historyIndex: {},
+    historyBrowse: {},
     completionCommands: {},
     completionFiles: {},
     modelCatalog: {},

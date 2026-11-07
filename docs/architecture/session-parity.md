@@ -39,7 +39,8 @@ drift from the terminal.
 9. **The composer clears at submit.** Enter empties the draft before the host
    request, matching terminal's `submitValue`; only a pre-acceptance refusal
    restores it (above anything typed since). A run that was acknowledged never
-   puts the text back.
+   puts the text back. A prompt submitted from history clears the composer and
+   drops its stashed draft too (`submitValue` → `exitHistoryBrowsing`).
 10. **Command prompts are host-tagged and collapsed by default.** A prompt
     template/skill or an extension-injected user message carries
     `promptOrigin`; the row names the command, hides the expanded body, and is
@@ -68,6 +69,20 @@ drift from the terminal.
     `ensureSession`, the `focus`/`visibilitychange` re-sync, and find-bar/tool
     toggles. Never rebuild `components` inline and never move tokens back into
     component state.
+13. **Prompt history is a draft-stashing walk.** The first `↑` stashes the draft
+    text and caret in `historyBrowse` and shows the newest sent prompt; `↓` walks
+    forward and, at the newest entry, restores the stash (including an empty
+    draft). Any real write (`setDraft`) or submit ends the walk and drops the
+    stash, exactly like pi-tui's `setText`/`submitValue` calling
+    `exitHistoryBrowsing`. While a preview is visible, the debounced
+    `prefs.set` and the `oi.editorText` mirror carry the stashed draft, never the
+    recalled prompt. The walked entries are the merge of prompts sent in this
+    renderer run (`draftHistory`) and a per-tab session seed rebuilt from the
+    hydrated transcript's user messages (`messages.get`, `promptOrigin` first,
+    100 cap). The seed is re-installed on every hydrate and branch switch,
+    upgraded after `loadPrefs` re-applies command origins, cleared by
+    `resetTranscript`, and pruned with the tab; shell `!` commands are not in the
+    transcript and are not seeded.
 
 ## Gap matrix (terminal 1.4.0 → desktop)
 
@@ -140,7 +155,10 @@ drift from the terminal.
   the source text visible instead of rendering an empty block.
 - `tests/renderer/transcript.test.tsx` — a fenced block's `pre` survives an
   unrelated transcript re-render (expand state, a new items array).
-- `tests/renderer/composer.test.tsx` — `!`/`!!`, chords, paste markers, queue.
+- `tests/renderer/composer.test.tsx` — `!`/`!!`, chords, paste markers, queue,
+  and the history key routing/caret.
+- `tests/renderer/prompt-history.test.ts` — the pure prompt-history walk: stash on
+  entry, restore (including an empty draft), no wrap, stale-index clamping.
 - `tests/host/session-core.test.ts` — bash run/abort, clone, export/import,
   replacement.
 - `tests/host/packages.test.ts` — extension update check.
@@ -153,6 +171,14 @@ drift from the terminal.
 - **Native textarea editing** (undo, word navigation, clipboard) is kept; the
   terminal kill-ring, `Ctrl+W/K/U`, `Ctrl+C` clear, double-Esc tree/fork, `Ctrl+D`
   exit and `Ctrl+Z` suspend are not ported. The menu/tabs own those actions.
+- **Prompt-history carets.** `↑` places the caret at the end of a recalled
+  prompt (pi-tui puts it at the start), so `↓` from the last line returns to the
+  draft in one press even for a multi-line prompt. `↑` enters history from line 1
+  at any column; pi-tui requires column 0.
+- **Prompt-history reconstruction.** `!` shell commands are not in the resumed
+  transcript, so history after a restart contains only typed prompts (terminal
+  Pi behaves the same). Pressing `↑` before the session finishes loading is a
+  no-op; the next press after hydration recalls.
 - **External editor** opens an in-app expanded editor; a configured GUI editor is
   best-effort. TUI editors need a TTY the app does not have.
 - **Paste markers** are persisted with a bounded paste map; the terminal keeps

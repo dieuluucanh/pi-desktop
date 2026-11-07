@@ -5,6 +5,7 @@ import { cn } from "../ui/cn";
 import { PROMPT_MAX_HEIGHT_PX, useAutoGrowTextarea } from "../ui/auto-grow";
 import { fileToAttachment, isImageFile, type ImageAttachment } from "./image-attachment";
 import { lostPasteIds, shouldCollapsePaste } from "./paste-markers";
+import type { PromptHistoryStep } from "./prompt-history";
 import { useAppStore } from "../state/app-store";
 import { sameFolder } from "../../../shared/rail-scope";
 import type { WorkspaceEntryKind } from "../../../shared/workspace";
@@ -48,6 +49,10 @@ import type {
  *    Enter steers; Alt+Enter / Ctrl+Q queue a follow-up. The choice is the
  *    chord, not a remembered toggle — the same model as terminal Pi.
  *  - **Escape**: stop the run and put the queued text back in the editor.
+ *  - **History**: Up on the first line recalls a sent prompt; Down on the last
+ *    line walks forward and, at the newest entry, restores the draft and caret
+ *    stashed when browsing began. The store owns both buffers, so a history
+ *    step writes the text and the composer only places the returned caret.
  */
 
 export interface ComposerProps {
@@ -96,7 +101,7 @@ export interface ComposerProps {
   onInvokeShortcut?: (key: string) => void;
   /** Asks the store to load the extension shortcuts (once). */
   onRequestShortcuts?: () => void;
-  onHistoryStep: (direction: 1 | -1) => string | null;
+  onHistoryStep: (direction: 1 | -1, caret: number) => PromptHistoryStep;
   /** The completion engine (plan step 7); omit it to disable completion. */
   completion?: ComposerCompletion;
   /** Step 7 attaches the completion overlay here. */
@@ -824,20 +829,28 @@ export function Composer({
               const offset = event.currentTarget.selectionStart ?? 0;
               const caretLine = value.slice(0, offset).split("\n").length;
               const lineCount = value.split("\n").length;
+              const applyHistory = (direction: 1 | -1): void => {
+                const step = onHistoryStep(direction, offset);
+                // "none" means the textarea keeps the key: no history movement.
+                if (step.kind === "none") return;
+                event.preventDefault();
+                // Pi cancels autocomplete when it navigates history; do the same
+                // so a menu built from the old buffer cannot survive the step.
+                closeCompletion();
+                setPickedSource(undefined);
+                pendingCaretRef.current = { text: step.text, caret: step.caret };
+                // The store already wrote the text. The caret can only be placed
+                // once the controlled value commits; the microtask also covers a
+                // preview identical to the current draft, where the `draft`
+                // effect does not re-run (same pattern as insertMention).
+                queueMicrotask(applyPendingCaret);
+              };
               if (event.key === "ArrowUp" && caretLine <= 1) {
-                const previous = onHistoryStep(-1);
-                if (previous !== null) {
-                  event.preventDefault();
-                  onDraftChange(previous);
-                }
+                applyHistory(-1);
                 return;
               }
               if (event.key === "ArrowDown" && caretLine >= lineCount) {
-                const next = onHistoryStep(1);
-                if (next !== null) {
-                  event.preventDefault();
-                  onDraftChange(next);
-                }
+                applyHistory(1);
                 return;
               }
               if (

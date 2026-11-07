@@ -105,7 +105,7 @@ describe("composer paste", () => {
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onHistoryStep={() => null}
+        onHistoryStep={() => ({ kind: "none" })}
       />,
     );
     const box = screen.getByLabelText("Prompt");
@@ -130,7 +130,7 @@ describe("composer paste", () => {
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onHistoryStep={() => null}
+        onHistoryStep={() => ({ kind: "none" })}
       />,
     );
     fireEvent.paste(screen.getByLabelText("Prompt"), {
@@ -154,7 +154,7 @@ describe("composer paste", () => {
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onHistoryStep={() => null}
+        onHistoryStep={() => ({ kind: "none" })}
       />,
     );
     const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
@@ -178,7 +178,7 @@ describe("composer paste", () => {
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onHistoryStep={() => null}
+        onHistoryStep={() => ({ kind: "none" })}
       />,
     );
     expect(screen.getByTestId("paste-content-lost")).toHaveTextContent("#2");

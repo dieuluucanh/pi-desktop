@@ -207,6 +207,8 @@ describe("applyTabs", () => {
       sessionStates: { [first.id]: { model: "test" } },
       modelCatalog: { [first.id]: [] },
       pasteBodies: { [first.id]: { 1: "large paste" } },
+      draftHistory: { [first.id]: ["a prompt"] },
+      historySeed: { [first.id]: ["from the session"] },
     });
     expect(useAppStore.getState().blobs["C:/blobs/a.json"]).toBeDefined();
 
@@ -217,6 +219,8 @@ describe("applyTabs", () => {
     expect(state.sessionStates[first.id]).toBeUndefined();
     expect(state.modelCatalog[first.id]).toBeUndefined();
     expect(state.pasteBodies[first.id]).toBeUndefined();
+    expect(state.draftHistory[first.id]).toBeUndefined();
+    expect(state.historySeed[first.id]).toBeUndefined();
     expect(state.blobs["C:/blobs/a.json"]).toBeUndefined();
   });
 

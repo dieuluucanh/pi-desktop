@@ -608,7 +608,7 @@ export function SessionView({ tabId }: { tabId: string }) {
                 onStop={() => void stopRun(active.id)}
                 onClearQueue={() => void clearQueue(active.id)}
                 onRestoreQueue={() => void restoreQueue(active.id)}
-                onHistoryStep={(direction) => historyStep(active.id, direction)}
+                onHistoryStep={(direction, caret) => historyStep(active.id, direction, caret)}
               />
             </div>
           )}

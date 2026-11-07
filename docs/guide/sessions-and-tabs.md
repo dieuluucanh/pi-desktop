@@ -175,6 +175,15 @@ The composer is a plain text area with Pi’s autocomplete contract:
   interrupted text into the composer — the same recipe terminal Pi uses.
 - Drafts are kept per tab, so switching tabs or restarting the app does not lose
   an unfinished prompt.
+- `↑` recalls prompts already sent in this tab, newest first; `↓` walks forward
+  and returns to the draft (and caret) you had when you started. Editing a
+  recalled prompt — or sending it — ends history mode and adopts the visible
+  text, exactly like terminal Pi. History is rebuilt from the session when a tab
+  loads, so it survives an app restart and includes sessions created in terminal
+  Pi; prompts sent in the current run stay on top. A command prompt is recalled
+  as the command you typed when the app knows it. After a compaction only the
+  prompts still in the active context remain (same as terminal Pi), and `!`
+  shell commands are only in the current run.
 - Paste or drop images to attach them; they are downscaled in the renderer and
   passed to the model as inline image content.
 
