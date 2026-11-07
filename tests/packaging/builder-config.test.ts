@@ -59,10 +59,12 @@ describe("electron-builder config (plan step 26)", () => {
     expect(builderYaml).toMatch(/arch:\s*\[arm64,\s*x64\]/);
     expect(builderYaml).toMatch(/target:\s*AppImage/);
     expect(builderYaml).toMatch(/target:\s*deb/);
-    // Linux is the one platform that also ships arm64, so its targets carry
-    // their own arch lists (the beta artefacts are built per arch in CI).
-    expect(builderYaml).toMatch(/target:\s*AppImage\s*\n\s+arch:\s*\[x64,\s*arm64\]/);
-    expect(builderYaml).toMatch(/target:\s*deb\s*\n\s+arch:\s*\[x64,\s*arm64\]/);
+    // Linux is built per arch by the release matrix, which passes `--x64` or
+    // `--arm64` on the CLI. A pinned `arch` list on these targets overrides that
+    // flag: electron-builder then packages both architectures and `afterPack`
+    // fails on the one whose runtime the job did not fetch. `package:linux`
+    // passes both flags for a local dual-arch build instead.
+    expect(builderYaml).not.toMatch(/target:\s*(?:AppImage|deb)\s*\n\s+arch:/);
   });
 
   it("ships the bundled runtime and the Office manifest outside the asar", () => {

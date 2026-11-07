@@ -120,11 +120,15 @@ linux:
   maintainer: Pi Desktop contributors <dieuluucanh@gmail.com>
   vendor: Pi Desktop contributors
   synopsis: Desktop app for the Pi coding agent
+  # Do NOT pin `arch` on these targets. The release workflow builds Linux as an
+  # x64/arm64 matrix and passes the architecture on the CLI (`--x64` /
+  # `--arm64`); a target that carries its own arch list cannot be narrowed by
+  # that flag, so electron-builder packaged the other architecture too and
+  # `afterPack` failed looking for a runtime the job had deliberately not
+  # fetched. `package:linux` passes both flags for a local dual-arch build.
   target:
     - target: AppImage
-      arch: [x64, arm64]
     - target: deb
-      arch: [x64, arm64]
 
 appImage:
   # Same rule as NSIS/portable on Windows (plan step 27): each target gets its

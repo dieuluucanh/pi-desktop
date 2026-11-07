@@ -39,7 +39,7 @@ uploaded. A partially uploaded draft is invisible to end users; a half-uploaded 
 release would break updates for everyone until it was fixed.
 
 ```text
-prepare   gh release create <tag> --draft --verify-tag --notes-file docs/releases/v0.7.1.md
+prepare   gh release create <tag> --draft --verify-tag --notes-file docs/releases/v0.7.2.md
 windows   build → verify → gh release upload *.exe *.blockmap latest.yml --clobber
 linux     build → verify → gh release upload *.AppImage *.deb latest-linux*.yml --clobber
 macos     build → verify → gh release upload *.dmg *.zip latest-mac.yml --clobber
@@ -222,6 +222,9 @@ platform/arch (`scripts/electron-builder-after-pack.mjs`).
 
 Linux has no upstream prebuild, so the `linux` job is a matrix: x64 on
 `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`; each run fetches only its own
-runtime and packages one arch (`--${{ matrix.arch }}`). The publish job still
-gates on `[prepare, windows, linux, macos]` because the matrix aggregates under
-`linux`.
+runtime and packages one arch (`--${{ matrix.arch }}`). The `linux.target`
+entries in `electron-builder.yml` deliberately carry **no** `arch` list: a pinned
+list overrides `--x64`/`--arm64`, so each job would package both architectures and
+`afterPack` would fail on the one whose runtime the job did not fetch. The publish
+job still gates on `[prepare, windows, linux, macos]` because the matrix aggregates
+under `linux`.
