@@ -49,10 +49,10 @@ grant trust. The composer's `!` stays the agent-visible command runner. See
 
 **Can I open several projects at once?**
 Yes — tabs are per session and sessions belong to projects; the sidebar groups
-them. There is one window in v0.7.0 (multi-window is backlog).
+them. There is one window in v0.7.1 (multi-window is backlog).
 
 **Why does Windows/macOS warn when I install it?**
-The v0.7.0 artefacts are unsigned. Windows SmartScreen: “More info → Run anyway”.
+The v0.7.1 artefacts are unsigned. Windows SmartScreen: “More info → Run anyway”.
 macOS refuses the first launch without offering a right-click override: open
 **System Settings → Privacy & Security**, scroll to the bottom and choose
 **Open Anyway**. See [Getting started](getting-started.md#installing-on-macos).
@@ -79,7 +79,7 @@ so. Package installs are separate: the app updates its own code, the package
 manager updates extensions.
 
 **Is it translated?**
-Not yet (i18n is backlog). The UI is English in v0.7.0.
+Not yet (i18n is backlog). The UI is English in v0.7.1.
 
 **How do I copy the proposed commit message from `/commit`?**
 The extension renders it in a questionnaire panel. Select the text and press

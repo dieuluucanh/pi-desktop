@@ -14,10 +14,13 @@
 
 ## Release notes
 
-- [`releases/v0.7.0.md`](releases/v0.7.0.md) — v0.7.0 release notes (the PTY-backed
-  integrated terminal, the session reliability pass, host-side transcript search and
-  the Node 24.22.2 runtime), install table, the known-limitations list and the
-  verification status.
+- [`releases/v0.7.1.md`](releases/v0.7.1.md) — v0.7.1 release notes (the first published
+  0.7 build: the PTY-backed integrated terminal, the session reliability pass,
+  host-side transcript search and the Node 24.22.2 runtime), the fix that unblocked the
+  release run, install table, known limitations and verification status.
+- [`releases/v0.7.0.md`](releases/v0.7.0.md) — v0.7.0 release notes, kept for the record:
+  the tag was cut but the release run failed before uploading, so this version was never
+  published and v0.7.1 carries its content.
 - [`releases/v0.6.0.md`](releases/v0.6.0.md) — v0.6.0 release notes (new files in
   brand-new folders now appear in Changes with a full-file diff, honest status
   timeouts, and the one-page product site), install table, the known-limitations

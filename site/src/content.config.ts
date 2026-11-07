@@ -4,9 +4,9 @@ import { docsSchema } from "@astrojs/starlight/schema";
 
 export const collections = {
   docs: defineCollection({
-    // Release filenames contain version dots (`v0.7.0.md`). The default
-    // generateId slugifies them to `v070`; keep the source basename so the
-    // public URL is `/releases/v0.7.0/`.
+    // Release filenames contain version dots (`v0.7.1.md`). The default
+    // generateId slugifies them to `v071`; keep the source basename so the
+    // public URL is `/releases/v0.7.1/`.
     loader: docsLoader({ generateId: ({ entry }) => entry.replace(/\.[^.]+$/, "") }),
     schema: docsSchema(),
   }),
