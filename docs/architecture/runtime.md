@@ -65,7 +65,7 @@ runnable binary, and only the host platform additionally runs `<node> --version`
 2. **The npm payload** the distribution ships — `node.lock.json`'s
    `node.npmPayload` holds its sha256, taken over CRLF-normalised content because
    the Windows ZIP ships the same npm files with CRLF while the tarballs ship LF.
-3. **The version stamp** in the binary (`node.js/v24.21.0`, present in the `.exe`,
+3. **The version stamp** in the binary (`node.js/v24.22.2`, present in the `.exe`,
    ELF and Mach-O alike) cross-checked against `include/node/node_version.h`.
 
 This is what makes `npm run package:linux` work from Windows; before it, `--all`

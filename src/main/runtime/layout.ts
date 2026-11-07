@@ -66,7 +66,7 @@ export function shimFileName(name: ShimName, platform: string): string {
   return name === "node" ? name : `${name}.cmd`;
 }
 
-/** `"v24.21.0\n"` → `"24.21.0"`; anything unparseable → `null`. */
+/** `"v24.22.2\n"` → `"24.22.2"`; anything unparseable → `null`. */
 export function parseNodeVersion(raw: string | null | undefined): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim().replace(/^v/i, "");
