@@ -14,10 +14,13 @@
 
 ## Release notes
 
-- [`releases/v0.7.2.md`](releases/v0.7.2.md) — v0.7.2 release notes (the first published
+- [`releases/v0.7.3.md`](releases/v0.7.3.md) — v0.7.3 release notes (the first published
   0.7 build: the PTY-backed integrated terminal, the session reliability pass,
-  host-side transcript search and the Node 24.22.2 runtime), the two release-tooling
+  host-side transcript search and the Node 24.22.2 runtime), the three release-tooling
   fixes, install table, known limitations and verification status.
+- [`releases/v0.7.2.md`](releases/v0.7.2.md) — v0.7.2 release notes, kept for the record:
+  the tag was cut but the Linux artefact guard failed, so this version was never
+  published.
 - [`releases/v0.7.1.md`](releases/v0.7.1.md) — v0.7.1 release notes, kept for the record:
   the tag was cut but the run failed while packaging Linux, so this version was never
   published.

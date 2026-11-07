@@ -22,7 +22,7 @@ function slugForSource(source) {
     throw new Error(`navigation names a doc that was not generated: ${source}`);
   }
   // Starlight sidebar slugs are content IDs, not public routes. Keep `index`
-  // for the docs landing page and the dots in `releases/v0.7.2`.
+  // for the docs landing page and the dots in `releases/v0.7.3`.
   return doc.target.replace(/^site\/src\/content\/docs\//, "").replace(/\.md$/, "");
 }
 

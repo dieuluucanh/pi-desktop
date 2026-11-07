@@ -7,7 +7,7 @@ row names a step range and points at a file that exists.
 
 A row is either **automated** (the referenced test or E2E spec covers it) or a
 **documented limitation** (a user-visible caveat in
-[`releases/v0.7.2.md`](../releases/v0.7.2.md) or
+[`releases/v0.7.3.md`](../releases/v0.7.3.md) or
 [`guide/troubleshooting.md`](../guide/troubleshooting.md)). The distinction is
 recorded with the release, not hidden here.
 
