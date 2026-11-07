@@ -29,10 +29,20 @@ export const RELEASE_PLATFORMS = ["win", "linux", "mac"];
  * The artefacts a platform's job must leave in `release/`.
  *
  * Deliberately exact: a tolerant "any .dmg" check would pass while the arm64
- * dmg was the only one produced.
+ * dmg was the only one produced. Linux is built as one job per architecture, so
+ * `arch` narrows the list to that job's artefacts; omitting it asks for both
+ * (what a local `npm run package:linux` produces).
  */
-export function expectedAssets(platform, version) {
+export function expectedAssets(platform, version, arch) {
   const base = `Pi-Desktop-${version}`;
+  if (arch !== undefined && arch !== "x64" && arch !== "arm64") {
+    throw new Error(`release-assets: unsupported arch "${arch}" (expected x64 or arm64)`);
+  }
+  if (arch !== undefined && platform !== "linux") {
+    throw new Error(
+      `release-assets: --arch scopes the Linux matrix only (${platform} builds its arches in one job)`,
+    );
+  }
   switch (platform) {
     case "win":
       return [
@@ -41,15 +51,21 @@ export function expectedAssets(platform, version) {
         `${base}-win-x64-portable.exe`,
         "latest.yml",
       ];
-    case "linux":
-      return [
+    case "linux": {
+      const x64 = [
         `${base}-linux-x86_64-appimage.AppImage`,
         `${base}-linux-amd64-deb.deb`,
+        "latest-linux.yml",
+      ];
+      const arm64 = [
         `${base}-linux-arm64-appimage.AppImage`,
         `${base}-linux-arm64-deb.deb`,
-        "latest-linux.yml",
         "latest-linux-arm64.yml",
       ];
+      if (arch === "x64") return x64;
+      if (arch === "arm64") return arm64;
+      return [x64[0], x64[1], arm64[0], arm64[1], x64[2], arm64[2]];
+    }
     case "mac":
       return [
         `${base}-mac-arm64.dmg`,
@@ -69,11 +85,13 @@ export function expectedAssets(platform, version) {
  * The `electron-updater` manifests a platform owns. Windows and macOS have one
  * per release; Linux writes one per architecture.
  */
-export function platformManifests(platform) {
+export function platformManifests(platform, arch) {
   switch (platform) {
     case "win":
       return ["latest.yml"];
     case "linux":
+      if (arch === "x64") return ["latest-linux.yml"];
+      if (arch === "arm64") return ["latest-linux-arm64.yml"];
       return ["latest-linux.yml", "latest-linux-arm64.yml"];
     case "mac":
       return ["latest-mac.yml"];
@@ -119,14 +137,14 @@ function isFile(path) {
  * release is usually broken in more than one place, and the workflow log should
  * say so in one pass.
  */
-export function inspectRelease({ dir, platform, version }) {
+export function inspectRelease({ dir, platform, version, arch }) {
   const root = resolve(dir);
-  const expected = expectedAssets(platform, version);
+  const expected = expectedAssets(platform, version, arch);
   const missing = expected.filter((name) => !isFile(join(root, name)));
 
   const manifests = {};
   const problems = [];
-  for (const name of platformManifests(platform)) {
+  for (const name of platformManifests(platform, arch)) {
     const file = join(root, name);
     if (!isFile(file)) continue; // already reported as missing
     const parsed = parseManifest(readFileSync(file, "utf8"));
@@ -158,6 +176,9 @@ function main() {
       platform: { type: "string" },
       dir: { type: "string", default: "release" },
       version: { type: "string" },
+      // Linux only: the release matrix builds one architecture per job, so the
+      // guard must not demand the other arch's artefacts (and its manifest).
+      arch: { type: "string" },
     },
     allowPositionals: false,
   });
@@ -176,6 +197,7 @@ function main() {
       dir: values.dir,
       platform,
       version: values.version ?? packageVersion(),
+      arch: values.arch,
     });
   } catch (error) {
     process.stderr.write(`release-assets: ${error instanceof Error ? error.message : error}\n`);
@@ -187,7 +209,7 @@ function main() {
       .map(([name, manifest]) => `${name} (${manifest.urls.length} file(s))`)
       .join(", ");
     process.stdout.write(
-      `release-assets: ${platform} ok — ${expectedAssets(platform, values.version ?? packageVersion()).length} asset(s); ${counts}\n`,
+      `release-assets: ${platform} ok — ${expectedAssets(platform, values.version ?? packageVersion(), values.arch).length} asset(s); ${counts}\n`,
     );
     return;
   }

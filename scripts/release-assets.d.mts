@@ -7,13 +7,20 @@
 
 export type ReleasePlatform = "win" | "linux" | "mac";
 
+/** Linux is built one architecture per matrix job; `--arch` scopes the guard. */
+export type ReleaseArch = "x64" | "arm64";
+
 export const RELEASE_PLATFORMS: readonly ReleasePlatform[];
 
 /** The artefacts a platform's job must leave in `release/`. */
-export function expectedAssets(platform: ReleasePlatform, version: string): string[];
+export function expectedAssets(
+  platform: ReleasePlatform,
+  version: string,
+  arch?: ReleaseArch,
+): string[];
 
 /** The `electron-updater` manifests a platform owns. */
-export function platformManifests(platform: ReleasePlatform): string[];
+export function platformManifests(platform: ReleasePlatform, arch?: ReleaseArch): string[];
 
 export interface ParsedManifest {
   version: string | null;
@@ -34,4 +41,5 @@ export function inspectRelease(input: {
   dir: string;
   platform: ReleasePlatform;
   version: string;
+  arch?: ReleaseArch;
 }): ReleaseInspection;

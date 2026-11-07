@@ -39,7 +39,7 @@ uploaded. A partially uploaded draft is invisible to end users; a half-uploaded 
 release would break updates for everyone until it was fixed.
 
 ```text
-prepare   gh release create <tag> --draft --verify-tag --notes-file docs/releases/v0.7.2.md
+prepare   gh release create <tag> --draft --verify-tag --notes-file docs/releases/v0.7.3.md
 windows   build → verify → gh release upload *.exe *.blockmap latest.yml --clobber
 linux     build → verify → gh release upload *.AppImage *.deb latest-linux*.yml --clobber
 macos     build → verify → gh release upload *.dmg *.zip latest-mac.yml --clobber
@@ -64,7 +64,10 @@ Each job builds on its own OS and asserts the finished artefacts, not the build 
 `arm64` depending on the target, which is why `scripts/release-assets.mjs` encodes the
 literal names instead of globbing for extensions. It runs in every job and fails when an
 artefact is missing or when a manifest names a file that is not there — the two failures
-that look like success until an installed app tries to update.
+that look like success until an installed app tries to update. The Linux job passes
+`--arch <x64|arm64>` because the matrix builds one architecture per job: the guard then
+expects only that arch's AppImage, deb and `latest-linux*.yml`, and omitting the flag
+asks for both (what a local `npm run package:linux` produces).
 
 Runtime fetching order matters in the Linux and macOS jobs: `runtime:fetch` writes
 `resources/runtime/bin` for the **last** `--platform` it is given, and `runtime:verify`

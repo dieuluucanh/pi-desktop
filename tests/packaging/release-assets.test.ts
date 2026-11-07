@@ -79,6 +79,27 @@ describe("release asset expectations", () => {
     expect(platformManifests("mac")).toEqual(["latest-mac.yml"]);
     expect(() => expectedAssets("beos" as never, VERSION)).toThrow(/unsupported platform/);
   });
+
+  it("scopes the Linux guard to the matrix job's architecture", () => {
+    // Each Linux job fetches and packages its own arch only, so demanding the
+    // other arch's artefacts (and manifest) fails a complete build.
+    expect(expectedAssets("linux", VERSION, "x64")).toEqual([
+      "Pi-Desktop-0.5.0-linux-x86_64-appimage.AppImage",
+      "Pi-Desktop-0.5.0-linux-amd64-deb.deb",
+      "latest-linux.yml",
+    ]);
+    expect(expectedAssets("linux", VERSION, "arm64")).toEqual([
+      "Pi-Desktop-0.5.0-linux-arm64-appimage.AppImage",
+      "Pi-Desktop-0.5.0-linux-arm64-deb.deb",
+      "latest-linux-arm64.yml",
+    ]);
+    expect(platformManifests("linux", "x64")).toEqual(["latest-linux.yml"]);
+    expect(platformManifests("linux", "arm64")).toEqual(["latest-linux-arm64.yml"]);
+    expect(() => expectedAssets("linux", VERSION, "x86" as never)).toThrow(/unsupported arch/);
+    // Windows and macOS build their arches in one job; scoping them is a caller
+    // bug, not a smaller expectation.
+    expect(() => expectedAssets("win", VERSION, "x64")).toThrow(/Linux matrix only/);
+  });
 });
 
 describe("manifest parsing", () => {
@@ -149,6 +170,26 @@ describe("inspectRelease", () => {
       manifestFor(VERSION, ["Pi-Desktop-0.5.0-mac-arm64.zip", "Pi-Desktop-0.5.0-mac-x64.zip"]),
     );
     expect(inspectRelease({ dir: mac, platform: "mac", version: VERSION }).ok).toBe(true);
+  });
+
+  it("accepts one complete Linux matrix job", () => {
+    const x64 = releaseDir(expectedAssets("linux", VERSION, "x64"));
+    writeFileSync(
+      join(x64, "latest-linux.yml"),
+      manifestFor(VERSION, ["Pi-Desktop-0.5.0-linux-x86_64-appimage.AppImage"]),
+    );
+    expect(
+      inspectRelease({ dir: x64, platform: "linux", version: VERSION, arch: "x64" }),
+    ).toMatchObject({ ok: true, missing: [], problems: [] });
+
+    const arm64 = releaseDir(expectedAssets("linux", VERSION, "arm64"));
+    writeFileSync(
+      join(arm64, "latest-linux-arm64.yml"),
+      manifestFor(VERSION, ["Pi-Desktop-0.5.0-linux-arm64-appimage.AppImage"]),
+    );
+    expect(
+      inspectRelease({ dir: arm64, platform: "linux", version: VERSION, arch: "arm64" }),
+    ).toMatchObject({ ok: true, missing: [], problems: [] });
   });
 
   it("names a missing artefact instead of failing generically", () => {

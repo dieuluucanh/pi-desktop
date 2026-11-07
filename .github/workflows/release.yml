@@ -236,7 +236,8 @@ jobs:
           set -euo pipefail
           ls -l release
           node scripts/release-assets.mjs \
-            --platform linux --dir release --version "$VERSION"
+            --platform linux --arch ${{ matrix.arch }} \
+            --dir release --version "$VERSION"
           for deb in release/*.deb; do
             echo "--- $deb"
             dpkg-deb -I "$deb" |
