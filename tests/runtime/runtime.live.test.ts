@@ -130,7 +130,10 @@ function runBare(name: string, args: string[] = []): ShimResult {
           encoding: "utf8",
           timeout: SPAWN_TIMEOUT_MS,
         })
-      : spawnSync("sh", ["-c", command], {
+      : // The shell itself must be absolute: `env.PATH` intentionally contains
+        // only the runtime directories, so a bare `sh` would not resolve and
+        // `spawnSync` would return `status: null` without running anything.
+        spawnSync("/bin/sh", ["-c", command], {
           env,
           encoding: "utf8",
           timeout: SPAWN_TIMEOUT_MS,
