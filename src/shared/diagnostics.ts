@@ -1,5 +1,5 @@
 import type { HostRole } from "./host-protocol";
-import type { SessionCapacity, StartupReport } from "./performance";
+import type { HostOpenTimings, SessionCapacity, StartupReport } from "./performance";
 
 /**
  * Reliability, recovery and diagnostics — the pure wire model (plan step 22).
@@ -23,6 +23,10 @@ export type IncidentKind =
   | "host_timeout"
   | "host_spawn"
   | "host_failed"
+  // A second start for one host id was refused and the live host adopted
+  // (2026-11-07 host-singleton plan). Self-healing, but it must be visible:
+  // before the supervisor guard this race silently leaked a pinned child.
+  | "host_duplicate_start"
   | "host_stale"
   | "host_recycled"
   | "host_restart_loop"
@@ -152,6 +156,7 @@ const SEVERITY_BY_KIND: Record<IncidentKind, IncidentSeverity> = {
   host_timeout: "error",
   host_spawn: "error",
   host_failed: "error",
+  host_duplicate_start: "warning",
   host_stale: "warning",
   host_recycled: "warning",
   host_restart_loop: "warning",
@@ -212,6 +217,8 @@ export function incidentFix(kind: IncidentKind): string | null {
       return "The host process could not start. Check the runtime in Diagnostics, then restart the tab.";
     case "host_failed":
       return "The host crashed repeatedly and was stopped. Restart it, or launch with --safe-mode to rule out an extension.";
+    case "host_duplicate_start":
+      return "A second host was refused for an id that already had one. Nothing to do: the running host was reused. If this repeats, the caller is racing itself.";
     case "host_stale":
       return "Restart the session tab to load the current host build; history comes back from the JSONL.";
     case "host_recycled":
@@ -361,6 +368,16 @@ export interface DiagnosticsHostInfo {
   lastRestartReason?: string | null;
   /** True when a protected host is over its RSS budget but was not recycled. */
   overMemory?: boolean;
+  /**
+   * Spawn → handshake in ms, or null when the supervisor has not measured it
+   * (2026-11-07 host-singleton plan).
+   */
+  bootMs?: number | null;
+  /**
+   * Phase breakdown of this host's last session open, or null before the first
+   * one / for a host that predates the measurement.
+   */
+  lastOpen?: HostOpenTimings | null;
   /** The tail of the host's own log file, oldest first. */
   logLines: string[];
 }
@@ -503,6 +520,8 @@ export function incidentHeadline(incident: Incident): string {
       return "The session host could not start";
     case "host_failed":
       return "The session host was stopped after repeated crashes";
+    case "host_duplicate_start":
+      return "A duplicate session host was refused";
     case "host_stale":
       return "The session host is running an older build";
     case "host_recycled":

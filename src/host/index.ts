@@ -236,6 +236,9 @@ function createCore(options: {
         sessionManager: request.sessionManager as never,
         ...(request.npmCommand ? { npmCommand: request.npmCommand } : {}),
         ...(request.projectTrusted === undefined ? {} : { projectTrusted: request.projectTrusted }),
+        // Phase timings for the last open (2026-11-07 plan): the adapter owns
+        // services/scope/session, the core owns trust/bind/reconcile.
+        ...(request.onPhase ? { onPhase: request.onPhase } : {}),
       };
       const created = await createSdkSessionRuntime(runtimeRequest);
       return { runtime: created.runtime, session: created.session };
@@ -538,6 +541,11 @@ export function runService(
       stdout: process.stdout,
       blobDir,
       handlers,
+      // The control core owns no session, so it reports no open timings.
+      lastOpen: () => {
+        if (!("lastOpenTimings" in core)) return null;
+        return typeof core.lastOpenTimings === "function" ? core.lastOpenTimings() : null;
+      },
       info: {
         sessionId: flagValue(args, "--session") ?? env[SESSION_ID_ENV] ?? null,
         cwd,

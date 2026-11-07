@@ -81,6 +81,17 @@ describe("code blocks", () => {
     expect(container.querySelectorAll("pre")).toHaveLength(1);
     expect(container.querySelector("pre code")?.textContent).toContain("const a = 1;");
   });
+
+  it("keeps the single pre > code shape after the renderer hoist", () => {
+    // 2026-11-07 transcript-highlight-stability: the element overrides moved to
+    // module scope, so a block must still be exactly one `pre > code` — a nested
+    // or duplicated wrapper would break both copy and the token cache key.
+    const { container } = render(<Markdown>{"```ts\nconst a = 1;\n```"}</Markdown>);
+
+    expect(container.querySelectorAll("pre")).toHaveLength(1);
+    expect(container.querySelector("pre > code")).not.toBeNull();
+    expect(container.querySelector("pre code")?.textContent).toContain("const a = 1;");
+  });
 });
 
 describe("find highlighting in code", () => {

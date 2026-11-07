@@ -1,6 +1,6 @@
 # Session parity contract
 
-**Last updated:** 2026-10-26 · **Terminal reference:** `@earendil-works/pi-coding-agent` 1.4.0 · **Plan:** `.pi/plans/2026-10-26-pi-desktop-session-parity.md`
+**Last updated:** 2026-11-07 · **Terminal reference:** `@earendil-works/pi-coding-agent` 1.4.0 · **Plan:** `.pi/plans/2026-10-26-pi-desktop-session-parity.md`
 
 **Status:** Phase A–F (steps 1–24) shipped. **Phase G (steps 25–28, updates) is deferred whole**, as the plan permits; `/bug` writes a local zip and does not upload to Radius.
 
@@ -55,6 +55,19 @@ drift from the terminal.
     the source. Inline code carries the token-driven `--color-code-bg` pill;
     the transcript content column is capped at `--transcript-measure` (110ch) so
     a wide window keeps a readable line length.
+12. **A transcript re-render never resets syntax highlighting.** Two mechanisms
+    keep a coloured fence coloured. First, the Markdown element overrides
+    (`components`) are a module-level constant and `Markdown` is memoized; a
+    changed element type would make React unmount and remount the subtree, which
+    is why `streaming` reaches the `pre` renderer through a context rather than a
+    closure. Second, `highlight-store.ts` caches Shiki tokens outside React,
+    keyed by `language + "\0" + code` and bounded by entry count and source
+    size; `CodeBlock` asks the cache and a synchronous warm path during render,
+    so a remount (virtualized rows, tab/pane changes) paints colour on its first
+    frame. The triggers to keep working: scroll re-renders, pointer-down
+    `ensureSession`, the `focus`/`visibilitychange` re-sync, and find-bar/tool
+    toggles. Never rebuild `components` inline and never move tokens back into
+    component state.
 
 ## Gap matrix (terminal 1.4.0 → desktop)
 
@@ -116,6 +129,17 @@ drift from the terminal.
   (language-less fences, `mark` flattening, the trailing-newline rule).
 - `tests/renderer/markdown.test.tsx` — inline spans stay inside their paragraph,
   fenced/indented blocks stay blocks, and find marks never reach block code.
+- `tests/renderer/highlight-store.test.ts` — the token cache's contract: cache
+  hits, in-flight/grammar dedupe, the synchronous warm path, `maxEntries` /
+  `maxChars` eviction, oversized blocks, failure retries and `reset()`.
+- `tests/renderer/markdown-highlight.test.tsx` — a forced re-render keeps the
+  same `pre` node and its colours, a click-driven state update does too, a
+  remount paints colour synchronously, and context still reaches the memoized
+  surface.
+- `tests/renderer/markdown-highlight-fallback.test.tsx` — a missing Shiki keeps
+  the source text visible instead of rendering an empty block.
+- `tests/renderer/transcript.test.tsx` — a fenced block's `pre` survives an
+  unrelated transcript re-render (expand state, a new items array).
 - `tests/renderer/composer.test.tsx` — `!`/`!!`, chords, paste markers, queue.
 - `tests/host/session-core.test.ts` — bash run/abort, clone, export/import,
   replacement.
@@ -137,3 +161,6 @@ drift from the terminal.
 - **Transcript measure.** Assistant prose is capped at `--transcript-measure`
   (110ch) on wide windows; terminal Pi is bounded by its pane width. Code blocks
   and tables keep their own horizontal scroll inside the capped column.
+- **Code colours are `github-dark` in both appearances.** Shiki token colours do
+  not follow the light palette; only the block chrome (`bg-sunken`, `border-line`)
+  is token-driven. A theme-aware Shiki palette is a separate change.

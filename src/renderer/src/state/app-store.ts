@@ -533,6 +533,30 @@ export const SESSION_ENSURE_THROTTLE_MS = 2_000;
 const SESSION_RESYNC_THROTTLE_MS = 1_000;
 let lastSessionResyncAt = 0;
 /**
+ * In-flight loader reads (2026-11-07 host-singleton plan).
+ *
+ * Every control-addressed loader was guarded only by a `*Loaded` flag, which is
+ * false until the first response lands. React StrictMode mounts an effect twice
+ * in dev and two surfaces can ask for the same thing at boot, so both callers
+ * passed the check and both issued a host request. Seven of those in one tick
+ * were the concurrent `controlHost()` callers that raced the supervisor into
+ * spawning a host each. Joining the in-flight run keeps it to one request per
+ * resource; a `{ refresh: true }` call joins too (the next call re-reads).
+ */
+const loaderRuns = new Map<string, Promise<unknown>>();
+
+function singleFlight<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const running = loaderRuns.get(key);
+  if (running) return running as Promise<T>;
+  const started = run();
+  loaderRuns.set(key, started);
+  const clear = (): void => {
+    if (loaderRuns.get(key) === started) loaderRuns.delete(key);
+  };
+  void started.then(clear, clear);
+  return started;
+}
+/**
  * The last visible-tab set pushed to main, joined.
  *
  * `syncVisibleTabs` runs from an effect on every layout/pane/focus change, and
@@ -694,6 +718,12 @@ export interface AppStateShape {
   /** Remembered projects, most recent first (plan step 10). */
   projects: ProjectRecord[];
   projectsLoaded: boolean;
+  /**
+   * Whether a tab table has been applied (a read or a push). Loaders that
+   * resolve a control-vs-session target wait for this, so "no active tab yet"
+   * is not mistaken for "there is no session" (2026-11-07 plan).
+   */
+  tabsLoaded: boolean;
   /** Host inspection per project path (git branch, `.pi/`, trust, session dir). */
   projectInspections: Record<string, ProjectInspection>;
   projectInspectionErrors: Record<string, string>;
@@ -2077,6 +2107,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   offlineNotice: null,
   staleHosts: {},
   tabs: [],
+  tabsLoaded: false,
   activeTabId: null,
   panePickerTarget: null,
   transcripts: {},
@@ -2746,15 +2777,21 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  loadTabs: async () => {
-    const api = bridge();
-    if (!api?.sessions) return;
-    try {
-      get().applyTabs(await api.sessions.list(), { adoptSelection: true });
-    } catch {
-      // Reading the tab table must never break the shell.
-    }
-  },
+  loadTabs: () =>
+    singleFlight("tabs", async () => {
+      const api = bridge();
+      if (!api?.sessions) return;
+      try {
+        get().applyTabs(await api.sessions.list(), { adoptSelection: true });
+      } catch {
+        // Reading the tab table must never break the shell.
+      } finally {
+        // The read happened even when the table was unchanged (the early return
+        // in `applyTabs`) or failed; the loaders gate on this, so it must settle
+        // after one attempt rather than making every loader re-issue `list`.
+        if (!get().tabsLoaded) set({ tabsLoaded: true });
+      }
+    }),
 
   applyTabs: (envelope, options) => {
     const state = get();
@@ -2861,6 +2898,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     );
     set({
       tabs,
+      tabsLoaded: true,
       activeTabId: effectiveActiveTabId,
       webTabStates,
       ...cachePatch,
@@ -4361,22 +4399,23 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   // ---- Connections: providers, credentials and sign-in (plan step 9) ----
 
-  loadProviders: async () => {
-    const api = bridge();
-    if (!api?.sessions) return;
-    try {
-      const result = (await api.sessions.request({
-        tabId: CONTROL_TAB_ID,
-        method: "providers.list",
-      })) as { providers?: ProviderSummary[] };
-      set({ providers: result.providers ?? [], providersLoaded: true, providersError: null });
-    } catch (error) {
-      set({
-        providersLoaded: true,
-        providersError: error instanceof Error ? error.message : String(error),
-      });
-    }
-  },
+  loadProviders: () =>
+    singleFlight("providers", async () => {
+      const api = bridge();
+      if (!api?.sessions) return;
+      try {
+        const result = (await api.sessions.request({
+          tabId: CONTROL_TAB_ID,
+          method: "providers.list",
+        })) as { providers?: ProviderSummary[] };
+        set({ providers: result.providers ?? [], providersLoaded: true, providersError: null });
+      } catch (error) {
+        set({
+          providersLoaded: true,
+          providersError: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }),
 
   setProviderKey: async (providerId, apiKey) => {
     const api = bridge();
@@ -4611,27 +4650,29 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   // ---- Pi settings (plan step 12) ----
 
-  loadSettings: async (options) => {
-    const api = bridge();
-    if (!api?.sessions) return;
+  loadSettings: (options) => {
     const cwd = get().project?.path ?? null;
-    const current = get();
-    if (!options?.refresh && current.settingsLoaded && current.settingsCwd === cwd) return;
-    set({ settingsBusy: true, settingsError: null });
-    try {
-      const snapshot = (await api.sessions.request({
-        tabId: CONTROL_TAB_ID,
-        method: "settings.get",
-        params: { cwd },
-      })) as SettingsSnapshot;
-      set(settingsStateFrom(snapshot, cwd));
-      const active = get().activeTabId;
-      get().noteDefaultModelProblem(
-        defaultModelProblemOf(get().settings, active ? (get().modelCatalog[active] ?? []) : []),
-      );
-    } catch (error) {
-      set({ settingsBusy: false, settingsLoaded: true, settingsError: errorMessage(error) });
-    }
+    return singleFlight(`settings:${cwd ?? ""}`, async () => {
+      const api = bridge();
+      if (!api?.sessions) return;
+      const current = get();
+      if (!options?.refresh && current.settingsLoaded && current.settingsCwd === cwd) return;
+      set({ settingsBusy: true, settingsError: null });
+      try {
+        const snapshot = (await api.sessions.request({
+          tabId: CONTROL_TAB_ID,
+          method: "settings.get",
+          params: { cwd },
+        })) as SettingsSnapshot;
+        set(settingsStateFrom(snapshot, cwd));
+        const active = get().activeTabId;
+        get().noteDefaultModelProblem(
+          defaultModelProblemOf(get().settings, active ? (get().modelCatalog[active] ?? []) : []),
+        );
+      } catch (error) {
+        set({ settingsBusy: false, settingsLoaded: true, settingsError: errorMessage(error) });
+      }
+    });
   },
 
   setSetting: async (key, value, scope) => {
@@ -4751,43 +4792,54 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   // ---- Extensions hub (plan step 13) ----
 
-  loadResources: async (options) => {
-    const api = bridge();
-    if (!api?.sessions) return;
-    const target = resourcesTarget(get());
-    const cwd = resourcesCwd(get(), target);
-    const current = get();
-    if (
-      options?.refresh !== true &&
-      current.resourcesLoaded &&
-      current.resourcesTabId === target &&
-      current.resourcesCwd === cwd
-    ) {
-      return;
-    }
-    set({ resourcesBusy: true, resourcesError: null });
-    try {
-      const raw = await api.sessions.request({
-        tabId: target,
-        method: "resources.list",
-        params: { cwd, refresh: options?.refresh === true },
-      });
-      set({
-        resources: sanitizeResourcesSnapshot(raw),
-        resourcesLoaded: true,
-        resourcesBusy: false,
-        resourcesError: null,
-        resourcesTabId: target,
-        resourcesCwd: cwd,
-      });
-    } catch (error) {
-      set({
-        resourcesBusy: false,
-        resourcesLoaded: true,
-        resourcesError: errorMessage(error),
-      });
-    }
-  },
+  loadResources: (options) =>
+    singleFlight("resources", async () => {
+      const api = bridge();
+      if (!api?.sessions) return;
+      // The target is the active session tab when one is restored; before the
+      // tab table lands `resourcesTarget` can only answer CONTROL, and the
+      // catalogue then lands against the wrong host (2026-11-07 plan).
+      // An empty table may still be *arriving*; a table that already has rows
+      // (a push landed first) is authoritative and must not be re-read.
+      if (!get().tabsLoaded && get().tabs.length === 0) {
+        await get()
+          .loadTabs()
+          .catch(() => undefined);
+      }
+      const target = resourcesTarget(get());
+      const cwd = resourcesCwd(get(), target);
+      const current = get();
+      if (
+        options?.refresh !== true &&
+        current.resourcesLoaded &&
+        current.resourcesTabId === target &&
+        current.resourcesCwd === cwd
+      ) {
+        return;
+      }
+      set({ resourcesBusy: true, resourcesError: null });
+      try {
+        const raw = await api.sessions.request({
+          tabId: target,
+          method: "resources.list",
+          params: { cwd, refresh: options?.refresh === true },
+        });
+        set({
+          resources: sanitizeResourcesSnapshot(raw),
+          resourcesLoaded: true,
+          resourcesBusy: false,
+          resourcesError: null,
+          resourcesTabId: target,
+          resourcesCwd: cwd,
+        });
+      } catch (error) {
+        set({
+          resourcesBusy: false,
+          resourcesLoaded: true,
+          resourcesError: errorMessage(error),
+        });
+      }
+    }),
 
   toggleResource: async (resource, enabled) => {
     const api = bridge();
@@ -4848,43 +4900,54 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   // ---- Skills, themes and keybindings (plan step 15) ----
 
-  loadThemes: async () => {
-    const api = bridge();
-    if (!api?.sessions) return;
-    const current = get();
-    if (current.themesLoaded && !current.themesError) return;
-    set({ themesBusy: true, themesError: null });
-    try {
-      const target = resourcesTarget(get());
-      const cwd = resourcesCwd(get(), target);
-      const raw = await api.sessions.request({
-        tabId: target,
-        method: "themes.list",
-        params: { cwd },
-      });
-      const themes = sanitizeThemesSnapshot(raw);
-      set({ themes, themesLoaded: true, themesBusy: false, themesError: null });
-      // Follow-system wins over the stored theme: switch the built-in theme to
-      // match the OS, then let the normal path cache and paint it.
-      if (get().prefs.followSystemTheme) {
-        const desired = systemThemeName();
-        if (themes.active !== desired) {
-          const ok = await get().setActiveTheme(desired, { keepFollowSystem: true });
-          if (!ok) get().applyChromeTheme();
-          return;
+  loadThemes: () =>
+    singleFlight("themes", async () => {
+      const api = bridge();
+      if (!api?.sessions) return;
+      const current = get();
+      if (current.themesLoaded && !current.themesError) return;
+      // `loadShortcuts` already waits for the tab table for exactly this reason;
+      // a theme read that races it asks the control host instead of the restored
+      // session (2026-11-07 plan). A failed table read still applies a theme.
+      // An empty table may still be *arriving*; a table that already has rows
+      // (a push landed first) is authoritative and must not be re-read.
+      if (!get().tabsLoaded && get().tabs.length === 0) {
+        await get()
+          .loadTabs()
+          .catch(() => undefined);
+      }
+      set({ themesBusy: true, themesError: null });
+      try {
+        const target = resourcesTarget(get());
+        const cwd = resourcesCwd(get(), target);
+        const raw = await api.sessions.request({
+          tabId: target,
+          method: "themes.list",
+          params: { cwd },
+        });
+        const themes = sanitizeThemesSnapshot(raw);
+        set({ themes, themesLoaded: true, themesBusy: false, themesError: null });
+        // Follow-system wins over the stored theme: switch the built-in theme to
+        // match the OS, then let the normal path cache and paint it.
+        if (get().prefs.followSystemTheme) {
+          const desired = systemThemeName();
+          if (themes.active !== desired) {
+            const ok = await get().setActiveTheme(desired, { keepFollowSystem: true });
+            if (!ok) get().applyChromeTheme();
+            return;
+          }
         }
+        // Keep the first-paint cache in step with the theme Pi actually loaded.
+        // Only write when it differs: this runs on every launch and on retry.
+        const active = activeThemeSwatches(themes);
+        if (active && get().prefs.theme !== active.variant) {
+          get().setPrefs({ theme: active.variant });
+        }
+        get().applyChromeTheme();
+      } catch (error) {
+        set({ themesBusy: false, themesLoaded: true, themesError: errorMessage(error) });
       }
-      // Keep the first-paint cache in step with the theme Pi actually loaded.
-      // Only write when it differs: this runs on every launch and on retry.
-      const active = activeThemeSwatches(themes);
-      if (active && get().prefs.theme !== active.variant) {
-        get().setPrefs({ theme: active.variant });
-      }
-      get().applyChromeTheme();
-    } catch (error) {
-      set({ themesBusy: false, themesLoaded: true, themesError: errorMessage(error) });
-    }
-  },
+    }),
 
   setActiveTheme: async (name, options) => {
     const scope = settingsTargetForProject(get(), get().project?.path ?? null);
@@ -6079,31 +6142,33 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     return tabId;
   },
 
-  loadPackages: async (options) => {
-    const api = bridge();
-    if (!api?.sessions) return;
-    const cwd = packageCwd(get());
-    const current = get();
-    if (options?.refresh !== true && current.packagesLoaded && current.packagesCwd === cwd) return;
-    set({ packagesBusy: true, packagesError: null });
-    try {
-      const raw = await api.sessions.request({
-        tabId: CONTROL_TAB_ID,
-        method: "packages.list",
-        params: { cwd },
-      });
-      const snapshot = sanitizePackagesSnapshot(raw);
-      set({
-        packages: snapshot.packages,
-        packagesLoaded: true,
-        packagesBusy: false,
-        packagesError: null,
-        packagesCwd: cwd,
-      });
-    } catch (error) {
-      set({ packagesBusy: false, packagesLoaded: true, packagesError: errorMessage(error) });
-    }
-  },
+  loadPackages: (options) =>
+    singleFlight("packages", async () => {
+      const api = bridge();
+      if (!api?.sessions) return;
+      const cwd = packageCwd(get());
+      const current = get();
+      if (options?.refresh !== true && current.packagesLoaded && current.packagesCwd === cwd)
+        return;
+      set({ packagesBusy: true, packagesError: null });
+      try {
+        const raw = await api.sessions.request({
+          tabId: CONTROL_TAB_ID,
+          method: "packages.list",
+          params: { cwd },
+        });
+        const snapshot = sanitizePackagesSnapshot(raw);
+        set({
+          packages: snapshot.packages,
+          packagesLoaded: true,
+          packagesBusy: false,
+          packagesError: null,
+          packagesCwd: cwd,
+        });
+      } catch (error) {
+        set({ packagesBusy: false, packagesLoaded: true, packagesError: errorMessage(error) });
+      }
+    }),
 
   requestPackageInstall: (source, scope, cwd, options) => {
     if (

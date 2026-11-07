@@ -3,6 +3,7 @@ import { PassThrough } from "node:stream";
 import { normalize, delimiter } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  HostAlreadyRunningError,
   HostStoppedError,
   HostTimeoutError,
   MAX_HOST_LOG_LINES,
@@ -294,6 +295,15 @@ describe("host supervisor startup", () => {
     expect(supervisor.allocatedPorts()).toEqual([OFFICE_BRIDGE_PORT, 38618, 38619]);
   });
 
+  it("reports spawn → handshake as bootMs", async () => {
+    const { supervisor } = harness();
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    const info = host.info();
+    expect(typeof info?.bootMs).toBe("number");
+    expect(info?.bootMs).toBeGreaterThanOrEqual(0);
+  });
+
   it("enforces the emergency host-process ceiling with a readable error", async () => {
     const { supervisor } = harness({ maxHosts: 1 });
     await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
@@ -317,6 +327,156 @@ describe("host supervisor startup", () => {
     const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
     expect(host.status()).toBe("ready");
     expect(spawned).toHaveLength(2);
+  });
+});
+
+describe("host supervisor singleton registry (2026-11-07 host-singleton plan)", () => {
+  it("refuses a second live host for one session id without spawning or allocating", async () => {
+    const { supervisor, spawned } = harness();
+    await supervisor.start({ sessionId: "control", cwd: normalize("C:/work"), role: "control" });
+
+    await expect(
+      supervisor.start({ sessionId: "control", cwd: normalize("C:/work"), role: "control" }),
+    ).rejects.toBeInstanceOf(HostAlreadyRunningError);
+
+    // The registry is the authority: one child, one port, one entry.
+    expect(spawned).toHaveLength(1);
+    expect(supervisor.list()).toHaveLength(1);
+    expect(supervisor.allocatedPorts()).toEqual([38618]);
+    expect(supervisor.get("control")?.status()).toBe("ready");
+  });
+
+  it("refuses a duplicate while the first host is still starting", async () => {
+    const { supervisor, spawned, spawnCalls } = harness({
+      behaviours: [{ silent: ["host.hello"] }],
+    });
+    const first = supervisor.start({ sessionId: "control", cwd: normalize("C:/work") });
+    // The entry is registered before the handshake completes, so the window a
+    // racing caller could exploit is closed too.
+    expect(supervisor.list()).toHaveLength(1);
+
+    await expect(
+      supervisor.start({ sessionId: "control", cwd: normalize("C:/work") }),
+    ).rejects.toBeInstanceOf(HostAlreadyRunningError);
+
+    expect(spawned).toHaveLength(1);
+    expect(spawnCalls).toHaveLength(1);
+    expect(supervisor.allocatedPorts()).toEqual([38618]);
+    await expect(first).rejects.toBeInstanceOf(HostTimeoutError);
+    // The failed handshake still releases both the entry and the port.
+    expect(supervisor.list()).toHaveLength(0);
+    expect(supervisor.allocatedPorts()).toEqual([]);
+  });
+
+  it("replaces a failed entry instead of leaking its slot and port", async () => {
+    const { supervisor, spawned } = harness({ maxRestarts: 1 });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    spawned[0]?.crash(9);
+    await vi.waitFor(() => expect(spawned.length).toBe(2));
+    spawned[1]?.crash(9);
+    await vi.waitFor(() => expect(supervisor.get("s1")?.status()).toBe("failed"));
+
+    const replacement = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    expect(replacement.status()).toBe("ready");
+    expect(spawned).toHaveLength(3);
+    expect(supervisor.list()).toHaveLength(1);
+    expect(supervisor.allocatedPorts()).toEqual([38618]);
+  });
+
+  it("keeps exactly one entry per child across distinct ids", async () => {
+    const { supervisor, spawned } = harness();
+    const ids = ["control", "s1", "s2", "s3"];
+    await Promise.all(
+      ids.map((sessionId) => supervisor.start({ sessionId, cwd: normalize("C:/work") })),
+    );
+
+    expect(spawned).toHaveLength(ids.length);
+    expect(supervisor.list()).toHaveLength(ids.length);
+    expect(new Set(supervisor.allocatedPorts()).size).toBe(ids.length);
+
+    await supervisor.stopAll();
+    expect(supervisor.list()).toHaveLength(0);
+    expect(supervisor.allocatedPorts()).toEqual([]);
+  });
+});
+
+describe("host supervisor ready contract (2026-11-07 host-singleton plan)", () => {
+  it("rejects ready() when the host is stopped before its handshake", async () => {
+    const { supervisor } = harness({ behaviours: [{ silent: ["host.hello"] }] });
+    const starting = supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    const handle = supervisor.get("s1");
+    if (!handle) throw new Error("host was not registered");
+
+    await supervisor.stop("s1");
+
+    await expect(handle.ready()).rejects.toBeInstanceOf(HostStoppedError);
+    // The spawn that was waiting on the same handshake settles too: no caller is
+    // left on a timer that outlives the process.
+    await expect(starting).rejects.toBeInstanceOf(HostStoppedError);
+  });
+
+  it("rejects ready() with the failure reason when the host dies before ready", async () => {
+    const { supervisor, spawned } = harness({
+      maxRestarts: 0,
+      behaviours: [{ silent: ["host.hello"] }],
+    });
+    const starting = supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    const handle = supervisor.get("s1");
+    if (!handle) throw new Error("host was not registered");
+
+    spawned[0]?.crash(7);
+
+    await expect(handle.ready()).rejects.toThrow(/crashed 1 times; giving up/);
+    await expect(starting).rejects.toThrow();
+  });
+
+  it("resolves ready() once and never rejects it afterwards", async () => {
+    const { supervisor, spawned } = harness();
+    const handle = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    await expect(handle.ready()).resolves.toBeTruthy();
+    await supervisor.stop("s1");
+
+    // A stop after a successful handshake is not a failed start.
+    await expect(handle.ready()).resolves.toBeTruthy();
+    expect(spawned[0]?.killed).toBe(true);
+  });
+
+  it("resets the crash budget on an explicit restart", async () => {
+    const { supervisor, spawned } = harness({ maxRestarts: 2 });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    spawned[0]?.crash(9);
+    await vi.waitFor(() => expect(spawned.length).toBe(2));
+    await vi.waitFor(() => expect(host.status()).toBe("ready"));
+    expect(host.restartCount?.()).toBe(1);
+
+    await host.restart("manual");
+    expect(host.restartCount?.()).toBe(0);
+    expect(spawned).toHaveLength(3);
+
+    // The old budget (2) would have been exhausted here; the reset makes this a
+    // fresh incident window, so a replacement still spawns.
+    spawned[2]?.crash(9);
+    await vi.waitFor(() => expect(spawned.length).toBe(4));
+    await vi.waitFor(() => expect(host.status()).toBe("ready"));
+  });
+
+  it("keeps incrementing the budget for automatic crash restarts", async () => {
+    const { supervisor, spawned } = harness({ maxRestarts: 2 });
+    const host = await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    spawned[0]?.crash(9);
+    await vi.waitFor(() => expect(spawned.length).toBe(2));
+    await vi.waitFor(() => expect(host.status()).toBe("ready"));
+    spawned[1]?.crash(9);
+    await vi.waitFor(() => expect(spawned.length).toBe(3));
+    await vi.waitFor(() => expect(host.status()).toBe("ready"));
+    spawned[2]?.crash(9);
+
+    await vi.waitFor(() => expect(host.status()).toBe("failed"));
+    expect(spawned).toHaveLength(3);
   });
 });
 

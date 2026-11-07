@@ -60,6 +60,9 @@ function buildCore(): SessionCore {
         agentDir: request.agentDir,
         sessionManager: request.sessionManager as never,
         ...(request.projectTrusted === undefined ? {} : { projectTrusted: request.projectTrusted }),
+        // Forward the phase hook exactly as the composition root does, so this
+        // suite measures the same legs the app reports (2026-11-07 plan).
+        ...(request.onPhase ? { onPhase: request.onPhase } : {}),
       });
       return { runtime: created.runtime, session: created.session };
     },
@@ -123,6 +126,36 @@ describe("session core against the real SDK", () => {
 
     const tools = (await call(core, "tools.list")) as { tools: unknown[] };
     expect(Array.isArray(tools.tools)).toBe(true);
+  }, 180_000);
+
+  it("reports the open phase breakdown and stays inside a loose budget", async () => {
+    core = buildCore();
+    const created = (await call(core, "session.create")) as { sessionFile: string };
+
+    const first = core.lastOpenTimings?.() ?? null;
+    expect(first).not.toBeNull();
+    expect(first!.servicesMs).toBeGreaterThan(0);
+    expect(first!.totalMs).toBeGreaterThanOrEqual(first!.servicesMs);
+
+    // Resume through the in-place switch path; the SDK owns the legs there, so
+    // only the total is asserted.
+    const resumed = (await call(core, "session.resume", {
+      sessionFile: created.sessionFile,
+    })) as { sessionFile: string };
+    expect(resumed.sessionFile).toBe(created.sessionFile);
+    const second = core.lastOpenTimings?.() ?? null;
+    expect(second?.totalMs).toBeGreaterThan(0);
+
+    // Report rather than gate: a shared machine owns the absolute numbers. The
+    // loose ceiling only catches a hang (a wedged open would sit in the SDK).
+    console.info(
+      `[perf] live open: create ${first!.totalMs} ms ` +
+        `(services ${first!.servicesMs}, scope ${first!.scopeMs}, session ${first!.sessionMs}, ` +
+        `bind ${first!.bindMs}, reconcile ${first!.reconcileMs}) · ` +
+        `resume ${second?.totalMs ?? 0} ms`,
+    );
+    expect(first!.totalMs).toBeLessThan(120_000);
+    expect(second!.totalMs).toBeLessThan(120_000);
   }, 180_000);
 
   it("switches model mid-session, records a model_change entry, and resumes with it", async () => {

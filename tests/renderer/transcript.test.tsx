@@ -156,6 +156,32 @@ describe("transcript rendering", () => {
     );
   });
 
+  it("keeps a fenced block's DOM node across an unrelated re-render", () => {
+    // 2026-11-07 transcript-highlight-stability: expanding a tool card, clicking
+    // a row or a focus re-sync re-renders the transcript. The block's `pre` must
+    // be the same node, otherwise `CodeBlock` remounts and the colours flash.
+    const items = reduceSessionEvents(createTranscriptState(), [
+      { event: "message_start", payload: { message: { role: "assistant" } } },
+      {
+        event: "message_end",
+        payload: {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Example:\n\n```bash\n# keep me\necho hi\n```" }],
+          },
+        },
+      },
+    ]).items;
+
+    const view = render(<Transcript items={items} toolsExpanded={false} />);
+    const pre = view.container.querySelector("[data-testid='transcript-row'] pre");
+    expect(pre).not.toBeNull();
+
+    view.rerender(<Transcript items={[...items]} toolsExpanded={true} />);
+
+    expect(view.container.querySelector("[data-testid='transcript-row'] pre")).toBe(pre);
+  });
+
   it("shows a diff for an edit tool and marks a failing tool", async () => {
     const user = userEvent.setup();
     const { container } = render(<Transcript items={fixtureItems()} />);

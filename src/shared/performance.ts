@@ -122,6 +122,36 @@ export function formatBytes(bytes: number | null | undefined): string {
   return `${rounded} ${units[unit]}`;
 }
 
+/**
+ * The phases of one session open, measured by the host's own clock.
+ *
+ * A host open is the slowest routine operation in the app (several seconds on a
+ * cold process) and it used to be visible only as a `request "session.resume"
+ * took N ms` line once it crossed the 2 s slow-request threshold. These numbers
+ * say *which* leg is slow, so a regression is diagnosable from the Diagnostics
+ * view instead of a stopwatch and a profiler (2026-11-07 host-singleton plan).
+ *
+ * `totalMs` is end-to-end and includes legs this type does not name (model
+ * apply, snapshot construction), so it is always `>=` the sum of the others.
+ */
+export interface HostOpenTimings {
+  totalMs: number;
+  /** Project trust: the trust file lock plus the ancestor-resource walk. */
+  trustMs: number;
+  /** SDK services: settings, model runtime, resource loader and extensions. */
+  servicesMs: number;
+  /** Resolving `enabledModels` against the model catalogue. */
+  scopeMs: number;
+  /** Building the `AgentSession` itself. */
+  sessionMs: number;
+  /** Extension binding: keybindings, `session_start`, resource discovery. */
+  bindMs: number;
+  /** Post-bind scope reconcile (settings reload + scope resolve). */
+  reconcileMs: number;
+  /** When the open finished (host clock, epoch ms). */
+  at: number;
+}
+
 /** A host's last measured memory, as `host.metrics` reports it. */
 export interface HostMemoryMetrics {
   rssBytes: number;
@@ -138,7 +168,26 @@ export interface HostMemoryMetrics {
   uptimeMs: number;
   /** When the sample was taken (epoch ms, host clock). */
   at: number;
+  /**
+   * The most recent session open in this process, or absent when none has run
+   * (or the host predates the measurement). Optional so a legacy host and a
+   * small test double still satisfy the shape.
+   */
+  lastOpen?: HostOpenTimings;
 }
+
+/**
+ * Ceiling for a fresh host process: spawn to `host.hello`. A cold boot parses
+ * the host bundle and the SDK; three seconds is generous for a healthy machine
+ * and small enough to catch a regression.
+ */
+export const HOST_BOOT_BUDGET_MS = 3_000;
+/**
+ * Warm open ceiling: the host is already up and the session file exists. The
+ * extension stack is the floor here, so this is a target, not a promise; the
+ * Diagnostics row marks it `over` rather than failing anything.
+ */
+export const HOST_OPEN_BUDGET_MS = 3_000;
 
 /** True when a sample is over the hard restart threshold. */
 export function shouldRestartForMemory(

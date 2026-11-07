@@ -582,6 +582,28 @@ and the renderer all read it, so a budget change is one edit.
 - **Lazy start and pre-warm.** The tab table is restored without spawning any
   host; only the most recently used tab is pre-warmed in the background, and
   safe mode skips even that.
+- **Session-open latency, measured.** A host open is the slowest routine
+  operation in the app (extension discovery plus factories, settings, scope,
+  `session_start`), and it used to be visible only once it crossed the 2 s
+  slow-request threshold. The host now reports the phases of its last open on its
+  own `host.metrics` frame (`lastOpen`: trust, services, scope, session, bind,
+  reconcile, total) and the supervisor adds `bootMs` (spawn → handshake).
+  Diagnostics prints `boot … · open … (services …, bind …)` per host, the
+  exported bundle repeats it, and `HOST_BOOT_BUDGET_MS` / `HOST_OPEN_BUDGET_MS`
+  colour the row. A `skipIf` live test (`tests/host/session-core.sdk.live.test.ts`)
+  opens a real session and prints the same breakdown with loose hang-only
+  ceilings, because wall-clock budgets on a paged machine are not a gate.
+- **One open, one bind, one settings read.** The SDK invokes the
+  `setRebindSession` callback after it replaces a session; `session.new`,
+  `switch`, `fork`, `clone` and `importJsonl` also called `rebind()` themselves,
+  so extension `session_start`, `resources_discover`, the settings reload and the
+  scope resolve ran **twice** per action. Handlers now skip their own call when
+  the runtime already reported the replacement (a counter keeps a runtime that
+  does not report it bound exactly once), and `startSession` no longer reloads
+  settings a third time after the runtime factory read them. The bundled
+  checkpoint extension's 30-day sweep moved off the awaited `session_start`
+  path; `store.ensure(cwd)` is still awaited, because the git-missing notice and
+  the first snapshot depend on it.
 - **Delta coalescing, measured.** `message_update` frames batch for 33 ms or
   1 KB before one IPC push; `sessionService.coalesceStats()` reports batches,
   deltas, flush reason and the largest batch, and a test pins that a 400-delta
@@ -614,7 +636,9 @@ and the renderer all read it, so a budget change is one edit.
   service parks the least-recently-used **idle** host (status `stopped` shows as
   "asleep"); if every live session is busy the spawn still proceeds, so a
   session count can never block the user. `hostProcessCeiling(totalMemory)` is
-  the memory-derived process ceiling (`target + 2`, 4–10). A 30-second
+  the memory-derived process ceiling (`target + 2`, 4–10), and the supervisor
+  refuses a second live host for one `sessionId`, so the live count is the real
+  child count rather than a map that could silently drop a process. A 30-second
   main-process tick parks idle hosts when the live count is over target or the
   sum of host RSS is over 50% of physical RAM. Diagnostics shows
   `live/target (ceiling)`, aggregate host RSS/limit, system free/total memory and

@@ -158,6 +158,15 @@ export function renderDiagnosticsBundle(snapshot: DiagnosticsSnapshot, officeTex
       `- ${host.tabId} role=${host.role} status=${host.status} pid=${host.pid ?? "?"} build=${host.buildId ?? "unknown"}${host.stale ? " (stale)" : ""} cwd=${host.cwd}`,
     );
     if (host.startedAt !== null) lines.push(`  started: ${iso(host.startedAt)}`);
+    if (typeof host.bootMs === "number") lines.push(`  boot: ${host.bootMs} ms`);
+    if (host.lastOpen) {
+      const open = host.lastOpen;
+      lines.push(
+        `  open: ${open.totalMs} ms (trust ${open.trustMs}, services ${open.servicesMs}, ` +
+          `scope ${open.scopeMs}, session ${open.sessionMs}, bind ${open.bindMs}, ` +
+          `reconcile ${open.reconcileMs})`,
+      );
+    }
     if (host.sessionFile) lines.push(`  session: ${host.sessionFile}`);
     if (host.logLines.length === 0) lines.push("  log: (empty)");
     else {

@@ -142,6 +142,53 @@ describe.skipIf(!buildReady)("live session service", () => {
   }, 300_000);
 });
 
+describe.skipIf(!buildReady)("live control host singleton (2026-11-07 plan)", () => {
+  it("spawns one child and one port for concurrent control callers", async () => {
+    const nodePath = resolution.nodePath;
+    if (!nodePath) throw new Error("no bundled runtime resolved");
+
+    const liveSupervisor = createHostSupervisor({
+      nodePath,
+      hostPath: resolution.piHostPath,
+      binDir: resolution.binDir,
+      nodeBinDir: resolution.nodeBinDir,
+      logDir: join(scratch, "logs-control"),
+      blobDir: join(scratch, "blobs-control"),
+      profileDir: join(scratch, "profile-control"),
+      requestTimeoutMs: 120_000,
+    });
+    const liveService = createSessionService({
+      supervisor: liveSupervisor,
+      store: {
+        read: async () => ({ tabs: [], activeTabId: null }),
+        update: async () => ({ tabs: [], activeTabId: null }),
+      },
+      controlCwd: scratch,
+      coalesceMs: 10,
+      emit: () => {},
+    });
+
+    try {
+      // The renderer's boot fan-out shape: several control-addressed requests at
+      // once. Before the fix this spawned one host per caller (seven children
+      // under one registry key, six unreachable).
+      const handles = await Promise.all(Array.from({ length: 5 }, () => liveService.controlHost()));
+
+      expect(new Set(handles).size).toBe(1);
+      expect(liveSupervisor.list()).toHaveLength(1);
+      expect(liveSupervisor.allocatedPorts()).toHaveLength(1);
+      expect(liveSupervisor.get(CONTROL_HOST_ID)).toBe(handles[0]);
+
+      await liveService.dispose();
+      expect(liveSupervisor.list()).toHaveLength(0);
+      expect(liveSupervisor.allocatedPorts()).toEqual([]);
+    } finally {
+      await liveService.dispose().catch(() => undefined);
+      await liveSupervisor.stopAll().catch(() => undefined);
+    }
+  }, 300_000);
+});
+
 describe.skipIf(!buildReady)("live session list projection", () => {
   it("returns a bounded page and chunked blobs for a profile that would spill", async () => {
     const nodePath = resolution.nodePath;

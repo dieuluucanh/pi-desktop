@@ -400,6 +400,41 @@ describe("host service resource metrics (plan step 24)", () => {
     expect(result.rssBytes as number).toBeGreaterThan(0);
     expect(typeof result.heapUsedBytes).toBe("number");
   });
+
+  it("reports the last session open's phases with the sample", async () => {
+    const lastOpen = {
+      totalMs: 5_400,
+      trustMs: 12,
+      servicesMs: 4_600,
+      scopeMs: 40,
+      sessionMs: 90,
+      bindMs: 410,
+      reconcileMs: 60,
+      at: 1_700_000_000_000,
+    };
+    const host = harness({
+      lastOpen: () => lastOpen,
+      readMemory: () => ({
+        rssBytes: 1,
+        heapUsedBytes: 2,
+        heapTotalBytes: 3,
+        uptimeMs: 4,
+        at: 5,
+      }),
+    });
+
+    await host.request(1, "host.metrics");
+
+    expect(host.lastResult()).toMatchObject({ rssBytes: 1, lastOpen });
+  });
+
+  it("omits the open phases before any open has run", async () => {
+    const host = harness({ lastOpen: () => null });
+
+    await host.request(1, "host.metrics");
+
+    expect(host.lastResult()).not.toHaveProperty("lastOpen");
+  });
 });
 
 describe("host service event spilling (plan step 24)", () => {

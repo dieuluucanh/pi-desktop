@@ -373,8 +373,12 @@ export default function checkpointExtension(
     // per-event cost.
     if (event.reason === "reload") return;
     const fs = createNodeCheckpointFs();
-    await sweepOldShadowRepos(fs, profileDir, store, now(), settings.retentionDays).catch(() => 0);
-    if (epoch !== sessionEpoch) return;
+    // A 30-day retention pass is maintenance, not part of opening a session. It
+    // used to be awaited here, so every open paid a shadow-repo directory walk
+    // (plus a `git log` per repo) before the session could be announced
+    // (2026-11-07 plan). Run it in the background: the pass is idempotent, and a
+    // session replaced while it runs does not make it wrong, only unnecessary.
+    void sweepOldShadowRepos(fs, profileDir, store, now(), settings.retentionDays).catch(() => 0);
     const probe = await store.ensure(cwd).catch(() => null);
     if (epoch !== sessionEpoch) return;
     if (probe && !probe.ok && probe.reason === "git_missing") {

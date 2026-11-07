@@ -107,6 +107,12 @@ export interface HostInfo {
    */
   buildId?: string | null;
   /**
+   * Spawn → handshake duration in ms (2026-11-07 plan). Computed by the
+   * supervisor (the host cannot see its own spawn), so it is absent until the
+   * handshake completes.
+   */
+  bootMs?: number;
+  /**
    * Optional host features (git-checkpoint plan step 24). Absent for a host
    * started by an older main, so every reader must treat it as "unknown, assume
    * no".
@@ -340,6 +346,28 @@ export class HostNotRunningError extends Error {
 }
 
 /**
+ * A live host already exists for this `sessionId`.
+ *
+ * The supervisor keys its registry by session id, so a second start used to
+ * overwrite the first handle: the child kept running (and kept its port) with
+ * nothing in `list()`/`stopAll()`/`capacity()` able to reach it. That is how one
+ * app launch ended up with seven control hosts under one map entry
+ * (2026-11-07 host-singleton plan). The registry is now the single authority:
+ * a caller that races gets this error instead of a silent orphan.
+ *
+ * A host whose status is `stopped` or `failed` is dead, not live: `start()`
+ * stops and replaces it so a crashed session can still be reopened.
+ */
+export class HostAlreadyRunningError extends Error {
+  readonly code = "host_already_running";
+
+  constructor(sessionId: string, status: HostStatus) {
+    super(`a host for ${sessionId} is already ${status}`);
+    this.name = "HostAlreadyRunningError";
+  }
+}
+
+/**
  * The emergency host-process ceiling was hit. Carries a stable `code` so IPC can
  * map it to the ceiling sentence instead of matching prose.
  */
@@ -411,8 +439,17 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     /** Characters in the current log segment (rotation counter). */
     private logFileChars = 0;
     private lastInfo: HostInfo | null = null;
+    /** When the current child was spawned, for the boot measurement. */
+    private spawnedAt: number | null = null;
+    private bootMsValue: number | null = null;
     private readyResolve: ((info: HostInfo) => void) | null = null;
     private readyReject: ((error: Error) => void) | null = null;
+    /**
+     * Whether `readyPromise` has settled. A host stopped before its handshake
+     * must not leave `ready()` pending forever: the caller has no other signal
+     * that the process it is waiting for will never arrive (2026-11-07 plan).
+     */
+    private readySettled = false;
     private readonly readyPromise: Promise<HostInfo>;
 
     constructor(
@@ -429,6 +466,17 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         this.readyResolve = resolve;
         this.readyReject = reject;
       });
+      // `ready()` is optional (`start()` awaits the handshake instead), so a
+      // rejection nobody asked for must not surface as an unhandled rejection.
+      // Callers that do await it still get the rejection.
+      void this.readyPromise.catch(() => undefined);
+    }
+
+    /** Settles the pending `ready()` with a rejection, at most once. */
+    private rejectReady(error: Error): void {
+      if (this.readySettled) return;
+      this.readySettled = true;
+      this.readyReject?.(error);
     }
 
     ready(): Promise<HostInfo> {
@@ -445,7 +493,10 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     }
 
     info(): HostInfo | null {
-      return this.lastInfo;
+      if (!this.lastInfo) return null;
+      return this.bootMsValue === null
+        ? this.lastInfo
+        : { ...this.lastInfo, bootMs: this.bootMsValue };
     }
 
     metrics(): HostMemoryMetrics | null {
@@ -589,6 +640,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       }
       // A replacement is a live host again; only `shutdown()` keeps it stopped.
       this.stopping = false;
+      this.spawnedAt = now();
       this.stopMetricsPolling();
       const telemetry =
         typeof options.telemetryEnabled === "function"
@@ -743,7 +795,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       if (this.restarts >= maxRestarts) {
         this.state = "failed";
         this.emitter.emit("status", "failed");
-        this.readyReject?.(
+        this.rejectReady(
           new Error(`host for ${this.sessionId} crashed ${this.restarts + 1} times; giving up`),
         );
         return;
@@ -782,6 +834,11 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
      */
     async restart(reason: string = "manual"): Promise<HostInfo> {
       this.lastRestartReasonValue = reason;
+      // The crash backoff budget is per incident window, not per process
+      // lifetime: without this reset, three crashes spread over a long session
+      // permanently mark the host `failed` and every later restart is refused.
+      // An automatic crash restart keeps the counter so the backoff still trips.
+      if (reason !== "crash") this.restarts = 0;
       if (this.restartTimer) {
         clearTimeout(this.restartTimer);
         this.restartTimer = null;
@@ -880,8 +937,12 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         );
       }
       this.lastInfo = info;
+      // Spawn → hello: the part of an open nobody can remove, only hide behind
+      // a pre-warm. Reported so a slow cold boot is visible in Diagnostics.
+      this.bootMsValue = this.spawnedAt === null ? null : Math.max(0, now() - this.spawnedAt);
       this.state = "ready";
       this.emitter.emit("status", "ready");
+      this.readySettled = true;
       this.readyResolve?.(info);
       this.scheduleIdleCheck();
       this.startMetricsPolling();
@@ -1088,6 +1149,8 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       // The metrics interval is unref'd, but it must not keep asking a host that
       // is being stopped for its RSS (plan step 27).
       this.stopMetricsPolling();
+      // Whatever a caller is waiting for, this host will never deliver it.
+      this.rejectReady(new HostStoppedError(this.sessionId, "ready"));
       const child = this.child;
       if (!child) {
         this.state = "stopped";
@@ -1140,14 +1203,33 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
   const stopHost = async (sessionId: string, reason: TabStopReason = "manual"): Promise<void> => {
     const host = hosts.get(sessionId);
     if (!host) return;
-    await host.shutdown(reason);
-    hosts.delete(sessionId);
-    ports.delete(host.port);
-    host.disposeHere();
+    try {
+      await host.shutdown(reason);
+    } finally {
+      // The entry and its port are the registry's only record of this child.
+      // A rejected shutdown must not strand either: the child is either gone
+      // or unkillable, and in both cases keeping the slot is worse.
+      hosts.delete(sessionId);
+      ports.delete(host.port);
+      host.disposeHere();
+    }
   };
+
+  /** `stopped`/`failed` entries have no live child left to protect. */
+  const isDeadStatus = (status: HostStatus): boolean => status === "stopped" || status === "failed";
 
   return {
     async start(spec: HostSpawnSpec): Promise<HostHandle> {
+      // One child per session id. A live duplicate is refused *before* a port is
+      // allocated or a process spawned, so a caller race cannot leak either. A
+      // dead entry (stopped/failed) is replaced: that is how a crash-recovered
+      // session reopens, and it must not hold a ceiling slot forever.
+      const existing = hosts.get(spec.sessionId);
+      if (existing) {
+        const status = existing.status();
+        if (!isDeadStatus(status)) throw new HostAlreadyRunningError(spec.sessionId, status);
+        await stopHost(spec.sessionId);
+      }
       if (hosts.size >= maxHosts) throw new HostLimitError(maxHosts);
       const port = allocatePort(spec.officeHost ?? false);
       const host = new SupervisorHost(

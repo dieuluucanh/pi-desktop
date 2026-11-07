@@ -26,6 +26,26 @@ function formatTime(at: number): string {
   return new Date(at).toLocaleTimeString();
 }
 
+/**
+ * Boot and last-open timing for one host (2026-11-07 host-singleton plan).
+ *
+ * A session open is the slowest routine operation in the app, and it used to be
+ * visible only once it crossed the 2 s slow-request threshold. Showing `boot`
+ * (spawn → hello) separately from `open` (create/resume) is what tells a slow
+ * cold start apart from a slow extension stack.
+ */
+function hostTiming(host: DiagnosticsHostInfo): string {
+  const parts: string[] = [];
+  if (typeof host.bootMs === "number") parts.push(`boot ${formatDuration(host.bootMs)}`);
+  if (host.lastOpen) {
+    const open = host.lastOpen;
+    parts.push(
+      `open ${formatDuration(open.totalMs)} (services ${formatDuration(open.servicesMs)}, bind ${formatDuration(open.bindMs)})`,
+    );
+  }
+  return parts.join(" · ");
+}
+
 export function DiagnosticsView() {
   const info = useAppStore((state) => state.info);
   const prefs = useAppStore((state) => state.prefs);
@@ -294,6 +314,11 @@ export function DiagnosticsView() {
                   <span className="truncate text-xs text-ink-muted" title={host.cwd}>
                     {host.cwd}
                   </span>
+                  {hostTiming(host) ? (
+                    <span className="text-xs text-ink-muted" data-testid="diagnostics-host-timing">
+                      {hostTiming(host)}
+                    </span>
+                  ) : null}
                   {host.logLines.length > 0 ? (
                     <div className="flex flex-col gap-1">
                       <pre className="max-h-40 overflow-auto rounded bg-surface-sunken p-2 text-[11px] leading-4">

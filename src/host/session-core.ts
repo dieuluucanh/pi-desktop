@@ -15,6 +15,7 @@ import {
 import type { ScopeDiagnosticInfo, ScopeSnapshot } from "../shared/model-scope";
 import type { ExtensionRuntimeErrorSummary } from "../shared/resources";
 import type { SettingsScope } from "../shared/settings-schema";
+import type { HostOpenTimings } from "../shared/performance";
 import {
   eventToFrame,
   sessionSnapshot,
@@ -300,6 +301,11 @@ export interface SessionRuntimeRequest {
    * composition root resolves it next to the host bundle; safe mode ignores it.
    */
   checkpointsExtensionPath?: string | null;
+  /**
+   * Sub-phase timings this request wants reported (2026-11-07 plan). Passed
+   * through to the SDK adapter, which owns `services`/`scope`/`session`.
+   */
+  onPhase?: (phase: "services" | "scope" | "session", ms: number) => void;
 }
 
 export interface SessionCoreDeps {
@@ -425,6 +431,12 @@ export interface SessionCore {
   session(): HostSession | null;
   /** Current session identity for event fencing (id + attachment epoch). */
   identity(): { sessionId: string | null; epoch: number };
+  /**
+   * Phase breakdown of the last `session.create`/`session.resume` in this
+   * process, or null before the first (2026-11-07 plan). Optional: the control
+   * core has no session to open.
+   */
+  lastOpenTimings?(): HostOpenTimings | null;
   cwd(): string;
   dispose(): Promise<void>;
 }
@@ -507,6 +519,55 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   let settingsPortManager: SettingsLike | null = null;
   let settingsPortCwd: string | null = null;
   let scopeFingerprint: string | null = null;
+  /**
+   * The open currently being measured and the last one that finished
+   * (2026-11-07 host-singleton plan). The host reports the result through
+   * `host.metrics`, so Diagnostics can say *which* leg of an open is slow
+   * instead of only logging a total once it crosses two seconds.
+   */
+  let activeOpen: {
+    startedAt: number;
+    trustMs: number;
+    servicesMs: number;
+    scopeMs: number;
+    sessionMs: number;
+    bindMs: number;
+    reconcileMs: number;
+  } | null = null;
+  let lastOpen: HostOpenTimings | null = null;
+  const clock = (): number => deps.now?.() ?? Date.now();
+  const beginOpen = (): void => {
+    activeOpen = {
+      startedAt: clock(),
+      trustMs: 0,
+      servicesMs: 0,
+      scopeMs: 0,
+      sessionMs: 0,
+      bindMs: 0,
+      reconcileMs: 0,
+    };
+  };
+  const recordOpenPhase = (phase: "services" | "scope" | "session", ms: number): void => {
+    if (!activeOpen) return;
+    if (phase === "services") activeOpen.servicesMs = ms;
+    else if (phase === "scope") activeOpen.scopeMs = ms;
+    else activeOpen.sessionMs = ms;
+  };
+  const finishOpen = (): void => {
+    if (!activeOpen) return;
+    const at = clock();
+    lastOpen = {
+      totalMs: at - activeOpen.startedAt,
+      trustMs: activeOpen.trustMs,
+      servicesMs: activeOpen.servicesMs,
+      scopeMs: activeOpen.scopeMs,
+      sessionMs: activeOpen.sessionMs,
+      bindMs: activeOpen.bindMs,
+      reconcileMs: activeOpen.reconcileMs,
+      at,
+    };
+    activeOpen = null;
+  };
   const resolveSettingsPort = (): SettingsPort | null => {
     if (!deps.createSettingsPort) return null;
     if (!settingsPort || settingsPortManager !== settingsManager || settingsPortCwd !== cwd) {
@@ -747,13 +808,36 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     unsubscribe = next.subscribe ? next.subscribe(listener) : null;
   };
 
+  /**
+   * How many times `rebind()` actually ran.
+   *
+   * The SDK invokes the callback registered with `setRebindSession()` after it
+   * replaces the session, and the lifecycle handlers below used to call it a
+   * second time. One `session.new`/`switch`/`fork`/`clone`/`import` therefore ran
+   * the whole bind twice — extension `session_start`, `resources_discover`, a
+   * settings reload and a second scope resolve — which doubled the slowest part
+   * of those actions (2026-11-07 plan). The counter lets a handler skip its own
+   * call when the runtime already did it, and still bind exactly once on a
+   * runtime that does not report back.
+   */
+  let rebindCount = 0;
+
+  const rebindIfRuntimeSkipped = async (before: number): Promise<void> => {
+    if (rebindCount === before) await rebind();
+  };
+
   const rebind = async (): Promise<void> => {
     if (!runtime) return;
+    rebindCount += 1;
     attach(runtime.session);
     settingsManager = runtime.services?.settingsManager ?? settingsManager;
+    const bindStartedAt = clock();
     await deps.bindSession?.(runtime.session, runtime);
+    if (activeOpen) activeOpen.bindMs = clock() - bindStartedAt;
     scopeFingerprint = null;
+    const reconcileStartedAt = clock();
     await reconcileModelScope({ reload: true });
+    if (activeOpen) activeOpen.reconcileMs = clock() - reconcileStartedAt;
     deps.emit("session_replaced", snapshot(), runtime.session.sessionId ?? undefined);
     emitState();
   };
@@ -831,7 +915,10 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     /** Per-project default thinking level for a brand-new session. */
     thinking?: string;
   }): Promise<SessionSnapshot> => {
+    beginOpen();
+    const trustStartedAt = clock();
     const status = trust.status(options.cwd);
+    if (activeOpen) activeOpen.trustMs = clock() - trustStartedAt;
     if (status.needsPrompt && !options.trustAnswer) {
       deps.emit("project_trust", status, undefined);
       throw new SessionCoreError(
@@ -848,11 +935,12 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       agentDir: deps.agentDir,
       sessionManager: options.sessionManager,
       npmCommand: deps.npmCommand,
-      projectTrusted: trust.status(cwd).trusted,
+      projectTrusted: status.trusted,
       ...(deps.safeMode ? { safeMode: true } : {}),
       ...(deps.checkpointsExtensionPath
         ? { checkpointsExtensionPath: deps.checkpointsExtensionPath }
         : {}),
+      onPhase: recordOpenPhase,
     });
     runtime = created.runtime;
     settingsManager = created.runtime.services?.settingsManager ?? null;
@@ -864,9 +952,18 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     if (options.thinking) {
       created.session.setThinkingLevel?.(options.thinking, { persist: false });
     }
+    const bindStartedAt = clock();
     await deps.bindSession?.(created.session, created.runtime);
+    if (activeOpen) activeOpen.bindMs = clock() - bindStartedAt;
     scopeFingerprint = null;
-    await reconcileModelScope({ reload: true });
+    const reconcileStartedAt = clock();
+    // The runtime factory has just built `SettingsManager` from disk and
+    // `resourceLoader.reload()` re-read it, so a third read here bought nothing
+    // (2026-11-07 plan). `reload: true` stays on `rebind()`, where it is the only
+    // read.
+    await reconcileModelScope({ reload: false });
+    if (activeOpen) activeOpen.reconcileMs = clock() - reconcileStartedAt;
+    finishOpen();
 
     deps.emit(
       "session_started",
@@ -924,7 +1021,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     "session.resume": async (params) => {
       const input = asRecord(params);
       if (runtime?.switchSession && typeof input.sessionFile === "string") {
+        // The SDK rebuilds the whole runtime here (services + extensions +
+        // bind), so the switch gets its own measurement window.
+        beginOpen();
         await runtime.switchSession(input.sessionFile);
+        finishOpen();
         return snapshot();
       }
       const sessionFile = requireString(input.sessionFile ?? input.path, "sessionFile");
@@ -940,10 +1041,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const entryId = requireString(input.entryId ?? input.id, "entryId");
       if (!runtime?.fork)
         throw new SessionCoreError("fork is not supported by this runtime", "unsupported");
+      const rebuiltAt = rebindCount;
       const result = await runtime.fork(entryId, {
         position: input.position === "before" ? "before" : "at",
       });
-      await rebind();
+      await rebindIfRuntimeSkipped(rebuiltAt);
       return {
         ...snapshot(),
         cancelled: result.cancelled,
@@ -1274,10 +1376,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         throw new SessionCoreError("starting a new session is not supported", "unsupported");
       }
       const parent = asRecord(params).parentSession;
+      const rebuiltAt = rebindCount;
       const result = await runtime.newSession(
         typeof parent === "string" && parent.length > 0 ? { parentSession: parent } : undefined,
       );
-      await rebind();
+      await rebindIfRuntimeSkipped(rebuiltAt);
       return { ...snapshot(), cancelled: result.cancelled };
     },
 
@@ -1287,8 +1390,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       if (!runtime?.switchSession) {
         throw new SessionCoreError("switching sessions is not supported", "unsupported");
       }
+      const rebuiltAt = rebindCount;
       const result = await runtime.switchSession(sessionFile);
-      await rebind();
+      await rebindIfRuntimeSkipped(rebuiltAt);
       return { ...snapshot(), cancelled: result.cancelled };
     },
 
@@ -1306,12 +1410,14 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         if (!leafId) {
           throw new SessionCoreError("this session has no entry to clone from", "no_leaf");
         }
+        const rebuiltAt = rebindCount;
         const forked = await runtime.fork(leafId, { position: "at" });
-        await rebind();
+        await rebindIfRuntimeSkipped(rebuiltAt);
         return { ...snapshot(), cancelled: forked.cancelled };
       }
+      const rebuiltAt = rebindCount;
       const result = await runtime.clone();
-      await rebind();
+      await rebindIfRuntimeSkipped(rebuiltAt);
       return { ...snapshot(), cancelled: result.cancelled };
     },
 
@@ -1349,8 +1455,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const cwdOverride =
         typeof input.cwd === "string" && input.cwd.length > 0 ? input.cwd : undefined;
       try {
+        const rebuiltAt = rebindCount;
         const result = await runtime.importFromJsonl(path, cwdOverride);
-        await rebind();
+        await rebindIfRuntimeSkipped(rebuiltAt);
         return { ...snapshot(), cancelled: result.cancelled };
       } catch (error) {
         // Pi's two documented import failures need actionable text: the renderer
@@ -1923,6 +2030,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     snapshot,
     session: () => session,
     identity: () => ({ sessionId: session?.sessionId ?? null, epoch: sessionEpoch }),
+    lastOpenTimings: () => lastOpen,
     cwd: () => cwd,
     dispose: async () => {
       promptOrigins.reset();

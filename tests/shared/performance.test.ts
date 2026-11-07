@@ -3,6 +3,8 @@ import {
   COALESCE_BYTES,
   COALESCE_MS,
   DEFAULT_LIVE_HOSTS,
+  HOST_BOOT_BUDGET_MS,
+  HOST_OPEN_BUDGET_MS,
   HOST_RSS_BUDGET_BYTES,
   HOST_RSS_RESTART_BYTES,
   LIVE_HOST_RAM_SHARE,
@@ -54,6 +56,16 @@ describe("budgets", () => {
     expect(worstBudgetStatus(["met", "unknown"])).toBe("unknown");
     expect(worstBudgetStatus(["unknown", "over", "met"])).toBe("over");
     expect(worstBudgetStatus([])).toBe("met");
+  });
+});
+
+describe("host boot and open budgets (2026-11-07 plan)", () => {
+  it("pins the budgets that the Diagnostics host rows colour against", () => {
+    expect(HOST_BOOT_BUDGET_MS).toBe(3_000);
+    expect(HOST_OPEN_BUDGET_MS).toBe(3_000);
+    expect(checkBudget(2_999, HOST_OPEN_BUDGET_MS)).toBe("met");
+    expect(checkBudget(3_001, HOST_OPEN_BUDGET_MS)).toBe("over");
+    expect(checkBudget(null, HOST_BOOT_BUDGET_MS)).toBe("unknown");
   });
 });
 

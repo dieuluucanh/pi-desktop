@@ -1,5 +1,10 @@
 import type { HostMethod, HostRole } from "../shared/host-protocol";
-import { DEFAULT_REQUEST_TIMEOUT_MS, HostStoppedError, HostTimeoutError } from "./host-supervisor";
+import {
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  HostAlreadyRunningError,
+  HostStoppedError,
+  HostTimeoutError,
+} from "./host-supervisor";
 import type { CommandCompleteResult } from "../shared/commands";
 import {
   appendIncident,
@@ -131,6 +136,8 @@ export interface HostInfoLike {
   pids?: { pid?: number };
   /** Build fingerprint reported by `host.hello` (2026-10-24 stale-host plan). */
   buildId?: string | null;
+  /** Spawn → handshake in ms, measured by the supervisor (2026-11-07 plan). */
+  bootMs?: number;
   /** Optional host features (git-checkpoint plan step 24); absent = unknown. */
   capabilities?: {
     checkpointsExtension?: boolean;
@@ -614,6 +621,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    */
   const visibleTabs = new Set<string>();
   let control: SupervisorHostLike | null = null;
+  /**
+   * In-flight control-host start (2026-11-07 host-singleton plan). Without it,
+   * every concurrent caller passed the `if (control)` check before any of them
+   * assigned `control`, and each spawned its own process under one registry key.
+   */
+  let controlStarting: Promise<SupervisorHostLike> | null = null;
   let disposed = false;
 
   const envelope = (): SessionTabsEnvelope => ({
@@ -1394,6 +1407,68 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     );
   };
 
+  /**
+   * Starts (or joins the in-flight start of) the single control host.
+   *
+   * The renderer's boot fan-out asks several control-addressed questions at
+   * once, so `controlHost()` had several concurrent callers. The old shape —
+   * `if (control) return control; await requestSlot(); start()` — let every one
+   * of them pass the check before any assigned `control`, and each spawned a
+   * host under the same `sessionId`. Six of the seven became immortal orphans
+   * (pinned by `host-policy`, invisible to `list()`), each holding ~95 MB of
+   * commit and a port for the app's lifetime (2026-11-07 host-singleton plan).
+   *
+   * This is the `ensureProcess` shape: one in-flight promise, a re-check after
+   * the budget slot, and adoption of a host that won the race in the supervisor.
+   */
+  const startControlHost = (): Promise<SupervisorHostLike> => {
+    if (control) return Promise.resolve(control);
+    if (controlStarting) return controlStarting;
+    const run = (async (): Promise<SupervisorHostLike> => {
+      await requestSlot(CONTROL_HOST_ID);
+      // A queued caller may have started it, or a crash may have cleared it.
+      if (control) return control;
+      if (disposed) throw new SessionServiceError("session service is disposed", "disposed");
+      let host: SupervisorHostLike;
+      try {
+        host = await deps.supervisor.start({
+          sessionId: CONTROL_HOST_ID,
+          cwd: deps.controlCwd,
+          role: "control",
+        });
+      } catch (error) {
+        // Defence in depth: the supervisor refuses a second live host for one
+        // id. If one is already serving, reuse it instead of failing the
+        // request that needed app-wide state.
+        const existing = deps.supervisor.get(CONTROL_HOST_ID) ?? null;
+        // A `stopped` entry is a corpse the supervisor is about to delete; the
+        // retry after it is gone is the one that should spawn. Adopting it would
+        // hand the caller a host that can only reject.
+        if (!(error instanceof HostAlreadyRunningError) || !existing) throw error;
+        if (existing.status() === "stopped") throw error;
+        recordIncident(
+          "host_duplicate_start",
+          `a second control host was refused; adopted the running one (${existing.status()})`,
+        );
+        host = existing;
+      }
+      // A dispose that raced the spawn must not publish a host over it.
+      if (disposed) {
+        await deps.supervisor.stop(CONTROL_HOST_ID).catch(() => undefined);
+        throw new SessionServiceError("session service is disposed", "disposed");
+      }
+      control = host;
+      subscribeControl(host);
+      return host;
+    })();
+    controlStarting = run;
+    const clear = (): void => {
+      if (controlStarting === run) controlStarting = null;
+    };
+    void run.then(clear, clear);
+    return run;
+  };
+
   /** One row per tab (plus the control host) for the Diagnostics view (step 22). */
   const describeHost = (tabId: string, host: SupervisorHostLike): DiagnosticsHostInfo => {
     const tab = tabs.get(tabId);
@@ -1412,6 +1487,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       pid: typeof pads?.pid === "number" ? pads.pid : null,
       startedAt: typeof info?.startedAt === "number" ? info.startedAt : null,
       rssBytes: host.metrics?.()?.rssBytes ?? null,
+      bootMs: info?.bootMs ?? null,
+      lastOpen: host.metrics?.()?.lastOpen ?? null,
       buildId,
       stale,
       stopReason: host.stopReason?.() ?? null,
@@ -1423,17 +1500,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   };
 
   const service: SessionService = {
-    async controlHost() {
-      if (control) return control;
-      await requestSlot(CONTROL_HOST_ID);
-      const host = await deps.supervisor.start({
-        sessionId: CONTROL_HOST_ID,
-        cwd: deps.controlCwd,
-        role: "control",
-      });
-      control = host;
-      subscribeControl(host);
-      return host;
+    controlHost() {
+      return startControlHost();
     },
 
     tabs: () => [...tabs.values()],
@@ -2072,6 +2140,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       recycling.clear();
       createParams.clear();
       control = null;
+      controlStarting = null;
       await deps.supervisor.stopAll();
     },
   };

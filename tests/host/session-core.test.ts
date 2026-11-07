@@ -535,3 +535,178 @@ describe("session core safe mode (plan step 22)", () => {
     expect(requests[0]?.projectTrusted).toBe(false);
   });
 });
+
+describe("session open timings (2026-11-07 host-singleton plan)", () => {
+  function timingHarness() {
+    let clock = 1_000;
+    const session = fakeSession().session;
+    const runtime: RuntimeLike = {
+      get session() {
+        return session;
+      },
+      get services() {
+        return { cwd: CWD };
+      },
+    };
+    const requests: SessionRuntimeRequest[] = [];
+    const harnessed = harness({
+      // Deterministic clock: the fake phases move it, so a recorded phase and
+      // the end-to-end total describe the same timeline.
+      now: () => clock,
+      bindSession: async () => {
+        clock += 30;
+      },
+      createRuntime: async (request) => {
+        requests.push(request);
+        clock += 400;
+        request.onPhase?.("services", 400);
+        clock += 25;
+        request.onPhase?.("scope", 25);
+        clock += 35;
+        request.onPhase?.("session", 35);
+        return { runtime, session };
+      },
+    });
+    return { ...harnessed, requests };
+  }
+
+  it("records the phase breakdown of a create", async () => {
+    const { call, core } = timingHarness();
+
+    await call("session.create");
+
+    const timings = core.lastOpenTimings?.() ?? null;
+    expect(timings).not.toBeNull();
+    expect(timings?.servicesMs).toBe(400);
+    expect(timings?.scopeMs).toBe(25);
+    expect(timings?.sessionMs).toBe(35);
+    expect(timings?.bindMs).toBe(30);
+    // End-to-end also covers legs the phases do not name (model apply,
+    // snapshot); it must never be smaller than the measured legs.
+    const legs =
+      (timings?.trustMs ?? 0) +
+      (timings?.servicesMs ?? 0) +
+      (timings?.scopeMs ?? 0) +
+      (timings?.sessionMs ?? 0) +
+      (timings?.bindMs ?? 0) +
+      (timings?.reconcileMs ?? 0);
+    expect(timings?.totalMs).toBeGreaterThanOrEqual(legs);
+    expect(timings?.totalMs).toBeGreaterThanOrEqual(490);
+  });
+
+  it("records a total for the in-place resume fast path", async () => {
+    let clock = 1_000;
+    const session = fakeSession().session;
+    const runtime: RuntimeLike = {
+      get session() {
+        return session;
+      },
+      get services() {
+        return { cwd: CWD };
+      },
+      async switchSession() {
+        clock += 2_500;
+        return { cancelled: false };
+      },
+    };
+    const harnessed = harness({
+      now: () => clock,
+      createRuntime: async () => ({ runtime, session }),
+    });
+    await harnessed.call("session.create");
+
+    await harnessed.call("session.resume", { sessionFile: "C:/sessions/one.jsonl" });
+
+    const timings = harnessed.core.lastOpenTimings?.() ?? null;
+    expect(timings).not.toBeNull();
+    expect(timings?.totalMs).toBe(2_500);
+    // The SDK owns the legs on this path; only the total is knowable here.
+    expect(timings?.servicesMs).toBe(0);
+  });
+
+  it("has no timings before the first open", () => {
+    const { core } = harness();
+    expect(core.lastOpenTimings?.()).toBeNull();
+  });
+});
+
+describe("session replacement rebinds once (2026-11-07 plan)", () => {
+  function replacingHarness(runtimeCallsRebind: boolean) {
+    const session = fakeSession().session;
+    let rebind: (() => Promise<void>) | undefined;
+    const runtime: RuntimeLike = {
+      get session() {
+        return session;
+      },
+      get services() {
+        return { cwd: CWD };
+      },
+      setRebindSession(fn) {
+        rebind = fn;
+      },
+      async newSession() {
+        if (runtimeCallsRebind) await rebind?.();
+        return { cancelled: false };
+      },
+    };
+    const binds: string[] = [];
+    const harnessed = harness({
+      createRuntime: async () => ({ runtime, session }),
+      bindSession: async () => {
+        binds.push("bind");
+      },
+    });
+    return { ...harnessed, binds };
+  }
+
+  it("binds once when the runtime reports the replacement itself", async () => {
+    const { call, binds } = replacingHarness(true);
+    await call("session.create");
+    binds.length = 0;
+
+    await call("session.new");
+
+    // The SDK calls `rebindSession`; the handler must not run the whole bind a
+    // second time (extension session_start, resources_discover, scope resolve).
+    expect(binds).toHaveLength(1);
+  });
+
+  it("binds once as a fallback when the runtime does not report it", async () => {
+    const { call, binds } = replacingHarness(false);
+    await call("session.create");
+    binds.length = 0;
+
+    await call("session.new");
+
+    expect(binds).toHaveLength(1);
+  });
+});
+
+describe("the open path reads settings once (2026-11-07 plan)", () => {
+  it("does not reload settings after the runtime factory already read them", async () => {
+    const reloads: string[] = [];
+    const settingsPort = {
+      read: async () => ({ global: {}, project: {} }),
+      files: async () => ({
+        global: { path: "/g.json", exists: false, mtimeMs: 0 },
+        project: { path: "/p.json", exists: false, mtimeMs: 0 },
+      }),
+      isProjectTrusted: () => true,
+      write: async () => undefined,
+      compareAndWrite: async () => undefined,
+      writeMany: async () => undefined,
+      writeScope: async () => undefined,
+      flush: async () => undefined,
+      reload: async () => {
+        reloads.push("reload");
+      },
+    };
+    const { call } = harness({
+      createSettingsPort: () => settingsPort as never,
+    });
+
+    await call("session.create");
+
+    expect(reloads).toEqual([]);
+  });
+});

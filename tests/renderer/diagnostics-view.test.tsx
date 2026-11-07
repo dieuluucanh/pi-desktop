@@ -166,6 +166,40 @@ describe("DiagnosticsView", () => {
     expect(hosts).toHaveTextContent("The live-session target is soft");
   });
 
+  it("shows boot and the last open's phases (2026-11-07 plan)", async () => {
+    const base = snapshot();
+    const first = base.hosts?.[0];
+    installBridge({
+      diagnostics: snapshot({
+        hosts: first
+          ? [
+              {
+                ...first,
+                bootMs: 2_300,
+                lastOpen: {
+                  totalMs: 5_400,
+                  trustMs: 12,
+                  servicesMs: 4_600,
+                  scopeMs: 40,
+                  sessionMs: 90,
+                  bindMs: 410,
+                  reconcileMs: 60,
+                  at: 1_700_000_000_000,
+                },
+              },
+            ]
+          : [],
+      }),
+    });
+    render(<DiagnosticsView />);
+
+    const timing = await screen.findByTestId("diagnostics-host-timing");
+    expect(timing).toHaveTextContent("boot 2.3 s");
+    expect(timing).toHaveTextContent("open 5.4 s");
+    expect(timing).toHaveTextContent("services 4.6 s");
+    expect(timing).toHaveTextContent("bind 410 ms");
+  });
+
   it("marks a host running an older build", async () => {
     const base = snapshot();
     const first = base.hosts?.[0];

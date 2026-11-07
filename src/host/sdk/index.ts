@@ -66,6 +66,12 @@ export type SessionRuntimeFactory = (options: {
    * does *not* gate `additionalExtensionPaths`.
    */
   checkpointsExtensionPath?: string | null;
+  /**
+   * Reports the duration of the three sub-phases this adapter owns, so the host
+   * can attribute an open to services (extensions), scope resolution or session
+   * construction instead of one opaque number (2026-11-07 plan).
+   */
+  onPhase?: (phase: "services" | "scope" | "session", ms: number) => void;
 }) => Promise<{
   runtime: AgentSessionRuntime;
   session: AgentSession;
@@ -93,6 +99,7 @@ export const createSdkSessionRuntime: SessionRuntimeFactory = async (options) =>
     agentDir,
     sessionManager,
   }) => {
+    const servicesStartedAt = Date.now();
     const services = await createAgentSessionServices({
       cwd,
       agentDir,
@@ -105,26 +112,31 @@ export const createSdkSessionRuntime: SessionRuntimeFactory = async (options) =>
         extensionPath: options.checkpointsExtensionPath,
       }),
     });
+    options.onPhase?.("services", Date.now() - servicesStartedAt);
     // Resolve `enabledModels` exactly as terminal Pi does at startup. The scope
     // is what extensions see as `ctx.scopedModels` and what `cycleModel` walks;
     // without it the workflow pickers believe no scope is configured and mark
     // every catalogue entry as out of scope. It does NOT pick the startup model:
     // `createAgentSession` calls `findInitialModel({ scopedModels: [] })`
     // internally, so the saved default still wins.
+    const scopeStartedAt = Date.now();
     const scope = await resolveSessionScope({
       patterns: settingsManager.getEnabledModels(),
       runtime: services.modelRuntime,
     });
+    options.onPhase?.("scope", Date.now() - scopeStartedAt);
     for (const diagnostic of scope.diagnostics) {
       // Same information terminal Pi prints; the host's stderr is captured in
       // the Diagnostics view's log tail.
       console.warn(`Warning: ${diagnostic.message}`);
     }
+    const sessionStartedAt = Date.now();
     const created = await createAgentSessionFromServices({
       services,
       sessionManager,
       ...(scope.scopedModels.length > 0 ? { scopedModels: scope.scopedModels } : {}),
     });
+    options.onPhase?.("session", Date.now() - sessionStartedAt);
     return {
       ...created,
       services,

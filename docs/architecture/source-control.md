@@ -177,6 +177,12 @@ of runs easily lands two snapshots in the same second — sorting on the timesta
 alone would then be free to drop the newest one. The log position is the real
 chronology, so the store passes it.
 
+The sweep itself runs **in the background** at `session_start`: it is a 30-day
+maintenance pass, so awaiting its directory walk (and a `git log` per shadow
+repo) would put retention on the critical path of every open
+(2026-11-07 host-singleton plan). `store.ensure(cwd)` stays awaited — the
+git-missing notice and the first snapshot depend on it.
+
 Because the retained set is always a **suffix** of the log, dropping the oldest
 commits needs nothing but moving the branch tip to the newest retained commit
 (compare-and-swap, retried once on loss). Reachability then ends at that tip, and

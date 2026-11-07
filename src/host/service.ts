@@ -19,7 +19,7 @@ import {
   type HostRole,
 } from "../shared/host-protocol";
 import { isPathInside } from "../workspace/path-guard";
-import type { HostMemoryMetrics } from "../shared/performance";
+import type { HostMemoryMetrics, HostOpenTimings } from "../shared/performance";
 
 /**
  * Host-side protocol service (plan step 4).
@@ -91,6 +91,12 @@ export interface HostServiceOptions {
    * so tests assert on a fixed sample instead of the test runner's own RSS.
    */
   readMemory?: () => HostMemoryMetrics;
+  /**
+   * The session core's phase breakdown for its last open (2026-11-07
+   * host-singleton plan). Optional: the control core opens no session, and a
+   * small test double reports none.
+   */
+  lastOpen?: () => HostOpenTimings | null;
   maxFrameBytes?: number;
 }
 
@@ -324,8 +330,14 @@ export function createHostService(options: HostServiceOptions): HostService {
 
   // The host is the only process that can read its own RSS without an
   // OS-specific query; the supervisor polls this for Diagnostics and the RSS
-  // restart threshold (plan step 24).
-  handlers["host.metrics"] = () => readMemory();
+  // restart threshold (plan step 24). The last open's phases ride along: the
+  // supervisor already stores this sample, so Diagnostics gains them without a
+  // new protocol method.
+  handlers["host.metrics"] = () => {
+    const sample = readMemory();
+    const lastOpen = options.lastOpen?.() ?? null;
+    return lastOpen ? { ...sample, lastOpen } : sample;
+  };
 
   handlers["host.hello"] = () => ({
     protocolVersion: HOST_PROTOCOL_VERSION,

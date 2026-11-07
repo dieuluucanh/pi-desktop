@@ -15,8 +15,13 @@ import {
   type SupervisorHostLike,
   type SupervisorLike,
 } from "../../src/main/session-service";
-import type { HostMemoryMetrics } from "../../src/shared/performance";
-import { HostStoppedError, HostTimeoutError } from "../../src/main/host-supervisor";
+import type { HostMemoryMetrics, HostOpenTimings } from "../../src/shared/performance";
+import {
+  HostAlreadyRunningError,
+  HostStoppedError,
+  HostTimeoutError,
+  type HostStatus,
+} from "../../src/main/host-supervisor";
 
 /**
  * The session service (plan step 3) drives everything the renderer sees, so it is
@@ -45,6 +50,8 @@ class FakeHost implements SupervisorHostLike {
   private readonly fail: { method: string; error: Error } | undefined;
   private readonly pinnedValue: boolean;
   private readonly rssBytes: number;
+  private readonly openTimings: HostOpenTimings | undefined;
+  private readonly bootMs: number | undefined;
   stopReasonValue: TabStopReason | null = null;
   overMemoryValue = false;
 
@@ -57,6 +64,8 @@ class FakeHost implements SupervisorHostLike {
       fail?: { method: string; error: Error };
       pinned?: boolean;
       rssBytes?: number;
+      openTimings?: HostOpenTimings;
+      bootMs?: number;
     } = {},
   ) {
     this.sessionId = sessionId;
@@ -69,6 +78,8 @@ class FakeHost implements SupervisorHostLike {
     this.fail = options.fail;
     this.pinnedValue = options.pinned ?? false;
     this.rssBytes = options.rssBytes ?? 0;
+    this.openTimings = options.openTimings;
+    this.bootMs = options.bootMs;
   }
 
   status(): string {
@@ -95,6 +106,7 @@ class FakeHost implements SupervisorHostLike {
       heapTotalBytes: this.rssBytes,
       uptimeMs: 1,
       at: 1,
+      ...(this.openTimings ? { lastOpen: this.openTimings } : {}),
     };
   }
 
@@ -157,6 +169,7 @@ class FakeHost implements SupervisorHostLike {
     startedAt: number;
     pids: { pid: number };
     buildId: string | null;
+    bootMs?: number;
   } {
     return {
       role: this.sessionId === CONTROL_HOST_ID ? "control" : "session",
@@ -165,6 +178,7 @@ class FakeHost implements SupervisorHostLike {
       startedAt: 5,
       pids: { pid: 900 },
       buildId: this.buildId,
+      ...(this.bootMs === undefined ? {} : { bootMs: this.bootMs }),
     };
   }
 
@@ -206,6 +220,10 @@ function createHarness(
     pinnedFor?: (spec: SpawnSpec) => boolean;
     /** Scripted RSS per host (used by the aggregate memory guard tests). */
     rssBytes?: number | ((spec: SpawnSpec) => number);
+    /** Boot duration surfaced by `info().bootMs` for Diagnostics. */
+    bootMs?: number;
+    /** Last-open phases surfaced through `metrics().lastOpen` for Diagnostics. */
+    openTimings?: HostOpenTimings;
     /** Aggregate host RSS budget passed to the service. */
     hostRssLimitBytes?: number;
     /** Controllable clock, so LRU can be tested without real time. */
@@ -216,6 +234,12 @@ function createHarness(
     fail?: { method: HostMethod; error: Error };
     /** Awaited inside the fake `supervisor.start`, to hold a spawn in flight. */
     onStart?: (spec: SpawnSpec) => Promise<void> | void;
+    /**
+     * Mirrors the real supervisor's one-child-per-id guard (2026-11-07 plan),
+     * so adoption and the single-flight behaviour are tested against the same
+     * contract the production registry enforces.
+     */
+    enforceSingleHost?: boolean;
     /** Scripts the Office-port reclaimer; absent keeps the pre-2026-10-30 path. */
     releaseOfficePort?: (input: {
       port: number;
@@ -240,6 +264,12 @@ function createHarness(
 
   const supervisor: SupervisorLike = {
     start: async (spec) => {
+      if (options.enforceSingleHost) {
+        const existing = hosts.get(spec.sessionId);
+        if (existing) {
+          throw new HostAlreadyRunningError(spec.sessionId, existing.status() as HostStatus);
+        }
+      }
       specs.push(spec);
       await options.onStart?.(spec);
       const host = new FakeHost(spec.sessionId, {
@@ -252,6 +282,8 @@ function createHarness(
           : { createdSessionFile: options.createdSessionFile }),
         ...(options.fail ? { fail: options.fail } : {}),
         pinned: options.pinnedFor?.(spec) ?? false,
+        ...(options.bootMs === undefined ? {} : { bootMs: options.bootMs }),
+        ...(options.openTimings === undefined ? {} : { openTimings: options.openTimings }),
         ...(options.rssBytes === undefined
           ? {}
           : {
@@ -380,6 +412,83 @@ describe("control host", () => {
     await expect(service.request("tab-missing", "state.get")).rejects.toThrow(
       /unknown session tab/,
     );
+  });
+
+  // 2026-11-07 host-singleton plan. The renderer's boot fan-out asked seven
+  // control-addressed questions at once; the old guard let every caller past the
+  // `if (control)` check and each spawned a host under one registry key.
+  it("starts one host for seven concurrent callers", async () => {
+    const { service, specs } = createHarness({ enforceSingleHost: true });
+
+    const hosts = await Promise.all(Array.from({ length: 7 }, () => service.controlHost()));
+
+    expect(specs.filter((spec) => spec.sessionId === CONTROL_HOST_ID)).toHaveLength(1);
+    expect(new Set(hosts).size).toBe(1);
+  });
+
+  it("serves seven concurrent control requests from one host", async () => {
+    const { service, specs, hosts } = createHarness({ enforceSingleHost: true });
+
+    await Promise.all(
+      Array.from({ length: 7 }, () => service.request(CONTROL_HOST_ID, "providers.list")),
+    );
+
+    expect(specs.filter((spec) => spec.sessionId === CONTROL_HOST_ID)).toHaveLength(1);
+    expect(hosts.get(CONTROL_HOST_ID)?.requests).toHaveLength(7);
+  });
+
+  it("adopts a live control host instead of spawning a second one", async () => {
+    const { service, specs, hosts } = createHarness({ enforceSingleHost: true });
+    await service.controlHost();
+    const live = hosts.get(CONTROL_HOST_ID)!;
+
+    // A crash push clears the service's handle but the supervisor still owns the
+    // process for a moment; the next caller must adopt, not duplicate.
+    live.emitLifecycle("crashed", {});
+    const adopted = await service.controlHost();
+
+    expect(adopted).toBe(live);
+    expect(specs.filter((spec) => spec.sessionId === CONTROL_HOST_ID)).toHaveLength(1);
+    expect(service.incidents().some((incident) => incident.kind === "host_duplicate_start")).toBe(
+      true,
+    );
+  });
+
+  it("does not adopt a control host that is already stopping", async () => {
+    const { service, hosts } = createHarness({ enforceSingleHost: true });
+    await service.controlHost();
+    const dying = hosts.get(CONTROL_HOST_ID)!;
+    dying.setStatus("stopped");
+    dying.emitLifecycle("crashed", {});
+
+    await expect(service.controlHost()).rejects.toBeInstanceOf(HostAlreadyRunningError);
+  });
+
+  it("stops the host it started when the service is disposed mid-start", async () => {
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let enterStart = (): void => undefined;
+    const entered = new Promise<void>((resolve) => {
+      enterStart = resolve;
+    });
+    const { service, stopped } = createHarness({
+      onStart: async () => {
+        enterStart();
+        await gate;
+      },
+    });
+
+    const starting = service.controlHost();
+    // Hold the spawn inside the supervisor, so dispose lands after the service
+    // decided to spawn but before it can publish the handle.
+    await entered;
+    await service.dispose();
+    release();
+
+    await expect(starting).rejects.toThrow(/disposed/);
+    expect(stopped).toContain(CONTROL_HOST_ID);
   });
 });
 
@@ -1298,6 +1407,26 @@ describe("reliability and recovery (plan step 22)", () => {
     await service.restoreTabs();
 
     expect(service.diagnosticsHosts()[0]).toMatchObject({ buildId: null, stale: false });
+  });
+
+  it("carries the host's boot and last-open timings for Diagnostics", async () => {
+    const lastOpen = {
+      totalMs: 5_400,
+      trustMs: 12,
+      servicesMs: 4_600,
+      scopeMs: 40,
+      sessionMs: 90,
+      bindMs: 410,
+      reconcileMs: 60,
+      at: 5,
+    };
+    const { service } = createHarness({ rssBytes: 1_000, bootMs: 2_300, openTimings: lastOpen });
+    await service.controlHost();
+
+    expect(service.diagnosticsHosts().find((row) => row.tabId === CONTROL_HOST_ID)).toMatchObject({
+      bootMs: 2_300,
+      lastOpen,
+    });
   });
 
   it("describes each tab and the control host for Diagnostics", async () => {
