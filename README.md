@@ -5,14 +5,14 @@
 [Website](https://dieuluucanh.github.io/pi-desktop/) ·
 [Installation](https://dieuluucanh.github.io/pi-desktop/#installation) ·
 [Documentation](https://dieuluucanh.github.io/pi-desktop/docs/) ·
-[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.7.1/)
+[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.7.2/)
 
 A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global
 installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
 `~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
-> **Status:** v0.7.1 — the third public release. A real PTY-backed **integrated
+> **Status:** v0.7.2 — the third public release. A real PTY-backed **integrated
 > terminal** now lives in the same strip and pane grid as sessions, with
 > detected shell profiles, a Settings card and app theme colours. Sessions got
 > the reliability pass: one tab per session file, no background wake or recycle
@@ -21,7 +21,7 @@ skills, themes and settings are managed through a UI, using the **same
 > installers are built and published from CI on a version tag. The Windows
 > installer is the primary artefact; macOS and Linux are beta, and builds are
 > unsigned. Known limitations and the deferred backlog are recorded in
-> [docs/releases/v0.7.1.md](docs/releases/v0.7.1.md) and
+> [docs/releases/v0.7.2.md](docs/releases/v0.7.2.md) and
 > [docs/product/backlog.md](docs/product/backlog.md).
 >
 > **Pi for Office is an optional integration.** It installs from Extensions →
@@ -140,7 +140,7 @@ the Markdown in `docs/` remains the source.
   host protocol + RPC mapping, extension UI host + TUI surface, Office
   integration, runtime, pinned versions).
 - **Parity** — [docs/product/parity.md](docs/product/parity.md).
-- **Release notes** — [docs/releases/v0.7.1.md](docs/releases/v0.7.1.md)
+- **Release notes** — [docs/releases/v0.7.2.md](docs/releases/v0.7.2.md)
   (install table, known limitations, verification status).
 - **Backlog** — [docs/product/backlog.md](docs/product/backlog.md).
 - **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md) and
