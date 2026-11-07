@@ -136,8 +136,16 @@ resource. The window shows a safe-mode banner.
 
 - `!command` and `!!command` are executed by the host through the same Bash Pi
   uses; they are not an interactive terminal. Commands that need a password, an
-  editor or another TTY prompt belong in a real terminal. `git push` works when
+  editor or another TTY prompt belong in the **integrated terminal**
+  (`New terminal` in the strip, `Ctrl/Cmd+Shift+T`, or `Ctrl/Cmd+J` to toggle).
+  `git push` works when
   git's credential helper or SSH agent is already configured.
+- The integrated terminal does not spawn in an untrusted project. The tab shows a
+  trust notice; grant trust and press **Retry**, or set the project to `never`
+  and use an external terminal. If a terminal tab shows an exit banner, the
+  shell process group is already gone — close the tab and open a new one; the
+  app kills the whole tree (POSIX process group / `taskkill /T`) so no shell
+  survives it.
 - A session host older than the app can fail with a `_bashAbortControllers` /
   `_bashAbortController` message. Restart the session tab or the app; current
   builds call the SDK method with its session receiver.
@@ -149,7 +157,7 @@ resource. The window shows a safe-mode banner.
   `node.cmd` shim, which used the batch file's `%~dp0` even when cmd had started
   it by bare name; the shim now locates itself and the real `node.exe` is on
   `PATH`. Update Pi Desktop, or run `npm run runtime:shims` in a development
-  tree. On 0.6.0 the stopgap is adding `PI_DESKTOP_NODE` to turbo's
+  tree. On 0.6.0 and earlier the stopgap is adding `PI_DESKTOP_NODE` to turbo's
   `globalPassThroughEnv`. `npm run doctor` prints the runtime and shim paths.
 
 ## A localhost URL shows Pi Desktop instead of my app
@@ -175,8 +183,6 @@ missing)**.
   the app elsewhere, set `PI_DESKTOP_RENDERER_PORT=5274` for `npm run dev`. For
   the project, enable `strictPort: true` in its Vite config (or give it a
   distinct `VITE_PORT`) so a taken port fails loudly instead of drifting.
-- 0.6.0 still uses 5173; the dedicated port arrives with the next development
-  build.
 
 ## Slash-command suggestions stopped working after a host edit
 
@@ -309,10 +315,10 @@ Diagnostics → Save         redacted support bundle (no credentials)
 The bundle runs `redactSecrets` over the whole document, so it is safe to attach
 to an issue.
 
-## Known limitations in v0.6.0
+## Known limitations in v0.7.0
 
 Every known limitation is recorded with the release notes:
-[`docs/releases/v0.6.0.md`](../releases/v0.6.0.md). The short version:
+[`docs/releases/v0.7.0.md`](../releases/v0.7.0.md). The short version:
 
 - **Unsigned builds** — SmartScreen/Gatekeeper warn on first launch; signing is
   deferred ([backlog](../product/backlog.md)).
@@ -323,11 +329,16 @@ Every known limitation is recorded with the release notes:
   so the app links to the release instead of offering an in-place install.
 - **The updater** is verified against its policy and a fake port, not a live
   GitHub Release feed.
+- **The terminal is local only** — one shell per tab, no SSH/remote session, no
+  tmux control mode and no docked split panel; it does not spawn in an untrusted
+  project until you grant trust. Linux arm64 packages compile `node-pty` on the
+  target runner because there is no upstream prebuild.
 - **Verified structurally, not on a live machine:** provider OAuth flows,
   extension TUI/renderer fidelity in the packaged app, the Office wizard and
   bridge end to end, the Plannotator round trip, web-tab isolation on a _loaded_
   page, crash/timeout banners, safe mode against a genuinely broken extension,
-  and the 60 fps / RSS numbers.
+  the terminal inside a packaged macOS or Linux build, and the 60 fps / RSS
+  numbers.
 - **Upstream:** Pi's own `settings.json` and session-JSONL writes are not
   crash-atomic; the app's own profile writes are (`fsync` + rename).
 - **Deferred features** are listed in [`../product/backlog.md`](../product/backlog.md).
@@ -338,5 +349,5 @@ useful issue.
 ## Related
 
 - [FAQ](faq.md) · [Getting started](getting-started.md)
-- [Release notes v0.6.0](../releases/v0.6.0.md) · [Backlog](../product/backlog.md)
+- [Release notes v0.7.0](../releases/v0.7.0.md) · [Backlog](../product/backlog.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)

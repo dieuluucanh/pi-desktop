@@ -38,15 +38,21 @@ then works like any other extension. See
 [parity.md](../product/parity.md#mcp).
 
 **Is there an in-app terminal?**
-Not in v0.6.0 (it is explicit post-MVP backlog). The app ships a `pi` PATH shim
-and can open an external terminal in a project folder.
+Yes, since v0.7.0: **New terminal** in the session strip (`Ctrl/Cmd+Shift+T`, or
+`Ctrl/Cmd+J` to toggle) opens a real PTY-backed shell in a tab, using the same
+shell detection as the rest of the app (PowerShell 7 / Windows PowerShell / cmd /
+Git Bash / WSL on Windows, `$SHELL` elsewhere). It is a local shell only — no
+SSH or remote sessions — and it does not spawn in an untrusted project until you
+grant trust. The composer's `!` stays the agent-visible command runner. See
+[sessions and tabs](sessions-and-tabs.md) and
+[settings](settings.md#terminal-app-owned).
 
 **Can I open several projects at once?**
 Yes — tabs are per session and sessions belong to projects; the sidebar groups
-them. There is one window in v0.6.0 (multi-window is backlog).
+them. There is one window in v0.7.0 (multi-window is backlog).
 
 **Why does Windows/macOS warn when I install it?**
-The v0.6.0 artefacts are unsigned. Windows SmartScreen: “More info → Run anyway”.
+The v0.7.0 artefacts are unsigned. Windows SmartScreen: “More info → Run anyway”.
 macOS refuses the first launch without offering a right-click override: open
 **System Settings → Privacy & Security**, scroll to the bottom and choose
 **Open Anyway**. See [Getting started](getting-started.md#installing-on-macos).
@@ -73,7 +79,7 @@ so. Package installs are separate: the app updates its own code, the package
 manager updates extensions.
 
 **Is it translated?**
-Not yet (i18n is backlog). The UI is English in v0.6.0.
+Not yet (i18n is backlog). The UI is English in v0.7.0.
 
 **How do I copy the proposed commit message from `/commit`?**
 The extension renders it in a questionnaire panel. Select the text and press

@@ -33,6 +33,32 @@ Sessions are grouped by project in the sidebar; the group lists the same tabs as
 the top strip (file tabs stay in the editor strip), and a running tab shows a
 status dot.
 
+## Terminal tabs
+
+A terminal tab is a real shell, not a Pi session: no agent, no transcript, and it
+never wakes a host. Use it when you want to drive the shell yourself; the
+composer's `!`/`!!` stays the "the agent should see this" runner.
+
+- **Open one** with **New terminal** in the strip, `Ctrl/Cmd+Shift+T`, or **File
+  → New Terminal**. `Ctrl/Cmd+J` toggles a terminal beside the session.
+- The strip's joined chip opens your **saved default** shell on its left segment;
+  the chevron opens a one-off terminal with another detected profile. The order
+  is New session → New terminal → Grid layout.
+- **Profiles** are detected in the main process: PowerShell 7, Windows PowerShell,
+  Command Prompt, Git Bash and WSL distributions on Windows; `$SHELL` and the
+  POSIX fallbacks elsewhere. **Settings → Terminal** picks the default, a custom
+  absolute path, and the font, cursor, scrollback and copy behaviour. A terminal
+  opened with a one-off profile keeps that shell across a relaunch.
+- **Scrollback survives** tab switches and grid changes — the terminal is moved,
+  not recreated — so a long build log stays where you left it. Shell chords
+  (`Ctrl+C/N/P/W/B/G`, and the rest) go to the shell; only the app's own chords
+  (copy/paste, find, clear, new/toggle/close terminal, tab cycling, palette, font
+  zoom) are intercepted.
+- **Trust still applies.** A terminal in an untrusted project does not spawn; the
+  tab shows the trust notice, and **Retry** after granting trust starts it.
+- It is a **local** shell only. There is no SSH/remote session, no tmux control
+  mode and no docked split panel; those are backlog.
+
 ## Working with several sessions at once (grid)
 
 The window can show several tabs side by side. The grid replaces only the content

@@ -14,6 +14,10 @@
 
 ## Release notes
 
+- [`releases/v0.7.0.md`](releases/v0.7.0.md) — v0.7.0 release notes (the PTY-backed
+  integrated terminal, the session reliability pass, host-side transcript search and
+  the Node 24.22.2 runtime), install table, the known-limitations list and the
+  verification status.
 - [`releases/v0.6.0.md`](releases/v0.6.0.md) — v0.6.0 release notes (new files in
   brand-new folders now appear in Changes with a full-file diff, honest status
   timeouts, and the one-page product site), install table, the known-limitations
@@ -45,7 +49,8 @@
   usage, tool detail.
 - [`guide/extensions-and-packages.md`](guide/extensions-and-packages.md) — the Extensions hub,
   enable/disable, packages and consent, safe mode.
-- [`guide/settings.md`](guide/settings.md) — every Pi setting, scopes, raw JSON, backups.
+- [`guide/settings.md`](guide/settings.md) — every Pi setting, scopes, raw JSON, backups,
+  plus the app-owned Terminal and appearance preferences.
 - [`guide/skills-themes-keybindings.md`](guide/skills-themes-keybindings.md) — skills, themes and
   `keybindings.json`.
 - [`guide/office-setup.md`](guide/office-setup.md) — Pi for Office as an optional integration.

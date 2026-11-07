@@ -396,16 +396,18 @@ renderer's Tailwind scan root, so `styles.css` also declares them with
 
 ## Command ownership (no double-firing)
 
-| Surface                                       | Owns                                                                                                                                                                                                                |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Electron menu (`src/main/menu.ts`)            | every global accelerator: `Ctrl+N` new session, `Ctrl+O` open project, `Ctrl+W` close session, `Ctrl+,` settings, `Ctrl+K` palette, `Ctrl+B` sidebar, `Ctrl+Tab` / `Ctrl+Shift+Tab` tab cycling, `Ctrl+/` shortcuts |
-| Renderer (`src/renderer/src/menu-actions.ts`) | the _behaviour_ of each command, dispatched from `app:menu-command`                                                                                                                                                 |
-| Renderer (`CommandPalette`)                   | palette-local keys only (arrow/enter/escape)                                                                                                                                                                        |
+| Surface                                       | Owns                                                                                                                                                                                                                                                                       |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Electron menu (`src/main/menu.ts`)            | every global accelerator: `Ctrl+N` new session, `Ctrl+Shift+T` new terminal, `Ctrl+J` toggle terminal, `Ctrl+O` open project, `Ctrl+W` close session, `Ctrl+,` settings, `Ctrl+K` palette, `Ctrl+B` sidebar, `Ctrl+Tab` / `Ctrl+Shift+Tab` tab cycling, `Ctrl+/` shortcuts |
+| Renderer (`src/renderer/src/menu-actions.ts`) | the _behaviour_ of each command, dispatched from `app:menu-command`                                                                                                                                                                                                        |
+| Renderer (`CommandPalette`)                   | palette-local keys only (arrow/enter/escape)                                                                                                                                                                                                                               |
 
 Menu items never touch windows: they forward a `MenuCommand` (typed in
 `src/shared/ipc.ts`), so the renderer stays the single owner of view state. A
 command whose feature lands later reports a precise hint (`hint` in the store →
-status bar) instead of failing silently.
+status bar) instead of failing silently. While a terminal has focus on
+Windows/Linux, main calls `setIgnoreMenuShortcuts(true)` so shell chords reach
+the PTY; the menu items still work through the menu bar.
 
 ## Theme tokens
 

@@ -5,21 +5,23 @@
 [Website](https://dieuluucanh.github.io/pi-desktop/) ·
 [Installation](https://dieuluucanh.github.io/pi-desktop/#installation) ·
 [Documentation](https://dieuluucanh.github.io/pi-desktop/docs/) ·
-[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.6.0/)
+[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.7.0/)
 
 A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global
 installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
 `~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
-> **Status:** v0.6.0 — the second public release. A new file created in a
-> brand-new folder is now a first-class `U` row in Source Control, with a
-> full-file diff, _Open file_ and whole-file staging; a slow repository reports
-> a timeout instead of looking like "not a repository". Windows, Linux and macOS
+> **Status:** v0.7.0 — the third public release. A real PTY-backed **integrated
+> terminal** now lives in the same strip and pane grid as sessions, with
+> detected shell profiles, a Settings card and app theme colours. Sessions got
+> the reliability pass: one tab per session file, no background wake or recycle
+> stealing the active tab, host-side transcript search that works on large
+> profiles, and a starting banner you can cancel. Windows, Linux and macOS
 > installers are built and published from CI on a version tag. The Windows
 > installer is the primary artefact; macOS and Linux are beta, and builds are
 > unsigned. Known limitations and the deferred backlog are recorded in
-> [docs/releases/v0.6.0.md](docs/releases/v0.6.0.md) and
+> [docs/releases/v0.7.0.md](docs/releases/v0.7.0.md) and
 > [docs/product/backlog.md](docs/product/backlog.md).
 >
 > **Pi for Office is an optional integration.** It installs from Extensions →
@@ -41,6 +43,10 @@ skills, themes and settings are managed through a UI, using the **same
   `Esc` to stop, retry/compaction status with cancel, `!`/`!!` shell commands,
   transcript find (`Ctrl+F`), paste markers, `Ctrl+G` expanded editor, Mermaid
   and LaTeX, usage and cost.
+- **Integrated terminal** — a real PTY-backed shell in a tab (PowerShell 7,
+  Windows PowerShell, cmd, Git Bash and WSL on Windows; `$SHELL` elsewhere), with
+  scrollback that survives tab switches, copy-on-selection, shell-key ownership,
+  theme-matched colours, terminal settings and a one-off profile menu.
 - **Context and commands** — `/` commands (app, extension, prompt, skill), `@`
   files, image paste/drop, `#` Office document mentions, plus `/session`,
   `/copy`, `/import`, `/export jsonl`, `/share`, `/bug`, `/changelog`,
@@ -134,7 +140,7 @@ the Markdown in `docs/` remains the source.
   host protocol + RPC mapping, extension UI host + TUI surface, Office
   integration, runtime, pinned versions).
 - **Parity** — [docs/product/parity.md](docs/product/parity.md).
-- **Release notes** — [docs/releases/v0.6.0.md](docs/releases/v0.6.0.md)
+- **Release notes** — [docs/releases/v0.7.0.md](docs/releases/v0.7.0.md)
   (install table, known limitations, verification status).
 - **Backlog** — [docs/product/backlog.md](docs/product/backlog.md).
 - **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md) and
