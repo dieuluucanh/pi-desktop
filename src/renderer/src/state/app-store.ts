@@ -149,6 +149,7 @@ import {
   type SessionSort,
   type SessionSummary,
 } from "../../../shared/session-browser";
+import { findTabBySessionFile } from "../../../shared/session-file";
 import {
   EMPTY_RESOURCES,
   applyResourceOverride,
@@ -544,6 +545,21 @@ let lastVisibleTabsKey = "";
  * "alp" then "alpha" must never let the older page win.
  */
 let sessionBrowserRequestId = 0;
+/**
+ * Session files with a `sessions.create` in flight. The browser dismisses the
+ * instant a row is picked, but the tab table is only pushed once main has
+ * registered it, so a second click can still arrive while the host is opening
+ * (resume takes 24-28 s on a large profile). One host per file is enough; a
+ * duplicate doubles the multi-hundred-MB RSS of the session host.
+ */
+const resumingSessionFiles = new Set<string>();
+/**
+ * Project folders with a `continueMostRecent` lookup in flight. The lookup keeps
+ * the browser on screen (8-13 s measured on a large profile), which is exactly
+ * when the Continue button can be clicked again; two lookups would then race to
+ * resume the same newest row.
+ */
+const continuingCwds = new Set<string>();
 let lastScopeSyncAt = 0;
 export const EDITOR_TEXT_DELAY_MS = 250;
 
@@ -6696,25 +6712,59 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       });
       return;
     }
+    if (resumingSessionFiles.has(session.path)) return;
+    resumingSessionFiles.add(session.path);
+    // Dismiss on the gesture, not on host readiness: `sessions.create` only
+    // resolves once the host has spawned, loaded the extension stack and read
+    // the JSONL (24-28 s measured), and a resume that times out at 30 s must
+    // not leave the browser on screen. Main publishes the tab table before it
+    // awaits the host, so the strip shows the new tab immediately.
+    // “Browse saved sessions…” from a pane: the resumed tab belongs there, not
+    // in a new tab the user then has to place by hand.
+    const targetPane = get().panePickerTarget;
+    set({ sessionBrowserOpen: false, panePickerTarget: null, view: "session", hint: null });
+    /** Return to a tab the user picked (the pane they asked for, or the window). */
+    const returnTo = async (tabId: string): Promise<void> => {
+      if (targetPane !== null) await get().assignPaneTab(targetPane, tabId);
+      else await get().activateTab(tabId);
+    };
     try {
+      // One JSONL is one conversation and one live manager: the SDK takes no
+      // lock and every host appends from its own in-memory leaf, so opening an
+      // already-open file would branch the transcript. Return to its tab.
+      const open = findTabBySessionFile(get().tabs, session.path);
+      if (open) {
+        await returnTo(open.id);
+        return;
+      }
       const envelope = await api.sessions.create({ cwd, sessionFile: session.path });
+      // Main found the file already open between our check and the request (a
+      // stale table or another caller): return to that tab, never a second one.
+      if (envelope.reusedTabId) {
+        get().applyTabs(envelope, { adoptSelection: false });
+        await returnTo(envelope.reusedTabId);
+        return;
+      }
       get().applyTabs(envelope, { adoptSelection: true });
-      set({ sessionBrowserOpen: false, view: "session", hint: null });
-      // “Browse saved sessions…” from a pane: the resumed tab belongs there, not
-      // in a new tab the user then has to place by hand.
-      const targetPane = get().panePickerTarget;
-      set({ panePickerTarget: null });
       if (targetPane !== null && envelope.activeTabId) {
         await get().assignPaneTab(targetPane, envelope.activeTabId);
       }
     } catch (error) {
+      // The browser stays closed: the status-bar hint and the failed tab are
+      // the feedback, and reopening would make the dialog appear by itself.
       get().noteFailure(error);
+    } finally {
+      resumingSessionFiles.delete(session.path);
     }
   },
 
   continueMostRecent: async (cwd) => {
     const api = bridge();
     if (!api?.sessions) return;
+    // Continue is the one browser action whose dialog stays up while main works
+    // (the newest-row lookup), so a second click must not start a second race.
+    if (continuingCwds.has(cwd)) return;
+    continuingCwds.add(cwd);
     try {
       // Ask for exactly one row instead of scanning a possibly truncated page.
       // This is a read-only lookup: it must not overwrite the dialog's rows.
@@ -6724,14 +6774,24 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         sort: "recent",
         limit: 1,
       });
+      // The host rejected the query: saying "no saved session" would send the
+      // user looking for a session that may well exist.
+      if (page.error) {
+        set({ hint: page.error });
+        return;
+      }
       const latest = page.sessions[0] ?? null;
       if (!latest) {
         set({ hint: "No saved session in this project yet — start a new one (Ctrl+N)." });
         return;
       }
+      // `resumeSession` dismisses the browser before it awaits the host open,
+      // so Continue closes as soon as the newest row is known.
       await get().resumeSession(latest);
     } catch (error) {
       get().noteFailure(error);
+    } finally {
+      continuingCwds.delete(cwd);
     }
   },
 

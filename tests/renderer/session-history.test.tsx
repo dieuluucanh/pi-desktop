@@ -123,6 +123,146 @@ describe("SessionBrowserDialog", () => {
     });
   });
 
+  it("hides the browser as soon as a row's title is clicked", async () => {
+    const { bridge } = installBridge();
+    let release!: (value: { tabs: TabRecord[]; activeTabId: string | null }) => void;
+    const pending = new Promise<{ tabs: TabRecord[]; activeTabId: string | null }>((resolve) => {
+      release = resolve;
+    });
+    const create = vi.fn(() => pending);
+    (bridge.sessions as unknown as { create: unknown }).create = create;
+    useAppStore.setState({
+      sessionBrowserOpen: true,
+      projectSessions: [summary()],
+      projectSessionsLoaded: true,
+    });
+
+    render(<SessionBrowserDialog />);
+    await userEvent.click(screen.getByRole("button", { name: "Fix host protocol" }));
+
+    // The host is still opening the session; the pick itself must dismiss.
+    await waitFor(() => expect(screen.queryByTestId("session-browser")).toBeNull());
+    expect(useAppStore.getState().sessionBrowserOpen).toBe(false);
+    expect(create).toHaveBeenCalledTimes(1);
+
+    release({ tabs: [tab()], activeTabId: "tab-1" });
+    await waitFor(() => expect(useAppStore.getState().tabs).toHaveLength(1));
+  });
+
+  it("hides the browser when the play button starts a resume", async () => {
+    const { bridge } = installBridge();
+    let release!: (value: { tabs: TabRecord[]; activeTabId: string | null }) => void;
+    const pending = new Promise<{ tabs: TabRecord[]; activeTabId: string | null }>((resolve) => {
+      release = resolve;
+    });
+    (bridge.sessions as unknown as { create: unknown }).create = vi.fn(() => pending);
+    useAppStore.setState({
+      sessionBrowserOpen: true,
+      projectSessions: [summary()],
+      projectSessionsLoaded: true,
+    });
+
+    render(<SessionBrowserDialog />);
+    await userEvent.click(screen.getByRole("button", { name: "Resume session" }));
+
+    await waitFor(() => expect(screen.queryByTestId("session-browser")).toBeNull());
+    expect(useAppStore.getState().sessionBrowserOpen).toBe(false);
+
+    release({ tabs: [tab()], activeTabId: "tab-1" });
+    await waitFor(() => expect(useAppStore.getState().tabs).toHaveLength(1));
+  });
+
+  it("hides the browser when Continue starts the resume", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async () => ({
+      sessions: [summary()],
+      total: 1,
+      matched: 1,
+      truncated: false,
+      error: null,
+    }));
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+    let release!: (value: { tabs: TabRecord[]; activeTabId: string | null }) => void;
+    const pending = new Promise<{ tabs: TabRecord[]; activeTabId: string | null }>((resolve) => {
+      release = resolve;
+    });
+    (bridge.sessions as unknown as { create: unknown }).create = vi.fn(() => pending);
+    useAppStore.setState({
+      sessionBrowserOpen: true,
+      projectSessions: [summary()],
+      projectSessionsLoaded: true,
+    });
+
+    render(<SessionBrowserDialog />);
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    // Continue looks the newest row up first; the dialog closes as soon as the
+    // resume starts, not when the host has loaded the session.
+    await waitFor(() => expect(screen.queryByTestId("session-browser")).toBeNull());
+    expect(useAppStore.getState().sessionBrowserOpen).toBe(false);
+
+    release({ tabs: [tab()], activeTabId: "tab-1" });
+    await waitFor(() => expect(useAppStore.getState().tabs).toHaveLength(1));
+  });
+
+  it("marks the session in the active tab as current", () => {
+    installBridge();
+    const current = tab({ id: "tab-current", sessionFile: `${WORK}\\sessions\\s1.jsonl` });
+    useAppStore.setState({
+      sessionBrowserOpen: true,
+      projectSessions: [
+        summary(),
+        summary({ path: `${WORK}\\sessions\\s2.jsonl`, id: "s2", name: "Second task" }),
+      ],
+      projectSessionsLoaded: true,
+      tabs: [current],
+      activeTabId: current.id,
+    });
+
+    render(<SessionBrowserDialog />);
+
+    const badge = screen.getByTestId("session-current");
+    expect(badge).toHaveTextContent("Current");
+    expect(badge.closest("li")).toHaveAttribute("aria-current", "true");
+    // Only the focused tab's session is marked; the other row stays plain.
+    expect(screen.getAllByTestId("session-row")).toHaveLength(2);
+    expect(screen.getAllByTestId("session-current")).toHaveLength(1);
+  });
+
+  it("returns to the current session when its row is picked", async () => {
+    const { bridge } = installBridge();
+    const create = vi.fn(async () => ({ tabs: [], activeTabId: null }));
+    (bridge.sessions as unknown as { create: unknown }).create = create;
+    const activate = vi.fn(async (tabId: string) => ({
+      tabs: useAppStore.getState().tabs,
+      activeTabId: tabId,
+    }));
+    (bridge.sessions as unknown as { activate: unknown }).activate = activate;
+    (bridge.sessions as unknown as { request: unknown }).request = vi.fn(async () => ({
+      sessions: [summary()],
+      total: 1,
+      matched: 1,
+      truncated: false,
+      error: null,
+    }));
+    const current = tab({ id: "tab-current", sessionFile: `${WORK}\\sessions\\s1.jsonl` });
+    useAppStore.setState({
+      sessionBrowserOpen: true,
+      projectSessions: [summary()],
+      projectSessionsLoaded: true,
+      tabs: [current],
+      activeTabId: current.id,
+    });
+
+    render(<SessionBrowserDialog />);
+    await userEvent.click(screen.getByRole("button", { name: "Fix host protocol" }));
+
+    await waitFor(() => expect(screen.queryByTestId("session-browser")).toBeNull());
+    // Picking the session you are in returns to it; it never opens a second tab.
+    expect(create).not.toHaveBeenCalled();
+    expect(activate).toHaveBeenCalledWith(current.id);
+  });
+
   it("asks the host for a filtered page and renders its rows", async () => {
     const { bridge } = installBridge();
     const request = vi.fn(async (input: { method: string }) =>

@@ -168,12 +168,17 @@ export function isSessionTab(tab: TabRecord): tab is SessionTab {
  *
  * Both are optional so a legacy sender (or a test double) still applies: an
  * absent number means "unknown, apply as before".
+ *
+ * `reusedTabId` is set by `createTab` only: the requested session file was
+ * already open, so that tab was activated instead of a second one being minted
+ * (one JSONL must never have two live managers).
  */
 export type SessionTabsEnvelope = {
   tabs: TabRecord[];
   activeTabId: string | null;
   revision?: number;
   selectionSeq?: number;
+  reusedTabId?: string;
 };
 
 /**

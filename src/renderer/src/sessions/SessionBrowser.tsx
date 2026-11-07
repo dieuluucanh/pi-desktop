@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { FolderOpen, Pencil, Play, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
 import { cn } from "../ui/cn";
 import { CopyIconButton } from "../ui/copy-button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
@@ -14,6 +15,7 @@ import {
   sessionDisplayTitle,
   type SessionSummary,
 } from "../../../shared/session-browser";
+import { sameSessionFile } from "../../../shared/session-file";
 
 /**
  * The session browser (plan step 11, deliverable `SessionBrowserView`).
@@ -61,6 +63,7 @@ export function SessionBrowserDialog() {
   const [showPath, setShowPath] = useState(false);
   const activeCwd = useAppStore((state) => state.project?.path ?? null);
   const tabs = useAppStore((state) => state.tabs);
+  const activeTabId = useAppStore((state) => state.activeTabId);
   // The host owns filtering/search/sort (it has the full message text and a
   // short catalog cache), so the dialog debounces instead of filtering locally.
   // `openSessionBrowser` records the query it loaded, so opening never duplicates.
@@ -76,6 +79,14 @@ export function SessionBrowserDialog() {
   }, [open, composed, recordedQuery, refresh]);
 
   const groups = useMemo(() => groupSessionsByProject(sessions), [sessions]);
+
+  // The session in the focused tab is "Current" (2026-11-06 plan). The
+  // comparison is the shared session-file rule, so a path Pi wrote with the
+  // other separator or drive case still matches.
+  const currentSessionFile = useMemo(
+    () => tabs.find((tab) => tab.id === activeTabId)?.sessionFile ?? null,
+    [tabs, activeTabId],
+  );
 
   /** Tabs that point at this file; deleting it closes them (the store does it). */
   const openTabsFor = (sessionPath: string): string[] =>
@@ -96,8 +107,8 @@ export function SessionBrowserDialog() {
         <DialogTitle>Sessions</DialogTitle>
         <DialogDescription>
           {scope === "current"
-            ? "Sessions saved for this project, newest first. Resuming one opens it in a new tab."
-            : "Every session in this Pi profile, newest first. Resuming one opens it in a new tab."}
+            ? "Sessions saved for this project, newest first. The session you are in is marked Current; picking an open session returns to its tab."
+            : "Every session in this Pi profile, newest first. The session you are in is marked Current; picking an open session returns to its tab."}
         </DialogDescription>
 
         <div className="flex items-center gap-2 px-4 pb-2">
@@ -277,6 +288,10 @@ export function SessionBrowserDialog() {
                       void rename(session, name);
                     }}
                     showPath={showPath}
+                    current={
+                      currentSessionFile !== null &&
+                      sameSessionFile(currentSessionFile, session.path)
+                    }
                     openTabs={openTabsFor(session.path)}
                     onResume={() => void resume(session)}
                     onAskDelete={() => setPendingDelete(session.path)}
@@ -299,6 +314,7 @@ export function SessionBrowserDialog() {
 function SessionRow({
   session,
   showPath,
+  current,
   openTabs,
   renaming,
   pendingDelete,
@@ -313,6 +329,8 @@ function SessionRow({
   session: SessionSummary;
   /** Show the full JSONL path under the row title instead of just the id. */
   showPath: boolean;
+  /** This row is the session of the focused tab. */
+  current: boolean;
   /** Titles of open tabs that deleting this file will close. */
   openTabs: readonly string[];
   renaming: boolean;
@@ -327,8 +345,13 @@ function SessionRow({
 }) {
   return (
     <li
-      className="flex items-center gap-2 rounded-sm border border-line bg-raised/40 px-2 py-1.5"
+      className={cn(
+        "flex items-center gap-2 rounded-sm border px-2 py-1.5",
+        current ? "border-accent/60 bg-accent/5" : "border-line bg-raised/40",
+      )}
       data-testid="session-row"
+      data-current={current ? "true" : undefined}
+      aria-current={current ? "true" : undefined}
     >
       <div className="min-w-0 flex-1">
         {renaming ? (
@@ -353,7 +376,12 @@ function SessionRow({
             {sessionDisplayTitle(session)}
           </button>
         )}
-        <div className="flex gap-2 text-[10px] text-ink-faint">
+        <div className="flex items-center gap-2 text-[10px] text-ink-faint">
+          {current ? (
+            <Badge tone="accent" className="px-1.5 py-0 leading-4" data-testid="session-current">
+              Current
+            </Badge>
+          ) : null}
           <time title={formatSessionTimeTitle(session.modified)}>
             {formatSessionTime(session.modified)}
           </time>

@@ -10,7 +10,8 @@
  * covers the rules without a DOM.
  */
 
-import { normalizeProjectPath, projectNameOf } from "./projects";
+import { projectNameOf } from "./projects";
+import { normalizeSessionFile } from "./session-file";
 
 /** One session as the browser shows it (a projection of Pi's `SessionInfo`). */
 export interface SessionSummary {
@@ -322,16 +323,12 @@ export function sortSessionsThreaded(sessions: readonly SessionSummary[]): Sessi
 }
 
 /**
- * A session's project identity, as Pi wrote it in the JSONL header. It starts
- * from the project list's trimming rule, then unifies separators and folds case
- * for Windows drive/UNC paths only. POSIX paths stay case-sensitive.
+ * A session's project identity, as Pi wrote it in the JSONL header. Delegates to
+ * the session-file rule so a cwd and the file opened in it can never disagree
+ * about separators or Windows case.
  */
 export function normalizeSessionProjectPath(value: string): string {
-  const trimmed = normalizeProjectPath(value);
-  if (trimmed.length === 0) return "";
-  const unified = trimmed.replace(/\\/g, "/");
-  const windows = /^[A-Za-z]:\//.test(unified) || unified.startsWith("//");
-  return windows ? unified.toLowerCase() : unified;
+  return normalizeSessionFile(value);
 }
 
 /** True when two session cwds identify the same project (empty never matches). */

@@ -47,6 +47,7 @@ import {
   type TabStatus,
   type TabStopReason,
 } from "../shared/session-ipc";
+import { collapseDuplicateSessionTabs, findTabBySessionFile } from "../shared/session-file";
 
 /**
  * Methods whose answer scans the whole profile get more than the supervisor's
@@ -1538,6 +1539,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     async restoreTabs() {
       const state = await deps.store.read();
+      // Older builds minted a new tab for every resume of an already-open
+      // session, so a profile can carry several records for one JSONL. Keep the
+      // most recently active record (with any pin) and drop the rest: the
+      // restored table must satisfy the one-manager-per-file invariant too.
+      const collapsed = collapseDuplicateSessionTabs(sanitizeTabs(state.tabs));
       tabs.clear();
       hosts.clear();
       starting.clear();
@@ -1546,7 +1552,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       sessionIdentities.clear();
       generations.clear();
       recovering.clear();
-      for (const tab of sanitizeTabs(state.tabs)) {
+      for (const tab of collapsed.tabs) {
         // A tab is a resumable record, not a process. Nothing is running yet
         // after a relaunch, so a restored tab is idle/stopped until activated;
         // the full table is restored, however many tabs the user keeps.
@@ -1563,6 +1569,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       tabs.clear();
       for (const tab of restored) tabs.set(tab.id, tab);
       const persistedActive = typeof state.activeTabId === "string" ? state.activeTabId : null;
+      // A dropped duplicate's id must resolve to the record that replaced it
+      // before the generic "named tab is gone" repair runs.
+      const repairedActive =
+        persistedActive !== null && collapsed.replacedTabIds.has(persistedActive)
+          ? (collapsed.replacedTabIds.get(persistedActive) ?? persistedActive)
+          : persistedActive;
       // The repair is for a *named* tab that no longer exists: fall back to the
       // most recently used session so the app opens where the user last worked
       // instead of on an empty shell. A deliberately cleared selection (`null`)
@@ -1571,13 +1583,16 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         .filter((tab) => isHostBackedTab(tab.kind))
         .sort((left, right) => right.lastActiveAt - left.lastActiveAt)[0];
       selectTab(
-        persistedActive === null
+        repairedActive === null
           ? null
-          : tabs.has(persistedActive)
-            ? persistedActive
+          : tabs.has(repairedActive)
+            ? repairedActive
             : (mruSession?.id ?? null),
       );
       publishTabs();
+      // Make the repair durable: otherwise the same duplicates come back on the
+      // next launch. Only a table that actually changed is rewritten.
+      if (collapsed.replacedTabIds.size > 0) await persist();
       return envelope();
     },
 
@@ -1597,6 +1612,22 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       if (isEditor && (!filePath || !isWorkspaceRelativePath(filePath))) {
         throw new SessionServiceError("createTab requires a project-relative file", "bad_request");
       }
+      const requestedFile =
+        typeof input.sessionFile === "string" && input.sessionFile.length > 0
+          ? input.sessionFile
+          : null;
+      // A session file is one conversation with one live manager: the SDK takes
+      // no lock and every host appends from its own in-memory leaf, so a second
+      // tab on one JSONL branches the transcript. The renderer checks first;
+      // this is the invariant behind every caller. Reuse is reported so the UI
+      // can take the "return to that tab" path instead of a new-tab path.
+      if (isHostBackedTab(kind) && requestedFile !== null) {
+        const existing = findTabBySessionFile(tabs.values(), requestedFile);
+        if (existing) {
+          if (input.activate !== false) await service.activateTab(existing.id);
+          return { ...envelope(), reusedTabId: existing.id };
+        }
+      }
       const id = newId();
       const timestamp = now();
       const cwd = typeof input.cwd === "string" ? input.cwd : "";
@@ -1609,7 +1640,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           : kind === "web"
             ? webTabTitle(webUrl)
             : sessionTitle(cwd),
-        sessionFile: input.sessionFile ?? null,
+        sessionFile: requestedFile,
         status: isHostBackedTab(kind) ? "starting" : "idle",
         createdAt: timestamp,
         lastActiveAt: timestamp,

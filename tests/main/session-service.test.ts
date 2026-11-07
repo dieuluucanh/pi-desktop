@@ -446,6 +446,57 @@ describe("tab lifecycle", () => {
     expect(newest().requests.map((request) => request.method)).toEqual(["session.resume"]);
   });
 
+  it("reuses the tab that already has the session file open", async () => {
+    const { service, specs, newest } = createHarness({
+      createdSessionFile: "C:\\profile\\sessions\\s1.jsonl",
+    });
+    const first = await service.createTab({
+      cwd: "C:\\work\\app",
+      sessionFile: "C:\\profile\\sessions\\s1.jsonl",
+    });
+    const id = first.activeTabId!;
+    const host = newest();
+    const opened = specs.length;
+
+    // The same file written with the other separator and drive case.
+    const second = await service.createTab({
+      cwd: "C:\\work\\app",
+      sessionFile: "c:/profile/sessions/s1.jsonl",
+    });
+
+    expect(second.reusedTabId).toBe(id);
+    expect(second.activeTabId).toBe(id);
+    expect(second.tabs.map((tab) => tab.id)).toEqual([id]);
+    // No second host, no second resume: one JSONL has one manager.
+    expect(specs).toHaveLength(opened);
+    expect(host.requests.filter((request) => request.method === "session.resume")).toHaveLength(1);
+  });
+
+  it("does not move the selection when a reuse asks not to activate", async () => {
+    const { service } = createHarness({
+      createdSessionFile: "C:\\profile\\sessions\\s1.jsonl",
+    });
+    const first = await service.createTab({
+      cwd: "C:\\work\\app",
+      sessionFile: "C:\\profile\\sessions\\s1.jsonl",
+    });
+    const web = await service.createTab({
+      kind: "web",
+      url: "http://127.0.0.1:8080/review",
+      sessionTabId: first.activeTabId ?? undefined,
+    });
+
+    const reused = await service.createTab({
+      cwd: "C:\\work\\app",
+      sessionFile: "C:\\profile\\sessions\\s1.jsonl",
+      activate: false,
+    });
+
+    expect(reused.reusedTabId).toBe(first.activeTabId);
+    expect(reused.activeTabId).toBe(web.activeTabId);
+    expect(reused.tabs).toHaveLength(2);
+  });
+
   it("opens a background web tab without stealing the session selection", async () => {
     const { service, specs } = createHarness();
     await service.createTab({ cwd: "C:\\work\\app" });
@@ -1565,6 +1616,68 @@ describe("persistence and restore", () => {
     expect(envelope.tabs).toHaveLength(1);
     expect(envelope.tabs[0]).toMatchObject({ id: "tab-9", status: "stopped" });
     expect(envelope.activeTabId).toBe("tab-9");
+  });
+
+  it("collapses duplicate tabs persisted for one session file", async () => {
+    const { service, stored } = createHarness();
+    const record = (
+      id: string,
+      lastActiveAt: number,
+      extra: Partial<TabRecord> = {},
+    ): TabRecord => ({
+      id,
+      kind: "session",
+      cwd: `C:\\work\\${id}`,
+      title: id,
+      sessionFile: `/profile/${id}.jsonl`,
+      status: "stopped",
+      createdAt: 1,
+      lastActiveAt,
+      model: null,
+      ...extra,
+    });
+    stored.tabs = [
+      record("tab-old", 1, { sessionFile: "C:\\profile\\s1.jsonl", pinned: true }),
+      record("tab-other", 9, { sessionFile: "C:\\profile\\s2.jsonl" }),
+      record("tab-new", 5, { sessionFile: "c:/profile/s1.jsonl" }),
+    ];
+    // The persisted selection points at the duplicate that loses.
+    stored.activeTabId = "tab-old";
+
+    const envelope = await service.restoreTabs();
+
+    expect(envelope.tabs.map((tab) => tab.id)).toEqual(["tab-new", "tab-other"]);
+    // The most recently active record wins, keeps the first slot and the pin.
+    expect(envelope.tabs[0]).toMatchObject({ id: "tab-new", pinned: true, status: "stopped" });
+    // The selection follows the replacement instead of jumping to another tab.
+    expect(envelope.activeTabId).toBe("tab-new");
+    // The repair is persisted, so the next launch cannot see the pair again.
+    expect(stored.tabs.map((tab) => tab.id)).toEqual(["tab-new", "tab-other"]);
+    expect(stored.activeTabId).toBe("tab-new");
+  });
+
+  it("does not rewrite the store when a restored table has no duplicates", async () => {
+    const { service, stored } = createHarness();
+    const persisted: TabRecord[] = [
+      {
+        id: "tab-1",
+        kind: "session",
+        cwd: "C:\\work\\one",
+        title: "one",
+        sessionFile: "C:\\profile\\one.jsonl",
+        status: "stopped",
+        createdAt: 1,
+        lastActiveAt: 1,
+        model: null,
+      },
+    ];
+    stored.tabs = persisted;
+    stored.activeTabId = "tab-1";
+
+    await service.restoreTabs();
+
+    // A unique table takes the no-write path: `persist` would replace the array.
+    expect(stored.tabs).toBe(persisted);
   });
 
   it("restores more than eight session tabs and more than sixteen editor tabs", async () => {

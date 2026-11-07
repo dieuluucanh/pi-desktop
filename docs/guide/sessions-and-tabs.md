@@ -83,7 +83,8 @@ run `/resume`, or click **Browse saved sessions…** in an empty grid pane. The
 browser opens on **This project** (the sessions saved for the folder you are in);
 **All sessions** shows every project in the Pi profile. (`Ctrl/Cmd+Shift+O` is
 **Open Project…**, not Sessions.) Sessions come from Pi’s own index, grouped by
-project, newest first. Each row shows its last activity in your local timezone;
+project, newest first. The row of the session you are in is marked **Current**.
+Each row shows its last activity in your local timezone;
 an unreadable timestamp shows `—` instead of a fake 1970 date. Search runs in the
 control host over the full transcript, not just the visible title: a word from an
 old assistant message still finds its session. The host keeps that text out of
@@ -93,8 +94,15 @@ profile; the host caches the listing for a few seconds while you type.
 
 From there you can:
 
-- **Resume** a session into a new tab (its full history loads);
-- **Continue the most recent** session of a project;
+- **Resume** a session into a new tab (its full history loads). The browser
+  closes as soon as you pick a row, so the tab appears immediately and shows its
+  starting state while Pi reads the history in the background. Picking the
+  **Current** session, or one already open in another tab, closes the browser and
+  returns to that tab instead — one session file never runs two hosts, so its
+  transcript can never be split between tabs;
+- **Continue the most recent** session of a project — the same, once the host has
+  found that project’s newest session (and a return to its tab when that session
+  is the one you are in);
 - **Rename** or **delete** a stored session — deletion goes to the OS trash, is
   validated against Pi’s index in the host and contained to the profile in the
   main process, and is recoverable;
@@ -103,6 +111,13 @@ From there you can:
   disabled until a new session has persisted its first message), ready to paste
   into the composer;
 - see sessions created by **terminal Pi** — they are the same files.
+
+Picking a session never waits for the host: the dialog closes on the click and the
+new tab reports its own progress. If that resume fails (a deleted file, a crashed
+host), the browser stays closed and the reason appears in the status bar; the tab
+remains in the strip so it can be restarted or closed. Tabs persisted by an older
+build that point at one session file are collapsed to a single tab on the next
+launch, keeping the most recently used one.
 
 ## History tree, fork and clone
 
