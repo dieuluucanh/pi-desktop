@@ -14,6 +14,9 @@
 
 ## Release notes
 
+- [`releases/v0.8.0.md`](releases/v0.8.0.md) — v0.8.0 release notes (notification
+  classes and the rebuilt bell, the update offer as a notification, and About & updates
+  as its own view), install table, known limitations and verification status.
 - [`releases/v0.7.3.md`](releases/v0.7.3.md) — v0.7.3 release notes (the first published
   0.7 build: the PTY-backed integrated terminal, the session reliability pass,
   host-side transcript search and the Node 24.22.2 runtime), the three release-tooling

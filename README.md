@@ -5,23 +5,23 @@
 [Website](https://dieuluucanh.github.io/pi-desktop/) ·
 [Installation](https://dieuluucanh.github.io/pi-desktop/#installation) ·
 [Documentation](https://dieuluucanh.github.io/pi-desktop/docs/) ·
-[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.7.3/)
+[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.8.0/)
 
 A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global
 installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
 `~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
-> **Status:** v0.7.3 — the third public release. A real PTY-backed **integrated
-> terminal** now lives in the same strip and pane grid as sessions, with
-> detected shell profiles, a Settings card and app theme colours. Sessions got
-> the reliability pass: one tab per session file, no background wake or recycle
-> stealing the active tab, host-side transcript search that works on large
-> profiles, and a starting banner you can cancel. Windows, Linux and macOS
-> installers are built and published from CI on a version tag. The Windows
-> installer is the primary artefact; macOS and Linux are beta, and builds are
-> unsigned. Known limitations and the deferred backlog are recorded in
-> [docs/releases/v0.7.3.md](docs/releases/v0.7.3.md) and
+> **Status:** v0.8.0 — the fourth public release. **Notifications** now have
+> classes, a real bell with a count, a closeable popover and a recoverable
+> hidden archive; informational messages start off, so background chatter stays
+> out of the way. A newer release is offered as an ordinary notification with a
+> **View update** action, and **About & updates** moved out of Settings into its
+> own sidebar view below Diagnostics, where it can carry the update dot. Windows,
+> Linux and macOS installers are built and published from CI on a version tag.
+> The Windows installer is the primary artefact; macOS and Linux are beta, and
+> builds are unsigned. Known limitations and the deferred backlog are recorded in
+> [docs/releases/v0.8.0.md](docs/releases/v0.8.0.md) and
 > [docs/product/backlog.md](docs/product/backlog.md).
 >
 > **Pi for Office is an optional integration.** It installs from Extensions →
@@ -141,7 +141,7 @@ the Markdown in `docs/` remains the source.
   host protocol + RPC mapping, extension UI host + TUI surface, Office
   integration, runtime, pinned versions).
 - **Parity** — [docs/product/parity.md](docs/product/parity.md).
-- **Release notes** — [docs/releases/v0.7.3.md](docs/releases/v0.7.3.md)
+- **Release notes** — [docs/releases/v0.8.0.md](docs/releases/v0.8.0.md)
   (install table, known limitations, verification status).
 - **Backlog** — [docs/product/backlog.md](docs/product/backlog.md).
 - **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md) and

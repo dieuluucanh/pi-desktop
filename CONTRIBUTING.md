@@ -88,7 +88,7 @@ runtime, builds, regenerates the host shims, runs `runtime:verify` and produces
 the installers under `release/`. Windows NSIS + portable is the primary
 artefact; macOS and Linux are beta. `electron-builder.yml` writes the artefacts,
 and the tag-driven `release.yml` publishes them to GitHub Releases, which is also
-the `electron-updater` feed. Artefacts are unsigned in v0.7.3; signing is
+the `electron-updater` feed. Artefacts are unsigned in v0.8.0; signing is
 backlog. Mac builds are ad-hoc signed and report manual updates (Squirrel.Mac
 rejects an ad-hoc update). The `afterPack` hook prunes `resources/runtime` to
 the platform/arch being packaged, so an installer never carries another

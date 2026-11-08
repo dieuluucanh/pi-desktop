@@ -14,7 +14,7 @@ editor tab strip editor tabs in a second row under the session strip; it
 sidebar          Projects (+ menu: default · new · clone · open folder) ·
                  Sessions · Views
 main area        the active view (welcome | session | settings | extensions |
-                 connections | skills | diagnostics)
+                 connections | skills | diagnostics | updates)
 status bar       active project path · build version · Pi profile · bundled
                  runtime · display zoom · transient hints · notifications
 panel rail       docked at the right edge of a session: an always-visible 44 px

@@ -316,10 +316,10 @@ Diagnostics → Save         redacted support bundle (no credentials)
 The bundle runs `redactSecrets` over the whole document, so it is safe to attach
 to an issue.
 
-## Known limitations in v0.7.3
+## Known limitations in v0.8.0
 
 Every known limitation is recorded with the release notes:
-[`docs/releases/v0.7.3.md`](../releases/v0.7.3.md). The short version:
+[`docs/releases/v0.8.0.md`](../releases/v0.8.0.md). The short version:
 
 - **Unsigned builds** — SmartScreen/Gatekeeper warn on first launch; signing is
   deferred ([backlog](../product/backlog.md)).
@@ -334,6 +334,13 @@ Every known limitation is recorded with the release notes:
   tmux control mode and no docked split panel; it does not spawn in an untrusted
   project until you grant trust. Linux arm64 packages compile `node-pty` on the
   target runner because there is no upstream prebuild.
+- **Informational notifications are hidden by default** — enable
+  **Informational messages** in Settings → Notifications to show them in the
+  bell and transcript. Hidden rows are never lost: **Show hidden (N)** in the
+  bell recovers them.
+- **The update offer is in-app only** — the bell row, its toast and the
+  About & updates dot are the whole surface; there is no OS notification, and
+  dismissing the row keeps the dot until the offer is installed or replaced.
 - **Verified structurally, not on a live machine:** provider OAuth flows,
   extension TUI/renderer fidelity in the packaged app, the Office wizard and
   bridge end to end, the Plannotator round trip, web-tab isolation on a _loaded_
@@ -350,5 +357,5 @@ useful issue.
 ## Related
 
 - [FAQ](faq.md) · [Getting started](getting-started.md)
-- [Release notes v0.7.3](../releases/v0.7.3.md) · [Backlog](../product/backlog.md)
+- [Release notes v0.8.0](../releases/v0.8.0.md) · [Backlog](../product/backlog.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)
