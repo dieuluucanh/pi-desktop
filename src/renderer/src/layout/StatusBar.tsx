@@ -1,8 +1,7 @@
 import { Minus, Plus, X } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { useAppStore } from "../state/app-store";
-import { NotificationCenter } from "../extension-ui/NotificationCenter";
-import { UpdateStatusButton } from "../updates/UpdateStatusButton";
+import { NotificationCenter } from "../notifications/NotificationCenter";
 import { formatZoomPercent } from "../../../shared/zoom";
 import { compactPath, tildePath } from "../../../shared/paths";
 
@@ -99,7 +98,6 @@ export function StatusBar() {
             <Plus className="size-3" aria-hidden />
           </button>
         </div>
-        <UpdateStatusButton />
         {info ? (
           <span data-testid="status-version" title={`Pi Desktop ${info.version}`}>
             v{info.version}

@@ -64,12 +64,20 @@ beforeEach(() => {
 });
 
 describe("SettingsView", () => {
-  it("reveals the About & updates card when Settings is focused there", async () => {
+  it("no longer renders the About & updates panel", () => {
     stubRequest();
-    useAppStore.setState({ settingsFocus: "updates" });
     render(<SettingsView />);
 
-    expect(screen.getByTestId("settings-updates")).toBeInTheDocument();
+    // The view moved to its own sidebar destination (2026-11-08 plan).
+    expect(screen.queryByTestId("updates-panel")).toBeNull();
+  });
+
+  it("reveals the Notifications card when Settings is focused there", async () => {
+    stubRequest();
+    useAppStore.setState({ settingsFocus: "notifications" });
+    render(<SettingsView />);
+
+    expect(screen.getByTestId("settings-notifications")).toBeInTheDocument();
     await waitFor(() => expect(useAppStore.getState().settingsFocus).toBeNull());
   });
 

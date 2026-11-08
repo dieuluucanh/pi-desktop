@@ -167,9 +167,11 @@ export interface UiPrefs {
    */
   desktopKeybindings: DesktopKeybindings;
   /**
-   * Muted extension notifications (`ctx.ui.notify`). The archive keeps every
-   * arrival; these rules only hide a matching notification from the transcript
-   * and suppress its toast until the user unmutes it (2026-10-31 UI plan).
+   * Notification classes and per-message mute rules (`ctx.ui.notify`). Classes
+   * are the coarse on/off switch (Info starts off); rules silence individual
+   * messages. The archive keeps every arrival, and either switch only hides it
+   * from the bell, toast and transcript until it is restored (2026-11-08 plan;
+   * rules from the 2026-10-31 UI plan).
    */
   notifications: NotificationPrefs;
   /** How a background tab's extension dialog may take the window. */
@@ -217,9 +219,9 @@ export interface UiPrefs {
   checkpoints: CheckpointConfig;
   /**
    * The updater's app preferences: whether the background check runs after
-   * launch, and the offered version whose status-bar chip was dismissed. The
-   * build channel and support gate decide whether `autoCheck` can take effect;
-   * see `src/shared/updates.ts`.
+   * launch, and the version whose notification the bell has already announced.
+   * The build channel and support gate decide whether `autoCheck` can take
+   * effect; see `src/shared/updates.ts`.
    */
   updates: UpdatePrefs;
   /**
@@ -252,9 +254,13 @@ export const DEFAULT_PREFS: UiPrefs = {
   profileMode: DEFAULT_PROFILE_MODE,
   onboardingCompletedAt: null,
   desktopKeybindings: {},
-  // A fresh array so a caller mutating one prefs value cannot mutate the
-  // module-level default.
-  notifications: { ...DEFAULT_NOTIFICATION_PREFS, muted: [] },
+  // A fresh array and a fresh classes object so a caller mutating one prefs
+  // value cannot mutate the module-level default.
+  notifications: {
+    ...DEFAULT_NOTIFICATION_PREFS,
+    classes: { ...DEFAULT_NOTIFICATION_PREFS.classes },
+    muted: [],
+  },
   dialogs: { ...DEFAULT_DIALOG_PREFS },
   showExpandedPrompts: false,
   promptOrigins: {},
@@ -391,12 +397,19 @@ export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
     "checkpoints" in source
       ? sanitizeCheckpointConfig({ ...current.checkpoints, ...asRecord(source.checkpoints) })
       : current.checkpoints;
-  // The mute list is nested too: a patch that only mentions `notifications`
-  // must not let the sanitizer replace the current rules with an empty list
-  // unless it actually supplied a `muted` array.
+  // Both notification blocks are nested: a class patch must keep the other
+  // classes and the mute list, and a mute patch must keep the classes.
+  const notificationPatch = asRecord(source.notifications);
   const notifications =
     "notifications" in source
-      ? sanitizeNotificationPrefs({ ...current.notifications, ...asRecord(source.notifications) })
+      ? sanitizeNotificationPrefs({
+          ...current.notifications,
+          ...notificationPatch,
+          classes: {
+            ...current.notifications.classes,
+            ...asRecord(notificationPatch.classes),
+          },
+        })
       : current.notifications;
   // The updater prefs are nested too: turning automatic checks off must not
   // drop a per-version dismissal.

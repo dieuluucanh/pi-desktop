@@ -23,7 +23,7 @@ of the SDK's `ExtensionUIContext` appears here.
 | `ExtensionUIContext` member                                       | Where it lands                                                                                          | Notes                                                                                                                                                                                                                  |
 | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `select` / `confirm` / `input` / `editor`                         | inline dock in the session column through `oi.request` / `oi.respond`                                   | keyboard-first, live `timeout` countdown (store-enforced), `signal` cancel, Escape cancels                                                                                                                             |
-| `notify(message, type)`                                           | transcript notice + history panel; warning/error also toast (`oi.notify`)                               | info output is chat content as in terminal Pi; the archive keeps every notification                                                                                                                                    |
+| `notify(message, type)`                                           | transcript notice + notification bell; warning/error also toast (`oi.notify`)                           | info is a class that starts off; the archive keeps every notification and Show hidden recovers a suppressed row                                                                                                        |
 | `setStatus(key, text)`                                            | one column in the wrapping session-footer status rail (`oi.state`)                                      | `undefined` removes the entry; keep status text short so it behaves as a column; values are sanitised for `title` and rendered ANSI-aware                                                                              |
 | `setWidget(key, lines \| factory, opts)`                          | string strip (`oi.state`) or TUI widget frames (`tui.state`)                                            | string arrays keep the strip; a component factory renders above/below the editor dock; a **single-line** component frame joins the footer rail instead of taking its own strip (2026-10-31 UI plan); one owner per key |
 | `setWorkingMessage` / `setWorkingVisible` / `setWorkingIndicator` | the working row above the composer                                                                      | custom frames + interval honoured; `visible:false` hides it                                                                                                                                                            |
@@ -321,16 +321,32 @@ auto-spaced one.
   that needs a host-side branch watcher and a provider count; the built-in
   footer is unaffected (2026-10-31 minimal-session-ui).
 
-## Notification muting (2026-10-31)
+## Notification classes and muting (2026-11-08)
 
-`ctx.ui.notify` has no extension/source field, so mute rules are derived from the
-message: **exact text**, a **template** signature (numbers, quoted values,
+`ctx.ui.notify` has no extension/source field, so the coarse class is **severity
+plus the app-owned update kind**: `update`, `error`, `warning`, `info`. Classes
+are toggled in Settings → Notifications and default to updates/errors/warnings
+**on**, info **off** — background chatter such as “Server logs ready (local)”
+never reaches the bell or transcript. There are deliberately no content
+heuristics; a noisy info message is handled by the class switch or a rule.
+
+Per-message rules remain the fine-grained switch, derived from the message:
+**exact text**, a **template** signature (numbers, quoted values,
 `provider/model` refs and thinking-level words become `*`), or the whole
-**type**. The gear on a warning/error toast (and on a history row) opens the Mute
-dialog; Settings → Notifications lists the rules with Unmute/Unmute all.
+**type**. The gear on a warning/error toast (and on a row) opens the dialog;
+Settings → Notifications lists the rules with Unmute/Unmute all. All three
+scopes are selectable; when a message has no variable parts the template rule is
+equivalent to the exact one and the dialog says so.
 
-A muted notification is **not deleted**: it stays in the history, is marked
-`muted`, and is hidden from the transcript and future toasts. Identical
-`oi.notify` messages are deduped in the transcript and their toasts are
-suppressed per tab for five minutes, so an extension that re-emits the same
-advisory on every state change cannot flood either surface.
+A suppressed notification (class off or rule match) is **not deleted**: it stays
+in the archive, is marked `hidden`/`muted`, and is hidden from the transcript and
+future toasts. The bell always renders, counts only unsuppressed rows, and its
+popover has a close `×`, a per-row `×`, class badges and **Show hidden (N)**.
+A class-hidden row offers **Show** (enable the class); a rule-muted row offers
+**Unmute**. Identical `oi.notify` messages are deduped in the transcript and
+their toasts are suppressed per tab for five minutes.
+
+An **app update offer** is the one app-owned row: class `update`, one per
+version (`prefs.updates.notifiedVersion`), with a **View update** action that
+opens About & updates. Its toast action is the same. The About & updates sidebar
+item carries a dot while a version is offered/downloading/downloaded.

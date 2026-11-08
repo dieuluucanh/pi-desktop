@@ -6,13 +6,13 @@ import { NotificationsSettingsCard } from "../../src/renderer/src/settings/Notif
 import { SettingsView } from "../../src/renderer/src/views/SettingsView";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
-import { muteRuleFor } from "../../src/shared/notifications";
+import { DEFAULT_NOTIFICATION_PREFS, muteRuleFor } from "../../src/shared/notifications";
 import { installBridge } from "./fixtures";
 
 function reset(): void {
   installBridge();
   useAppStore.setState({
-    prefs: { ...DEFAULT_PREFS, notifications: { muted: [] } },
+    prefs: { ...DEFAULT_PREFS, notifications: { ...DEFAULT_NOTIFICATION_PREFS } },
     settingsCwd: null,
     settings: null,
     settingsLoaded: false,
@@ -35,6 +35,25 @@ describe("NotificationsSettingsCard", () => {
     expect(screen.getByTestId("notifications-empty")).toHaveTextContent("No muted notifications");
   });
 
+  it("toggles a class without dropping the mute rules", async () => {
+    const rule = muteRuleFor({ message: "Installed workflow", type: "info" }, "exact", 1);
+    useAppStore.setState({
+      prefs: {
+        ...DEFAULT_PREFS,
+        notifications: { ...DEFAULT_NOTIFICATION_PREFS, muted: [rule] },
+      },
+    });
+    render(<NotificationsSettingsCard />);
+
+    const info = screen.getByRole("switch", { name: /show informational messages/i });
+    expect(info).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: /show warnings/i })).toBeChecked();
+
+    await userEvent.click(info);
+    expect(useAppStore.getState().prefs.notifications.classes.info).toBe(true);
+    expect(useAppStore.getState().prefs.notifications.muted).toHaveLength(1);
+  });
+
   it("lists exact, template and type rules", () => {
     const exact = muteRuleFor({ message: "Installed workflow", type: "info" }, "exact");
     const template = muteRuleFor(
@@ -43,7 +62,10 @@ describe("NotificationsSettingsCard", () => {
     );
     const type = muteRuleFor({ message: "anything", type: "warning" }, "type");
     useAppStore.setState({
-      prefs: { ...DEFAULT_PREFS, notifications: { muted: [exact, template, type] } },
+      prefs: {
+        ...DEFAULT_PREFS,
+        notifications: { ...DEFAULT_NOTIFICATION_PREFS, muted: [exact, template, type] },
+      },
     });
     render(<NotificationsSettingsCard />);
     expect(screen.getByText("exact")).toBeInTheDocument();
@@ -57,7 +79,10 @@ describe("NotificationsSettingsCard", () => {
     const first = muteRuleFor({ message: "one", type: "warning" }, "exact");
     const second = muteRuleFor({ message: "two", type: "warning" }, "exact");
     useAppStore.setState({
-      prefs: { ...DEFAULT_PREFS, notifications: { muted: [first, second] } },
+      prefs: {
+        ...DEFAULT_PREFS,
+        notifications: { ...DEFAULT_NOTIFICATION_PREFS, muted: [first, second] },
+      },
     });
     render(<NotificationsSettingsCard />);
 

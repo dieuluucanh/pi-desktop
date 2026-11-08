@@ -16,7 +16,7 @@ import { isOfficeTool, officeToolSummary } from "./office-tool-card";
 import { useMarkdownTransform } from "./useMarkdownTransform";
 import { useAppStore } from "../state/app-store";
 import { matchesBinding } from "../shortcuts/dom-keys";
-import { isNotificationMuted } from "../../../shared/notifications";
+import { isNotificationSuppressed } from "../../../shared/notifications";
 import { resolveDesktopKeymap } from "../../../shared/desktop-keymap";
 import { isBlobRef } from "../../../shared/host-protocol";
 import type { OfficeDocumentPane } from "../../../shared/office-documents";
@@ -324,11 +324,12 @@ function NoticeView({
   running?: boolean;
 }) {
   const notifications = useAppStore((state) => state.prefs.notifications);
-  // A muted extension notification stays in the history archive, but it must
-  // not take a row in the transcript. The hook runs before this early return.
+  // A suppressed extension notification (class off or a mute rule) stays in the
+  // notification archive, but it must not take a row in the transcript. The
+  // hook runs before this early return, so enabling the class restores the row.
   if (
     notice.event === "oi.notify" &&
-    isNotificationMuted({ message: notice.text, type: notice.severity }, notifications)
+    isNotificationSuppressed({ message: notice.text, type: notice.severity }, notifications)
   ) {
     return null;
   }

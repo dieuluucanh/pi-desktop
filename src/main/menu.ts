@@ -102,12 +102,13 @@ const GO_ITEMS: readonly ItemSpec[] = [
   { command: "view-connections", label: "Connections" },
   { command: "view-skills", label: "Skills, Themes & Keys" },
   { command: "view-diagnostics", label: "Diagnostics" },
+  { command: "view-updates", label: "About & Updates" },
 ];
 
 const HELP_ITEMS: readonly ItemSpec[] = [
   { command: "shortcuts", label: "Keyboard Shortcuts", accelerator: "CmdOrCtrl+/" },
-  // Opens Settings → About & updates and starts a check. A menu accelerator
-  // here would only duplicate the status chip's own affordance.
+  // Opens the About & updates view and starts a check. A menu accelerator here
+  // would only duplicate the bell's own affordance.
   { command: "check-updates", label: "Check for Updates…" },
 ];
 

@@ -83,9 +83,10 @@ the guide, including the macOS approval steps and the Linux FUSE and apt notes).
 macOS updates are download-only for now — see the release notes.
 
 Installed release builds check GitHub Releases in the background. When a newer
-version exists, the status bar shows a small **Update vX** chip; Download and
-**Restart & install** live in **Settings → About & updates**. Locally built
-packages are stamped `local`, skip automatic checks, and say so in that card.
+version exists, the app raises a notification in the bell and marks **About &
+updates** in the sidebar; Download and **Restart & install** live in that view.
+Locally built packages are stamped `local`, skip automatic checks, and say so
+there.
 
 ## Develop
 

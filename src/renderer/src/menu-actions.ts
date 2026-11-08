@@ -232,6 +232,9 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "view-diagnostics":
       store.setView("diagnostics");
       return;
+    case "view-updates":
+      store.setView("updates");
+      return;
     case "view-office":
       // Pi for Office is an integration, not a primary view (plan D-A10): the
       // menu item opens the Extensions hub on its Integrations card.
@@ -241,13 +244,12 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
       store.setShortcutsHelpOpen(true);
       return;
     case "check-updates":
-      // Opens the durable About & updates card and starts a check; the status
-      // bar then carries available/downloading/downloaded, and the card carries
-      // every outcome including a missing published feed.
-      store.openUpdateSettings({ check: true });
+      // Opens the About & updates view and starts a check; the bell carries the
+      // offer and the view carries every outcome including a missing feed.
+      store.openUpdatesView({ check: true });
       return;
     case "view-about":
-      store.openUpdateSettings();
+      store.openUpdatesView();
       return;
     default: {
       // Exhaustive today: every MenuCommand is handled above, so `command` is

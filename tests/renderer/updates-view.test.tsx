@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { UpdateSettingsCard } from "../../src/renderer/src/settings/UpdateSettingsCard";
+import { UpdatesView } from "../../src/renderer/src/views/UpdatesView";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import {
@@ -12,9 +12,9 @@ import {
 import { appInfoFixture, installBridge } from "./fixtures";
 
 /**
- * Settings → About & updates (2026-11-01 update plan): build provenance, the
- * updater's full state, and every action. This card is where errors and no-feed
- * notices live now that the full-width banner is gone.
+ * About & updates (2026-11-01 update plan, moved out of Settings in 2026-11-08):
+ * build provenance, the updater's full state, and every action. This view is
+ * where errors and no-feed notices live now that the full-width banner is gone.
  */
 
 beforeEach(() => {
@@ -30,6 +30,8 @@ beforeEach(() => {
       builtAt: "2026-11-01T10:00:00.000Z",
     }),
     update: initialUpdateState(true, { currentVersion: "0.3.0" }),
+    prefsLoaded: true,
+    notifications: [],
     settingsFocus: null,
     hint: null,
   });
@@ -41,11 +43,11 @@ function setUpdate(partial: Partial<UpdateState>) {
   });
 }
 
-describe("UpdateSettingsCard", () => {
+describe("UpdatesView", () => {
   it("shows the version, build provenance and a check action", () => {
-    render(<UpdateSettingsCard />);
+    render(<UpdatesView />);
 
-    expect(screen.getByTestId("settings-updates")).toHaveTextContent("v0.3.0");
+    expect(screen.getByTestId("updates-panel")).toHaveTextContent("v0.3.0");
     expect(screen.getByText("Release build")).toBeInTheDocument();
     expect(screen.getByText(/commit abc123/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /check now/i })).toBeInTheDocument();
@@ -61,7 +63,7 @@ describe("UpdateSettingsCard", () => {
         buildVersion: "0.3.0",
       }),
     });
-    render(<UpdateSettingsCard />);
+    render(<UpdatesView />);
 
     expect(screen.getByText("Local build")).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: /automatically/i })).toBeDisabled();
@@ -86,7 +88,7 @@ describe("UpdateSettingsCard", () => {
     };
 
     setUpdate({ phase: "available", version: "0.4.0" });
-    render(<UpdateSettingsCard />);
+    render(<UpdatesView />);
     await user.click(screen.getByRole("button", { name: /download v0\.4\.0/i }));
     await vi.waitFor(() => expect(useAppStore.getState().update?.phase).toBe("downloading"));
     expect(calls).toEqual(["download"]);
@@ -105,9 +107,9 @@ describe("UpdateSettingsCard", () => {
       problemKind: "no-feed",
       error: "ERR_UPDATER_LATEST_VERSION_NOT_FOUND",
     });
-    render(<UpdateSettingsCard />);
+    render(<UpdatesView />);
 
-    expect(screen.getByTestId("settings-updates")).toHaveTextContent(
+    expect(screen.getByTestId("updates-panel")).toHaveTextContent(
       "No published release was found for this build.",
     );
     await user.click(screen.getByRole("button", { name: /check again/i }));
@@ -124,9 +126,9 @@ describe("UpdateSettingsCard", () => {
       problemKind: "network",
       error: "getaddrinfo ENOTFOUND github.com",
     });
-    render(<UpdateSettingsCard />);
+    render(<UpdatesView />);
 
-    expect(screen.getByTestId("settings-updates")).toHaveTextContent(
+    expect(screen.getByTestId("updates-panel")).toHaveTextContent(
       /Couldn't reach the update server/,
     );
     expect(screen.getByText("Technical details")).toBeInTheDocument();
@@ -137,23 +139,28 @@ describe("UpdateSettingsCard", () => {
     expect(useAppStore.getState().update?.phase).toBe("idle");
   });
 
-  it("hides and restores the status-bar notification for an offered version", async () => {
+  it("offers Notify me again after the update notification is dismissed", async () => {
     const user = userEvent.setup();
     setUpdate({ phase: "available", version: "0.4.0" });
-    render(<UpdateSettingsCard />);
+    useAppStore.setState({
+      prefs: {
+        ...DEFAULT_PREFS,
+        updates: { ...DEFAULT_PREFS.updates, notifiedVersion: "0.4.0" },
+      },
+      notifications: [],
+    });
+    render(<UpdatesView />);
 
-    await user.click(screen.getByRole("button", { name: /hide notification/i }));
-    expect(useAppStore.getState().prefs.updates.dismissedVersion).toBe("0.4.0");
-
-    await user.click(screen.getByRole("button", { name: /show notification/i }));
-    expect(useAppStore.getState().prefs.updates.dismissedVersion).toBeNull();
+    await user.click(screen.getByRole("button", { name: /notify me again/i }));
+    expect(useAppStore.getState().notifications).toHaveLength(1);
+    expect(useAppStore.getState().prefs.updates.notifiedVersion).toBe("0.4.0");
   });
 
   it("opens the public releases page", async () => {
     const user = userEvent.setup();
     const openExternal = vi.fn(async () => true);
     (window.pi as unknown as { openExternal: typeof openExternal }).openExternal = openExternal;
-    render(<UpdateSettingsCard />);
+    render(<UpdatesView />);
 
     await user.click(screen.getByRole("button", { name: /open releases page/i }));
     expect(openExternal).toHaveBeenCalledWith(PI_DESKTOP_RELEASES_URL);
@@ -169,13 +176,13 @@ describe("UpdateSettingsCard", () => {
         unsupportedReason: "unsigned-mac",
       }),
     });
-    render(<UpdateSettingsCard />);
+    render(<UpdatesView />);
 
     // The badge names the policy, and the prose says where the update comes from
     // — an ad-hoc-signed mac build can never install one in place.
     expect(screen.getByText("Manual updates")).toBeInTheDocument();
     expect(screen.queryByText("Unsupported")).not.toBeInTheDocument();
-    expect(screen.getByTestId("settings-updates")).toHaveTextContent(
+    expect(screen.getByTestId("updates-panel")).toHaveTextContent(
       /installed by downloading the new release from GitHub/i,
     );
     expect(screen.getByRole("switch", { name: /check for updates automatically/i })).toBeDisabled();

@@ -101,7 +101,11 @@ behaviour:
 - [Providers and auth](providers-and-auth.md) · [Extensions and packages](extensions-and-packages.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)
 
-**Notifications.** Settings → Notifications lists mute rules created from a
-notification's gear or from the notification history. Each rule can be unmuted
-individually, or use **Unmute all**. Muted notifications stay in the history
-(marked `muted`) but disappear from the transcript and stop toasting.
+**Notifications.** Settings → Notifications has two layers. **Classes** switch a
+whole kind on or off: App updates, Errors, Warnings and Informational messages
+(off by default, so background chatter such as “Server logs ready (local)” stays
+out of the bell and transcript). The mute-rule list is the per-message layer,
+created from a notification's gear or from the bell; each rule can be unmuted
+individually, or use **Unmute all**. Both layers only hide a notification: the
+archive keeps it, and the bell's **Show hidden (N)** can recover it. See
+[extension UI](../architecture/extension-ui.md#notification-classes-and-muting-2026-11-08).

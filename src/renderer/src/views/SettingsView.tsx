@@ -28,7 +28,6 @@ import {
 } from "../settings/SourceControlSettings";
 import { NotificationsSettingsCard } from "../settings/NotificationsSettings";
 import { TerminalSettingsCard } from "../settings/TerminalSettings";
-import { UpdateSettingsCard } from "../settings/UpdateSettingsCard";
 import { setSidebarWidth } from "../state/sidebar-width";
 import { ViewShell } from "./ViewShell";
 
@@ -74,14 +73,15 @@ export function SettingsView() {
   const setSetting = useAppStore((state) => state.setSetting);
   const settingsFocus = useAppStore((state) => state.settingsFocus);
   const clearSettingsFocus = useAppStore((state) => state.clearSettingsFocus);
-  const updateCardRef = useRef<HTMLDivElement | null>(null);
   const terminalCardRef = useRef<HTMLDivElement | null>(null);
+  const notificationsCardRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     // The Help menu and the terminal profile menu route here: scroll to the
     // target card, then consume it so a later Settings visit starts at the top.
     if (!settingsFocus) return;
-    const target = settingsFocus === "updates" ? updateCardRef.current : terminalCardRef.current;
+    const target =
+      settingsFocus === "notifications" ? notificationsCardRef.current : terminalCardRef.current;
     target?.scrollIntoView?.({ block: "start" });
     clearSettingsFocus();
   }, [settingsFocus, clearSettingsFocus]);
@@ -354,7 +354,9 @@ export function SettingsView() {
       */}
       <SourceControlSettingsCard />
       <CheckpointsSettingsCard />
-      <NotificationsSettingsCard />
+      <div ref={notificationsCardRef}>
+        <NotificationsSettingsCard />
+      </div>
 
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold">Pi settings</h2>
@@ -420,10 +422,6 @@ export function SettingsView() {
           </dd>
         </dl>
       </section>
-
-      <div ref={updateCardRef}>
-        <UpdateSettingsCard />
-      </div>
 
       <Dialog open={rawOpen} onOpenChange={setRawOpen}>
         <DialogContent data-testid="settings-raw-dialog">

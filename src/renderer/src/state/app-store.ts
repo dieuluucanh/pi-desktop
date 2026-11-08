@@ -48,13 +48,18 @@ import { MAX_BLOB_BYTES, MAX_RETAINED_BLOBS, maxRetainedTranscripts } from "./re
 import { isTabDragActive } from "./tab-drag-session";
 import type { CustomProviderInput, CustomProviderSummary } from "../../../shared/custom-providers";
 import {
-  isNotificationMuted,
+  appNotificationFromExtension,
+  isNotificationSuppressed,
   muteRuleFor,
   normalizeNotificationText,
   removeMuteRule,
   removeMutesForNotification,
   shouldCollapseNotification,
+  updateNotification,
+  updateNotificationId,
   withMuteRule,
+  type AppNotification,
+  type NotificationClass,
   type NotificationMuteScope,
 } from "../../../shared/notifications";
 import {
@@ -137,7 +142,6 @@ import {
   type ExtensionCompletionResult,
   type ExtensionCompletionSuggestions,
   type ExtensionDialogRequest,
-  type ExtensionNotification,
   type ExtensionUiSnapshot,
 } from "../../../shared/extension-ui";
 import {
@@ -162,7 +166,7 @@ import {
   type ResourcesSnapshot,
 } from "../../../shared/resources";
 import type { RecommendedPackage } from "../../../shared/recommended-packages";
-import { notifyToast } from "../extension-ui/notify-toast";
+import { notifyToast } from "../notifications/notify-toast";
 import {
   emptyIntegrationsState,
   officeBridgePackageSource,
@@ -254,7 +258,12 @@ import {
 import { orderThinkingLevels } from "../../../shared/thinking";
 import { classifyFailure, isOfflineError } from "../../../shared/diagnostics";
 import type { DiagnosticsSnapshot } from "../../../shared/diagnostics";
-import { describeUpdate, sanitizeUpdateState, type UpdateState } from "../../../shared/updates";
+import {
+  describeUpdate,
+  sanitizeUpdateState,
+  type UpdatePrefs,
+  type UpdateState,
+} from "../../../shared/updates";
 import {
   clampRailSplit,
   clampRailWidth,
@@ -297,7 +306,14 @@ import { readBlobText, wrapBridgeWithBlobResolution } from "./host-response";
  */
 
 export type AppView =
-  "welcome" | "session" | "settings" | "extensions" | "connections" | "skills" | "diagnostics";
+  | "welcome"
+  | "session"
+  | "settings"
+  | "extensions"
+  | "connections"
+  | "skills"
+  | "diagnostics"
+  | "updates";
 
 /** How a message sent while the agent is streaming is delivered (plan step 6). */
 export type SendMode = "steer" | "followUp";
@@ -604,6 +620,7 @@ export const APP_VIEWS: readonly AppView[] = [
   "connections",
   "skills",
   "diagnostics",
+  "updates",
 ];
 
 export interface ProjectRef {
@@ -884,9 +901,9 @@ export interface AppStateShape {
   focusIntegrations: () => void;
   clearExtensionsFocus: () => void;
   /** The Settings section to reveal after navigation. */
-  settingsFocus: "updates" | "terminal" | null;
-  /** Opens Settings on the About & updates card, optionally starting a check. */
-  openUpdateSettings: (options?: { check?: boolean }) => void;
+  settingsFocus: "terminal" | "notifications" | null;
+  /** Opens the About & updates view, optionally starting a check. */
+  openUpdatesView: (options?: { check?: boolean }) => void;
   /** Opens Settings on the Terminal card. */
   openTerminalSettings: () => void;
   clearSettingsFocus: () => void;
@@ -1275,8 +1292,12 @@ export interface AppStateShape {
   installUpdate: () => Promise<void>;
   /** Clears a no-feed/error notice without discarding an offer or download. */
   clearUpdateProblem: () => Promise<void>;
-  /** Hides the status-bar chip for the currently offered version. */
-  dismissUpdateNotification: () => void;
+  /** Merges a partial updater preference without dropping the other fields. */
+  setUpdatePrefs: (patch: Partial<UpdatePrefs>) => void;
+  /** Raises the one update-offer notification for the current state. */
+  raiseUpdateNotification: () => void;
+  /** Clears the notified marker and raises the current offer again. */
+  restoreUpdateNotification: () => void;
   /**
    * Bodies of spilled large payloads, fetched on demand and cached by blob path
    * (plan step 24). A 50 MB tool result never crosses the event frame; it is
@@ -1558,10 +1579,14 @@ export interface AppStateShape {
   dialogAttention: Record<string, boolean>;
   markDialogAttention: (tabId: string) => void;
   clearDialogAttention: (tabId: string) => void;
-  /** Notification history (the toast centre's backing list). */
-  extensionNotifications: ExtensionNotification[];
+  /**
+   * The unified notification archive: extension `oi.notify` arrivals plus the
+   * app's own update offer. Suppressed classes/rules stay here so `Show hidden`
+   * can recover them.
+   */
+  notifications: AppNotification[];
   /** The notification the Mute dialog is configuring, or null. */
-  muteTarget: ExtensionNotification | null;
+  muteTarget: AppNotification | null;
   /**
    * Last time an identical notification was seen per tab, keyed by
    * `tabId\u0000type\u0000normalizedMessage`. Ephemeral: it only decides whether a
@@ -1577,14 +1602,21 @@ export interface AppStateShape {
     dialog: ExtensionDialogRequest,
     answer: { value?: string; confirmed?: boolean; cancelled?: boolean },
   ) => Promise<void>;
-  clearExtensionNotifications: () => void;
+  /** Empties the archive and the repeat cooldowns (the popover's Clear). */
+  clearNotifications: () => void;
+  /** Removes one row (the popover's per-row ×). */
+  dismissNotification: (id: string) => void;
+  /** Turns one notification class on or off. */
+  setNotificationClass: (klass: NotificationClass, enabled: boolean) => void;
+  /** Opens Settings focused on the Notifications card. */
+  openNotificationSettings: () => void;
   /** Opens/closes the Mute dialog for one notification. */
-  openMuteDialog: (notification: ExtensionNotification) => void;
+  openMuteDialog: (notification: AppNotification) => void;
   closeMuteDialog: () => void;
   /** Saves an exact/template/type mute rule and closes the dialog. */
-  muteNotification: (notification: ExtensionNotification, scope: NotificationMuteScope) => void;
+  muteNotification: (notification: AppNotification, scope: NotificationMuteScope) => void;
   /** Removes every rule that silences this notification (history Unmute). */
-  unmuteNotification: (notification: ExtensionNotification) => void;
+  unmuteNotification: (notification: AppNotification) => void;
   /** Removes one persisted rule by id (Settings card). */
   unmuteNotificationRule: (ruleId: string) => void;
   /** Removes every muted notification rule (Settings card). */
@@ -2003,8 +2035,10 @@ const EXTENSION_UI_EVENTS = new Set<string>([
 ]);
 
 /** The per-tab identity used to suppress a repeated toast. */
-function notificationCooldownKey(tabId: string, notification: ExtensionNotification): string {
-  return `${tabId}\u0000${notification.type}\u0000${normalizeNotificationText(notification.message)}`;
+function notificationCooldownKey(notification: AppNotification): string {
+  return `${notification.tabId ?? "app"}\u0000${notification.type}\u0000${normalizeNotificationText(
+    notification.message,
+  )}`;
 }
 
 /**
@@ -2362,7 +2396,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   extensionUi: {},
   extensionDialogs: [],
   dialogAttention: {},
-  extensionNotifications: [],
+  notifications: [],
   muteTarget: null,
   notificationCooldowns: {},
   tuiSurfaces: {},
@@ -2379,8 +2413,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }),
   focusIntegrations: () => set({ view: "extensions", extensionsFocus: "integrations", hint: null }),
   clearExtensionsFocus: () => set({ extensionsFocus: null }),
-  openUpdateSettings: (options) => {
-    set({ view: "settings", settingsFocus: "updates", hint: null });
+  openUpdatesView: (options) => {
+    set({ view: "updates", hint: null });
     if (options?.check) void get().checkForUpdates();
   },
   openTerminalSettings: () => set({ view: "settings", settingsFocus: "terminal", hint: null }),
@@ -2869,6 +2903,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api) {
       set({ prefsLoaded: true });
+      get().raiseUpdateNotification();
       return;
     }
     try {
@@ -2897,6 +2932,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     } catch {
       set({ prefsLoaded: true });
     }
+    // The updater state can arrive before the stored prefs (and the class
+    // defaults); now that the loaded prefs are in place, raise the offer once.
+    get().raiseUpdateNotification();
   },
 
   loadTabs: () =>
@@ -3392,18 +3430,19 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return;
     }
     if (entry.event === EXTENSION_UI_NOTIFY_EVENT) {
-      const notification = parseExtensionNotification(entry.payload, tabId);
-      if (!notification) return;
-      const key = notificationCooldownKey(tabId, notification);
+      const parsed = parseExtensionNotification(entry.payload, tabId);
+      if (!parsed) return;
+      const notification = appNotificationFromExtension(parsed);
+      const key = notificationCooldownKey(notification);
       const now = Date.now();
-      const muted = isNotificationMuted(notification, get().prefs.notifications);
+      const suppressed = isNotificationSuppressed(notification, get().prefs.notifications);
       const collapsed = shouldCollapseNotification(get().notificationCooldowns[key], now);
       set({
-        extensionNotifications: [notification, ...get().extensionNotifications].slice(0, 100),
+        notifications: [notification, ...get().notifications].slice(0, 100),
         notificationCooldowns: { ...get().notificationCooldowns, [key]: now },
       });
-      if (!muted && !collapsed) {
-        notifyToast(notification, () => get().openMuteDialog(notification));
+      if (!suppressed && !collapsed) {
+        notifyToast(notification, { onMute: () => get().openMuteDialog(notification) });
       }
       // Plannotator notifies its review URL, so the URL arriving in a
       // notification is the signal to open it in an in-app tab (plan step 21)
@@ -3440,7 +3479,21 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  clearExtensionNotifications: () => set({ extensionNotifications: [] }),
+  clearNotifications: () => set({ notifications: [], notificationCooldowns: {} }),
+
+  dismissNotification: (id) =>
+    set({ notifications: get().notifications.filter((entry) => entry.id !== id) }),
+
+  setNotificationClass: (klass, enabled) => {
+    const prefs = get().prefs.notifications;
+    get().setPrefs({
+      notifications: { ...prefs, classes: { ...prefs.classes, [klass]: enabled } },
+    });
+    if (klass === "update" && enabled) get().raiseUpdateNotification();
+  },
+
+  openNotificationSettings: () =>
+    set({ view: "settings", settingsFocus: "notifications", hint: null }),
 
   openMuteDialog: (notification) => set({ muteTarget: notification }),
   closeMuteDialog: () => set({ muteTarget: null }),
@@ -3468,7 +3521,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   unmuteAllNotifications: () => {
     if (get().prefs.notifications.muted.length === 0) return;
-    get().setPrefs({ notifications: { muted: [] } });
+    get().setPrefs({
+      notifications: { ...get().prefs.notifications, muted: [] },
+    });
   },
 
   reportEditorText: (tabId, text) => {
@@ -5519,33 +5574,37 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.updates) return;
     try {
-      set({ update: sanitizeUpdateState(await api.updates.get()) });
+      get().applyUpdateState(await api.updates.get());
     } catch {
       // An updater that cannot be reached is not a user-visible failure: the
-      // status chip simply stays absent and Settings explains the state.
+      // bell simply stays quiet and Settings explains the state.
     }
   },
 
-  applyUpdateState: (state) => set({ update: sanitizeUpdateState(state) }),
+  applyUpdateState: (state) => {
+    set({ update: sanitizeUpdateState(state) });
+    get().raiseUpdateNotification();
+  },
 
   checkForUpdates: async () => {
     const api = bridge();
     if (!api?.updates) return;
     try {
       const next = sanitizeUpdateState(await api.updates.check());
+      get().applyUpdateState(next);
       // A finished check is feedback even when there is nothing to install. The
-      // status chip carries available/downloaded; everything else is a short
+      // bell carries available/downloaded; everything else is a short
       // dismissible status-bar hint.
       if (next.phase === "up-to-date") {
-        set({ update: next, hint: "Pi Desktop is up to date." });
+        set({ hint: "Pi Desktop is up to date." });
       } else if (
         next.phase === "unsupported" ||
         next.phase === "no-feed" ||
         next.phase === "error"
       ) {
-        set({ update: next, hint: describeUpdate(next) });
+        set({ hint: describeUpdate(next) });
       } else {
-        set({ update: next, hint: null });
+        set({ hint: null });
       }
     } catch (error) {
       get().noteFailure(error);
@@ -5556,7 +5615,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.updates) return;
     try {
-      set({ update: sanitizeUpdateState(await api.updates.download()) });
+      get().applyUpdateState(await api.updates.download());
     } catch (error) {
       get().noteFailure(error);
     }
@@ -5578,18 +5637,42 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.updates) return;
     try {
-      set({ update: sanitizeUpdateState(await api.updates.clearProblem()), hint: null });
+      get().applyUpdateState(await api.updates.clearProblem());
+      set({ hint: null });
     } catch (error) {
       get().noteFailure(error);
     }
   },
 
-  dismissUpdateNotification: () => {
-    const { update, prefs } = get();
-    const version = update?.version;
-    if (!version || (update.phase !== "available" && update.phase !== "downloaded")) return;
-    get().setPrefs({ updates: { ...prefs.updates, dismissedVersion: version } });
-    set({ hint: null });
+  setUpdatePrefs: (patch) => get().setPrefs({ updates: { ...get().prefs.updates, ...patch } }),
+
+  raiseUpdateNotification: () => {
+    const { update, prefs, prefsLoaded, notifications } = get();
+    if (!prefsLoaded || !update || update.phase !== "available" || !update.version) return;
+    // A muted class does not get a marker either: enabling it later raises the
+    // offer instead of leaving a hidden row behind.
+    if (!prefs.notifications.classes.update) return;
+    const id = updateNotificationId(update.version);
+    if (notifications.some((entry) => entry.id === id)) {
+      if (prefs.updates.notifiedVersion !== update.version) {
+        get().setUpdatePrefs({ notifiedVersion: update.version });
+      }
+      return;
+    }
+    // Dismissed (and cleared) rows keep the marker, so a relaunch or a repeated
+    // push does not re-raise the same version. A new version does.
+    if (prefs.updates.notifiedVersion === update.version) return;
+    const notification = updateNotification(update.version);
+    set({ notifications: [notification, ...notifications].slice(0, 100) });
+    get().setUpdatePrefs({ notifiedVersion: update.version });
+    notifyToast(notification, { onOpen: () => get().openUpdatesView() });
+  },
+
+  restoreUpdateNotification: () => {
+    const { update } = get();
+    if (!update?.version) return;
+    get().setUpdatePrefs({ notifiedVersion: null });
+    get().raiseUpdateNotification();
   },
 
   // ---- Onboarding (plan step 26) ----
@@ -6047,10 +6130,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   applyCheckpointState: (state) => {
     const parsed = sanitizeCheckpointState(state);
     if (parsed.projectPath.length === 0) return;
-    const next: Record<string, CheckpointState> = {
+    const next = {
       ...get().checkpoints,
       [parsed.projectPath]: parsed,
-    };
+    } satisfies Record<string, CheckpointState>;
     for (const stale of Object.keys(next).slice(
       0,
       Math.max(0, Object.keys(next).length - MAX_GIT_SNAPSHOTS),

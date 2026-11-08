@@ -54,7 +54,7 @@ resource. The window shows a safe-mode banner.
   `xattr -dr com.apple.quarantine "/Applications/Pi Desktop.app"`.
 - **There is no “Restart & install” for updates.** Deliberate: Squirrel.Mac
   rejects an update whose code-signing identity differs from the running app, and
-  these builds are ad-hoc signed. **Settings → About & updates** says **Manual
+  these builds are ad-hoc signed. **About & updates** says **Manual
   updates** and links to the Releases page; download the new `.dmg`.
 
 ## A session looks idle/asleep after a long break
@@ -291,11 +291,12 @@ the first write per run.
 
 ## Updates
 
-`Help → Check for Updates…` opens **Settings → About & updates** and runs a
-check. A released build checks once after launch; the status bar shows a small
-**Update vX** chip when a version is available, or **Restart to update** after a
-download. All outcomes live in the card: up to date, downloading, ready, error,
-and **no published release**.
+`Help → Check for Updates…` opens **About & updates** (sidebar, below
+Diagnostics) and runs a check. A released build checks once after launch; a
+version is offered as a bell notification with a **View update** action, and the
+About & updates sidebar item shows a dot until you install or the build is up to
+date. All outcomes live in that view: up to date, downloading, ready, error, and
+**no published release**. There is no status-bar update chip.
 
 A locally built package (stamped `local` in `resources/build-info.json`) does not
 auto-check; a manual check only tells you whether a published release exists. A

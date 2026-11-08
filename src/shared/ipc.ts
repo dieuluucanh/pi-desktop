@@ -332,11 +332,12 @@ export const MENU_COMMANDS = [
   "view-connections",
   "view-skills",
   "view-diagnostics",
+  "view-updates",
   "view-office",
   "shortcuts",
   // Updates (plan step 26).
   "check-updates",
-  /** Opens the Settings About & updates card (non-macOS About item). */
+  /** Opens the About & updates view (non-macOS About item). */
   "view-about",
   // Session history (plan step 11).
   "session-tree",

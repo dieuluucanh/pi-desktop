@@ -131,13 +131,13 @@ export interface InitialUpdateOptions {
 export interface UpdatePrefs {
   /** Check once after launch (effective off for local/dev/offline builds). */
   autoCheck: boolean;
-  /** An offered version whose status-bar chip the user dismissed. */
-  dismissedVersion: string | null;
+  /** The offered version the notification bell has already announced. */
+  notifiedVersion: string | null;
 }
 
 export const DEFAULT_UPDATE_PREFS: UpdatePrefs = {
   autoCheck: true,
-  dismissedVersion: null,
+  notifiedVersion: null,
 };
 
 /** Keeps the updater preference object valid; unknown keys are dropped. */
@@ -147,7 +147,7 @@ export function sanitizeUpdatePrefs(input: unknown): UpdatePrefs {
     // A missing value means on: an older app-state.json did not ask to disable
     // update checks, and a fresh install should notice a new release.
     autoCheck: typeof source.autoCheck === "boolean" ? source.autoCheck : true,
-    dismissedVersion: boundedVersion(source.dismissedVersion),
+    notifiedVersion: boundedVersion(source.notifiedVersion),
   };
 }
 

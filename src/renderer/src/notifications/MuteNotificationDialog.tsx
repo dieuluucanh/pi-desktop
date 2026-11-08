@@ -91,35 +91,36 @@ export function MuteNotificationDialog() {
 
         <fieldset className="mx-4 mt-3 flex flex-col gap-1.5">
           <legend className="mb-1 text-xs font-semibold text-ink">What should be muted?</legend>
-          {SCOPES.map((value) => {
-            const disabled = value === "template" && signature === exact;
-            return (
-              <label
-                key={value}
-                className={cn(
-                  "flex cursor-pointer items-start gap-2 rounded-sm border px-2 py-1.5 text-xs",
-                  scope === value ? "border-accent bg-accent/10" : "border-line hover:bg-raised/60",
-                  disabled && "cursor-not-allowed opacity-50",
-                )}
-              >
-                <input
-                  type="radio"
-                  name="notification-mute-scope"
-                  value={value}
-                  checked={scope === value}
-                  disabled={disabled}
-                  onChange={() => setScope(value)}
-                  className="mt-0.5"
-                />
-                <span className="flex min-w-0 flex-col">
-                  <span className="font-medium text-ink">{scopeLabel(value, target.type)}</span>
-                  <span className="min-w-0 truncate font-mono text-[11px] text-ink-faint">
-                    {value === "type" ? target.type : value === "template" ? signature : exact}
-                  </span>
+          {SCOPES.map((value) => (
+            <label
+              key={value}
+              className={cn(
+                "flex cursor-pointer items-start gap-2 rounded-sm border px-2 py-1.5 text-xs",
+                scope === value ? "border-accent bg-accent/10" : "border-line hover:bg-raised/60",
+              )}
+            >
+              <input
+                type="radio"
+                name="notification-mute-scope"
+                value={value}
+                checked={scope === value}
+                onChange={() => setScope(value)}
+                className="mt-0.5"
+              />
+              <span className="flex min-w-0 flex-col">
+                <span className="font-medium text-ink">{scopeLabel(value, target.type)}</span>
+                <span className="min-w-0 truncate font-mono text-[11px] text-ink-faint">
+                  {value === "type" ? target.type : value === "template" ? signature : exact}
                 </span>
-              </label>
-            );
-          })}
+                {value === "template" && signature === exact ? (
+                  <span className="text-[11px] text-ink-faint">
+                    This message has no variable parts, so this rule matches the same text as “Just
+                    this notification”.
+                  </span>
+                ) : null}
+              </span>
+            </label>
+          ))}
         </fieldset>
 
         <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-line px-4 py-3">

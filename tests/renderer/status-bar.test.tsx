@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { StatusBar } from "../../src/renderer/src/layout/StatusBar";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
+import { initialUpdateState } from "../../src/shared/updates";
 import { appInfoFixture, installBridge } from "./fixtures";
 
 /**
@@ -20,6 +21,18 @@ beforeEach(() => {
     project: null,
     hint: null,
     update: null,
+  });
+});
+
+describe("status bar update chrome", () => {
+  it("has no update chip even when a version is offered", () => {
+    useAppStore.setState({
+      update: { ...initialUpdateState(true), phase: "available", version: "0.4.0" },
+    });
+    render(<StatusBar />);
+
+    // Update attention lives in the bell and the About & updates sidebar dot.
+    expect(screen.queryByTestId("status-update")).toBeNull();
   });
 });
 

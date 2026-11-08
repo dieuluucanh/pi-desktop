@@ -859,15 +859,25 @@ and safe-mode launches never auto-check; a manual check is still allowed.
 
 Events reduce into `UpdateState` (`src/shared/updates.ts`), whose phases include
 the benign `no-feed` state for an unpublished build/feed. `prefs.updates` carries
-`autoCheck` and the per-version `dismissedVersion`. The renderer shows only a
-compact status-bar chip for available → **Update vX**, downloading → **Updating
-N%** and downloaded → **Restart to update**; a new version re-notifies after a
-dismissal. Every other outcome — up to date, no feed, an error — lives in
-**Settings → About & updates**, with the raw updater text under Technical
-details. `Help → Check for Updates…` opens that card and checks; on Windows and
-Linux `Help → About Pi Desktop` opens the same card, while macOS keeps its native
-About panel. Automatic failures stay silent; a manual failure is a dismissible
-status hint plus the card. There is no full-width update banner.
+`autoCheck` and the per-version `notifiedVersion`: a check that finds a release
+raises exactly one app-owned notification (class `update`) in the bell, with a
+**View update** action, and puts a dot on the **About & updates** sidebar item.
+That item is the last product view, below Diagnostics; there is no status-bar
+update chip. Downloading and downloaded change the dot; every other outcome — up
+to date, no feed, an error — lives in that view, with the raw updater text under
+Technical details. `Help → Check for Updates…` opens the view and checks; on
+Windows and Linux `Help → About Pi Desktop` opens the same view, while macOS
+keeps its native About panel. Automatic failures stay silent; a manual failure is
+a dismissible status hint plus the view. There is no full-width update banner.
+
+**Notifications.** The status-bar bell always renders and counts only
+unsuppressed rows. Notifications are classed as **App updates**, **Errors**,
+**Warnings** and **Informational messages**; classes are severity-based because
+Pi's `ctx.ui.notify` has no source field. Info is off by default, so background
+chatter such as “Server logs ready (local)” stays out of the bell and transcript.
+The popover has a `×`, a per-row `×`, class badges and **Show hidden (N)** for
+archived suppressed rows. Settings → Notifications owns the class switches and
+the per-message mute rules.
 
 **Packaging.** `electron-builder.yml` targets Windows NSIS + portable, macOS
 dmg/zip on arm64 + x64, and Linux AppImage/deb on x64 + arm64. The bundled

@@ -36,10 +36,11 @@ import { ExtensionsView } from "./views/ExtensionsView";
 import { WorkspaceView } from "./views/WorkspaceView";
 import { WebNavigationDialog } from "./web/WebNavigationDialog";
 import { WebUrlDialog } from "./web/WebUrlDialog";
-import { MuteNotificationDialog } from "./extension-ui/MuteNotificationDialog";
+import { MuteNotificationDialog } from "./notifications/MuteNotificationDialog";
 import { DiffDialog } from "./rail/DiffDialog";
 import { SettingsView } from "./views/SettingsView";
 import { SkillsView } from "./views/SkillsView";
+import { UpdatesView } from "./views/UpdatesView";
 import { WelcomeView } from "./views/WelcomeView";
 
 /**
@@ -49,9 +50,9 @@ import { WelcomeView } from "./views/WelcomeView";
  * strip (the topmost app row — the OS frame owns the window controls), the
  * active view, status bar, plus the command palette and the toast host. Global
  * shortcuts belong to the Electron menu (step 1) — the renderer only owns
- * palette-local keys, so nothing fires twice. The update offer is a slim
- * conditional row above the tab strip; it costs no height when there is
- * nothing to do (the status bar has no update chip).
+ * palette-local keys, so nothing fires twice. Update attention lives in the
+ * notification bell and the About & updates sidebar dot; the status bar has no
+ * update chip.
  */
 
 const VIEWS: Record<AppView, () => ReactElement> = {
@@ -62,6 +63,7 @@ const VIEWS: Record<AppView, () => ReactElement> = {
   connections: ConnectionsView,
   skills: SkillsView,
   diagnostics: DiagnosticsView,
+  updates: UpdatesView,
 };
 
 export function App() {

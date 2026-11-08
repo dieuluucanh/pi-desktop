@@ -1,8 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
+import { updateNotificationId } from "../../src/shared/notifications";
 import { initialUpdateState } from "../../src/shared/updates";
 import { installBridge, removeBridge } from "./fixtures";
+
+vi.mock("sonner", () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  },
+}));
 
 /**
  * Update store actions (plan step 26): the renderer never invents updater state
@@ -11,12 +22,15 @@ import { installBridge, removeBridge } from "./fixtures";
  */
 
 beforeEach(() => {
+  vi.clearAllMocks();
   installBridge({ update: initialUpdateState(true) });
   useAppStore.setState({
     prefs: { ...DEFAULT_PREFS },
+    prefsLoaded: true,
     view: "welcome",
     settingsFocus: null,
     update: null,
+    notifications: [],
     hint: null,
     offlineNotice: null,
   });
@@ -138,41 +152,150 @@ describe("update store (plan step 26)", () => {
     expect(useAppStore.getState().hint).toBeNull();
   });
 
-  it("persists a per-version notification dismissal", () => {
-    useAppStore.setState({
-      prefs: { ...DEFAULT_PREFS },
-      update: { ...initialUpdateState(true), phase: "available", version: "0.4.0" },
-    });
-
-    useAppStore.getState().dismissUpdateNotification();
-
-    expect(useAppStore.getState().prefs.updates.dismissedVersion).toBe("0.4.0");
-
-    // Nothing is offered / downloaded: the action is a no-op.
-    useAppStore.setState({
-      prefs: { ...DEFAULT_PREFS },
-      update: { ...initialUpdateState(true), phase: "idle" },
-    });
-    useAppStore.getState().dismissUpdateNotification();
-    expect(useAppStore.getState().prefs.updates.dismissedVersion).toBeNull();
-  });
-
-  it("opens Settings on the updates card and can start a check", async () => {
+  it("opens the About & updates view and can start a check", async () => {
     const check = vi.fn(async () => initialUpdateState(true));
     (window.pi as unknown as { updates: { check: unknown } }).updates.check = check;
 
-    useAppStore.getState().openUpdateSettings();
-    expect(useAppStore.getState().view).toBe("settings");
-    expect(useAppStore.getState().settingsFocus).toBe("updates");
-
-    // Navigating away consumes/clears the section target.
-    useAppStore.getState().setView("welcome");
+    useAppStore.getState().openUpdatesView();
+    expect(useAppStore.getState().view).toBe("updates");
     expect(useAppStore.getState().settingsFocus).toBeNull();
 
-    useAppStore.getState().openUpdateSettings({ check: true });
+    useAppStore.getState().openUpdatesView({ check: true });
     await vi.waitFor(() => expect(check).toHaveBeenCalledTimes(1));
+    expect(useAppStore.getState().view).toBe("updates");
+    expect(useAppStore.getState().settingsFocus).toBeNull();
+  });
+
+  it("raises one notification per offered version and remembers it", () => {
+    const offer = (version: string) => ({
+      ...initialUpdateState(true),
+      phase: "available" as const,
+      version,
+    });
+
+    useAppStore.getState().applyUpdateState(offer("0.4.0"));
+    let state = useAppStore.getState();
+    expect(state.notifications).toHaveLength(1);
+    expect(state.notifications[0]).toMatchObject({
+      id: updateNotificationId("0.4.0"),
+      message: "Pi Desktop v0.4.0 is available.",
+      class: "update",
+      action: { kind: "open-updates" },
+    });
+    expect(state.prefs.updates.notifiedVersion).toBe("0.4.0");
+    expect(toast.info).toHaveBeenCalledTimes(1);
+
+    // A repeated push does not duplicate the row or the toast.
+    useAppStore.getState().applyUpdateState(offer("0.4.0"));
+    state = useAppStore.getState();
+    expect(state.notifications).toHaveLength(1);
+    expect(toast.info).toHaveBeenCalledTimes(1);
+
+    // A newer offer notifies again.
+    useAppStore.getState().applyUpdateState(offer("0.5.0"));
+    state = useAppStore.getState();
+    expect(state.notifications.map((entry) => entry.id)).toEqual([
+      updateNotificationId("0.5.0"),
+      updateNotificationId("0.4.0"),
+    ]);
+    expect(state.prefs.updates.notifiedVersion).toBe("0.5.0");
+    expect(toast.info).toHaveBeenCalledTimes(2);
+  });
+
+  it("defers the offer until the stored prefs have loaded", async () => {
+    useAppStore.setState({ prefsLoaded: false, prefs: { ...DEFAULT_PREFS } });
+    useAppStore.getState().applyUpdateState({
+      ...initialUpdateState(true),
+      phase: "available",
+      version: "0.4.0",
+    });
+    expect(useAppStore.getState().notifications).toHaveLength(0);
+    expect(useAppStore.getState().prefs.updates.notifiedVersion).toBeNull();
+
+    await useAppStore.getState().loadPrefs();
+    expect(useAppStore.getState().notifications).toHaveLength(1);
+    expect(useAppStore.getState().prefs.updates.notifiedVersion).toBe("0.4.0");
+  });
+
+  it("respects the update class and raises once it is enabled", () => {
+    useAppStore.setState({
+      prefs: {
+        ...DEFAULT_PREFS,
+        notifications: {
+          ...DEFAULT_PREFS.notifications,
+          classes: { ...DEFAULT_PREFS.notifications.classes, update: false },
+        },
+      },
+    });
+    useAppStore.getState().applyUpdateState({
+      ...initialUpdateState(true),
+      phase: "available",
+      version: "0.4.0",
+    });
+    expect(useAppStore.getState().notifications).toHaveLength(0);
+    expect(useAppStore.getState().prefs.updates.notifiedVersion).toBeNull();
+
+    useAppStore.getState().setNotificationClass("update", true);
+    expect(useAppStore.getState().prefs.notifications.classes.update).toBe(true);
+    expect(useAppStore.getState().notifications).toHaveLength(1);
+    expect(useAppStore.getState().prefs.updates.notifiedVersion).toBe("0.4.0");
+  });
+
+  it("dismisses without re-raising and restores on demand", () => {
+    const offer = {
+      ...initialUpdateState(true),
+      phase: "available" as const,
+      version: "0.4.0",
+    };
+    useAppStore.getState().applyUpdateState(offer);
+    const id = updateNotificationId("0.4.0");
+
+    useAppStore.getState().dismissNotification(id);
+    expect(useAppStore.getState().notifications).toHaveLength(0);
+    expect(useAppStore.getState().prefs.updates.notifiedVersion).toBe("0.4.0");
+
+    // A repeated push does not resurrect a dismissed notification.
+    useAppStore.getState().applyUpdateState(offer);
+    expect(useAppStore.getState().notifications).toHaveLength(0);
+
+    useAppStore.getState().restoreUpdateNotification();
+    expect(useAppStore.getState().notifications).toHaveLength(1);
+    expect(useAppStore.getState().notifications[0]?.id).toBe(id);
+  });
+
+  it("clears the archive without letting the same version raise again", () => {
+    const offer = {
+      ...initialUpdateState(true),
+      phase: "available" as const,
+      version: "0.4.0",
+    };
+    useAppStore.getState().applyUpdateState(offer);
+    useAppStore.getState().clearNotifications();
+    expect(useAppStore.getState().notifications).toHaveLength(0);
+
+    useAppStore.getState().applyUpdateState(offer);
+    expect(useAppStore.getState().notifications).toHaveLength(0);
+    expect(useAppStore.getState().prefs.updates.notifiedVersion).toBe("0.4.0");
+  });
+
+  it("routes the update toast action to About & updates", () => {
+    useAppStore.getState().applyUpdateState({
+      ...initialUpdateState(true),
+      phase: "available",
+      version: "0.4.0",
+    });
+    const calls = (toast.info as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const options = calls[0]?.[1] as
+      { action?: { label?: string; onClick?: () => void } } | undefined;
+    expect(options?.action?.label).toBe("View update");
+    options?.action?.onClick?.();
+    expect(useAppStore.getState().view).toBe("updates");
+  });
+
+  it("opens Settings focused on Notifications", () => {
+    useAppStore.getState().openNotificationSettings();
     expect(useAppStore.getState().view).toBe("settings");
-    expect(useAppStore.getState().settingsFocus).toBe("updates");
+    expect(useAppStore.getState().settingsFocus).toBe("notifications");
   });
 
   it("does nothing when the bridge is absent", async () => {

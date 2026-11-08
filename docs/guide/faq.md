@@ -71,12 +71,12 @@ sandboxed renderer, strict CSP, allowlisted IPC, web tabs without a preload.
 
 **How do I get a newer version?**
 Release builds check GitHub Releases once after launch. An available version
-appears as a small **Update vX** chip in the status bar; the full status,
-**Download** and **Restart & install** live in **Settings → About & updates**.
-`Help → Check for Updates…` opens that card and checks on demand. Locally built
-packages are not on the update feed: automatic checks are off and the card says
-so. Package installs are separate: the app updates its own code, the package
-manager updates extensions.
+raises a bell notification and marks **About & updates** in the sidebar (below
+Diagnostics) with a dot; the full status, **Download** and **Restart & install**
+live there. `Help → Check for Updates…` opens that view and checks on demand.
+Locally built packages are not on the update feed: automatic checks are off and
+the view says so. Package installs are separate: the app updates its own code,
+the package manager updates extensions.
 
 **Is it translated?**
 Not yet (i18n is backlog). The UI is English in v0.7.3.
@@ -98,4 +98,4 @@ launches.
 
 **Where do I report a bug?**
 Attach a Diagnostics support bundle (it is redacted) and the version from
-Settings → About or the status bar, and open an issue on the repository.
+**About & updates** or the status bar, and open an issue on the repository.

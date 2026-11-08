@@ -7,18 +7,19 @@ import {
   type UpdatePhase,
   type UpdateState,
 } from "../../../shared/updates";
+import { updateNotificationId } from "../../../shared/notifications";
 import { useAppStore } from "../state/app-store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 
 /**
- * Settings → About & updates (2026-11-01 update plan).
+ * About & updates → Update status (2026-11-01 update plan, moved 2026-11-08).
  *
- * The durable surface for app identity and updater state. The status bar only
- * carries an available/downloaded chip; every outcome — including a missing
- * public release (`no-feed`) and the raw updater error — is visible here. A
- * locally packaged build is labelled as such and its automatic check is off.
+ * The durable surface for app identity and updater state. The notification bell
+ * carries the offer; every outcome — including a missing public release
+ * (`no-feed`) and the raw updater error — is visible here. A locally packaged
+ * build is labelled as such and its automatic check is off.
  */
 
 const PHASE_LABELS: Record<UpdatePhase, string> = {
@@ -95,7 +96,7 @@ function formatCheckedAt(value: number | null | undefined): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toLocaleString();
 }
 
-export function UpdateSettingsCard() {
+export function UpdatePanel() {
   const info = useAppStore((state) => state.info);
   const update = useAppStore((state) => state.update);
   const prefs = useAppStore((state) => state.prefs);
@@ -104,7 +105,8 @@ export function UpdateSettingsCard() {
   const downloadUpdate = useAppStore((state) => state.downloadUpdate);
   const installUpdate = useAppStore((state) => state.installUpdate);
   const clearUpdateProblem = useAppStore((state) => state.clearUpdateProblem);
-  const dismissUpdateNotification = useAppStore((state) => state.dismissUpdateNotification);
+  const notifications = useAppStore((state) => state.notifications);
+  const restoreUpdateNotification = useAppStore((state) => state.restoreUpdateNotification);
 
   const channel = info?.buildChannel ?? "unknown";
   const local = channel === "local";
@@ -115,17 +117,16 @@ export function UpdateSettingsCard() {
   const builtAt = formatBuiltAt(info?.builtAt);
   const versionMismatch =
     typeof info?.buildVersion === "string" && info.buildVersion !== info.version;
-  const dismissed =
-    phase === "available" &&
+  const updateNotificationPresent =
     update?.version !== null &&
     update?.version !== undefined &&
-    prefs.updates.dismissedVersion === update.version;
+    notifications.some((entry) => entry.id === updateNotificationId(update.version!));
 
   return (
-    <section className="card flex flex-col gap-3" data-testid="settings-updates">
+    <section className="card flex flex-col gap-3" data-testid="updates-panel">
       <div>
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-sm font-semibold">About &amp; updates</h2>
+          <h2 className="text-sm font-semibold">Update status</h2>
           <Badge tone={channelTone(channel)}>{channelLabel(channel)}</Badge>
           {update ? <Badge tone={phaseTone(update.phase)}>{phaseLabel(update)}</Badge> : null}
         </div>
@@ -202,17 +203,23 @@ export function UpdateSettingsCard() {
           </Button>
         ) : null}
 
-        {dismissed ? (
+        {phase === "available" &&
+        update?.version !== null &&
+        update?.version !== undefined &&
+        prefs.updates.notifiedVersion === update.version &&
+        !updateNotificationPresent ? (
           <Button
             size="sm"
             variant="ghost"
-            onClick={() => setPrefs({ updates: { ...prefs.updates, dismissedVersion: null } })}
+            disabled={!prefs.notifications.classes.update}
+            title={
+              prefs.notifications.classes.update
+                ? "Raise the update notification again"
+                : "App update notifications are off in Settings → Notifications"
+            }
+            onClick={() => restoreUpdateNotification()}
           >
-            Show notification
-          </Button>
-        ) : phase === "available" || phase === "downloaded" ? (
-          <Button size="sm" variant="ghost" onClick={dismissUpdateNotification}>
-            Hide notification
+            Notify me again
           </Button>
         ) : null}
 

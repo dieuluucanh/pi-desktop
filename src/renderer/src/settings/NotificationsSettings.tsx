@@ -1,19 +1,25 @@
 /**
- * Settings → Notifications (2026-10-31 UI polish plan).
+ * Settings → Notifications (2026-10-31 UI polish plan; classes 2026-11-08).
  *
- * The gear on a toast is the quick path; this card is the durable one. It lists
- * every persisted mute rule (exact text, template signature or whole type) and
- * offers Unmute / Unmute all. Muted notifications are still archived in the
- * notification centre, so nothing is lost by silencing a noisy advisory.
+ * Classes are the coarse switch (Info starts off so background chatter stays
+ * out of the bell/transcript); per-message rules are the fine-grained one. Both
+ * only hide a notification: the archive keeps every arrival, and the bell's
+ * Show hidden row can recover it.
  */
 
-import { notificationRuleLabel } from "../../../shared/notifications";
+import {
+  NOTIFICATION_CLASSES,
+  NOTIFICATION_CLASS_META,
+  notificationRuleLabel,
+} from "../../../shared/notifications";
 import { useAppStore } from "../state/app-store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Switch } from "../ui/switch";
 
 export function NotificationsSettingsCard() {
   const prefs = useAppStore((state) => state.prefs.notifications);
+  const setNotificationClass = useAppStore((state) => state.setNotificationClass);
   const unmuteRule = useAppStore((state) => state.unmuteNotificationRule);
   const unmuteAll = useAppStore((state) => state.unmuteAllNotifications);
 
@@ -22,9 +28,41 @@ export function NotificationsSettingsCard() {
       <div>
         <h2 className="text-sm font-semibold">Notifications</h2>
         <p className="text-xs text-ink-muted">
-          Muted extension notifications stop appearing in the transcript and stop toasting, but stay
-          in the notification history. Unmute them here.
+          Classes decide which notifications appear in the bell, toasts and transcript. Rules
+          silence one message (or one message shape). Hidden notifications stay in the history.
         </p>
+      </div>
+
+      <div className="flex flex-col gap-2" data-testid="notification-classes">
+        <div>
+          <h3 className="text-xs font-semibold">Classes</h3>
+          <p className="text-xs text-ink-faint">
+            Disabled classes are hidden from every surface. They stay in the history under Show
+            hidden.
+          </p>
+        </div>
+        <ul className="flex flex-col gap-1">
+          {NOTIFICATION_CLASSES.map((klass) => {
+            const meta = NOTIFICATION_CLASS_META[klass];
+            return (
+              <li
+                key={klass}
+                data-testid={`notification-class-${klass}`}
+                className="flex items-start justify-between gap-3 rounded-sm border border-line bg-raised/40 px-2 py-1.5 text-xs"
+              >
+                <div className="min-w-0">
+                  <div className="font-medium text-ink">{meta.label}</div>
+                  <div className="text-ink-faint">{meta.description}</div>
+                </div>
+                <Switch
+                  checked={prefs.classes[klass]}
+                  onCheckedChange={(enabled) => setNotificationClass(klass, enabled)}
+                  aria-label={`Show ${meta.label.toLowerCase()}`}
+                />
+              </li>
+            );
+          })}
+        </ul>
       </div>
 
       {prefs.muted.length === 0 ? (

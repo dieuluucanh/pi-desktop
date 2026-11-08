@@ -22,6 +22,7 @@ const GO_TARGETS: readonly GoTarget[] = [
   { view: "connections", label: "Connections (providers & keys)" },
   { view: "skills", label: "Skills, themes & keybindings" },
   { view: "diagnostics", label: "Diagnostics" },
+  { view: "updates", label: "About & updates" },
 ];
 
 export function CommandPalette() {

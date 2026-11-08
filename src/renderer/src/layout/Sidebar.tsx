@@ -1,6 +1,7 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Activity, Blocks, Plug, Settings as SettingsIcon, Sparkles } from "lucide-react";
+import { Activity, Blocks, Info, Plug, Settings as SettingsIcon, Sparkles } from "lucide-react";
 import { clampSidebarWidth } from "../../../shared/prefs";
+import { describeUpdate } from "../../../shared/updates";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { ProjectsSection } from "../projects/ProjectsSection";
@@ -30,13 +31,36 @@ const VIEW_ITEMS: readonly NavItem[] = [
   { view: "connections", label: "Connections", icon: Plug },
   { view: "skills", label: "Skills & themes", icon: Sparkles },
   { view: "diagnostics", label: "Diagnostics", icon: Activity },
+  { view: "updates", label: "About & updates", icon: Info },
 ];
 
 export function Sidebar() {
   const view = useAppStore((state) => state.view);
+  const update = useAppStore((state) => state.update);
   const collapsed = useAppStore((state) => state.prefs.sidebarCollapsed);
   const width = useAppStore((state) => state.prefs.sidebarWidth);
   const setView = useAppStore((state) => state.setView);
+  const updateSign =
+    update &&
+    (update.phase === "available" ||
+      update.phase === "downloading" ||
+      update.phase === "downloaded")
+      ? {
+          title: describeUpdate(update),
+          label:
+            update.phase === "downloaded"
+              ? "Restart to update"
+              : update.phase === "downloading"
+                ? "Update downloading"
+                : "Update available",
+          dot:
+            update.phase === "downloaded"
+              ? "bg-ok"
+              : update.phase === "downloading"
+                ? "bg-info"
+                : "bg-accent",
+        }
+      : null;
   // Mirrors RightRail's width drag: local state follows the pointer; one
   // preference write on release. The ref survives the pointerup batch.
   const [dragWidth, setDragWidth] = useState<number | null>(null);
@@ -114,6 +138,16 @@ export function Sidebar() {
             >
               <item.icon className="size-4" aria-hidden />
               <span className="flex-1 text-left">{item.label}</span>
+              {item.view === "updates" && updateSign ? (
+                <span className="flex items-center" title={updateSign.title}>
+                  <span className="sr-only">{updateSign.label}</span>
+                  <span
+                    data-testid="nav-update-badge"
+                    className={`size-1.5 rounded-full ${updateSign.dot}`}
+                    aria-hidden
+                  />
+                </span>
+              ) : null}
               {item.shortcut ? (
                 <span className="text-[11px] text-ink-faint">{item.shortcut}</span>
               ) : null}
