@@ -678,8 +678,13 @@ jobs:
           # runner may not have. Exercise it when it can run; otherwise record
           # the skip instead of failing a package that is fine.
           if arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+            # Rosetta's first translation of a large x64 binary is slow, so the
+            # x64 pass gets a longer budget than the native one.
+            arch -x86_64 \
+              "$x64_app/Contents/Resources/runtime/node/darwin-x64/bin/node" --version
             node scripts/verify-packaged-terminal.mjs \
-              --resources "$x64_app/Contents/Resources" --arch x64
+              --resources "$x64_app/Contents/Resources" --arch x64 \
+              --timeout 180000
           else
             echo "::warning::Rosetta is unavailable; x64 PTY smoke skipped"
             echo "x64 PTY smoke skipped (no Rosetta); helper, mode, signature" \
