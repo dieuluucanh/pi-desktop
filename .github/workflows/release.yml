@@ -680,8 +680,8 @@ jobs:
           if arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
             # Rosetta's first translation of a large x64 binary is slow, so the
             # x64 pass gets a longer budget than the native one.
-            arch -x86_64 \
-              "$x64_app/Contents/Resources/runtime/node/darwin-x64/bin/node" --version
+            x64_runtime="$x64_app/Contents/Resources/runtime/node"
+            arch -x86_64 "$x64_runtime/darwin-x64/bin/node" --version
             node scripts/verify-packaged-terminal.mjs \
               --resources "$x64_app/Contents/Resources" --arch x64 \
               --timeout 180000
