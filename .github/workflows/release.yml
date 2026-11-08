@@ -124,7 +124,8 @@ jobs:
               fi
               status=$?
               if [ "$n" -ge "$attempts" ]; then return "$status"; fi
-              echo "release create attempt $n/$attempts failed (exit $status); retrying in ${delay}s" >&2
+              echo "release create attempt $n/$attempts failed" \
+                "(exit $status); retrying in ${delay}s" >&2
               sleep "$delay"
               n=$((n + 1))
               delay=$((delay * 2))
@@ -166,12 +167,15 @@ jobs:
       # SHASUMS256.txt. `node_modules` and npm's cache are deliberately absent.
       - name: Restore the release download caches
         id: build-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        # v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             ${{ runner.temp }}/electron-cache
             ${{ runner.temp }}/electron-builder-cache
-          key: ${{ runner.os }}-${{ runner.arch }}-release-v1-${{ hashFiles('package-lock.json', 'electron-builder.yml') }}
+          key: >-
+            ${{ runner.os }}-${{ runner.arch }}-release-v1-${{
+            hashFiles('package-lock.json', 'electron-builder.yml') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-release-v1-
 
@@ -196,7 +200,10 @@ jobs:
           ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
           ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
           DEBUG: "@electron/get:*"
-        run: bash scripts/package-retry.sh npx electron-builder --win --x64 --publish never -c.electronDownload.cache="$ELECTRON_CACHE"
+        run: |
+          bash scripts/package-retry.sh npx electron-builder \
+            --win --x64 --publish never \
+            -c.electronDownload.cache="$ELECTRON_CACHE"
 
       - name: Inspect the failed package attempt
         if: failure()
@@ -226,6 +233,11 @@ jobs:
           grep -q '"channel": "release"' "$res/build-info.json"
           grep -q "\"version\": \"$VERSION\"" "$res/build-info.json"
 
+      - name: Open a real PTY from the packaged app
+        run: |
+          app=release/win-unpacked
+          node scripts/verify-packaged-terminal.mjs --dir "$app"
+
       - name: Upload to the draft release
         if: needs.prepare.outputs.publish == 'true'
         env:
@@ -248,7 +260,9 @@ jobs:
           if-no-files-found: error
 
       - name: Save the release download caches
-        if: success() && steps.build-cache.outputs.cache-hit != 'true' && steps.build-cache.outputs.cache-primary-key != ''
+        if: >-
+          success() && steps.build-cache.outputs.cache-hit != 'true' &&
+          steps.build-cache.outputs.cache-primary-key != ''
         continue-on-error: true
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -265,10 +279,12 @@ jobs:
       matrix:
         include:
           - arch: x64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             runtime: linux-x64
           # node-pty ships no Linux prebuild: both Linux jobs compile it, and
           # arm64 must compile on an arm64 runner rather than a cross toolchain.
+          # Both runners are pinned: `ubuntu-latest` moved to a 26.04-era image
+          # (glibc 2.42) and broke every older distribution in v0.8.0.
           - arch: arm64
             runner: ubuntu-24.04-arm
             runtime: linux-arm64
@@ -296,12 +312,15 @@ jobs:
       # SHASUMS256.txt. `node_modules` and npm's cache are deliberately absent.
       - name: Restore the release download caches
         id: build-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        # v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             ${{ runner.temp }}/electron-cache
             ${{ runner.temp }}/electron-builder-cache
-          key: ${{ runner.os }}-${{ runner.arch }}-release-v1-${{ hashFiles('package-lock.json', 'electron-builder.yml') }}
+          key: >-
+            ${{ runner.os }}-${{ runner.arch }}-release-v1-${{
+            hashFiles('package-lock.json', 'electron-builder.yml') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-release-v1-
 
@@ -322,12 +341,32 @@ jobs:
       - name: Verify the bundled runtime
         run: npm run runtime:verify
 
+      # node-pty must be built against the oldest supported glibc, not the
+      # runner's. The image is resolved to a digest first so the provenance in
+      # `BUILD-INFO.json` names exactly what compiled the binary.
+      - name: Resolve the pinned node-pty build image
+        run: |
+          set -euo pipefail
+          docker pull debian:bullseye
+          digest="$(docker image inspect \
+            --format '{{index .RepoDigests 0}}' debian:bullseye)"
+          echo "PI_PTY_IMAGE=$digest" >> "$GITHUB_ENV"
+
+      - name: Build the Linux node-pty (glibc floor)
+        run: |
+          set -euo pipefail
+          npm run pty:linux -- --arch ${{ matrix.arch }}
+          npm run pty:linux -- --check-only --arch ${{ matrix.arch }}
+
       - name: Package (retry on transient downloads)
         env:
           ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
           ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
           DEBUG: "@electron/get:*"
-        run: bash scripts/package-retry.sh npx electron-builder --linux --${{ matrix.arch }} --publish never -c.electronDownload.cache="$ELECTRON_CACHE"
+        run: |
+          bash scripts/package-retry.sh npx electron-builder \
+            --linux --${{ matrix.arch }} --publish never \
+            -c.electronDownload.cache="$ELECTRON_CACHE"
 
       - name: Inspect the failed package attempt
         if: failure()
@@ -371,6 +410,18 @@ jobs:
             echo "bundled runtime: $runtimes"
             host_bundle='resources/app.asar.unpacked/out/host/index.mjs'
             grep -q "$host_bundle" "$entries_file"
+            # The native backend is the pinned prebuild (never a runner build),
+            # and the terminal host bundle travels with it.
+            pty_dir='resources/app.asar.unpacked/node_modules/node-pty'
+            runtime='${{ matrix.runtime }}'
+            pty_node="$pty_dir/prebuilds/$runtime/pty.node"
+            grep -q "$pty_node" "$entries_file"
+            if grep -q "$pty_dir/build/Release/pty.node" "$entries_file"; then
+              echo "::error::the package ships an unpinned node-pty build" >&2
+              exit 1
+            fi
+            host_out='resources/app.asar.unpacked/out/host'
+            grep -q "$host_out/terminal.mjs" "$entries_file"
             grep -q 'usr/share/applications/pi-desktop.desktop' "$entries_file"
             rm -f "$entries_file"
           done
@@ -383,6 +434,40 @@ jobs:
             test "$(stat -c %s "$appimage")" -gt 150000000
           done
           echo "artefacts verified"
+
+      # A binary that exists and passes the floor check can still fail to load.
+      # This opens a real PTY through the packaged host, the packaged node-pty
+      # and the bundled Node — then repeats it inside Debian 11 (glibc 2.31),
+      # which is the oldest runtime the package claims to support.
+      - name: Open a real PTY from the packaged app
+        run: |
+          set -euo pipefail
+          node scripts/verify-packaged-terminal.mjs --dir release/linux-unpacked
+
+          deb_dir="$(mktemp -d)"
+          dpkg-deb -x release/*.deb "$deb_dir"
+          deb_resources="$(find "$deb_dir" -maxdepth 4 \
+            -type d -path '*/resources' | head -n 1)"
+          test -n "$deb_resources"
+          node scripts/verify-packaged-terminal.mjs --resources "$deb_resources"
+
+          appimage_dir="$(mktemp -d)"
+          (cd "$appimage_dir" && "$GITHUB_WORKSPACE"/release/*.AppImage \
+            --appimage-extract >/dev/null)
+          app_resources="$appimage_dir/squashfs-root/resources"
+          node scripts/verify-packaged-terminal.mjs --resources "$app_resources"
+
+          verify_script="$GITHUB_WORKSPACE/scripts/verify-packaged-terminal.mjs"
+          runtime='${{ matrix.runtime }}'
+          docker run --rm \
+            -v "$verify_script:/verify.mjs:ro" \
+            -v "$appimage_dir/squashfs-root:/app:ro" \
+            -w / \
+            debian:bullseye \
+            "/app/resources/runtime/node/$runtime/bin/node" /verify.mjs \
+              --resources /app/resources \
+              --node "/app/resources/runtime/node/$runtime/bin/node" \
+              --shell /bin/sh --cwd /
 
       - name: Upload to the draft release
         if: needs.prepare.outputs.publish == 'true'
@@ -406,7 +491,9 @@ jobs:
           if-no-files-found: error
 
       - name: Save the release download caches
-        if: success() && steps.build-cache.outputs.cache-hit != 'true' && steps.build-cache.outputs.cache-primary-key != ''
+        if: >-
+          success() && steps.build-cache.outputs.cache-hit != 'true' &&
+          steps.build-cache.outputs.cache-primary-key != ''
         continue-on-error: true
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -450,12 +537,15 @@ jobs:
       # SHASUMS256.txt. `node_modules` and npm's cache are deliberately absent.
       - name: Restore the release download caches
         id: build-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        # v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             ${{ runner.temp }}/electron-cache
             ${{ runner.temp }}/electron-builder-cache
-          key: ${{ runner.os }}-${{ runner.arch }}-release-v1-${{ hashFiles('package-lock.json', 'electron-builder.yml') }}
+          key: >-
+            ${{ runner.os }}-${{ runner.arch }}-release-v1-${{
+            hashFiles('package-lock.json', 'electron-builder.yml') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-release-v1-
 
@@ -482,7 +572,8 @@ jobs:
           ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
           DEBUG: "@electron/get:*"
         run: |
-          bash scripts/package-retry.sh npx electron-builder --mac --arm64 --x64 --publish never \
+          bash scripts/package-retry.sh npx electron-builder \
+            --mac --arm64 --x64 --publish never \
             -c.mac.identity=- \
             -c.electronDownload.cache="$ELECTRON_CACHE"
 
@@ -554,6 +645,17 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The packaged terminal, with the real node-pty prebuild for each arch.
+      - name: Open a real PTY from the packaged app
+        run: |
+          set -euo pipefail
+          arm_app='release/mac-arm64/Pi Desktop.app'
+          x64_app='release/mac/Pi Desktop.app'
+          node scripts/verify-packaged-terminal.mjs \
+            --resources "$arm_app/Contents/Resources" --arch arm64
+          node scripts/verify-packaged-terminal.mjs \
+            --resources "$x64_app/Contents/Resources" --arch x64
+
       # A mac runner may lack a GUI session, so this is evidence, not a gate.
       - name: Launch smoke (arm64)
         continue-on-error: true
@@ -594,7 +696,9 @@ jobs:
           if-no-files-found: error
 
       - name: Save the release download caches
-        if: success() && steps.build-cache.outputs.cache-hit != 'true' && steps.build-cache.outputs.cache-primary-key != ''
+        if: >-
+          success() && steps.build-cache.outputs.cache-hit != 'true' &&
+          steps.build-cache.outputs.cache-primary-key != ''
         continue-on-error: true
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -634,7 +738,8 @@ jobs:
               if "$@"; then return 0; fi
               status=$?
               if [ "$n" -ge "$attempts" ]; then return "$status"; fi
-              echo "attempt $n/$attempts failed (exit $status); retrying in ${delay}s" >&2
+              echo "attempt $n/$attempts failed (exit $status);" \
+                "retrying in ${delay}s" >&2
               sleep "$delay"
               n=$((n + 1))
               delay=$((delay * 2))
@@ -653,7 +758,8 @@ jobs:
           manifests="$manifests latest-linux-arm64.yml latest-mac.yml"
           for manifest in $manifests; do
             for attempt in 1 2 3 4 5; do
-              if body="$(curl -fsSL --max-time 60 --connect-timeout 15 "$base/$manifest")"; then break; fi
+              if body="$(curl -fsSL --max-time 60 --connect-timeout 15 \
+                "$base/$manifest")"; then break; fi
               echo "waiting for $manifest ($attempt)"
               sleep 5
               body=""

@@ -43,3 +43,60 @@ export function composeChildEnv(input: ChildEnvInput): Record<string, string | u
   for (const name of input.strip ?? []) delete env[name];
   return env;
 }
+
+/**
+ * Loader variables and how their entries are separated. glibc accepts colons
+ * in both; `LD_PRELOAD` also accepts spaces.
+ */
+const LOADER_VARIABLES: Record<string, RegExp> = {
+  LD_LIBRARY_PATH: /:/,
+  LD_PRELOAD: /[\s:]/,
+};
+
+/**
+ * Removes the AppImage mount from the loader paths of a child process.
+ *
+ * electron-builder's AppRun exports `LD_LIBRARY_PATH=$APPDIR/usr/lib` and every
+ * process the app spawns inherits it. That directory holds the AppImage's own
+ * runtime libraries, which can shadow the host's `libstdc++`/`libc` for a
+ * bundled Node or a native addon — a class of failure that looks nothing like
+ * its cause. Only entries under `$APPDIR` are removed: a user-set path is left
+ * byte-identical, and without `APPDIR` (deb, dev, Windows, macOS) this is a
+ * no-op.
+ */
+export function stripAppImageLibraryPaths(env: Record<string, string>): Record<string, string>;
+export function stripAppImageLibraryPaths(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined>;
+/**
+ * Removes the AppImage mount from the loader paths of a child process.
+ *
+ * electron-builder's AppRun exports `LD_LIBRARY_PATH=$APPDIR/usr/lib` and every
+ * process the app spawns inherits it. That directory holds the AppImage's own
+ * runtime libraries, which can shadow the host's `libstdc++`/`libc` for a
+ * bundled Node or a native addon — a class of failure that looks nothing like
+ * its cause. Only entries under `$APPDIR` are removed: a user-set path is left
+ * byte-identical, and without `APPDIR` (deb, dev, Windows, macOS) this is a
+ * no-op.
+ */
+export function stripAppImageLibraryPaths(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const appDir = env.APPDIR?.replace(/\/+$/, "");
+  if (!appDir) return { ...env };
+
+  const result = { ...env };
+  for (const [name, separator] of Object.entries(LOADER_VARIABLES)) {
+    const value = result[name];
+    if (typeof value !== "string" || value.length === 0) continue;
+    const entries = value.split(separator);
+    const kept = entries.filter(
+      (entry) => entry.length > 0 && entry !== appDir && !entry.startsWith(`${appDir}/`),
+    );
+    const originalCount = entries.filter((entry) => entry.length > 0).length;
+    if (kept.length === originalCount) continue;
+    if (kept.length === 0) delete result[name];
+    else result[name] = kept.join(":");
+  }
+  return result;
+}

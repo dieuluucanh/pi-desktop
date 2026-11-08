@@ -44,14 +44,16 @@
     "e2e:smoke": "playwright test --grep @smoke",
     "e2e:perf": "playwright test --grep @perf",
     "runtime:fetch": "node scripts/fetch-runtime.mjs",
+    "pty:linux": "node scripts/build-node-pty.mjs",
     "runtime:lock": "node scripts/fetch-runtime.mjs --update-lock",
     "runtime:shims": "node scripts/gen-shims.mjs",
     "runtime:verify": "node scripts/verify-runtime.mjs",
+    "verify:terminal": "node scripts/verify-packaged-terminal.mjs",
     "icons:gen": "node scripts/gen-icons.mjs",
     "doctor": "vitest run tests/runtime/doctor.live.test.ts --disable-console-intercept",
     "package:win": "npm run runtime:fetch && npm run build && npm run runtime:verify && electron-builder --win --publish never",
     "package:mac": "npm run runtime:fetch -- --all && npm run build && npm run runtime:shims && npm run runtime:verify && electron-builder --mac --publish never",
-    "package:linux": "npm run runtime:fetch -- --all && npm run build && npm run runtime:shims && npm run runtime:verify && electron-builder --linux --x64 --arm64 --publish never",
+    "package:linux": "npm run runtime:fetch -- --all && npm run pty:linux -- --arch x64 --arch arm64 && npm run build && npm run runtime:shims && npm run runtime:verify && electron-builder --linux --x64 --arm64 --publish never",
     "release:assets": "node scripts/release-assets.mjs",
     "office:doctor": "vitest run tests/office/detect.live.test.ts --disable-console-intercept",
     "office:manifest:check": "node scripts/sync-office-manifest.mjs --check",
@@ -161,5 +163,8 @@
   "overrides": {
     "@radix-ui/react-dismissable-layer": "1.1.19",
     "@radix-ui/react-focus-guards": "1.1.6"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
   }
 }

@@ -5,10 +5,19 @@
  * bundled Node 24 and Electron — no `electron-rebuild`, and no native code in
  * the main process. Only this host-side adapter touches it; the architecture
  * test `tests/architecture/node-pty-isolation.test.ts` enforces that.
+ *
+ * The import is **dynamic and injected**: a package whose native module cannot
+ * load must not take the whole host process down at module evaluation (the
+ * 0.8.0 Linux package did exactly that, and Node exits 1 before the first
+ * request can be answered). `loadNodePty` never rejects; on failure it probes
+ * every path node-pty would try and keeps the real loader error for each one,
+ * because node-pty's message only reports the **last** candidate.
  */
 
 import { spawnSync } from "node:child_process";
-import { spawn } from "node-pty";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import type { TerminalNativeCandidate } from "../shared/terminal-protocol";
 import type {
   PtyPort,
   PtyProcess,
@@ -22,7 +31,7 @@ import type {
  * makes it deliver raw `Buffer`s. This structural shape describes what actually
  * happens, so the cast below is the only place the mismatch is acknowledged.
  */
-interface RawPty {
+export interface NodePtyProcess {
   readonly pid: number;
   onData(listener: (data: string | Uint8Array) => void): { dispose(): void };
   onExit(listener: (event: { exitCode: number; signal?: number }) => void): { dispose(): void };
@@ -33,11 +42,114 @@ interface RawPty {
   kill(signal?: string): void;
 }
 
+/** The slice of `node-pty` this adapter consumes; tests inject a fake. */
+export interface NodePtyModule {
+  spawn(shell: string, args: string[], options: NodePtySpawnOptions): NodePtyProcess;
+}
+
+interface NodePtySpawnOptions {
+  name: string;
+  cols: number;
+  rows: number;
+  cwd: string;
+  env: Record<string, string>;
+  encoding: null;
+}
+
+/** A load attempt's outcome. Failure is a value, never a rejection. */
+export type NodePtyLoad =
+  | {
+      ok: true;
+      port: PtyPort;
+      /** The candidate that resolved, when the package could be located. */
+      path: string | null;
+      candidates: TerminalNativeCandidate[];
+    }
+  | {
+      ok: false;
+      /** The first non-`ENOENT` loader error, or the import failure itself. */
+      error: string;
+      candidates: TerminalNativeCandidate[];
+    };
+
+export interface NodePtyLoadOptions {
+  platform?: string;
+  arch?: string;
+  /** Test seam: the package root containing `lib/`, `build/` and `prebuilds/`. */
+  moduleDir?: string;
+  /** Test seam: defaults to `import("node-pty")`. */
+  importer?: () => Promise<unknown>;
+}
+
 /** One encoder for the whole adapter; Windows always hands back a string. */
 const utf8 = new TextEncoder();
+const requireFromHere = createRequire(import.meta.url);
 
-function spawnWithNodePty(input: PtySpawnInput): PtyProcess {
-  const spawned = spawn(input.shell, input.args, {
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The paths node-pty's own `loadNativeModule` checks, in its order. */
+export function nativeCandidatePaths(moduleDir: string, platform: string, arch: string): string[] {
+  return [
+    join(moduleDir, "build", "Release", "pty.node"),
+    join(moduleDir, "build", "Debug", "pty.node"),
+    join(moduleDir, "prebuilds", `${platform}-${arch}`, "pty.node"),
+  ];
+}
+
+/**
+ * `require.resolve` proves a path exists without touching the filesystem port;
+ * it throws the standard MODULE_NOT_FOUND for an absent file.
+ */
+function resolveCandidate(path: string): boolean {
+  try {
+    requireFromHere.resolve(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function probeCandidates(paths: string[]): TerminalNativeCandidate[] {
+  return paths.map((path) => {
+    try {
+      requireFromHere(path);
+      return { path, error: null };
+    } catch (error) {
+      return { path, error: errorText(error) };
+    }
+  });
+}
+
+const MISSING_MODULE = /MODULE_NOT_FOUND|Cannot find module/i;
+
+/**
+ * Picks the headline error for a failed load. `ENOENT` candidates are expected
+ * on a package that ships one binary; the first real dlopen error (e.g.
+ * "version `GLIBC_2.42' not found") is the one a user or a bug report needs.
+ */
+export function summarizeNativeFailure(
+  candidates: readonly TerminalNativeCandidate[],
+  fallback: string,
+): string {
+  const real = candidates.find(
+    (candidate) => candidate.error && !MISSING_MODULE.test(candidate.error),
+  );
+  return real?.error ?? fallback;
+}
+
+/** The installed package root, or null when the package cannot be resolved. */
+function installedModuleDir(): string | null {
+  try {
+    return dirname(dirname(requireFromHere.resolve("node-pty")));
+  } catch {
+    return null;
+  }
+}
+
+function spawnWithNodePty(module: NodePtyModule, input: PtySpawnInput): PtyProcess {
+  const pty = module.spawn(input.shell, input.args, {
     name: input.name,
     cols: input.cols,
     rows: input.rows,
@@ -47,12 +159,6 @@ function spawnWithNodePty(input: PtySpawnInput): PtyProcess {
     // across two chunks is not corrupted at this boundary.
     encoding: null,
   });
-  // SAFETY: `encoding: null` makes node-pty deliver raw `Buffer`s (a Uint8Array)
-  // even though its typings declare `onData: IEvent<string>`; every other member
-  // of `RawPty` matches the runtime `IPty` shape exactly. This is the only cast
-  // between the two, and it stays contained to this adapter.
-  const raw: unknown = spawned;
-  const pty = raw as RawPty;
 
   return {
     pid: pty.pid,
@@ -85,8 +191,43 @@ function spawnWithNodePty(input: PtySpawnInput): PtyProcess {
   };
 }
 
-export function createNodePtyPort(): PtyPort {
-  return { spawn: spawnWithNodePty };
+function asModule(value: unknown): NodePtyModule {
+  const module = value as Partial<NodePtyModule> | null | undefined;
+  if (typeof module?.spawn !== "function") {
+    throw new Error("node-pty did not export spawn()");
+  }
+  return module as NodePtyModule;
+}
+
+/**
+ * Loads `node-pty` without ever throwing. On success the port is ready; on
+ * failure the caller runs a host that answers `terminal.info` and returns a
+ * typed `native_unavailable` error for `terminal.open` instead of dying.
+ */
+export async function loadNodePty(options: NodePtyLoadOptions = {}): Promise<NodePtyLoad> {
+  const platform = options.platform ?? process.platform;
+  const arch = options.arch ?? process.arch;
+  const moduleDir = options.moduleDir ?? installedModuleDir();
+  const paths = moduleDir ? nativeCandidatePaths(moduleDir, platform, arch) : [];
+  const importer = options.importer ?? (() => import("node-pty"));
+
+  try {
+    const module = asModule(await importer());
+    const path = paths.find((candidate) => resolveCandidate(candidate)) ?? null;
+    return {
+      ok: true,
+      port: { spawn: (input) => spawnWithNodePty(module, input) },
+      path,
+      candidates: [],
+    };
+  } catch (error) {
+    const candidates = probeCandidates(paths);
+    return {
+      ok: false,
+      error: summarizeNativeFailure(candidates, errorText(error)),
+      candidates,
+    };
+  }
 }
 
 /**

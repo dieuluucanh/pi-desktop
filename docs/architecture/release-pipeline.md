@@ -84,6 +84,18 @@ cache decision and the URL instead of a bare `Response code 504`. An
 `if: failure()` step prints the cache sizes and the partially built `release/`
 tree.
 
+### Install scripts
+
+npm 12 defaults `allowScripts` to **off** and blocks dependency install scripts,
+including the implicit `node-gyp` build for a package with a `binding.gyp`.
+`package.json` therefore carries a version-pinned approval for `node-pty`
+(`"node-pty@1.1.0": true`), and `tests/packaging/native-install.test.ts` fails
+when a bump forgets the review. Approve the minimum with
+`npm approve-scripts --allow-scripts-pending` (never `--all`), and keep the
+`node scripts/check-native-terminal.mjs` step in `checks.yml`: it loads the
+module right after `npm ci`, so a policy change is a red job rather than a
+Linux package whose terminal cannot start.
+
 ### Caching
 
 Each build job restores and saves `actions/cache` entries for:
@@ -115,11 +127,11 @@ out at 10 minutes for `prepare`, 60 for Windows/Linux, 90 for macOS and 15 for
 
 Each job builds on its own OS and asserts the finished artefacts, not the build log.
 
-| Platform | Runner                                            | Artefacts                                                                            | Manifests                                    |
-| -------- | ------------------------------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------- |
-| Windows  | `windows-latest` (bash)                           | `Pi-Desktop-<v>-win-x64-setup.exe`, `…-setup.exe.blockmap`, `…-win-x64-portable.exe` | `latest.yml`                                 |
-| Linux    | `ubuntu-latest` (x64), `ubuntu-24.04-arm` (arm64) | `…-linux-x86_64-appimage.AppImage`, `…-linux-amd64-deb.deb`, and the `arm64` pair    | `latest-linux.yml`, `latest-linux-arm64.yml` |
-| macOS    | `macos-latest` (arm64 M1)                         | `…-mac-arm64.dmg`, `…-mac-x64.dmg`, `…-mac-arm64.zip`, `…-mac-x64.zip`               | `latest-mac.yml`                             |
+| Platform | Runner                                           | Artefacts                                                                            | Manifests                                    |
+| -------- | ------------------------------------------------ | ------------------------------------------------------------------------------------ | -------------------------------------------- |
+| Windows  | `windows-latest` (bash)                          | `Pi-Desktop-<v>-win-x64-setup.exe`, `…-setup.exe.blockmap`, `…-win-x64-portable.exe` | `latest.yml`                                 |
+| Linux    | `ubuntu-24.04` (x64), `ubuntu-24.04-arm` (arm64) | `…-linux-x86_64-appimage.AppImage`, `…-linux-amd64-deb.deb`, and the `arm64` pair    | `latest-linux.yml`, `latest-linux-arm64.yml` |
+| macOS    | `macos-latest` (arm64 M1)                        | `…-mac-arm64.dmg`, `…-mac-x64.dmg`, `…-mac-arm64.zip`, `…-mac-x64.zip`               | `latest-mac.yml`                             |
 
 `${os}` renders as `win`/`linux`/`mac` and `${arch}` as `x64`, `x86_64`, `amd64` or
 `arm64` depending on the target, which is why `scripts/release-assets.mjs` encodes the
@@ -297,16 +309,42 @@ beta`, `Upstream` and `Verified structurally, not on a live machine`; update the
 
 ## Native terminal (`node-pty`)
 
-`node-pty` 1.x is N-API, so its prebuilt binaries are ABI-stable across the
-bundled Node 24 and Electron; `electron-builder.yml` sets `npmRebuild: false`
-so packaging never replaces them. `afterPack` prunes `node-pty` to the target
-platform/arch (`scripts/electron-builder-after-pack.mjs`).
+`node-pty` 1.x is N-API, so a binary is ABI-stable across the bundled Node 24
+and Electron; `electron-builder.yml` sets `npmRebuild: false` so packaging never
+replaces it. `afterPack` prunes the module to the target platform/arch and
+**fails the package** when no usable binary survives, when `out/host/terminal.mjs`
+is missing, when a Linux tree still carries `build/Release/pty.node`, or when the
+ELF needs more than the support floor.
 
-Linux has no upstream prebuild, so the `linux` job is a matrix: x64 on
-`ubuntu-latest`, arm64 on `ubuntu-24.04-arm`; each run fetches only its own
-runtime and packages one arch (`--${{ matrix.arch }}`). The `linux.target`
-entries in `electron-builder.yml` deliberately carry **no** `arch` list: a pinned
-list overrides `--x64`/`--arm64`, so each job would package both architectures and
-`afterPack` would fail on the one whose runtime the job did not fetch. The publish
-job still gates on `[prepare, windows, linux, macos]` because the matrix aggregates
-under `linux`.
+`node-pty@1.1.0` ships prebuilds only for macOS and Windows. Linux has none, so
+each Linux job runs `npm run pty:linux -- --arch ${{ matrix.arch }}`, which
+compiles in a pinned `debian:bullseye` container (glibc 2.31, GCC 10 →
+`GLIBCXX_3.4.28`) and writes
+`node_modules/node-pty/prebuilds/linux-<arch>/pty.node` plus `BUILD-INFO.json`
+(node-pty version, Node, image digest, measured floor). `build/` is deleted
+because node-pty's loader prefers it over `prebuilds/`.
+
+The runners are pinned (`ubuntu-24.04`, `ubuntu-24.04-arm`). `ubuntu-latest` had
+moved to a 26.04-era glibc (2.42), and the v0.8.0 AppImage shipped a binary that
+could not load on Linux Mint 22 (2.39). The image digest is resolved before the
+build, so `BUILD-INFO.json` names exactly what compiled it.
+
+Verification, in order:
+
+- `readelf --version-info` in `afterPack` rejects a binary above the floor;
+- the `.deb` listing must contain the pinned prebuild and `terminal.mjs`, and no
+  `build/Release/pty.node`;
+- `scripts/verify-packaged-terminal.mjs` opens a real PTY from the unpacked app,
+  the `.deb` and the AppImage, then runs once more inside `debian:bullseye` with
+  the app's own bundled Node — the only place where "it loads on the runner"
+  cannot hide a floor mismatch.
+
+The `linux.target` entries in `electron-builder.yml` deliberately carry **no**
+`arch` list: a pinned list overrides `--x64`/`--arm64`, so each job would package
+both architectures and `afterPack` would fail on the one whose runtime the job
+did not fetch. The publish job still gates on `[prepare, windows, linux, macos]`
+because the matrix aggregates under `linux`.
+
+npm 12 blocks dependency install scripts by default, including implicit node-gyp
+builds; see [Install scripts](#install-scripts) for the pinned `allowScripts`
+approval.

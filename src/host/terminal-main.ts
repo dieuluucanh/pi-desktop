@@ -9,20 +9,29 @@
  * Lifecycle: the parent (main's `TerminalHost`) owns the pipe. On stdin end,
  * SIGTERM or an uncaught error every PTY is killed before the process exits, so
  * closing the window cannot orphan a shell or a dev server.
+ *
+ * Native-module policy (2026-11-08 linux-terminal plan, step 1): `node-pty` is
+ * loaded **lazily, on the first request**, through `loadNodePty()` — never at
+ * module evaluation. A package whose `pty.node` cannot be dlopen'd (the 0.8.0
+ * Linux build demanded `GLIBC_2.42`) must still answer `terminal.info` and
+ * return a typed `native_unavailable` error for `terminal.open` instead of
+ * exiting 1 before the request can be read.
  */
 
 import { pathToFileURL } from "node:url";
 import type { Readable, Writable } from "node:stream";
-import { TerminalCore, TerminalCoreError } from "./terminal-core";
-import { createNodePtyPort, createNodeTreeKill } from "./pty-node";
+import { TerminalCore, TerminalCoreError, type PtyPort } from "./terminal-core";
+import { createNodeTreeKill, loadNodePty, type NodePtyLoad } from "./pty-node";
 import { JsonlDecoder } from "../shared/jsonl";
 import {
   MAX_TERMINAL_FRAME_BYTES,
+  TERMINAL_PROTOCOL_VERSION,
   decodeTerminalFrame,
   encodeTerminalFrame,
   isTerminalMethod,
   type TerminalFrame,
   type TerminalFrameError,
+  type TerminalHostInfo,
   type TerminalRequestFrame,
   type TerminalResponseFrame,
   type TerminalSpawnSpec,
@@ -75,12 +84,27 @@ function toFrameError(error: unknown): TerminalFrameError {
 }
 
 /**
+ * The report used when a caller drives `dispatchTerminalRequest` with a bare
+ * core (unit tests). The real host always passes the probed status.
+ */
+export function defaultHostInfo(): TerminalHostInfo {
+  return {
+    protocol: TERMINAL_PROTOCOL_VERSION,
+    platform: process.platform,
+    arch: process.arch,
+    node: process.version,
+    pty: { loaded: false, path: null, candidates: [], error: "not reported" },
+  };
+}
+
+/**
  * Routes one validated frame to the core. Unknown methods and malformed params
  * become typed errors; nothing here throws into the read loop.
  */
 export function dispatchTerminalRequest(
   core: TerminalCore,
   frame: TerminalRequestFrame,
+  info: TerminalHostInfo = defaultHostInfo(),
 ): TerminalResponseFrame {
   if (!isTerminalMethod(frame.method)) {
     return {
@@ -119,6 +143,8 @@ export function dispatchTerminalRequest(
         };
       case "terminal.list":
         return { id: frame.id, result: core.list() };
+      case "terminal.info":
+        return { id: frame.id, result: info };
       default:
         return {
           id: frame.id,
@@ -130,8 +156,21 @@ export function dispatchTerminalRequest(
   }
 }
 
-export interface TerminalHostServiceOptions {
+/** What the service needs for one request: the core plus its native report. */
+export interface TerminalHostRuntime {
   core: TerminalCore;
+  info: TerminalHostInfo;
+}
+
+/**
+ * A ready core (tests, fakes) or a factory that builds it on the first request.
+ * The factory is how the real host keeps `node-pty` out of module evaluation.
+ */
+export type TerminalRuntimeSource =
+  TerminalCore | (() => TerminalHostRuntime | Promise<TerminalHostRuntime>);
+
+export interface TerminalHostServiceOptions {
+  core: TerminalRuntimeSource;
   input: Readable;
   output: Writable;
   onError?: (error: unknown) => void;
@@ -148,19 +187,55 @@ export function createTerminalHostService(
 ): TerminalHostService {
   const { core, input, output, onError } = options;
   const reader = new TerminalLineReader();
+  const plainCore = typeof core === "function" ? null : core;
   let disposed = false;
+  let runtime: Promise<TerminalHostRuntime> | null = null;
+  /** Requests are answered in arrival order even though the first may load. */
+  let queue: Promise<void> = Promise.resolve();
 
   const write = (frame: TerminalFrame): void => {
+    if (disposed) return;
     output.write(encodeTerminalFrame(frame));
   };
 
+  const resolveRuntime = (): Promise<TerminalHostRuntime> => {
+    if (runtime) return runtime;
+    runtime =
+      typeof core === "function"
+        ? Promise.resolve().then(core)
+        : Promise.resolve({ core, info: defaultHostInfo() });
+    return runtime;
+  };
+
+  const handle = async (frame: TerminalRequestFrame): Promise<void> => {
+    if (disposed) return;
+    const resolved = await resolveRuntime();
+    if (disposed) return;
+    write(dispatchTerminalRequest(resolved.core, frame, resolved.info));
+  };
+
+  const fail = (frame: TerminalRequestFrame, error: unknown): void => {
+    if (disposed) return;
+    onError?.(error);
+    write({ id: frame.id, error: toFrameError(error) });
+  };
+
   const onData = (chunk: string | Buffer): void => {
+    if (disposed) return;
     const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
     for (const line of reader.push(text)) {
       const frame = decodeTerminalFrame(line);
       // A response/event on the host's stdin is a protocol violation, not work.
       if (!frame || !("method" in frame)) continue;
-      write(dispatchTerminalRequest(core, frame as TerminalRequestFrame));
+      const request = frame as TerminalRequestFrame;
+      // A ready core is answered synchronously (the unit tests and any caller
+      // that owns the port); only the lazy loader needs the ordered queue, so
+      // a request written immediately before `end` is never dropped.
+      if (plainCore) {
+        write(dispatchTerminalRequest(plainCore, request));
+        continue;
+      }
+      queue = queue.then(() => handle(request)).catch((error) => fail(request, error));
     }
   };
 
@@ -170,7 +245,12 @@ export function createTerminalHostService(
     input.off("data", onData);
     input.off("end", onEnd);
     input.off("error", onInputError);
-    core.dispose();
+    if (plainCore) {
+      plainCore.dispose();
+      return;
+    }
+    // A load that has not started must not be started just to dispose it.
+    if (runtime) void runtime.then((resolved) => resolved.core.dispose()).catch(() => undefined);
   };
 
   const onEnd = (): void => {
@@ -190,18 +270,51 @@ export function createTerminalHostService(
   return { dispose };
 }
 
-/** Builds the real core (node-pty + taskkill/process-group) and serves stdio. */
+/** Builds the core and its report from a native load result (never throws). */
+export function createHostRuntime(
+  load: NodePtyLoad,
+  emit: (frame: TerminalFrame) => void,
+): TerminalHostRuntime {
+  const info: TerminalHostInfo = {
+    protocol: TERMINAL_PROTOCOL_VERSION,
+    platform: process.platform,
+    arch: process.arch,
+    node: process.version,
+    pty: load.ok
+      ? { loaded: true, path: load.path, candidates: [], error: null }
+      : { loaded: false, path: null, candidates: load.candidates, error: load.error },
+  };
+  const pty: PtyPort = load.ok
+    ? load.port
+    : {
+        spawn() {
+          // The host is alive, so this becomes a typed frame error instead of
+          // an exit-1 crash the supervisor can only report as "host exited".
+          throw new TerminalCoreError(
+            `node-pty could not be loaded: ${load.error}`,
+            "native_unavailable",
+          );
+        },
+      };
+  return {
+    core: new TerminalCore({
+      pty,
+      treeKill: createNodeTreeKill(),
+      emit,
+    }),
+    info,
+  };
+}
+
+/** Builds the real runtime (lazy `node-pty` + POSIX process-group / taskkill). */
 export function runTerminalHost(): void {
-  const core = new TerminalCore({
-    pty: createNodePtyPort(),
-    treeKill: createNodeTreeKill(),
-    emit: (frame) => {
-      process.stdout.write(encodeTerminalFrame(frame));
-    },
-  });
+  let disposed = false;
 
   const service = createTerminalHostService({
-    core,
+    core: async () =>
+      createHostRuntime(await loadNodePty(), (frame) => {
+        if (!disposed) process.stdout.write(encodeTerminalFrame(frame));
+      }),
     input: process.stdin,
     output: process.stdout,
     onError: (error) => {
@@ -211,6 +324,7 @@ export function runTerminalHost(): void {
   });
 
   const shutdown = (code: number, detail?: string): void => {
+    disposed = true;
     if (detail) process.stderr.write(`${detail}\n`);
     service.dispose();
     // Give the last frames a tick to flush before the process ends.

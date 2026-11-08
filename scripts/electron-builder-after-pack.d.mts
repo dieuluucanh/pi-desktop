@@ -71,3 +71,13 @@ export function writeBuildInfo(
 
 /** Prunes foreign runtimes, stamps build provenance, then rewrites the shims. */
 export default function afterPack(context: AfterPackContext): Promise<void>;
+
+/** Throws when the asar-unpacked terminal host bundle is missing. */
+export function assertTerminalBundle(resourcesDir: string): string;
+
+/** Runs the ELF floor check; throws when the binary needs a newer runtime. */
+export function verifyNativeFloor(binary: string): {
+  binary: string;
+  glibc: string | null;
+  glibcxx: string | null;
+};

@@ -51,13 +51,53 @@ Electron main
 - The terminal host is its own Vite input (`vite.host.config.ts`) and never
   imports `src/host/sdk`; `tests/architecture/node-pty-isolation.test.ts` guards
   both rules.
-- `node-pty` 1.x is N-API, so its prebuilt binaries work under the bundled Node
-  24 **and** Electron. `electron-builder.yml` sets `npmRebuild: false`, and the
+- `node-pty` 1.x is N-API, so a binary is ABI-stable across the bundled Node 24
+  **and** Electron. `electron-builder.yml` sets `npmRebuild: false`; the
   `afterPack` hook prunes the tarball to the target platform/arch (it is ~64 MB
-  unpacked).
-- Linux has no upstream prebuild. The release workflow builds Linux as a matrix:
-  x64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`, so node-gyp compiles for
-  the target instead of cross-compiling.
+  unpacked) and **fails the package** when no usable binary for the target
+  survives.
+- `node-pty@1.1.0` publishes only `darwin-*` and `win32-*` prebuilds. Windows and
+  macOS use those. Linux has none, so the release builds one explicitly.
+
+### Native binary (Linux)
+
+The packaged binary is loaded by the bundled Node with the **host's** glibc, so
+it has to be built against the oldest runtime we support — never against the
+runner's.
+
+- Floor: **glibc 2.31 / `GLIBCXX_3.4.28`** (Debian 11 / Ubuntu 20.04), both
+  arches. Everything the app claims to support is at least this new.
+- `npm run pty:linux -- --arch <x64|arm64>` compiles in the pinned
+  `debian:bullseye` container and writes
+  `node_modules/node-pty/prebuilds/linux-<arch>/pty.node` plus `BUILD-INFO.json`
+  (node-pty version, bundled Node, image digest, measured floor). It then
+  deletes `node_modules/node-pty/build`, because node-pty's loader checks
+  `build/Release` **before** `prebuilds/` and an unpinned runner build would win.
+- The release matrix is `ubuntu-24.04` (x64) and `ubuntu-24.04-arm` (arm64) —
+  never `-latest`. In v0.8.0 `ubuntu-latest` had moved to a 26.04-era image
+  (glibc 2.42); the binary shipped but could not load on Mint 22 (glibc 2.39).
+- `afterPack` runs `readelf --version-info` and rejects a binary above the floor.
+  A `.deb` must contain the pinned prebuild, `out/host/terminal.mjs`, and **no**
+  `build/Release/pty.node`. The release job then opens a real PTY from the
+  unpacked app, the `.deb` and the AppImage, and repeats it inside Debian 11 with
+  the app's own bundled Node.
+- **npm 12** blocks dependency install scripts unless `package.json`'s
+  `allowScripts` approves them (pinned to `node-pty@1.1.0` here). CI loads
+  `node-pty` right after `npm ci`, so a policy change is a red job rather than a
+  broken package.
+
+### When the native module cannot load
+
+`pty-node.ts` imports `node-pty` **lazily, on the first request**, so a broken
+binary cannot kill the host before it answers. `terminal.open` returns a typed
+`native_unavailable` error, and `terminal.info` reports every candidate path with
+its own loader error — node-pty itself only reports the last one, which is why
+v0.8.0 looked like a missing file instead of `version 'GLIBC_2.42' not found`.
+The supervisor attaches the host's stderr tail to a crash and appends every
+`[terminal]` line to `<profile>/logs/terminal.log`. The tab's error banner keeps
+one actionable sentence and a **Details** disclosure with the per-candidate
+report; **Diagnostics → Terminal** shows the same state, the last exit and the
+log path.
 
 ## Protocol and flow control
 
@@ -142,9 +182,20 @@ recreating the shell or losing scrollback.
 
 - `tests/host/terminal-core|terminal-main|terminal-perf|terminal-integration` —
   lifecycle, batching, credit, replay, tree-kill, 50 MB flood, real shell.
-- `tests/main/terminal-*` — profile detection, supervisor RPC, trust/limits/
-  reconciliation, env composition.
+  `terminal-integration` is built first in CI and **required**
+  (`PI_REQUIRE_TERMINAL_HOST=1`), so it can no longer silently skip.
+- `tests/host/pty-node.test.ts` — the lazy loader, the per-candidate probe and
+  the error summary.
+- `tests/main/terminal-*`, `tests/main/runtime/child-env.test.ts` — profile
+  detection, supervisor RPC and stderr, trust/limits/reconciliation, error
+  details, AppImage loader-path hygiene.
+- `tests/packaging/node-pty-{prune,artifact,build}.test.ts`,
+  `terminal-artifact.test.ts`, `native-install.test.ts` — the fail-closed
+  package gate, the ELF floor, the pinned container build, the packaged smoke's
+  path resolution and the `allowScripts` pin.
 - `tests/renderer/terminal-*` — pool move semantics, store seq/replay, view
-  notices and input wiring, theme tokens, resolved font stacks, terminal
-  settings and the one-off profile menu.
+  notices and input wiring, error Details/Copy, theme tokens, resolved font
+  stacks, terminal settings and the one-off profile menu.
 - `tests/e2e/terminal.spec.ts` — real Electron + terminal host on Windows CI.
+- Release: `scripts/verify-packaged-terminal.mjs` opens a real PTY from the
+  unpacked app, the `.deb`, the AppImage and inside `debian:bullseye`.

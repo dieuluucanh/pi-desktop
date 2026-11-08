@@ -160,6 +160,43 @@ resource. The window shows a safe-mode banner.
   tree. On 0.6.0 and earlier the stopgap is adding `PI_DESKTOP_NODE` to turbo's
   `globalPassThroughEnv`. `npm run doctor` prints the runtime and shim paths.
 
+## The terminal does not start on Linux
+
+- **`the terminal host exited (1) during "terminal.open"`** and
+  `Failed to load native module: pty.node` in the log. The packaged `node-pty`
+  binary could not be loaded by the bundled Node. Open **Diagnostics →
+  Terminal**: it names the loader error and the log file
+  (`logs/terminal.log` under the agent profile). The tab's **Details** disclosure
+  has the same
+  report, and **Copy details** puts it on the clipboard for an issue.
+- **`version 'GLIBC_2.xx' not found`** means the binary was built on a newer
+  distribution than yours. Releases from the next patch build against
+  **glibc 2.31 / `GLIBCXX_3.4.28`** (Debian 11 / Ubuntu 20.04), so every
+  supported Mint/Ubuntu/Debian release loads it. To check a package:
+
+  ```bash
+  ldd "<app>/resources/app.asar.unpacked/node_modules/node-pty/prebuilds/linux-x64/pty.node"
+  ```
+
+  A `not found` line is the bug; no output beyond the library list is healthy.
+
+- **Workaround until the patch ships** — build node-pty on your own machine and
+  copy it over the packaged file, then run the extracted app:
+
+  ```bash
+  mkdir -p /tmp/pty && cd /tmp/pty && npm init -y && npm install node-pty@1.1.0
+  cd /tmp && /path/Pi-Desktop-0.8.0-linux-x86_64-appimage.AppImage --appimage-extract
+  cp /tmp/pty/node_modules/node-pty/build/Release/pty.node \
+     /tmp/squashfs-root/resources/app.asar.unpacked/node_modules/node-pty/build/Release/
+  /tmp/squashfs-root/AppRun
+  ```
+
+  On npm 12+, run the install with `--allow-scripts=node-pty` or check that
+  `build/Release/pty.node` exists before copying.
+
+- The **AppImage and the `.deb` carry the same binary**, so both are fixed by
+  the same release. The `.deb` does not self-update; reinstall it.
+
 ## A localhost URL shows Pi Desktop instead of my app
 
 A project's dev server prints a URL, the browser opens it, and the page is Pi
@@ -332,8 +369,10 @@ Every known limitation is recorded with the release notes:
   GitHub Release feed.
 - **The terminal is local only** — one shell per tab, no SSH/remote session, no
   tmux control mode and no docked split panel; it does not spawn in an untrusted
-  project until you grant trust. Linux arm64 packages compile `node-pty` on the
-  target runner because there is no upstream prebuild.
+  project until you grant trust. The Linux native backend is built for
+  **glibc 2.31 / `GLIBCXX_3.4.28`**; a package built on a newer runner is a
+  release bug (v0.8.0 shipped one, see
+  [the Linux terminal entry](#the-terminal-does-not-start-on-linux)).
 - **Informational notifications are hidden by default** — enable
   **Informational messages** in Settings → Notifications to show them in the
   bell and transcript. Hidden rows are never lost: **Show hidden (N)** in the
@@ -345,8 +384,9 @@ Every known limitation is recorded with the release notes:
   extension TUI/renderer fidelity in the packaged app, the Office wizard and
   bridge end to end, the Plannotator round trip, web-tab isolation on a _loaded_
   page, crash/timeout banners, safe mode against a genuinely broken extension,
-  the terminal inside a packaged macOS or Linux build, and the 60 fps / RSS
-  numbers.
+  the terminal inside a packaged build on a real desktop (CI now opens a real PTY
+  from the packaged app on every platform, including inside Debian 11), and the
+  60 fps / RSS numbers.
 - **Upstream:** Pi's own `settings.json` and session-JSONL writes are not
   crash-atomic; the app's own profile writes are (`fsync` + rename).
 - **Deferred features** are listed in [`../product/backlog.md`](../product/backlog.md).

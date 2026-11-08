@@ -715,6 +715,7 @@ function diagnosticsSnapshot(info: AppInfo): DiagnosticsSnapshot {
       appStateFile: info.appStateFile,
     },
     hosts: [],
+    terminal: { hosts: [] },
     capacity: {
       liveHosts: 0,
       targetHosts: 6,

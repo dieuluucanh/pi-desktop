@@ -51,6 +51,24 @@ function snapshot(overrides: Partial<DiagnosticsSnapshot> = {}): Partial<Diagnos
       freeBytes: 8_589_934_592,
     },
     web: { tabs: 1, liveViews: 1, limit: 4 },
+    terminal: {
+      hosts: [
+        {
+          windowId: 1,
+          running: true,
+          nodePath: "/app/resources/runtime/node/linux-x64/bin/node",
+          hostPath: "/app/resources/app.asar.unpacked/out/host/terminal.mjs",
+          pty: {
+            loaded: false,
+            path: null,
+            error: "/lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.42' not found",
+          },
+          lastExit: { code: 1, signal: "", expected: false },
+          lastError: null,
+          logFile: "/home/me/.pi/agent/logs/terminal.log",
+        },
+      ],
+    },
     startup: {
       startedAt: 1,
       appReadyAt: 100,
@@ -135,6 +153,21 @@ describe("DiagnosticsView", () => {
     expect(screen.getByTestId("diagnostics-extension-errors")).toHaveTextContent("boom");
     expect(screen.getByTestId("diagnostics-office")).toHaveTextContent("38617");
     expect(screen.getByTestId("diagnostics-environment")).toHaveTextContent("PI_OFFLINE");
+    // The terminal host card names the native backend rather than hiding it in
+    // the session host list (2026-11-08 linux-terminal plan, step 3).
+    expect(screen.getByTestId("diagnostics-terminal")).toHaveTextContent("node-pty unavailable");
+    expect(screen.getByTestId("diagnostics-terminal")).toHaveTextContent("GLIBC_2.42");
+    expect(screen.getByTestId("diagnostics-terminal")).toHaveTextContent("terminal.log");
+    expect(screen.getByTestId("diagnostics-terminal")).toHaveTextContent("Last exit 1");
+  });
+
+  it("says so when no terminal host has started", async () => {
+    installBridge({ diagnostics: snapshot({ terminal: { hosts: [] } }) });
+    render(<DiagnosticsView />);
+
+    expect(await screen.findByTestId("diagnostics-terminal")).toHaveTextContent(
+      "No terminal host has started yet",
+    );
   });
 
   it("shows the live-host target as soft and warns when over it", async () => {

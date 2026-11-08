@@ -10,16 +10,16 @@ const { pruneNodePty } =
     pruneNodePty: (
       resourcesDir: string,
       target: string,
-    ) => { found: boolean; removed: string[]; kept: string | null };
+    ) => { found: boolean; removed: string[]; kept: string | null; binary: string | null };
   };
 
 const roots: string[] = [];
 
-function fixture(): { resources: string; root: string } {
+function fixture(entries: string[] = []): { resources: string; root: string } {
   const base = mkdtempSync(join(tmpdir(), "pi-pty-"));
   roots.push(base);
   const root = join(base, "app.asar.unpacked", "node_modules", "node-pty");
-  for (const path of [
+  const files = [
     "prebuilds/win32-x64/pty.node",
     "prebuilds/darwin-arm64/pty.node",
     "prebuilds/darwin-arm64/spawn-helper",
@@ -29,10 +29,14 @@ function fixture(): { resources: string; root: string } {
     "lib/index.js",
     "package.json",
     "pty.pdb",
-  ]) {
+    ...entries,
+  ];
+  for (const path of files) {
     const target = join(root, path);
     mkdirSync(join(target, ".."), { recursive: true });
-    writeFileSync(target, "");
+    // A `.node` must be non-empty: a zero-byte binary is a failed copy, not a
+    // usable native module.
+    writeFileSync(target, path.endsWith(".node") ? "native-binary" : "");
   }
   return { resources: base, root };
 }
@@ -45,13 +49,48 @@ describe("pruneNodePty", () => {
   it("keeps only the target platform/arch prebuild and drops build-time files", () => {
     const { resources, root } = fixture();
     const result = pruneNodePty(resources, "win32-x64");
-    expect(result).toMatchObject({ found: true, kept: "win32-x64" });
+    expect(result).toMatchObject({
+      found: true,
+      kept: "win32-x64",
+      binary: join(root, "prebuilds", "win32-x64", "pty.node"),
+    });
     expect(readdirSync(join(root, "prebuilds"))).toEqual(["win32-x64"]);
     for (const name of ["deps", "third_party", "scripts", "pty.pdb"]) {
       expect(result.removed).toContain(name);
     }
     expect(result.removed).toContain("prebuilds/darwin-arm64");
     expect(readdirSync(root).sort()).toEqual(["lib", "package.json", "prebuilds"]);
+  });
+
+  it("accepts the pinned Linux prebuild and reports it", () => {
+    const { resources, root } = fixture(["prebuilds/linux-x64/pty.node"]);
+    const result = pruneNodePty(resources, "linux-x64");
+    expect(result.kept).toBe("linux-x64");
+    expect(result.binary).toBe(join(root, "prebuilds", "linux-x64", "pty.node"));
+    expect(readdirSync(join(root, "prebuilds"))).toEqual(["linux-x64"]);
+  });
+
+  it("fails the package when the Linux tree still contains a runner build", () => {
+    // node-pty checks build/Release before prebuilds, so shipping both would
+    // load the binary compiled against the runner's (newer) glibc.
+    const { resources } = fixture(["prebuilds/linux-x64/pty.node", "build/Release/pty.node"]);
+    expect(() => pruneNodePty(resources, "linux-x64")).toThrow(/must ship the pinned prebuild/);
+  });
+
+  it("fails the package when no binary for the target survives", () => {
+    const { resources } = fixture(["prebuilds/linux-x64/pty.node"]);
+    // The fixture only holds win32/darwin prebuilds for a win target, so a
+    // linux target with no Linux prebuild and no build/ output must throw.
+    expect(() => pruneNodePty(resources, "win32-x64")).not.toThrow();
+    expect(() => pruneNodePty(resources, "linux-arm64")).toThrow(
+      /no usable binary for linux-arm64/,
+    );
+  });
+
+  it("rejects a zero-byte binary instead of shipping it", () => {
+    const { resources, root } = fixture();
+    writeFileSync(join(root, "prebuilds", "win32-x64", "pty.node"), "");
+    expect(() => pruneNodePty(resources, "win32-x64")).toThrow(/no usable binary/);
   });
 
   it("is a no-op when the package is absent", () => {
@@ -61,6 +100,7 @@ describe("pruneNodePty", () => {
       found: false,
       removed: [],
       kept: null,
+      binary: null,
     });
   });
 });

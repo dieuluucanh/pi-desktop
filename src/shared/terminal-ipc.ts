@@ -41,7 +41,13 @@ export type TerminalCreateOutcome =
     }
   | { kind: "needs-trust"; cwd: string }
   | { kind: "unavailable"; message: string; profiles: TerminalProfile[] }
-  | { kind: "error"; code: TerminalErrorCode; message: string };
+  | {
+      kind: "error";
+      code: TerminalErrorCode;
+      message: string;
+      /** The native-load / host report behind the banner's Details disclosure. */
+      details?: string;
+    };
 
 export interface TerminalBridge {
   /** Creates or reattaches the terminal for a tab. */

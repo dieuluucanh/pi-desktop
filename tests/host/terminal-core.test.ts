@@ -127,6 +127,16 @@ describe("TerminalCore.open", () => {
     expect(core.list()).toEqual([]);
   });
 
+  it("keeps a typed port failure instead of relabelling it", () => {
+    const { core, pty } = createCore();
+    pty.failNext = new TerminalCoreError(
+      "node-pty could not be loaded: version `GLIBC_2.42' not found",
+      "native_unavailable",
+    );
+    expect(codeOf(() => core.open(spec()))).toBe("native_unavailable");
+    expect(core.list()).toEqual([]);
+  });
+
   it("enforces the per-window terminal limit", () => {
     const { core } = createCore({ maxTerminals: 1 });
     core.open(spec());

@@ -22,7 +22,7 @@ import {
   type TerminalFrame,
   type TerminalMethod,
 } from "../shared/terminal-protocol";
-import { composeChildEnv } from "./runtime/child-env";
+import { composeChildEnv, stripAppImageLibraryPaths } from "./runtime/child-env";
 
 /** Production spawner; tests inject a fake `ChildProcess` built on PassThrough. */
 export type TerminalHostSpawner = (
@@ -57,6 +57,31 @@ export interface TerminalHostExitInfo {
   expected: boolean;
 }
 
+/** What the Diagnostics view and a failed request need to explain a crash. */
+export interface TerminalHostDiagnostics {
+  running: boolean;
+  nodePath: string;
+  hostPath: string;
+  lastExit: TerminalHostExitInfo | null;
+  lastError: string | null;
+  /** The tail the host wrote to stderr (bounded, native-load errors live here). */
+  stderrTail: string;
+}
+
+/**
+ * Kept well below the frame cap: a stack trace with a `GLIBC_2.42` line is a
+ * few hundred bytes, and the tail is only ever attached to an error message.
+ */
+const MAX_STDERR_TAIL_CHARS = 8 * 1024;
+const MAX_STDERR_IN_ERROR_CHARS = 2 * 1024;
+
+/**
+ * The one message a broken native module produces. Matching it lets the
+ * supervisor add a plain-language hint; the log file keeps the full trace.
+ */
+const NATIVE_LOAD_FAILURE =
+  /Failed to load native module|ERR_DLOPEN_FAILED|GLIBC(X)?_[0-9]|Cannot find module ['"].*prebuilds/i;
+
 export interface TerminalHostOptions {
   nodePath: string;
   /** `out/host/terminal.mjs` (dev or `app.asar.unpacked`). */
@@ -89,6 +114,9 @@ export class TerminalHost {
   private stopping = false;
   private readonly spawner: TerminalHostSpawner;
   private readonly requestTimeoutMs: number;
+  private stderrTail = "";
+  private lastExitInfo: TerminalHostExitInfo | null = null;
+  private lastError: string | null = null;
 
   constructor(private readonly options: TerminalHostOptions) {
     this.spawner = options.spawner ?? defaultSpawner;
@@ -98,6 +126,22 @@ export class TerminalHost {
   /** True while a child process exists (it may still be starting). */
   get running(): boolean {
     return this.child !== null;
+  }
+
+  /**
+   * The supervisor's own view, for Diagnostics and for the terminal error
+   * details. The stderr tail is what names a native-module failure: the host
+   * exits before it can answer, so its stderr is the only evidence.
+   */
+  diagnostics(): TerminalHostDiagnostics {
+    return {
+      running: this.child !== null,
+      nodePath: this.options.nodePath,
+      hostPath: this.options.hostPath,
+      lastExit: this.lastExitInfo,
+      lastError: this.lastError,
+      stderrTail: this.stderrTail,
+    };
   }
 
   /**
@@ -188,21 +232,23 @@ export class TerminalHost {
   private ensureStarted(): void {
     if (this.child) return;
 
-    const env = composeChildEnv({
-      baseEnv: this.options.env ?? process.env,
-      platform: process.platform,
-      binDir: this.options.binDir,
-      nodeBinDir: this.options.nodeBinDir ?? null,
-      extra: {
-        // So `pi` run inside a terminal uses the same profile as the app.
-        PI_CODING_AGENT_DIR: this.options.profileDir,
-        PI_DESKTOP_TERMINAL_HOST: "1",
-        TERM_PROGRAM: "PiDesktop",
-      },
-      // Electron sets this when it re-executes itself as Node; a shell must not
-      // inherit it.
-      strip: ["ELECTRON_RUN_AS_NODE"],
-    });
+    const env = stripAppImageLibraryPaths(
+      composeChildEnv({
+        baseEnv: this.options.env ?? process.env,
+        platform: process.platform,
+        binDir: this.options.binDir,
+        nodeBinDir: this.options.nodeBinDir ?? null,
+        extra: {
+          // So `pi` run inside a terminal uses the same profile as the app.
+          PI_CODING_AGENT_DIR: this.options.profileDir,
+          PI_DESKTOP_TERMINAL_HOST: "1",
+          TERM_PROGRAM: "PiDesktop",
+        },
+        // Electron sets this when it re-executes itself as Node; a shell must not
+        // inherit it.
+        strip: ["ELECTRON_RUN_AS_NODE"],
+      }),
+    );
 
     const child = this.spawner(this.options.nodePath, [this.options.hostPath], {
       cwd: this.options.cwd,
@@ -210,21 +256,46 @@ export class TerminalHost {
       windowsHide: true,
     });
     this.child = child;
+    this.stderrTail = "";
+    this.lastError = null;
     this.decoder = new JsonlDecoder<TerminalFrame>(decodeTerminalFrame, MAX_TERMINAL_FRAME_BYTES);
     this.options.log?.(`spawned terminal host ${this.options.hostPath} (pid ${child.pid ?? "?"})`);
 
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string | Buffer) => this.ingest(chunk.toString()));
     child.stderr?.on("data", (chunk: Buffer | string) => {
-      const text = chunk.toString().trim();
+      const raw = chunk.toString();
+      this.appendStderr(raw);
+      const text = raw.trim();
       if (text.length > 0) this.options.log?.(`terminal host stderr: ${text.slice(0, 800)}`);
     });
     child.on("error", (error: Error) => {
       this.options.log?.(`terminal host error: ${error.message}`);
+      if (this.child !== child) return;
+      this.lastError = error.message;
+      this.rejectPending(`the terminal host failed (${error.message})`);
+      // A spawn failure never emits `exit` (the process never existed), so the
+      // supervisor would otherwise keep a dead child and time out every later
+      // request. A live pid means a different error (e.g. a failed kill): keep
+      // owning the process and let its `exit` clear it.
+      if (child.pid === undefined) {
+        this.child = null;
+        this.decoder.reset();
+        this.lastExitInfo = { code: -1, signal: "", expected: this.stopping };
+        this.options.onExit?.(this.lastExitInfo);
+      }
     });
     child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
       this.handleExit(child, code, signal);
     });
+  }
+
+  /** Keeps only the tail: a native-loader trace is short, a crash loop is not. */
+  private appendStderr(text: string): void {
+    this.stderrTail += text;
+    if (this.stderrTail.length > MAX_STDERR_TAIL_CHARS) {
+      this.stderrTail = this.stderrTail.slice(-MAX_STDERR_TAIL_CHARS);
+    }
   }
 
   private ingest(chunk: string): void {
@@ -261,19 +332,42 @@ export class TerminalHost {
     this.child = null;
     this.decoder.reset();
     const reason = code ?? signal ?? "unknown";
-    this.rejectPending(`the terminal host exited (${reason})`);
-    this.options.onExit?.({
+    const info: TerminalHostExitInfo = {
       code: code ?? -1,
       signal: signal ?? "",
       expected: this.stopping,
-    });
+    };
+    this.lastExitInfo = info;
+    this.rejectPending(`the terminal host exited (${reason})`, this.stderrTail);
+    this.options.log?.(
+      `terminal host exited (${reason})${info.expected ? " during shutdown" : ""}`,
+    );
+    this.options.onExit?.(info);
   }
 
-  private rejectPending(reason: string): void {
+  private rejectPending(reason: string, stderrTail = ""): void {
+    const suffix = this.describeStderr(stderrTail);
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
-      pending.reject(new Error(`${reason} during "${pending.method}"`));
+      pending.reject(new Error(`${reason} during "${pending.method}"${suffix}`));
     }
     this.pending.clear();
+  }
+
+  /**
+   * Appends the host's stderr to a rejection so the renderer can show the real
+   * error (e.g. `version 'GLIBC_2.42' not found`) instead of only an exit code.
+   */
+  private describeStderr(stderrTail: string): string {
+    const text = stderrTail.trim();
+    if (text.length === 0) return "";
+    const clipped =
+      text.length > MAX_STDERR_IN_ERROR_CHARS
+        ? `${text.slice(0, MAX_STDERR_IN_ERROR_CHARS)}\n…`
+        : text;
+    const hint = NATIVE_LOAD_FAILURE.test(text)
+      ? " (the packaged node-pty cannot load on this system; open Diagnostics → Terminal for the log)"
+      : "";
+    return `: ${clipped}${hint}`;
   }
 }

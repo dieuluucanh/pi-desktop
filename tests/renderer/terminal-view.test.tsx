@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TerminalView } from "../../src/renderer/src/views/TerminalView";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
@@ -347,6 +347,45 @@ describe("TerminalView", () => {
 
     expect(await screen.findByText("no shell found")).toBeTruthy();
     expect(screen.getByText("Retry")).toBeTruthy();
+  });
+
+  it("puts the native-loader report behind Details and copies it", async () => {
+    const writeText = vi.fn(async (_text: string) => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    const details = [
+      "platform: linux x64 · node v24.22.2 · terminal protocol 1",
+      "node-pty: not loaded — version `GLIBC_2.42' not found",
+      "  /app/node-pty/build/Release/pty.node: version `GLIBC_2.42' not found",
+      "log: /home/me/.pi/agent/logs/terminal.log",
+    ].join("\n");
+    const { store, pool } = setup({
+      kind: "error",
+      code: "native_unavailable",
+      message: "The terminal backend could not start: node-pty could not be loaded",
+      details,
+    });
+    render(
+      <TerminalView
+        tab={TAB}
+        store={store}
+        pool={pool}
+        requestTrust={async () => false}
+        platform="linux"
+      />,
+    );
+
+    expect(await screen.findByText(/terminal backend could not start/i)).toBeTruthy();
+    expect(screen.getByText("Details")).toBeTruthy();
+    expect(screen.getByText(/GLIBC_2\.42/)).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Copy details"));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(writeText.mock.calls[0]?.[0]).toContain("terminal backend could not start");
+    expect(writeText.mock.calls[0]?.[0]).toContain("terminal.log");
+    await waitFor(() => expect(screen.getByText("Copied")).toBeTruthy());
   });
 
   it("skips fitting while the host has no layout box", async () => {

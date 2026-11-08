@@ -382,6 +382,35 @@ export interface DiagnosticsHostInfo {
   logLines: string[];
 }
 
+/**
+ * The terminal host's own state (2026-11-08 linux-terminal plan, step 3).
+ *
+ * A terminal failure has two distinct halves: what the host reported through
+ * `terminal.info` (whether the native module loaded, and each candidate's real
+ * loader error) and what the main-side supervisor saw (exit code, stderr). Both
+ * are needed to explain a package whose `pty.node` cannot be dlopen'd.
+ */
+export interface DiagnosticsTerminalHostInfo {
+  windowId: number;
+  running: boolean;
+  nodePath: string;
+  hostPath: string;
+  /** The last `terminal.info` probe; null before the first terminal request. */
+  pty: {
+    loaded: boolean;
+    path: string | null;
+    error: string | null;
+  } | null;
+  lastExit: { code: number; signal: string; expected: boolean } | null;
+  lastError: string | null;
+  /** `<profile>/logs/terminal.log` — the file a support request should attach. */
+  logFile: string;
+}
+
+export interface DiagnosticsTerminalInfo {
+  hosts: DiagnosticsTerminalHostInfo[];
+}
+
 export interface DiagnosticsAppInfo {
   name: string;
   version: string;
@@ -441,6 +470,8 @@ export interface DiagnosticsSnapshot {
   runtime: DiagnosticsRuntimeInfo;
   paths: DiagnosticsPathsInfo;
   hosts: DiagnosticsHostInfo[];
+  /** One entry per window's terminal host (2026-11-08 linux-terminal plan). */
+  terminal: DiagnosticsTerminalInfo;
   /** Live-host budget and open-tab counts (plan step 24 backpressure). */
   capacity: SessionCapacity;
   /** The per-host memory budget and restart threshold, for the RSS readout. */

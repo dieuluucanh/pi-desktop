@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { SquareTerminal } from "lucide-react";
 import { useStore } from "zustand";
 import { Button } from "../ui/button";
+import { copyText } from "../ui/clipboard";
 import { cn } from "../ui/cn";
 import { useAppStore } from "../state/app-store";
 import { handleMenuCommand } from "../menu-actions";
@@ -59,6 +60,7 @@ export function TerminalView({
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [bell, setBell] = useState(false);
+  const [detailsCopied, setDetailsCopied] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
   const copyTimer = useRef<number | null>(null);
   const bellTimer = useRef<number | null>(null);
@@ -284,6 +286,15 @@ export function TerminalView({
       .create(tab.id, tab.cwd, state?.cols ?? 80, state?.rows ?? 24, grant, tab.profileId);
   };
 
+  const copyDetails = async (): Promise<void> => {
+    const details = state?.errorDetails;
+    if (!details) return;
+    const copied = await copyText(`${state?.error ?? "The terminal could not start."}\n${details}`);
+    if (!copied) return;
+    setDetailsCopied(true);
+    window.setTimeout(() => setDetailsCopied(false), 1500);
+  };
+
   const search = (direction: "next" | "previous"): void => {
     const terminalId = state?.terminalId;
     if (!terminalId || query.length === 0) return;
@@ -392,11 +403,30 @@ export function TerminalView({
           </div>
         ) : null}
         {status === "failed" ? (
-          <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 border-t border-danger/40 bg-surface px-3 py-2 text-xs text-danger">
-            <span>{state?.error ?? "The terminal could not start."}</span>
-            <Button size="sm" onClick={() => void restart()}>
-              Retry
-            </Button>
+          <div className="absolute inset-x-0 bottom-0 border-t border-danger/40 bg-surface px-3 py-2 text-xs text-danger">
+            <div className="flex items-center gap-2">
+              <span className="min-w-0 flex-1 truncate" title={state?.error ?? undefined}>
+                {state?.error ?? "The terminal could not start."}
+              </span>
+              <Button size="sm" onClick={() => void restart()}>
+                Retry
+              </Button>
+            </div>
+            {state?.errorDetails ? (
+              <details className="mt-1 text-ink-muted">
+                <summary className="cursor-pointer select-none">Details</summary>
+                {/* The full native-loader report (per-candidate paths) lives here,
+                    not in the one-line banner: a GLIBC dlopen error is long. */}
+                <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-xs bg-canvas p-2 text-xs text-ink-muted">
+                  {state.errorDetails}
+                </pre>
+                <div className="mt-1 flex justify-end">
+                  <Button size="sm" variant="ghost" onClick={() => void copyDetails()}>
+                    {detailsCopied ? "Copied" : "Copy details"}
+                  </Button>
+                </div>
+              </details>
+            ) : null}
           </div>
         ) : null}
       </div>

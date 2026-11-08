@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { TerminalCore } from "../../src/host/terminal-core";
 import {
   TerminalLineReader,
+  createHostRuntime,
   createTerminalHostService,
   dispatchTerminalRequest,
 } from "../../src/host/terminal-main";
@@ -12,6 +13,7 @@ import {
   encodeTerminalFrame,
   type TerminalAttachResult,
   type TerminalFrame,
+  type TerminalHostInfo,
   type TerminalRequestFrame,
   type TerminalResponseFrame,
   type TerminalSpawnSpec,
@@ -161,6 +163,93 @@ describe("dispatchTerminalRequest", () => {
       request({ method: "terminal.open", params: { spec: spec() } }),
     );
     expect(response.error).toMatchObject({ code: "spawn_failed" });
+  });
+});
+
+describe("terminal.info", () => {
+  it("reports the host info it was given, including a failed native load", () => {
+    const { core } = createCore();
+    const info: TerminalHostInfo = {
+      protocol: 1,
+      platform: "linux",
+      arch: "x64",
+      node: "v24.22.2",
+      pty: {
+        loaded: false,
+        path: null,
+        candidates: [
+          {
+            path: "/app/node-pty/build/Release/pty.node",
+            error: "version `GLIBC_2.42' not found",
+          },
+        ],
+        error: "version `GLIBC_2.42' not found",
+      },
+    };
+    expect(dispatchTerminalRequest(core, request({ method: "terminal.info" }), info)).toEqual({
+      id: 1,
+      result: info,
+    });
+  });
+
+  it("answers with a not-probed report when the caller supplies none", () => {
+    const { core } = createCore();
+    const response = dispatchTerminalRequest(core, request({ method: "terminal.info" }));
+    expect(response.result).toMatchObject({
+      protocol: 1,
+      pty: { loaded: false, error: "not reported" },
+    });
+  });
+
+  it("keeps the host alive and answers terminal.open with native_unavailable", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const frames: TerminalFrame[] = [];
+    output.on("data", (chunk: Buffer) => {
+      for (const line of chunk.toString("utf8").split("\n")) {
+        if (line.trim().length === 0) continue;
+        const frame = decodeTerminalFrame(line);
+        if (frame) frames.push(frame);
+      }
+    });
+
+    const runtime = createHostRuntime(
+      {
+        ok: false,
+        error: "/lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.42' not found",
+        candidates: [
+          {
+            path: "/app/node-pty/build/Release/pty.node",
+            error: "/lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.42' not found",
+          },
+          { path: "/app/node-pty/prebuilds/linux-x64/pty.node", error: "Cannot find module" },
+        ],
+      },
+      () => undefined,
+    );
+
+    const service = createTerminalHostService({
+      core: async () => runtime,
+      input,
+      output,
+    });
+
+    input.write(encodeTerminalFrame({ id: 1, method: "terminal.info" }));
+    input.write(encodeTerminalFrame({ id: 2, method: "terminal.open", params: { spec: spec() } }));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // The process is still serving: the info frame came first, then the typed
+    // error, and nothing threw out of the read loop.
+    expect(frames[0]).toMatchObject({ id: 1, result: { pty: { loaded: false } } });
+    expect(frames[1]).toMatchObject({ id: 2, error: { code: "native_unavailable" } });
+    expect((frames[1] as { error?: { message?: string } }).error?.message).toContain("GLIBC_2.42");
+
+    // A later request is still answered (the failure is not sticky).
+    input.write(encodeTerminalFrame({ id: 3, method: "terminal.list" }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(frames[2]).toEqual({ id: 3, result: [] });
+
+    service.dispose();
   });
 });
 

@@ -32,14 +32,39 @@ jobs:
       - name: Install
         run: npm ci
 
+      # `npm ci` can leave node-pty without a binary (npm 12 blocks install
+      # scripts without `allowScripts`; Linux has no prebuild). Fail here, with
+      # the loader error, instead of at first terminal use.
+      - name: Native terminal module
+        run: node scripts/check-native-terminal.mjs
+
       - name: Typecheck
         run: npm run typecheck
 
       - name: Lint
         run: npm run lint
 
+      # The real-PTY integration test skips when the host bundle is absent, so
+      # build it and require the test: a terminal path that nobody ran is what
+      # shipped broken in 0.8.0.
+      - name: Build the terminal host bundle
+        run: npm run build:host
+
       - name: Unit + integration tests
+        env:
+          PI_REQUIRE_TERMINAL_HOST: "1"
         run: npm test
+
+      # The release compiles node-pty in a pinned Debian 11 container. Exercise
+      # that script on every PR so a broken image or Dockerfile-only assumption
+      # fails here, not on a tag.
+      - name: Pinned Linux node-pty build
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          npm run runtime:fetch -- --platform linux-x64
+          npm run pty:linux -- --arch x64 --force
+          npm run pty:linux -- --check-only --arch x64
 
       - name: Checkpoint extension package
         run: npm run build:extension && npm run verify:extension

@@ -76,7 +76,14 @@ function isEnvName(value: unknown): value is string {
 }
 
 export type TerminalErrorCode =
-  "bad_request" | "limit" | "not_found" | "spawn_failed" | "protocol" | "closed";
+  | "bad_request"
+  | "limit"
+  | "not_found"
+  | "spawn_failed"
+  | "protocol"
+  | "closed"
+  /** The host process started, but `node-pty`'s native module could not load. */
+  | "native_unavailable";
 
 /** The request methods the terminal host implements. One allowlist, one place. */
 export const TERMINAL_METHODS = [
@@ -87,6 +94,12 @@ export const TERMINAL_METHODS = [
   "terminal.close",
   "terminal.ack",
   "terminal.list",
+  /**
+   * The host's own view: runtime versions and whether the native module loaded.
+   * It is answered even when the load failed, which is what makes a broken
+   * package report its real error instead of exiting before the first request.
+   */
+  "terminal.info",
 ] as const;
 
 export type TerminalMethod = (typeof TERMINAL_METHODS)[number];
@@ -142,6 +155,35 @@ export interface TerminalAttachResult {
   bytes: number;
   /** The last sequence number emitted; live frames continue above it. */
   seq: number;
+}
+
+/**
+ * One place `node-pty` looked for its native module. A candidate that exists but
+ * cannot be dlopen'd keeps its loader error, which is the only way to surface a
+ * missing `GLIBC_*` symbol: node-pty itself reports only the last candidate.
+ */
+export interface TerminalNativeCandidate {
+  path: string;
+  /** Null when the file resolved and loaded; the loader's message otherwise. */
+  error: string | null;
+}
+
+/** `terminal.info`: the host's runtime identity and native-module status. */
+export interface TerminalHostInfo {
+  protocol: number;
+  platform: string;
+  arch: string;
+  /** `process.version` of the bundled Node running the host. */
+  node: string;
+  pty: {
+    loaded: boolean;
+    /** The candidate that loaded, when known. */
+    path: string | null;
+    /** Every probed path, with the real loader error for each failure. */
+    candidates: TerminalNativeCandidate[];
+    /** The headline failure (the first non-`ENOENT` error), or null. */
+    error: string | null;
+  };
 }
 
 export interface TerminalWriteParams {

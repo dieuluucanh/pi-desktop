@@ -43,6 +43,7 @@ import { DEFAULT_ZOOM, clampZoomFactor } from "../shared/zoom";
 import { APP_COPYRIGHT, APP_NAME, APP_USER_MODEL_ID, resolveBranding } from "./branding";
 import { createAppStore } from "./app-store";
 import { createNodeFsPort } from "./fs-port";
+import { createTerminalLog, type TerminalLog } from "./terminal-log";
 import { createHostBuildId } from "./host-build";
 import { TerminalHost } from "./terminal-host";
 import { createTerminalService, type TerminalService } from "./terminal-service";
@@ -473,6 +474,23 @@ const terminalServices = new Map<number, TerminalService>();
 let terminalPrefs: TerminalPrefs = DEFAULT_TERMINAL_PREFS;
 
 /**
+ * Terminal host lines land on the console (dev) and in `<logs>/terminal.log`,
+ * which is the only copy a packaged AppImage user can hand to support. Created
+ * lazily so it never runs while the app is still resolving its paths.
+ */
+let terminalLog: TerminalLog | null = null;
+
+function terminalLogPath(): string {
+  return join(paths.logs, "terminal.log");
+}
+
+function logTerminal(line: string): void {
+  console.error(`[terminal] ${line}`);
+  terminalLog ??= createTerminalLog({ file: terminalLogPath(), fs: createNodeFsPort() });
+  terminalLog.write(line);
+}
+
+/**
  * The terminal service for one window, created on first use. The window's
  * WebContents id is the key, so a second window can never address the first
  * window's PTYs and a destroyed window disposes its own host.
@@ -499,7 +517,7 @@ function terminalServiceFor(windowId: number): TerminalService {
     binDir: runtime.binDir,
     nodeBinDir: runtime.nodeBinDir,
     env: process.env,
-    log: (line) => console.error(`[terminal] ${line}`),
+    log: logTerminal,
     onEvent: send,
     onExit: () => terminalServices.get(windowId)?.handleHostExit(),
   });
@@ -528,7 +546,8 @@ function terminalServiceFor(windowId: number): TerminalService {
     platform: process.platform,
     profileDir: paths.profileDir,
     termProgramVersion: app.getVersion(),
-    log: (line) => console.error(`[terminal] ${line}`),
+    logFile: terminalLogPath(),
+    log: logTerminal,
   });
 
   terminalServices.set(windowId, service);
@@ -1350,6 +1369,26 @@ const diagnostics = createDiagnosticsService({
     tabs: sessions?.tabs().filter((tab) => tab.kind === "web").length ?? 0,
     liveViews: webTabs.liveViewCount(),
     limit: webTabs.webViewLimit(),
+  }),
+  // One entry per window: whether its terminal host is up, what `terminal.info`
+  // said about the native module, and the log file a support request should
+  // attach (2026-11-08 linux-terminal plan, step 3).
+  terminal: () => ({
+    hosts: [...terminalServices.entries()].map(([windowId, service]) => {
+      const view = service.diagnostics();
+      return {
+        windowId,
+        running: view.host?.running ?? false,
+        nodePath: view.host?.nodePath ?? runtime.nodePath ?? "",
+        hostPath: view.host?.hostPath ?? runtime.terminalHostPath,
+        pty: view.info
+          ? { loaded: view.info.pty.loaded, path: view.info.pty.path, error: view.info.pty.error }
+          : null,
+        lastExit: view.host?.lastExit ?? null,
+        lastError: view.host?.lastError ?? null,
+        logFile: view.logFile ?? terminalLogPath(),
+      };
+    }),
   }),
 });
 

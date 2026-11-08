@@ -5,10 +5,12 @@ import {
   type TerminalHostLike,
   type TerminalServiceOptions,
 } from "../../src/main/terminal-service";
+import { TerminalHostRpcError } from "../../src/main/terminal-host";
 import {
   MAX_TERMINALS_PER_WINDOW,
   type TerminalAttachResult,
   type TerminalEventFrame,
+  type TerminalHostInfo,
   type TerminalInfo,
   type TerminalMethod,
   type TerminalSpawnSpec,
@@ -21,18 +23,33 @@ type Tab = Pick<TabRecord, "id" | "kind" | "cwd" | "lastCwd" | "profileId">;
 class FakeHost implements TerminalHostLike {
   readonly requests: Array<{ method: TerminalMethod; params?: unknown }> = [];
   readonly live = new Map<string, TerminalInfo>();
+  /** Fails the next `terminal.open` (the native probe must not consume it). */
   failNext: Error | null = null;
+  info: TerminalHostInfo = {
+    protocol: 1,
+    platform: "linux",
+    arch: "x64",
+    node: "v24.22.2",
+    pty: {
+      loaded: true,
+      path: "/app/node_modules/node-pty/build/Release/pty.node",
+      candidates: [],
+      error: null,
+    },
+  };
   disposed = 0;
   private nextId = 1;
 
   async request<T>(method: TerminalMethod, params?: unknown): Promise<T> {
     this.requests.push({ method, params: params as unknown });
-    if (this.failNext) {
+    if (method === "terminal.open" && this.failNext) {
       const error = this.failNext;
       this.failNext = null;
       throw error;
     }
     switch (method) {
+      case "terminal.info":
+        return this.info as T;
       case "terminal.open": {
         const spec = (params as { spec: TerminalSpawnSpec }).spec;
         const info: TerminalInfo = {
@@ -64,6 +81,17 @@ class FakeHost implements TerminalHostLike {
 
   async dispose(): Promise<void> {
     this.disposed += 1;
+  }
+
+  diagnostics() {
+    return {
+      running: true,
+      nodePath: "/runtime/bin/node",
+      hostPath: "/app/out/host/terminal.mjs",
+      lastExit: null,
+      lastError: null,
+      stderrTail: "",
+    };
   }
 }
 
@@ -103,6 +131,7 @@ function createService(
     platform: "linux",
     profileDir: "/home/me/.pi/agent",
     termProgramVersion: "0.6.0",
+    logFile: "/home/me/.pi/agent/logs/terminal.log",
     ...overrides,
   };
   const service = new TerminalService(options);
@@ -221,6 +250,71 @@ describe("TerminalService.create", () => {
       kind: "error",
       code: "spawn_failed",
     });
+  });
+
+  it("reports native_unavailable with the per-candidate details", async () => {
+    const { service, host } = createService();
+    host.info = {
+      protocol: 1,
+      platform: "linux",
+      arch: "x64",
+      node: "v24.22.2",
+      pty: {
+        loaded: false,
+        path: null,
+        error: "/lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.42' not found",
+        candidates: [
+          {
+            path: "/app/node-pty/build/Release/pty.node",
+            error: "/lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.42' not found",
+          },
+          { path: "/app/node-pty/prebuilds/linux-x64/pty.node", error: "Cannot find module" },
+        ],
+      },
+    };
+    host.failNext = new TerminalHostRpcError(
+      "native_unavailable",
+      "node-pty could not be loaded: GLIBC_2.42",
+    );
+
+    const outcome = await service.create(createInput());
+    expect(outcome).toMatchObject({ kind: "error", code: "native_unavailable" });
+    if (outcome.kind !== "error") return;
+    expect(outcome.message).toMatch(/terminal backend could not start/i);
+    expect(outcome.details).toContain("platform: linux x64");
+    expect(outcome.details).toContain("node-pty: not loaded — ");
+    expect(outcome.details).toContain("GLIBC_2.42");
+    expect(outcome.details).toContain(
+      "/app/node-pty/prebuilds/linux-x64/pty.node: Cannot find module",
+    );
+    expect(outcome.details).toContain("log: /home/me/.pi/agent/logs/terminal.log");
+  });
+
+  it("exposes the host's view and the captured info through diagnostics()", async () => {
+    const { service } = createService();
+    await service.create(createInput());
+    const view = service.diagnostics();
+    expect(view.host).toMatchObject({ running: true, nodePath: "/runtime/bin/node" });
+    expect(view.info).toMatchObject({ pty: { loaded: true } });
+    expect(view.logFile).toBe("/home/me/.pi/agent/logs/terminal.log");
+  });
+
+  it("does not leak the AppImage's loader paths into the shell", async () => {
+    const appDir = "/tmp/.mount_PiDesk123";
+    const { service, host } = createService({
+      env: {
+        PATH: "/usr/bin",
+        APPDIR: appDir,
+        LD_LIBRARY_PATH: `${appDir}/usr/lib:/usr/local/lib`,
+        LD_PRELOAD: `${appDir}/usr/lib/libfoo.so`,
+      },
+    });
+    await service.create(createInput());
+
+    const env = openSpec(host).env;
+    expect(env.LD_LIBRARY_PATH).toBe("/usr/local/lib");
+    expect(env.LD_PRELOAD).toBeUndefined();
+    expect(env.APPDIR).toBe(appDir);
   });
 
   it("starts a lastCwd when it still exists and falls back when it does not", async () => {

@@ -26,6 +26,12 @@
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  assertNativeFloor,
+  isUsableBinary,
+  nativeCandidatePaths,
+  parseReadelfVersionNeeds,
+} from "./lib/node-pty-artifact.mjs";
 
 /** `Arch` from `builder-util`, inlined so the hook needs no extra dependency. */
 const ARCH_NAMES = new Map([
@@ -150,7 +156,7 @@ function gitCommit(projectDir) {
 
 export function pruneNodePty(resourcesDir, target) {
   const root = join(resourcesDir, "app.asar.unpacked", "node_modules", "node-pty");
-  if (!existsSync(root)) return { found: false, removed: [], kept: null };
+  if (!existsSync(root)) return { found: false, removed: [], kept: null, binary: null };
 
   const removed = [];
   // Sources, vendored deps and the prebuild scripts are build-time only; the
@@ -182,7 +188,73 @@ export function pruneNodePty(resourcesDir, target) {
   const helper = join(root, "prebuilds", target, "spawn-helper");
   if (existsSync(helper)) chmodSync(helper, 0o755);
 
-  return { found: true, removed: removed.sort(), kept: target };
+  // Fail-closed (2026-11-08 linux-terminal plan, step 4): a package that cannot
+  // open a PTY must never be published. The 2026-11-05 plan asked for this
+  // throw; the implementation only pruned, so a Linux artifact shipped without
+  // a loadable binary and the terminal died at the first click.
+  const candidates = nativeCandidatePaths(root, target);
+  const binary = candidates.find((candidate) => isUsableBinary(candidate)) ?? null;
+  if (!binary) {
+    throw new Error(
+      `afterPack: node-pty has no usable binary for ${target} (searched: ${candidates.join(", ")}). ` +
+        `Linux packages must run \`npm run pty:linux -- --arch <x64|arm64>\` first; ` +
+        `Windows/macOS use the prebuild from the npm tarball.`,
+    );
+  }
+  if (target.startsWith("linux-")) {
+    const runnerBuild = candidates[1];
+    if (existsSync(runnerBuild)) {
+      throw new Error(
+        `afterPack: ${target} must ship the pinned prebuild (${candidates[0]}), not ${runnerBuild}. ` +
+          `A runner-compiled binary is linked against the runner's glibc and breaks older ` +
+          `distributions; run \`npm run pty:linux -- --arch <x64|arm64>\`.`,
+      );
+    }
+    if (binary !== candidates[0]) {
+      throw new Error(
+        `afterPack: ${target} must ship the pinned prebuild (${candidates[0]}) ` +
+          `but the package only contains ${binary}. Run \`npm run pty:linux -- --arch <x64|arm64>\`.`,
+      );
+    }
+  }
+
+  return { found: true, removed: removed.sort(), kept: target, binary };
+}
+
+/** The terminal host bundle must be inside the asar-unpacked tree. */
+export function assertTerminalBundle(resourcesDir) {
+  const bundle = join(resourcesDir, "app.asar.unpacked", "out", "host", "terminal.mjs");
+  if (!existsSync(bundle)) {
+    throw new Error(
+      `afterPack: the terminal host bundle is missing at ${bundle}. ` +
+        `Run \`npm run build\`: the terminal entry is part of the host build.`,
+    );
+  }
+  return bundle;
+}
+
+/**
+ * Reads the ELF's version needs and fails the package when it needs a newer
+ * runtime than {@link NATIVE_FLOOR}. A missing `readelf` is an error, not a
+ * skip: the floor check is part of the deliverable.
+ */
+export function verifyNativeFloor(binary) {
+  let output;
+  try {
+    output = execFileSync("readelf", ["--version-info", binary], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch (error) {
+    throw new Error(
+      `afterPack: could not run readelf on ${binary} ` +
+        `(${error instanceof Error ? error.message : String(error)}). ` +
+        `Install binutils (readelf) to package Linux.`,
+      { cause: error },
+    );
+  }
+  const measured = assertNativeFloor(parseReadelfVersionNeeds(output));
+  return { binary, ...measured };
 }
 
 /**
@@ -210,11 +282,23 @@ export default async function afterPack(context) {
     );
   }
 
+  // The terminal is a separate binary + host bundle; check both before the
+  // installers exist, so a broken package fails here instead of on a user's
+  // first "New terminal" click (2026-11-08 linux-terminal plan, step 4).
+  assertTerminalBundle(resourcesDir);
   const pty = pruneNodePty(resourcesDir, target);
   if (pty.found) {
     process.stdout.write(
-      `afterPack: node-pty pruned (${pty.removed.length} entries, keeping prebuilds/${pty.kept})\n`,
+      `afterPack: node-pty pruned (${pty.removed.length} entries, keeping prebuilds/${pty.kept}) ` +
+        `-> ${pty.binary}\n`,
     );
+    if (context.electronPlatformName === "linux") {
+      const floor = verifyNativeFloor(pty.binary);
+      process.stdout.write(
+        `afterPack: node-pty requires GLIBC ≤ ${floor.glibc ?? "none"} / ` +
+          `GLIBCXX ≤ ${floor.glibcxx ?? "none"}\n`,
+      );
+    }
   }
 
   execFileSync(

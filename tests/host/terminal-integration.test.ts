@@ -104,67 +104,83 @@ function startHost(): Harness {
   };
 }
 
-describe.skipIf(!existsSync(HOST_BUNDLE))("terminal host integration", () => {
-  it(
-    "starts a real shell, streams its output and kills it on close",
-    async () => {
-      const host = startHost();
-      try {
-        host.send({
-          id: 1,
-          method: "terminal.open",
-          params: {
-            spec: {
-              cwd: process.cwd(),
-              shell: shellPath(),
-              args: [],
-              env: { ...hostEnv(), TERM: "xterm-256color" },
-              cols: 80,
-              rows: 24,
-              name: "xterm-256color",
+const REQUIRED = process.env.PI_REQUIRE_TERMINAL_HOST === "1";
+const HAS_HOST_BUNDLE = existsSync(HOST_BUNDLE);
+
+describe("terminal host integration", () => {
+  // CI builds `out/host/terminal.mjs` first and sets this flag. Without the
+  // flag a clean checkout may skip; with it, a missing bundle is a failure, not
+  // a green skip (the 0.8.0 Linux package shipped a terminal nobody had run).
+  it("has a built host bundle when the gate requires one", () => {
+    if (!REQUIRED) return;
+    expect(
+      HAS_HOST_BUNDLE,
+      `run \`npm run build:host\` before \`npm test\` (expected ${HOST_BUNDLE})`,
+    ).toBe(true);
+  });
+
+  describe.skipIf(!HAS_HOST_BUNDLE)("real shell", () => {
+    it(
+      "starts a real shell, streams its output and kills it on close",
+      async () => {
+        const host = startHost();
+        try {
+          host.send({
+            id: 1,
+            method: "terminal.open",
+            params: {
+              spec: {
+                cwd: process.cwd(),
+                shell: shellPath(),
+                args: [],
+                env: { ...hostEnv(), TERM: "xterm-256color" },
+                cols: 80,
+                rows: 24,
+                name: "xterm-256color",
+              },
             },
-          },
-        });
-        const opened = await host.waitFor(
-          (frame): frame is Extract<TerminalFrame, { id: number; result?: unknown }> =>
-            "id" in frame && frame.id === 1,
-        );
-        expect(opened).toMatchObject({ id: 1 });
-        const info = (opened as { result: TerminalInfo }).result;
-        expect(info.id).toMatch(/^t-/);
-        expect(info.cols).toBe(80);
-        expect(info.rows).toBe(24);
+          });
+          const opened = await host.waitFor(
+            (frame): frame is Extract<TerminalFrame, { id: number; result?: unknown }> =>
+              "id" in frame && frame.id === 1,
+          );
+          expect(opened).toMatchObject({ id: 1 });
+          const info = (opened as { result: TerminalInfo }).result;
+          expect(info.id).toMatch(/^t-/);
+          expect(info.cols).toBe(80);
+          expect(info.rows).toBe(24);
 
-        host.send({
-          id: 2,
-          method: "terminal.write",
-          params: { terminalId: info.id, data: `echo terminal-integration\r` },
-        });
-        const output = await host.waitFor(
-          (frame): frame is Extract<TerminalFrame, { event: string }> => {
-            if (!("event" in frame) || frame.event !== "terminal.data") return false;
-            const payload = frame.payload as TerminalDataEvent;
-            return Buffer.from(payload.data, "base64")
-              .toString("utf8")
-              .includes("terminal-integration");
-          },
-        );
-        expect("event" in output).toBe(true);
+          host.send({
+            id: 2,
+            method: "terminal.write",
+            params: { terminalId: info.id, data: `echo terminal-integration\r` },
+          });
+          const output = await host.waitFor(
+            (frame): frame is Extract<TerminalFrame, { event: string }> => {
+              if (!("event" in frame) || frame.event !== "terminal.data") return false;
+              const payload = frame.payload as TerminalDataEvent;
+              return Buffer.from(payload.data, "base64")
+                .toString("utf8")
+                .includes("terminal-integration");
+            },
+          );
+          expect("event" in output).toBe(true);
 
-        host.send({
-          id: 3,
-          method: "terminal.close",
-          params: { terminalId: info.id, force: true },
-        });
-        const closed = await host.waitFor(
-          (frame): frame is Extract<TerminalFrame, { id: number }> =>
-            "id" in frame && frame.id === 3,
-        );
-        expect(closed).toMatchObject({ id: 3, result: { closed: true } });
-      } finally {
-        host.stop();
-      }
-    },
-    PROCEDURE_TIMEOUT_MS,
-  );
+          host.send({
+            id: 3,
+            method: "terminal.close",
+            params: { terminalId: info.id, force: true },
+          });
+          const closed = await host.waitFor(
+            (frame): frame is Extract<TerminalFrame, { id: number }> =>
+              "id" in frame && frame.id === 3,
+          );
+          expect(closed).toMatchObject({ id: 3, result: { closed: true } });
+        } finally {
+          host.stop();
+        }
+      },
+      PROCEDURE_TIMEOUT_MS,
+    );
+  });
 });

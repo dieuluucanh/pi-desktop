@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   BUILD_INFO_FILE,
+  assertTerminalBundle,
   buildChannelFromEnv,
   buildInfoDocument,
   macSigningFromEnv,
@@ -61,6 +62,19 @@ describe("afterPack runtime pruning", () => {
 
     expect(pruneForeignRuntimes(nodeDir, "linux-x64")).toEqual([]);
     expect(readdirSync(nodeDir).sort()).toEqual(["README.md", "linux-x64", "node.lock.json"]);
+  });
+});
+
+describe("afterPack terminal artifact", () => {
+  it("requires the terminal host bundle inside the asar-unpacked tree", () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-terminal-bundle-"));
+    roots.push(root);
+    const bundle = join(root, "app.asar.unpacked", "out", "host", "terminal.mjs");
+
+    expect(() => assertTerminalBundle(root)).toThrow(/terminal host bundle is missing/);
+    mkdirSync(join(bundle, ".."), { recursive: true });
+    writeFileSync(bundle, "export {};\n");
+    expect(assertTerminalBundle(root)).toBe(bundle);
   });
 });
 

@@ -21,7 +21,6 @@ const HOST_PATH =
  * on `stdout`, exactly like the real host.
  */
 class FakeChild extends EventEmitter {
-  readonly pid = 4242;
   readonly stdin = new PassThrough();
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
@@ -29,7 +28,7 @@ class FakeChild extends EventEmitter {
   readonly requests: TerminalRequestFrame[] = [];
   private buffer = "";
 
-  constructor() {
+  constructor(readonly pid: number | undefined = 4242) {
     super();
     this.stdin.setEncoding("utf8");
     this.stdin.on("data", (chunk: string) => {
@@ -47,6 +46,11 @@ class FakeChild extends EventEmitter {
         }
       }
     });
+  }
+
+  /** A process that never started: Node reports no pid for a spawn failure. */
+  markUnspawned(): void {
+    Object.defineProperty(this, "pid", { value: undefined });
   }
 
   kill(signal = "SIGTERM"): boolean {
@@ -151,6 +155,24 @@ describe("TerminalHost spawning", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("strips the AppImage mount from the host's loader paths", async () => {
+    const appDir = "/tmp/.mount_PiDesk123";
+    const { host, children, calls } = createHost({
+      env: {
+        PATH: "/usr/bin",
+        APPDIR: appDir,
+        LD_LIBRARY_PATH: `${appDir}/usr/lib:/usr/local/lib`,
+        LD_PRELOAD: `${appDir}/usr/lib/libfoo.so`,
+      },
+    });
+    const pending = host.request("terminal.list");
+    children[0]?.respond(children[0].requests[0]!.id, []);
+    await expect(pending).resolves.toEqual([]);
+
+    expect(calls[0]?.options.env.LD_LIBRARY_PATH).toBe("/usr/local/lib");
+    expect(calls[0]?.options.env.LD_PRELOAD).toBeUndefined();
+  });
+
   it("rejects a request when spawning throws", async () => {
     const spawner: TerminalHostSpawner = () => {
       throw new Error("ENOENT: node missing");
@@ -164,6 +186,101 @@ describe("TerminalHost spawning", () => {
     const { host } = createHost();
     await host.dispose();
     await expect(host.request("terminal.list")).rejects.toThrow(/shutting down/);
+  });
+});
+
+describe("TerminalHost stderr and spawn errors", () => {
+  it("attaches the host's stderr to the exit rejection and names a native failure", async () => {
+    const { host, children } = createHost();
+    const pending = host.request("terminal.open", { spec: {} });
+    children[0]!.stderr.write(
+      "Error: Failed to load native module: pty.node, checked: build/Release\n",
+    );
+    children[0]!.stderr.write("/lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.42' not found\n");
+    children[0]!.exit(1, null);
+
+    await expect(pending).rejects.toThrow(/GLIBC_2\.42/);
+    await expect(pending).rejects.toThrow(/Diagnostics → Terminal/);
+    await expect(pending).rejects.toThrow(/exited \(1\) during "terminal.open"/);
+  });
+
+  it("does not add a native hint for an ordinary crash", async () => {
+    const { host, children } = createHost();
+    const pending = host.request("terminal.list");
+    children[0]!.stderr.write("TypeError: something else\n");
+    children[0]!.exit(1, null);
+
+    const error = (await pending.catch((reason: Error) => reason)) as Error;
+    expect(error.message).toContain("TypeError: something else");
+    expect(error.message).not.toContain("Diagnostics → Terminal");
+  });
+
+  it("rejects pending work immediately on a spawn error and allows a respawn", async () => {
+    const children: FakeChild[] = [];
+    const spawner: TerminalHostSpawner = () => {
+      const child = new FakeChild();
+      child.markUnspawned();
+      children.push(child);
+      return child as unknown as ChildProcess;
+    };
+    const { host } = createHost({ spawner });
+
+    const pending = host.request("terminal.list");
+    children[0]!.emit("error", new Error("spawn EACCES"));
+
+    await expect(pending).rejects.toThrow(/failed \(spawn EACCES\)/);
+    expect(host.running).toBe(false);
+    expect(host.diagnostics().lastError).toBe("spawn EACCES");
+
+    const again = host.request<string[]>("terminal.list");
+    expect(children).toHaveLength(2);
+    children[1]!.respond(children[1]!.requests[0]!.id, ["ok"]);
+    await expect(again).resolves.toEqual(["ok"]);
+  });
+
+  it("clears the stderr tail before a new spawn", async () => {
+    const { host, children } = createHost();
+    const first = host.request("terminal.list");
+    children[0]!.stderr.write("OLD NATIVE ERROR GLIBC_2.42\n");
+    children[0]!.exit(1, null);
+    await first.catch(() => undefined);
+
+    const second = host.request("terminal.list");
+    children[1]!.exit(1, null);
+    const error = (await second.catch((reason: Error) => reason)) as Error;
+    expect(error.message).not.toContain("GLIBC_2.42");
+    expect(host.diagnostics().stderrTail).toBe("");
+  });
+
+  it("reports paths, last exit and the tail through diagnostics()", async () => {
+    const { host, children } = createHost();
+    const pending = host.request("terminal.list");
+    children[0]!.stderr.write("boom\n");
+    children[0]!.exit(1, null);
+    await pending.catch(() => undefined);
+
+    expect(host.diagnostics()).toMatchObject({
+      running: false,
+      nodePath: NODE_PATH,
+      hostPath: HOST_PATH,
+      lastError: null,
+      lastExit: { code: 1, signal: "", expected: false },
+    });
+    expect(host.diagnostics().stderrTail).toBe("boom\n");
+  });
+
+  it("sends stderr and exit lines to the log sink", async () => {
+    const lines: string[] = [];
+    const { host, children } = createHost({ log: (line) => lines.push(line) });
+    const pending = host.request("terminal.list");
+    children[0]!.stderr.write("native load failed\n");
+    children[0]!.exit(1, null);
+    await pending.catch(() => undefined);
+
+    expect(lines.some((line) => line.includes("terminal host stderr: native load failed"))).toBe(
+      true,
+    );
+    expect(lines.some((line) => line.includes("terminal host exited (1)"))).toBe(true);
   });
 });
 

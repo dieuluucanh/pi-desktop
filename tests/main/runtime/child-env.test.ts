@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { composeChildEnv } from "../../../src/main/runtime/child-env";
+import { composeChildEnv, stripAppImageLibraryPaths } from "../../../src/main/runtime/child-env";
 
 describe("composeChildEnv", () => {
   it("puts the shim directory and the Node directory before the base PATH", () => {
@@ -70,5 +70,54 @@ describe("composeChildEnv", () => {
       binDir: "C:\\bin",
     });
     expect(base).toEqual({ Path: "C:\\Windows" });
+  });
+});
+
+describe("stripAppImageLibraryPaths", () => {
+  const appDir = "/tmp/.mount_PiDesk123";
+
+  it("removes AppImage entries and keeps the rest", () => {
+    const env = stripAppImageLibraryPaths({
+      APPDIR: appDir,
+      LD_LIBRARY_PATH: `${appDir}/usr/lib:/usr/local/lib`,
+      LD_PRELOAD: `${appDir}/usr/lib/libfoo.so`,
+      PATH: "/usr/bin",
+    });
+    expect(env.LD_LIBRARY_PATH).toBe("/usr/local/lib");
+    expect(env.LD_PRELOAD).toBeUndefined();
+    expect(env.PATH).toBe("/usr/bin");
+  });
+
+  it("handles a space-separated LD_PRELOAD and a trailing slash", () => {
+    const env = stripAppImageLibraryPaths({
+      APPDIR: `${appDir}/`,
+      LD_PRELOAD: `${appDir}/a.so /usr/lib/b.so`,
+    });
+    expect(env.LD_PRELOAD).toBe("/usr/lib/b.so");
+  });
+
+  it("is a no-op without APPDIR or when nothing matches", () => {
+    const without = { LD_LIBRARY_PATH: "/usr/lib" };
+    expect(stripAppImageLibraryPaths(without)).toEqual(without);
+
+    const elsewhere = stripAppImageLibraryPaths({
+      APPDIR: appDir,
+      LD_LIBRARY_PATH: "/tmp/.mount_other/lib:/usr/lib",
+    });
+    expect(elsewhere.LD_LIBRARY_PATH).toBe("/tmp/.mount_other/lib:/usr/lib");
+  });
+
+  it("does not touch a path that merely shares the prefix", () => {
+    const env = stripAppImageLibraryPaths({
+      APPDIR: "/tmp/mount",
+      LD_LIBRARY_PATH: "/tmp/mount-other/lib",
+    });
+    expect(env.LD_LIBRARY_PATH).toBe("/tmp/mount-other/lib");
+  });
+
+  it("does not mutate the input", () => {
+    const input = { APPDIR: appDir, LD_LIBRARY_PATH: `${appDir}/usr/lib` };
+    stripAppImageLibraryPaths(input);
+    expect(input.LD_LIBRARY_PATH).toBe(`${appDir}/usr/lib`);
   });
 });

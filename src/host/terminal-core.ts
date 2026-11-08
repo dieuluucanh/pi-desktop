@@ -241,6 +241,9 @@ export class TerminalCore {
         name: spec.name,
       });
     } catch (error) {
+      // A port that already knows the domain code (the native module could not
+      // load) keeps it; only unknown spawn failures become spawn_failed.
+      if (error instanceof TerminalCoreError) throw error;
       const message = error instanceof Error ? error.message : String(error);
       throw new TerminalCoreError(`could not start the shell: ${message}`, "spawn_failed");
     }

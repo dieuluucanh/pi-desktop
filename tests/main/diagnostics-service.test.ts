@@ -239,6 +239,45 @@ describe("renderDiagnosticsBundle", () => {
     expect(text).toContain("pi offline: yes");
     expect(text).toContain("(not available)");
   });
+
+  it("renders the terminal backend, its failure and the log path", () => {
+    const service = createDiagnosticsService(
+      deps({
+        terminal: () => ({
+          hosts: [
+            {
+              windowId: 1,
+              running: false,
+              nodePath: "/runtime/node/bin/node",
+              hostPath: "/app/out/host/terminal.mjs",
+              pty: {
+                loaded: false,
+                path: null,
+                error: "version `GLIBC_2.42' not found",
+              },
+              lastExit: { code: 1, signal: "", expected: false },
+              lastError: "spawn EACCES",
+              logFile: "/state/logs/terminal.log",
+            },
+          ],
+        }),
+      }),
+    );
+    const text = renderDiagnosticsBundle(service.snapshot(), "");
+
+    expect(text).toContain("## Terminal (1)");
+    expect(text).toContain("window 1 · host stopped");
+    expect(text).toContain("node-pty: not loaded — version `GLIBC_2.42' not found");
+    expect(text).toContain("last exit: 1");
+    expect(text).toContain("last error: spawn EACCES");
+    expect(text).toContain("log: /state/logs/terminal.log");
+  });
+
+  it("reports an empty terminal section when no provider is wired", () => {
+    const service = createDiagnosticsService(deps());
+    const text = renderDiagnosticsBundle(service.snapshot(), "");
+    expect(text).toContain("## Terminal (0)");
+  });
 });
 
 describe("exportBundle", () => {

@@ -19,6 +19,7 @@ import {
   type TerminalAttachResult,
   type TerminalErrorCode,
   type TerminalEventFrame,
+  type TerminalHostInfo,
   type TerminalInfo,
   type TerminalMethod,
   type TerminalSpawnSpec,
@@ -32,12 +33,23 @@ import {
   type TerminalProfileSnapshot,
 } from "../shared/terminal-profiles";
 import type { TabRecord } from "../shared/session-ipc";
-import { TerminalHostRpcError } from "./terminal-host";
+import { TerminalHostRpcError, type TerminalHostDiagnostics } from "./terminal-host";
+import { stripAppImageLibraryPaths } from "./runtime/child-env";
 
 /** The supervisor surface the service needs; tests provide a fake. */
 export interface TerminalHostLike {
   request<T>(method: TerminalMethod, params?: unknown): Promise<T>;
   dispose(): Promise<void>;
+  /** Optional so a minimal test double does not need to model the supervisor. */
+  diagnostics?(): TerminalHostDiagnostics;
+}
+
+/** What the Diagnostics view and a failed create can say about one window. */
+export interface TerminalServiceDiagnostics {
+  host: TerminalHostDiagnostics | null;
+  /** The last `terminal.info` report, when the host answered one. */
+  info: TerminalHostInfo | null;
+  logFile: string | null;
 }
 
 export interface TerminalServiceOptions {
@@ -57,6 +69,8 @@ export interface TerminalServiceOptions {
   platform?: string;
   profileDir: string;
   termProgramVersion?: string;
+  /** `<profile>/logs/terminal.log`, shown in an error's details. */
+  logFile?: string;
   log?: (line: string) => void;
 }
 
@@ -81,6 +95,7 @@ export class TerminalService {
   private readonly byTab = new Map<string, string>();
   private readonly byId = new Map<string, LiveTerminal>();
   private profileCache: { key: string; value: Promise<TerminalProfileSnapshot> } | null = null;
+  private hostInfo: TerminalHostInfo | null = null;
 
   constructor(private readonly options: TerminalServiceOptions) {}
 
@@ -140,6 +155,10 @@ export class TerminalService {
     }
 
     const spec = await this.spawnSpec(tab, profile, input.cols, input.rows);
+    // Ask the host what it is before forking anything: a native-module failure
+    // is answered here (the host stays alive), and its per-candidate errors are
+    // what the failure details need.
+    const info = await this.probeHostInfo();
     try {
       const terminal = await this.options.host.request<TerminalInfo>("terminal.open", { spec });
       const replay = await this.options.host.request<TerminalAttachResult | null>(
@@ -154,7 +173,7 @@ export class TerminalService {
         replay: replay ?? { data: "", bytes: 0, seq: 0 },
       };
     } catch (error) {
-      return this.failure(error, "the shell could not be started");
+      return this.failure(error, "the shell could not be started", info);
     }
   }
 
@@ -235,6 +254,7 @@ export class TerminalService {
 
   /** The host died: fail every mapped terminal and let the next create restart it. */
   handleHostExit(): void {
+    this.hostInfo = null;
     for (const live of this.byId.values()) {
       this.options.emit({
         event: "terminal.error",
@@ -268,7 +288,29 @@ export class TerminalService {
     this.byTab.clear();
     this.byId.clear();
     this.profileCache = null;
+    this.hostInfo = null;
     await this.options.host.dispose();
+  }
+
+  /** One window's terminal backend, for the Diagnostics view. */
+  diagnostics(): TerminalServiceDiagnostics {
+    return {
+      host: this.options.host.diagnostics?.() ?? null,
+      info: this.hostInfo,
+      logFile: this.options.logFile ?? null,
+    };
+  }
+
+  /** `terminal.info`, cached per host; a probe failure is not fatal. */
+  private async probeHostInfo(): Promise<TerminalHostInfo | null> {
+    if (this.hostInfo) return this.hostInfo;
+    try {
+      this.hostInfo = await this.options.host.request<TerminalHostInfo>("terminal.info");
+      return this.hostInfo;
+    } catch (error) {
+      this.options.log?.(`terminal info probe failed: ${String(error)}`);
+      return null;
+    }
   }
 
   private async trustOutcome(
@@ -330,7 +372,9 @@ export class TerminalService {
     if (platform !== "win32" && !env.LANG) env.LANG = "en_US.UTF-8";
     // Git Bash otherwise cds to $HOME before running the user's profile.
     if (profile.kind === "git-bash") env.CHERE_INVOKING = "1";
-    return env;
+    // The AppImage's AppRun points LD_LIBRARY_PATH at its own mount; a shell
+    // must not inherit that (2026-11-08 linux-terminal plan, step 9).
+    return stripAppImageLibraryPaths(env);
   }
 
   private require(terminalId: string): LiveTerminal {
@@ -355,13 +399,56 @@ export class TerminalService {
     );
   }
 
-  private failure(error: unknown, fallback: string): TerminalCreateOutcome {
+  private failure(
+    error: unknown,
+    fallback: string,
+    info: TerminalHostInfo | null = null,
+  ): TerminalCreateOutcome {
     const serviceError = this.toServiceError(error);
+    const message =
+      serviceError.code === "native_unavailable"
+        ? `The terminal backend could not start: ${serviceError.message}`
+        : serviceError.message || fallback;
+    const details = this.failureDetails(info);
     return {
       kind: "error",
       code: serviceError.code,
-      message: serviceError.message || fallback,
+      message,
+      ...(details ? { details } : {}),
     };
+  }
+
+  /**
+   * The report behind the banner's Details disclosure: what the host told us
+   * about the native module, what the supervisor saw, and where the log lives.
+   * This is what turns "the terminal host exited (1)" into `GLIBC_2.42`.
+   */
+  private failureDetails(info: TerminalHostInfo | null): string | undefined {
+    const host = this.options.host.diagnostics?.() ?? null;
+    const lines: string[] = [];
+    if (info) {
+      lines.push(
+        `platform: ${info.platform} ${info.arch} · node ${info.node} · terminal protocol ${info.protocol}`,
+      );
+      if (info.pty.loaded) {
+        lines.push(`node-pty: loaded${info.pty.path ? ` (${info.pty.path})` : ""}`);
+      } else {
+        lines.push(`node-pty: not loaded${info.pty.error ? ` — ${info.pty.error}` : ""}`);
+        for (const candidate of info.pty.candidates) {
+          if (candidate.error) lines.push(`  ${candidate.path}: ${candidate.error}`);
+        }
+      }
+    }
+    if (host) {
+      const exit = host.lastExit
+        ? ` · last exit ${host.lastExit.code}${host.lastExit.signal ? ` (${host.lastExit.signal})` : ""}`
+        : "";
+      lines.push(`host: ${host.running ? "running" : "stopped"}${exit}`);
+      if (host.lastError) lines.push(`last error: ${host.lastError}`);
+      if (host.stderrTail.trim().length > 0) lines.push(`stderr:\n${host.stderrTail.trim()}`);
+    }
+    if (this.options.logFile) lines.push(`log: ${this.options.logFile}`);
+    return lines.length > 0 ? lines.join("\n") : undefined;
   }
 }
 

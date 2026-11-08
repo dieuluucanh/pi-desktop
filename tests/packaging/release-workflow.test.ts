@@ -89,7 +89,8 @@ describe("release workflow", () => {
       expect(block, name).toContain("continue-on-error: true");
       // A failed job must not freeze a partial cache under the primary key;
       // the `release-v1-` segment is the manual invalidation salt.
-      expect(block, name).toContain("if: success() && steps.build-cache");
+      expect(block, name).toContain("if: >-");
+      expect(block, name).toContain("success() && steps.build-cache.outputs.cache-hit");
       expect(block, name).toContain("release-v1-");
       // Only verified upstream archives are cached; node_modules and npm's own
       // cache are deliberately absent.
@@ -257,5 +258,37 @@ describe("release workflow", () => {
     // No checkout *step* — the comment mentioning it does not count.
     expect(publish).not.toMatch(/\n\s+-\s+uses: actions\/checkout/);
     expect(publish).toContain("GH_REPO: ${{ github.repository }}");
+  });
+
+  it("builds node-pty for the glibc floor and opens a PTY from the package", () => {
+    const linux = job("linux");
+    // `ubuntu-latest` is a moving alias; v0.8.0 compiled against a 26.04-era
+    // glibc and broke every older distribution. A job that builds native code
+    // names its runner.
+    expect(linux).toContain("runner: ubuntu-24.04");
+    expect(linux).not.toContain("runner: ubuntu-latest");
+    // The explicit, pinned build replaces the runner compile. The image is
+    // resolved to a digest before it is used, so BUILD-INFO records it.
+    expect(linux).toContain("npm run pty:linux -- --arch ${{ matrix.arch }}");
+    expect(linux).toContain("npm run pty:linux -- --check-only --arch ${{ matrix.arch }}");
+    expect(linux).toContain("PI_PTY_IMAGE");
+    expect(linux).toContain("docker image inspect");
+    // The deb must carry the pinned prebuild and the host bundle, and must not
+    // carry a runner build (node-pty would load build/Release first).
+    expect(linux).toContain("node_modules/node-pty");
+    expect(linux).toContain('"$pty_dir/build/Release/pty.node"');
+    expect(linux).toContain('"$host_out/terminal.mjs"');
+    // The smoke runs from the unpacked app, the deb, the AppImage and finally
+    // inside the floor container — a binary can exist and still not dlopen.
+    expect(linux).toContain("verify-packaged-terminal.mjs --dir release/linux-unpacked");
+    expect(linux).toContain("deb_resources");
+    expect(linux).toContain("squashfs-root/resources");
+    expect(linux).toContain("debian:bullseye");
+    expect(linux).toContain("--shell /bin/sh --cwd /");
+    // Windows/macOS run the same smoke against their shipped prebuilds.
+    expect(job("windows")).toContain("verify-packaged-terminal.mjs --dir");
+    expect(job("macos")).toContain("verify-packaged-terminal.mjs");
+    expect(job("macos")).toContain("--arch arm64");
+    expect(job("macos")).toContain("--arch x64");
   });
 });

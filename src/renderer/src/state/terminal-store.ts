@@ -28,6 +28,8 @@ export interface TerminalTabState {
   pid: number | null;
   exitCode: number | null;
   error: string | null;
+  /** The supervisor's native-load report, shown behind the error's Details. */
+  errorDetails: string | null;
   /** Highest data sequence already written (the replay boundary at first). */
   lastSeq: number;
   cols: number;
@@ -77,6 +79,7 @@ function blank(cwd: string, cols: number, rows: number): TerminalTabState {
     pid: null,
     exitCode: null,
     error: null,
+    errorDetails: null,
     lastSeq: 0,
     cols,
     rows,
@@ -124,17 +127,21 @@ export function createTerminalStore(deps: TerminalStoreDeps): TerminalStore {
       if (outcome.kind === "needs-trust") {
         const granted = await deps.requestTrust(outcome.cwd);
         if (!granted) {
-          patch(tabId, { status: "needs-trust", error: null });
+          patch(tabId, { status: "needs-trust", error: null, errorDetails: null });
           return false;
         }
         return runCreate(tabId, cwd, cols, rows, "session", profileId);
       }
       if (outcome.kind === "unavailable") {
-        patch(tabId, { status: "failed", error: outcome.message });
+        patch(tabId, { status: "failed", error: outcome.message, errorDetails: null });
         return false;
       }
       if (outcome.kind === "error") {
-        patch(tabId, { status: "failed", error: outcome.message });
+        patch(tabId, {
+          status: "failed",
+          error: outcome.message,
+          errorDetails: outcome.details ?? null,
+        });
         return false;
       }
 
@@ -151,6 +158,7 @@ export function createTerminalStore(deps: TerminalStoreDeps): TerminalStore {
         lastSeq: outcome.replay.seq,
         exitCode: null,
         error: null,
+        errorDetails: null,
       });
       return true;
     };
@@ -179,7 +187,7 @@ export function createTerminalStore(deps: TerminalStoreDeps): TerminalStore {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           deps.log?.(`terminal create failed: ${message}`);
-          patch(tabId, { status: "failed", error: message });
+          patch(tabId, { status: "failed", error: message, errorDetails: null });
           return false;
         }
       },
@@ -265,7 +273,7 @@ export function createTerminalStore(deps: TerminalStoreDeps): TerminalStore {
         }
         const found = findByTerminal(terminalId);
         if (!found) return;
-        patch(found[0], { status: "failed", error: message });
+        patch(found[0], { status: "failed", error: message, errorDetails: null });
       },
 
       removeTab(tabId) {
