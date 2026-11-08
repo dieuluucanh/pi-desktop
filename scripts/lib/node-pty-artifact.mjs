@@ -145,18 +145,35 @@ export function isPtyPrebuildFresh(existing, expected) {
  * The module is copied to `/tmp` inside the container, so node-gyp's build tree
  * never lands in the mounted workspace as root; only `pty.node` and the readelf
  * report are written back.
+ *
+ * Debian 11 left security support before this shipped, so `deb.debian.org` keeps
+ * the `bullseye-security` index but its `pool/updates` files now 404. The image's
+ * apt sources are replaced with `archive.debian.org`, whose Release files are
+ * expired by design — hence `check-valid-until=no`. Keeping the archived image is
+ * the point: glibc 2.31 is the floor the packages promise.
  */
 export function linuxPtyContainer(input) {
   const platform = input.arch === "x64" ? "linux/amd64" : "linux/arm64";
+  const archiveMirror = "http://archive.debian.org";
   const script = [
     "set -euo pipefail",
     "module_dir=$1; node_path=$2; node_gyp=$3; node_version=$4; output_dir=$5",
-    "apt-get update -qq",
-    "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends " +
-      "build-essential python3 ca-certificates binutils",
+    "rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources",
+    `printf '%s\\n' 'deb [check-valid-until=no] ${archiveMirror}/debian bullseye main' ` +
+      `'deb [check-valid-until=no] ${archiveMirror}/debian-security bullseye-security main' ` +
+      "> /etc/apt/sources.list",
+    "apt-get -o Acquire::Check-Valid-Until=false update -qq",
+    "DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Check-Valid-Until=false install -y -qq " +
+      "--no-install-recommends build-essential python3 ca-certificates binutils",
     "rm -rf /tmp/node-pty",
     'cp -a "$module_dir" /tmp/node-pty',
     "cd /tmp/node-pty",
+    // node-pty's binding.gyp shells out to `node -p ...` for node-addon-api, and
+    // the container has no system Node: put the bundled one first on PATH. The
+    // module is copied to /tmp without its hoisted deps, so NODE_PATH points
+    // back at the workspace `node_modules` for that require and its includes.
+    'export PATH="$(dirname "$node_path"):$PATH"',
+    'export NODE_PATH="$(dirname "$module_dir")"',
     '"$node_path" "$node_gyp" rebuild --target="$node_version" --release',
     'mkdir -p "$output_dir"',
     'cp build/Release/pty.node "$output_dir/pty.node"',

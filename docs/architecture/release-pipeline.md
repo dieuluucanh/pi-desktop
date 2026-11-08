@@ -329,6 +329,21 @@ moved to a 26.04-era glibc (2.42), and the v0.8.0 AppImage shipped a binary that
 could not load on Linux Mint 22 (2.39). The image digest is resolved before the
 build, so `BUILD-INFO.json` names exactly what compiled it.
 
+The container build is deliberately self-contained, because the first dry run of
+this release failed on both points:
+
+- Debian 11 has left security support, so `deb.debian.org` still serves the
+  `bullseye-security` index while its pool 404s. The script rewrites
+  `/etc/apt/sources.list` to `archive.debian.org` with `check-valid-until=no`.
+- The image has no system Node and the module is compiled from a `/tmp` copy,
+  so the bundled Node goes on `PATH` and the workspace `node_modules` on
+  `NODE_PATH` (`binding.gyp` requires `node-addon-api`).
+
+`afterPack` also **fails a macOS package** whose `prebuilds/darwin-<arch>/`
+lacks an executable `spawn-helper`: node-pty execs it to allocate the PTY, the
+npm tarball stores it `0644`, and a broken one only surfaces as
+`posix_spawnp failed` on the first terminal open.
+
 Verification, in order:
 
 - `readelf --version-info` in `afterPack` rejects a binary above the floor;
@@ -337,7 +352,10 @@ Verification, in order:
 - `scripts/verify-packaged-terminal.mjs` opens a real PTY from the unpacked app,
   the `.deb` and the AppImage, then runs once more inside `debian:bullseye` with
   the app's own bundled Node — the only place where "it loads on the runner"
-  cannot hide a floor mismatch.
+  cannot hide a floor mismatch. On macOS it requires the packaged
+  `spawn-helper` to exist and be executable first, and a spawn failure names the
+  shell, the cwd and the helper's mode instead of only the opaque
+  `posix_spawnp failed`.
 
 The `linux.target` entries in `electron-builder.yml` deliberately carry **no**
 `arch` list: a pinned list overrides `--x64`/`--arm64`, so each job would package

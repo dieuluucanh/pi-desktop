@@ -31,6 +31,22 @@ export function hostPaths(
   arch?: string,
 ): { hostBundle: string; nodePath: string };
 
+/** The executable node-pty spawns to allocate a PTY (`darwin` only). */
+export function spawnHelperPath(
+  resourcesDir: string,
+  platform: string,
+  arch: string,
+): string | null;
+
+export interface ExecutableState {
+  exists: boolean;
+  executable: boolean;
+  mode: string | null;
+}
+
+/** File evidence for a failed spawn, without throwing. */
+export function describeExecutable(target: string): ExecutableState;
+
 /** Opens a real PTY through the packaged host; throws with the evidence. */
 export function verifyPackagedTerminal(
   options: VerifyOptions,

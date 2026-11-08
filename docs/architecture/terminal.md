@@ -76,6 +76,13 @@ runner's.
 - The release matrix is `ubuntu-24.04` (x64) and `ubuntu-24.04-arm` (arm64) —
   never `-latest`. In v0.8.0 `ubuntu-latest` had moved to a 26.04-era image
   (glibc 2.42); the binary shipped but could not load on Mint 22 (glibc 2.39).
+- Debian 11 left security support before this shipped, so the live mirror keeps
+  the `bullseye-security` index but 404s its pool. The container therefore
+  rewrites `/etc/apt/sources.list` to **`archive.debian.org`** with
+  `check-valid-until=no` (archive Release files are expired by design), and puts
+  the bundled Node on `PATH` with the workspace `node_modules` on `NODE_PATH` —
+  `binding.gyp` shells out to `node -p "require('node-addon-api')…"` and the
+  module is compiled from a `/tmp` copy that has no deps beside it.
 - `afterPack` runs `readelf --version-info` and rejects a binary above the floor.
   A `.deb` must contain the pinned prebuild, `out/host/terminal.mjs`, and **no**
   `build/Release/pty.node`. The release job then opens a real PTY from the

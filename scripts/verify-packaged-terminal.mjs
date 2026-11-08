@@ -22,7 +22,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -104,6 +104,38 @@ export function hostPaths(resourcesDir, platform = process.platform, arch = proc
 function defaultShell(platform) {
   if (platform === "win32") return process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe";
   return process.env.SHELL ?? "/bin/sh";
+}
+
+/**
+ * The executable node-pty spawns to create a PTY on macOS. It ships next to
+ * `pty.node` in the prebuild directory, and a copy that lost its executable bit
+ * (or was pruned) fails as the opaque `posix_spawnp failed` on first open.
+ */
+export function spawnHelperPath(resourcesDir, platform, arch) {
+  if (platform !== "darwin") return null;
+  return join(
+    resourcesDir,
+    "app.asar.unpacked",
+    "node_modules",
+    "node-pty",
+    "prebuilds",
+    `${platform}-${arch}`,
+    "spawn-helper",
+  );
+}
+
+/** File evidence for a failed spawn, without throwing. */
+export function describeExecutable(target) {
+  try {
+    const stats = statSync(target);
+    return {
+      exists: true,
+      executable: stats.isFile() && (stats.mode & 0o111) !== 0,
+      mode: (stats.mode & 0o777).toString(8).padStart(3, "0"),
+    };
+  } catch {
+    return { exists: false, executable: false, mode: null };
+  }
 }
 
 /** A small, bounded env: the host validates it, and a shell needs no more. */
@@ -288,6 +320,14 @@ export async function verifyPackagedTerminal(options) {
   }
 
   const shell = options.shell ?? defaultShell(options.platform);
+  const helperPath = spawnHelperPath(resources, options.platform, options.arch);
+  const helper = helperPath ? describeExecutable(helperPath) : null;
+  if (helperPath && !helper?.executable) {
+    throw new Error(
+      `node-pty spawn-helper is ${helper?.exists ? `not executable (mode ${helper.mode})` : "missing"} ` +
+        `at ${helperPath}; macOS cannot open a PTY without it`,
+    );
+  }
   const host = startHost(nodePath, paths.hostBundle, options.cwd);
   try {
     const info = await host.request("terminal.info", undefined, options.timeoutMs);
@@ -300,21 +340,35 @@ export async function verifyPackagedTerminal(options) {
       );
     }
 
-    const opened = await host.request(
-      "terminal.open",
-      {
-        spec: {
-          cwd: options.cwd,
-          shell,
-          args: [],
-          env: shellEnv(options.platform),
-          cols: 80,
-          rows: 24,
-          name: TERMINAL_NAME,
+    const opened = await host
+      .request(
+        "terminal.open",
+        {
+          spec: {
+            cwd: options.cwd,
+            shell,
+            args: [],
+            env: shellEnv(options.platform),
+            cols: 80,
+            rows: 24,
+            name: TERMINAL_NAME,
+          },
         },
-      },
-      options.timeoutMs,
-    );
+        options.timeoutMs,
+      )
+      .catch((error) => {
+        // The spawn error alone names no path. Add what the run knows, so a CI
+        // failure says whether it was the shell, the cwd or the helper.
+        const context = [
+          `shell ${shell}`,
+          `cwd ${options.cwd}`,
+          `platform ${options.platform}-${options.arch}`,
+          helperPath ? `spawn-helper ${helperPath} (mode ${helper?.mode ?? "missing"})` : null,
+        ]
+          .filter(Boolean)
+          .join(", ");
+        throw new Error(`${error instanceof Error ? error.message : String(error)} [${context}]`);
+      });
     const terminalId = opened?.id;
     if (!terminalId) throw new Error("terminal.open returned no terminal id");
 

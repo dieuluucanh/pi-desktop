@@ -651,6 +651,17 @@ jobs:
           set -euo pipefail
           arm_app='release/mac-arm64/Pi Desktop.app'
           x64_app='release/mac/Pi Desktop.app'
+          # node-pty execs this helper and reports only
+          # `posix_spawnp failed`, so print the evidence that decides the case:
+          # presence, mode and signature.
+          for arch in arm64 x64; do
+            if [ "$arch" = arm64 ]; then app="$arm_app"; else app="$x64_app"; fi
+            helper="$app/Contents/Resources/app.asar.unpacked/node_modules/node-pty/prebuilds/darwin-$arch/spawn-helper"
+            echo "--- spawn-helper ($arch)"
+            ls -l "$helper" || true
+            file "$helper" || true
+            codesign -dv --verbose=2 "$helper" 2>&1 | head -5 || true
+          done
           node scripts/verify-packaged-terminal.mjs \
             --resources "$arm_app/Contents/Resources" --arch arm64
           node scripts/verify-packaged-terminal.mjs \

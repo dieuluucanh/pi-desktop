@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,7 +10,13 @@ const { pruneNodePty } =
     pruneNodePty: (
       resourcesDir: string,
       target: string,
-    ) => { found: boolean; removed: string[]; kept: string | null; binary: string | null };
+    ) => {
+      found: boolean;
+      removed: string[];
+      kept: string | null;
+      binary: string | null;
+      helper?: string | null;
+    };
   };
 
 const roots: string[] = [];
@@ -101,6 +107,25 @@ describe("pruneNodePty", () => {
       removed: [],
       kept: null,
       binary: null,
+      helper: null,
     });
+  });
+
+  it("makes the macOS spawn-helper executable", () => {
+    // node-pty execs prebuilds/<target>/spawn-helper to allocate the PTY; the
+    // npm tarball stores it 0644, so packaging re-applies 0755.
+    const { resources, root } = fixture();
+    const result = pruneNodePty(resources, "darwin-arm64");
+    const helper = join(root, "prebuilds", "darwin-arm64", "spawn-helper");
+    expect(result.helper).toBe(helper);
+    if (process.platform !== "win32") {
+      expect(statSync(helper).mode & 0o111).not.toBe(0);
+    }
+  });
+
+  it("fails the macOS package when the spawn-helper is missing", () => {
+    const { resources, root } = fixture();
+    rmSync(join(root, "prebuilds", "darwin-arm64", "spawn-helper"), { force: true });
+    expect(() => pruneNodePty(resources, "darwin-arm64")).toThrow(/no node-pty spawn-helper/);
   });
 });

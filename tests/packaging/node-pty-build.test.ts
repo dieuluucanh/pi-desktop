@@ -103,7 +103,22 @@ describe("linuxPtyContainer", () => {
     expect(container.script).toContain("chmod 0755");
     expect(container.script).toContain("readelf --version-info");
     expect(container.script).toContain("build-essential python3 ca-certificates binutils");
-    expect(container.script).toContain("apt-get update");
+    expect(container.script).toContain("apt-get");
+  });
+
+  it("installs from the archived Debian 11 mirror, not the EOL live pool", () => {
+    // bullseye's security suite was archived in 2026: deb.debian.org still
+    // serves the index but the pool files 404, so the build must point apt at
+    // archive.debian.org and accept its intentionally expired Release files.
+    const script = linuxPtyContainer({ ...base, arch: "x64" }).script;
+    expect(script).toContain("archive.debian.org/debian bullseye main");
+    expect(script).toContain("archive.debian.org/debian-security bullseye-security main");
+    expect(script).toContain("check-valid-until=no");
+    expect(script).toContain("Acquire::Check-Valid-Until=false");
+    expect(script).not.toContain("deb.debian.org");
+    // The sources file is written from scratch: the image's own list points at
+    // the live mirror that no longer has the packages.
+    expect(script).toContain("rm -f /etc/apt/sources.list");
   });
 });
 

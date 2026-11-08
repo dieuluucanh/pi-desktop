@@ -1,14 +1,16 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  describeExecutable,
   hostPaths,
   parseVerifyArgs,
   resourcesDirFor,
   runtimeTarget,
+  spawnHelperPath,
 } from "../../scripts/verify-packaged-terminal.mjs";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -99,6 +101,54 @@ describe("hostPaths", () => {
     expect(hostPaths("/app/resources", "darwin", "arm64").nodePath).toBe(
       join("/app/resources", "runtime", "node", "darwin-arm64", "bin", "node"),
     );
+  });
+});
+
+describe("spawn-helper", () => {
+  it("resolves the macOS helper next to pty.node and nothing elsewhere", () => {
+    expect(spawnHelperPath("/app/resources", "darwin", "arm64")).toBe(
+      join(
+        "/app/resources",
+        "app.asar.unpacked",
+        "node_modules",
+        "node-pty",
+        "prebuilds",
+        "darwin-arm64",
+        "spawn-helper",
+      ),
+    );
+    expect(spawnHelperPath("/app/resources", "linux", "x64")).toBeNull();
+    expect(spawnHelperPath("/app/resources", "win32", "x64")).toBeNull();
+  });
+
+  it("reports a missing helper instead of pretending it is executable", () => {
+    const state = describeExecutable(join(tmpdir(), "pi-no-such-spawn-helper"));
+    expect(state).toEqual({ exists: false, executable: false, mode: null });
+  });
+
+  it("treats a non-executable helper as a failure, not a spawn attempt", () => {
+    // The npm tarball stores spawn-helper 0644; packaging must chmod it or
+    // macOS fails every open with the opaque `posix_spawnp failed`.
+    const root = mkdtempSync(join(tmpdir(), "pi-helper-"));
+    roots.push(root);
+    const helper = join(root, "spawn-helper");
+    writeFileSync(helper, "#!/bin/sh\n");
+    expect(describeExecutable(helper)).toEqual({
+      exists: true,
+      executable: false,
+      mode: expect.stringMatching(/^[0-7]{3}$/),
+    });
+  });
+
+  // Windows has no executable bit: chmod is a no-op there, and a darwin package
+  // is only ever built on macOS.
+  it.runIf(process.platform !== "win32")("accepts an executable helper", () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-helper-"));
+    roots.push(root);
+    const helper = join(root, "spawn-helper");
+    writeFileSync(helper, "#!/bin/sh\n");
+    chmodSync(helper, 0o755);
+    expect(describeExecutable(helper)).toEqual({ exists: true, executable: true, mode: "755" });
   });
 });
 

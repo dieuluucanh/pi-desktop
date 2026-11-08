@@ -24,7 +24,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   assertNativeFloor,
@@ -156,7 +156,8 @@ function gitCommit(projectDir) {
 
 export function pruneNodePty(resourcesDir, target) {
   const root = join(resourcesDir, "app.asar.unpacked", "node_modules", "node-pty");
-  if (!existsSync(root)) return { found: false, removed: [], kept: null, binary: null };
+  if (!existsSync(root))
+    return { found: false, removed: [], kept: null, binary: null, helper: null };
 
   const removed = [];
   // Sources, vendored deps and the prebuild scripts are build-time only; the
@@ -184,9 +185,28 @@ export function pruneNodePty(resourcesDir, target) {
   }
 
   // A copy/repack can drop the executable bit, and macOS fails at spawn time
-  // rather than at package time. Re-apply it here.
+  // rather than at package time. Re-apply it here, then require it: node-pty
+  // runs `prebuilds/<target>/spawn-helper` to create the PTY, and an
+  // unexecutable or missing helper surfaces as the opaque
+  // `posix_spawnp failed` on the first terminal open.
   const helper = join(root, "prebuilds", target, "spawn-helper");
-  if (existsSync(helper)) chmodSync(helper, 0o755);
+  if (target.startsWith("darwin-")) {
+    if (!existsSync(helper)) {
+      throw new Error(
+        `afterPack: ${target} has no node-pty spawn-helper at ${helper}. ` +
+          `macOS cannot open a PTY without it; the npm tarball ships ` +
+          `prebuilds/${target}/spawn-helper next to pty.node.`,
+      );
+    }
+    chmodSync(helper, 0o755);
+    // Windows has no executable bit, so the mode check is only meaningful on a
+    // POSIX host — which is the only place a darwin package is ever built.
+    if (process.platform !== "win32" && (statSync(helper).mode & 0o111) === 0) {
+      throw new Error(
+        `afterPack: ${helper} is not executable after chmod; macOS refuses to spawn it.`,
+      );
+    }
+  }
 
   // Fail-closed (2026-11-08 linux-terminal plan, step 4): a package that cannot
   // open a PTY must never be published. The 2026-11-05 plan asked for this
@@ -218,7 +238,13 @@ export function pruneNodePty(resourcesDir, target) {
     }
   }
 
-  return { found: true, removed: removed.sort(), kept: target, binary };
+  return {
+    found: true,
+    removed: removed.sort(),
+    kept: target,
+    binary,
+    helper: target.startsWith("darwin-") ? helper : null,
+  };
 }
 
 /** The terminal host bundle must be inside the asar-unpacked tree. */
