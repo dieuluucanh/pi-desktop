@@ -344,6 +344,14 @@ lacks an executable `spawn-helper`: node-pty execs it to allocate the PTY, the
 npm tarball stores it `0644`, and a broken one only surfaces as
 `posix_spawnp failed` on the first terminal open.
 
+The same helper exposed a second defect: node-pty 1.1.0 rewrites `app.asar` to
+`app.asar.unpacked` unconditionally, so a module that already lives under
+`app.asar.unpacked` resolves `app.asar.unpacked.unpacked/spawn-helper` and every
+macOS spawn fails. `afterPack` patches the packaged `lib/unixTerminal.js` to make
+that rewrite idempotent (mirroring [node-pty #924](https://github.com/microsoft/node-pty/pull/924))
+and throws when the upstream source no longer matches, so a dependency bump
+re-opens the decision instead of silently shipping it.
+
 Verification, in order:
 
 - `readelf --version-info` in `afterPack` rejects a binary above the floor;

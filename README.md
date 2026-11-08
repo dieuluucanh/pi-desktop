@@ -13,16 +13,20 @@ skills, themes and settings are managed through a UI, using the **same
 `~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
 > **Status:** v0.8.1 — the fifth public release, a stability patch for the Linux
-> packages. v0.8.0 shipped a Linux `node-pty` binary built against glibc 2.42, so
-> the integrated terminal could not start on older distributions. v0.8.1 builds it
-> in a pinned Debian 11 container, **fails the package** above the support floor
-> (glibc 2.31 / `GLIBCXX_3.4.28`), opens a real PTY from the packaged artefacts in
-> CI and reports a broken native load instead of dying. The release pipeline also
-> retries and caches upstream downloads after the first v0.8.0 tag run failed on
-> GitHub 504s. Windows, Linux and macOS installers are built and published from CI
-> on a version tag; Windows is the primary artefact, macOS and Linux are beta, and
-> builds are unsigned. Known limitations and the deferred backlog are recorded in
-> [docs/releases/v0.8.1.md](docs/releases/v0.8.1.md) and
+> packages and the macOS terminal. v0.8.0 shipped a Linux `node-pty` binary built
+> against glibc 2.42, so the integrated terminal could not start on older
+> distributions. v0.8.1 builds it in a pinned Debian 11 container, **fails the
+> package** above the support floor (glibc 2.31 / `GLIBCXX_3.4.28`), opens a real
+> PTY from the packaged artefacts in CI and reports a broken native load instead
+> of dying. The packaged-PTY smoke also found that no macOS build ever had a
+> working terminal: node-pty 1.1.0 rewrote its helper path to
+> `app.asar.unpacked.unpacked`, so every open failed with `posix_spawnp failed`;
+> the packaged copy is now patched and the package fails closed. The release
+> pipeline also retries and caches upstream downloads after the first v0.8.0 tag
+> run failed on GitHub 504s. Windows, Linux and macOS installers are built and
+> published from CI on a version tag; Windows is the primary artefact, macOS and
+> Linux are beta, and builds are unsigned. Known limitations and the deferred
+> backlog are recorded in [docs/releases/v0.8.1.md](docs/releases/v0.8.1.md) and
 > [docs/product/backlog.md](docs/product/backlog.md).
 >
 > **Pi for Office is an optional integration.** It installs from Extensions →

@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -16,6 +24,7 @@ const { pruneNodePty } =
       kept: string | null;
       binary: string | null;
       helper?: string | null;
+      helperPatched?: boolean;
     };
   };
 
@@ -33,6 +42,8 @@ function fixture(entries: string[] = []): { resources: string; root: string } {
     "third_party/conpty/x.dll",
     "scripts/prebuild.js",
     "lib/index.js",
+    // node-pty 1.1.0's rewrite, verbatim: packing patches it to be idempotent.
+    "lib/unixTerminal.js",
     "package.json",
     "pty.pdb",
     ...entries,
@@ -42,6 +53,19 @@ function fixture(entries: string[] = []): { resources: string; root: string } {
     mkdirSync(join(target, ".."), { recursive: true });
     // A `.node` must be non-empty: a zero-byte binary is a failed copy, not a
     // usable native module.
+    if (path === "lib/unixTerminal.js") {
+      writeFileSync(
+        target,
+        [
+          "var helperPath = native.dir + '/spawn-helper';",
+          "helperPath = path.resolve(__dirname, helperPath);",
+          "helperPath = helperPath.replace('app.asar', 'app.asar.unpacked');",
+          "helperPath = helperPath.replace('node_modules.asar', 'node_modules.asar.unpacked');",
+          "",
+        ].join("\n"),
+      );
+      continue;
+    }
     writeFileSync(target, path.endsWith(".node") ? "native-binary" : "");
   }
   return { resources: base, root };
@@ -108,7 +132,35 @@ describe("pruneNodePty", () => {
       kept: null,
       binary: null,
       helper: null,
+      helperPatched: false,
     });
+  });
+
+  it("makes node-pty's macOS helper rewrite idempotent in the package", () => {
+    // node-pty@1.1.0 appends `.unpacked` unconditionally, so a module that
+    // already lives in app.asar.unpacked points macOS at
+    // app.asar.unpacked.unpacked/spawn-helper and every open fails with
+    // `posix_spawnp failed` (upstream PR #924).
+    const { resources, root } = fixture();
+    const result = pruneNodePty(resources, "darwin-arm64");
+    expect(result.helperPatched).toBe(true);
+    const source = readFileSync(join(root, "lib", "unixTerminal.js"), "utf8");
+    expect(source).toContain("Pi Desktop: node-pty@1.1.0 rewrote app.asar");
+    expect(source).toContain("!helperPath.includes('app.asar.unpacked')");
+    expect(source).toContain("helperPath = helperPath.replace('app.asar', 'app.asar.unpacked');");
+
+    // A second pack of the same tree is a no-op, never a double patch.
+    expect(pruneNodePty(resources, "darwin-arm64").helperPatched).toBe(false);
+  });
+
+  it("fails the package when node-pty's helper rewrite is gone", () => {
+    // Fail closed: the upstream source changed, so the bug has to be
+    // re-evaluated instead of silently shipping an unpatched helper path.
+    const { resources, root } = fixture();
+    writeFileSync(join(root, "lib", "unixTerminal.js"), "// upstream changed\n");
+    expect(() => pruneNodePty(resources, "darwin-arm64")).toThrow(
+      /no longer contains node-pty's helper rewrite/,
+    );
   });
 
   it("makes the macOS spawn-helper executable", () => {

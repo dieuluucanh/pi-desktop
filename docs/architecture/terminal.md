@@ -93,6 +93,23 @@ runner's.
   `node-pty` right after `npm ci`, so a policy change is a red job rather than a
   broken package.
 
+### The packaged macOS copy is patched
+
+`node-pty@1.1.0` resolves the helper it execs from `native.dir`, which is
+`<…>/app.asar.unpacked/node_modules/node-pty/lib/prebuilds/darwin-<arch>`, and
+then runs `replace('app.asar', 'app.asar.unpacked')`. Because the module already
+lives under `app.asar.unpacked`, that produces
+`app.asar.unpacked.unpacked/spawn-helper` — a path that does not exist, so macOS
+rejects the very first `terminal.open` with the opaque `posix_spawnp failed`.
+Upstream fixed this in [node-pty #924](https://github.com/microsoft/node-pty/pull/924)
+but no release carries it yet.
+
+`afterPack` therefore rewrites the packaged `lib/unixTerminal.js` so the path
+rewrite only runs when the path is still packed, and **fails the package** when
+the expected upstream lines are gone — an upgrade must be re-checked instead of
+shipping an unpatched helper path. Only macOS execs the helper, but the patch is
+applied on every platform so the installed package is identical everywhere.
+
 ### When the native module cannot load
 
 `pty-node.ts` imports `node-pty` **lazily, on the first request**, so a broken

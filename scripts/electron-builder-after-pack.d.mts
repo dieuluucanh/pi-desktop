@@ -81,3 +81,14 @@ export function verifyNativeFloor(binary: string): {
   glibc: string | null;
   glibcxx: string | null;
 };
+
+/**
+ * Makes the packaged node-pty's `spawn-helper` path rewrite idempotent (the
+ * upstream 1.1.0 bug appends `.unpacked` twice on macOS). Throws when the
+ * expected upstream source is gone, so an upgrade cannot silently ship it.
+ */
+export function patchNodePtyHelperPath(moduleDir: string): {
+  patched: boolean;
+  file: string;
+  reason: "patched" | "already-patched";
+};

@@ -24,7 +24,15 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   assertNativeFloor,
@@ -157,7 +165,14 @@ function gitCommit(projectDir) {
 export function pruneNodePty(resourcesDir, target) {
   const root = join(resourcesDir, "app.asar.unpacked", "node_modules", "node-pty");
   if (!existsSync(root))
-    return { found: false, removed: [], kept: null, binary: null, helper: null };
+    return {
+      found: false,
+      removed: [],
+      kept: null,
+      binary: null,
+      helper: null,
+      helperPatched: false,
+    };
 
   const removed = [];
   // Sources, vendored deps and the prebuild scripts are build-time only; the
@@ -208,6 +223,10 @@ export function pruneNodePty(resourcesDir, target) {
     }
   }
 
+  // node-pty computes the macOS helper path at require() time; the packaged
+  // copy needs the idempotent rewrite (see patchNodePtyHelperPath).
+  const helperPatch = patchNodePtyHelperPath(root);
+
   // Fail-closed (2026-11-08 linux-terminal plan, step 4): a package that cannot
   // open a PTY must never be published. The 2026-11-05 plan asked for this
   // throw; the implementation only pruned, so a Linux artifact shipped without
@@ -244,7 +263,58 @@ export function pruneNodePty(resourcesDir, target) {
     kept: target,
     binary,
     helper: target.startsWith("darwin-") ? helper : null,
+    helperPatched: helperPatch.patched,
   };
+}
+
+/** The `app.asar` rewrite node-pty 1.1.0 ships, verbatim from `lib/unixTerminal.js`. */
+const ASAR_HELPER_REWRITE = [
+  "helperPath = helperPath.replace('app.asar', 'app.asar.unpacked');",
+  "helperPath = helperPath.replace('node_modules.asar', 'node_modules.asar.unpacked');",
+].join("\n");
+
+/** The idempotent rewrite that replaces it. */
+const ASAR_HELPER_REWRITE_FIXED = [
+  "// Pi Desktop: node-pty@1.1.0 rewrote app.asar -> app.asar.unpacked",
+  "// unconditionally. When the module already lives in app.asar.unpacked (the",
+  "// host runs under plain Node, not Electron's asar shim) the path became",
+  "// app.asar.unpacked.unpacked and macOS rejected every terminal.open with",
+  "// the opaque 'posix_spawnp failed'. Mirrors node-pty PR #924.",
+  "if (",
+  "  !helperPath.includes('app.asar.unpacked') &&",
+  "  !helperPath.includes('node_modules.asar.unpacked')",
+  ") {",
+  "  helperPath = helperPath.replace('app.asar', 'app.asar.unpacked');",
+  "  helperPath = helperPath.replace('node_modules.asar', 'node_modules.asar.unpacked');",
+  "}",
+].join("\n");
+
+/**
+ * Makes node-pty's `spawn-helper` path resolution idempotent in the packaged
+ * copy.
+ *
+ * Only macOS execs the helper, but the rewrite runs on every platform and the
+ * patch keeps the installed package identical everywhere. Fail-closed: when the
+ * expected lines are gone, node-pty changed and the bug has to be re-evaluated
+ * rather than silently shipped.
+ */
+export function patchNodePtyHelperPath(moduleDir) {
+  const file = join(moduleDir, "lib", "unixTerminal.js");
+  if (!existsSync(file)) {
+    throw new Error(`afterPack: node-pty has no lib/unixTerminal.js at ${file}.`);
+  }
+  const source = readFileSync(file, "utf8");
+  if (source.includes("Pi Desktop: node-pty@1.1.0 rewrote app.asar")) {
+    return { patched: false, file, reason: "already-patched" };
+  }
+  if (!source.includes(ASAR_HELPER_REWRITE)) {
+    throw new Error(
+      `afterPack: ${file} no longer contains node-pty's helper rewrite. ` +
+        `Re-check the app.asar.unpacked.unpacked bug (node-pty PR #924) before shipping.`,
+    );
+  }
+  writeFileSync(file, source.replace(ASAR_HELPER_REWRITE, ASAR_HELPER_REWRITE_FIXED));
+  return { patched: true, file, reason: "patched" };
 }
 
 /** The terminal host bundle must be inside the asar-unpacked tree. */
