@@ -54,6 +54,7 @@ jobs:
   prepare:
     name: prepare
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write # create the draft release
     outputs:
@@ -62,12 +63,14 @@ jobs:
       publish: ${{ steps.resolve.outputs.publish }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       # No npm cache here: a cached tree feeding a release is the one place a
       # poisoned cache would reach installed apps.
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 24
+          node-version: 24.22.2
 
       - name: Resolve the tag and the publish decision
         id: resolve
@@ -108,18 +111,33 @@ jobs:
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
           set -euo pipefail
-          gh release view "$TAG" >/dev/null 2>&1 ||
-            gh release create "$TAG" \
-              --draft \
-              --verify-tag \
-              --title "Pi Desktop $TAG" \
-              --notes-file "docs/releases/$TAG.md"
+          retry_create() {
+            local attempts=3 delay=10 n=1 status
+            while true; do
+              if gh release view "$TAG" >/dev/null 2>&1; then return 0; fi
+              if gh release create "$TAG" \
+                --draft \
+                --verify-tag \
+                --title "Pi Desktop $TAG" \
+                --notes-file "docs/releases/$TAG.md"; then
+                return 0
+              fi
+              status=$?
+              if [ "$n" -ge "$attempts" ]; then return "$status"; fi
+              echo "release create attempt $n/$attempts failed (exit $status); retrying in ${delay}s" >&2
+              sleep "$delay"
+              n=$((n + 1))
+              delay=$((delay * 2))
+            done
+          }
+          retry_create
           echo "draft release: $TAG"
 
   windows:
     name: windows (${{ needs.prepare.outputs.version }})
     needs: prepare
     runs-on: windows-latest
+    timeout-minutes: 60
     permissions:
       contents: write # upload to the draft release
     defaults:
@@ -131,20 +149,66 @@ jobs:
     env:
       TAG: ${{ needs.prepare.outputs.tag }}
       VERSION: ${{ needs.prepare.outputs.version }}
+      npm_config_fetch_retries: "5"
+      npm_config_fetch_retry_mintimeout: "20000"
+      npm_config_fetch_retry_maxtimeout: "120000"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 24
+          node-version: 24.22.2
+
+      # Verified upstream archives only: electron-builder checks its tool
+      # checksums, and the Electron zip is validated against a fresh
+      # SHASUMS256.txt. `node_modules` and npm's cache are deliberately absent.
+      - name: Restore the release download caches
+        id: build-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ runner.temp }}/electron-cache
+            ${{ runner.temp }}/electron-builder-cache
+          key: ${{ runner.os }}-${{ runner.arch }}-release-v1-${{ hashFiles('package-lock.json', 'electron-builder.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-release-v1-
 
       - name: Install
-        run: npm ci
+        run: bash scripts/retry.sh 3 30 -- npm ci
 
       # Fetches the win32-x64 runtime, builds, regenerates the host shims, runs
       # `runtime:verify`, then NSIS + portable (+ `latest.yml`, blockmap).
-      - name: Package
-        run: npm run package:win
+      - name: Build
+        run: npm run build
+
+      - name: Fetch the bundled runtime
+        run: npm run runtime:fetch -- --platform win32-x64
+
+      - name: Verify the bundled runtime
+        run: npm run runtime:verify
+
+      # Windows used to run all of the above in one step. Splitting it means a
+      # retry never rebuilds the app or refetches Node.
+      - name: Package (retry on transient downloads)
+        env:
+          ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
+          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
+          DEBUG: "@electron/get:*"
+        run: bash scripts/package-retry.sh npx electron-builder --win --x64 --publish never -c.electronDownload.cache="$ELECTRON_CACHE"
+
+      - name: Inspect the failed package attempt
+        if: failure()
+        env:
+          ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
+          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
+        run: |
+          set -uo pipefail
+          echo "--- cache sizes"
+          du -sh "$ELECTRON_CACHE" "$ELECTRON_BUILDER_CACHE" 2>/dev/null || true
+          echo "--- release tree"
+          find release -maxdepth 2 2>/dev/null || true
 
       - name: Verify the artefacts
         run: |
@@ -167,7 +231,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "$TAG" \
+          bash scripts/retry.sh 3 15 -- gh release upload "$TAG" \
             release/*.exe release/*.blockmap release/latest.yml \
             --clobber
 
@@ -183,6 +247,16 @@ jobs:
             release/latest.yml
           if-no-files-found: error
 
+      - name: Save the release download caches
+        if: success() && steps.build-cache.outputs.cache-hit != 'true' && steps.build-cache.outputs.cache-primary-key != ''
+        continue-on-error: true
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ runner.temp }}/electron-cache
+            ${{ runner.temp }}/electron-builder-cache
+          key: ${{ steps.build-cache.outputs.cache-primary-key }}
+
   linux:
     name: linux-${{ matrix.arch }} (${{ needs.prepare.outputs.version }})
     needs: prepare
@@ -193,26 +267,46 @@ jobs:
           - arch: x64
             runner: ubuntu-latest
             runtime: linux-x64
-          # node-pty has no Linux prebuild, so arm64 must compile on an arm64
-          # runner rather than rely on a cross toolchain.
+          # node-pty ships no Linux prebuild: both Linux jobs compile it, and
+          # arm64 must compile on an arm64 runner rather than a cross toolchain.
           - arch: arm64
             runner: ubuntu-24.04-arm
             runtime: linux-arm64
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     permissions:
       contents: write
     env:
       TAG: ${{ needs.prepare.outputs.tag }}
       VERSION: ${{ needs.prepare.outputs.version }}
+      npm_config_fetch_retries: "5"
+      npm_config_fetch_retry_mintimeout: "20000"
+      npm_config_fetch_retry_maxtimeout: "120000"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 24
+          node-version: 24.22.2
+
+      # Verified upstream archives only: electron-builder checks its tool
+      # checksums, and the Electron zip is validated against a fresh
+      # SHASUMS256.txt. `node_modules` and npm's cache are deliberately absent.
+      - name: Restore the release download caches
+        id: build-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ runner.temp }}/electron-cache
+            ${{ runner.temp }}/electron-builder-cache
+          key: ${{ runner.os }}-${{ runner.arch }}-release-v1-${{ hashFiles('package-lock.json', 'electron-builder.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-release-v1-
 
       - name: Install
-        run: npm ci
+        run: bash scripts/retry.sh 3 30 -- npm ci
 
       - name: Build
         run: npm run build
@@ -228,8 +322,24 @@ jobs:
       - name: Verify the bundled runtime
         run: npm run runtime:verify
 
-      - name: Package
-        run: npx electron-builder --linux --${{ matrix.arch }} --publish never
+      - name: Package (retry on transient downloads)
+        env:
+          ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
+          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
+          DEBUG: "@electron/get:*"
+        run: bash scripts/package-retry.sh npx electron-builder --linux --${{ matrix.arch }} --publish never -c.electronDownload.cache="$ELECTRON_CACHE"
+
+      - name: Inspect the failed package attempt
+        if: failure()
+        env:
+          ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
+          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
+        run: |
+          set -uo pipefail
+          echo "--- cache sizes"
+          du -sh "$ELECTRON_CACHE" "$ELECTRON_BUILDER_CACHE" 2>/dev/null || true
+          echo "--- release tree"
+          find release -maxdepth 2 2>/dev/null || true
 
       - name: Verify the artefacts
         run: |
@@ -279,7 +389,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "$TAG" \
+          bash scripts/retry.sh 3 15 -- gh release upload "$TAG" \
             release/*.AppImage release/*.deb release/latest-linux*.yml \
             --clobber
 
@@ -295,12 +405,23 @@ jobs:
             release/latest-linux*.yml
           if-no-files-found: error
 
+      - name: Save the release download caches
+        if: success() && steps.build-cache.outputs.cache-hit != 'true' && steps.build-cache.outputs.cache-primary-key != ''
+        continue-on-error: true
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ runner.temp }}/electron-cache
+            ${{ runner.temp }}/electron-builder-cache
+          key: ${{ steps.build-cache.outputs.cache-primary-key }}
+
   macos:
     name: macos (${{ needs.prepare.outputs.version }})
     needs: prepare
     # `macos-latest` is the arm64 image (3-core M1). Both arches are packaged in
     # one run: electron-builder downloads the x64 Electron distribution itself.
     runs-on: macos-latest
+    timeout-minutes: 90
     permissions:
       contents: write
     env:
@@ -312,15 +433,34 @@ jobs:
       # rejects an update built with it - hence "manual updates" on macOS.
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
       PI_MAC_SIGNING: adhoc
+      npm_config_fetch_retries: "5"
+      npm_config_fetch_retry_mintimeout: "20000"
+      npm_config_fetch_retry_maxtimeout: "120000"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 24
+          node-version: 24.22.2
+
+      # Verified upstream archives only: electron-builder checks its tool
+      # checksums, and the Electron zip is validated against a fresh
+      # SHASUMS256.txt. `node_modules` and npm's cache are deliberately absent.
+      - name: Restore the release download caches
+        id: build-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ runner.temp }}/electron-cache
+            ${{ runner.temp }}/electron-builder-cache
+          key: ${{ runner.os }}-${{ runner.arch }}-release-v1-${{ hashFiles('package-lock.json', 'electron-builder.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-release-v1-
 
       - name: Install
-        run: npm ci
+        run: bash scripts/retry.sh 3 30 -- npm ci
 
       - name: Build
         run: npm run build
@@ -336,10 +476,27 @@ jobs:
       - name: Verify the bundled runtime
         run: npm run runtime:verify
 
-      - name: Package
+      - name: Package (retry on transient downloads)
+        env:
+          ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
+          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
+          DEBUG: "@electron/get:*"
         run: |
-          npx electron-builder --mac --arm64 --x64 --publish never \
-            -c.mac.identity=-
+          bash scripts/package-retry.sh npx electron-builder --mac --arm64 --x64 --publish never \
+            -c.mac.identity=- \
+            -c.electronDownload.cache="$ELECTRON_CACHE"
+
+      - name: Inspect the failed package attempt
+        if: failure()
+        env:
+          ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
+          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
+        run: |
+          set -uo pipefail
+          echo "--- cache sizes"
+          du -sh "$ELECTRON_CACHE" "$ELECTRON_BUILDER_CACHE" 2>/dev/null || true
+          echo "--- release tree"
+          find release -maxdepth 2 2>/dev/null || true
 
       - name: Verify the bundles
         run: |
@@ -420,7 +577,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "$TAG" \
+          bash scripts/retry.sh 3 15 -- gh release upload "$TAG" \
             release/*.dmg release/*.zip release/latest-mac.yml \
             --clobber
 
@@ -436,11 +593,22 @@ jobs:
             release/latest-mac.yml
           if-no-files-found: error
 
+      - name: Save the release download caches
+        if: success() && steps.build-cache.outputs.cache-hit != 'true' && steps.build-cache.outputs.cache-primary-key != ''
+        continue-on-error: true
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ runner.temp }}/electron-cache
+            ${{ runner.temp }}/electron-builder-cache
+          key: ${{ steps.build-cache.outputs.cache-primary-key }}
+
   publish:
     name: publish
     needs: [prepare, windows, linux, macos]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     env:
@@ -456,7 +624,23 @@ jobs:
       - name: Publish the draft
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$TAG" --draft=false --latest
+        run: |
+          set -euo pipefail
+          retry() {
+            local attempts="$1" delay="$2"
+            shift 2
+            local n=1 status
+            while true; do
+              if "$@"; then return 0; fi
+              status=$?
+              if [ "$n" -ge "$attempts" ]; then return "$status"; fi
+              echo "attempt $n/$attempts failed (exit $status); retrying in ${delay}s" >&2
+              sleep "$delay"
+              n=$((n + 1))
+              delay=$((delay * 2))
+            done
+          }
+          retry 3 15 gh release edit "$TAG" --draft=false --latest
 
       # Proves the two things only the public internet can prove: the manifests
       # are readable without a token, and the installers they name are there.
@@ -469,7 +653,7 @@ jobs:
           manifests="$manifests latest-linux-arm64.yml latest-mac.yml"
           for manifest in $manifests; do
             for attempt in 1 2 3 4 5; do
-              if body="$(curl -fsSL "$base/$manifest")"; then break; fi
+              if body="$(curl -fsSL --max-time 60 --connect-timeout 15 "$base/$manifest")"; then break; fi
               echo "waiting for $manifest ($attempt)"
               sleep 5
               body=""
@@ -482,8 +666,15 @@ jobs:
             "Pi-Desktop-$VERSION-win-x64-setup.exe" \
             "Pi-Desktop-$VERSION-linux-x86_64-appimage.AppImage" \
             "Pi-Desktop-$VERSION-mac-arm64.dmg"; do
-            code="$(curl -s -o /dev/null -w '%{http_code}' \
-              -L -r 0-0 "$base/$asset")"
+            code=""
+            for attempt in 1 2 3 4 5; do
+              code="$(curl -s -o /dev/null -w '%{http_code}' \
+                -L -r 0-0 --max-time 60 --connect-timeout 15 \
+                "$base/$asset" || true)"
+              if [ "$code" = "206" ] || [ "$code" = "200" ]; then break; fi
+              echo "waiting for $asset ($attempt)"
+              sleep 5
+            done
             echo "asset: $asset -> HTTP $code"
             test "$code" = "206" || test "$code" = "200"
           done

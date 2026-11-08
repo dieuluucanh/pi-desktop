@@ -20,6 +20,9 @@ import { describe, expect, it } from "vitest";
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const workflowPath = ".github/workflows/release.yml";
 const yaml = readFileSync(join(repoRoot, workflowPath), "utf8").replace(/\r\n/g, "\n");
+const nodeLock = JSON.parse(
+  readFileSync(join(repoRoot, "resources", "runtime", "node.lock.json"), "utf8"),
+) as { node: { version: string } };
 
 const JOB_NAMES = ["prepare", "windows", "linux", "macos", "publish"];
 
@@ -62,6 +65,100 @@ describe("release workflow", () => {
     for (const name of ["linux", "macos"]) {
       expect(job(name), name).toMatch(/set -euo pipefail/);
     }
+  });
+
+  it("pins the bundled Node, retries the install and caches verified downloads", () => {
+    // The release workflow must build with the same Node as the bundled
+    // runtime. Pinning it also makes the node-gyp headers cache exact.
+    expect(nodeLock.node.version).toBe("24.22.2");
+    for (const name of ["prepare", "windows", "linux", "macos"]) {
+      expect(job(name), name).toContain(`node-version: ${nodeLock.node.version}`);
+      // The release workflow holds `contents: write`; do not leave the checkout
+      // token in `.git/config` for the build/upload steps.
+      expect(job(name), name).toContain("persist-credentials: false");
+    }
+
+    for (const name of ["windows", "linux", "macos"]) {
+      const block = job(name);
+      expect(block, name).toContain("bash scripts/retry.sh 3 30 -- npm ci");
+      expect(block, name).toContain(
+        "actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830",
+      );
+      expect(block, name).toContain("actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830");
+      expect(block, name).toContain("steps.build-cache.outputs.cache-primary-key");
+      expect(block, name).toContain("continue-on-error: true");
+      // A failed job must not freeze a partial cache under the primary key;
+      // the `release-v1-` segment is the manual invalidation salt.
+      expect(block, name).toContain("if: success() && steps.build-cache");
+      expect(block, name).toContain("release-v1-");
+      // Only verified upstream archives are cached; node_modules and npm's own
+      // cache are deliberately absent.
+      expect(block, name).toContain("${{ runner.temp }}/electron-cache");
+      expect(block, name).toContain("${{ runner.temp }}/electron-builder-cache");
+      // node-gyp headers are not cached (the workflow cannot verify them);
+      // `npm ci` is retried instead.
+      expect(block, name).not.toContain("node-gyp");
+      expect(block, name).toContain("hashFiles('package-lock.json', 'electron-builder.yml')");
+      expect(block, name).toContain("ELECTRON_CACHE: ${{ runner.temp }}/electron-cache");
+      expect(block, name).toContain(
+        "ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache",
+      );
+      expect(block, name).toContain('npm_config_fetch_retries: "5"');
+      expect(block, name).toContain('npm_config_fetch_retry_mintimeout: "20000"');
+      expect(block, name).toContain('npm_config_fetch_retry_maxtimeout: "120000"');
+    }
+  });
+
+  it("retries packaging with a bounded, diagnosable attempt", () => {
+    for (const name of ["windows", "linux", "macos"]) {
+      const block = job(name);
+      expect(block, name).toContain("bash scripts/package-retry.sh npx electron-builder");
+      expect(block, name).toContain('-c.electronDownload.cache="$ELECTRON_CACHE"');
+      expect(block, name).toContain('DEBUG: "@electron/get:*"');
+      expect(block, name).toContain("Inspect the failed package attempt");
+    }
+
+    const windows = job("windows");
+    expect(windows).toContain("npm run build");
+    expect(windows).toContain("npm run runtime:fetch -- --platform win32-x64");
+    expect(windows).toContain("npm run runtime:verify");
+    expect(windows).not.toContain("npm run package:win");
+    expect(windows).toContain("--win --x64");
+
+    expect(job("linux")).toContain("--linux --${{ matrix.arch }}");
+    expect(job("macos")).toContain("--mac --arm64 --x64");
+    expect(job("macos")).toContain("-c.mac.identity=-");
+
+    const timeouts: Record<string, string> = {
+      prepare: "10",
+      windows: "60",
+      linux: "60",
+      macos: "90",
+      publish: "15",
+    };
+    for (const [name, minutes] of Object.entries(timeouts)) {
+      expect(job(name), name).toContain(`timeout-minutes: ${minutes}`);
+    }
+  });
+
+  it("retries uploads and the publish flip", () => {
+    for (const name of ["windows", "linux", "macos"]) {
+      const block = job(name);
+      expect(block, name).toContain('bash scripts/retry.sh 3 15 -- gh release upload "$TAG"');
+      expect(block, name).toContain("--clobber");
+    }
+    expect(job("prepare")).toContain("retry_create");
+    expect(job("prepare")).toContain('gh release create "$TAG"');
+    expect(job("prepare")).toContain('gh release view "$TAG"');
+
+    const publish = job("publish");
+    expect(publish).toContain('retry 3 15 gh release edit "$TAG" --draft=false --latest');
+    expect(publish).toContain("for attempt in 1 2 3 4 5");
+    expect(publish).toContain("waiting for $asset");
+    expect(publish).toContain("--max-time 60");
+    expect(publish).toContain("--connect-timeout 15");
+    // The publish job still has no checkout: the retry is inline.
+    expect(publish).not.toMatch(/\n\s+-\s+uses: actions\/checkout/);
   });
 
   it("refuses a tag that disagrees with package.json", () => {

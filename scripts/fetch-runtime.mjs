@@ -43,6 +43,7 @@ import { pipeline } from "node:stream/promises";
 import { parseArgs } from "node:util";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { fetchWithRetry } from "./fetch-retry.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const lockPath = join(repoRoot, "resources", "runtime", "node.lock.json");
@@ -129,7 +130,20 @@ async function updateLock({ mirror, platform }) {
   const v = version.startsWith("v") ? version : `v${version}`;
 
   log(`fetch-runtime: refreshing lock from ${base}/${v}/SHASUMS256.txt`);
-  const response = await fetch(`${base}/${v}/SHASUMS256.txt`);
+  let response;
+  try {
+    response = await fetchWithRetry(`${base}/${v}/SHASUMS256.txt`, {
+      onRetry: ({ attempt, attempts, status, error, delayMs }) => {
+        const detail =
+          status ?? (error instanceof Error ? error.message : String(error ?? "network error"));
+        log(
+          `fetch-runtime: retrying SHASUMS256.txt (${detail}) in ${Math.round(delayMs / 1000)}s [${attempt}/${attempts}]`,
+        );
+      },
+    });
+  } catch (error) {
+    fail(`cannot refresh the lock: ${error instanceof Error ? error.message : String(error)}`);
+  }
   if (!response.ok) fail(`SHASUMS256.txt returned HTTP ${response.status}`);
 
   const wanted = platform === "all" ? SUPPORTED : [platform];
@@ -210,9 +224,17 @@ async function sha256TextFile(target) {
 }
 
 async function download(url, destination) {
-  const response = await fetch(url);
+  const response = await fetchWithRetry(url, {
+    onRetry: ({ attempt, attempts, status, error, delayMs }) => {
+      const detail =
+        status ?? (error instanceof Error ? error.message : String(error ?? "network error"));
+      log(
+        `fetch-runtime: retrying ${url} (${detail}) in ${Math.round(delayMs / 1000)}s [${attempt}/${attempts}]`,
+      );
+    },
+  });
   if (!response.ok || !response.body) {
-    fail(`download failed: HTTP ${response.status} for ${url}`);
+    throw new Error(`download failed: HTTP ${response.status} for ${url}`);
   }
   const total = Number(response.headers.get("content-length") ?? 0);
   let received = 0;
@@ -233,6 +255,29 @@ async function download(url, destination) {
   });
   await pipeline(body, progressStream, createWriteStream(destination));
   return received;
+}
+
+/**
+ * The HTTP helper already retries 5xx; this outer loop covers a stream that
+ * dies mid-transfer (the request succeeded, then the connection dropped).
+ */
+async function downloadWithRetry(url, destination, target) {
+  const attempts = 3;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await download(url, destination);
+      return;
+    } catch (error) {
+      if (attempt >= attempts) throw error;
+      await rm(destination, { force: true });
+      const delayMs = attempt * 5000;
+      const detail = error instanceof Error ? error.message : String(error);
+      log(
+        `fetch-runtime: ${target} download failed (${detail}); retrying in ${delayMs / 1000}s [${attempt}/${attempts}]`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
 }
 
 function extract(archive, destination) {
@@ -408,7 +453,7 @@ async function installOne(target, lock, { force, mirror }) {
   try {
     const archive = join(staging, artifact.archive);
     log(`fetch-runtime: downloading ${artifact.archive} (${target})`);
-    await download(url, archive);
+    await downloadWithRetry(url, archive, target);
 
     const digest = await sha256File(archive);
     if (digest !== artifact.sha256) {
@@ -612,4 +657,6 @@ async function main() {
   log(`fetch-runtime: ${installed} runtime(s) installed; shims ready in resources/runtime/bin`);
 }
 
-await main();
+await main().catch((error) => {
+  fail(error instanceof Error ? error.message : String(error));
+});

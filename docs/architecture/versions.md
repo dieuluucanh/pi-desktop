@@ -22,14 +22,15 @@ Changing a pin here means changing it there.
 
 ## Runtime the app bundles (not an npm dependency)
 
-| Component | Pin                                                                                   | Where                                       |
-| --------- | ------------------------------------------------------------------------------------- | ------------------------------------------- |
-| Node.js   | Node 24 LTS, exact build recorded in `resources/runtime/node.lock.json` (plan step 2) | `resources/runtime/node/<platform>-<arch>/` |
-| npm CLI   | the `npm` shipped inside that Node distribution                                       | invoked as `<bundledNode> <npmCliJs>`       |
+| Component | Pin                                                                                                                                               | Where                                       |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| Node.js   | Node 24 LTS, exact build recorded in `resources/runtime/node.lock.json` (plan step 2); the release workflow pins `setup-node` to the same version | `resources/runtime/node/<platform>-<arch>/` |
+| npm CLI   | the `npm` shipped inside that Node distribution                                                                                                   | invoked as `<bundledNode> <npmCliJs>`       |
 
 The bundled runtime — not Electron's Node — runs every Pi host process and every
 npm install (plan D3). `resources/runtime/` is gitignored; `npm run runtime:fetch`
-populates it.
+populates it. The release workflow's `setup-node` is pinned to the same `24.22.2`;
+`checks.yml` and the site workflow still use the floating `24` major.
 
 ## Build provenance (not a dependency)
 

@@ -4,6 +4,8 @@ dist
 release
 coverage
 packages/checkpoints/index.mjs
+# Shell scripts have no Prettier parser.
+scripts/*.sh
 test-results
 playwright-report
 resources/runtime

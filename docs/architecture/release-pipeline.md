@@ -50,15 +50,76 @@ publish   gh release edit <tag> --draft=false --latest
 `needs: [prepare, windows, linux, macos]` on the publish job is the whole safety
 property: a failed or cancelled platform means the release stays a draft.
 
+## Network resilience
+
+A release performs several kinds of network work: `npm ci` (registry tarballs and,
+on both Linux jobs, a `node-pty` → `node-gyp` Node-headers download because the
+package ships no Linux prebuild), `runtime:fetch` (nodejs.org), electron-builder
+(the Electron zip plus its builder tools), `gh release create/upload/edit`, and
+the anonymous `curl` feed checks. The v0.8.0 run failed because electron-builder's
+downloader retries a GitHub 504 only for about 12 seconds: `app-builder-lib` wraps
+`@electron/get@3.1.0` (which uses `got@11.8.6`) in
+`retry({ retries: 3, interval: 2000, backoff: 2000 })` — 2 s, 4 s, 6 s — and all
+four runners exhausted that window together.
+
+The workflow now has two retry layers and a verified cache:
+
+- `scripts/package-retry.sh` runs electron-builder three times with 60 s and
+  120 s waits, removing `release/` between attempts.
+- `scripts/retry.sh` does the same for `npm ci`, `gh release upload` and
+  `gh release create`. The `publish` job has no checkout, so its
+  `gh release edit` retry is an inline function rather than a script call.
+- `scripts/fetch-retry.mjs` retries `runtime:fetch` and `--update-lock` on
+  408/425/429/5xx and network errors, honours `Retry-After`, and enforces a
+  per-attempt request timeout. The timeout covers the request/headers; the
+  caller streams the body under the job timeout.
+- The publish job re-checks each manifest and each ranged installer GET five
+  times before failing, and every `curl` has a connect/overall timeout.
+
+Release jobs also pin `setup-node` to `24.22.2`, matching
+`resources/runtime/node.lock.json`, so the build is reproducible.
+
+`DEBUG=@electron/get:*` is set on each package step, so the log names the
+cache decision and the URL instead of a bare `Response code 504`. An
+`if: failure()` step prints the cache sizes and the partially built `release/`
+tree.
+
+### Caching
+
+Each build job restores and saves `actions/cache` entries for:
+
+- `${{ runner.temp }}/electron-cache` — electron-builder's Electron zips,
+  selected explicitly with `-c.electronDownload.cache=...`;
+- `${{ runner.temp }}/electron-builder-cache` — `ELECTRON_BUILDER_CACHE`, the
+  NSIS / winCodeSign / AppImage / fpm / 7zip tools.
+
+Only successful jobs save the cache (`if: success()`), and the key carries a
+`release-v1-` segment: bump it to discard a bad cache without changing a
+dependency. This is deliberately not the `setup-node` npm cache: `node_modules`,
+`~/.npm` and the dependency tree are never restored. The cached entries are the
+Electron zips and builder-tool archives that electron-builder verifies against
+`SHASUMS256.txt` and its hardcoded tool checksums; a tampered archive fails
+verification rather than reaching an installer. node-gyp headers are not cached
+because the workflow cannot independently verify them; `npm ci` is retried
+instead. The release workflow runs on tags and `main` only, and a pull request
+cannot write the base-branch cache. The cache is best-effort: a cold tag cache
+still has both retry layers.
+
+### Timeouts
+
+A stalled download used to consume the six-hour job default. The jobs now time
+out at 10 minutes for `prepare`, 60 for Windows/Linux, 90 for macOS and 15 for
+`publish`; a stuck request fails while the log still has the attempt banners.
+
 ## Per-platform build contract
 
 Each job builds on its own OS and asserts the finished artefacts, not the build log.
 
-| Platform | Runner                    | Artefacts                                                                            | Manifests                                    |
-| -------- | ------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------- |
-| Windows  | `windows-latest` (bash)   | `Pi-Desktop-<v>-win-x64-setup.exe`, `…-setup.exe.blockmap`, `…-win-x64-portable.exe` | `latest.yml`                                 |
-| Linux    | `ubuntu-latest`           | `…-linux-x86_64-appimage.AppImage`, `…-linux-amd64-deb.deb`, and the `arm64` pair    | `latest-linux.yml`, `latest-linux-arm64.yml` |
-| macOS    | `macos-latest` (arm64 M1) | `…-mac-arm64.dmg`, `…-mac-x64.dmg`, `…-mac-arm64.zip`, `…-mac-x64.zip`               | `latest-mac.yml`                             |
+| Platform | Runner                                            | Artefacts                                                                            | Manifests                                    |
+| -------- | ------------------------------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------- |
+| Windows  | `windows-latest` (bash)                           | `Pi-Desktop-<v>-win-x64-setup.exe`, `…-setup.exe.blockmap`, `…-win-x64-portable.exe` | `latest.yml`                                 |
+| Linux    | `ubuntu-latest` (x64), `ubuntu-24.04-arm` (arm64) | `…-linux-x86_64-appimage.AppImage`, `…-linux-amd64-deb.deb`, and the `arm64` pair    | `latest-linux.yml`, `latest-linux-arm64.yml` |
+| macOS    | `macos-latest` (arm64 M1)                         | `…-mac-arm64.dmg`, `…-mac-x64.dmg`, `…-mac-arm64.zip`, `…-mac-x64.zip`               | `latest-mac.yml`                             |
 
 `${os}` renders as `win`/`linux`/`mac` and `${arch}` as `x64`, `x86_64`, `amd64` or
 `arm64` depending on the target, which is why `scripts/release-assets.mjs` encodes the
@@ -76,8 +137,10 @@ the host architecture last.
 
 ### Windows
 
-`npm run package:win` fetches the win32-x64 runtime, builds, regenerates the host shims,
-runs `runtime:verify`, then produces NSIS + portable. The job asserts that
+The release job runs `npm run build`, `runtime:fetch -- --platform win32-x64` and
+`runtime:verify` as separate steps, then packages with electron-builder. Splitting them
+means a transient-download retry never rebuilds the app or refetches the runtime;
+`npm run package:win` remains the local one-shot equivalent. The job asserts that
 `release/win-unpacked/resources/runtime/node` holds **exactly** `win32-x64` (the
 `afterPack` prune), that `app-update.yml` names the GitHub provider, and that
 `build-info.json` reports `channel: "release"` and the expected version.
@@ -141,10 +204,13 @@ changes anything outside `release.yml`, the workflow secrets and `PI_MAC_SIGNING
 gh workflow run release.yml --ref <branch> -f publish=false
 ```
 
-Same builds, same assertions, no release. Each job uploads its installers and manifests
-as a workflow artifact (`windows-<v>`, `linux-<v>`, `macos-<v>`), which is how a new
-platform is validated before anything is published. Artifact storage is free on a public
-repository; they still expire, so download what you need.
+Run this on the exact commit that will be tagged **before** pushing the tag. Same
+builds, same assertions, no release. Each job uploads its installers and manifests as a
+workflow artifact (`windows-<v>`, `linux-<arch>-<v>`, `macos-<v>`), which is how a new
+platform is validated before anything is published. In the log, check the
+`actions/cache/restore` and `save` lines, the `@electron/get:*` URL lines and the
+`attempt N/3` package banners. Artifact storage is free on a public repository; they
+still expire, so download what you need.
 
 ## Product site
 
@@ -187,11 +253,17 @@ regenerates docs from `docs/`; never edit generated content under
 beta`, `Upstream` and `Verified structurally, not on a live machine`; update the guide,
    README, docs index, backlog and traceability with the same version.
 3. Run the gates, merge to `main`, push.
-4. Dry-run the workflow on the branch if anything in the pipeline or a platform changed.
+4. Dry-run the release commit before tagging:
+   `gh workflow run release.yml --ref main -f publish=false`. Confirm the cache
+   restore/save, the `@electron/get:*` URL lines and the `attempt N/3` package
+   banners. This is the only step that exercises the complete pipeline before a tag.
 5. `git tag -a v<v> -m "Pi Desktop v<v>" && git push origin v<v>`.
 6. Watch the run: `prepare` creates the draft, three builds upload, `publish` flips it and
-   verifies the feed anonymously. A failure after the tag is a **new patch release**, never
-   a moved tag.
+   verifies the feed anonymously. If a build fails on an upstream 5xx, a timeout or a
+   truncated download, run `gh run rerun <id> --failed`: the draft is reused and uploads
+   are `--clobber`. If the failure is deterministic (a wrong command, archive name or
+   platform config), land the fix and cut a **new patch release**; never move the tag.
+   Delete the stale draft when a new patch supersedes it and keep the old tag as history.
 7. Install from the published URL on each platform you can reach and record what you did
    not verify.
 8. Confirm `https://api.github.com/repos/dieuluucanh/pi-desktop/releases/latest` returns
@@ -214,6 +286,13 @@ beta`, `Upstream` and `Verified structurally, not on a live machine`; update the
 | Wrong runtime in a package               | `afterPack` prune + per-package runtime assertion                        |
 | Broken mac signature                     | `codesign --verify` + the `damaged` check                                |
 | Feed not actually public                 | anonymous `curl` in the publish job, no token                            |
+| Upstream 5xx during a download           | two retry layers (`package-retry.sh`, `retry.sh`, `fetchWithRetry`)      |
+| Stalled download                         | per-request timeouts + 10/60/90/15-minute job timeouts                   |
+| npm registry 5xx                         | npm fetch retries + `scripts/retry.sh 3 30 -- npm ci`                    |
+| Upload or publish API 5xx                | `scripts/retry.sh` with `--clobber`; inline publish retry                |
+| Retry budget exhausted                   | the job fails and the release stays a draft; rerun or cut a new patch    |
+| Cache poisoning                          | checksum-verified upstream archives; no `node_modules`/npm cache; tags   |
+| Tag cache miss                           | best-effort cache; both retry layers still run                           |
 | Two releases racing                      | `concurrency: release-<ref>`, `cancel-in-progress: false`                |
 
 ## Native terminal (`node-pty`)

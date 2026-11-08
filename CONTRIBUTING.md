@@ -108,6 +108,9 @@ All three platforms are built and published by
 its own OS, asserts the finished artefacts, and uploads the installers plus their
 `latest*.yml` manifests to a **draft** Release that is published only once all
 three succeed. A `workflow_dispatch` run with `publish: false` is the dry run.
+The pipeline retries transient download failures at two layers, caches verified
+upstream artifacts and documents the rerun-vs-new-patch decision in
+[Network resilience](docs/architecture/release-pipeline.md#network-resilience).
 The mechanics — and how to cut the next release — are in
 [the release pipeline](docs/architecture/release-pipeline.md).
 
