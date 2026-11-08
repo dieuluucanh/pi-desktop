@@ -280,7 +280,10 @@ describe("release workflow", () => {
     expect(linux).toContain('"$host_out/terminal.mjs"');
     // The smoke runs from the unpacked app, the deb, the AppImage and finally
     // inside the floor container — a binary can exist and still not dlopen.
-    expect(linux).toContain("verify-packaged-terminal.mjs --dir release/linux-unpacked");
+    // electron-builder names the unpacked dir per arch, so the step resolves
+    // it instead of hard-coding x64's default.
+    expect(linux).toContain("-name 'linux*-unpacked'");
+    expect(linux).toContain('--dir "$app_dir"');
     expect(linux).toContain("deb_resources");
     expect(linux).toContain("squashfs-root/resources");
     expect(linux).toContain("debian:bullseye");

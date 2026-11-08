@@ -442,7 +442,12 @@ jobs:
       - name: Open a real PTY from the packaged app
         run: |
           set -euo pipefail
-          node scripts/verify-packaged-terminal.mjs --dir release/linux-unpacked
+          # electron-builder names the default arch `linux-unpacked` and any
+          # other `linux-<arch>-unpacked`, so the matrix cannot hard-code one.
+          app_dir="$(find release -maxdepth 1 -type d -name 'linux*-unpacked' \
+            | head -n 1)"
+          test -n "$app_dir"
+          node scripts/verify-packaged-terminal.mjs --dir "$app_dir"
 
           deb_dir="$(mktemp -d)"
           dpkg-deb -x release/*.deb "$deb_dir"
@@ -644,6 +649,58 @@ jobs:
             cat release/latest-mac.yml
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The PTY smoke fails at the opaque `posix_spawnp failed`. This prints the
+      # variants that decide whether the shell, the environment or the running
+      # Node is the difference: system vs bundled Node, bash vs zsh, minimal vs
+      # inherited env. Evidence, not a gate.
+      - name: Diagnose the macOS PTY spawn
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          app='release/mac-arm64/Pi Desktop.app'
+          resources="$app/Contents/Resources"
+          module="$resources/app.asar.unpacked/node_modules/node-pty"
+          bundled="$resources/runtime/node/darwin-arm64/bin/node"
+          probe="$RUNNER_TEMP/pty-probe.cjs"
+          cat > "$probe" <<'PROBE'
+          const pty = require(process.argv[2]);
+          const shell = process.argv[3];
+          const mode = process.argv[4];
+          const env = mode === 'minimal'
+            ? { TERM: 'xterm-256color', PATH: process.env.PATH,
+                LANG: 'C.UTF-8' }
+            : process.env;
+          try {
+            const term = pty.spawn(shell, [], {
+              cwd: process.cwd(), env, cols: 80, rows: 24,
+              name: 'xterm-256color',
+            });
+            term.onData((data) => {
+              if (data.includes('PROBE_OK')) {
+                console.log('PROBE_OK', process.execPath, shell, mode);
+                process.exit(0);
+              }
+            });
+            term.write('echo PROBE_OK\n');
+            setTimeout(() => {
+              console.log('PROBE_TIMEOUT', process.execPath, shell, mode);
+              process.exit(1);
+            }, 8000);
+          } catch (error) {
+            console.log('PROBE_FAIL', process.execPath, shell, mode,
+              error.message);
+            process.exit(1);
+          }
+          PROBE
+          for node_bin in node "$bundled"; do
+            for shell in /bin/bash /bin/zsh; do
+              for mode in minimal inherit; do
+                echo "--- $node_bin $shell $mode"
+                "$node_bin" "$probe" "$module" "$shell" "$mode" || true
+              done
+            done
+          done
 
       # The packaged terminal, with the real node-pty prebuild for each arch.
       - name: Open a real PTY from the packaged app
