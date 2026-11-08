@@ -183,7 +183,15 @@ signature, so the job requires:
   `env -i PATH=/usr/bin:/bin`, and the bundled
   `runtime/node/darwin-arm64/bin/node --version` — this is what proves the
   `app.asar.unpacked` paths survive packaging;
-- `build-info.json` to report `channel: "release"` and `macSigning: "adhoc"`.
+- `build-info.json` to report `channel: "release"` and `macSigning: "adhoc"`;
+- the packaged `node-pty` tree to carry the idempotent helper-path patch, and its
+  `spawn-helper` to exist, be executable and be signed.
+
+The PTY smoke opens a real shell from the **arm64** bundle. The runner is arm64, so the
+x64 bundle only runs when Rosetta is installed; the job exercises it when
+`arch -x86_64 /usr/bin/true` succeeds, and otherwise records the skip in the summary
+after asserting the x64 helper, its mode, its signature and the packaged patch. A
+hosted runner does not install Rosetta, so plan on the structural path there.
 
 A 15-second launch of the packaged `.app` is recorded in the run summary with
 `continue-on-error`, because a macOS runner may have no GUI session. It is evidence, not
