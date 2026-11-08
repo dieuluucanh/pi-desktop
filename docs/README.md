@@ -14,6 +14,10 @@
 
 ## Release notes
 
+- [`releases/v0.8.1.md`](releases/v0.8.1.md) — v0.8.1 release notes (the Linux
+  terminal fix: a pinned Debian 11 `node-pty` build, a packaged-PTY smoke test and a
+  fail-closed ELF floor gate, plus release-pipeline retries and caching), install table,
+  known limitations and verification status.
 - [`releases/v0.8.0.md`](releases/v0.8.0.md) — v0.8.0 release notes (notification
   classes and the rebuilt bell, the update offer as a notification, and About & updates
   as its own view), install table, known limitations and verification status.

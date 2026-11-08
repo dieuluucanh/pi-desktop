@@ -5,23 +5,24 @@
 [Website](https://dieuluucanh.github.io/pi-desktop/) ·
 [Installation](https://dieuluucanh.github.io/pi-desktop/#installation) ·
 [Documentation](https://dieuluucanh.github.io/pi-desktop/docs/) ·
-[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.8.0/)
+[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.8.1/)
 
 A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global
 installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
 `~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
-> **Status:** v0.8.0 — the fourth public release. **Notifications** now have
-> classes, a real bell with a count, a closeable popover and a recoverable
-> hidden archive; informational messages start off, so background chatter stays
-> out of the way. A newer release is offered as an ordinary notification with a
-> **View update** action, and **About & updates** moved out of Settings into its
-> own sidebar view below Diagnostics, where it can carry the update dot. Windows,
-> Linux and macOS installers are built and published from CI on a version tag.
-> The Windows installer is the primary artefact; macOS and Linux are beta, and
+> **Status:** v0.8.1 — the fifth public release, a stability patch for the Linux
+> packages. v0.8.0 shipped a Linux `node-pty` binary built against glibc 2.42, so
+> the integrated terminal could not start on older distributions. v0.8.1 builds it
+> in a pinned Debian 11 container, **fails the package** above the support floor
+> (glibc 2.31 / `GLIBCXX_3.4.28`), opens a real PTY from the packaged artefacts in
+> CI and reports a broken native load instead of dying. The release pipeline also
+> retries and caches upstream downloads after the first v0.8.0 tag run failed on
+> GitHub 504s. Windows, Linux and macOS installers are built and published from CI
+> on a version tag; Windows is the primary artefact, macOS and Linux are beta, and
 > builds are unsigned. Known limitations and the deferred backlog are recorded in
-> [docs/releases/v0.8.0.md](docs/releases/v0.8.0.md) and
+> [docs/releases/v0.8.1.md](docs/releases/v0.8.1.md) and
 > [docs/product/backlog.md](docs/product/backlog.md).
 >
 > **Pi for Office is an optional integration.** It installs from Extensions →
@@ -141,7 +142,7 @@ the Markdown in `docs/` remains the source.
   host protocol + RPC mapping, extension UI host + TUI surface, Office
   integration, runtime, pinned versions).
 - **Parity** — [docs/product/parity.md](docs/product/parity.md).
-- **Release notes** — [docs/releases/v0.8.0.md](docs/releases/v0.8.0.md)
+- **Release notes** — [docs/releases/v0.8.1.md](docs/releases/v0.8.1.md)
   (install table, known limitations, verification status).
 - **Backlog** — [docs/product/backlog.md](docs/product/backlog.md).
 - **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md) and

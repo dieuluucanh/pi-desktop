@@ -185,7 +185,7 @@ resource. The window shows a safe-mode banner.
 
   ```bash
   mkdir -p /tmp/pty && cd /tmp/pty && npm init -y && npm install node-pty@1.1.0
-  cd /tmp && /path/Pi-Desktop-0.8.0-linux-x86_64-appimage.AppImage --appimage-extract
+  cd /tmp && /path/Pi-Desktop-0.8.1-linux-x86_64-appimage.AppImage --appimage-extract
   cp /tmp/pty/node_modules/node-pty/build/Release/pty.node \
      /tmp/squashfs-root/resources/app.asar.unpacked/node_modules/node-pty/build/Release/
   /tmp/squashfs-root/AppRun
@@ -353,10 +353,10 @@ Diagnostics → Save         redacted support bundle (no credentials)
 The bundle runs `redactSecrets` over the whole document, so it is safe to attach
 to an issue.
 
-## Known limitations in v0.8.0
+## Known limitations in v0.8.1
 
 Every known limitation is recorded with the release notes:
-[`docs/releases/v0.8.0.md`](../releases/v0.8.0.md). The short version:
+[`docs/releases/v0.8.1.md`](../releases/v0.8.1.md). The short version:
 
 - **Unsigned builds** — SmartScreen/Gatekeeper warn on first launch; signing is
   deferred ([backlog](../product/backlog.md)).
@@ -371,7 +371,7 @@ Every known limitation is recorded with the release notes:
   tmux control mode and no docked split panel; it does not spawn in an untrusted
   project until you grant trust. The Linux native backend is built for
   **glibc 2.31 / `GLIBCXX_3.4.28`**; a package built on a newer runner is a
-  release bug (v0.8.0 shipped one, see
+  release bug (v0.8.0 shipped one, fixed in v0.8.1 — see
   [the Linux terminal entry](#the-terminal-does-not-start-on-linux)).
 - **Informational notifications are hidden by default** — enable
   **Informational messages** in Settings → Notifications to show them in the
@@ -397,5 +397,5 @@ useful issue.
 ## Related
 
 - [FAQ](faq.md) · [Getting started](getting-started.md)
-- [Release notes v0.8.0](../releases/v0.8.0.md) · [Backlog](../product/backlog.md)
+- [Release notes v0.8.1](../releases/v0.8.1.md) · [Backlog](../product/backlog.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)
