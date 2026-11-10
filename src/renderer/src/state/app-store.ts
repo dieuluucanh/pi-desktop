@@ -1475,10 +1475,16 @@ export interface AppStateShape {
   /** Opens a page in a web tab, reusing an existing tab for the same URL. */
   openWebTab: (input: WebTabOpenInput) => Promise<boolean>;
   /**
-   * Opens a loopback URL a notification or tool result mentioned (plan step 21),
-   * without stealing focus from a tab that already shows it.
+   * Opens a loopback URL a notification or tool result mentioned (plan step 21).
+   * Notification URLs focus (a review is the common case); tool-result URLs
+   * stay in the background. An existing same-URL tab is reloaded for a focus
+   * request, never duplicated.
    */
-  openLoopbackUrl: (url: string, sessionTabId: string | null) => void;
+  openLoopbackUrl: (
+    url: string,
+    sessionTabId: string | null,
+    options?: { focus?: boolean },
+  ) => void;
   /** Runs a chrome command against a web tab. */
   webCommand: (tabId: string, command: WebCommand) => void;
   /** Records the rectangle the native view occupies; fire-and-forget. */
@@ -3498,7 +3504,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // notification is the signal to open it in an in-app tab (plan step 21)
       // instead of handing it to the system browser.
       const loopback = firstLoopbackUrl(notification.message);
-      if (loopback) get().openLoopbackUrl(loopback, tabId);
+      if (loopback) get().openLoopbackUrl(loopback, tabId, { focus: true });
       return;
     }
     if (entry.event === EXTENSION_UI_THEME_EVENT) {
@@ -3673,18 +3679,23 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   interruptRun: async (tabId, key = { key: "Escape" }) => {
+    const extensionBusy = (id: string): boolean => {
+      const working = get().extensionUi[id]?.working;
+      return working?.message != null && working.visible !== false;
+    };
     const tab = get().tabs.find((entry) => entry.id === tabId);
-    if (!tab || tab.kind !== "session" || tab.status !== "running") return;
+    if (!tab || tab.kind !== "session" || (tab.status !== "running" && !extensionBusy(tabId)))
+      return;
     const now = Date.now();
     if (now - (lastInterruptAt.get(tabId) ?? 0) < INTERRUPT_DEDUPE_MS) return;
     lastInterruptAt.set(tabId, now);
     const data = domKeyToTerminalData(key);
     if (!data) {
       // A remapped chord with no terminal bytes cannot reach the extension's
-      // `onTerminalInput`; it is not forwarded, and the run stops as before
-      // (the documented limitation in docs/architecture — Escape is the case
-      // that matters and always encodes to ``).
-      await get().stopRun(tabId);
+      // `onTerminalInput`; it is not forwarded, and a running turn stops as
+      // before (the documented limitation — Escape is the case that matters
+      // and always encodes to ``).
+      if (tab.status === "running") await get().stopRun(tabId);
       return;
     }
     const consumed = await withTimeout(
@@ -3694,8 +3705,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     );
     // A cancelled/settled run may have changed the tab while the host answered.
     const live = get().tabs.find((entry) => entry.id === tabId);
-    if (!live || live.status !== "running") return;
-    if (!consumed) await get().stopRun(tabId);
+    if (!live) return;
+    const liveRunning = live.status === "running";
+    if (!liveRunning && !extensionBusy(tabId)) return;
+    // An idle extension-owned round is paused by its handler; an unconsumed
+    // key must not stop a run that does not exist.
+    if (liveRunning && !consumed) await get().stopRun(tabId);
   },
 
   extensionRender: async (tabId, request) => {
@@ -6349,16 +6364,22 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  openLoopbackUrl: (url, sessionTabId) => {
+  openLoopbackUrl: (url, sessionTabId, options = {}) => {
     const parsed = sanitizeWebUrl(url);
     if (!parsed) return;
-    // Already open: leave the user where they are instead of re-focusing the tab
-    // on every repeated mention.
+    const focus = options.focus === true;
     const existing = get().tabs.find((tab) => tab.kind === "web" && tab.url === parsed);
-    if (existing) return;
+    if (existing) {
+      if (!focus) return;
+      // The same review server (a fixed PLANNOTATOR_PORT) can reuse its URL
+      // for the next round. Reload so the old plan is never shown as current.
+      get().webCommand(existing.id, { command: "reload" });
+      void get().activateTab(existing.id);
+      return;
+    }
     void get().openWebTab({
       url: parsed,
-      activate: false,
+      activate: focus,
       ...(sessionTabId ? { sessionTabId } : {}),
     });
   },

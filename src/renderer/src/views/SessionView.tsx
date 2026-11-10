@@ -128,6 +128,21 @@ export function SessionView({ tabId }: { tabId: string }) {
   );
   const defaultModelIssue = useAppStore(selectDefaultModelProblem);
   const extensionUi = useAppStore((state) => state.extensionUi[tabId]);
+  // An extension can own long-running work while the parent tab is idle
+  // (a manual Review round). That is still "busy" for the working row and
+  // Escape, even though `tab.status` stays idle.
+  const extensionWorking = extensionUi?.working;
+  const extensionBusy = extensionWorking?.message != null && extensionWorking.visible !== false;
+  const workflowStatus = extensionUi?.statuses?.workflow ?? null;
+  const reviewActive =
+    extensionBusy &&
+    (/review/i.test(workflowStatus ?? "") || /review/i.test(extensionWorking?.message ?? ""));
+  const reviewPaused = reviewActive && /paused/i.test(extensionWorking?.message ?? "");
+  const workingHint = reviewActive
+    ? reviewPaused
+      ? "/review-resume to continue · /review-abort to stop"
+      : "ESC to pause · /review-pause, /review-abort"
+    : "Esc to cancel";
   const extensionDialogs = useAppStore((state) => state.extensionDialogs);
   const toolsExpandedState = useAppStore((state) => state.toolsExpanded[tabId]);
   const toggleToolsExpanded = useAppStore((state) => state.toggleToolsExpanded);
@@ -495,7 +510,7 @@ export function SessionView({ tabId }: { tabId: string }) {
               }}
             />
           ) : null}
-          {active.status === "running" ? (
+          {active.status === "running" || extensionBusy ? (
             <WorkingRow
               working={
                 extensionUi?.working ?? {
@@ -507,6 +522,7 @@ export function SessionView({ tabId }: { tabId: string }) {
               }
               startedAt={transcript?.runStartedAt ?? null}
               showCancelHint
+              cancelHint={workingHint}
             />
           ) : null}
           {tuiSurface?.header ? (
@@ -582,7 +598,7 @@ export function SessionView({ tabId }: { tabId: string }) {
                 onMentionHandled={(id) =>
                   setMentionRequest((current) => (current?.id === id ? null : current))
                 }
-                workflowStatus={extensionUi?.statuses?.workflow ?? null}
+                workflowStatus={workflowStatus}
                 extensionShortcuts={shortcuts.shortcuts}
                 onInvokeShortcut={(key) => void invokeShortcut(key)}
                 onRequestShortcuts={() => void loadShortcuts()}
@@ -608,8 +624,10 @@ export function SessionView({ tabId }: { tabId: string }) {
                 completion={completion}
                 onStop={() => void stopRun(active.id)}
                 // Escape goes through the extension first (plan step 24): a
-                // running review pauses instead of aborting.
+                // running review pauses instead of aborting. A manual review
+                // runs on an idle tab, so `escapeActive` forwards too.
                 onEscape={() => void interruptRun(active.id)}
+                escapeActive={extensionBusy}
                 onClearQueue={() => void clearQueue(active.id)}
                 onRestoreQueue={() => void restoreQueue(active.id)}
                 onHistoryStep={(direction, caret) => historyStep(active.id, direction, caret)}

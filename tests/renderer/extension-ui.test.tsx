@@ -290,6 +290,17 @@ describe("WorkingRow", () => {
     expect(screen.getByText("1:07")).toBeInTheDocument();
     vi.useRealTimers();
   });
+
+  it("uses the caller's action hint for a review", () => {
+    render(
+      <WorkingRow
+        working={{ message: "🔍 Reviewing plan…", visible: null, frames: null, intervalMs: null }}
+        showCancelHint
+        cancelHint="ESC to pause · /review-pause, /review-abort"
+      />,
+    );
+    expect(screen.getByText("ESC to pause · /review-pause, /review-abort")).toBeInTheDocument();
+  });
 });
 
 describe("StatusBar", () => {

@@ -147,6 +147,23 @@ describe("streaming delivery", () => {
     expect(onStop).not.toHaveBeenCalled();
   });
 
+  it("routes Escape through onEscape for idle extension work", async () => {
+    const user = userEvent.setup();
+    const onEscape = vi.fn();
+    const onStop = vi.fn();
+    renderComposer({
+      running: false,
+      escapeActive: true,
+      onEscape,
+      onStop,
+      draft: "half typed",
+    });
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("{Escape}");
+    expect(onEscape).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
   it("keeps the Stop button on onStop even with an onEscape", async () => {
     const user = userEvent.setup();
     const onEscape = vi.fn();

@@ -692,3 +692,65 @@ describe("Escape parity (plan step 24)", () => {
     expect(useAppStore.getState().tabs[0]?.status).toBe("idle");
   });
 });
+
+describe("extension-owned work on an idle tab (2026-11-10)", () => {
+  const reviewing = {
+    message: "🔍 Reviewing plan…",
+    visible: null,
+    frames: null,
+    intervalMs: null,
+  };
+
+  it("shows the working row for a manual review while the tab is idle", () => {
+    useAppStore.setState({
+      extensionUi: { [TAB]: { ...EMPTY_EXTENSION_UI, working: reviewing } },
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    expect(screen.getByTestId("extension-working-row")).toHaveTextContent("Reviewing plan");
+    expect(screen.getByText("ESC to pause · /review-pause, /review-abort")).toBeInTheDocument();
+    expect(useAppStore.getState().tabs[0]?.status).toBe("idle");
+  });
+
+  it("shows the resume/abort hint while a review is paused", () => {
+    useAppStore.setState({
+      extensionUi: {
+        [TAB]: {
+          ...EMPTY_EXTENSION_UI,
+          working: {
+            ...reviewing,
+            message: "⏸ Review paused — /review-resume to continue",
+          },
+        },
+      },
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    expect(
+      screen.getByText("/review-resume to continue · /review-abort to stop"),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the row when the extension hides its indicator", () => {
+    useAppStore.setState({
+      extensionUi: {
+        [TAB]: {
+          ...EMPTY_EXTENSION_UI,
+          working: { ...reviewing, visible: false },
+        },
+      },
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    expect(screen.queryByTestId("extension-working-row")).toBeNull();
+  });
+
+  it("keeps a genuinely idle tab empty", () => {
+    render(<SessionView tabId={TAB} />);
+
+    expect(screen.queryByTestId("extension-working-row")).toBeNull();
+  });
+});

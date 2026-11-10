@@ -11,7 +11,8 @@ import type { ExtensionWorkingState } from "../../../shared/extension-ui";
  *
  * 2026-10-26 session-parity plan step 8: the row also renders for a running
  * session with no extension state at all (an extension must not be required for
- * a working indicator), and shows elapsed time plus the Esc-to-cancel hint.
+ * a working indicator), and shows elapsed time plus an action hint. The hint is
+ * context-aware: a review pauses, an ordinary run cancels.
  */
 
 function formatElapsed(ms: number): string {
@@ -25,12 +26,15 @@ export function WorkingRow({
   working,
   startedAt = null,
   showCancelHint = false,
+  cancelHint = "Esc to cancel",
 }: {
   working: ExtensionWorkingState;
   /** Epoch ms when the turn started; renders elapsed time when present. */
   startedAt?: number | null;
-  /** Renders the desktop's Esc-to-cancel hint (plan step 8). */
+  /** Renders the desktop's action hint on the right (plan step 8). */
   showCancelHint?: boolean;
+  /** Action hint text; a review uses “ESC to pause · …”. */
+  cancelHint?: string;
 }) {
   const frames = working.frames;
   const [frame, setFrame] = useState(0);
@@ -66,7 +70,7 @@ export function WorkingRow({
       </span>
       <span>{working.message ?? "Working…"}</span>
       {elapsed === null ? null : <span className="text-ink-subtle">{elapsed}</span>}
-      {showCancelHint ? <span className="text-ink-subtle">Esc to cancel</span> : null}
+      {showCancelHint ? <span className="text-ink-subtle">{cancelHint}</span> : null}
     </div>
   );
 }

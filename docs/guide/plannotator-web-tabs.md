@@ -6,13 +6,23 @@ instead of your system browser.
 
 ## Opening one
 
-- **Automatically**: when a notification or a tool result mentions a loopback
-  URL, a web tab opens **in the background** (it does not steal the session you
-  are reading) and is deduplicated — a repeated notification never re-focuses a
-  tab you are typing in. The owning session stays protected from idle/RSS
-  recycling while its review tab is active or visible.
+- **Automatically**: a loopback URL in an extension **notification** (the
+  Plannotator review-ready message) opens or focuses a web tab, so the new plan
+  is in front. A URL found in a **tool result** opens in the background; it does
+  not steal the session you are reading. An existing tab for the same URL is
+  reloaded and focused for a notification, never duplicated — a fixed
+  `PLANNOTATOR_PORT` therefore cannot leave the previous round's plan on screen.
+  The owning session stays protected from idle/RSS recycling while its review tab
+  is active or visible.
 - **Manually**: the command palette or `File → Open URL in Tab…`.
 - A session tab that a web tab came from shows a **Review:** chip linking back.
+
+## Review handoffs
+
+Each later Review round opens its own focused review tab. If Plannotator reuses a
+URL, Desktop reloads the existing tab before focusing it; a notification can
+never leave the old review in front. Tool-result localhost URLs remain
+background tabs.
 
 ## Chrome
 

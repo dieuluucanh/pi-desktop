@@ -82,6 +82,12 @@ export interface ComposerProps {
    * Defaults to `onStop`, so an un-wired caller behaves exactly as before.
    */
   onEscape?: () => void;
+  /**
+   * True while an extension owns long-running work on an idle tab (a manual
+   * Review round). The composer then routes Escape through `onEscape` even
+   * though no parent turn is streaming.
+   */
+  escapeActive?: boolean;
   onClearQueue: () => void;
   /** `clearQueue` and put the queued text back in the draft (Alt+Up, plan step 9). */
   onRestoreQueue: () => void;
@@ -265,6 +271,7 @@ export function Composer({
   onSend,
   onStop,
   onEscape,
+  escapeActive = false,
   onClearQueue,
   onRestoreQueue,
   onHistoryStep,
@@ -802,7 +809,7 @@ export function Composer({
                 }
               }
 
-              if (event.key === "Escape" && running) {
+              if (event.key === "Escape" && (running || escapeActive)) {
                 event.preventDefault();
                 // The extension gets the first look (a review pauses); only an
                 // unconsumed Escape reaches the stop path.

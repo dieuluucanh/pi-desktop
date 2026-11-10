@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAppStore } from "../../src/renderer/src/state/app-store";
+import { EMPTY_EXTENSION_UI } from "../../src/shared/extension-ui";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { EMPTY_TUI_SURFACE, TUI_STATE_EVENT } from "../../src/shared/tui-surface";
 import { installBridge } from "./fixtures";
@@ -250,6 +251,64 @@ describe("interruptRun", () => {
     await useAppStore.getState().interruptRun("esc-crashed");
 
     expect(request).not.toHaveBeenCalled();
+    expect(stopRun).not.toHaveBeenCalled();
+  });
+
+  it("forwards Escape for idle extension work", async () => {
+    const request = stubRequest(async () => ({
+      ok: true,
+      consumed: true,
+      dispatched: true,
+    }));
+    useAppStore.setState({
+      tabs: [sessionTab("esc-manual", "idle")],
+      extensionUi: {
+        "esc-manual": {
+          ...EMPTY_EXTENSION_UI,
+          working: {
+            message: "🔍 Reviewing plan…",
+            visible: null,
+            frames: null,
+            intervalMs: null,
+          },
+        },
+      },
+    });
+
+    await useAppStore.getState().interruptRun("esc-manual");
+
+    expect(request).toHaveBeenCalledWith({
+      tabId: "esc-manual",
+      method: "tui.input",
+      params: { data: "\x1b" },
+    });
+    expect(stopRun).not.toHaveBeenCalled();
+  });
+
+  it("does not stop an idle extension-work tab when the key is unconsumed", async () => {
+    const request = stubRequest(async () => ({
+      ok: true,
+      consumed: false,
+      dispatched: true,
+    }));
+    useAppStore.setState({
+      tabs: [sessionTab("esc-manual-idle", "idle")],
+      extensionUi: {
+        "esc-manual-idle": {
+          ...EMPTY_EXTENSION_UI,
+          working: {
+            message: "🔍 Reviewing plan…",
+            visible: null,
+            frames: null,
+            intervalMs: null,
+          },
+        },
+      },
+    });
+
+    await useAppStore.getState().interruptRun("esc-manual-idle");
+
+    expect(request).toHaveBeenCalled();
     expect(stopRun).not.toHaveBeenCalled();
   });
 

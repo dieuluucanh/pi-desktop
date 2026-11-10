@@ -225,7 +225,7 @@ describe("automatic loopback detection (plan step 21)", () => {
 
     await vi.waitFor(() =>
       expect(handles.webOpened).toEqual([
-        { url: "http://127.0.0.1:19432/review/abc", sessionTabId: "s1", activate: false },
+        { url: "http://127.0.0.1:19432/review/abc", sessionTabId: "s1", activate: true },
       ]),
     );
   });
@@ -285,7 +285,7 @@ describe("automatic loopback detection (plan step 21)", () => {
     );
   });
 
-  it("does not steal focus for a loopback URL already open", async () => {
+  it("reloads and keeps the focus on an already-open notification review", async () => {
     const handles = installBridge();
     useAppStore.setState({
       tabs: [webRecord()],
@@ -299,7 +299,38 @@ describe("automatic loopback detection (plan step 21)", () => {
       payload: { message: "Still at http://localhost:19432/review" },
     });
 
+    await vi.waitFor(() =>
+      expect(handles.webCommands).toEqual([{ tabId: "w1", command: { command: "reload" } }]),
+    );
+    expect(handles.webOpened).toEqual([]);
+    expect(useAppStore.getState().activeTabId).toBe("w1");
+  });
+
+  it("does not reload or focus an already-open tool-result URL", async () => {
+    const handles = installBridge();
+    useAppStore.setState({
+      tabs: [webRecord()],
+      activeTabId: "w1",
+      webTabStates: { w1: state() },
+      transcripts: {},
+    });
+
+    useAppStore.getState().applySessionEvents({
+      tabId: "s1",
+      seq: 1,
+      events: [
+        {
+          event: "tool_execution_end",
+          payload: {
+            toolCallId: "t1",
+            result: { content: [{ type: "text", text: "open http://localhost:19432/review" }] },
+          },
+        },
+      ],
+    });
+
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(handles.webOpened).toEqual([]);
+    expect(handles.webCommands).toEqual([]);
   });
 });

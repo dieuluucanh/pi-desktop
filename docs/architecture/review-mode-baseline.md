@@ -74,3 +74,24 @@ than thrown.
 A review on a non-Command-Code reviewer (synthetic/opencode) completed normally. That keeps the
 provider-specific failure separate from the Review Mode orchestration, and is the recommended
 immediate mitigation until the recovery work ships.
+
+## 2026-11-10 follow-up — handoff continuity and manual-review visibility
+
+Two additional gaps were observed after the provider recovery work:
+
+- **Manual `/review` had no live status.** Desktop mounted `WorkingRow` only while
+  `tab.status === "running"`. An automatic review runs inside `agent_end` while the parent turn
+  streams; a manual `/review` is a slash command on an idle tab, so the extension's
+  `🔍 Reviewing plan…` message was never rendered and Escape was never forwarded. Fixed by treating
+  an active extension working message as busy (working row + Escape), independent of the parent run.
+- **Round 2+ could lose the browser handoff.** A manual `/review` started a new round without
+  clearing an older `awaitingDecision`; a stale browser Deny arriving during a new round was
+  rejected without clearing it; restore read the boolean but nulled the review id/path/hash; and a
+  slow request response fell back to inline while the browser tab still opened. Fixed with a
+  persisted full correlation (review id, request id, URL, source, plan hash, cycle), stale-gate
+  supersede on every new round, `session-opened`/`session-closed` lifecycle listeners, and
+  `review-status` recovery after `reload`/`resume`/`fork`.
+- **The new review tab stayed behind the old one.** Notification URLs opened with
+  `activate:false`, and an existing same-URL tab was left untouched. Notification review URLs now
+  focus; an existing same-URL tab is reloaded before focus. Tool-result localhost URLs stay in the
+  background.

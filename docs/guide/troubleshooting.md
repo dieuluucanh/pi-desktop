@@ -291,6 +291,14 @@ visible while main still rejects the call.
   `/review`; `/review-status` names the model and the last provider error. See
   [Review Mode provider baseline](../architecture/review-mode-baseline.md).
 
+- **Manual `/review` shows no “Reviewing” status** — fixed: an extension-owned
+  round on an idle tab now renders the working row (`🔍 Reviewing plan…`) and
+  forwards Escape, so it pauses exactly like an automatic round.
+- **Review round 2+ does not reopen Plannotator** — fixed: a new round or manual
+  `/review` supersedes an older browser gate, stale browser decisions are
+  discarded, and the full review correlation is persisted. After a reload the
+  extension asks Plannotator `review-status`; `/review-status` names a pending
+  browser handoff and its URL.
 - **Esc does not stop the run during a review** — that is deliberate. Escape is
   sent to the session's extension handlers first (the same path terminal Pi uses),
   and Review Mode pauses the round instead of aborting it: the session footer shows
