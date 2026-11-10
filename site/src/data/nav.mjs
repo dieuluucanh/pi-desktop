@@ -43,6 +43,7 @@ export const NAV_GROUPS = [
       "docs/architecture/office-integration.md",
       "docs/architecture/runtime.md",
       "docs/architecture/release-pipeline.md",
+      "docs/architecture/review-mode-baseline.md",
       "docs/architecture/versions.md",
     ],
   },

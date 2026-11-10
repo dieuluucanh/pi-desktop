@@ -634,3 +634,61 @@ describe("prompt history", () => {
     expect(prompt).toHaveValue("pending draft");
   });
 });
+
+describe("Escape parity (plan step 24)", () => {
+  function runningTab() {
+    useAppStore.setState({
+      tabs: useAppStore.getState().tabs.map((tab) => ({ ...tab, status: "running" })),
+    });
+  }
+
+  it("sends composer Escape through interruptRun, not stopRun", async () => {
+    const user = userEvent.setup();
+    const interrupt = vi.fn(async () => {});
+    const stop = vi.fn(async () => {});
+    useAppStore.setState({ interruptRun: interrupt, stopRun: stop });
+    runningTab();
+
+    render(<SessionView tabId={TAB} />);
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("{Escape}");
+
+    expect(interrupt).toHaveBeenCalledWith(TAB);
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("sends transcript Escape through the global interrupt too", () => {
+    const interrupt = vi.fn(async () => {});
+    const stop = vi.fn(async () => {});
+    useAppStore.setState({ interruptRun: interrupt, stopRun: stop });
+    runningTab();
+
+    render(
+      <>
+        <SessionView tabId={TAB} />
+        <ShortcutDispatcher />
+      </>,
+    );
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    expect(interrupt).toHaveBeenCalledWith(TAB, expect.objectContaining({ key: "Escape" }));
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("does not intercept Escape outside a running session", () => {
+    const interrupt = vi.fn(async () => {});
+    useAppStore.setState({ interruptRun: interrupt });
+
+    render(
+      <>
+        <SessionView tabId={TAB} />
+        <ShortcutDispatcher />
+      </>,
+    );
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    // The dispatcher forwards; the store decides (an idle tab is a no-op).
+    expect(interrupt).toHaveBeenCalled();
+    expect(useAppStore.getState().tabs[0]?.status).toBe("idle");
+  });
+});

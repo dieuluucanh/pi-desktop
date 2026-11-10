@@ -5,7 +5,7 @@
 This matrix is the product's contract: Pi Desktop is the desktop UI for the Pi
 coding agent, and every row is either **implemented**, **planned at a stated
 step**, or an explicit **non-goal**. "Terminal Pi" means the `pi` CLI running
-from `@earendil-works/pi-coding-agent` 1.4.0.
+from `@earendil-works/pi-coding-agent` 1.5.0.
 
 Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of scope.
 
@@ -16,18 +16,19 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 
 ## Core agent loop
 
-| Capability                                                 | Terminal Pi                      | Pi Desktop                                                                                                                      |
-| ---------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Chat with the agent (streaming text, thinking, tool calls) | ✅                               | ✅ steps 5–6 (virtualized transcript, markdown + highlighted code)                                                              |
-| Steering / follow-up while streaming                       | ✅                               | ✅ step 9 (pending rows with Steering/Follow-up labels, restore all on Alt+Up, `Ctrl+Q`/`Alt+Enter`, live queue modes)          |
-| Abort a run (Esc) and restore queued text                  | ✅                               | ✅ step 6 (`clearQueue` → `abort` → draft restored)                                                                             |
-| Compaction (auto + `/compact`)                             | ✅                               | ✅ step 8 (status row with a live countdown, Esc/Cancel aborts retry or compaction, boundary card)                              |
-| Branching: fork / clone / tree navigation                  | ✅                               | ✅ steps 11, 13, 17 (tree filters/fold/search/labels, branch-summary prompt + cancel, `/clone` via a leaf fork)                 |
-| Session list, resume, rename, delete, export/import        | ✅                               | ✅ steps 11, 14, 16 (scope/sort/named/path/regex browser; HTML **and** JSONL export; JSONL import with confirmation)            |
-| Session storage                                            | JSONL in `~/.pi/agent/sessions`  | ✅ same files (shared profile, D-A8)                                                                                            |
-| The composer shows where the cursor is                     | ✅ (inverse block cursor)        | ✅ accent caret + a live `Ln n · Col m` readout in the status row                                                               |
-| The selected element of an extension-drawn UI is marked    | ✅ (a filled block / `→` prefix) | ✅ a background fill is the app's selection surface + accent underline; `ctx.ui.select` is a keyboard listbox with a `→` marker |
-| One vertical rhythm between transcript blocks              | ✅ (`Spacer(1)`)                 | ✅ the rhythm is the row's padding, so the virtualizer measures it (a margin vanished in long sessions)                         |
+| Capability                                                 | Terminal Pi                         | Pi Desktop                                                                                                                                                                                     |
+| ---------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chat with the agent (streaming text, thinking, tool calls) | ✅                                  | ✅ steps 5–6 (virtualized transcript, markdown + highlighted code)                                                                                                                             |
+| Steering / follow-up while streaming                       | ✅                                  | ✅ step 9 (pending rows with Steering/Follow-up labels, restore all on Alt+Up, `Ctrl+Q`/`Alt+Enter`, live queue modes)                                                                         |
+| Abort a run (Esc) and restore queued text                  | ✅                                  | ✅ step 6 (`clearQueue` → `abort` → draft restored). **2026-11-09**: Escape goes to the extension first — a running review pauses instead of aborting; only an unconsumed Escape stops the run |
+| Pause a Review Mode round with Esc                         | ✅ (pause, second Esc stays paused) | ✅ **2026-11-09** (Escape → `tui.input` → extension `onTerminalInput`; pause hint in the session footer, `/review-resume` continues, `/review-abort` hands off)                                |
+| Compaction (auto + `/compact`)                             | ✅                                  | ✅ step 8 (status row with a live countdown, Esc/Cancel aborts retry or compaction, boundary card)                                                                                             |
+| Branching: fork / clone / tree navigation                  | ✅                                  | ✅ steps 11, 13, 17 (tree filters/fold/search/labels, branch-summary prompt + cancel, `/clone` via a leaf fork)                                                                                |
+| Session list, resume, rename, delete, export/import        | ✅                                  | ✅ steps 11, 14, 16 (scope/sort/named/path/regex browser; HTML **and** JSONL export; JSONL import with confirmation)                                                                           |
+| Session storage                                            | JSONL in `~/.pi/agent/sessions`     | ✅ same files (shared profile, D-A8)                                                                                                                                                           |
+| The composer shows where the cursor is                     | ✅ (inverse block cursor)           | ✅ accent caret + a live `Ln n · Col m` readout in the status row                                                                                                                              |
+| The selected element of an extension-drawn UI is marked    | ✅ (a filled block / `→` prefix)    | ✅ a background fill is the app's selection surface + accent underline; `ctx.ui.select` is a keyboard listbox with a `→` marker                                                                |
+| One vertical rhythm between transcript blocks              | ✅ (`Spacer(1)`)                    | ✅ the rhythm is the row's padding, so the virtualizer measures it (a margin vanished in long sessions)                                                                                        |
 
 ## Session interaction (2026-10-26 session-parity plan)
 

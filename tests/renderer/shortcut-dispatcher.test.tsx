@@ -145,3 +145,96 @@ describe("ShortcutDispatcher app.message.copy (plan step 12)", () => {
     expect(copy).toHaveBeenCalledWith(TAB);
   });
 });
+
+describe("ShortcutDispatcher app.interrupt (plan step 24)", () => {
+  it("routes a default Escape to interruptRun, not stopRun", () => {
+    const interrupt = vi.fn(async () => {});
+    useAppStore.setState({ interruptRun: interrupt });
+    render(<ShortcutDispatcher />);
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    expect(interrupt).toHaveBeenCalledWith(TAB, {
+      key: "Escape",
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+      metaKey: false,
+    });
+  });
+
+  it("honours a remapped app.interrupt chord", () => {
+    const interrupt = vi.fn(async () => {});
+    useAppStore.setState({
+      interruptRun: interrupt,
+      keybindings: keybindings({ "app.interrupt": ["ctrl+shift+escape"] }),
+    });
+    render(<ShortcutDispatcher />);
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(interrupt).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(document.body, { key: "Escape", ctrlKey: true, shiftKey: true });
+    expect(interrupt).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves Escape to the composer's editable target", () => {
+    const interrupt = vi.fn(async () => {});
+    useAppStore.setState({ interruptRun: interrupt });
+    render(<ShortcutDispatcher />);
+
+    const textarea = document.createElement("textarea");
+    document.body.appendChild(textarea);
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(interrupt).not.toHaveBeenCalled();
+    textarea.remove();
+  });
+
+  it("leaves Escape to a dialog and to a mounted TuiSurface", () => {
+    const interrupt = vi.fn(async () => {});
+    useAppStore.setState({ interruptRun: interrupt });
+    render(<ShortcutDispatcher />);
+
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.appendChild(dialog);
+    fireEvent.keyDown(dialog, { key: "Escape" });
+
+    const surface = document.createElement("div");
+    surface.setAttribute("data-tui-surface", "dock");
+    document.body.appendChild(surface);
+    fireEvent.keyDown(surface, { key: "Escape" });
+
+    expect(interrupt).not.toHaveBeenCalled();
+    dialog.remove();
+    surface.remove();
+  });
+
+  it("does not fire while the palette or help is open", () => {
+    const interrupt = vi.fn(async () => {});
+    useAppStore.setState({ interruptRun: interrupt, paletteOpen: true });
+    render(<ShortcutDispatcher />);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(interrupt).not.toHaveBeenCalled();
+
+    useAppStore.setState({ paletteOpen: false, shortcutsHelpOpen: true });
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(interrupt).not.toHaveBeenCalled();
+  });
+
+  it("respects defaultPrevented", () => {
+    const interrupt = vi.fn(async () => {});
+    useAppStore.setState({ interruptRun: interrupt });
+    render(<ShortcutDispatcher />);
+
+    const event = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    event.preventDefault();
+    window.dispatchEvent(event);
+
+    expect(interrupt).not.toHaveBeenCalled();
+  });
+});

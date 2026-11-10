@@ -9,12 +9,13 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { commandCodeProviderDoctorLine } from "../../src/main/provider-doctor";
 import { detectOfficeEnvironment } from "../../src/main/office/detect";
 import { checkBridgeHealth, createDefaultVerifyDeps } from "../../src/main/office/verify";
 import { resolveAppPaths } from "../../src/main/paths";
@@ -76,6 +77,9 @@ describe("doctor", () => {
             ? ["common project port — expect collisions"]
             : []),
         ].join("; ");
+    const modelsPath = join(paths.profileDir, "models.json");
+    const modelsText = existsSync(modelsPath) ? readFileSync(modelsPath, "utf8") : undefined;
+    const providerCheck = commandCodeProviderDoctorLine(modelsText);
 
     const lines = [
       "",
@@ -92,6 +96,7 @@ describe("doctor", () => {
       `pi profile       ${paths.profileDir}${existsSync(paths.profileDir) ? "" : "  (not created yet)"}`,
       `  settings.json  ${existsSync(join(paths.profileDir, "settings.json")) ? "present" : "absent"}`,
       `  auth.json      ${existsSync(join(paths.profileDir, "auth.json")) ? "present" : "absent"}`,
+      `  models.json    ${existsSync(modelsPath) ? "present" : "absent"}`,
       `git              ${git.status === 0 ? (git.stdout ?? "").trim() : "not found (commit/checkpoint features degrade)"}`,
       `office           ${office.os}${office.office.version ? `, Office ${office.office.version}` : ", no Office install"} (supported: ${office.supported})`,
       `bridge           ${health.status} on ${health.url}${health.portConflict ? " (port conflict)" : ""}${
@@ -100,6 +105,8 @@ describe("doctor", () => {
           : ""
       }`,
     ];
+
+    if (providerCheck) lines.push(providerCheck);
 
     for (const problem of resolution.problems) lines.push(`note             ${problem}`);
     if (resolution.hint) lines.push(`hint             ${resolution.hint}`);

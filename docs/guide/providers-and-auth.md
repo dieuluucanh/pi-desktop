@@ -67,6 +67,35 @@ or router-style id works as-is:
   clearing one clears it, and removing a model id from the list removes it from
   the file.
 
+### Command Code
+
+Command Code is a multi-wire gateway: Claude models answer on `/messages`, models that advertise
+`/responses` answer there, and the rest answer on `/chat/completions`. A hand-written `models.json`
+entry declares one API family for the whole provider, so it cannot route each model correctly.
+
+Use the maintained package instead:
+
+- **Pi Desktop:** Settings → Extensions → **Install** `pi-commandcode-provider`.
+- **Terminal Pi:** `pi install npm:pi-commandcode-provider`, then `/reload`.
+
+The package registers provider id **`commandcode`**, routes each model to its advertised wire, and
+normalises Command Code's non-standard reasoning deltas. A typical hand-written entry uses
+`command-code`; after installing the package, migrate the saved references without editing JSON by
+hand:
+
+```text
+/profile retarget-provider command-code commandcode          # dry run; prints every change
+/profile retarget-provider command-code commandcode --apply  # writes both files, keeps .bak copies
+```
+
+The command rewrites only `{ provider, id }` model references in `profiles.json` and `roles.json`;
+all other keys are preserved. A malformed file blocks both writes. Verify the new provider in
+`/model` before deleting the old `command-code` entry from `models.json`. The app's `npm run doctor`
+prints the same warning when it detects a single-wire Command Code provider.
+
+See [Review Mode provider baseline](../architecture/review-mode-baseline.md) for the stream-cut
+evidence behind this guidance.
+
 ## Proxy and offline
 
 - `httpProxy` (Settings → Network) is a Pi `settings.json` key and is inherited

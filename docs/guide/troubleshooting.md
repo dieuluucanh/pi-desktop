@@ -270,6 +270,36 @@ visible while main still rejects the call.
 - **A custom gateway lost its API key after an edit** — leave the key field
   blank to keep the stored value; typing a value replaces it. Deleting a gateway
   with the button removes the whole entry, key included.
+- **Command Code: `Stream ended without finish_reason`** — the gateway closed a long
+  streaming response before sending a terminal `finish_reason`. Pi's OpenAI-compatible
+  parser treats that as a fatal provider error; Review Mode retries the same long
+  request and can hand the plan over unreviewed. Lowering the reviewer's thinking
+  level may shorten the request, but it is not a reliable fix.
+
+  Use the maintained provider and migrate the saved model references:
+
+  ```sh
+  pi install npm:pi-commandcode-provider
+  # then, in Pi:
+  /profile retarget-provider command-code commandcode          # dry run
+  /profile retarget-provider command-code commandcode --apply
+  ```
+
+  Verify a Command Code model in `/model`, then remove the old hand-written
+  `command-code` entry from `models.json`. If the failure still recurs on a different
+  provider, switch the reviewer (`/profile use …` or `/role set reviewer …`) and retry
+  `/review`; `/review-status` names the model and the last provider error. See
+  [Review Mode provider baseline](../architecture/review-mode-baseline.md).
+
+- **Esc does not stop the run during a review** — that is deliberate. Escape is
+  sent to the session's extension handlers first (the same path terminal Pi uses),
+  and Review Mode pauses the round instead of aborting it: the session footer shows
+  the paused hint. A second Esc stays paused. Use `/review-resume` to continue, or
+  `/review-abort` to end the round and hand the author's plan over. Outside a
+  review, Esc still stops the run as before. If you remapped `app.interrupt` in
+  `keybindings.json` to a chord with no terminal encoding (anything but Escape and
+  the byte-encodable chords), the key is not forwarded and simply stops the run.
+
 - **Proxy** — set `httpProxy` in Settings → Network; every host inherits it.
 
 ## Disk and permission problems

@@ -703,6 +703,16 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
     scope: "both",
     advanced: true,
   },
+  {
+    key: "selfUpdateCommand",
+    group: "shell",
+    label: "Self-update command",
+    description:
+      "Argv `pi update` runs to update Pi itself; {packageName}, {version} and {installSpec} are filled in. Agent-directory settings only; PI_SELF_UPDATE_COMMAND wins.",
+    type: "string-list",
+    scope: "global",
+    advanced: true,
+  },
 
   // ---- Tools ------------------------------------------------------------
   {

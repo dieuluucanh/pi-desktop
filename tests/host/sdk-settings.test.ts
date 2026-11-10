@@ -239,6 +239,20 @@ describe("createSdkSettingsPort", () => {
     expect(await readJson(globalPath())).toEqual({ theme: "light", unknownKey: 1 });
   });
 
+  it("keeps SDK 1.5.0's extensionChangelogVersions across an app write", async () => {
+    // `SettingsManager.setExtensionChangelogVersion` (1.5.0) stores this key in
+    // the global settings document. The app's named writes must not drop it.
+    const port = makePort();
+    await port.writeScope(null, "global", {
+      extensionChangelogVersions: { "@dieulc/workflow": "0.9.2" },
+    });
+    await port.write(null, "theme", "dark", "global");
+    expect(await readJson(globalPath())).toEqual({
+      extensionChangelogVersions: { "@dieulc/workflow": "0.9.2" },
+      theme: "dark",
+    });
+  });
+
   it("settings.get reloads an external edit before reporting it", async () => {
     const port = makePort();
     await port.write(null, "theme", "dark", "global");

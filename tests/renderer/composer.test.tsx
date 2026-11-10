@@ -137,10 +137,79 @@ describe("streaming delivery", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
+  it("routes Escape through onEscape when the view provides one", async () => {
+    const user = userEvent.setup();
+    const onEscape = vi.fn();
+    const { onStop } = renderComposer({ running: true, draft: "half typed", onEscape });
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("{Escape}");
+    expect(onEscape).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Stop button on onStop even with an onEscape", async () => {
+    const user = userEvent.setup();
+    const onEscape = vi.fn();
+    const { onStop } = renderComposer({ running: true, draft: "half typed", onEscape });
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onEscape).not.toHaveBeenCalled();
+  });
+
   it("offers Stop only while running", () => {
     renderComposer({ running: true });
     expect(screen.getByRole("button", { name: /stop/i })).toBeInTheDocument();
     screen.getByRole("button", { name: /stop/i }).remove();
+  });
+});
+
+describe("Escape precedence (plan step 23)", () => {
+  it("lets an open completion menu keep Escape while streaming", async () => {
+    const onEscape = vi.fn();
+    const onStop = vi.fn();
+    const provider: CompletionProvider = {
+      id: "fake",
+      async getSuggestions(lines, cursorLine, cursorCol) {
+        const line = lines[cursorLine] ?? "";
+        if (cursorLine !== 0 || !line.slice(0, cursorCol).startsWith("/")) return null;
+        return {
+          items: [{ value: "/deploy", label: "/deploy", source: "extension" }],
+          prefix: line.slice(0, cursorCol),
+        };
+      },
+      applyCompletion: (lines) => ({ lines: [...lines], cursorLine: 0, cursorCol: 7 }),
+    };
+
+    function Harness() {
+      const [draft, setDraft] = useState("/");
+      return (
+        <Composer
+          tabId="tab-1"
+          running
+          draft={draft}
+          queue={{ steering: [], followUp: [] }}
+          onDraftChange={setDraft}
+          onSend={async () => true}
+          onStop={onStop}
+          onEscape={onEscape}
+          onClearQueue={() => undefined}
+          onRestoreQueue={() => undefined}
+          onHistoryStep={() => ({ kind: "none" })}
+          completion={{ provider }}
+        />
+      );
+    }
+
+    render(<Harness />);
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("/");
+    await screen.findByTestId("completion-overlay");
+
+    await user.keyboard("{Escape}");
+    expect(onEscape).not.toHaveBeenCalled();
+    expect(onStop).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByTestId("completion-overlay")).toBeNull());
   });
 });
 

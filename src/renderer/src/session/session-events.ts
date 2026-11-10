@@ -791,7 +791,13 @@ export function reduceSessionEvents(
         break;
 
       case "agent_settled":
-        next = { ...next, runStartedAt: null };
+        // SDK 1.5.0 adds `aborted`. An aborted settle is a cancelled run: any
+        // tool that never produced `tool_execution_end` must stop spinning,
+        // exactly as it does on an aborted `agent_end`.
+        next = {
+          ...(payload.aborted === true ? sweepUnfinishedTools(next) : next),
+          runStartedAt: null,
+        };
         break;
 
       case "tool_execution_start":

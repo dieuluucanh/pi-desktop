@@ -151,3 +151,126 @@ describe("tui surface store", () => {
     expect(useAppStore.getState().tuiSurfaces[TAB]?.active).toBe(true);
   });
 });
+
+/**
+ * Escape parity (plan step 22).
+ *
+ * Desktop Escape must behave like terminal Pi's: the extension gets the key
+ * first, and the run is stopped only when nothing consumed it. Every failure
+ * mode (bridge error, timeout, a host that never answers) fails OPEN to `stopRun`
+ * so Escape is never dead.
+ */
+describe("interruptRun", () => {
+  const stopRun = vi.fn(async () => {});
+
+  function sessionTab(id: string, status: string, kind = "session") {
+    return {
+      id,
+      kind: kind as "session",
+      cwd: "C:/work/app",
+      title: id,
+      sessionFile: null,
+      status: status as "running",
+      createdAt: 1,
+      lastActiveAt: 1,
+      model: null,
+    };
+  }
+
+  beforeEach(() => {
+    stopRun.mockReset();
+    stopRun.mockResolvedValue(undefined);
+    useAppStore.setState({ stopRun });
+  });
+
+  it("does not stop the run when the host consumed the key", async () => {
+    const request = stubRequest(async (method) =>
+      method === "tui.input" ? { ok: true, consumed: true, dispatched: true } : {},
+    );
+    useAppStore.setState({ tabs: [sessionTab("esc-consumed", "running")] });
+
+    await useAppStore.getState().interruptRun("esc-consumed");
+
+    expect(request).toHaveBeenCalledWith({
+      tabId: "esc-consumed",
+      method: "tui.input",
+      params: { data: "\x1b" },
+    });
+    expect(stopRun).not.toHaveBeenCalled();
+  });
+
+  it("stops the run when nothing consumed the key", async () => {
+    stubRequest(async () => ({ ok: true, consumed: false, dispatched: false }));
+    useAppStore.setState({ tabs: [sessionTab("esc-unconsumed", "running")] });
+
+    await useAppStore.getState().interruptRun("esc-unconsumed");
+
+    expect(stopRun).toHaveBeenCalledWith("esc-unconsumed");
+  });
+
+  it("fails open when the bridge request rejects", async () => {
+    stubRequest(async () => {
+      throw new Error("host is gone");
+    });
+    useAppStore.setState({ tabs: [sessionTab("esc-rejected", "running")] });
+
+    await useAppStore.getState().interruptRun("esc-rejected");
+
+    expect(stopRun).toHaveBeenCalledWith("esc-rejected");
+  });
+
+  it("fails open when the host never answers", async () => {
+    vi.useFakeTimers();
+    try {
+      stubRequest(() => new Promise(() => {}));
+      useAppStore.setState({ tabs: [sessionTab("esc-timeout", "running")] });
+
+      const pending = useAppStore.getState().interruptRun("esc-timeout");
+      await vi.advanceTimersByTimeAsync(500);
+      await pending;
+
+      expect(stopRun).toHaveBeenCalledWith("esc-timeout");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never stops a run for an idle, stopped or crashed tab", async () => {
+    const request = stubRequest(async () => ({ ok: true, consumed: false }));
+    useAppStore.setState({
+      tabs: [
+        sessionTab("esc-idle", "idle"),
+        sessionTab("esc-stopped", "stopped"),
+        sessionTab("esc-crashed", "crashed"),
+      ],
+    });
+
+    await useAppStore.getState().interruptRun("esc-idle");
+    await useAppStore.getState().interruptRun("esc-stopped");
+    await useAppStore.getState().interruptRun("esc-crashed");
+
+    expect(request).not.toHaveBeenCalled();
+    expect(stopRun).not.toHaveBeenCalled();
+  });
+
+  it("ignores a non-session tab", async () => {
+    const request = stubRequest(async () => ({ ok: true, consumed: false }));
+    useAppStore.setState({ tabs: [sessionTab("esc-terminal", "running", "terminal")] });
+
+    await useAppStore.getState().interruptRun("esc-terminal");
+
+    expect(request).not.toHaveBeenCalled();
+    expect(stopRun).not.toHaveBeenCalled();
+  });
+
+  it("dedupes a repeated Escape inside the window", async () => {
+    const request = stubRequest(async () => ({ ok: true, consumed: false, dispatched: true }));
+    useAppStore.setState({ tabs: [sessionTab("esc-repeat", "running")] });
+
+    await useAppStore.getState().interruptRun("esc-repeat");
+    await useAppStore.getState().interruptRun("esc-repeat");
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(stopRun).toHaveBeenCalledTimes(1);
+  });
+});

@@ -75,6 +75,13 @@ export interface ComposerProps {
     options?: { preferredSource?: CompletionSource; followUp?: boolean },
   ) => Promise<boolean>;
   onStop: () => void;
+  /**
+   * Escape while a run is streaming (plan step 23). Terminal Pi gives the key
+   * to the extension's `onTerminalInput` handlers first and pauses a review; the
+   * composer only forwards, the store decides whether anything consumed it.
+   * Defaults to `onStop`, so an un-wired caller behaves exactly as before.
+   */
+  onEscape?: () => void;
   onClearQueue: () => void;
   /** `clearQueue` and put the queued text back in the draft (Alt+Up, plan step 9). */
   onRestoreQueue: () => void;
@@ -257,6 +264,7 @@ export function Composer({
   onDraftChange,
   onSend,
   onStop,
+  onEscape,
   onClearQueue,
   onRestoreQueue,
   onHistoryStep,
@@ -796,7 +804,9 @@ export function Composer({
 
               if (event.key === "Escape" && running) {
                 event.preventDefault();
-                onStop();
+                // The extension gets the first look (a review pauses); only an
+                // unconsumed Escape reaches the stop path.
+                (onEscape ?? onStop)();
                 return;
               }
               // Pi's dequeue chord (alt+up): take every queued message back into
@@ -955,7 +965,9 @@ export function Composer({
           </span>
           <span className="shrink-0">
             Enter sends · Shift+Enter newline
-            {running ? " · Alt+Enter queues a follow-up · Esc stops" : ""}
+            {running
+              ? " · Alt+Enter queues a follow-up · Esc pauses a review or stops the run"
+              : ""}
           </span>
         </div>
         {/* Where the cursor is. The browser's caret is a thin blinking line that

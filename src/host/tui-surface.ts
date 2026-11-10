@@ -26,6 +26,7 @@ import {
   type TuiCursor,
   type TuiFrame,
   type TuiSlot,
+  type TuiInputResult,
   type TuiSurfaceSnapshot,
 } from "../shared/tui-surface";
 import type { HostMethod } from "../shared/host-protocol";
@@ -616,31 +617,68 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
     }
   };
 
-  /** Extension input filters → TUI listeners → the focused component. */
-  const routeInput = (data: string): void => {
-    if (disposed || data.length === 0) return;
+  /**
+   * Extension input filters → TUI listeners → the focused component.
+   *
+   * Returns what happened, because the renderer's Escape fallback depends on it:
+   * `consumed` means a handler claimed the key (so the renderer must not also
+   * stop the run), `dispatched` means the bytes reached anything at all. Every
+   * handler is wrapped: a throwing extension must not lose the key or escape
+   * into the IPC handler.
+   */
+  const routeInput = (data: string): TuiInputResult => {
+    if (disposed || data.length === 0) {
+      return { ok: true, consumed: false, dispatched: false };
+    }
     let current = data;
+    let consumed = false;
+    let dispatched = false;
     for (const handler of options.terminalInput?.() ?? []) {
-      const result = handler(current);
-      if (result?.consume) return;
-      if (result?.data !== undefined) current = result.data;
-    }
-    if (current.length === 0) return;
-    for (const listener of inputListeners) {
-      const result = listener(current);
-      if (result?.consume) return;
-      if (result?.data !== undefined) current = result.data;
-    }
-    if (current.length === 0) return;
-    const target = focusedComponent;
-    if (target?.handleInput) {
+      let result: SurfaceInputResult;
       try {
-        target.handleInput(current);
+        result = handler(current);
       } catch {
-        // A throwing handler must not crash the host; the next render recovers.
+        // A broken extension filter must not swallow the key.
+        continue;
+      }
+      if (result?.consume) {
+        consumed = true;
+        break;
+      }
+      if (result?.data !== undefined) current = result.data;
+    }
+    if (!consumed && current.length > 0) {
+      for (const listener of inputListeners) {
+        let result: SurfaceInputResult;
+        try {
+          result = listener(current);
+        } catch {
+          continue;
+        }
+        if (result?.consume) {
+          consumed = true;
+          break;
+        }
+        if (result?.data !== undefined) current = result.data;
       }
     }
-    scheduleRender();
+    if (!consumed && current.length > 0) {
+      const target = focusedComponent;
+      if (target?.handleInput) {
+        dispatched = true;
+        try {
+          target.handleInput(current);
+        } catch {
+          // A throwing handler must not crash the host; the next render recovers.
+        }
+      }
+    }
+    if (consumed) {
+      // Someone claimed the key: repaint so the component's reaction shows.
+      dispatched = true;
+      scheduleRender();
+    }
+    return { ok: true, consumed, dispatched };
   };
 
   const clearSlots = (): void => {
@@ -755,7 +793,9 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
     },
 
     input(data) {
-      routeInput(data);
+      // Host-internal paths (TUI components calling `tui.input`) ignore the
+      // result; only the IPC handler reports consumption to the renderer.
+      void routeInput(data);
     },
 
     invalidate() {
@@ -779,12 +819,11 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
         scheduleRender();
         return { ok: true, rows, cols };
       },
-      "tui.input": (params) => {
+      "tui.input": (params): TuiInputResult => {
         const request = sanitizeTuiInput(params);
         if (!request) throw new Error("tui.input requires { data }");
         // Route through the same path as a host-side key so listeners run too.
-        routeInput(request.data);
-        return { ok: true };
+        return routeInput(request.data);
       },
     }),
 

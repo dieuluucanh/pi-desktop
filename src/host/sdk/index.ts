@@ -170,6 +170,16 @@ export function createSdkSettings(
   return manager;
 }
 
+/**
+ * Delegates to the Pi coding agent CLI (the SDK's `main`). Lives here so the
+ * only `@earendil-works/*` import in the host stays inside `src/host/sdk/*`
+ * (AGENTS.md rule 4 / plan step 28).
+ */
+export async function runSdkCli(args: readonly string[]): Promise<void> {
+  const { main } = await import("@earendil-works/pi-coding-agent");
+  await main([...args]);
+}
+
 /** Every session of the profile across projects — the session browser's source. */
 export function listAllSessions(): Promise<unknown[]> {
   return SessionManager.listAll() as Promise<unknown[]>;

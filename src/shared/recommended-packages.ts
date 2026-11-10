@@ -77,6 +77,15 @@ export const RECOMMENDED_PACKAGES: readonly RecommendedPackage[] = [
     provides: "Plan/code review",
     verifiableInRepo: false,
   },
+  {
+    id: "commandcode-provider",
+    name: "pi-commandcode-provider",
+    source: "npm:pi-commandcode-provider",
+    description:
+      "Command Code provider with per-model wire routing (Responses when advertised), reasoning normalization and redacted diagnostics.",
+    provides: "Command Code provider",
+    verifiableInRepo: false,
+  },
 ];
 
 /** Read-only discovery: there is no `npm run gallery`-style check in this repo. */

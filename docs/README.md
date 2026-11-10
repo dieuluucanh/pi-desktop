@@ -86,6 +86,8 @@
   performance, onboarding/updates and packaging.
 - [`architecture/host-protocol.md`](architecture/host-protocol.md) — the main ⇄ Pi host JSONL
   protocol, including the RPC mapping table.
+- [`architecture/review-mode-baseline.md`](architecture/review-mode-baseline.md) — the
+  Command Code stream-cut evidence and probe matrix behind Review Mode provider recovery.
 - [`architecture/extension-ui.md`](architecture/extension-ui.md) — `ExtensionUIContext`
   member-by-member (the parity doc the definition of done calls `extension-parity.md`) and the
   TUI rendering surface.

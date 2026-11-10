@@ -121,7 +121,7 @@ export const APP_CHROME_SWATCHES: Record<"dark" | "light", Record<ThemeColorKey,
 
 /**
  * Built-in swatches, resolved from the SDK's own theme JSON (`vars` + `export`
- * sections) at `@earendil-works/pi-coding-agent@1.4.0`. `tests/shared/themes`
+ * sections) at `@earendil-works/pi-coding-agent@1.5.0`. `tests/shared/themes`
  * re-resolves the SDK files and asserts equality, so an upstream palette change
  * turns into a failing test instead of a stale preview.
  */

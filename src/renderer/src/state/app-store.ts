@@ -290,6 +290,7 @@ import {
   type OnboardingStep,
 } from "../../../shared/onboarding";
 import type { ProfileMode } from "../../../shared/profile";
+import { domKeyToTerminalData, type TerminalKeyInput } from "../../../shared/terminal-keys";
 import { readBlobText, wrapBridgeWithBlobResolution } from "./host-response";
 
 /**
@@ -1644,8 +1645,21 @@ export interface AppStateShape {
   loadTuiSurface: (tabId: string) => Promise<void>;
   /** Reports the renderer's measured grid so overlays re-resolve. */
   resizeTuiSurface: (tabId: string, rows: number, cols: number) => void;
-  /** Sends raw terminal bytes to the tab's focused component. */
-  sendTuiInput: (tabId: string, data: string) => void;
+  /**
+   * Sends raw terminal bytes to the tab's focused component and resolves with
+   * whether the host reports them **consumed** (plan step 22). Escape's fallback
+   * depends on this: a consumed key must not also stop the run.
+   */
+  sendTuiInput: (tabId: string, data: string) => Promise<boolean>;
+  /**
+   * The Escape/interrupt path (plan steps 22-24): forwards the key to the host's
+   * extension input handlers first and stops the run only when nothing consumed
+   * it. Non-session, non-running tabs are untouched; a repeated press within the
+   * dedupe window is ignored. `key` lets a remapped `app.interrupt` chord be
+   * forwarded; a chord with no terminal encoding is not forwarded at all (it
+   * falls straight through to `stopRun` — Escape is the parity case).
+   */
+  interruptRun: (tabId: string, key?: TerminalKeyInput) => Promise<void>;
 
   /**
    * Extension-owned renderers (plan step 18). `extensionRender` runs a
@@ -1933,6 +1947,42 @@ function isSessionAsleepError(error: unknown): boolean {
 }
 
 const STALE_EXTENSION_CONTEXT = "This extension ctx is stale after session replacement or reload.";
+
+/** Repeat presses inside this window are one interrupt, not two (plan step 22). */
+export const INTERRUPT_DEDUPE_MS = 400;
+/** How long the renderer waits for `tui.input` before treating it as unconsumed. */
+export const INTERRUPT_TIMEOUT_MS = 400;
+/** Last accepted interrupt per tab, for the dedupe window. */
+const lastInterruptAt = new Map<string, number>();
+
+/**
+ * Resolves with `promise`, or with `fallback` once `ms` elapses. The Escape
+ * path must never hang: an unanswered host falls through to the normal stop.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(fallback);
+    }, ms);
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(fallback);
+      },
+    );
+  });
+}
 
 /** The SDK's expected invalidation error, not a new extension bug. */
 function isStaleExtensionContextError(entry: SessionEventEntry): boolean {
@@ -3605,14 +3655,47 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (request) void request.then(undefined, () => undefined);
   },
 
-  sendTuiInput: (tabId, data) => {
-    if (data.length === 0) return;
+  sendTuiInput: async (tabId, data) => {
+    if (data.length === 0) return false;
     const request = bridge()?.sessions?.request({
       tabId,
       method: "tui.input",
       params: { data },
     });
-    if (request) void request.then(undefined, () => undefined);
+    if (!request) return false;
+    try {
+      const result = (await request) as { consumed?: unknown } | undefined;
+      return result?.consumed === true;
+    } catch {
+      // A host that cannot answer (asleep, crashed mid-call) consumed nothing.
+      return false;
+    }
+  },
+
+  interruptRun: async (tabId, key = { key: "Escape" }) => {
+    const tab = get().tabs.find((entry) => entry.id === tabId);
+    if (!tab || tab.kind !== "session" || tab.status !== "running") return;
+    const now = Date.now();
+    if (now - (lastInterruptAt.get(tabId) ?? 0) < INTERRUPT_DEDUPE_MS) return;
+    lastInterruptAt.set(tabId, now);
+    const data = domKeyToTerminalData(key);
+    if (!data) {
+      // A remapped chord with no terminal bytes cannot reach the extension's
+      // `onTerminalInput`; it is not forwarded, and the run stops as before
+      // (the documented limitation in docs/architecture — Escape is the case
+      // that matters and always encodes to ``).
+      await get().stopRun(tabId);
+      return;
+    }
+    const consumed = await withTimeout(
+      get().sendTuiInput(tabId, data),
+      INTERRUPT_TIMEOUT_MS,
+      false,
+    );
+    // A cancelled/settled run may have changed the tab while the host answered.
+    const live = get().tabs.find((entry) => entry.id === tabId);
+    if (!live || live.status !== "running") return;
+    if (!consumed) await get().stopRun(tabId);
   },
 
   extensionRender: async (tabId, request) => {

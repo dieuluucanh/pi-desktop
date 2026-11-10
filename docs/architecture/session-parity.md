@@ -1,6 +1,6 @@
 # Session parity contract
 
-**Last updated:** 2026-11-07 · **Terminal reference:** `@earendil-works/pi-coding-agent` 1.4.0 · **Plan:** `.pi/plans/2026-10-26-pi-desktop-session-parity.md`
+**Last updated:** 2026-11-07 · **Terminal reference:** `@earendil-works/pi-coding-agent` 1.5.0 · **Plan:** `.pi/plans/2026-10-26-pi-desktop-session-parity.md`
 
 **Status:** Phase A–F (steps 1–24) shipped. **Phase G (steps 25–28, updates) is deferred whole**, as the plan permits; `/bug` writes a local zip and does not upload to Radius.
 
@@ -84,7 +84,7 @@ drift from the terminal.
     `resetTranscript`, and pruned with the tab; shell `!` commands are not in the
     transcript and are not seeded.
 
-## Gap matrix (terminal 1.4.0 → desktop)
+## Gap matrix (terminal 1.5.0 → desktop)
 
 | Area                     | Terminal                                     | Desktop before this work                                                                                    | Owning step |
 | ------------------------ | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ----------- |

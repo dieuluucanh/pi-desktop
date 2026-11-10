@@ -92,6 +92,7 @@ export function SessionView({ tabId }: { tabId: string }) {
   const hydrateTranscript = useAppStore((state) => state.hydrateTranscript);
   const sendPrompt = useAppStore((state) => state.sendPrompt);
   const stopRun = useAppStore((state) => state.stopRun);
+  const interruptRun = useAppStore((state) => state.interruptRun);
   const clearQueue = useAppStore((state) => state.clearQueue);
   const restoreQueue = useAppStore((state) => state.restoreQueue);
   const setDraft = useAppStore((state) => state.setDraft);
@@ -606,6 +607,9 @@ export function SessionView({ tabId }: { tabId: string }) {
                 }}
                 completion={completion}
                 onStop={() => void stopRun(active.id)}
+                // Escape goes through the extension first (plan step 24): a
+                // running review pauses instead of aborting.
+                onEscape={() => void interruptRun(active.id)}
                 onClearQueue={() => void clearQueue(active.id)}
                 onRestoreQueue={() => void restoreQueue(active.id)}
                 onHistoryStep={(direction, caret) => historyStep(active.id, direction, caret)}

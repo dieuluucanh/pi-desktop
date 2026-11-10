@@ -102,10 +102,10 @@ export function classifyInvocation(
   return wantsService ? { mode: "service", args } : { mode: "cli", args };
 }
 
-/** Delegates to the Pi coding agent CLI (the SDK's `main`). */
+/** Delegates to the Pi coding agent CLI (the SDK's `main`), via the SDK boundary. */
 export async function runCli(args: readonly string[]): Promise<void> {
-  const { main } = await import("@earendil-works/pi-coding-agent");
-  await main([...args]);
+  const { runSdkCli } = await import("./sdk/index");
+  await runSdkCli(args);
 }
 
 function flagValue(args: readonly string[], flag: string): string | null {

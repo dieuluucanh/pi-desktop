@@ -821,6 +821,22 @@ describe("aborted tool runs", () => {
     state = reduceSessionEvents(state, [fixtures.agentEnd()]);
     expect(state.items.filter((item) => item.kind === "tool")).toHaveLength(1);
   });
+
+  it("sweeps running tools on SDK 1.5.0's aborted agent_settled", () => {
+    // 1.5.0 reports `agent_settled: { aborted: true }` when a run is cancelled
+    // before the tool produced an end event. The card must stop spinning even if
+    // no `agent_end` reached the renderer.
+    const state = reduceSessionEvents(createTranscriptState(), [
+      fixtures.toolStart("call-1", "read", { path: "note.txt" }),
+      event("agent_settled", { aborted: true }),
+    ]);
+    const tool = state.items.find((item) => item.kind === "tool");
+    expect(tool?.kind === "tool" ? tool.tool : null).toMatchObject({
+      done: true,
+      cancelled: true,
+    });
+    expect(state.runStartedAt).toBeNull();
+  });
 });
 
 describe("run status (plan step 8)", () => {

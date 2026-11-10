@@ -35,6 +35,14 @@ describe("recommended packages", () => {
   it("points gallery discovery at pi.dev without pretending to install", () => {
     expect(PACKAGE_GALLERY_URL).toBe("https://pi.dev/packages");
   });
+
+  it("recommends the maintained Command Code provider", () => {
+    const entry = RECOMMENDED_PACKAGES.find((candidate) => candidate.id === "commandcode-provider");
+    expect(entry).toBeDefined();
+    expect(entry?.name).toBe("pi-commandcode-provider");
+    expect(entry?.source).toBe("npm:pi-commandcode-provider");
+    expect(entry?.provides).toBe("Command Code provider");
+  });
 });
 
 describe("packageNameOf", () => {

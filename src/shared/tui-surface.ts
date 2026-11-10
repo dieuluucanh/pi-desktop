@@ -205,6 +205,21 @@ export interface TuiInputRequest {
   data: string;
 }
 
+/**
+ * `tui.input` result: what the host did with the bytes.
+ *
+ * `consumed` means an extension handler or TUI listener claimed the key, so the
+ * renderer must not also run its own default action (in particular, Escape must
+ * not fall through to `stopRun`). `dispatched` means the bytes reached at least
+ * one handler, listener or component — a key nobody looked at is not an
+ * interruption.
+ */
+export interface TuiInputResult {
+  ok: true;
+  consumed: boolean;
+  dispatched: boolean;
+}
+
 export function sanitizeTuiInput(value: unknown): TuiInputRequest | null {
   const record = asRecord(value);
   if (typeof record.data !== "string" || record.data.length === 0) return null;
