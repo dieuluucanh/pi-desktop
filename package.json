@@ -1,7 +1,7 @@
 {
   "name": "pi-desktop",
   "desktopName": "pi-desktop.desktop",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "private": true,
   "description": "Pi Desktop — a standalone desktop app for the Pi coding agent (with zero-touch Pi for Office)",
   "type": "module",

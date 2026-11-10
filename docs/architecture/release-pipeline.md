@@ -39,7 +39,7 @@ uploaded. A partially uploaded draft is invisible to end users; a half-uploaded 
 release would break updates for everyone until it was fixed.
 
 ```text
-prepare   gh release create <tag> --draft --verify-tag --notes-file docs/releases/v0.8.1.md
+prepare   gh release create <tag> --draft --verify-tag --notes-file docs/releases/v0.8.2.md
 windows   build → verify → gh release upload *.exe *.blockmap latest.yml --clobber
 linux     build → verify → gh release upload *.AppImage *.deb latest-linux*.yml --clobber
 macos     build → verify → gh release upload *.dmg *.zip latest-mac.yml --clobber

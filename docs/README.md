@@ -14,6 +14,10 @@
 
 ## Release notes
 
+- [`releases/v0.8.2.md`](releases/v0.8.2.md) — v0.8.2 release notes (Review Mode
+  handoff continuity and manual-review visibility, focused review web tabs, SDK 1.5.0
+  and the workflow 0.10.0 provider recovery), install table, known limitations and
+  verification status.
 - [`releases/v0.8.1.md`](releases/v0.8.1.md) — v0.8.1 release notes (the Linux
   terminal fix: a pinned Debian 11 `node-pty` build, a packaged-PTY smoke test and a
   fail-closed ELF floor gate, plus release-pipeline retries and caching), install table,

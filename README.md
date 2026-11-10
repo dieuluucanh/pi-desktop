@@ -5,28 +5,23 @@
 [Website](https://dieuluucanh.github.io/pi-desktop/) ·
 [Installation](https://dieuluucanh.github.io/pi-desktop/#installation) ·
 [Documentation](https://dieuluucanh.github.io/pi-desktop/docs/) ·
-[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.8.1/)
+[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.8.2/)
 
 A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global
 installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
 `~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
-> **Status:** v0.8.1 — the fifth public release, a stability patch for the Linux
-> packages and the macOS terminal. v0.8.0 shipped a Linux `node-pty` binary built
-> against glibc 2.42, so the integrated terminal could not start on older
-> distributions. v0.8.1 builds it in a pinned Debian 11 container, **fails the
-> package** above the support floor (glibc 2.31 / `GLIBCXX_3.4.28`), opens a real
-> PTY from the packaged artefacts in CI and reports a broken native load instead
-> of dying. The packaged-PTY smoke also found that no macOS build ever had a
-> working terminal: node-pty 1.1.0 rewrote its helper path to
-> `app.asar.unpacked.unpacked`, so every open failed with `posix_spawnp failed`;
-> the packaged copy is now patched and the package fails closed. The release
-> pipeline also retries and caches upstream downloads after the first v0.8.0 tag
-> run failed on GitHub 504s. Windows, Linux and macOS installers are built and
-> published from CI on a version tag; Windows is the primary artefact, macOS and
-> Linux are beta, and builds are unsigned. Known limitations and the deferred
-> backlog are recorded in [docs/releases/v0.8.1.md](docs/releases/v0.8.1.md) and
+> **Status:** v0.8.2 — the sixth public release, a Review Mode and provider patch.
+> Manual `/review` is visible and pausable, every later review round reopens the
+> current plan, and a pending browser review survives a reload. The bundled Pi SDK
+> is 1.5.0, `@dieulc/workflow` 0.10.0 adds provider recovery and chunked plan
+> rewrites, and the Command Code stream probe/doctor is included. Notification
+> review tabs open focused; tool-result localhost URLs stay in the background.
+> Windows, Linux and macOS installers are built and published from CI on a version
+> tag; Windows is the primary artefact, macOS and Linux are beta, and builds are
+> unsigned. Known limitations and the deferred backlog are recorded in
+> [docs/releases/v0.8.2.md](docs/releases/v0.8.2.md) and
 > [docs/product/backlog.md](docs/product/backlog.md).
 >
 > **Pi for Office is an optional integration.** It installs from Extensions →
@@ -146,7 +141,7 @@ the Markdown in `docs/` remains the source.
   host protocol + RPC mapping, extension UI host + TUI surface, Office
   integration, runtime, pinned versions).
 - **Parity** — [docs/product/parity.md](docs/product/parity.md).
-- **Release notes** — [docs/releases/v0.8.1.md](docs/releases/v0.8.1.md)
+- **Release notes** — [docs/releases/v0.8.2.md](docs/releases/v0.8.2.md)
   (install table, known limitations, verification status).
 - **Backlog** — [docs/product/backlog.md](docs/product/backlog.md).
 - **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md) and
