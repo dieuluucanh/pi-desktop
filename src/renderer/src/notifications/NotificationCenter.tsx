@@ -13,6 +13,7 @@ import { useAppStore } from "../state/app-store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
+import { MultilineText } from "../ui/multiline-text";
 
 /**
  * The notification centre (plan step 16; rebuilt 2026-11-08).
@@ -138,10 +139,10 @@ export function NotificationCenter() {
                           className="min-w-0 flex-1 break-words text-left hover:underline"
                           onClick={() => run(entry)}
                         >
-                          {entry.message}
+                          <MultilineText>{entry.message}</MultilineText>
                         </button>
                       ) : (
-                        <span className="min-w-0 flex-1 break-words">{entry.message}</span>
+                        <MultilineText className="min-w-0 flex-1">{entry.message}</MultilineText>
                       )}
                       {!classEnabled ? (
                         <Badge tone="neutral" data-testid="notification-hidden">

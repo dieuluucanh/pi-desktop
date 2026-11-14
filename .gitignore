@@ -38,3 +38,4 @@ site/public/brand/
 site/public/docs/
 site/public/favicon.svg
 site/test-results/
+.pi/settings.json

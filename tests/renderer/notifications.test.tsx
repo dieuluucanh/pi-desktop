@@ -135,6 +135,31 @@ describe("NotificationCenter", () => {
     expect(screen.getByTestId("notification-count")).toHaveTextContent("1");
   });
 
+  it("keeps every line of an archived notification", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({
+      notifications: [entry({ id: "n-lines", message: "line one\nline two" })],
+    });
+    render(<NotificationCenter />);
+
+    await user.click(screen.getByRole("button", { name: /Notifications/ }));
+    const message = screen.getByText(/line one\s+line two/);
+    expect(message.className).toContain("whitespace-pre-wrap");
+    expect(message.textContent).toBe("line one\nline two");
+  });
+
+  it("keeps every line of an actionable notification", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({
+      notifications: [{ ...updateNotification("0.4.0", 1), message: "line one\nline two" }],
+    });
+    render(<NotificationCenter />);
+
+    await user.click(screen.getByRole("button", { name: /Notifications/ }));
+    const message = screen.getByText(/line one\s+line two/);
+    expect(message.className).toContain("whitespace-pre-wrap");
+  });
+
   it("opens the update view from the offer row", async () => {
     const user = userEvent.setup();
     useAppStore.setState({ notifications: [updateNotification("0.4.0", 1)] });

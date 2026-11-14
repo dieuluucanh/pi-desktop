@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
+import { MultilineText } from "../ui/multiline-text";
 import { useAppStore } from "../state/app-store";
 import type { ExtensionDialogRequest } from "../../../shared/extension-ui";
 
@@ -74,7 +75,9 @@ export function ExtensionDialogDock({
         {dialog.timeout ? <DialogCountdown key={`countdown-${dialog.id}`} dialog={dialog} /> : null}
       </div>
       {dialog.method === "confirm" && dialog.message ? (
-        <p className="px-4 pb-2 text-xs text-ink-muted">{dialog.message}</p>
+        <p className="px-4 pb-2 text-xs text-ink-muted">
+          <MultilineText>{dialog.message}</MultilineText>
+        </p>
       ) : null}
       <div className="min-h-0 flex-1 overflow-y-auto">
         <DialogBody key={`body-${dialog.id}`} dialog={dialog} onAnswer={answer} onCancel={cancel} />
@@ -284,7 +287,7 @@ function SelectOptions({
             >
               {isSelected ? "→" : " "}
             </span>
-            <span className="min-w-0 flex-1">{option}</span>
+            <MultilineText className="min-w-0 flex-1">{option}</MultilineText>
           </Button>
         );
       })}

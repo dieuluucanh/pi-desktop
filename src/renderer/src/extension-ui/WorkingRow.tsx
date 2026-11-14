@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { MultilineText } from "../ui/multiline-text";
 import type { ExtensionWorkingState } from "../../../shared/extension-ui";
 
 /**
@@ -68,7 +69,7 @@ export function WorkingRow({
       <span className={frames && frames.length > 0 ? "font-mono" : "animate-pulse text-accent"}>
         {marker}
       </span>
-      <span>{working.message ?? "Working…"}</span>
+      <MultilineText className="min-w-0">{working.message ?? "Working…"}</MultilineText>
       {elapsed === null ? null : <span className="text-ink-subtle">{elapsed}</span>}
       {showCancelHint ? <span className="text-ink-subtle">{cancelHint}</span> : null}
     </div>

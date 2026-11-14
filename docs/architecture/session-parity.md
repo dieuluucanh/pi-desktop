@@ -1,6 +1,6 @@
 # Session parity contract
 
-**Last updated:** 2026-11-07 · **Terminal reference:** `@earendil-works/pi-coding-agent` 1.5.0 · **Plan:** `.pi/plans/2026-10-26-pi-desktop-session-parity.md`
+**Last updated:** 2026-11-14 · **Terminal reference:** `@earendil-works/pi-coding-agent` 1.5.0 · **Plan:** `.pi/plans/2026-10-26-pi-desktop-session-parity.md` · `.pi/plans/2026-11-14-transcript-line-parity.md`
 
 **Status:** Phase A–F (steps 1–24) shipped. **Phase G (steps 25–28, updates) is deferred whole**, as the plan permits; `/bug` writes a local zip and does not upload to Radius.
 
@@ -83,6 +83,18 @@ drift from the terminal.
     upgraded after `loadPrefs` re-applies command origins, cleared by
     `resetTranscript`, and pruned with the tab; shell `!` commands are not in the
     transcript and are not seeded.
+14. **Line semantics are terminal's.** Every source newline inside transcript
+    Markdown is a rendered line: `remark-breaks` turns a CommonMark soft break
+    into a `<br>`, matching `pi-tui`'s inline renderer, while fenced/indented
+    code keeps its own newlines. Extension **plain text** — `ctx.ui.notify`, a
+    `ctx.ui.confirm` message, `ctx.ui.select` option labels,
+    `setWorkingMessage` and the session error banner — is rendered verbatim by
+    `MultilineText` (`white-space: pre-wrap`) and is **never** parsed as
+    Markdown; only `custom_message` / `custom` entry content goes through the
+    Markdown pipeline. The notice severity badge, archive, toast and suppression
+    rules are orthogonal to line preservation. A find query that spans a soft
+    break is still counted by the item-model matcher but cannot paint one
+    `<mark>` across the `<br>`; copy always uses the raw message text.
 
 ## Gap matrix (terminal 1.5.0 → desktop)
 
@@ -101,6 +113,7 @@ drift from the terminal.
 | Queue                    | pending rows + Alt+Up                        | ✅ pending rows, Alt+Up, Ctrl+Q/Alt+Enter, live modes                                                       | 9           |
 | Streaming follow         | pinned + jump-to-latest                      | ✅ content-size follow + jump pill + Ctrl+End                                                               | 10          |
 | Find                     | Ctrl+Shift+F                                 | ✅ Ctrl+F, inline marks, next/prev (remappable)                                                             | 11          |
+| Multi-line output        | one source line per line                     | ✅ 2026-11-14 (`remark-breaks`; verbatim extension text)                                                    | 2026-11-14  |
 | Copy last / session info | `/copy`, `/session`                          | ✅ `/copy`, Ctrl+X outside editor, `/session`                                                               | 12          |
 | Clone / extension switch | works                                        | ✅ leaf fork fallback; replaced sessions rehydrate                                                          | 13          |
 | JSONL                    | export/import                                | ✅ `/export jsonl`, `/import` with confirmation                                                             | 14          |
@@ -143,7 +156,17 @@ drift from the terminal.
 - `tests/renderer/markdown-code.test.ts` — the pure `pre > code` extractor
   (language-less fences, `mark` flattening, the trailing-newline rule).
 - `tests/renderer/markdown.test.tsx` — inline spans stay inside their paragraph,
-  fenced/indented blocks stay blocks, and find marks never reach block code.
+  fenced/indented blocks stay blocks, find marks never reach block code, a soft
+  newline becomes a `<br>`, and the Build Complete TODO sample keeps one line
+  per TODO.
+- `tests/renderer/multiline-text.test.tsx` — the shared primitive's class
+  contract, caller-class merging and newline/indent preservation.
+- `tests/renderer/transcript.test.tsx` — the `/profile` notice keeps every line,
+  the `workflow-complete` fallback has one `<br>` per TODO boundary, and
+  assistant prose keeps a single newline.
+- `tests/renderer/extension-ui.test.tsx`, `tests/renderer/notifications.test.tsx`,
+  `tests/renderer/session-view.test.tsx`, `tests/renderer/notify-toast.test.tsx` —
+  confirm/select/working/archive/toast/error-banner text keeps its lines.
 - `tests/renderer/highlight-store.test.ts` — the token cache's contract: cache
   hits, in-flight/grammar dedupe, the synchronous warm path, `maxEntries` /
   `maxChars` eviction, oversized blocks, failure retries and `reset()`.
@@ -187,6 +210,10 @@ drift from the terminal.
 - **Transcript measure.** Assistant prose is capped at `--transcript-measure`
   (110ch) on wide windows; terminal Pi is bounded by its pane width. Code blocks
   and tables keep their own horizontal scroll inside the capped column.
+- **Markdown chrome stays desktop-native.** Bubbles, native list bullets, styled
+  headings, syntax-highlighted code cards and the 110ch measure are kept; only
+  line semantics follow `pi-tui`. A find query spanning a soft break is counted
+  but cannot paint one `<mark>` across the `<br>`; copy uses the raw text.
 - **Code colours are `github-dark` in both appearances.** Shiki token colours do
   not follow the light palette; only the block chrome (`bg-sunken`, `border-line`)
   is token-driven. A theme-aware Shiki palette is a separate change.

@@ -2,6 +2,7 @@ import { createContext, memo, useContext, useEffect, useMemo, useState } from "r
 import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
+import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
@@ -209,6 +210,12 @@ interface MarkdownProps {
  * wasted work. Every prop is a primitive, so a shallow compare is safe; a future
  * per-instance prop must be a primitive too, or reach the renderers through a
  * context (as `streaming` does).
+ *
+ * `remarkBreaks` is the terminal-parity rule (2026-11-14): pi-tui's Markdown
+ * keeps every `\n` inside inline text as an output line, while CommonMark
+ * collapses a soft break into a space. The plugin turns those breaks into
+ * `break` nodes, which React renders as `<br>`. A root-level `white-space` rule
+ * would also reach KaTeX, Mermaid and table internals, so it is not used.
  */
 export const Markdown = memo(function Markdown({
   children,
@@ -227,7 +234,7 @@ export const Markdown = memo(function Markdown({
     <div className={cn("pi-markdown text-sm leading-relaxed", className)}>
       <MarkdownStreamingContext.Provider value={streaming}>
         <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkMath]}
+          remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
           rehypePlugins={[...rehypePlugins, rehypeKatex]}
           components={MARKDOWN_COMPONENTS}
         >

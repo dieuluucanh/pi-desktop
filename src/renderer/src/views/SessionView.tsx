@@ -5,6 +5,7 @@ import { StartingBanner } from "../session/StartingBanner";
 import { SessionFooter } from "../session/SessionFooter";
 import { Transcript } from "../session/Transcript";
 import { Button } from "../ui/button";
+import { MultilineText } from "../ui/multiline-text";
 import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
 import { selectDefaultModelProblem } from "../state/selectors";
@@ -437,12 +438,12 @@ export function SessionView({ tabId }: { tabId: string }) {
 
       {active.error || active.status === "crashed" || active.status === "failed" ? (
         <div className="banner banner--error mx-4 mt-2 flex items-start justify-between gap-3">
-          <span>
+          <MultilineText className="min-w-0">
             {active.error ??
               (active.status === "crashed"
                 ? "The session host crashed. History is on disk and returns after a restart."
                 : "The session host was stopped after repeated failures.")}
-          </span>
+          </MultilineText>
           <Button size="sm" variant="secondary" onClick={() => void restartTab(active.id)}>
             Restart
           </Button>

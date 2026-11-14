@@ -616,6 +616,88 @@ describe("extension renderers", () => {
   });
 });
 
+describe("terminal line semantics (2026-11-14 transcript-line-parity)", () => {
+  const PROFILE_SAMPLE = [
+    "Model Profiles (named role-model combinations):",
+    "  Active: ⚡ Opencode-Deepseek-V4.1-Flash · default: Opencode-Deepseek-V4.1-Flash",
+    "",
+    "  ⚡ Opencode-Deepseek-V4.1-Flash (● active, ★ default)",
+    "     planner: opencode-go/deepseek-v4.1-flash (high)",
+    "     reviewer: opencode-go/deepseek-v4.1-flash (high)",
+  ].join("\n");
+
+  it("keeps every line of a /profile notice", () => {
+    // Info notifications are off by default; this is the user-reported
+    // `/profile list` path once the class is visible.
+    useAppStore.setState({
+      prefs: {
+        ...DEFAULT_PREFS,
+        notifications: {
+          ...DEFAULT_PREFS.notifications,
+          classes: { ...DEFAULT_PREFS.notifications.classes, info: true },
+        },
+      },
+    });
+    const items = itemsOf([
+      {
+        event: "oi.notify",
+        payload: { id: "n-profile", message: PROFILE_SAMPLE, type: "info", at: 1 },
+      },
+    ]);
+    render(<Transcript items={items} />);
+
+    const text = screen.getByTestId("transcript-notice-text");
+    expect(text.className).toContain("whitespace-pre-wrap");
+    expect(text.className).toContain("break-words");
+    expect(text.textContent).toBe(PROFILE_SAMPLE);
+    expect(screen.getByText("info")).toBeInTheDocument();
+  });
+
+  it("puts each completed workflow TODO on its own line", async () => {
+    installBridge();
+    stubRender(async (method) =>
+      method === "render.request" ? { rendered: false, width: 40, lines: [] } : {},
+    );
+    const items = itemsOf([
+      {
+        event: "entry_appended",
+        payload: {
+          entry: {
+            type: "custom_message",
+            id: "c-complete",
+            customType: "workflow-complete",
+            content: "**Build Complete! ✓**\n\n~~1. first~~\n~~2. second~~\n~~3. third~~",
+          },
+        },
+      },
+    ]);
+    const { container } = render(<Transcript items={items} tabId={RENDER_TAB} />);
+
+    await waitFor(() => expect(container.querySelectorAll("del")).toHaveLength(3));
+    expect([...container.querySelectorAll("del")].map((element) => element.textContent)).toEqual([
+      "1. first",
+      "2. second",
+      "3. third",
+    ]);
+    expect(container.querySelectorAll("p br")).toHaveLength(2);
+  });
+
+  it("keeps a single newline in assistant prose", () => {
+    const items = itemsOf([
+      { event: "message_start", payload: { message: { role: "assistant" } } },
+      {
+        event: "message_end",
+        payload: { message: { role: "assistant", content: "First line\nSecond line" } },
+      },
+    ]);
+    const { container } = render(<Transcript items={items} />);
+
+    expect(container.querySelectorAll("p br")).toHaveLength(1);
+    expect(container.textContent).toContain("First line");
+    expect(container.textContent).toContain("Second line");
+  });
+});
+
 describe("command prompt rows (2026-10-26 composer plan)", () => {
   const commandItems = (): TranscriptItem[] =>
     reduceSessionEvents(createTranscriptState(), [

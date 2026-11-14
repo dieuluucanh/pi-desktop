@@ -127,6 +127,29 @@ describe("ExtensionDialog", () => {
     });
   });
 
+  it("keeps every line of a confirm message", () => {
+    renderDialog({
+      id: "ui-lines",
+      method: "confirm",
+      title: "Delete?",
+      message: "line one\nline two",
+    });
+
+    const message = screen.getByText(/line one\s+line two/);
+    expect(message.className).toContain("whitespace-pre-wrap");
+    expect(message.className).toContain("break-words");
+    expect(message.textContent).toBe("line one\nline two");
+  });
+
+  it("keeps every line of a select option", () => {
+    renderDialog({ id: "ui-lines", options: ["First\nline", "Second"] });
+
+    const option = screen.getByRole("option", { name: /First\s+line/ });
+    const label = option.querySelector(".whitespace-pre-wrap");
+    expect(label).not.toBeNull();
+    expect(label?.textContent).toBe("First\nline");
+  });
+
   it("cancels a confirm on Escape", async () => {
     const request = stubRequest();
     renderDialog({
@@ -257,6 +280,18 @@ describe("WorkingRow", () => {
       <WorkingRow working={{ message: null, visible: false, frames: null, intervalMs: null }} />,
     );
     expect(screen.queryByTestId("extension-working-row")).toBeNull();
+  });
+
+  it("keeps every line of a working message", () => {
+    render(
+      <WorkingRow
+        working={{ message: "line one\nline two", visible: null, frames: null, intervalMs: null }}
+      />,
+    );
+
+    const message = screen.getByText(/line one\s+line two/);
+    expect(message.className).toContain("whitespace-pre-wrap");
+    expect(message.textContent).toBe("line one\nline two");
   });
 
   it("uses the default label and hides on empty frames", () => {

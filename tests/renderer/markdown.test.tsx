@@ -94,6 +94,62 @@ describe("code blocks", () => {
   });
 });
 
+describe("soft line breaks (terminal parity)", () => {
+  it("renders a single newline as a line break, like terminal Pi", () => {
+    // 2026-11-14 transcript-line-parity: pi-tui keeps every `\n` inside inline
+    // text; CommonMark alone would collapse this into one space.
+    const { container } = render(<Markdown>{"line one\nline two"}</Markdown>);
+
+    expect(container.querySelectorAll("p")).toHaveLength(1);
+    expect(container.querySelectorAll("p br")).toHaveLength(1);
+    expect(container.querySelector("p")?.textContent).toContain("line one");
+    expect(container.querySelector("p")?.textContent).toContain("line two");
+  });
+
+  it("keeps every struck Build Complete TODO on its own line", () => {
+    const source = "**Build Complete! ✓**\n\n~~1. first~~\n~~2. second~~\n~~3. third~~";
+    const { container } = render(<Markdown>{source}</Markdown>);
+
+    expect(container.querySelectorAll("del")).toHaveLength(3);
+    expect(container.querySelectorAll("p br")).toHaveLength(2);
+    expect([...container.querySelectorAll("del")].map((el) => el.textContent)).toEqual([
+      "1. first",
+      "2. second",
+      "3. third",
+    ]);
+  });
+
+  it("does not turn blank lines or fenced code into breaks", () => {
+    const { container } = render(
+      <Markdown>{"Before\n\n```ts\nconst a = 1;\nconst b = 2;\n```\n\nAfter"}</Markdown>,
+    );
+
+    expect(container.querySelectorAll("p")).toHaveLength(2);
+    expect(container.querySelectorAll("p br")).toHaveLength(0);
+    expect(container.querySelector("pre br")).toBeNull();
+    expect(container.querySelector("pre code")?.textContent).toContain("const b = 2;");
+  });
+
+  it("keeps inline code inline across a soft break", () => {
+    const { container } = render(<Markdown>{"Run `a` then\n`b`."}</Markdown>);
+
+    expect(container.querySelectorAll("p")).toHaveLength(1);
+    expect(container.querySelectorAll("p code")).toHaveLength(2);
+    expect(container.querySelectorAll("p br")).toHaveLength(1);
+  });
+
+  it("still paints a find mark within a line after the break", () => {
+    const { container } = render(
+      <FindPatternContext.Provider value={/needle/gi}>
+        <Markdown>{"first line\nneedle here"}</Markdown>
+      </FindPatternContext.Provider>,
+    );
+
+    expect(container.querySelector("p mark.pi-find")?.textContent).toBe("needle");
+    expect(container.querySelectorAll("p br")).toHaveLength(1);
+  });
+});
+
 describe("find highlighting in code", () => {
   it("keeps the span text and lets the mark render inline", () => {
     const { container } = render(

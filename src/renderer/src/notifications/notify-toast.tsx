@@ -16,6 +16,7 @@ import { Settings2 } from "lucide-react";
 import { toast } from "sonner";
 
 import type { AppNotification } from "../../../shared/notifications";
+import { MultilineText } from "../ui/multiline-text";
 
 export interface NotifyToastHandlers {
   /** Opens the mute dialog for this message (warning/error toasts only). */
@@ -26,8 +27,11 @@ export interface NotifyToastHandlers {
 
 /** Shows one notification toast, if its class/type has a toast. */
 export function notifyToast(notification: AppNotification, handlers: NotifyToastHandlers): void {
+  // Extension text is verbatim in terminal Pi; Sonner accepts a React node, so
+  // the toast keeps every source line too.
+  const message = <MultilineText>{notification.message}</MultilineText>;
   if (notification.class === "update") {
-    toast.info(notification.message, {
+    toast.info(message, {
       action: {
         label: "View update",
         onClick: handlers.onOpen ?? (() => undefined),
@@ -47,6 +51,6 @@ export function notifyToast(notification: AppNotification, handlers: NotifyToast
       onClick: handlers.onMute ?? (() => undefined),
     },
   } as const;
-  if (notification.type === "error") toast.error(notification.message, options);
-  else toast.warning(notification.message, options);
+  if (notification.type === "error") toast.error(message, options);
+  else toast.warning(message, options);
 }

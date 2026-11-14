@@ -182,6 +182,25 @@ describe("session chrome", () => {
     expect(screen.getByRole("button", { name: "Restart" })).toBeInTheDocument();
   });
 
+  it("keeps every line of a session error", () => {
+    useAppStore.setState({
+      tabs: [
+        {
+          ...useAppStore.getState().tabs[0]!,
+          status: "crashed",
+          error: "host failed\nsecond line",
+        },
+      ],
+    });
+    render(<SessionView tabId={TAB} />);
+
+    const message = screen.getByText(/host failed\s+second line/);
+    expect(message.className).toContain("whitespace-pre-wrap");
+    expect(message.className).toContain("break-words");
+    expect(message.textContent).toBe("host failed\nsecond line");
+    expect(screen.getByRole("button", { name: "Restart" })).toBeInTheDocument();
+  });
+
   it("has no view-mode control; Ctrl+O is the only tool-detail switch", () => {
     render(
       <>

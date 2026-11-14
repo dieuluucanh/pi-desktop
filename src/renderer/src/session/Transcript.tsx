@@ -5,6 +5,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { copyText, hasSelectionWithin } from "../ui/clipboard";
 import { cn } from "../ui/cn";
+import { MultilineText } from "../ui/multiline-text";
 import { Markdown } from "./Markdown";
 import { HighlightText } from "./Highlight";
 import { FindPatternContext } from "./find-context";
@@ -339,7 +340,9 @@ function NoticeView({
     <div className="flex items-start gap-3 rounded-sm border border-line bg-surface px-3 py-2 text-xs">
       <Badge tone={tone}>{notice.severity}</Badge>
       <div className="flex-1">
-        <div>{<HighlightText text={notice.text} />}</div>
+        <MultilineText data-testid="transcript-notice-text">
+          <HighlightText text={notice.text} />
+        </MultilineText>
         {notice.detail ? (
           <pre className="mt-1 whitespace-pre-wrap font-mono text-[11px] text-ink-faint">
             <HighlightText text={notice.detail} />
