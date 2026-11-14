@@ -34,6 +34,7 @@ import {
   terminalStore,
 } from "../terminal/terminal-runtime";
 import type { PoolTerminal, TerminalPool } from "../terminal/terminal-pool";
+import { createPasteIntake, type PasteSource } from "../terminal/paste-intake";
 import { terminalFontFamilyFromDocument } from "../terminal/terminal-font";
 import type { TerminalStore } from "../state/terminal-store";
 
@@ -64,6 +65,7 @@ export function TerminalView({
   const hostRef = useRef<HTMLDivElement>(null);
   const copyTimer = useRef<number | null>(null);
   const bellTimer = useRef<number | null>(null);
+  const pasteIntake = useRef(createPasteIntake());
 
   const defaultTrust = useCallback(async (cwd: string): Promise<boolean> => {
     // Opening the prompt is all this does; the notice's button decides when to
@@ -125,6 +127,31 @@ export function TerminalView({
     void store.getState().create(tab.id, tab.cwd, 80, 24, grant, tab.profileId);
   }, [store, tab.id, tab.cwd, tab.profileId, state?.terminalId, sessionTrust]);
 
+  /**
+   * The single writer for clipboard text. Both the app's own path (a claimed
+   * chord, the Paste button) and the DOM `paste` event the browser fires for the
+   * same gesture end up here, so one gesture can never reach the PTY twice.
+   */
+  const writePaste = useCallback(
+    (terminalId: string, text: string, source: PasteSource) => {
+      if (!pasteIntake.current.accept(text, source)) return;
+      // `term.paste` is xterm's own normalisation + bracketed-paste framing.
+      pool.get(terminalId)?.term.paste(text);
+    },
+    [pool],
+  );
+
+  const pasteFromClipboard = useCallback(
+    async (terminalId: string) => {
+      // A denied clipboard read leaves nothing to paste (the Paste button fails
+      // the same way); the intake refuses empty text. The chord was already
+      // cancelled, so the shell receives no input instead of a partial one.
+      const text = await navigator.clipboard.readText().catch(() => "");
+      writePaste(terminalId, text, "app");
+    },
+    [writePaste],
+  );
+
   const runAction = useCallback(
     async (action: TerminalAppAction, terminalId: string) => {
       const term = pool.get(terminalId)?.term;
@@ -132,12 +159,11 @@ export function TerminalView({
       switch (action) {
         case "copy": {
           const selection = term.getSelection();
-          if (selection) await navigator.clipboard.writeText(selection);
+          if (selection) await copyText(selection);
           return;
         }
         case "paste": {
-          const text = await navigator.clipboard.readText();
-          if (text) term.paste(text);
+          await pasteFromClipboard(terminalId);
           return;
         }
         case "select-all":
@@ -186,7 +212,7 @@ export function TerminalView({
         }
       }
     },
-    [pool],
+    [pool, pasteFromClipboard],
   );
 
   // Attach the pooled xterm to this host and wire input/focus/resize. The pool
@@ -232,13 +258,36 @@ export function TerminalView({
       }, 150);
     });
     term.attachKeyHandler((event) => {
-      const decision = terminalKeyDecision(event, {
-        platform: terminalRuntimeConfig().platform,
-        hasSelection: term.getSelection().length > 0,
-        copyOnSelection: terminalRuntimeConfig().copyOnSelection,
-      });
+      // An IME composition owns the keystroke; xterm's composition helper decides.
+      if (event.isComposing) return true;
+      // xterm calls this handler for keydown, keypress and keyup; only the
+      // keydown may act, so the other two go back to xterm (which cancels them
+      // and emits no bytes for these chords).
+      const type =
+        event.type === "keydown" ? "keydown" : event.type === "keyup" ? "keyup" : "keypress";
+      const decision = terminalKeyDecision(
+        {
+          key: event.key,
+          ctrlKey: event.ctrlKey,
+          altKey: event.altKey,
+          shiftKey: event.shiftKey,
+          metaKey: event.metaKey,
+          type,
+        },
+        {
+          platform: terminalRuntimeConfig().platform,
+          hasSelection: term.getSelection().length > 0,
+          copyOnSelection: terminalRuntimeConfig().copyOnSelection,
+        },
+      );
       if (decision.kind === "pty") return true;
-      if (decision.kind === "app") void runAction(decision.action, terminalId);
+      if (decision.kind === "ignore") return false;
+      // Returning false only stops xterm from encoding the key. Without this the
+      // browser still runs its own paste/copy command on the helper textarea and
+      // xterm writes the clipboard a second time.
+      event.preventDefault();
+      event.stopPropagation();
+      void runAction(decision.action, terminalId);
       return false;
     });
 
@@ -246,6 +295,18 @@ export function TerminalView({
     const onBlur = (): void => window.pi?.terminal.setFocus(false);
     host.addEventListener("focusin", onFocus);
     host.addEventListener("focusout", onBlur);
+
+    // Own the native paste event. xterm binds its own listener to the helper
+    // textarea *and* to the `.xterm` element, so leaving the event alone would
+    // let a menu/context-menu paste and the chord both write the clipboard.
+    // Stopping it during capture (before the target) is what keeps one writer.
+    const onNativePaste = (event: ClipboardEvent): void => {
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      event.preventDefault();
+      event.stopPropagation();
+      writePaste(terminalId, text, "native");
+    };
+    host.addEventListener("paste", onNativePaste, true);
 
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fitHost);
     observer?.observe(host);
@@ -259,12 +320,13 @@ export function TerminalView({
       if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
       if (bellTimer.current !== null) window.clearTimeout(bellTimer.current);
       observer?.disconnect();
+      host.removeEventListener("paste", onNativePaste, true);
       host.removeEventListener("focusin", onFocus);
       host.removeEventListener("focusout", onBlur);
       pool.detach(terminalId);
       window.pi?.terminal.setFocus(false);
     };
-  }, [state?.terminalId, tab.id, pool, store, runAction]);
+  }, [state?.terminalId, tab.id, pool, store, runAction, writePaste]);
 
   const retry = async (): Promise<void> => {
     await useAppStore.getState().openTrustPrompt(tab.cwd);

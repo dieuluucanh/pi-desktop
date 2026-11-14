@@ -42,7 +42,13 @@ export interface PoolTerminal {
   setOptions(options: TerminalOptionsPatch): void;
   /** Raw user input; the view owns the key policy and writes to the PTY. */
   onData(listener: (data: string) => void): () => void;
-  /** xterm's custom key handler: return false to keep a chord for the app. */
+  /**
+   * xterm's custom key handler: return false to keep a chord for the app.
+   *
+   * xterm invokes it for keydown, keypress **and** keyup, so the owner decides
+   * which of those acts (the terminal view acts on keydown only and cancels the
+   * DOM event, which is what stops the browser's own clipboard command).
+   */
   attachKeyHandler(handler: (event: KeyboardEvent) => boolean): void;
   paste(text: string): void;
   onTitleChange(listener: (title: string) => void): () => void;

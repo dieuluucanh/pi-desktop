@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TerminalView } from "../../src/renderer/src/views/TerminalView";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
@@ -10,6 +10,7 @@ import {
   type TerminalPoolOptions,
 } from "../../src/renderer/src/terminal/terminal-pool";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
+import type { TerminalKeyPlatform } from "../../src/shared/terminal-keys";
 import type {
   TerminalBridge,
   TerminalCreateInput,
@@ -46,6 +47,18 @@ class FakeTerm implements PoolTerminal {
   keyHandler: ((event: KeyboardEvent) => boolean) | null = null;
   fitCalls = 0;
   fitSize = { cols: 80, rows: 24 };
+
+  constructor() {
+    // xterm binds its own `paste` listener to the helper textarea and to the
+    // `.xterm` element (browser/Clipboard.ts handlePasteEvent): a native paste
+    // that reaches this element becomes a PTY write. Emulated so a test can see
+    // the third writer the browser adds when nothing cancels the DOM default.
+    this.element.addEventListener("paste", (event) => {
+      const text = (event as ClipboardEvent).clipboardData?.getData("text/plain") ?? "";
+      event.stopPropagation();
+      if (text.length > 0) this.paste(text);
+    });
+  }
 
   write(bytes: Uint8Array, callback?: () => void): void {
     this.writes.push(bytes);
@@ -184,6 +197,70 @@ describe("TerminalView", () => {
     act(() => useAppStore.getState().setPrefs({ terminal: { ...current, ...patch } }));
   }
 
+  /** The clipboard the async clipboard API returns, with copy counted too. */
+  function stubClipboard(text: string): {
+    readText: ReturnType<typeof vi.fn>;
+    writeText: ReturnType<typeof vi.fn>;
+  } {
+    const clipboard = {
+      readText: vi.fn().mockResolvedValue(text),
+      writeText: vi.fn().mockResolvedValue(undefined),
+    };
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+    return clipboard;
+  }
+
+  /** Mounts the view and returns the pooled fake terminal plus its host. */
+  async function mountTerminal(platform: TerminalKeyPlatform = "linux") {
+    const harness = setup();
+    render(
+      <TerminalView
+        tab={TAB}
+        store={harness.store}
+        pool={harness.pool}
+        requestTrust={async () => false}
+        platform={platform}
+      />,
+    );
+    await waitFor(() => expect(harness.store.getState().forTab(TAB.id)?.status).toBe("attached"));
+    return {
+      ...harness,
+      host: screen.getByTestId("terminal-host"),
+      term: harness.terms[0]!,
+    };
+  }
+
+  /** Lets the app's `await navigator.clipboard.readText()` writes settle. */
+  async function settlePastes(): Promise<void> {
+    await act(async () => {
+      // Each `await` in the paste path adds a tick; flush a few so a late write
+      // can never land after the assertion and hide a duplicate.
+      for (let tick = 0; tick < 5; tick += 1) await Promise.resolve();
+    });
+  }
+
+  /**
+   * One clipboard gesture as Chromium runs it around xterm: xterm asks the
+   * custom key handler about keydown, keypress and keyup; unless the keydown was
+   * defaultPrevented the browser also runs its paste command, which lands on
+   * xterm's helper textarea (emulated by FakeTerm's own `paste` listener).
+   *
+   * Chromium fires `keypress` only for character-producing keys, so a Ctrl/Cmd
+   * chord and a named key such as Insert do not get one.
+   */
+  function pressChord(term: FakeTerm, init: KeyboardEventInit, clipboard: string): KeyboardEvent {
+    const down = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+    term.keyHandler?.(down);
+    if (!down.defaultPrevented) {
+      fireEvent.paste(term.element, { clipboardData: { getData: () => clipboard } });
+    }
+    const keypress = init.key?.length === 1 && !init.ctrlKey && !init.metaKey && !init.altKey;
+    for (const type of [...(keypress ? (["keypress"] as const) : []), "keyup"] as const) {
+      term.keyHandler?.(new KeyboardEvent(type, { bubbles: true, cancelable: true, ...init }));
+    }
+    return down;
+  }
+
   it("creates the shell, mounts the pooled xterm and forwards input", async () => {
     const { store, pool, terms, writes } = setup();
     render(
@@ -268,6 +345,133 @@ describe("TerminalView", () => {
     setTerminalPrefs({ copyOnSelection: true });
     act(() => terms[0]!.emitSelection("hello"));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("hello"));
+  });
+
+  it("pastes the clipboard exactly once for Ctrl+V", async () => {
+    stubClipboard("hello");
+    const { term } = await mountTerminal("win32");
+
+    const down = pressChord(term, { key: "v", ctrlKey: true }, "hello");
+    await settlePastes();
+
+    expect(term.pasted).toEqual(["hello"]);
+    expect(down.defaultPrevented).toBe(true);
+  });
+
+  it("pastes the clipboard once for Ctrl+Shift+V", async () => {
+    stubClipboard("hello");
+    const { term } = await mountTerminal("linux");
+
+    pressChord(term, { key: "V", ctrlKey: true, shiftKey: true }, "hello");
+    await settlePastes();
+
+    expect(term.pasted).toEqual(["hello"]);
+  });
+
+  it("pastes the clipboard once for Cmd+V on macOS", async () => {
+    stubClipboard("hello");
+    const { term } = await mountTerminal("darwin");
+
+    pressChord(term, { key: "v", metaKey: true }, "hello");
+    await settlePastes();
+
+    expect(term.pasted).toEqual(["hello"]);
+  });
+
+  it("never repeats a paste on keypress or keyup", async () => {
+    stubClipboard("hello");
+    const { term } = await mountTerminal("win32");
+
+    for (const type of ["keypress", "keyup"] as const) {
+      term.keyHandler?.(
+        new KeyboardEvent(type, { bubbles: true, cancelable: true, key: "v", ctrlKey: true }),
+      );
+    }
+    await settlePastes();
+
+    expect(term.pasted).toEqual([]);
+  });
+
+  it("writes a native paste once and cancels its DOM default", async () => {
+    stubClipboard("hello");
+    const { term } = await mountTerminal("win32");
+
+    // The context menu / Edit ▸ Paste path: the browser fires `paste` on the
+    // helper textarea, which xterm would normally turn into a PTY write itself.
+    const event = createEvent.paste(term.element, {
+      clipboardData: { getData: () => "from-menu" },
+    });
+    fireEvent(term.element, event);
+    await settlePastes();
+
+    expect(term.pasted).toEqual(["from-menu"]);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("collapses a native paste and a chord carrying the same text", async () => {
+    stubClipboard("hello");
+    const { term } = await mountTerminal("win32");
+
+    // The macOS ordering: the menu accelerator pastes natively, then the
+    // renderer's keydown reads the same clipboard text.
+    fireEvent.paste(term.element, { clipboardData: { getData: () => "hello" } });
+    pressChord(term, { key: "v", ctrlKey: true }, "hello");
+    await settlePastes();
+
+    expect(term.pasted).toEqual(["hello"]);
+  });
+
+  it("writes two deliberate chord pastes", async () => {
+    stubClipboard("hello");
+    const { term } = await mountTerminal("win32");
+
+    pressChord(term, { key: "v", ctrlKey: true }, "hello");
+    await settlePastes();
+    pressChord(term, { key: "v", ctrlKey: true }, "hello");
+    await settlePastes();
+
+    expect(term.pasted).toEqual(["hello", "hello"]);
+  });
+
+  it("copies the selection on Ctrl+Shift+C and cancels the browser copy", async () => {
+    const { writeText } = stubClipboard("unused");
+    const { term } = await mountTerminal("win32");
+    act(() => term.emitSelection("picked"));
+
+    const down = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "C",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+    term.keyHandler?.(down);
+    await settlePastes();
+
+    expect(down.defaultPrevented).toBe(true);
+    expect(writeText).toHaveBeenCalledWith("picked");
+    expect(term.pasted).toEqual([]);
+  });
+
+  it("pastes from the Paste button once", async () => {
+    stubClipboard("hello");
+    const { term } = await mountTerminal("win32");
+
+    fireEvent.click(screen.getByText("Paste"));
+    await settlePastes();
+
+    expect(term.pasted).toEqual(["hello"]);
+  });
+
+  it("ignores an empty clipboard", async () => {
+    stubClipboard("");
+    const { term } = await mountTerminal("win32");
+
+    fireEvent.paste(term.element, { clipboardData: { getData: () => "" } });
+    fireEvent.click(screen.getByText("Paste"));
+    await settlePastes();
+
+    expect(term.pasted).toEqual([]);
   });
 
   it("flashes the surface on BEL only when the bell preference is on", async () => {

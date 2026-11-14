@@ -226,4 +226,46 @@ describe("terminalKeyDecision", () => {
     });
     expect(decision({ key: "b", altKey: true }, mac)).toEqual({ kind: "pty" });
   });
+
+  /**
+   * xterm asks the custom handler about keydown, keypress and keyup. Only the
+   * keydown may act: without this rule one Ctrl+V pasted three times (keydown +
+   * keyup through the app, plus the browser's own uncancelled paste).
+   */
+  it("acts only on the keydown of a chord xterm asks about three times", () => {
+    const linux: TerminalKeyContext = { ...win, platform: "linux" };
+    // win32 and linux share the `!mac` branch, but each table is pinned so a
+    // platform-specific regression cannot hide behind the other.
+    const chords: Array<[Parameters<typeof terminalKeyDecision>[0], TerminalKeyContext]> = [
+      [{ key: "v", ctrlKey: true }, win],
+      [{ key: "v", ctrlKey: true, shiftKey: true }, win],
+      [{ key: "Insert", shiftKey: true }, win],
+      [{ key: "w", ctrlKey: true }, win],
+      [{ key: "p", ctrlKey: true, shiftKey: true }, win],
+      [{ key: "Tab", ctrlKey: true }, win],
+      [{ key: "v", ctrlKey: true }, linux],
+      [{ key: "v", ctrlKey: true, shiftKey: true }, linux],
+      [{ key: "Insert", shiftKey: true }, linux],
+      [{ key: "v", metaKey: true }, mac],
+      [{ key: "c", metaKey: true }, mac],
+      [{ key: "a", metaKey: true }, mac],
+    ];
+
+    for (const [input, context] of chords) {
+      expect(terminalKeyDecision({ ...input, type: "keydown" }, context).kind).toBe("app");
+      expect(terminalKeyDecision(input, context).kind).toBe("app"); // omitted type = keydown
+      expect(terminalKeyDecision({ ...input, type: "keypress" }, context)).toEqual({
+        kind: "pty",
+      });
+      expect(terminalKeyDecision({ ...input, type: "keyup" }, context)).toEqual({ kind: "pty" });
+    }
+  });
+
+  it("keeps a non-acting decision on every event type", () => {
+    for (const type of ["keydown", "keypress", "keyup"] as const) {
+      expect(decision({ key: "n", ctrlKey: true, type })).toEqual({ kind: "pty" });
+      expect(decision({ key: "n", metaKey: true, type })).toEqual({ kind: "ignore" });
+      expect(decision({ key: "Escape", type })).toEqual({ kind: "pty" });
+    }
+  });
 });

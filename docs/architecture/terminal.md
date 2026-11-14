@@ -175,10 +175,35 @@ fed to xterm's custom key handler. Shell keys (including Ctrl+C/N/P/W/B/G) go to
 the PTY. Only curated chords are app actions: copy/paste, find, clear, new/
 toggle/close terminal, tab cycling, palette and terminal font zoom.
 
+Two rules keep one chord from acting more than once:
+
+1. **Only the keydown acts.** xterm calls the custom handler for keydown,
+   `keypress` and `keyup` (`CoreBrowserTerminal._keyPress`/`_keyUp`), so
+   `terminalKeyDecision` downgrades an app chord to `pty` on the two non-owning
+   events. xterm then cancels them and emits no bytes for these chords.
+2. **A claimed keydown cancels the DOM default.** Returning `false` only stops
+   xterm from encoding the key; without `preventDefault()` (and
+   `stopPropagation()`) Chromium still runs its own copy/paste command on
+   xterm's hidden helper textarea, which xterm turns into a second PTY write.
+   That was the three-paste bug: keydown + keyup through the app, plus the
+   browser's own paste.
+
+Paste has a single writer. The chord and the toolbar Paste button read the
+clipboard through `navigator.clipboard` and call `term.paste()`; the native
+`paste` event (Edit ▸ Paste, the right-click menu, middle-click, a macOS menu
+accelerator) is captured on the terminal host with `capture: true`,
+`preventDefault()` and `stopPropagation()`, then written through the same path.
+`src/renderer/src/terminal/paste-intake.ts` is the one decision point: an
+identical text arriving from the _other_ source within 200 ms is treated as the
+same gesture and dropped, while same-source repeats (holding Ctrl+V, two
+deliberate pastes) always pass. `term.paste()` applies xterm's own line-ending
+normalisation and bracketed-paste framing either way.
+
 On Windows/Linux, main calls `webContents.setIgnoreMenuShortcuts(true)` while a
 terminal has focus, so menu accelerators cannot steal those chords; macOS
-accelerators are Cmd-based and do not collide. Menu items (`New Terminal`,
-`Toggle Terminal`) are the non-terminal entry point.
+accelerators are Cmd-based, and the intake makes a menu paste that races the
+renderer keydown safe. Menu items (`New Terminal`, `Toggle Terminal`) are the
+non-terminal entry point.
 
 ## Theme and appearance
 
@@ -219,7 +244,15 @@ recreating the shell or losing scrollback.
   path resolution and the `allowScripts` pin.
 - `tests/renderer/terminal-*` — pool move semantics, store seq/replay, view
   notices and input wiring, error Details/Copy, theme tokens, resolved font
-  stacks, terminal settings and the one-off profile menu.
-- `tests/e2e/terminal.spec.ts` — real Electron + terminal host on Windows CI.
+  stacks, terminal settings and the one-off profile menu. The view suite also
+  models Chromium's clipboard plumbing around xterm (a keydown plus the native
+  `paste` it spawns when nothing cancels it) and pins one write per gesture for
+  `Ctrl+V`, `Ctrl+Shift+V`, `Cmd+V`, the Paste button and a native menu paste.
+- `tests/shared/terminal-keys.test.ts` — the chord tables per platform, and the
+  rule that only the keydown of a claimed chord acts.
+- `tests/renderer/paste-intake.test.ts` — the 200 ms cross-source duplicate
+  guard, including the three-arrival `native, app, app` sequence.
+- `tests/e2e/terminal.spec.ts` — real Electron + terminal host on Windows CI,
+  including a clipboard paste that must reach the shell exactly once.
 - Release: `scripts/verify-packaged-terminal.mjs` opens a real PTY from the
   unpacked app, the `.deb`, the AppImage and inside `debian:bullseye`.

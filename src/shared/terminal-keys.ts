@@ -22,6 +22,15 @@ export interface TerminalKeyInput {
   altKey?: boolean;
   shiftKey?: boolean;
   metaKey?: boolean;
+  /**
+   * The DOM event xterm is asking about, defaulting to `keydown`.
+   *
+   * xterm's custom key handler runs on keydown, keypress **and** keyup
+   * (`CoreBrowserTerminal._keyDown`/`_keyPress`/`_keyUp`), so a policy that
+   * ignored the type would perform one chord's action three times — pasting
+   * the clipboard three times for a single Ctrl+V.
+   */
+  type?: "keydown" | "keypress" | "keyup";
 }
 
 const ESC = "\x1b";
@@ -262,12 +271,22 @@ function app(action: TerminalAppAction): TerminalKeyDecision {
  *
  * Defaults to the PTY: ordinary typing, Tab completion, Esc, Ctrl+C (SIGINT),
  * Ctrl+D/Z/L/N/P/B/G and every Ctrl+Shift combination we do not claim all reach
- * the shell. Only the curated chords below are app actions.
+ * the shell. Only the curated chords below are app actions, and only on the
+ * keydown: keypress/keyup are handed back to xterm, which cancels the DOM event
+ * and emits no bytes for them (`_keyPress` bails on the modifier check, `_keyUp`
+ * only restores focus). Without that rule one chord acts twice.
  */
 export function terminalKeyDecision(
   input: TerminalKeyInput,
   context: TerminalKeyContext,
 ): TerminalKeyDecision {
+  const decision = chordDecision(input, context);
+  if (decision.kind === "app" && (input.type ?? "keydown") !== "keydown") return PTY;
+  return decision;
+}
+
+/** The chord table itself; `terminalKeyDecision` adds the owning-event rule. */
+function chordDecision(input: TerminalKeyInput, context: TerminalKeyContext): TerminalKeyDecision {
   const mac = context.platform === "darwin";
   const key = input.key;
   // Named keys are matched case-insensitively (`Tab`, `Insert`, `F1`), and a
