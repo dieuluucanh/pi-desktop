@@ -28,12 +28,14 @@ describe("parseWorkflowStatus", () => {
     expect(parseWorkflowStatus("▶ build")).toEqual({
       mode: "build",
       browserReview: false,
+      reviewPhase: null,
       done: null,
       total: null,
     });
     expect(parseWorkflowStatus("▶ build 3/8")).toEqual({
       mode: "build",
       browserReview: false,
+      reviewPhase: null,
       done: 3,
       total: 8,
     });
@@ -43,14 +45,34 @@ describe("parseWorkflowStatus", () => {
     expect(parseWorkflowStatus("⏸ plan")).toEqual({
       mode: "plan",
       browserReview: false,
+      reviewPhase: null,
       done: null,
       total: null,
     });
     expect(parseWorkflowStatus("⏸ plan 2/8")).toEqual({
       mode: "plan",
       browserReview: false,
+      reviewPhase: null,
       done: 2,
       total: 8,
+    });
+  });
+
+  it("decodes the Review turn and its phase", () => {
+    expect(parseWorkflowStatus("🔍 review")).toEqual({
+      mode: "review",
+      reviewPhase: "running",
+      browserReview: false,
+      done: null,
+      total: null,
+    });
+    expect(parseWorkflowStatus("🔍 review — paused")).toMatchObject({
+      mode: "review",
+      reviewPhase: "paused",
+    });
+    expect(parseWorkflowStatus("🔍 review — awaiting decision")).toMatchObject({
+      mode: "review",
+      reviewPhase: "handoff",
     });
   });
 
@@ -58,12 +80,14 @@ describe("parseWorkflowStatus", () => {
     expect(parseWorkflowStatus("⏸ plan — reviewing in browser")).toEqual({
       mode: "plan",
       browserReview: true,
+      reviewPhase: null,
       done: null,
       total: null,
     });
     expect(parseWorkflowStatus("⏸ plan — reviewing in browser 1/4")).toMatchObject({
       mode: "plan",
       browserReview: true,
+      reviewPhase: null,
       done: 1,
       total: 4,
     });
@@ -73,12 +97,14 @@ describe("parseWorkflowStatus", () => {
     expect(parseWorkflowStatus("◦ 3/8")).toEqual({
       mode: "default",
       browserReview: false,
+      reviewPhase: null,
       done: 3,
       total: 8,
     });
     expect(parseWorkflowStatus("◦ commits:never")).toEqual({
       mode: "default",
       browserReview: false,
+      reviewPhase: null,
       done: null,
       total: null,
     });
@@ -151,6 +177,7 @@ describe("workflowBorderClass", () => {
     expect(workflowBorderClass(parseWorkflowStatus("⏸ plan — reviewing in browser"))).toBe(
       "border-warn",
     );
+    expect(workflowBorderClass(parseWorkflowStatus("🔍 review"))).toBe("border-info");
   });
 
   it("stays neutral for default mode and for no mode", () => {
@@ -167,12 +194,23 @@ describe("workflowBorderClass", () => {
           mode === null
             ? null
             : parseWorkflowStatus(
-                mode === "build" ? "▶ build" : mode === "plan" ? "⏸ plan" : "◦ 1/2",
+                mode === "build"
+                  ? "▶ build"
+                  : mode === "plan"
+                    ? "⏸ plan"
+                    : mode === "review"
+                      ? "🔍 review"
+                      : "◦ 1/2",
               ),
         ),
       ),
     );
-    expect([...classes].sort()).toEqual(["border-accent", "border-line", "border-warn"]);
+    expect([...classes].sort()).toEqual([
+      "border-accent",
+      "border-info",
+      "border-line",
+      "border-warn",
+    ]);
   });
 });
 
@@ -181,6 +219,7 @@ describe("workflowBadgeClass", () => {
     expect(workflowBadgeClass(parseWorkflowStatus("▶ build"))).toBe("text-accent");
     expect(workflowBadgeClass(parseWorkflowStatus("⏸ plan"))).toBe("text-warn");
     expect(workflowBadgeClass(parseWorkflowStatus("◦ commits:never"))).toBe("text-ink-faint");
+    expect(workflowBadgeClass(parseWorkflowStatus("🔍 review"))).toBe("text-info");
     expect(workflowBadgeClass(null)).toBe("text-ink-faint");
   });
 
@@ -191,12 +230,23 @@ describe("workflowBadgeClass", () => {
           mode === null
             ? null
             : parseWorkflowStatus(
-                mode === "build" ? "▶ build" : mode === "plan" ? "⏸ plan" : "◦ 1/2",
+                mode === "build"
+                  ? "▶ build"
+                  : mode === "plan"
+                    ? "⏸ plan"
+                    : mode === "review"
+                      ? "🔍 review"
+                      : "◦ 1/2",
               ),
         ),
       ),
     );
-    expect([...classes].sort()).toEqual(["text-accent", "text-ink-faint", "text-warn"]);
+    expect([...classes].sort()).toEqual([
+      "text-accent",
+      "text-info",
+      "text-ink-faint",
+      "text-warn",
+    ]);
   });
 });
 
@@ -207,6 +257,8 @@ describe("workflowModeLabel", () => {
     // The plannotator "reviewing in browser" phrase is a Plan sub-state, not a
     // mode: the badge always reads Plan (2026-10-20 startup-tab-cycle plan).
     expect(workflowModeLabel(parseWorkflowStatus("⏸ plan — reviewing in browser"))).toBe("Plan");
+    expect(workflowModeLabel(parseWorkflowStatus("🔍 review"))).toBe("Review");
+    expect(workflowModeLabel(parseWorkflowStatus("🔍 review — paused"))).toBe("Review");
   });
 
   it("names the default mode instead of returning nothing", () => {

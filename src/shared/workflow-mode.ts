@@ -28,11 +28,15 @@ import { stripAnsi } from "./ansi";
  * `default` is the extension's "workflow off" state (it renders `◦ …`); it is a
  * real mode with an explicit neutral presentation, not an unknown value.
  */
-export const WORKFLOW_MODES = ["plan", "build", "default"] as const;
+export const WORKFLOW_MODES = ["plan", "build", "default", "review"] as const;
 export type WorkflowMode = (typeof WORKFLOW_MODES)[number];
+
+export type ReviewPhase = "running" | "paused" | "handoff";
 
 export interface WorkflowModeView {
   mode: WorkflowMode;
+  /** The exclusive Review turn when `mode === "review"`. */
+  reviewPhase: ReviewPhase | null;
   /**
    * True while the plan is under review in the browser (`⏸ plan — reviewing
    * in browser`). This is a sub-state of Plan, not a mode: it must never
@@ -62,6 +66,8 @@ const PROGRESS = /(\d+)\s*\/\s*(\d+)/;
  */
 const BUILD_STATUS = /^\u25b6\s*build\b/; // ▶ build
 const PLAN_STATUS = /^\u23f8\s*plan\b/; // ⏸ plan
+/** Review owns the turn: `🔍 review`, `🔍 review — paused`. */
+const REVIEW_STATUS = /^\u{1F50D}\s*review\b/u;
 /** Default (workflow off): `◦ 3/8` or `◦ commits:never`. */
 const DEFAULT_STATUS = /^\u25e6\s*(?:\d+\s*\/\s*\d+|commits\b)/;
 
@@ -94,18 +100,27 @@ export function parseWorkflowStatus(text: string | null | undefined): WorkflowMo
 
   const progress = progressOf(plain);
 
+  if (REVIEW_STATUS.test(plain)) {
+    const reviewPhase: ReviewPhase = /—\s*paused\b/i.test(plain)
+      ? "paused"
+      : /—\s*awaiting decision\b/i.test(plain)
+        ? "handoff"
+        : "running";
+    return { mode: "review", reviewPhase, browserReview: false, ...progress };
+  }
   if (BUILD_STATUS.test(plain)) {
-    return { mode: "build", browserReview: false, ...progress };
+    return { mode: "build", reviewPhase: null, browserReview: false, ...progress };
   }
   if (PLAN_STATUS.test(plain)) {
     return {
       mode: "plan",
+      reviewPhase: null,
       browserReview: plain.includes(REVIEWING_MARKER),
       ...progress,
     };
   }
   if (DEFAULT_STATUS.test(plain)) {
-    return { mode: "default", browserReview: false, ...progress };
+    return { mode: "default", reviewPhase: null, browserReview: false, ...progress };
   }
   return null;
 }
@@ -122,6 +137,7 @@ export function workflowBorderClass(mode: WorkflowModeView | null): string {
   if (!mode) return "border-line";
   if (mode.mode === "build") return "border-accent";
   if (mode.mode === "plan") return "border-warn";
+  if (mode.mode === "review") return "border-info";
   return "border-line";
 }
 
@@ -135,6 +151,7 @@ export function workflowBadgeClass(mode: WorkflowModeView | null): string {
   if (!mode) return "text-ink-faint";
   if (mode.mode === "build") return "text-accent";
   if (mode.mode === "plan") return "text-warn";
+  if (mode.mode === "review") return "text-info";
   return "text-ink-faint";
 }
 
@@ -149,6 +166,7 @@ export function workflowModeLabel(mode: WorkflowModeView | null): string | null 
   if (!mode) return null;
   if (mode.mode === "build") return "Build";
   if (mode.mode === "plan") return "Plan";
+  if (mode.mode === "review") return "Review";
   return "Default";
 }
 

@@ -587,6 +587,12 @@ export interface WebTabOpenInput {
    * review cannot steal the session the user is reading (2026-11-06 Strata loop).
    */
   activate?: boolean;
+  /**
+   * Reload an already-open tab for this URL before focusing it (review round 2+
+   * on a fixed Plannotator port). Main owns this so a parked/not-yet-created
+   * view is synced before the reload command runs.
+   */
+  reload?: boolean;
 }
 
 export interface WebBridge {

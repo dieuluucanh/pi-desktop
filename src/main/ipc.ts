@@ -560,7 +560,7 @@ function parseProjectSettingsToggle(value: unknown): ProjectSettingsToggleInput 
 }
 
 /** Validates the `web:open` input: a permitted URL, an optional folder and link. */
-function parseWebOpen(value: unknown): WebTabOpenInput {
+export function parseWebOpen(value: unknown): WebTabOpenInput {
   const record = asRecord(value);
   const url = sanitizeWebUrl(record.url);
   if (!url) throw new Error("web: a permitted http(s) URL is required");
@@ -569,6 +569,10 @@ function parseWebOpen(value: unknown): WebTabOpenInput {
   if (typeof record.sessionTabId === "string" && record.sessionTabId.length > 0) {
     input.sessionTabId = record.sessionTabId;
   }
+  // These were previously dropped, so a tool-result URL opened in the
+  // foreground and a reused review URL could not be reloaded.
+  if (typeof record.activate === "boolean") input.activate = record.activate;
+  if (typeof record.reload === "boolean") input.reload = record.reload;
   return input;
 }
 

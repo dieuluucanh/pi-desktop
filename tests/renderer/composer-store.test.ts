@@ -704,3 +704,28 @@ describe("prompt origin persistence", () => {
     });
   });
 });
+
+describe("Review mode prompt guard", () => {
+  it("refuses prose and ! shell commands while Review owns the turn", async () => {
+    const request = stubRequest(async () => ({}));
+    useAppStore.setState({
+      extensionUi: {
+        "tab-1": {
+          statuses: { workflow: "🔍 review" },
+          working: null,
+        },
+      } as never,
+      hint: null,
+    });
+    useAppStore.getState().setDraft("tab-1", "please fix it");
+
+    await expect(useAppStore.getState().sendPrompt("tab-1", "please fix it")).resolves.toBe(false);
+    expect(request).not.toHaveBeenCalled();
+    // The draft is preserved so the user can run /review-pause or edit it.
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("please fix it");
+    expect(useAppStore.getState().hint).toMatch(/Review in progress/);
+
+    await expect(useAppStore.getState().sendPrompt("tab-1", "!git status")).resolves.toBe(false);
+    expect(request).not.toHaveBeenCalled();
+  });
+});

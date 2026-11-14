@@ -101,25 +101,17 @@ describe("openWebTab", () => {
     expect(handles.webOpened).toEqual([{ url: "http://localhost:2/review", activate: false }]);
   });
 
-  it("focuses an existing tab for the same URL instead of opening a second", async () => {
+  it("delegates a same-URL open to main, which focuses/reloads instead of duplicating", async () => {
     const handles = installBridge();
-    const existing = webRecord();
     useAppStore.setState({
-      tabs: [existing, webRecord({ id: "w2", url: "http://localhost:2/" })],
+      tabs: [webRecord(), webRecord({ id: "w2", url: "http://localhost:2/" })],
       activeTabId: "w2",
     });
-    // The fixture's sessions bridge is a stub; activation must echo the tab
-    // table the way main does, or `applyTabs` would clear the active id.
-    const activate = async (tabId: string) => ({
-      tabs: [existing, webRecord({ id: "w2", url: "http://localhost:2/" })],
-      activeTabId: tabId,
-    });
-    (window.pi as unknown as { sessions: { activate: unknown } }).sessions.activate = activate;
 
     await useAppStore.getState().openWebTab({ url: "http://localhost:19432/review" });
 
-    expect(handles.webOpened).toEqual([]);
-    expect(useAppStore.getState().activeTabId).toBe("w1");
+    // Main owns dedupe/activate/reload; the renderer must not short-circuit.
+    expect(handles.webOpened).toEqual([{ url: "http://localhost:19432/review" }]);
   });
 
   it("reports a bridge without a web surface", async () => {
@@ -225,7 +217,12 @@ describe("automatic loopback detection (plan step 21)", () => {
 
     await vi.waitFor(() =>
       expect(handles.webOpened).toEqual([
-        { url: "http://127.0.0.1:19432/review/abc", sessionTabId: "s1", activate: true },
+        {
+          url: "http://127.0.0.1:19432/review/abc",
+          sessionTabId: "s1",
+          activate: true,
+          reload: true,
+        },
       ]),
     );
   });
@@ -300,10 +297,16 @@ describe("automatic loopback detection (plan step 21)", () => {
     });
 
     await vi.waitFor(() =>
-      expect(handles.webCommands).toEqual([{ tabId: "w1", command: { command: "reload" } }]),
+      expect(handles.webOpened).toEqual([
+        {
+          url: "http://localhost:19432/review",
+          sessionTabId: "s1",
+          activate: true,
+          reload: true,
+        },
+      ]),
     );
-    expect(handles.webOpened).toEqual([]);
-    expect(useAppStore.getState().activeTabId).toBe("w1");
+    expect(handles.webCommands).toEqual([]);
   });
 
   it("does not reload or focus an already-open tool-result URL", async () => {

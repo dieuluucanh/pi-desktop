@@ -256,6 +256,18 @@ const appState = createAppStore({
 let mainWindow: BrowserWindow | null = null;
 
 /**
+ * Raise the app when a review web tab is opened/activated. The review handoff
+ * is the user's requested destination in Desktop; a system browser or another
+ * window must not keep the in-app tab behind it.
+ */
+function focusMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+/**
  * Update checking (plan step 26). Created in `whenReady` because resolving the
  * `electron-updater` port is async; null until then, and in a build with no feed.
  */
@@ -662,7 +674,14 @@ const sessionsIpc: IpcSessionDeps = {
     void officeDocuments.refresh();
     return envelope;
   },
-  activate: (tabId: string) => requireSessions().activateTab(tabId),
+  activate: async (tabId: string) => {
+    const envelope = await requireSessions().activateTab(tabId);
+    const tab = envelope.tabs.find((entry) => entry.id === tabId);
+    // A review web tab is a handoff destination, not a background utility:
+    // raise the app so the user sees the new plan.
+    if (tab?.kind === "web" && tab.sessionTabId) focusMainWindow();
+    return envelope;
+  },
   ensure: (tabId: string) => requireSessions().ensureTab(tabId),
   setVisibleTabs: (ids: readonly string[]) => {
     // Mirror the push into the supervisor's holder before the service stores it:
@@ -1819,17 +1838,26 @@ if (!app.requestSingleInstanceLock()) {
             ?.tabs()
             .find((tab) => tab.kind === "web" && tab.url === input.url);
           if (existing) {
-            return input.activate === false
-              ? requireSessions().envelope()
-              : requireSessions().activateTab(existing.id);
+            if (input.activate === false) return requireSessions().envelope();
+            // Activate first: the tabs emit runs webTabs.sync, which creates a
+            // parked view before the reload command runs. Sending reload before
+            // the view exists was the round-2 stale-plan bug.
+            const envelope = await requireSessions().activateTab(existing.id);
+            if (input.reload === true) {
+              webTabs.command(existing.id, { command: "reload" });
+            }
+            focusMainWindow();
+            return envelope;
           }
-          return requireSessions().createTab({
+          const envelope = await requireSessions().createTab({
             kind: "web",
             cwd: webTabCwd(input.cwd),
             url: input.url,
             ...(input.sessionTabId ? { sessionTabId: input.sessionTabId } : {}),
             ...(input.activate === false ? { activate: false } : {}),
           });
+          if (input.activate !== false) focusMainWindow();
+          return envelope;
         },
         setBounds: (tabId, bounds) => {
           webTabs.setBounds(tabId, bounds);

@@ -22,6 +22,15 @@ import {
 import { createNodeFsPort, type FsPort } from "./fs-port";
 import { composeChildEnv } from "./runtime/child-env";
 import { SESSION_ID_ENV, SERVICE_ENV, SERVICE_FLAG } from "../host/index";
+
+/**
+ * Desktop hosts are review web-tab hosts: Plannotator must not launch the OS
+ * browser for a plan review. The app opens the loopback URL from the
+ * notification in an isolated web tab. Terminal Pi and the in-app terminal
+ * inherit the app process environment instead, so they keep the browser.
+ */
+export const PLANNOTATOR_BROWSER_ENV = "PLANNOTATOR_BROWSER";
+export const PLANNOTATOR_BROWSER_NONE = "none";
 import {
   HOST_MEMORY_GRACE_MS,
   HOST_RSS_OVER_BUDGET_SAMPLES,
@@ -660,6 +669,7 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
           [SERVICE_ENV]: "service",
           PI_CODING_AGENT_DIR: options.profileDir,
           PI_OFFICE_BRIDGE_PORT: String(this.port),
+          [PLANNOTATOR_BROWSER_ENV]: PLANNOTATOR_BROWSER_NONE,
         },
       });
       env[NODE_BIN_ENV] = options.nodePath;

@@ -4,6 +4,7 @@ import type { AppInfo, WebTabOpenInput } from "../../../shared/ipc";
 import type { BlobRef, HostMethod } from "../../../shared/host-protocol";
 import { DEFAULT_PREFS, type UiPrefs } from "../../../shared/prefs";
 import { mergeTerminalPrefs, type TerminalPrefs } from "../../../shared/terminal-prefs";
+import { parseWorkflowStatus } from "../../../shared/workflow-mode";
 import {
   findProject,
   projectNameOf,
@@ -4098,6 +4099,18 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const trimmed = text.trim();
     const tab = get().tabs.find((entry) => entry.id === tabId);
     if (!api?.sessions || !tab || trimmed.length === 0) return false;
+    // Review owns the turn: prose and ! shell commands are refused. Slash
+    // commands stay available (the extension decides which ones it allows).
+    if (
+      parseWorkflowStatus(get().extensionUi[tabId]?.statuses?.workflow ?? null)?.mode ===
+        "review" &&
+      !trimmed.startsWith("/")
+    ) {
+      set({
+        hint: "Review in progress — pause, resume, abort, or change model/profile.",
+      });
+      return false;
+    }
     // Terminal Pi's editor clears in `submitValue` before dispatching. Do the
     // same before any await: a slow wake or a long run must never leave the text
     // in the composer. A refusal restores it above anything typed since.
@@ -4146,6 +4159,17 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
    */
   sendPrompt: async (tabId, text, options = {}) => {
     const trimmedInput = text.trim();
+    // Immediate UI refusal; `sendPromptNow` repeats it as the final backstop.
+    if (
+      parseWorkflowStatus(get().extensionUi[tabId]?.statuses?.workflow ?? null)?.mode ===
+        "review" &&
+      !trimmedInput.startsWith("/")
+    ) {
+      set({
+        hint: "Review in progress — pause, resume, abort, or change model/profile.",
+      });
+      return false;
+    }
     if (isShellCommand(trimmedInput)) {
       const excludeFromContext = isExcludedShellCommand(trimmedInput);
       const command = trimmedInput.slice(excludeFromContext ? 2 : 1).trim();
@@ -6347,13 +6371,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       set({ hint: "The preload bridge is unavailable." });
       return false;
     }
-    // Opening the same page twice focuses the tab that already shows it, so a
-    // repeated notification cannot spawn a second review view.
-    const existing = get().tabs.find((tab) => tab.kind === "web" && tab.url === input.url);
-    if (existing) {
-      if (input.activate !== false) await get().activateTab(existing.id);
-      return true;
-    }
+    // Main owns same-URL dedupe, activation and reload: a local short-circuit
+    // here would bypass the parked-view reload fix (round 2+).
     try {
       get().applyTabs(await api.web.open(input), { adoptSelection: true });
       set({ view: "session", hint: null });
@@ -6368,18 +6387,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const parsed = sanitizeWebUrl(url);
     if (!parsed) return;
     const focus = options.focus === true;
-    const existing = get().tabs.find((tab) => tab.kind === "web" && tab.url === parsed);
-    if (existing) {
-      if (!focus) return;
-      // The same review server (a fixed PLANNOTATOR_PORT) can reuse its URL
-      // for the next round. Reload so the old plan is never shown as current.
-      get().webCommand(existing.id, { command: "reload" });
-      void get().activateTab(existing.id);
-      return;
-    }
     void get().openWebTab({
       url: parsed,
       activate: focus,
+      // A focused notification is a review handoff: the fixed-port server may
+      // reuse the URL, so main reloads the existing view before focusing it.
+      ...(focus ? { reload: true } : {}),
       ...(sessionTabId ? { sessionTabId } : {}),
     });
   },

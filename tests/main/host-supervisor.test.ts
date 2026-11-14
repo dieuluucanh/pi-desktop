@@ -231,6 +231,8 @@ describe("host supervisor startup", () => {
     // carries the shim dir then the real node dir, so `node` is an executable.
     expect(spawnCalls[0]?.env.PI_DESKTOP_NODE).toBe(NODE_PATH);
     expect(spawnCalls[0]?.env.PI_DESKTOP_HOST_MODE).toBe("service");
+    // Desktop hosts hand reviews to the in-app web tab, never the OS browser.
+    expect(spawnCalls[0]?.env.PLANNOTATOR_BROWSER).toBe("none");
     expect(spawnCalls[0]?.env.PATH).toBe(
       [
         normalize("C:/app/resources/runtime/bin"),
@@ -238,6 +240,15 @@ describe("host supervisor startup", () => {
         normalize("C:/Windows/System32"),
       ].join(delimiter),
     );
+  });
+
+  it("overrides a user browser choice for desktop review hosts", async () => {
+    const { supervisor, spawnCalls } = harness({
+      env: { PATH: normalize("C:/Windows/System32"), PLANNOTATOR_BROWSER: "firefox" },
+    });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+
+    expect(spawnCalls[0]?.env.PLANNOTATOR_BROWSER).toBe("none");
   });
 
   it("keeps one path-like env key and merges a base Path spelling on Windows", async () => {
