@@ -9,9 +9,10 @@ import {
 import { PI_OFFICE_BRIDGE } from "../../src/shared/office";
 
 /**
- * The recommended set (plan step 13). The list is checked in, so the one name
- * this repo can prove — the Office bridge — is pinned here; everything else is
- * an npm source that the package manager must resolve at install time.
+ * The recommended set. The list is checked in, so the exact ordered id list and
+ * the one name this repo can prove — the Office bridge — are pinned here;
+ * everything else is an npm source that the package manager must resolve at
+ * install time.
  */
 
 describe("recommended packages", () => {
@@ -32,16 +33,34 @@ describe("recommended packages", () => {
     }
   });
 
-  it("points gallery discovery at pi.dev without pretending to install", () => {
-    expect(PACKAGE_GALLERY_URL).toBe("https://pi.dev/packages");
+  it("pins the exact set, in the order the UI renders", () => {
+    expect(RECOMMENDED_PACKAGES.map((entry) => entry.id)).toEqual([
+      "dieulc-autocompact",
+      "pi-office-bridge",
+      "dieulc-workflow",
+      "plannotator",
+      "pi-lens",
+      "pi-memory",
+      "pi-web-access",
+    ]);
   });
 
-  it("recommends the maintained Command Code provider", () => {
-    const entry = RECOMMENDED_PACKAGES.find((candidate) => candidate.id === "commandcode-provider");
-    expect(entry).toBeDefined();
-    expect(entry?.name).toBe("pi-commandcode-provider");
-    expect(entry?.source).toBe("npm:pi-commandcode-provider");
-    expect(entry?.provides).toBe("Command Code provider");
+  it("does not recommend packages that were dropped from the set", () => {
+    const names = RECOMMENDED_PACKAGES.map((entry) => entry.name);
+    expect(names).not.toContain("@dieulc/server-logs");
+    expect(names).not.toContain("pi-commandcode-provider");
+  });
+
+  it("keeps every card renderable: a chip label and a description", () => {
+    for (const entry of RECOMMENDED_PACKAGES) {
+      expect(entry.provides.trim()).not.toBe("");
+      expect(entry.provides.length).toBeLessThanOrEqual(24);
+      expect(entry.description.trim()).not.toBe("");
+    }
+  });
+
+  it("points gallery discovery at pi.dev without pretending to install", () => {
+    expect(PACKAGE_GALLERY_URL).toBe("https://pi.dev/packages");
   });
 });
 

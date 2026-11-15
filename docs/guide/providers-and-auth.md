@@ -75,7 +75,8 @@ entry declares one API family for the whole provider, so it cannot route each mo
 
 Use the maintained package instead:
 
-- **Pi Desktop:** Settings → Extensions → **Install** `pi-commandcode-provider`.
+- **Pi Desktop:** Settings → Extensions → **Packages**, then install the source
+  `npm:pi-commandcode-provider` (it is not one of the recommended cards).
 - **Terminal Pi:** `pi install npm:pi-commandcode-provider`, then `/reload`.
 
 The package registers provider id **`commandcode`**, routes each model to its advertised wire, and

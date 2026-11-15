@@ -19,8 +19,15 @@ terminal Pi, from the shared profile and each project’s `.pi/`. The
   what changed.
 - **Diagnostics** show loader errors and a bounded history of live
   `extension_error` events, so a broken extension is visible instead of silent.
-- **Recommended for Pi Desktop** is a small, checked-in set. Installing runs the
-  package manager with the exact source shown on the card.
+- **Recommended for Pi Desktop** is a small, checked-in set, listed alphabetically
+  and shown the same way in the onboarding step: `@dieulc/autocompact`,
+  `@dieulc/pi-office-bridge`, `@dieulc/workflow`, `@plannotator/pi-extension`,
+  `pi-lens`, `pi-memory` and `pi-web-access`. The Office bridge is the only entry
+  whose name this repo can prove (it is pinned in code); everything else is an
+  npm source resolved at install time, so a resolution failure shows on the card.
+  Installing runs the package manager with the exact source shown on the card,
+  after the usual consent. Anything else installs from the gallery
+  (<https://pi.dev/packages>) or from **Packages**, below.
 - **What can extensions do?** states the privilege model: extensions are **not
   sandboxed**, which is why installs require consent and safe mode exists.
 

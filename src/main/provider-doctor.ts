@@ -93,8 +93,9 @@ export function commandCodeProviderWarning(
         "the catalog advertises /responses for models such as deepseek/deepseek-v4.1-flash.",
       hint:
         "Install the maintained provider (Terminal: `pi install npm:pi-commandcode-provider`; " +
-        "Desktop: Settings → Extensions → Install pi-commandcode-provider), then retarget " +
-        "profiles/roles from `command-code` to `commandcode` before removing the static entry.",
+        "Desktop: Settings → Extensions → Packages, source npm:pi-commandcode-provider), then " +
+        "retarget profiles/roles from `command-code` to `commandcode` before removing the " +
+        "static entry.",
     };
   }
   return null;
