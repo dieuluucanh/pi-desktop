@@ -235,24 +235,31 @@ The composer’s textarea border reflects the Workflow extension’s mode, mirro
 terminal Pi’s editor border (which tracks the thinking level). The extension
 reports its mode only through `setStatus("workflow", …)`, so
 `src/shared/workflow-mode.ts` decodes that text (`⏸ plan` → warn, `▶ build` →
-accent, `◦ …` → neutral) and an unrecognised value degrades to the neutral border
-without guessing. The coupling is deliberate and documented: the extension lives
-outside this repo, so the parser is tolerant by construction.
+accent, `🔍 review` → info, `◦ …` → neutral) and an unrecognised value degrades
+to the neutral border without guessing. The coupling is deliberate and
+documented: the extension lives outside this repo, so the parser is tolerant by
+construction.
 
-The desktop shows exactly the extension’s three modes — Default, Plan, Build.
-The Plannotator phrase `⏸ plan — reviewing in browser` is a Plan **sub-state**,
-not a mode (it is Plannotator’s phase label, rendered merely because the
-Plannotator package is installed): the composer label always reads `Plan` for
-it, while the raw phrase stays visible in the label’s tooltip and in the
-footer’s extension-status row (2026-10-20 startup-tab-cycle plan).
+The desktop shows four modes — Default, Plan, Build, Review. Review is a
+first-class mode since `@dieulc/workflow` 0.11.0, and the status carries its
+phase (`— paused`, `— awaiting decision`). The legacy Plannotator phrase
+`⏸ plan — reviewing in browser` stays a Plan **sub-state**, never Review (the old
+extension emitted it in every Plan mode merely because Plannotator was
+installed), and the composer label always reads `Plan` for it while the raw
+phrase stays visible in the label’s tooltip and the footer’s extension-status
+row (2026-10-20 startup-tab-cycle plan). While Review owns the turn,
+`SessionView` renders a `ReviewBar` with Pause/Resume/Abort (or the review-tab
+link during the handoff) and the store refuses prose with a preserved draft
+(2026-11-14 review-mode-isolation plan).
 
 **Colour is never the only signal (2026-10-19, tightened 2026-10-31).** The mode
 is named in the composer’s top-right corner and exposed with `role="status"`.
 Every recognised mode has a label, including `Default`, and the label is shown at
-every window width; Plan/Build use the same warn/accent tone as the border. It
-renders inside the composer, so it survives a non-overlay `ctx.ui.custom()`
-replacement of the editor; the footer has no duplicate `mode: …` chip (the raw
-`workflow` status still appears as its mode/progress column).
+every window width; Plan/Build/Review use the same warn/accent/info tone as the
+border. It renders inside the composer, so it survives a non-overlay
+`ctx.ui.custom()` replacement of the editor; the footer has no duplicate
+`mode: …` chip (the raw `workflow` status still appears as its mode/progress
+column).
 
 **Tab reaches the extension’s shortcut first.** Terminal Pi checks
 `onExtensionShortcut` _before_ the editor (`custom-editor.js`), which is how the

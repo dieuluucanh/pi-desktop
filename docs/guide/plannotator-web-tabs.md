@@ -24,6 +24,18 @@ URL, Desktop reloads the existing tab before focusing it; a notification can
 never leave the old review in front. Tool-result localhost URLs remain
 background tabs.
 
+Desktop hosts are spawned with `PLANNOTATOR_BROWSER=none`, so Plannotator never
+launches the system browser for a review. The review page is an app tab; the
+**Open in browser** button in its chrome is the escape hatch. Terminal Pi is
+unaffected and keeps opening the system browser.
+
+While Review owns the turn the session shows a **Review bar** (Pause/Resume/
+Abort, or **Open review tab** during the handoff). The composer refuses prose
+and `!` shell commands with a hint and keeps your draft; `/review-pause`,
+`/review-resume`, `/review-abort` and `/model`/`/thinking`/`/profile` stay
+available. Approve or annotate in the review tab to hand the plan back to Plan
+or Build.
+
 ## Chrome
 
 Back / forward / reload-stop, an editable address field, favicon and title, copy

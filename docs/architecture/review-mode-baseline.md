@@ -95,3 +95,49 @@ Two additional gaps were observed after the provider recovery work:
   `activate:false`, and an existing same-URL tab was left untouched. Notification review URLs now
   focus; an existing same-URL tab is reloaded before focus. Tool-result localhost URLs stay in the
   background.
+
+## 2026-11-14 follow-up — Review is an isolated mode with an in-app handoff
+
+`@dieulc/workflow` 0.11.0 turns Review into an explicit turn (`running` →
+`paused` → `running` → `handoff` → `transition` → `idle`) and emits it as its own
+status: `🔍 review`, `🔍 review — paused`, `🔍 review — awaiting decision`.
+Pi Desktop now parses that as the fourth workflow mode instead of inferring
+Review from a working message. The heuristic (`/review/i` over the status or the
+working text) could miss the handoff phase entirely and could misclassify
+unrelated extension text.
+
+The desktop half of the contract:
+
+- **A visible control surface.** `ReviewBar` sits above the working row and
+  offers Pause/Abort while running, Resume/Abort while paused, and **Open review
+  tab** during the handoff (there is nothing to abort once the reviewer has
+  finished; `/review-abort` remains the command escape). The bar reads the
+  linked loopback web tab for this session, so a closed review tab degrades to
+  the command path instead of a dead button.
+- **The store refuses prose, not commands.** `sendPrompt`/`sendPromptNow`
+  reject anything that does not start with `/` while the workflow status is
+  Review, set a hint, and leave the draft untouched. The extension remains the
+  authority on which commands are allowed. `runReviewCommand` (the bar's action)
+  runs `commands.run` directly and never calls `setDraft`, so a draft typed
+  before the review survives.
+- **The desktop host never launches the system browser.** `host-supervisor.ts`
+  composes `PLANNOTATOR_BROWSER=none` into desktop host processes only. Terminal
+  Pi and the in-app terminal keep their own environment and therefore keep the
+  browser. The review page opens as a focused web tab; `web.open` now carries
+  `reload` and honours `activate`, so a reused Plannotator URL is reloaded only
+  after the parked view is created, and the app window is raised.
+- **Composer.** The Review badge uses the `info` tone, Stop is hidden while
+  Review owns the turn (Stop would abort the parent run, not the review), and
+  the hint row explains that only review/model/profile commands are accepted.
+
+Both halves must be upgraded together. A new extension with an old desktop
+degrades to no badge but keeps the extension-side lock; an old extension with
+the new desktop keeps emitting the legacy Plan sub-state, which is parsed as
+Plan and never as Review.
+
+Verification: `tests/renderer/review-bar.test.tsx`,
+`tests/shared/workflow-mode.test.ts`, `tests/renderer/session-view.test.tsx`,
+`tests/renderer/composer.test.tsx`, `tests/renderer/composer-store.test.ts`,
+`tests/renderer/web-tab-store.test.ts` and `tests/main/host-supervisor.test.ts`.
+The manual cross-version matrix in the 2026-11-14 plan (step 19) has not been
+exercised on real provider sessions for this release.

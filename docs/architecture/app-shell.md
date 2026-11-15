@@ -188,17 +188,26 @@ multi-line frames keep Pi's placement. The TUI grid is measured from this column
 never from the surface's own rendered frame (`src/renderer/src/tui/use-tui-viewport.ts`).
 
 **The workflow mode is shown as text, not just colour.** The composer's textarea
-border reflects the Workflow extension's mode (`Plan` → warn, `Build` → accent),
-decoded from its status text by `src/shared/workflow-mode.ts`; an unrecognised
-value degrades to the neutral border rather than guessing. The desktop names
-exactly the extension's three modes (Default/Plan/Build): the Plannotator
-`reviewing in browser` phrase is a Plan sub-state, so the composer label reads
-the mode — `Plan` — never the sub-state (2026-10-20 startup-tab-cycle plan).
-Because colour alone is not an indicator, the mode is also named in the
+border reflects the Workflow extension's mode (`Plan` → warn, `Build` → accent,
+`Review` → info), decoded from its status text by
+`src/shared/workflow-mode.ts`; an unrecognised value degrades to the neutral
+border rather than guessing. Since `@dieulc/workflow` 0.11.0 the desktop names
+four modes (Default/Plan/Build/Review). Review is a real mode, not a Plan
+sub-state: the status carries the phase (`🔍 review`, `— paused`,
+`— awaiting decision`), the composer badge reads `Review`, and the legacy
+Plannotator `⏸ plan — reviewing in browser` phrase is still parsed as Plan
+because the old extension emitted it in every Plan mode (2026-11-14
+review-mode-isolation plan). While Review owns the turn the store refuses prose
+and `!` commands with a hint (the draft is preserved), slash commands stay
+available, and a `ReviewBar` above the working row offers Pause/Resume/Abort —
+the handoff phase instead links to the review tab. Desktop hosts are launched
+with `PLANNOTATOR_BROWSER=none`, so a review opens in an app tab and never the
+system browser; the web tab's **Open in browser** button remains the escape
+hatch. Because colour alone is not an indicator, the mode is also named in the
 composer's top-right corner, exposed through `role="status"`. Every
-recognised mode has a label, including `Default`; Plan/Build use the same
-`text-warn`/`text-accent` tone as the border, and Default uses the readable
-faint ink. The label renders at every
+recognised mode has a label, including `Default`; Plan/Build/Review use the
+same `text-warn`/`text-accent`/`text-info` tone as the border, and Default uses
+the readable faint ink. The label renders at every
 window width — it used to be hidden below the `sm` breakpoint — and there is no
 duplicate `mode: …` chip in the footer (2026-10-31 minimal-session-ui).
 

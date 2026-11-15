@@ -5,23 +5,23 @@
 [Website](https://dieuluucanh.github.io/pi-desktop/) ·
 [Installation](https://dieuluucanh.github.io/pi-desktop/#installation) ·
 [Documentation](https://dieuluucanh.github.io/pi-desktop/docs/) ·
-[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.8.2/)
+[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.9.0/)
 
 A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global
 installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
 `~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
-> **Status:** v0.8.2 — the sixth public release, a Review Mode and provider patch.
-> Manual `/review` is visible and pausable, every later review round reopens the
-> current plan, and a pending browser review survives a reload. The bundled Pi SDK
-> is 1.5.0, `@dieulc/workflow` 0.10.0 adds provider recovery and chunked plan
-> rewrites, and the Command Code stream probe/doctor is included. Notification
-> review tabs open focused; tool-result localhost URLs stay in the background.
-> Windows, Linux and macOS installers are built and published from CI on a version
-> tag; Windows is the primary artefact, macOS and Linux are beta, and builds are
+> **Status:** v0.9.0 — the seventh public release, a Review Mode isolation and rendering
+> parity release. Review is its own locked mode with a Pause/Resume/Abort bar and an
+> in-app review tab (desktop hosts never open the system browser); the companion
+> `@dieulc/workflow` 0.11.0 provides the locked turn, and terminal Pi keeps its browser.
+> Transcript Markdown and extension text keep one source line per line, and one
+> `Ctrl+V` writes the clipboard to the terminal exactly once. The bundled Pi SDK is
+> 1.5.0. Windows, Linux and macOS installers are built and published from CI on a
+> version tag; Windows is the primary artefact, macOS and Linux are beta, and builds are
 > unsigned. Known limitations and the deferred backlog are recorded in
-> [docs/releases/v0.8.2.md](docs/releases/v0.8.2.md) and
+> [docs/releases/v0.9.0.md](docs/releases/v0.9.0.md) and
 > [docs/product/backlog.md](docs/product/backlog.md).
 >
 > **Pi for Office is an optional integration.** It installs from Extensions →
@@ -141,7 +141,7 @@ the Markdown in `docs/` remains the source.
   host protocol + RPC mapping, extension UI host + TUI surface, Office
   integration, runtime, pinned versions).
 - **Parity** — [docs/product/parity.md](docs/product/parity.md).
-- **Release notes** — [docs/releases/v0.8.2.md](docs/releases/v0.8.2.md)
+- **Release notes** — [docs/releases/v0.9.0.md](docs/releases/v0.9.0.md)
   (install table, known limitations, verification status).
 - **Backlog** — [docs/product/backlog.md](docs/product/backlog.md).
 - **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md) and

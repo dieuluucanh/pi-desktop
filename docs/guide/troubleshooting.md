@@ -185,7 +185,7 @@ resource. The window shows a safe-mode banner.
 
   ```bash
   mkdir -p /tmp/pty && cd /tmp/pty && npm init -y && npm install node-pty@1.1.0
-  cd /tmp && /path/Pi-Desktop-0.8.2-linux-x86_64-appimage.AppImage --appimage-extract
+  cd /tmp && /path/Pi-Desktop-0.9.0-linux-x86_64-appimage.AppImage --appimage-extract
   cp /tmp/pty/node_modules/node-pty/build/Release/pty.node \
      /tmp/squashfs-root/resources/app.asar.unpacked/node_modules/node-pty/build/Release/
   /tmp/squashfs-root/AppRun
@@ -294,6 +294,21 @@ visible while main still rejects the call.
 - **Manual `/review` shows no “Reviewing” status** — fixed: an extension-owned
   round on an idle tab now renders the working row (`🔍 Reviewing plan…`) and
   forwards Escape, so it pauses exactly like an automatic round.
+- **The composer refuses my prompt during a review** — that is the isolated Review
+  mode (`@dieulc/workflow` 0.11.0+): prose and `!` shell commands are refused while
+  the reviewer owns the turn, with a hint and your draft kept. Use the **Review**
+  bar (Pause/Resume/Abort), `/review-pause`, `/review-resume`, `/review-abort`, or
+  change model/profile. Approve or annotate in the review tab to hand the plan
+  back. With an older workflow extension the badge and bar do not appear — upgrade
+  with `pi install @dieulc/workflow@0.11.0`.
+- **A review opened the system browser instead of an app tab** — only desktop
+  hosts set `PLANNOTATOR_BROWSER=none`. If you launched a session from a terminal
+  Pi process, that process keeps its own browser behaviour; the desktop tab's
+  **Open in browser** button is the deliberate escape hatch in the other direction.
+- **The Review bar has no Open review tab button** — the linked loopback tab was
+  closed, or the page is not a loopback URL. `/review-abort` still hands the plan
+  over, and **Open in browser** in the tab chrome (or the notification row) can
+  reopen it.
 - **Review round 2+ does not reopen Plannotator** — fixed: a new round or manual
   `/review` supersedes an older browser gate, stale browser decisions are
   discarded, and the full review correlation is persisted. After a reload the
@@ -391,16 +406,23 @@ Diagnostics → Save         redacted support bundle (no credentials)
 The bundle runs `redactSecrets` over the whole document, so it is safe to attach
 to an issue.
 
-## Known limitations in v0.8.2
+## Known limitations in v0.9.0
 
 Every known limitation is recorded with the release notes:
-[`docs/releases/v0.8.2.md`](../releases/v0.8.2.md). The short version:
+[`docs/releases/v0.9.0.md`](../releases/v0.9.0.md). The short version:
 
 - **Unsigned builds** — SmartScreen/Gatekeeper warn on first launch; signing is
   deferred ([backlog](../product/backlog.md)).
 - **macOS and Linux are beta** — built and structurally verified in CI, but no
   real macOS launch and no fresh Linux desktop install have been exercised by a
   person for this release. Windows is the verified target.
+- **Review Mode needs `@dieulc/workflow` 0.11.0+** — with an older extension there
+  is no Review badge/bar; the extension still enforces its own lock. The in-app
+  review tab and `PLANNOTATOR_BROWSER=none` still apply, and a review without
+  Plannotator falls back to the inline decision prompt.
+- **Review Mode's manual matrix is not verified for this release** — automated
+  tests cover parsing, the bar, the store gate and the host environment; no live
+  provider session was walked through approve/deny/pause/reload for v0.9.0.
 - **macOS updates are manual** — an ad-hoc signature cannot satisfy Squirrel.Mac,
   so the app links to the release instead of offering an in-place install.
 - **The updater** is verified against its policy and a fake port, not a live
@@ -411,6 +433,9 @@ Every known limitation is recorded with the release notes:
   **glibc 2.31 / `GLIBCXX_3.4.28`**; a package built on a newer runner is a
   release bug (v0.8.0 shipped one, fixed in v0.8.1 — see
   [the Linux terminal entry](#the-terminal-does-not-start-on-linux)).
+- **Transcript find cannot mark across a soft break** — a query spanning a line
+  break is counted but a single `<mark>` cannot span the rendered `<br>`; copy
+  still uses the raw message text.
 - **Informational notifications are hidden by default** — enable
   **Informational messages** in Settings → Notifications to show them in the
   bell and transcript. Hidden rows are never lost: **Show hidden (N)** in the
@@ -435,5 +460,5 @@ useful issue.
 ## Related
 
 - [FAQ](faq.md) · [Getting started](getting-started.md)
-- [Release notes v0.8.2](../releases/v0.8.2.md) · [Backlog](../product/backlog.md)
+- [Release notes v0.9.0](../releases/v0.9.0.md) · [Backlog](../product/backlog.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)
