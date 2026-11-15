@@ -105,6 +105,12 @@ export interface ComposerProps {
   /** The `workflow` extension status, decoded into a composer border colour. */
   workflowStatus?: string | null;
   /**
+   * True while Review owns the turn (2026-11-14 review-mode-isolation plan).
+   * The store refuses prose and the Review bar owns Pause/Resume/Abort, so the
+   * composer must not offer Stop: it would abort the parent run, not the review.
+   */
+  reviewMode?: boolean;
+  /**
    * The session's registered extension shortcuts, used to give Tab to the mode
    * cycle (the workflow extension registers `tab`). Empty until the store loads
    * them, which the composer requests through `onRequestShortcuts`.
@@ -261,6 +267,7 @@ export function Composer({
   draft,
   queue,
   workflowStatus,
+  reviewMode = false,
   extensionShortcuts,
   onInvokeShortcut,
   onRequestShortcuts,
@@ -917,7 +924,7 @@ export function Composer({
             >
               <Send className="size-4" aria-hidden />
             </Button>
-            {running ? (
+            {running && !reviewMode ? (
               <Button
                 size="icon-md"
                 variant="danger"
@@ -972,9 +979,11 @@ export function Composer({
           </span>
           <span className="shrink-0">
             Enter sends · Shift+Enter newline
-            {running
-              ? " · Alt+Enter queues a follow-up · Esc pauses a review or stops the run"
-              : ""}
+            {reviewMode
+              ? " · Review in progress — pause, resume, abort, or change model/profile"
+              : running
+                ? " · Alt+Enter queues a follow-up · Esc pauses a review or stops the run"
+                : ""}
           </span>
         </div>
         {/* Where the cursor is. The browser's caret is a thin blinking line that

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Cpu } from "lucide-react";
 import { Composer } from "../session/Composer";
+import { ReviewBar } from "../session/ReviewBar";
 import { StartingBanner } from "../session/StartingBanner";
 import { SessionFooter } from "../session/SessionFooter";
 import { Transcript } from "../session/Transcript";
@@ -34,6 +35,8 @@ import { contextUsageOf, modelKeyOf, thinkingLevelsOf } from "../session/model-c
 import { sameFolder } from "../../../shared/rail-scope";
 import type { WorkspaceEntryKind } from "../../../shared/workspace";
 import { isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
+import { parseWorkflowStatus } from "../../../shared/workflow-mode";
+import { isLoopbackUrl } from "../../../shared/web-tabs";
 
 /**
  * Session view (plan step 5).
@@ -94,6 +97,10 @@ export function SessionView({ tabId }: { tabId: string }) {
   const sendPrompt = useAppStore((state) => state.sendPrompt);
   const stopRun = useAppStore((state) => state.stopRun);
   const interruptRun = useAppStore((state) => state.interruptRun);
+  // Review is an isolated turn: the bar's controls run the same extension
+  // commands a typed `/review-*` would, without touching the draft.
+  const runReviewCommand = useAppStore((state) => state.runReviewCommand);
+  const activateTab = useAppStore((state) => state.activateTab);
   const clearQueue = useAppStore((state) => state.clearQueue);
   const restoreQueue = useAppStore((state) => state.restoreQueue);
   const setDraft = useAppStore((state) => state.setDraft);
@@ -135,15 +142,21 @@ export function SessionView({ tabId }: { tabId: string }) {
   const extensionWorking = extensionUi?.working;
   const extensionBusy = extensionWorking?.message != null && extensionWorking.visible !== false;
   const workflowStatus = extensionUi?.statuses?.workflow ?? null;
-  const reviewActive =
-    extensionBusy &&
-    (/review/i.test(workflowStatus ?? "") || /review/i.test(extensionWorking?.message ?? ""));
-  const reviewPaused = reviewActive && /paused/i.test(extensionWorking?.message ?? "");
-  const workingHint = reviewActive
-    ? reviewPaused
-      ? "/review-resume to continue · /review-abort to stop"
-      : "ESC to pause · /review-pause, /review-abort"
-    : "Esc to cancel";
+  // Review is a first-class mode since @dieulc/workflow 0.11.0: the status is
+  // the authority (and carries the phase), not the working message any more.
+  // A running review's message can differ from the mode status, and the handoff
+  // phase has no working message at all.
+  const workflowMode = parseWorkflowStatus(workflowStatus);
+  const reviewMode = workflowMode?.mode === "review";
+  const reviewPhase = reviewMode ? (workflowMode?.reviewPhase ?? "running") : null;
+  const workingHint =
+    reviewPhase === "handoff"
+      ? "Approve or annotate in the review tab · /review-abort to skip"
+      : reviewPhase === "paused"
+        ? "/review-resume to continue · /review-abort to stop"
+        : reviewMode
+          ? "ESC to pause · /review-pause, /review-abort"
+          : "Esc to cancel";
   const extensionDialogs = useAppStore((state) => state.extensionDialogs);
   const toolsExpandedState = useAppStore((state) => state.toolsExpanded[tabId]);
   const toggleToolsExpanded = useAppStore((state) => state.toggleToolsExpanded);
@@ -230,6 +243,15 @@ export function SessionView({ tabId }: { tabId: string }) {
 
   const active = tabs.find((tab) => tab.id === tabId) ?? null;
   const activeId = active?.id ?? null;
+  // The review page is a loopback web tab linked to this session. The bar can
+  // focus it; without one it stays command-only (the page may have been closed).
+  const reviewTabId =
+    reviewMode && active
+      ? (tabs.find(
+          (tab) =>
+            tab.kind === "web" && tab.sessionTabId === active.id && isLoopbackUrl(tab.url ?? null),
+        )?.id ?? null)
+      : null;
   const [mentionRequest, setMentionRequest] = useState<{
     id: number;
     tabId: string;
@@ -511,6 +533,18 @@ export function SessionView({ tabId }: { tabId: string }) {
               }}
             />
           ) : null}
+          {reviewPhase ? (
+            <ReviewBar
+              phase={reviewPhase}
+              canOpenReview={reviewTabId !== null}
+              onPause={() => void runReviewCommand(active.id, "review-pause")}
+              onResume={() => void runReviewCommand(active.id, "review-resume")}
+              onAbort={() => void runReviewCommand(active.id, "review-abort")}
+              onOpenReview={() => {
+                if (reviewTabId) void activateTab(reviewTabId);
+              }}
+            />
+          ) : null}
           {active.status === "running" || extensionBusy ? (
             <WorkingRow
               working={
@@ -628,7 +662,8 @@ export function SessionView({ tabId }: { tabId: string }) {
                 // running review pauses instead of aborting. A manual review
                 // runs on an idle tab, so `escapeActive` forwards too.
                 onEscape={() => void interruptRun(active.id)}
-                escapeActive={extensionBusy}
+                escapeActive={extensionBusy || reviewMode}
+                reviewMode={reviewMode}
                 onClearQueue={() => void clearQueue(active.id)}
                 onRestoreQueue={() => void restoreQueue(active.id)}
                 onHistoryStep={(direction, caret) => historyStep(active.id, direction, caret)}

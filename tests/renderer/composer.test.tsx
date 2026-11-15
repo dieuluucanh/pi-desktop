@@ -178,6 +178,13 @@ describe("streaming delivery", () => {
     expect(screen.getByRole("button", { name: /stop/i })).toBeInTheDocument();
     screen.getByRole("button", { name: /stop/i }).remove();
   });
+
+  it("hides Stop and names the locked turn while Review owns it", () => {
+    renderComposer({ running: true, reviewMode: true });
+
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    expect(screen.getByText(/Review in progress/)).toBeInTheDocument();
+  });
 });
 
 describe("Escape precedence (plan step 23)", () => {

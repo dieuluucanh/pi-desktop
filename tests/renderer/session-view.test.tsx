@@ -719,37 +719,102 @@ describe("extension-owned work on an idle tab (2026-11-10)", () => {
     frames: null,
     intervalMs: null,
   };
+  const reviewStatus = (workflow: string) => ({
+    ...EMPTY_EXTENSION_UI,
+    statuses: { workflow },
+    working: reviewing,
+  });
 
   it("shows the working row for a manual review while the tab is idle", () => {
-    useAppStore.setState({
-      extensionUi: { [TAB]: { ...EMPTY_EXTENSION_UI, working: reviewing } },
-    });
+    useAppStore.setState({ extensionUi: { [TAB]: reviewStatus("🔍 review") } });
 
     render(<SessionView tabId={TAB} />);
 
     expect(screen.getByTestId("extension-working-row")).toHaveTextContent("Reviewing plan");
     expect(screen.getByText("ESC to pause · /review-pause, /review-abort")).toBeInTheDocument();
+    expect(screen.getByTestId("review-bar")).toHaveAttribute("data-phase", "running");
     expect(useAppStore.getState().tabs[0]?.status).toBe("idle");
   });
 
-  it("shows the resume/abort hint while a review is paused", () => {
-    useAppStore.setState({
-      extensionUi: {
-        [TAB]: {
-          ...EMPTY_EXTENSION_UI,
-          working: {
-            ...reviewing,
-            message: "⏸ Review paused — /review-resume to continue",
-          },
-        },
-      },
-    });
+  it("shows the resume/abort hint and a Resume button while a review is paused", () => {
+    useAppStore.setState({ extensionUi: { [TAB]: reviewStatus("🔍 review — paused") } });
 
     render(<SessionView tabId={TAB} />);
 
     expect(
       screen.getByText("/review-resume to continue · /review-abort to stop"),
     ).toBeInTheDocument();
+    expect(screen.getByTestId("review-bar")).toHaveAttribute("data-phase", "paused");
+    expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+  });
+
+  it("keeps the handoff bar and hint alive after the reviewer finishes", () => {
+    useAppStore.setState({
+      extensionUi: {
+        [TAB]: {
+          ...EMPTY_EXTENSION_UI,
+          statuses: { workflow: "🔍 review — awaiting decision" },
+        },
+      },
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    expect(screen.getByTestId("review-bar")).toHaveAttribute("data-phase", "handoff");
+    expect(screen.getByText("Awaiting your decision in the review tab")).toBeInTheDocument();
+    expect(screen.queryByTestId("extension-working-row")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Abort" })).toBeNull();
+  });
+
+  it("runs the review command without clearing the draft", async () => {
+    const request = vi.fn(async (input: { method: string }) =>
+      input.method === "commands.run" ? { ran: true } : {},
+    );
+    (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = request;
+    useAppStore.setState({ extensionUi: { [TAB]: reviewStatus("🔍 review") } });
+
+    render(<SessionView tabId={TAB} />);
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: TAB,
+        method: "commands.run",
+        params: { name: "review-pause", args: "", ack: "started" },
+      }),
+    );
+  });
+
+  it("focuses the linked loopback review tab from the handoff bar", async () => {
+    useAppStore.setState({
+      extensionUi: {
+        [TAB]: {
+          ...EMPTY_EXTENSION_UI,
+          statuses: { workflow: "🔍 review — awaiting decision" },
+        },
+      },
+      tabs: [
+        ...useAppStore.getState().tabs,
+        {
+          id: "web-review",
+          kind: "web" as const,
+          cwd: "C:/work/app",
+          title: "Review",
+          sessionFile: null,
+          status: "idle" as const,
+          createdAt: 2,
+          lastActiveAt: 2,
+          model: null,
+          url: "http://127.0.0.1:4317/review",
+          sessionTabId: TAB,
+        },
+      ],
+    });
+
+    render(<SessionView tabId={TAB} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open review tab" }));
+
+    await waitFor(() => expect(useAppStore.getState().activeTabId).toBe("web-review"));
   });
 
   it("hides the row when the extension hides its indicator", () => {
@@ -771,5 +836,6 @@ describe("extension-owned work on an idle tab (2026-11-10)", () => {
     render(<SessionView tabId={TAB} />);
 
     expect(screen.queryByTestId("extension-working-row")).toBeNull();
+    expect(screen.queryByTestId("review-bar")).toBeNull();
   });
 });

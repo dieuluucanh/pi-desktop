@@ -1089,6 +1089,13 @@ export interface AppStateShape {
     text: string,
     options?: { preferredSource?: CompletionSource; mode?: SendMode; images?: PromptImage[] },
   ) => Promise<CommandOutcome>;
+  /**
+   * Runs one Review command (`/review-pause`, `/review-resume`,
+   * `/review-abort`) from the Review bar. It never calls `setDraft`: unlike a
+   * typed command, a button press must not clear the draft the user is
+   * keeping for after the review (2026-11-14 review-mode-isolation step 13).
+   */
+  runReviewCommand: (tabId: string, name: string) => Promise<boolean>;
 
   /** Model, thinking and usage UX (plan step 8). */
   modelCatalog: Record<string, ModelCatalogEntry[]>;
@@ -4603,6 +4610,29 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     } catch (error) {
       get().noteFailure(error);
       return { handled: true, sent: false };
+    }
+  },
+
+  runReviewCommand: async (tabId, name) => {
+    const api = bridge();
+    if (!api?.sessions) {
+      set({ hint: "The preload bridge is unavailable." });
+      return false;
+    }
+    try {
+      const response = await api.sessions.request({
+        tabId,
+        method: "commands.run",
+        params: { name, args: "", ack: "started" },
+      });
+      if (!parseCommandRunResult(response).ran) {
+        set({ hint: `/${name} is not available in this session.` });
+        return false;
+      }
+      return true;
+    } catch (error) {
+      get().noteFailure(error);
+      return false;
     }
   },
 

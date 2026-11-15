@@ -183,6 +183,33 @@ describe("sendPrompt", () => {
   });
 });
 
+describe("runReviewCommand", () => {
+  it("runs the command and never clears the draft", async () => {
+    const request = stubRequest(async () => ({ ran: true }));
+    useAppStore.getState().setDraft("tab-1", "keep this for after the review");
+
+    await expect(useAppStore.getState().runReviewCommand("tab-1", "review-pause")).resolves.toBe(
+      true,
+    );
+
+    expect(request).toHaveBeenCalledWith({
+      tabId: "tab-1",
+      method: "commands.run",
+      params: { name: "review-pause", args: "", ack: "started" },
+    });
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("keep this for after the review");
+  });
+
+  it("explains a command the host does not know", async () => {
+    stubRequest(async () => ({ ran: false }));
+
+    await expect(useAppStore.getState().runReviewCommand("tab-1", "review-abort")).resolves.toBe(
+      false,
+    );
+    expect(useAppStore.getState().hint).toContain("/review-abort is not available");
+  });
+});
+
 describe("bash mode", () => {
   it("routes `!command` to bash.run and never to prompt", async () => {
     const request = stubRequest(async () => ({ result: { output: "/work/app" } }));
