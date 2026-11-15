@@ -75,8 +75,9 @@ export function MuteNotificationDialog() {
       >
         <DialogTitle>Notification settings</DialogTitle>
         <DialogDescription>
-          Muted notifications disappear from the transcript and stop toasting, but stay in the
-          notification history. Unmute them any time in Settings → Notifications.
+          Muted notifications stop toasting and are marked muted in the notification history. The
+          transcript still prints extension output, as terminal Pi does. Unmute them any time in
+          Settings → Notifications.
         </DialogDescription>
 
         <div className="mx-4 rounded-sm border border-line bg-raised/60 px-3 py-2">

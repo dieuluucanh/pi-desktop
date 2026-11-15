@@ -28,8 +28,9 @@ export function NotificationsSettingsCard() {
       <div>
         <h2 className="text-sm font-semibold">Notifications</h2>
         <p className="text-xs text-ink-muted">
-          Classes decide which notifications appear in the bell, toasts and transcript. Rules
-          silence one message (or one message shape). Hidden notifications stay in the history.
+          Classes decide which notifications appear in the bell and toasts. The transcript always
+          prints extension output, like terminal Pi. Rules silence one message (or one message
+          shape) in the bell and toasts. Hidden notifications stay in the history.
         </p>
       </div>
 
@@ -37,8 +38,8 @@ export function NotificationsSettingsCard() {
         <div>
           <h3 className="text-xs font-semibold">Classes</h3>
           <p className="text-xs text-ink-faint">
-            Disabled classes are hidden from every surface. They stay in the history under Show
-            hidden.
+            Disabled classes are hidden from the bell and toasts. They stay in the history under
+            Show hidden. The transcript still prints them.
           </p>
         </div>
         <ul className="flex flex-col gap-1">

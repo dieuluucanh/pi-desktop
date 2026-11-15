@@ -634,18 +634,25 @@ const NOTICE_SEVERITY: Record<string, TranscriptNotice["severity"]> = {
   extension_error: "error",
 };
 
-/** True when this transcript already carries the same extension notification. */
-function hasNotificationNotice(
+/**
+ * True when the immediately previous row is the same extension notification.
+ *
+ * Terminal Pi's `showStatus` updates the last status line in place only while
+ * it is still the last chat content; a repeat after any other item appends. A
+ * back-to-back duplicate card adds no information, so warning/error repeats
+ * collapse too (the one deliberate deviation from showWarning/showError).
+ */
+function repeatsLastNotification(
   state: TranscriptState,
   severity: TranscriptNotice["severity"],
   text: string,
 ): boolean {
-  return state.items.some(
-    (item) =>
-      item.kind === "notice" &&
-      item.notice.event === "oi.notify" &&
-      item.notice.severity === severity &&
-      item.notice.text === text,
+  const last = state.items[state.items.length - 1];
+  return (
+    last?.kind === "notice" &&
+    last.notice.event === "oi.notify" &&
+    last.notice.severity === severity &&
+    last.notice.text === text
   );
 }
 
@@ -956,12 +963,10 @@ export function reduceSessionEvents(
       case "oi.notify": {
         // Extension command output is chat content in terminal Pi. Keep the
         // full multi-line message; the notification archive/toast path is
-        // handled separately by the store.
+        // handled separately by the store. Only an immediately repeated
+        // identical row collapses; a repeat after other content appends.
         const notice = notificationNotice(payload);
-        // The workflow (and other extensions) can re-emit the same advisory on
-        // every mode switch. Keep one row per distinct message; the history
-        // archive still records every arrival (see app-store).
-        if (notice && !hasNotificationNotice(next, notice.severity, notice.text)) {
+        if (notice && !repeatsLastNotification(next, notice.severity, notice.text)) {
           next = appendNotice(next, "oi.notify", notice.severity, notice.text);
         }
         break;

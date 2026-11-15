@@ -410,7 +410,7 @@ describe("StatusBar", () => {
 });
 
 describe("Transcript extension notices", () => {
-  it("hides an info notify row by default and restores it when the class is enabled", () => {
+  it("renders an info notify row with default prefs (terminal parity)", () => {
     const items = [
       {
         kind: "notice" as const,
@@ -426,23 +426,16 @@ describe("Transcript extension notices", () => {
     useAppStore.setState({
       prefs: { ...DEFAULT_PREFS, notifications: { ...DEFAULT_NOTIFICATION_PREFS } },
     });
-    const view = render(<Transcript items={items} />);
-    expect(screen.queryByText("Server logs ready (local)")).toBeNull();
+    render(<Transcript items={items} />);
 
-    useAppStore.setState({
-      prefs: {
-        ...DEFAULT_PREFS,
-        notifications: {
-          ...DEFAULT_NOTIFICATION_PREFS,
-          classes: { ...DEFAULT_NOTIFICATION_PREFS.classes, info: true },
-        },
-      },
-    });
-    view.rerender(<Transcript items={items} />);
-    expect(screen.getByText("Server logs ready (local)")).toBeInTheDocument();
+    const text = screen.getByTestId("transcript-notice-text");
+    expect(text.textContent).toBe("Server logs ready (local)");
+    expect(text.className).toContain("whitespace-pre-wrap");
+    expect(text.className).toContain("break-words");
+    expect(screen.getByText("info")).toBeInTheDocument();
   });
 
-  it("hides a muted notify row and restores it on unmute", () => {
+  it("renders a warning row even when its class is off and a mute rule matches", () => {
     const items = [
       {
         kind: "notice" as const,
@@ -457,16 +450,19 @@ describe("Transcript extension notices", () => {
     ];
     const rule = muteRuleFor({ message: "noisy warning", type: "warning" }, "exact");
     useAppStore.setState({
-      prefs: { ...DEFAULT_PREFS, notifications: { ...DEFAULT_NOTIFICATION_PREFS, muted: [rule] } },
+      prefs: {
+        ...DEFAULT_PREFS,
+        notifications: {
+          ...DEFAULT_NOTIFICATION_PREFS,
+          classes: { ...DEFAULT_NOTIFICATION_PREFS.classes, warning: false },
+          muted: [rule],
+        },
+      },
     });
-    const view = render(<Transcript items={items} />);
-    expect(screen.queryByText("noisy warning")).toBeNull();
+    render(<Transcript items={items} />);
 
-    useAppStore.setState({
-      prefs: { ...DEFAULT_PREFS, notifications: { ...DEFAULT_NOTIFICATION_PREFS } },
-    });
-    view.rerender(<Transcript items={items} />);
     expect(screen.getByText("noisy warning")).toBeInTheDocument();
+    expect(screen.getByTestId("transcript-notice-text").className).toContain("whitespace-pre-wrap");
   });
 });
 

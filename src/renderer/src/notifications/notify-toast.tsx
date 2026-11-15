@@ -8,8 +8,10 @@
  * the Mute dialog.
  *
  * Info notifications deliberately have no toast: their command output is
- * transcript content, exactly as in terminal Pi. The one exception is the
- * app-owned `update` class, which is a prompt rather than command output.
+ * transcript content, exactly as in terminal Pi. Classes and mute rules decide
+ * only bell/toast visibility; they never hide a transcript row. The one
+ * exception to the "no toast" rule is the app-owned `update` class, which is a
+ * prompt rather than command output.
  */
 
 import { Settings2 } from "lucide-react";

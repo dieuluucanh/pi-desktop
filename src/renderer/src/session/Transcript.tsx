@@ -17,7 +17,6 @@ import { isOfficeTool, officeToolSummary } from "./office-tool-card";
 import { useMarkdownTransform } from "./useMarkdownTransform";
 import { useAppStore } from "../state/app-store";
 import { matchesBinding } from "../shortcuts/dom-keys";
-import { isNotificationSuppressed } from "../../../shared/notifications";
 import { resolveDesktopKeymap } from "../../../shared/desktop-keymap";
 import { isBlobRef } from "../../../shared/host-protocol";
 import type { OfficeDocumentPane } from "../../../shared/office-documents";
@@ -324,16 +323,10 @@ function NoticeView({
   onAbort?: () => void;
   running?: boolean;
 }) {
-  const notifications = useAppStore((state) => state.prefs.notifications);
-  // A suppressed extension notification (class off or a mute rule) stays in the
-  // notification archive, but it must not take a row in the transcript. The
-  // hook runs before this early return, so enabling the class restores the row.
-  if (
-    notice.event === "oi.notify" &&
-    isNotificationSuppressed({ message: notice.text, type: notice.severity }, notifications)
-  ) {
-    return null;
-  }
+  // `ctx.ui.notify` is chat content in terminal Pi: showStatus / showWarning /
+  // showError append to the chat. Notification classes and mute rules are
+  // bell/toast policy, never transcript policy — a class switch must not hide
+  // command output. `MultilineText` keeps the source lines verbatim.
   const tone =
     notice.severity === "error" ? "danger" : notice.severity === "warning" ? "warn" : "neutral";
   return (

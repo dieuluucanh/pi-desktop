@@ -104,8 +104,10 @@ behaviour:
 **Notifications.** Settings → Notifications has two layers. **Classes** switch a
 whole kind on or off: App updates, Errors, Warnings and Informational messages
 (off by default, so background chatter such as “Server logs ready (local)” stays
-out of the bell and transcript). The mute-rule list is the per-message layer,
-created from a notification's gear or from the bell; each rule can be unmuted
-individually, or use **Unmute all**. Both layers only hide a notification: the
-archive keeps it, and the bell's **Show hidden (N)** can recover it. See
-[extension UI](../architecture/extension-ui.md#notification-classes-and-muting-2026-11-08).
+out of the bell and toasts). The transcript always prints extension output, as
+terminal Pi does. The mute-rule list is the per-message layer, created from a
+notification's gear or from the bell; each rule can be unmuted individually, or
+use **Unmute all**. Both layers only hide a notification from the bell and
+toasts: the archive keeps it, and the bell's **Show hidden (N)** can recover it.
+See
+[extension UI](../architecture/extension-ui.md#notification-classes-and-muting-2026-11-08-transcript-rule-amended-2026-11-15).

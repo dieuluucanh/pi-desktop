@@ -632,17 +632,9 @@ describe("terminal line semantics (2026-11-14 transcript-line-parity)", () => {
   ].join("\n");
 
   it("keeps every line of a /profile notice", () => {
-    // Info notifications are off by default; this is the user-reported
-    // `/profile list` path once the class is visible.
-    useAppStore.setState({
-      prefs: {
-        ...DEFAULT_PREFS,
-        notifications: {
-          ...DEFAULT_PREFS.notifications,
-          classes: { ...DEFAULT_PREFS.notifications.classes, info: true },
-        },
-      },
-    });
+    // Terminal Pi prints info notices; the bell's info class is off by default,
+    // but the transcript must not be (2026-11-15 command-output parity).
+    useAppStore.setState({ prefs: { ...DEFAULT_PREFS } });
     const items = itemsOf([
       {
         event: "oi.notify",
@@ -656,6 +648,32 @@ describe("terminal line semantics (2026-11-14 transcript-line-parity)", () => {
     expect(text.className).toContain("break-words");
     expect(text.textContent).toBe(PROFILE_SAMPLE);
     expect(screen.getByText("info")).toBeInTheDocument();
+  });
+
+  it("prints a /folder-policy status notice with default prefs", () => {
+    const FOLDER_POLICY_SAMPLE = [
+      "Folder policy: cwd (default settings)",
+      "  outside: ask; grantScope: project; templates: allow",
+      "  base: C:/repo",
+      "  unverifiable writes: not prompted (use /write-policy ask for strictness)",
+      "  sensitive: 12 default, 0 extra, 0 exemption(s)",
+      "  excluded: 0 rule(s)",
+      "Global: C:/Users/lenovo/.pi/agent/settings.json",
+      "Project: C:/repo/.pi/settings.json",
+      "Usage: /folder-policy repo|cwd|parent|any [global|project]",
+    ].join("\n");
+    useAppStore.setState({ prefs: { ...DEFAULT_PREFS } });
+    const items = itemsOf([
+      {
+        event: "oi.notify",
+        payload: { id: "n-folder", message: FOLDER_POLICY_SAMPLE, type: "info", at: 2 },
+      },
+    ]);
+    render(<Transcript items={items} />);
+
+    const text = screen.getByTestId("transcript-notice-text");
+    expect(text.className).toContain("whitespace-pre-wrap");
+    expect(text.textContent).toBe(FOLDER_POLICY_SAMPLE);
   });
 
   it("puts each completed workflow TODO on its own line", async () => {

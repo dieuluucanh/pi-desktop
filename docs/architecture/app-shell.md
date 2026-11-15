@@ -884,8 +884,9 @@ a dismissible status hint plus the view. There is no full-width update banner.
 **Notifications.** The status-bar bell always renders and counts only
 unsuppressed rows. Notifications are classed as **App updates**, **Errors**,
 **Warnings** and **Informational messages**; classes are severity-based because
-Pi's `ctx.ui.notify` has no source field. Info is off by default, so background
-chatter such as “Server logs ready (local)” stays out of the bell and transcript.
+Pi's `ctx.ui.notify` has no source field. Info is off by default for the bell and
+toasts, so background chatter such as “Server logs ready (local)” stays out of
+them; the transcript always prints extension notifications, as terminal Pi does.
 The popover has a `×`, a per-row `×`, class badges and **Show hidden (N)** for
 archived suppressed rows. Settings → Notifications owns the class switches and
 the per-message mute rules.

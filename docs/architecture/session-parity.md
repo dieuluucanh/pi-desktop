@@ -1,6 +1,6 @@
 # Session parity contract
 
-**Last updated:** 2026-11-15 · **Terminal reference:** `@earendil-works/pi-coding-agent` 1.5.0 · **Plan:** `.pi/plans/2026-10-26-pi-desktop-session-parity.md` · `.pi/plans/2026-11-14-transcript-line-parity.md` · `.pi/plans/2026-11-15-transcript-full-width.md`
+**Last updated:** 2026-11-15 · **Terminal reference:** `@earendil-works/pi-coding-agent` 1.5.0 · **Plan:** `.pi/plans/2026-10-26-pi-desktop-session-parity.md` · `.pi/plans/2026-11-14-transcript-line-parity.md` · `.pi/plans/2026-11-15-transcript-full-width.md` · `.pi/plans/2026-11-15-extension-command-output-parity.md`
 
 **Status:** Phase A–F (steps 1–24) shipped. **Phase G (steps 25–28, updates) is deferred whole**, as the plan permits; `/bug` writes a local zip and does not upload to Radius.
 
@@ -94,10 +94,17 @@ drift from the terminal.
     `setWorkingMessage` and the session error banner — is rendered verbatim by
     `MultilineText` (`white-space: pre-wrap`) and is **never** parsed as
     Markdown; only `custom_message` / `custom` entry content goes through the
-    Markdown pipeline. The notice severity badge, archive, toast and suppression
-    rules are orthogonal to line preservation. A find query that spans a soft
+    Markdown pipeline. The notice severity badge and the bell/toast class and
+    mute rules are orthogonal to line preservation; they never gate whether the
+    transcript row exists. A find query that spans a soft
     break is still counted by the item-model matcher but cannot paint one
     `<mark>` across the `<br>`; copy always uses the raw message text.
+15. **Extension notifications are chat content.** Every `ctx.ui.notify` call
+    prints a transcript notice with its full multi-line text, like terminal Pi's
+    `showStatus` / `showWarning` / `showError`. Notification classes and mute
+    rules filter the bell and toasts only; they never hide a transcript row.
+    Only an immediately repeated identical notice collapses; a repeat after any
+    other transcript content adds a row.
 
 ## Gap matrix (terminal 1.5.0 → desktop)
 
@@ -117,6 +124,7 @@ drift from the terminal.
 | Streaming follow         | pinned + jump-to-latest                      | ✅ content-size follow + jump pill + Ctrl+End                                                               | 10          |
 | Find                     | Ctrl+Shift+F                                 | ✅ Ctrl+F, inline marks, next/prev (remappable)                                                             | 11          |
 | Multi-line output        | one source line per line                     | ✅ 2026-11-14 (`remark-breaks`; verbatim extension text)                                                    | 2026-11-14  |
+| Extension command output | status line in chat, always printed          | ✅ 2026-11-15 (every `ctx.ui.notify` prints; classes/mutes filter only the bell and toasts)                 | 2026-11-15  |
 | Copy last / session info | `/copy`, `/session`                          | ✅ `/copy`, Ctrl+X outside editor, `/session`                                                               | 12          |
 | Clone / extension switch | works                                        | ✅ leaf fork fallback; replaced sessions rehydrate                                                          | 13          |
 | JSONL                    | export/import                                | ✅ `/export jsonl`, `/import` with confirmation                                                             | 14          |
@@ -164,9 +172,19 @@ drift from the terminal.
   per TODO.
 - `tests/renderer/multiline-text.test.tsx` — the shared primitive's class
   contract, caller-class merging and newline/indent preservation.
-- `tests/renderer/transcript.test.tsx` — the `/profile` notice keeps every line,
-  the `workflow-complete` fallback has one `<br>` per TODO boundary, and
+- `tests/renderer/transcript.test.tsx` — the `/profile` and `/folder-policy
+status` notices print with the default `info: false` prefs and keep every
+  line; the `workflow-complete` fallback has one `<br>` per TODO boundary, and
   assistant prose keeps a single newline.
+- `tests/renderer/extension-ui.test.tsx` — an info row prints with default
+  prefs; a warning row still prints when its class is off and a mute rule
+  matches.
+- `tests/renderer/session-events.test.ts` — only an immediately repeated
+  identical `oi.notify` collapses; a repeat after other content appends.
+- `tests/host/integration.test.ts` — every command output channel reaches its
+  host event through `commands.run`.
+- `tests/e2e/session.spec.ts` — a seeded extension's info command output is
+  visible in the real transcript with default prefs.
 - `tests/renderer/extension-ui.test.tsx`, `tests/renderer/notifications.test.tsx`,
   `tests/renderer/session-view.test.tsx`, `tests/renderer/notify-toast.test.tsx` —
   confirm/select/working/archive/toast/error-banner text keeps its lines.
@@ -220,6 +238,12 @@ drift from the terminal.
   headings and syntax-highlighted code cards are kept; only line semantics follow
   `pi-tui`. A find query spanning a soft break is counted
   but cannot paint one `<mark>` across the `<br>`; copy uses the raw text.
+- **Notification classes and mute rules filter the bell and toasts, not the
+  transcript.** Every `ctx.ui.notify` prints in the transcript; info starts off
+  for the bell by default. Only an immediately repeated identical notice
+  collapses. Terminal's `showStatus` does the same for status lines; terminal
+  appends repeated warnings/errors, while the desktop also collapses a
+  back-to-back identical warning/error row.
 - **Code colours are `github-dark` in both appearances.** Shiki token colours do
   not follow the light palette; only the block chrome (`bg-sunken`, `border-line`)
   is token-driven. A theme-aware Shiki palette is a separate change.

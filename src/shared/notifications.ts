@@ -1,6 +1,7 @@
 /**
  * Extension-notification mute rules and notification classes
- * (2026-10-31 UI polish plan, 2026-11-08 updates/notifications plan).
+ * (2026-10-31 UI polish plan, 2026-11-08 updates/notifications plan,
+ * 2026-11-15 extension-command-output parity).
  *
  * Pi's `ctx.ui.notify(message, type)` is shared by every installed extension and
  * carries **no source attribution** — the SDK hands each extension the same
@@ -14,15 +15,17 @@
  *  - `type`     — every notification of one type (`info`/`warning`/`error`).
  *
  * Because no source is available, the coarse class is severity plus the one
- * app-owned kind: `update`, `error`, `warning`, `info`. `info` is off by
- * default so background chatter ("Server logs ready (local)") does not fill the
- * bell, toast or transcript. Class-hidden notifications stay in the archive and
- * can be revealed from the notification popover.
+ * app-owned kind: `update`, `error`, `warning`, `info`. `info` is off by default
+ * so background chatter ("Server logs ready (local)") does not fill the bell or
+ * toasts. The transcript always prints every `ctx.ui.notify` (terminal parity);
+ * classes and mute rules never hide a transcript row. Class-hidden
+ * notifications stay in the archive and can be revealed from the notification
+ * popover.
  *
  * The rules are persisted in `prefs.notifications` (see `src/shared/prefs.ts`).
  * They are deliberately *not* a second notification archive: the history keeps
- * every arrival, and muting only hides it from the transcript/toast surfaces so
- * it can be restored with Unmute.
+ * every arrival, and muting only hides it from the bell/toast surfaces so it can
+ * be restored with Unmute.
  */
 
 import type { ExtensionNotification, ExtensionNotifyType } from "./extension-ui";
@@ -52,11 +55,11 @@ export const NOTIFICATION_CLASS_META: Record<NotificationClass, NotificationClas
   },
   info: {
     label: "Informational messages",
-    description: "Status and command messages, such as “Server logs ready (local)”.",
+    description: "Status and command messages; the transcript always prints them.",
   },
 };
 
-/** Per-class visibility; a false value hides that class from every surface. */
+/** Per-class visibility; a false value hides that class from the bell and toasts. */
 export interface NotificationClassPrefs {
   update: boolean;
   error: boolean;
@@ -66,8 +69,9 @@ export interface NotificationClassPrefs {
 
 /**
  * Warnings and errors are actionable, updates are the app's own offer, but
- * informational chatter is opt-in: a fresh profile must not be flooded by an
- * extension that reports every state change.
+ * informational chatter is opt-in for the bell and toasts: a fresh profile must
+ * not be flooded there by an extension that reports every state change. The
+ * transcript always prints extension output.
  */
 export const DEFAULT_NOTIFICATION_CLASSES: NotificationClassPrefs = {
   update: true,
@@ -283,9 +287,10 @@ export function isNotificationMuted(
 }
 
 /**
- * True when the notification must not appear in the bell, toast or transcript:
- * its class is off, or a per-message rule silences it. The archive still keeps
- * every arrival (see the module header).
+ * True when the notification must not appear in the bell or a toast: its class
+ * is off, or a per-message rule silences it. The transcript always prints
+ * `ctx.ui.notify` output (terminal parity); the archive still keeps every
+ * arrival (see the module header).
  */
 export function isNotificationSuppressed(
   notification: NotificationLike,

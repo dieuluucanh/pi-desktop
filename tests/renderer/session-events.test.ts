@@ -284,7 +284,7 @@ describe("queue and notices", () => {
     expect(notices[2]).toMatchObject({ severity: "error", text: "failed" });
   });
 
-  it("keeps only one transcript row for an identical repeated oi.notify", () => {
+  it("collapses only an immediately repeated identical oi.notify", () => {
     const state = reduceSessionEvents(createTranscriptState(), [
       { event: "oi.notify", payload: { message: "same warning", type: "warning" } },
       { event: "oi.notify", payload: { message: "same warning", type: "warning" } },
@@ -293,6 +293,38 @@ describe("queue and notices", () => {
     ]);
     const notices = items(state).filter((item) => item.kind === "notice");
     expect(notices).toHaveLength(3);
+  });
+
+  it("appends the same notice again after other transcript content", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "oi.notify", payload: { message: "same", type: "info" } },
+      {
+        event: "message_end",
+        payload: { message: { id: "m1", role: "assistant", content: "ok" } },
+      },
+      { event: "oi.notify", payload: { message: "same", type: "info" } },
+    ]);
+    const notices = items(state).filter((item) => item.kind === "notice");
+    expect(notices).toHaveLength(2);
+  });
+
+  it("appends the same notice after a different notice", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "oi.notify", payload: { message: "same", type: "info" } },
+      { event: "oi.notify", payload: { message: "other", type: "info" } },
+      { event: "oi.notify", payload: { message: "same", type: "info" } },
+    ]);
+    const notices = items(state).filter((item) => item.kind === "notice");
+    expect(notices).toHaveLength(3);
+  });
+
+  it("keeps a same-text notice with a different severity", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "oi.notify", payload: { message: "same", type: "info" } },
+      { event: "oi.notify", payload: { message: "same", type: "warning" } },
+    ]);
+    const notices = items(state).filter((item) => item.kind === "notice");
+    expect(notices).toHaveLength(2);
   });
 
   it("renders compaction as a card, a cancellation, and a failure", () => {

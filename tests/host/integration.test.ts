@@ -814,3 +814,156 @@ describe.skipIf(workflowExtension.length === 0)(
     }, 120_000);
   },
 );
+
+/**
+ * The command-output audit (2026-11-15 extension-command-output parity).
+ *
+ * Every channel below is invoked through `commands.run` with
+ * `ack: "started"`, the renderer's exact path, so a channel that only works
+ * through `prompt` cannot hide a regression.
+ */
+const OUTPUT_AUDIT_EXTENSION = `export default function (pi) {
+  pi.registerCommand("audit-notify", {
+    description: "Multi-line info output",
+    handler: async (_args, ctx) => {
+      ctx.ui.notify("Folder policy: cwd\\n  outside: ask", "info");
+    },
+  });
+  pi.registerCommand("audit-status", {
+    description: "Footer status and working message",
+    handler: async (_args, ctx) => {
+      ctx.ui.setStatus("audit", "ready");
+      ctx.ui.setWorkingMessage("auditing");
+    },
+  });
+  pi.registerCommand("audit-message", {
+    description: "Custom message",
+    handler: async () => {
+      await pi.sendMessage({ customType: "audit", content: "command output", display: true });
+    },
+  });
+  pi.registerCommand("audit-entry", {
+    description: "Custom entry",
+    handler: async () => {
+      pi.appendEntry("audit", { ok: true });
+    },
+  });
+  pi.registerCommand("audit-dialog", {
+    description: "Select dialog",
+    handler: async (_args, ctx) => {
+      const choice = await ctx.ui.select("Audit", ["one", "two"]);
+      ctx.ui.notify("chose " + (choice ?? "none"), "info");
+    },
+  });
+  pi.registerCommand("audit-picker", {
+    description: "TUI custom picker",
+    handler: async (_args, ctx) => {
+      await ctx.ui.custom((_tui, _theme, _kb, done) => ({
+        render: () => ["audit picker"],
+        handleInput: (data) => {
+          if (data === "\\x1b") done(undefined);
+        },
+      }));
+    },
+  });
+}
+`;
+
+async function auditHarness(): Promise<Harness> {
+  const harness = await startHarness({ extensions: true });
+  harness.profile.writeExtension("audit-output.js", OUTPUT_AUDIT_EXTENSION);
+  await harness.call("session.create");
+  return harness;
+}
+
+async function runAudit(harness: Harness, name: string): Promise<void> {
+  const result = (await harness.call("commands.run", {
+    name,
+    args: "",
+    ack: "started",
+  })) as { ran?: boolean };
+  expect(result.ran).toBe(true);
+}
+
+describe("host integration: extension command output (2026-11-15)", () => {
+  it("delivers a command's multi-line info notification", async () => {
+    const harness = await auditHarness();
+    await runAudit(harness, "audit-notify");
+    await waitFor(() => harness.payloads("oi.notify").length > 0);
+    const notify = harness.payloads("oi.notify").at(-1) as { message: string; type: string };
+    expect(notify.message).toBe("Folder policy: cwd\n  outside: ask");
+    expect(notify.type).toBe("info");
+    expect(harness.provider.requests).toHaveLength(0);
+  });
+
+  it("delivers a command's footer status and working message", async () => {
+    const harness = await auditHarness();
+    await runAudit(harness, "audit-status");
+    await waitFor(() => {
+      const snapshots = harness.payloads("oi.state") as Array<{
+        statuses?: Record<string, string>;
+        working?: { message?: string | null };
+      }>;
+      const last = snapshots.at(-1);
+      return last?.statuses?.audit === "ready" && last?.working?.message === "auditing";
+    });
+    expect(harness.provider.requests).toHaveLength(0);
+  });
+
+  it("delivers a command's custom message", async () => {
+    const harness = await auditHarness();
+    await runAudit(harness, "audit-message");
+    await waitFor(() => harness.payloads("message_start").length > 0);
+    const started = harness.payloads("message_start").at(-1) as {
+      message?: { role?: string; customType?: string; content?: unknown };
+    };
+    expect(started.message?.role).toBe("custom");
+    expect(started.message?.customType).toBe("audit");
+    expect(JSON.stringify(started.message?.content)).toContain("command output");
+    expect(harness.provider.requests).toHaveLength(0);
+  });
+
+  it("delivers a command's custom entry", async () => {
+    const harness = await auditHarness();
+    await runAudit(harness, "audit-entry");
+    await waitFor(() => harness.payloads("entry_appended").length > 0);
+    const appended = harness.payloads("entry_appended").at(-1) as {
+      entry?: { type?: string; customType?: string };
+    };
+    expect(appended.entry?.type).toBe("custom");
+    expect(appended.entry?.customType).toBe("audit");
+    expect(harness.provider.requests).toHaveLength(0);
+  });
+
+  it("delivers a command's select dialog and its continuation", async () => {
+    const harness = await auditHarness();
+    await runAudit(harness, "audit-dialog");
+    const request = await waitForEvent(harness, "oi.request");
+    expect(request.method).toBe("select");
+    expect((request.params as { title?: string } | undefined)?.title).toBe("Audit");
+    await harness.call("oi.respond", { id: request.id, value: "one" });
+    await waitFor(() =>
+      harness
+        .payloads("oi.notify")
+        .some((payload) => (payload as { message?: string }).message === "chose one"),
+    );
+    expect(harness.provider.requests).toHaveLength(0);
+  });
+
+  it("delivers a command's TUI custom picker", async () => {
+    const harness = await auditHarness();
+    await runAudit(harness, "audit-picker");
+    await waitFor(() => {
+      const frames = harness.payloads("tui.state") as Array<{
+        custom?: { lines?: string[] } | null;
+      }>;
+      return (frames.at(-1)?.custom?.lines ?? []).join("\n").includes("audit picker");
+    });
+    await harness.call("tui.input", { data: "\x1b" });
+    await waitFor(() => {
+      const frames = harness.payloads("tui.state") as Array<{ custom?: unknown }>;
+      return frames.at(-1)?.custom === null;
+    });
+    expect(harness.provider.requests).toHaveLength(0);
+  });
+});

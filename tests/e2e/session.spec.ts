@@ -192,3 +192,33 @@ test("fills the pane with the transcript at every zoom level", async () => {
 
   await current.menuCommand("zoom-reset");
 });
+
+test("prints multi-line info command output in the transcript with default prefs", async () => {
+  const current = (app = await launchFakeApp({
+    launch: {
+      extensions: {
+        "audit-output.js": `export default function (pi) {
+  pi.registerCommand("audit", {
+    description: "Print multi-line command output",
+    handler: async (_args, ctx) => {
+      ctx.ui.notify("Folder policy: cwd\\n  outside: ask\\n  base: C:/repo", "info");
+    },
+  });
+}`,
+      },
+    },
+  }));
+  const composer = await startSession(current);
+  const requestsBefore = current.provider.requests.length;
+  await composer.fill("/audit");
+  await composer.press("Enter");
+
+  // Info notifications are off for the bell by default; the transcript must
+  // still print extension command output, exactly like terminal Pi.
+  const notice = current.window
+    .getByTestId("transcript-notice-text")
+    .filter({ hasText: "Folder policy: cwd" });
+  await expect(notice).toBeVisible({ timeout: 30_000 });
+  await expect(notice).toContainText("outside: ask");
+  expect(current.provider.requests).toHaveLength(requestsBefore);
+});
