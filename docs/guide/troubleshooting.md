@@ -185,7 +185,7 @@ resource. The window shows a safe-mode banner.
 
   ```bash
   mkdir -p /tmp/pty && cd /tmp/pty && npm init -y && npm install node-pty@1.1.0
-  cd /tmp && /path/Pi-Desktop-0.9.0-linux-x86_64-appimage.AppImage --appimage-extract
+  cd /tmp && /path/Pi-Desktop-0.10.0-linux-x86_64-appimage.AppImage --appimage-extract
   cp /tmp/pty/node_modules/node-pty/build/Release/pty.node \
      /tmp/squashfs-root/resources/app.asar.unpacked/node_modules/node-pty/build/Release/
   /tmp/squashfs-root/AppRun
@@ -415,23 +415,25 @@ Diagnostics → Save         redacted support bundle (no credentials)
 The bundle runs `redactSecrets` over the whole document, so it is safe to attach
 to an issue.
 
-## Known limitations in v0.9.0
+## Known limitations in v0.10.0
 
 Every known limitation is recorded with the release notes:
-[`docs/releases/v0.9.0.md`](../releases/v0.9.0.md). The short version:
+[`docs/releases/v0.10.0.md`](../releases/v0.10.0.md). The short version:
 
 - **Unsigned builds** — SmartScreen/Gatekeeper warn on first launch; signing is
   deferred ([backlog](../product/backlog.md)).
 - **macOS and Linux are beta** — built and structurally verified in CI, but no
   real macOS launch and no fresh Linux desktop install have been exercised by a
   person for this release. Windows is the verified target.
-- **Review Mode needs `@dieulc/workflow` 0.11.0+** — with an older extension there
-  is no Review badge/bar; the extension still enforces its own lock. The in-app
-  review tab and `PLANNOTATOR_BROWSER=none` still apply, and a review without
-  Plannotator falls back to the inline decision prompt.
-- **Review Mode's manual matrix is not verified for this release** — automated
-  tests cover parsing, the bar, the store gate and the host environment; no live
-  provider session was walked through approve/deny/pause/reload for v0.9.0.
+- **Extension update checks are registry-based** — they need the network, pause
+  under `PI_OFFLINE`, and can lag a fresh publish by a few seconds. A pinned
+  package is skipped by design, and a Git or ranged source has no single target
+  version to name.
+- **An updated package takes effect on the next session** — a running session
+  keeps the code it loaded until **Reload runtime** (or a restart).
+- **The bundled Pi agent is not user-updatable** — it moves with Pi Desktop. A
+  stale agent is a release-pipeline warning by default, not a blocked tag, and a
+  major is never taken automatically.
 - **macOS updates are manual** — an ad-hoc signature cannot satisfy Squirrel.Mac,
   so the app links to the release instead of offering an in-place install.
 - **The updater** is verified against its policy and a fake port, not a live
@@ -445,10 +447,9 @@ Every known limitation is recorded with the release notes:
 - **Transcript find cannot mark across a soft break** — a query spanning a line
   break is counted but a single `<mark>` cannot span the rendered `<br>`; copy
   still uses the raw message text.
-- **Informational notifications are hidden by default** — enable
-  **Informational messages** in Settings → Notifications to show them in the
-  bell and transcript. Hidden rows are never lost: **Show hidden (N)** in the
-  bell recovers them.
+- **Informational notifications are hidden in the bell by default** — that
+  switch now scopes to the bell and toasts only; the transcript always shows
+  the text. Hidden bell rows are never lost: **Show hidden (N)** recovers them.
 - **The update offer is in-app only** — the bell row, its toast and the
   About & updates dot are the whole surface; there is no OS notification, and
   dismissing the row keeps the dot until the offer is installed or replaced.
@@ -458,7 +459,8 @@ Every known limitation is recorded with the release notes:
   page, crash/timeout banners, safe mode against a genuinely broken extension,
   the terminal inside a packaged build on a real desktop (CI now opens a real PTY
   from the packaged app on every platform, including inside Debian 11), and the
-  60 fps / RSS numbers.
+  60 fps / RSS numbers. Review Mode's manual provider matrix was not re-walked
+  for this release.
 - **Upstream:** Pi's own `settings.json` and session-JSONL writes are not
   crash-atomic; the app's own profile writes are (`fsync` + rename).
 - **Deferred features** are listed in [`../product/backlog.md`](../product/backlog.md).
@@ -469,5 +471,5 @@ useful issue.
 ## Related
 
 - [FAQ](faq.md) · [Getting started](getting-started.md)
-- [Release notes v0.9.0](../releases/v0.9.0.md) · [Backlog](../product/backlog.md)
+- [Release notes v0.10.0](../releases/v0.10.0.md) · [Backlog](../product/backlog.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)

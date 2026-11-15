@@ -5,23 +5,25 @@
 [Website](https://dieuluucanh.github.io/pi-desktop/) ·
 [Installation](https://dieuluucanh.github.io/pi-desktop/#installation) ·
 [Documentation](https://dieuluucanh.github.io/pi-desktop/docs/) ·
-[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.9.0/)
+[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.10.0/)
 
 A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global
 installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
 `~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
-> **Status:** v0.9.0 — the seventh public release, a Review Mode isolation and rendering
-> parity release. Review is its own locked mode with a Pause/Resume/Abort bar and an
-> in-app review tab (desktop hosts never open the system browser); the companion
-> `@dieulc/workflow` 0.11.0 provides the locked turn, and terminal Pi keeps its browser.
-> Transcript Markdown and extension text keep one source line per line, and one
-> `Ctrl+V` writes the clipboard to the terminal exactly once. The bundled Pi SDK is
-> 1.5.0. Windows, Linux and macOS installers are built and published from CI on a
-> version tag; Windows is the primary artefact, macOS and Linux are beta, and builds are
-> unsigned. Known limitations and the deferred backlog are recorded in
-> [docs/releases/v0.9.0.md](docs/releases/v0.9.0.md) and
+> **Status:** v0.10.0 — the eighth public release, an update-awareness and chat-parity
+> release. Installed packages are checked for newer versions and surfaced in the
+> Extensions hub, the sidebar and the bell, and updates stay consent-gated; the bundled
+> Pi agent is kept current by a daily watch workflow and a release pre-flight instead of
+> being bumped by hand. Extension command output (`ctx.ui.notify`) always prints in the
+> transcript, as in terminal Pi, and the transcript now fills the pane at every zoom
+> level. The notification bell is a real popover that closes on an outside click or
+> Escape, and the recommended package set was refreshed. The bundled Pi SDK is 1.5.0.
+> Windows, Linux and macOS installers are built and published from CI on a version tag;
+> Windows is the primary artefact, macOS and Linux are beta, and builds are unsigned.
+> Known limitations and the deferred backlog are recorded in
+> [docs/releases/v0.10.0.md](docs/releases/v0.10.0.md) and
 > [docs/product/backlog.md](docs/product/backlog.md).
 >
 > **Pi for Office is an optional integration.** It installs from Extensions →
@@ -141,7 +143,7 @@ the Markdown in `docs/` remains the source.
   host protocol + RPC mapping, extension UI host + TUI surface, Office
   integration, runtime, pinned versions).
 - **Parity** — [docs/product/parity.md](docs/product/parity.md).
-- **Release notes** — [docs/releases/v0.9.0.md](docs/releases/v0.9.0.md)
+- **Release notes** — [docs/releases/v0.10.0.md](docs/releases/v0.10.0.md)
   (install table, known limitations, verification status).
 - **Backlog** — [docs/product/backlog.md](docs/product/backlog.md).
 - **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md) and
