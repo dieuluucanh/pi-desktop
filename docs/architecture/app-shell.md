@@ -887,9 +887,10 @@ unsuppressed rows. Notifications are classed as **App updates**, **Errors**,
 Pi's `ctx.ui.notify` has no source field. Info is off by default for the bell and
 toasts, so background chatter such as “Server logs ready (local)” stays out of
 them; the transcript always prints extension notifications, as terminal Pi does.
-The popover has a `×`, a per-row `×`, class badges and **Show hidden (N)** for
-archived suppressed rows. Settings → Notifications owns the class switches and
-the per-message mute rules.
+The popover closes on an outside click or Escape (and the bell toggles it), so
+there is no header `×`; it keeps a per-row `×`, class badges and **Show hidden
+(N)** for archived suppressed rows. Settings → Notifications owns the class
+switches and the per-message mute rules.
 
 **Packaging.** `electron-builder.yml` targets Windows NSIS + portable, macOS
 dmg/zip on arm64 + x64, and Linux AppImage/deb on x64 + arm64. The bundled

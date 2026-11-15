@@ -1,9 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MuteNotificationDialog } from "../../src/renderer/src/notifications/MuteNotificationDialog";
 import { NotificationCenter } from "../../src/renderer/src/notifications/NotificationCenter";
+import { overlayOpenIn } from "../../src/renderer/src/web/overlay-detect";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import {
   updateNotification,
@@ -71,7 +72,7 @@ describe("NotificationCenter", () => {
     expect(screen.getByTestId("notification-count")).toHaveTextContent("1");
   });
 
-  it("renders an empty bell and a closeable popover", async () => {
+  it("opens an empty bell and closes it with Escape", async () => {
     const user = userEvent.setup();
     render(<NotificationCenter />);
     const bell = screen.getByRole("button", { name: "Notifications" });
@@ -80,9 +81,120 @@ describe("NotificationCenter", () => {
     await user.click(bell);
     expect(screen.getByTestId("notification-center")).toBeInTheDocument();
     expect(screen.getByText("No notifications.")).toBeInTheDocument();
+    expect(screen.getByTestId("notification-center")).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Close notifications" })).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: "Close notifications" }));
-    expect(screen.queryByTestId("notification-center")).toBeNull();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByTestId("notification-center")).toBeNull());
+    await waitFor(() => expect(bell).toHaveFocus());
+  });
+
+  it("closes on an outside click and still runs the outside control", async () => {
+    const user = userEvent.setup();
+    const outside = vi.fn();
+    render(
+      <>
+        <button type="button" onClick={outside}>
+          Outside
+        </button>
+        <NotificationCenter />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Notifications" }));
+    await user.click(screen.getByRole("button", { name: "Outside" }));
+
+    expect(outside).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByTestId("notification-center")).toBeNull());
+  });
+
+  it("stays open when a control inside is used", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({ notifications: [entry()] });
+    render(<NotificationCenter />);
+
+    await user.click(screen.getByRole("button", { name: "Notifications (1)" }));
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+
+    expect(useAppStore.getState().notifications).toHaveLength(0);
+    expect(screen.getByTestId("notification-center")).toBeInTheDocument();
+    expect(screen.getByText("No notifications.")).toBeInTheDocument();
+  });
+
+  it("toggles closed from the bell", async () => {
+    const user = userEvent.setup();
+    render(<NotificationCenter />);
+    const bell = screen.getByRole("button", { name: "Notifications" });
+
+    await user.click(bell);
+    expect(screen.getByTestId("notification-center")).toBeInTheDocument();
+
+    await user.click(bell);
+    await waitFor(() => expect(screen.queryByTestId("notification-center")).toBeNull());
+  });
+
+  it("resets Show hidden when the panel is dismissed", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({
+      notifications: [
+        entry({
+          id: "n-info",
+          message: "Server logs ready (local)",
+          type: "info",
+          class: "info",
+        }),
+      ],
+    });
+    render(
+      <>
+        <button type="button">Outside</button>
+        <NotificationCenter />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Notifications" }));
+    await user.click(screen.getByRole("button", { name: "Show hidden (1)" }));
+    expect(screen.getByText("Server logs ready (local)")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Outside" }));
+    await waitFor(() => expect(screen.queryByTestId("notification-center")).toBeNull());
+
+    await user.click(screen.getByRole("button", { name: "Notifications" }));
+    expect(screen.getByText("You're all caught up.")).toBeInTheDocument();
+    expect(screen.queryByText("Server logs ready (local)")).toBeNull();
+  });
+
+  it("closes the panel and focuses the mute dialog from a row gear", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({ notifications: [entry()] });
+    render(
+      <>
+        <NotificationCenter />
+        <MuteNotificationDialog />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Notifications (1)" }));
+    await user.click(
+      screen.getByRole("button", { name: "Notification settings for Installed workflow" }),
+    );
+
+    expect(useAppStore.getState().muteTarget?.id).toBe("n1");
+    await waitFor(() => expect(screen.queryByTestId("notification-center")).toBeNull());
+    const dialog = await screen.findByTestId("mute-notification-dialog");
+    await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement));
+  });
+
+  it("registers as an overlay so a native web view steps aside", async () => {
+    const user = userEvent.setup();
+    render(<NotificationCenter />);
+    expect(overlayOpenIn(document)).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "Notifications" }));
+    expect(overlayOpenIn(document)).toBe(true);
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(overlayOpenIn(document)).toBe(false));
   });
 
   it("clears the archive", async () => {
@@ -202,7 +314,12 @@ describe("NotificationCenter", () => {
       screen.getByRole("button", { name: /notification settings for installed workflow/i }),
     );
     expect(useAppStore.getState().muteTarget).toEqual(muted);
+    await waitFor(() => expect(screen.queryByTestId("notification-center")).toBeNull());
 
+    // The gear closed the panel; Show hidden starts collapsed on reopen.
+    useAppStore.setState({ muteTarget: null });
+    await user.click(screen.getByRole("button", { name: "Notifications" }));
+    await user.click(screen.getByRole("button", { name: "Show hidden (1)" }));
     await user.click(screen.getByRole("button", { name: /unmute notification/i }));
     expect(useAppStore.getState().prefs.notifications.muted).toHaveLength(0);
     expect(screen.queryByTestId("notification-muted")).toBeNull();

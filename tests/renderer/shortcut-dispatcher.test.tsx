@@ -1,6 +1,8 @@
-import { fireEvent, render } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { NotificationCenter } from "../../src/renderer/src/notifications/NotificationCenter";
 import { ShortcutDispatcher } from "../../src/renderer/src/shortcuts/ShortcutDispatcher";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
@@ -235,6 +237,25 @@ describe("ShortcutDispatcher app.interrupt (plan step 24)", () => {
     event.preventDefault();
     window.dispatchEvent(event);
 
+    expect(interrupt).not.toHaveBeenCalled();
+  });
+
+  it("closes the notification panel on Escape without interrupting the run", async () => {
+    const interrupt = vi.fn(async () => {});
+    useAppStore.setState({ interruptRun: interrupt });
+    render(
+      <>
+        <ShortcutDispatcher />
+        <NotificationCenter />
+      </>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Notifications" }));
+    expect(await screen.findByTestId("notification-center")).toBeInTheDocument();
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByTestId("notification-center")).toBeNull());
     expect(interrupt).not.toHaveBeenCalled();
   });
 });

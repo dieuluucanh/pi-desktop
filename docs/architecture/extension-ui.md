@@ -350,8 +350,9 @@ rule is equivalent to the exact one and the dialog says so.
 A suppressed notification (class off or rule match) is **not deleted**: it stays
 in the archive, is marked `hidden`/`muted`, and is hidden from the bell and
 future toasts, while its transcript row still prints (2026-11-15). The bell
-always renders, counts only unsuppressed rows, and its popover has a close `×`,
-a per-row `×`, class badges and **Show hidden (N)**. A class-hidden row offers
+always renders, counts only unsuppressed rows, and closes its popover on an
+outside click, Escape or the bell (there is no header `×`); it keeps a per-row
+`×`, class badges and **Show hidden (N)**. A class-hidden row offers
 **Show** (enable the class); a rule-muted row offers **Unmute**. Only an
 immediately repeated identical `oi.notify` row collapses in the transcript; a
 repeat after any other content adds a row. Toasts are suppressed per tab for

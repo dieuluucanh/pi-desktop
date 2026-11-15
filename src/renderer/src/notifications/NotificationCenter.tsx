@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Bell, Settings2, X } from "lucide-react";
 
 import {
@@ -14,6 +14,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
 import { MultilineText } from "../ui/multiline-text";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 
 /**
  * The notification centre (plan step 16; rebuilt 2026-11-08).
@@ -23,6 +24,11 @@ import { MultilineText } from "../ui/multiline-text";
  * popover groups each row by class so the Settings class switches explain what
  * is hidden. A class-disabled or rule-matched notification stays in the archive
  * (`Show hidden`) so a user can recover it instead of losing it to a mute.
+ *
+ * The panel is a light-dismiss Radix popover: an outside click, Escape or the
+ * bell closes it, and the header carries no `×` (the per-row `×` still dismisses
+ * one notification). Opening focuses the panel itself, not `Clear`, so a second
+ * Enter can never empty the archive.
  */
 
 const CLASS_TONE: Record<NotificationClass, "neutral" | "accent" | "info" | "warn" | "danger"> = {
@@ -49,6 +55,7 @@ export function NotificationCenter() {
   const setView = useAppStore((state) => state.setView);
   const [open, setOpen] = useState(false);
   const [showHidden, setShowHidden] = useState(false);
+  const contentRef = useRef<HTMLDivElement | null>(null);
 
   const visible = notifications.filter((entry) => !isNotificationSuppressed(entry, prefs));
   const hidden = notifications.filter((entry) => isNotificationSuppressed(entry, prefs));
@@ -60,9 +67,9 @@ export function NotificationCenter() {
     setOpen(false);
     setShowHidden(false);
   };
-  const toggle = (): void => {
-    if (open) close();
-    else setOpen(true);
+  const onOpenChange = (next: boolean): void => {
+    if (next) setOpen(true);
+    else close();
   };
   const run = (entry: AppNotification): void => {
     if (entry.action?.kind === "open-updates") {
@@ -77,168 +84,165 @@ export function NotificationCenter() {
   };
 
   return (
-    <div className="relative">
-      <Button
-        size="icon-sm"
-        variant="ghost"
-        className="relative"
-        aria-expanded={open}
-        aria-label={`Notifications${count > 0 ? ` (${count})` : ""}`}
-        title={count > 0 ? `${count} notification${count === 1 ? "" : "s"}` : "Notifications"}
-        onClick={toggle}
-      >
-        <Bell className="size-3.5" aria-hidden />
-        {count > 0 ? (
-          <span
-            data-testid="notification-count"
-            aria-hidden
-            className={cn(
-              "absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 text-[9px] font-semibold leading-none text-surface",
-              errors > 0 ? "bg-danger" : "bg-accent",
-            )}
-          >
-            {count > 99 ? "99+" : count}
-          </span>
-        ) : null}
-      </Button>
-      {open ? (
-        <div
-          data-testid="notification-center"
-          role="dialog"
-          aria-label="Notifications"
-          className="absolute bottom-8 right-0 z-50 w-96 rounded-md border border-line bg-surface p-2 shadow-xl"
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          className="relative"
+          aria-label={`Notifications${count > 0 ? ` (${count})` : ""}`}
+          title={count > 0 ? `${count} notification${count === 1 ? "" : "s"}` : "Notifications"}
         >
-          <div className="mb-1 flex items-center justify-between gap-2 px-1">
-            <span className="text-xs font-semibold">Notifications</span>
-            <div className="flex items-center gap-1">
-              {notifications.length > 0 ? (
-                <Button size="sm" variant="ghost" onClick={clear}>
-                  Clear
-                </Button>
-              ) : null}
-              <Button
-                size="icon-sm"
-                variant="ghost"
-                aria-label="Close notifications"
-                title="Close notifications"
-                onClick={close}
-              >
-                <X className="size-3.5" aria-hidden />
-              </Button>
-            </div>
-          </div>
+          <Bell className="size-3.5" aria-hidden />
+          {count > 0 ? (
+            <span
+              data-testid="notification-count"
+              aria-hidden
+              className={cn(
+                "absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 text-[9px] font-semibold leading-none text-surface",
+                errors > 0 ? "bg-danger" : "bg-accent",
+              )}
+            >
+              {count > 99 ? "99+" : count}
+            </span>
+          ) : null}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        ref={contentRef}
+        data-testid="notification-center"
+        role="dialog"
+        aria-label="Notifications"
+        tabIndex={-1}
+        side="top"
+        className="w-96"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          contentRef.current?.focus();
+        }}
+      >
+        <div className="mb-1 flex items-center justify-between gap-2 px-1">
+          <span className="text-xs font-semibold">Notifications</span>
+          {notifications.length > 0 ? (
+            <Button size="sm" variant="ghost" onClick={clear}>
+              Clear
+            </Button>
+          ) : null}
+        </div>
 
-          {notifications.length === 0 ? (
-            <p className="px-1 py-3 text-xs text-ink-faint">No notifications.</p>
-          ) : (
-            <>
-              <ul className="max-h-64 overflow-y-auto">
-                {list.map((entry) => {
-                  const klass = notificationClassOf(entry);
-                  const classEnabled = isNotificationClassEnabled(prefs, klass);
-                  const rule = matchingMuteRule(entry, prefs.muted);
-                  return (
-                    <li
-                      key={entry.id}
-                      className="flex items-start gap-2 border-t border-line px-1 py-1 text-xs first:border-t-0"
-                    >
-                      <Badge tone={CLASS_TONE[klass]}>{klass}</Badge>
-                      {entry.action ? (
-                        <button
-                          type="button"
-                          className="min-w-0 flex-1 break-words text-left hover:underline"
-                          onClick={() => run(entry)}
-                        >
-                          <MultilineText>{entry.message}</MultilineText>
-                        </button>
-                      ) : (
-                        <MultilineText className="min-w-0 flex-1">{entry.message}</MultilineText>
-                      )}
-                      {!classEnabled ? (
-                        <Badge tone="neutral" data-testid="notification-hidden">
-                          hidden
-                        </Badge>
-                      ) : rule ? (
-                        <Badge tone="neutral" data-testid="notification-muted">
-                          muted
-                        </Badge>
-                      ) : null}
-                      {rule ? (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          aria-label={`Unmute notification: ${entry.message}`}
-                          onClick={() => unmuteNotification(entry)}
-                        >
-                          Unmute
-                        </Button>
-                      ) : null}
-                      {!classEnabled ? (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          aria-label={`Show ${klass} notifications`}
-                          onClick={() => setNotificationClass(klass, true)}
-                        >
-                          Show
-                        </Button>
-                      ) : null}
-                      {entry.action ? null : (
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          aria-label={`Notification settings for ${entry.message}`}
-                          title="Notification settings"
-                          onClick={() => openMuteDialog(entry)}
-                        >
-                          <Settings2 className="size-3.5" aria-hidden />
-                        </Button>
-                      )}
+        {notifications.length === 0 ? (
+          <p className="px-1 py-3 text-xs text-ink-faint">No notifications.</p>
+        ) : (
+          <>
+            <ul className="max-h-64 overflow-y-auto">
+              {list.map((entry) => {
+                const klass = notificationClassOf(entry);
+                const classEnabled = isNotificationClassEnabled(prefs, klass);
+                const rule = matchingMuteRule(entry, prefs.muted);
+                return (
+                  <li
+                    key={entry.id}
+                    className="flex items-start gap-2 border-t border-line px-1 py-1 text-xs first:border-t-0"
+                  >
+                    <Badge tone={CLASS_TONE[klass]}>{klass}</Badge>
+                    {entry.action ? (
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 break-words text-left hover:underline"
+                        onClick={() => run(entry)}
+                      >
+                        <MultilineText>{entry.message}</MultilineText>
+                      </button>
+                    ) : (
+                      <MultilineText className="min-w-0 flex-1">{entry.message}</MultilineText>
+                    )}
+                    {!classEnabled ? (
+                      <Badge tone="neutral" data-testid="notification-hidden">
+                        hidden
+                      </Badge>
+                    ) : rule ? (
+                      <Badge tone="neutral" data-testid="notification-muted">
+                        muted
+                      </Badge>
+                    ) : null}
+                    {rule ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label={`Unmute notification: ${entry.message}`}
+                        onClick={() => unmuteNotification(entry)}
+                      >
+                        Unmute
+                      </Button>
+                    ) : null}
+                    {!classEnabled ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label={`Show ${klass} notifications`}
+                        onClick={() => setNotificationClass(klass, true)}
+                      >
+                        Show
+                      </Button>
+                    ) : null}
+                    {entry.action ? null : (
                       <Button
                         size="icon-sm"
                         variant="ghost"
-                        aria-label={`Dismiss notification: ${entry.message}`}
-                        title="Dismiss notification"
-                        onClick={() => dismiss(entry.id)}
+                        aria-label={`Notification settings for ${entry.message}`}
+                        title="Notification settings"
+                        onClick={() => {
+                          close();
+                          openMuteDialog(entry);
+                        }}
                       >
-                        <X className="size-3" aria-hidden />
+                        <Settings2 className="size-3.5" aria-hidden />
                       </Button>
-                    </li>
-                  );
-                })}
-              </ul>
-              {!showHidden && visible.length === 0 && hidden.length > 0 ? (
-                <p className="px-1 pt-1 text-xs text-ink-faint">You're all caught up.</p>
-              ) : null}
-              {hidden.length > 0 ? (
-                <div className="mt-1 flex items-center gap-2 border-t border-line px-1 pt-1">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    aria-pressed={showHidden}
-                    onClick={() => setShowHidden((value) => !value)}
-                  >
-                    {showHidden ? "Hide hidden" : `Show hidden (${hidden.length})`}
-                  </Button>
-                </div>
-              ) : null}
-            </>
-          )}
+                    )}
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      aria-label={`Dismiss notification: ${entry.message}`}
+                      title="Dismiss notification"
+                      onClick={() => dismiss(entry.id)}
+                    >
+                      <X className="size-3" aria-hidden />
+                    </Button>
+                  </li>
+                );
+              })}
+            </ul>
+            {!showHidden && visible.length === 0 && hidden.length > 0 ? (
+              <p className="px-1 pt-1 text-xs text-ink-faint">You're all caught up.</p>
+            ) : null}
+            {hidden.length > 0 ? (
+              <div className="mt-1 flex items-center gap-2 border-t border-line px-1 pt-1">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-pressed={showHidden}
+                  onClick={() => setShowHidden((value) => !value)}
+                >
+                  {showHidden ? "Hide hidden" : `Show hidden (${hidden.length})`}
+                </Button>
+              </div>
+            ) : null}
+          </>
+        )}
 
-          <div className="mt-1 flex items-center justify-between border-t border-line px-1 pt-1">
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                close();
-                openNotificationSettings();
-              }}
-            >
-              Notification settings
-            </Button>
-          </div>
+        <div className="mt-1 flex items-center justify-between border-t border-line px-1 pt-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              close();
+              openNotificationSettings();
+            }}
+          >
+            Notification settings
+          </Button>
         </div>
-      ) : null}
-    </div>
+      </PopoverContent>
+    </Popover>
   );
 }
