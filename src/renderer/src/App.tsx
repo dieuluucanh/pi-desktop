@@ -15,6 +15,7 @@ import { SessionTabStrip } from "./layout/SessionTabStrip";
 import { EditorTabStrip } from "./layout/EditorTabStrip";
 import { handleMenuCommand } from "./menu-actions";
 import { useAppStore, type AppView } from "./state/app-store";
+import { PACKAGE_CHECK_INTERVAL_MS, PACKAGE_CHECK_STARTUP_DELAY_MS } from "../../shared/packages";
 import { createFocusResync } from "./state/focus-resync";
 import { systemThemeName, watchSystemTheme } from "./themes/system-theme";
 import { OnboardingWizard } from "./onboarding/OnboardingWizard";
@@ -76,6 +77,8 @@ export function App() {
   const loadThemes = useAppStore((state) => state.loadThemes);
   const loadUpdateState = useAppStore((state) => state.loadUpdateState);
   const prefsLoaded = useAppStore((state) => state.prefsLoaded);
+  const autoCheckPackages = useAppStore((state) => state.prefs.packages.autoCheck);
+  const checkPackageUpdates = useAppStore((state) => state.checkPackageUpdates);
   const privacyAcknowledged = useAppStore((state) => state.prefs.privacyAcknowledged);
   const onboardingCompletedAt = useAppStore((state) => state.prefs.onboardingCompletedAt);
   const setInfo = useAppStore((state) => state.setInfo);
@@ -206,6 +209,25 @@ export function App() {
       window.removeEventListener("unhandledrejection", onRejection);
     };
   }, [loadTabs, setInfo, loadUpdateState]);
+
+  // Extension update checks (plan step 8): one quiet sweep once the window is
+  // interactive, then every six hours. The switch gates only this background
+  // traffic — opening the Extensions page and Check now always work.
+  useEffect(() => {
+    if (!prefsLoaded || !autoCheckPackages || piOffline) return;
+    const first = setTimeout(
+      () => void checkPackageUpdates({ automatic: true }),
+      PACKAGE_CHECK_STARTUP_DELAY_MS,
+    );
+    const repeat = setInterval(
+      () => void checkPackageUpdates({ automatic: true, force: true }),
+      PACKAGE_CHECK_INTERVAL_MS,
+    );
+    return () => {
+      clearTimeout(first);
+      clearInterval(repeat);
+    };
+  }, [prefsLoaded, autoCheckPackages, piOffline, checkPackageUpdates]);
 
   useEffect(() => {
     // A laptop that slept, or a window that was hidden, can miss main's tab

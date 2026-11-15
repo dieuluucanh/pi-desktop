@@ -294,4 +294,31 @@ describe("release workflow", () => {
     expect(job("macos")).toContain("--arch arm64");
     expect(job("macos")).toContain("--arch x64");
   });
+
+  it("checks the bundled Pi agent before building, and never blocks on a fresh publish", () => {
+    expect(yaml).toMatch(/require_latest_pi:\n(?:.*\n)*? {8}default: false/);
+    expect(yaml).toContain("Fail when the bundled Pi agent is behind the latest published version");
+
+    const prepare = job("prepare");
+    expect(prepare).toContain("node scripts/pi-agent.mjs --status --json");
+    expect(prepare).toContain("node scripts/pi-agent.mjs --check");
+    // It runs before the draft exists, and it needs no install (dependency-free).
+    expect(prepare.indexOf("node scripts/pi-agent.mjs --status")).toBeLessThan(
+      prepare.indexOf("Create the draft release"),
+    );
+    expect(prepare).not.toContain("retry.sh 3 30 -- npm ci");
+
+    // An unreadable registry is a warning: a release never depends on npm being up.
+    expect(prepare).toMatch(/if \[ "\$agent_code" -eq 2 \]; then[\s\S]*?exit 0/);
+    // A stale agent warns by default...
+    expect(prepare).toMatch(/echo "::warning::the bundled Pi agent is behind;"[\s\S]*?exit 0/);
+    // ...and fails only when the operator asked for it.
+    expect(prepare).toMatch(/if \[ "\$INPUT_REQUIRE_LATEST_PI" = "true" \]; then[\s\S]*?exit 1/);
+  });
+
+  it("reminds the operator to name the agent version in the release notes", () => {
+    const prepare = job("prepare");
+    expect(prepare).toContain('grep -q -- "$current" "docs/releases/$TAG.md"');
+    expect(prepare).toContain("does not mention");
+  });
 });

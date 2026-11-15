@@ -9,9 +9,9 @@
  *
  * Info notifications deliberately have no toast: their command output is
  * transcript content, exactly as in terminal Pi. Classes and mute rules decide
- * only bell/toast visibility; they never hide a transcript row. The one
- * exception to the "no toast" rule is the app-owned `update` class, which is a
- * prompt rather than command output.
+ * only bell/toast visibility; they never hide a transcript row. The exception to
+ * the "no toast" rule is the two app-owned offer classes (`update` and
+ * `extension`), which are prompts rather than command output.
  */
 
 import { Settings2 } from "lucide-react";
@@ -23,7 +23,7 @@ import { MultilineText } from "../ui/multiline-text";
 export interface NotifyToastHandlers {
   /** Opens the mute dialog for this message (warning/error toasts only). */
   onMute?: () => void;
-  /** Opens the About & updates view (update toasts only). */
+  /** Opens the destination of an app-owned offer (app update or extension updates). */
   onOpen?: () => void;
 }
 
@@ -32,10 +32,12 @@ export function notifyToast(notification: AppNotification, handlers: NotifyToast
   // Extension text is verbatim in terminal Pi; Sonner accepts a React node, so
   // the toast keeps every source line too.
   const message = <MultilineText>{notification.message}</MultilineText>;
-  if (notification.class === "update") {
+  // The two app-owned offer classes share one toast shape; only the destination
+  // and the action label differ.
+  if (notification.class === "update" || notification.class === "extension") {
     toast.info(message, {
       action: {
-        label: "View update",
+        label: notification.class === "extension" ? "View extensions" : "View update",
         onClick: handlers.onOpen ?? (() => undefined),
       },
     });

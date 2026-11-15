@@ -54,6 +54,14 @@ describe("NotificationsSettingsCard", () => {
     expect(useAppStore.getState().prefs.notifications.muted).toHaveLength(1);
   });
 
+  it("lists the extension-update class with the others", () => {
+    render(<NotificationsSettingsCard />);
+    expect(screen.getByTestId("notification-class-extension")).toHaveTextContent(
+      "Extension updates",
+    );
+    expect(screen.getByRole("switch", { name: /show extension updates/i })).toBeChecked();
+  });
+
   it("lists exact, template and type rules", () => {
     const exact = muteRuleFor({ message: "Installed workflow", type: "info" }, "exact");
     const template = muteRuleFor(

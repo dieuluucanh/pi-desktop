@@ -397,6 +397,12 @@ export interface AppInfo {
   buildCommit: string | null;
   /** ISO timestamp of the packaging run. */
   builtAt: string | null;
+  /**
+   * The bundled `@earendil-works/pi-coding-agent` version. Users cannot update
+   * the agent independently of the app, so this is the honest answer to "which
+   * Pi agent am I running?".
+   */
+  piVersion: string | null;
   safeMode: boolean;
   /** True when `PI_OFFLINE` disables Pi's startup network calls (plan step 22). */
   piOffline: boolean;

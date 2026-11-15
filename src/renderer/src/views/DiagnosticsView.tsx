@@ -200,6 +200,10 @@ export function DiagnosticsView() {
                 <dd>{snapshot.runtime.nodeVersion ?? "unavailable"}</dd>
               </div>
               <div className="contents">
+                <dt>Pi agent</dt>
+                <dd>{snapshot.runtime.piVersion ?? "unavailable"}</dd>
+              </div>
+              <div className="contents">
                 <dt>Pi profile</dt>
                 <dd title={snapshot.paths.profileDir}>{snapshot.paths.profileDir}</dd>
               </div>

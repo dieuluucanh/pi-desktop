@@ -28,6 +28,7 @@ beforeEach(() => {
       buildVersion: "0.3.0",
       buildCommit: "abc123",
       builtAt: "2026-11-01T10:00:00.000Z",
+      piVersion: "1.5.0",
     }),
     update: initialUpdateState(true, { currentVersion: "0.3.0" }),
     prefsLoaded: true,
@@ -50,6 +51,8 @@ describe("UpdatesView", () => {
     expect(screen.getByTestId("updates-panel")).toHaveTextContent("v0.3.0");
     expect(screen.getByText("Release build")).toBeInTheDocument();
     expect(screen.getByText(/commit abc123/)).toBeInTheDocument();
+    // The bundled agent ships with the app; users cannot update it separately.
+    expect(screen.getByTestId("bundled-pi-agent")).toHaveTextContent("Pi agent 1.5.0");
     expect(screen.getByRole("button", { name: /check now/i })).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: /automatically/i })).toBeChecked();
   });

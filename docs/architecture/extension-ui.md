@@ -361,3 +361,12 @@ An **app update offer** is the one app-owned row: class `update`, one per
 version (`prefs.updates.notifiedVersion`), with a **View update** action that
 opens About & updates. Its toast action is the same. The About & updates sidebar
 item carries a dot while a version is offered/downloading/downloaded.
+
+An **extension update offer** is the other app-owned row (2026-11-15): class
+`extension`, one per update _set_ (`prefs.packages.notifiedSignature`, a sorted
+`source@latestVersion` fingerprint), with a **View extensions** action that opens
+the Extensions hub on the Packages card. The class is on by default and has its
+own Settings switch, so muting app updates does not mute extension updates. The
+sidebar **Extensions** item carries a dot while the set is non-empty, and each
+outdated package row shows a `1.6.0 available` badge; a pinned row never does
+(the sweep skips a deliberate pin).

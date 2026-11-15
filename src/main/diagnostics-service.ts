@@ -312,6 +312,7 @@ export function createDiagnosticsService(deps: DiagnosticsServiceDeps): Diagnost
       runtime: {
         source: info.runtimeSource,
         nodeVersion: info.runtimeNodeVersion,
+        piVersion: info.piVersion,
         problems: [...info.runtimeProblems],
       },
       paths: {

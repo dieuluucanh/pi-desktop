@@ -358,6 +358,8 @@ export interface DiagnosticsHostInfo {
   rssBytes: number | null;
   /** Fingerprint reported by `host.hello`; null for a pre-change host. */
   buildId: string | null;
+  /** The Pi agent version this host reported in `host.hello`. */
+  piVersion: string | null;
   /** True when the running host predates the bundle on disk. */
   stale: boolean;
   /** Why the host last stopped (idle/RSS/park/manual/restart/crash). */
@@ -431,6 +433,8 @@ export interface DiagnosticsAppInfo {
 export interface DiagnosticsRuntimeInfo {
   source: string | null;
   nodeVersion: string | null;
+  /** The bundled Pi agent stamped at pack time (null when unknown). */
+  piVersion: string | null;
   problems: string[];
 }
 

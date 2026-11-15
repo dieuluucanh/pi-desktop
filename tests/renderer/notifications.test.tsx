@@ -5,7 +5,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { MuteNotificationDialog } from "../../src/renderer/src/notifications/MuteNotificationDialog";
 import { NotificationCenter } from "../../src/renderer/src/notifications/NotificationCenter";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
-import { updateNotification, type AppNotification } from "../../src/shared/notifications";
+import {
+  updateNotification,
+  packageUpdateNotification,
+  type AppNotification,
+} from "../../src/shared/notifications";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { installBridge } from "./fixtures";
 
@@ -168,6 +172,18 @@ describe("NotificationCenter", () => {
     await user.click(screen.getByRole("button", { name: "Notifications (1)" }));
     await user.click(screen.getByRole("button", { name: "Pi Desktop v0.4.0 is available." }));
     expect(useAppStore.getState().view).toBe("updates");
+  });
+
+  it("opens the Extensions hub from an extension-update row", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({
+      notifications: [packageUpdateNotification(2, "npm:alpha@2.0.0|npm:beta@")],
+    });
+    render(<NotificationCenter />);
+
+    await user.click(screen.getByRole("button", { name: "Notifications (1)" }));
+    await user.click(screen.getByRole("button", { name: "2 extension updates available." }));
+    expect(useAppStore.getState().view).toBe("extensions");
   });
 
   it("marks a muted row behind Show hidden and unmutes it", async () => {

@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import type { AppInfo, WebTabOpenInput } from "../../../shared/ipc";
 import type { BlobRef, HostMethod } from "../../../shared/host-protocol";
-import { DEFAULT_PREFS, type UiPrefs } from "../../../shared/prefs";
+import { DEFAULT_PREFS, type PackageCheckPrefs, type UiPrefs } from "../../../shared/prefs";
 import { mergeTerminalPrefs, type TerminalPrefs } from "../../../shared/terminal-prefs";
 import { parseWorkflowStatus } from "../../../shared/workflow-mode";
 import {
@@ -55,6 +55,8 @@ import {
   normalizeNotificationText,
   removeMuteRule,
   removeMutesForNotification,
+  packageUpdateNotification,
+  packageUpdateNotificationId,
   shouldCollapseNotification,
   updateNotification,
   updateNotificationId,
@@ -206,13 +208,17 @@ import {
   PACKAGES_CHANGED_EVENT,
   PACKAGE_PROGRESS_EVENT,
   normalizePackageSource,
+  packageUpdateIdentity,
+  packageUpdateSignature,
   pinnedPackageSource,
   sanitizePackageProgress,
   sanitizePackagesSnapshot,
+  sanitizePackageUpdatesSnapshot,
   unpinnedPackageSource,
   type PackageProgressEvent,
   type PackageScope,
   type PackageSummary,
+  type PackageUpdateSummary,
 } from "../../../shared/packages";
 import {
   applyPromptOrigins,
@@ -896,11 +902,14 @@ export interface AppStateShape {
   /**
    * Which section of the Extensions hub to reveal after navigation (plan step
    * 19). The Integrations menu item routes here, since Pi for Office has no
-   * primary-navigation surface of its own.
+   * primary-navigation surface of its own; an extension-update notification
+   * routes to the Packages card (plan step 6).
    */
-  extensionsFocus: "integrations" | null;
+  extensionsFocus: "integrations" | "packages" | null;
   /** Opens the Extensions hub on the Integrations card. */
   focusIntegrations: () => void;
+  /** Opens the Extensions hub on the Packages card (the update notification). */
+  openExtensionsView: () => void;
   clearExtensionsFocus: () => void;
   /** The Settings section to reveal after navigation. */
   settingsFocus: "terminal" | "notifications" | null;
@@ -1534,6 +1543,25 @@ export interface AppStateShape {
   /** Reinstall floating on latest (npm only); opens the consent dialog. */
   unpinPackage: (summary: PackageSummary, cwd?: string | null) => void;
 
+  /** The last available-update sweep (plan step 5). */
+  packageUpdates: PackageUpdateSummary[];
+  packageUpdatesCheckedAt: number | null;
+  packageUpdatesBusy: boolean;
+  /** Why the last sweep failed; the previous list is deliberately kept. */
+  packageUpdatesError: string | null;
+  packageUpdatesOffline: boolean;
+  /** True when this host has no package manager, so checks cannot run at all. */
+  packageUpdatesUnavailable: boolean;
+  packageUpdatesCwd: string | null;
+  /** When a package mutation last succeeded, so the UI can offer a reload. */
+  packagesMutatedAt: number | null;
+  /** Sweeps the configured packages; `force` skips the host's 60 s cache. */
+  checkPackageUpdates: (options?: { force?: boolean; automatic?: boolean }) => Promise<void>;
+  setPackageCheckPrefs: (patch: Partial<PackageCheckPrefs>) => void;
+  /** Raises the one "extensions can be updated" notification for this set. */
+  raisePackageUpdateNotification: () => void;
+  dismissPackageReloadHint: () => void;
+
   /** Themes (plan step 15): the catalogue with the active theme marked. */
   themes: ThemesSnapshot;
   themesLoaded: boolean;
@@ -1953,6 +1981,28 @@ function bridge(): Window["pi"] | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The host's typed error code, when it carried one. */
+function errorCode(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && code.length > 0 ? code : null;
+}
+
+/**
+ * Drops the update entries a successful mutation just made obsolete.
+ *
+ * `null` means "every package" (update-all, or a removal whose source we no
+ * longer have); otherwise the entry whose identity matches — the identity
+ * ignores the version, so pinning `npm:foo` also clears `npm:foo@1.2.3`.
+ */
+function dropPackageUpdates(
+  updates: PackageUpdateSummary[],
+  source: string | null,
+): PackageUpdateSummary[] {
+  if (source === null) return [];
+  const identity = packageUpdateIdentity({ source });
+  return updates.filter((entry) => packageUpdateIdentity(entry) !== identity);
 }
 
 /** True for the main process's "this tab is asleep" refusal. */
@@ -2419,6 +2469,14 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   packagesCwd: null,
   packageProgress: null,
   packageConsent: null,
+  packageUpdates: [],
+  packageUpdatesCheckedAt: null,
+  packageUpdatesBusy: false,
+  packageUpdatesError: null,
+  packageUpdatesOffline: false,
+  packageUpdatesUnavailable: false,
+  packageUpdatesCwd: null,
+  packagesMutatedAt: null,
   integrations: emptyIntegrationsState(),
   integrationsLoaded: false,
   officeDocuments: null,
@@ -2476,6 +2534,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       ...(view === "settings" ? {} : { settingsFocus: null }),
     }),
   focusIntegrations: () => set({ view: "extensions", extensionsFocus: "integrations", hint: null }),
+  openExtensionsView: () => set({ view: "extensions", extensionsFocus: "packages", hint: null }),
   clearExtensionsFocus: () => set({ extensionsFocus: null }),
   openUpdatesView: (options) => {
     set({ view: "updates", hint: null });
@@ -4847,7 +4906,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
 
     if (entry.event === PACKAGES_CHANGED_EVENT) {
-      // Another window (or the host itself) changed the package list.
+      // Another window (or the host itself) changed the package list. The payload
+      // names the mutation's source, so the update entries it invalidated vanish
+      // immediately instead of waiting for the next sweep.
+      const payload = entry.payload as { source?: unknown } | undefined;
+      const source = typeof payload?.source === "string" ? payload.source : null;
+      if (source !== null) {
+        set({
+          packageUpdates: dropPackageUpdates(get().packageUpdates, source === "*" ? null : source),
+        });
+      }
       void get().loadPackages({ refresh: true });
       return;
     }
@@ -6605,7 +6673,15 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       if (consent.kind === "install" && consent.integration === "office") {
         await get().recordOfficeIntegration({ bridgeInstalledAt: new Date().toISOString() });
       }
-      set({ packagesBusy: false, packageProgress: null });
+      set({
+        packagesBusy: false,
+        packageProgress: null,
+        packageUpdates: dropPackageUpdates(
+          get().packageUpdates,
+          consent.source === "*" ? null : consent.source,
+        ),
+        packagesMutatedAt: Date.now(),
+      });
       return true;
     } catch (error) {
       set({ packagesBusy: false, packageProgress: null, packagesError: errorMessage(error) });
@@ -6630,7 +6706,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       });
       await get().loadPackages({ refresh: true });
       await get().loadResources({ refresh: true });
-      set({ packagesBusy: false, packageProgress: null });
+      set({
+        packagesBusy: false,
+        packageProgress: null,
+        packageUpdates: dropPackageUpdates(get().packageUpdates, summary.source),
+        packagesMutatedAt: Date.now(),
+      });
       return true;
     } catch (error) {
       set({ packagesBusy: false, packageProgress: null, packagesError: errorMessage(error) });
@@ -6647,6 +6728,73 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const source = unpinnedPackageSource(summary);
     if (source) get().requestPackageInstall(source, summary.scope, cwd);
   },
+
+  checkPackageUpdates: (options) =>
+    singleFlight("package-checks", async () => {
+      const api = bridge();
+      if (!api?.sessions) return;
+      const cwd = packageCwd(get());
+      set({ packageUpdatesBusy: true, packageUpdatesError: null });
+      try {
+        const raw = await api.sessions.request({
+          tabId: CONTROL_TAB_ID,
+          method: "packages.checkUpdates",
+          params: options?.force === true ? { cwd, force: true } : { cwd },
+        });
+        const snapshot = sanitizePackageUpdatesSnapshot(raw);
+        set({
+          packageUpdates: snapshot.updates,
+          packageUpdatesCheckedAt: snapshot.checkedAt,
+          packageUpdatesOffline: snapshot.offline,
+          packageUpdatesBusy: false,
+          packageUpdatesError: null,
+          packageUpdatesUnavailable: false,
+          packageUpdatesCwd: cwd,
+        });
+        get().raisePackageUpdateNotification();
+      } catch (error) {
+        // A failed sweep is not proof that nothing is outdated, so the previous
+        // list stays. The page shows the reason inline (D8); a manual check also
+        // gets a status hint, a background one stays silent.
+        set({
+          packageUpdatesBusy: false,
+          packageUpdatesError: errorMessage(error),
+          packageUpdatesUnavailable: errorCode(error) === "not_implemented",
+        });
+        if (options?.automatic !== true) {
+          get().setHint(`Could not check for extension updates: ${errorMessage(error)}`);
+        }
+      }
+    }),
+
+  setPackageCheckPrefs: (patch) =>
+    get().setPrefs({ packages: { ...get().prefs.packages, ...patch } }),
+
+  raisePackageUpdateNotification: () => {
+    const { packageUpdates, prefs, prefsLoaded, notifications } = get();
+    if (!prefsLoaded || packageUpdates.length === 0) return;
+    // A muted class gets no marker either: enabling it later raises the offer
+    // instead of leaving a hidden row behind.
+    if (!prefs.notifications.classes.extension) return;
+    const signature = packageUpdateSignature(packageUpdates);
+    if (signature.length === 0) return;
+    const id = packageUpdateNotificationId(signature);
+    if (notifications.some((entry) => entry.id === id)) {
+      if (prefs.packages.notifiedSignature !== signature) {
+        get().setPackageCheckPrefs({ notifiedSignature: signature });
+      }
+      return;
+    }
+    // Dismissed rows keep the marker, so a relaunch or a repeated sweep does not
+    // re-raise the same set; a new package or a newer target changes it (D7).
+    if (prefs.packages.notifiedSignature === signature) return;
+    const notification = packageUpdateNotification(packageUpdates.length, signature);
+    set({ notifications: [notification, ...notifications].slice(0, 100) });
+    get().setPackageCheckPrefs({ notifiedSignature: signature });
+    notifyToast(notification, { onOpen: () => get().setView("extensions") });
+  },
+
+  dismissPackageReloadHint: () => set({ packagesMutatedAt: null }),
 
   createSessionTab: async (kind, options) => {
     const { project, setHint } = get();

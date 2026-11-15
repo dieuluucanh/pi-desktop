@@ -18,6 +18,7 @@ function reset(collapsed = false): void {
     tabs: [],
     activeTabId: null,
     update: null,
+    packageUpdates: [],
     prefs: { ...DEFAULT_PREFS, sidebarCollapsed: collapsed, sidebarWidth: 268 },
   });
 }
@@ -51,6 +52,31 @@ describe("Sidebar update sign", () => {
     useAppStore.setState({ update: { ...initialUpdateState(true), phase: "up-to-date" } });
     rerender(<Sidebar />);
     expect(screen.queryByTestId("nav-update-badge")).toBeNull();
+  });
+});
+
+describe("Sidebar package-update sign", () => {
+  it("marks Extensions while an update is waiting", () => {
+    useAppStore.setState({
+      packageUpdates: [
+        {
+          source: "npm:alpha",
+          name: "alpha",
+          kind: "npm",
+          scope: "user",
+          latestVersion: "2.0.0",
+        },
+      ],
+    });
+    render(<Sidebar />);
+
+    expect(screen.getByTestId("nav-package-update-badge")).toBeInTheDocument();
+    expect(screen.getByTitle("1 extension update available")).toBeInTheDocument();
+  });
+
+  it("shows no sign when nothing is outdated", () => {
+    render(<Sidebar />);
+    expect(screen.queryByTestId("nav-package-update-badge")).toBeNull();
   });
 });
 

@@ -53,6 +53,7 @@ export function appInfoFixture(overrides: Partial<AppInfo> = {}): AppInfo {
     buildVersion: null,
     buildCommit: null,
     builtAt: null,
+    piVersion: null,
     safeMode: false,
     piOffline: false,
     userDataDir: "C:\\state",
@@ -701,6 +702,7 @@ function diagnosticsSnapshot(info: AppInfo): DiagnosticsSnapshot {
     runtime: {
       source: info.runtimeSource,
       nodeVersion: info.runtimeNodeVersion,
+      piVersion: info.piVersion,
       problems: info.runtimeProblems,
     },
     paths: {

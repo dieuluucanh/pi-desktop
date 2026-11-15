@@ -109,7 +109,15 @@ export function buildChannelFromEnv(env = {}) {
 }
 
 /** The JSON document written into `resources/build-info.json`. */
-export function buildInfoDocument({ version, channel, commit, builtAt, platform, macSigning }) {
+export function buildInfoDocument({
+  version,
+  channel,
+  commit,
+  builtAt,
+  platform,
+  macSigning,
+  piVersion,
+}) {
   const validChannel = channel === "release" || channel === "local" ? channel : "unknown";
   return {
     channel: validChannel,
@@ -117,7 +125,28 @@ export function buildInfoDocument({ version, channel, commit, builtAt, platform,
     commit: typeof commit === "string" && commit.length > 0 ? commit : null,
     builtAt: typeof builtAt === "string" && builtAt.length > 0 ? builtAt : null,
     macSigning: macSigningFor(platform, macSigning),
+    // The agent this installer ships. Users cannot update it independently, so
+    // the app surfaces it rather than leaving them to guess (2026-11-15 plan).
+    piVersion: typeof piVersion === "string" && piVersion.length > 0 ? piVersion : null,
   };
+}
+
+/** The bundled Pi agent version, read from the installed SDK; null if absent. */
+export function readPiAgentVersion(projectDir) {
+  try {
+    const manifest = JSON.parse(
+      readFileSync(
+        join(projectDir, "node_modules", "@earendil-works", "pi-coding-agent", "package.json"),
+        "utf8",
+      ),
+    );
+    return typeof manifest.version === "string" && manifest.version.length > 0
+      ? manifest.version
+      : null;
+  } catch {
+    // A missing manifest is metadata, not a packaging failure.
+    return null;
+  }
 }
 
 /**
@@ -434,6 +463,7 @@ export default async function afterPack(context) {
       builtAt: new Date().toISOString(),
       platform: context.electronPlatformName,
       macSigning,
+      piVersion: readPiAgentVersion(packager.projectDir),
     });
     process.stdout.write(
       `afterPack: build-info ${channel} ${commit ?? "unknown"} -> ${targetFile}\n`,

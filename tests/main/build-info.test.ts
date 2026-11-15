@@ -14,8 +14,42 @@ describe("readBuildInfo", () => {
       commit: null,
       builtAt: null,
       macSigning: "none",
+      piVersion: null,
     });
     expect(readTextFile).not.toHaveBeenCalled();
+  });
+
+  it("reads the bundled agent version in development", () => {
+    const sdkPath = join(
+      "C:",
+      "app",
+      "node_modules",
+      "@earendil-works",
+      "pi-coding-agent",
+      "package.json",
+    );
+    const readTextFile = vi.fn((path: string) =>
+      path === sdkPath ? JSON.stringify({ version: "1.5.0" }) : null,
+    );
+    expect(
+      readBuildInfo({
+        isPackaged: false,
+        resourcesDir: RESOURCES,
+        readTextFile,
+        devPiPackageJson: sdkPath,
+      }),
+    ).toMatchObject({ channel: "dev", piVersion: "1.5.0" });
+    expect(readTextFile).toHaveBeenCalledWith(sdkPath);
+
+    // A missing or malformed manifest is simply null.
+    expect(
+      readBuildInfo({
+        isPackaged: false,
+        resourcesDir: RESOURCES,
+        readTextFile: () => null,
+        devPiPackageJson: sdkPath,
+      }).piVersion,
+    ).toBeNull();
   });
 
   it("reads the packaged provenance file", () => {
@@ -26,6 +60,7 @@ describe("readBuildInfo", () => {
         commit: "abc123",
         builtAt: "2026-11-01T00:00:00.000Z",
         macSigning: "adhoc",
+        piVersion: "1.5.0",
       }),
     );
     expect(readBuildInfo({ isPackaged: true, resourcesDir: RESOURCES, readTextFile })).toEqual({
@@ -34,6 +69,7 @@ describe("readBuildInfo", () => {
       commit: "abc123",
       builtAt: "2026-11-01T00:00:00.000Z",
       macSigning: "adhoc",
+      piVersion: "1.5.0",
     });
     expect(readTextFile).toHaveBeenCalledWith(join(RESOURCES, BUILD_INFO_FILE));
   });
@@ -45,6 +81,7 @@ describe("readBuildInfo", () => {
       commit: null,
       builtAt: null,
       macSigning: "none",
+      piVersion: null,
     };
     expect(
       readBuildInfo({ isPackaged: true, resourcesDir: RESOURCES, readTextFile: () => null }),

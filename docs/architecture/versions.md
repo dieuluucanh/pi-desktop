@@ -33,6 +33,35 @@ npm install (plan D3). `resources/runtime/` is gitignored; `npm run runtime:fetc
 populates it. The release workflow's `setup-node` is pinned to the same `24.22.2`;
 `checks.yml` and the site workflow still use the floating `24` major.
 
+## Keeping the Pi agent current
+
+The Pi agent ships with the app: a user updates it by updating Pi Desktop, never
+by editing their profile. Two automations keep that honest without letting a tag
+build mutate its own source:
+
+- **`pi-agent-watch.yml`** runs daily (and on demand). It reads npm's `latest`
+  for `@earendil-works/pi-coding-agent`, derives the family and `typebox` pins
+  from the SDK's own published manifest, and opens a PR when a minor/patch is
+  behind. A major is reported (`major-behind`) and never bumped automatically.
+- **`release.yml` `prepare`** repeats the check. A stale agent is a warning by
+  default; `require_latest_pi=true` on a dispatch makes it a hard failure. A
+  registry error is always a warning: a release must not depend on npm being up.
+
+The bump is mechanical and checked:
+
+```bash
+npm run pi:status     # pinned vs latest, plus the bundled Node vs engines.node
+npm run pi:check      # exit 0 in sync/local-ahead, 1 behind, 2 registry error
+npm run pi:update     # family + typebox + docs/architecture/versions.md
+```
+
+`tests/packaging/pi-pins.test.ts` enforces the contract the automation relies on:
+the four app pins are exact and equal, the lockfile resolves the same versions,
+the SDK's own manifest declares the same family and the same `typebox`, this
+document names those versions, and the bundled Node satisfies the SDK's
+`engines.node`. The agent version is stamped into `resources/build-info.json`
+at pack time and shown in **About & updates** and Diagnostics.
+
 ## Build provenance (not a dependency)
 
 `afterPack` writes `<resources>/build-info.json` with `channel` (`local` or

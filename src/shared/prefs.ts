@@ -28,6 +28,7 @@ import {
   type CheckpointConfig,
 } from "./checkpoints";
 import { DEFAULT_ZOOM, clampZoomFactor } from "./zoom";
+import { MAX_PACKAGE_UPDATE_SIGNATURE } from "./packages";
 import { sanitizeThemeColorPrefs, type ThemeColorPrefs } from "./themes";
 import {
   DEFAULT_TERMINAL_PREFS,
@@ -76,6 +77,7 @@ export const PREF_KEYS = [
   "explorer",
   "checkpoints",
   "updates",
+  "packages",
   "dialogs",
   "grid",
 ] as const;
@@ -105,6 +107,53 @@ export const DEFAULT_DIALOG_PREFS: DialogPrefs = { autoFocus: "blocking" };
 export function sanitizeDialogPrefs(input: unknown): DialogPrefs {
   const source = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
   return { autoFocus: source.autoFocus === "never" ? "never" : "blocking" };
+}
+
+/**
+ * Extension update checks (plan step 5).
+ *
+ * `autoCheck` gates only the *background* sweep (after launch and every six
+ * hours); opening the Extensions page or pressing Check now always checks.
+ * `notifiedSignature` is the update set the bell already announced — a
+ * fingerprint rather than a version, because an extension update is a set, not
+ * one release (see `packageUpdateSignature`).
+ */
+export interface PackageCheckPrefs {
+  autoCheck: boolean;
+  notifiedSignature: string | null;
+}
+
+export const DEFAULT_PACKAGE_CHECK_PREFS: PackageCheckPrefs = {
+  autoCheck: true,
+  notifiedSignature: null,
+};
+
+/** Rebuilds from defaults: an older app-state.json has no `packages` block. */
+export function sanitizePackageCheckPrefs(input: unknown): PackageCheckPrefs {
+  const source =
+    input && typeof input === "object" && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : {};
+  const signature = source.notifiedSignature;
+  return {
+    autoCheck:
+      typeof source.autoCheck === "boolean"
+        ? source.autoCheck
+        : DEFAULT_PACKAGE_CHECK_PREFS.autoCheck,
+    notifiedSignature:
+      typeof signature === "string" && signature.length > 0
+        ? signature.slice(0, MAX_PACKAGE_UPDATE_SIGNATURE)
+        : null,
+  };
+}
+
+/** A partial patch keeps the other key: turning checks off must not forget the marker. */
+export function mergePackageCheckPrefs(
+  current: PackageCheckPrefs,
+  patch: unknown,
+): PackageCheckPrefs {
+  const source = patch && typeof patch === "object" && !Array.isArray(patch) ? patch : {};
+  return sanitizePackageCheckPrefs({ ...current, ...(source as Record<string, unknown>) });
 }
 
 export interface UiPrefs {
@@ -225,6 +274,12 @@ export interface UiPrefs {
    */
   updates: UpdatePrefs;
   /**
+   * Extension update checks (plan step 5): the background switch and the update
+   * set the bell has already announced. Separate from `updates` because the two
+   * channels have different cadences and different mute semantics.
+   */
+  packages: PackageCheckPrefs;
+  /**
    * The session view grid (2026-11-03 plan): which preset shape the content area
    * shows and which tab each pane holds. `panes` is indexed by pane and padded
    * with `null`; a tab closed elsewhere is pruned to `null` by the store, never
@@ -274,6 +329,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   // value must not mutate the module-level default (nor the shared config).
   checkpoints: { ...DEFAULT_CHECKPOINT_CONFIG, exclude: [] },
   updates: { ...DEFAULT_UPDATE_PREFS },
+  packages: { ...DEFAULT_PACKAGE_CHECK_PREFS },
   // A fresh `panes` array for the same reason as `rail.order`: the shared
   // default's slot must never be mutated by a caller. `lastMultiLayout` keeps the
   // last split when the user selects Single.
@@ -367,6 +423,9 @@ export function sanitizePrefs(input: unknown): UiPrefs {
     // Automatic update checks are on by default; the build channel/support gate
     // still decide whether they can run (local and dev builds stay off).
     updates: sanitizeUpdatePrefs(source.updates),
+    // Extension update checks are on by default too; the switch gates only the
+    // background sweep, and an older app-state.json gets the defaults.
+    packages: sanitizePackageCheckPrefs(source.packages),
     // The session view grid: which preset is on screen and which tab each pane
     // holds. An older app-state.json has no block; the sanitizer supplies the
     // single-pane default, so no migration is needed.
@@ -415,6 +474,12 @@ export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
   // drop a per-version dismissal.
   const updates =
     "updates" in source ? mergeUpdatePrefs(current.updates, source.updates) : current.updates;
+  // The package-check prefs are nested as well: turning automatic checks off
+  // must keep the marker that stops a dismissed update set from re-raising.
+  const packages =
+    "packages" in source
+      ? mergePackageCheckPrefs(current.packages, source.packages)
+      : current.packages;
   // `grid.panes` is a list, so a patch that names only the layout must keep the
   // assignments (and vice versa); `mergeGridPrefs` owns that rule.
   const grid = "grid" in source ? mergeGridPrefs(current.grid, source.grid) : current.grid;
@@ -428,6 +493,7 @@ export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
     checkpoints,
     notifications,
     updates,
+    packages,
     grid,
   });
 }

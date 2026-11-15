@@ -267,6 +267,16 @@ regenerates docs from `docs/`; never edit generated content under
 
 ## Cutting the next release
 
+Before bumping the app version, check the agent the build will bundle:
+
+- `npm run pi:status` prints the pinned Pi agent against npm's `latest`. If it is
+  behind, merge the daily `pi-agent-watch` PR (or run `npm run pi:update`) before
+  writing the notes. A major release is reported, never taken automatically.
+- `prepare` repeats the check and **warns** by default. Pass
+  `require_latest_pi=true` to the dispatch to make a stale agent a hard failure.
+  An unreadable npm registry is always a warning: a release must not depend on
+  npm being up.
+
 1. Bump `package.json` (`npm version <v> --no-git-tag-version`) and the lockfile.
 2. Write `docs/releases/v<v>.md` — it becomes the release body. `tests/packaging/release.test.ts`
    requires `## Known limitations` and the phrases `Unsigned builds`, `macOS and Linux are
@@ -314,6 +324,16 @@ beta`, `Upstream` and `Verified structurally, not on a live machine`; update the
 | Cache poisoning                          | checksum-verified upstream archives; no `node_modules`/npm cache; tags   |
 | Tag cache miss                           | best-effort cache; both retry layers still run                           |
 | Two releases racing                      | `concurrency: release-<ref>`, `cancel-in-progress: false`                |
+
+### The bundled Pi agent (2026-11-15 update-channels plan)
+
+- **A stale agent does not block a release by default.** `prepare` prints the
+  bundled and latest versions in the job summary and annotates a warning; the
+  build proceeds. `require_latest_pi=true` is the opt-in hard gate.
+- **A registry failure never blocks a release.** If `npm view` cannot answer,
+  `prepare` says the check is inconclusive and continues.
+- **The bump happens before the tag.** `pi-agent-watch.yml` opens a PR when a
+  minor/patch is published; the tag build always installs the committed lockfile.
 
 ## Native terminal (`node-pty`)
 

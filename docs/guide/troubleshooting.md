@@ -357,6 +357,15 @@ the first write per run.
 - `/reload` reloads a live session and shows what changed; **Reload runtime** in
   the hub does the same with no session open.
 - Pin a known-good version from the package list if an update broke something.
+- **No update badge for a package** — a pinned source is skipped by the check by
+  design (unpin to follow latest), and a Git or ranged source has no single
+  target version to name. Press **Check now** if the list looks stale.
+- **A badge does not clear after updating** — npm’s registry can lag a publish
+  by a few seconds; press **Check now**. The update itself already changed the
+  installed version (the list and the `installed …` badge are authoritative).
+- **An update does not take effect in a running session** — sessions load the
+  version they started with; use **Reload runtime** in the Extensions hub (or
+  restart the session).
 - **Cannot copy text from an extension panel** — select the text and press
   <kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Cmd</kbd>+<kbd>C</kbd>, or use the panel's
   **Copy** button, or right-click → **Copy**. A selection is copied instead of

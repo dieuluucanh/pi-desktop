@@ -42,6 +42,19 @@ The **Packages** section installs, updates, removes and pins Pi packages.
   path sources have no pin action.
 - **Update** one package or **Update all**; npm’s output tail is shown, and a
   failure carries actionable hints (offline, 404, auth, peer dependency).
+- **Update checks** run in the background — about 20 s after launch, then every
+  six hours — when **Check automatically** is on. Opening the page or pressing
+  **Check now** always checks, and shows when the list was last read. A newer
+  version adds an `available` badge to the row, a dot to the **Extensions**
+  sidebar item, and one row in the bell (class **Extension updates**, its own
+  Settings switch).
+- The badge names the version only when that is what an update would install (a
+  floating `npm:name`). A ranged or Git source says `update available` without
+  a number, and a **pinned** package never badges — the check skips a deliberate
+  pin; unpin to follow latest.
+- An updated package is loaded the next time a session starts. Running sessions
+  keep the code they loaded; the hub offers **Reload runtime** (and the restart
+  banner) after a change.
 - **Consent is required** before any install or update: a dialog states that
   extensions run with full system access and shows the source verbatim. The host
   enforces this — a renderer that skipped the dialog cannot install anything.

@@ -27,6 +27,7 @@ function snapshot(overrides: Partial<DiagnosticsSnapshot> = {}): Partial<Diagnos
         startedAt: 1_700_000_000_000,
         rssBytes: 268_435_456,
         buildId: "build-1",
+        piVersion: "1.5.0",
         stale: false,
         logLines: ["spawned node host.mjs\n", "resumed session\n"],
       },

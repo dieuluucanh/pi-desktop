@@ -224,6 +224,7 @@ export const HOST_METHODS = [
   "packages.remove",
   "packages.update",
   "packages.list",
+  "packages.checkUpdates",
   // extension UI + files
   "oi.respond",
   // Extension-UI state and the composer bridge (plan step 16). No RPC

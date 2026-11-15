@@ -147,6 +147,19 @@ release. It runs the full gate, builds and verifies the tarball, commits only th
 package manifest/changelog, publishes with npm, then tags and pushes. A stale
 installed copy in a profile is updated with `pi update --extensions`.
 
+The bundled **Pi agent** moves with the release pipeline, not at runtime:
+
+```bash
+npm run pi:status   # pinned vs npm latest, plus the bundled Node vs engines.node
+npm run pi:check    # exit 0 in sync/local-ahead, 1 behind, 2 registry error
+npm run pi:update   # family + typebox + docs/architecture/versions.md
+```
+
+`pi-agent-watch.yml` runs `pi:update` daily and opens a PR for a minor/patch (a
+major is reported, never taken). The release `prepare` job repeats the check and
+warns when the agent is stale; `require_latest_pi=true` makes that fatal. The
+release notes should name the bundled agent version.
+
 To build Linux locally on a Linux machine (or WSL):
 
 ```bash

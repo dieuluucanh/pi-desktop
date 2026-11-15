@@ -38,6 +38,15 @@ function firstArgument(toastFn: unknown): ReactElement {
   return calls[0]?.[0] as ReactElement;
 }
 
+interface ToastOptions {
+  action?: { label?: string; onClick?: () => void };
+}
+
+function secondArgument(toastFn: unknown): ToastOptions | undefined {
+  const calls = (toastFn as { mock: { calls: unknown[][] } }).mock.calls;
+  return calls[0]?.[1] as ToastOptions | undefined;
+}
+
 describe("notifyToast", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -60,6 +69,17 @@ describe("notifyToast", () => {
     const message = container.querySelector("span");
     expect(message?.className).toContain("whitespace-pre-wrap");
     expect(message?.textContent).toBe("line one\nline two");
+  });
+
+  it("offers the Extensions hub from an extension-update toast", () => {
+    const onOpen = vi.fn();
+    notifyToast(notification({ class: "extension", type: "info" }), { onOpen });
+
+    expect(toast.info).toHaveBeenCalledTimes(1);
+    const options = secondArgument(toast.info);
+    expect(options?.action?.label).toBe("View extensions");
+    options?.action?.onClick?.();
+    expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
   it("does not toast an info notification", () => {

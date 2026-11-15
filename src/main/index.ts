@@ -222,6 +222,15 @@ const buildInfo = readBuildInfo({
       return null;
     }
   },
+  // A dev run has no packaged provenance; the bundled agent version is still
+  // readable from the checkout so Diagnostics/About are not blank during dev.
+  devPiPackageJson: join(
+    app.getAppPath(),
+    "node_modules",
+    "@earendil-works",
+    "pi-coding-agent",
+    "package.json",
+  ),
 });
 
 const runtime: RuntimeResolution = resolveAppRuntime({
@@ -752,6 +761,7 @@ function currentAppInfo(): AppInfo {
     buildVersion: buildInfo.version,
     buildCommit: buildInfo.commit,
     builtAt: buildInfo.builtAt,
+    piVersion: buildInfo.piVersion,
     safeMode,
     piOffline: isOfflineEnv(process.env.PI_OFFLINE),
     userDataDir: paths.userData,

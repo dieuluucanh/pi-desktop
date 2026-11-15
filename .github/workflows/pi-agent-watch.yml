@@ -1,0 +1,118 @@
+# Keeps the bundled Pi agent current (2026-11-15 update-channels plan, step 11).
+#
+# A tag build cannot bump its own dependency: the artefact must match the tagged
+# tree, `npm ci` installs exactly the committed lockfile, and the release notes
+# are written before the tag. So the bump happens here, daily, on `main` — and
+# it arrives as a normal pull request that runs the full gate.
+#
+# The family and `typebox` pins are derived from the SDK's own published
+# manifest (`node scripts/pi-agent.mjs --update`), and a major version is never
+# taken automatically.
+name: pi-agent-watch
+
+on:
+  schedule:
+    # Off the hour: GitHub's scheduler is busiest at :00. Daily is enough for a
+    # package that releases every few days.
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: pi-agent-watch
+  cancel-in-progress: true
+
+permissions:
+  contents: write # push the bump branch
+  pull-requests: write # open the PR
+
+jobs:
+  bump:
+    name: check and bump
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Pinned by commit, like `release.yml`: this job can push to the repo.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Deliberately persisted: the job pushes the bump branch.
+          persist-credentials: true
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24.22.2
+
+      # Runs before `npm ci` on purpose: the status script is dependency-free,
+      # so a broken install can never hide a stale agent (plan decision D11).
+      - name: Check the published Pi agent
+        id: status
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/pi-agent.mjs --status --json | tee pi-agent-status.json
+          status="$(node -p "require('./pi-agent-status.json').status")"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          case "$status" in
+            behind)
+              echo "::notice::a Pi agent bump is available"
+              ;;
+            major-behind)
+              # A major is a human decision: report it, never auto-bump it.
+              echo "::warning::a major Pi agent release is available; merge it by hand with --major"
+              ;;
+            in-sync | local-ahead)
+              echo "::notice::the bundled Pi agent is $status"
+              ;;
+            *)
+              echo "::warning::could not classify the Pi agent status ($status)"
+              ;;
+          esac
+
+      - name: Bump the pins and prove them
+        if: steps.status.outputs.status == 'behind'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/retry.sh 3 30 -- npm ci
+          node scripts/pi-agent.mjs --update
+          npm run typecheck
+          npm run lint
+          npm test
+          npm run build:host
+          npm run pi:check
+
+      - name: Open the pull request
+        if: steps.status.outputs.status == 'behind'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').dependencies['@earendil-works/pi-coding-agent']")"
+          branch="chore/pi-agent-$version"
+          git config user.name "pi-agent-watch"
+          git config user.email "actions@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add package.json package-lock.json docs/architecture/versions.md
+          git commit -m "chore(deps): bump Pi agent to $version"
+          git push --force-with-lease origin "$branch"
+
+          if [ "$(gh pr list --head "$branch" --state open --json number --jq 'length')" != "0" ]; then
+            echo "::notice::a pull request for $branch already exists"
+            exit 0
+          fi
+
+          body="$(cat <<EOF
+          Bumps the bundled Pi agent to \`$version\`.
+
+          - the SDK family and \`typebox\` pins come from the SDK's own published manifest
+          - \`docs/architecture/versions.md\` is updated by the same command
+          - gates run here: typecheck, lint, tests, host build, \`pi:check\`
+
+          Release checklist: mention the new agent version in \`docs/releases/v<v>.md\`.
+          EOF
+          )"
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "chore(deps): bump Pi agent to $version" \
+            --body "$body"

@@ -73,6 +73,9 @@ const REQUEST_TIMEOUT_OVERRIDES: Readonly<Partial<Record<HostMethod, number>>> =
   "session.create": HOST_OPEN_TIMEOUT_MS,
   "session.resume": HOST_OPEN_TIMEOUT_MS,
   "session.open": HOST_OPEN_TIMEOUT_MS,
+  // A sweep shells `npm view` per unpinned package (10 s each, concurrency 4)
+  // and may enrich a few floating ones; 30 s is too tight for a cold registry.
+  "packages.checkUpdates": 120_000,
 };
 
 export function requestTimeoutFor(
@@ -136,6 +139,8 @@ export interface HostInfoLike {
   pids?: { pid?: number };
   /** Build fingerprint reported by `host.hello` (2026-10-24 stale-host plan). */
   buildId?: string | null;
+  /** The Pi agent version the host reported in `host.hello`. */
+  piVersion?: string | null;
   /** Spawn → handshake in ms, measured by the supervisor (2026-11-07 plan). */
   bootMs?: number;
   /** Optional host features (git-checkpoint plan step 24); absent = unknown. */
@@ -1495,6 +1500,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       bootMs: info?.bootMs ?? null,
       lastOpen: host.metrics?.()?.lastOpen ?? null,
       buildId,
+      piVersion: typeof info?.piVersion === "string" ? info.piVersion : null,
       stale,
       stopReason: host.stopReason?.() ?? null,
       overMemory: host.overMemory?.() === true,
@@ -1599,6 +1605,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           startedAt: null,
           rssBytes: null,
           buildId: null,
+          piVersion: null,
           stale: false,
           stopReason: tab.stopReason ?? null,
           overMemory: tab.memoryOverBudget === true,

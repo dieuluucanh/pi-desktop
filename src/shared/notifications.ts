@@ -31,7 +31,7 @@
 import type { ExtensionNotification, ExtensionNotifyType } from "./extension-ui";
 
 /** The coarse classes the notification surfaces group and toggle. */
-export const NOTIFICATION_CLASSES = ["update", "error", "warning", "info"] as const;
+export const NOTIFICATION_CLASSES = ["update", "extension", "error", "warning", "info"] as const;
 export type NotificationClass = (typeof NOTIFICATION_CLASSES)[number];
 
 /** Copy for the Settings class switches. */
@@ -44,6 +44,10 @@ export const NOTIFICATION_CLASS_META: Record<NotificationClass, NotificationClas
   update: {
     label: "App updates",
     description: "New Pi Desktop versions and install prompts.",
+  },
+  extension: {
+    label: "Extension updates",
+    description: "New versions of installed packages and extensions.",
   },
   error: {
     label: "Errors",
@@ -62,6 +66,7 @@ export const NOTIFICATION_CLASS_META: Record<NotificationClass, NotificationClas
 /** Per-class visibility; a false value hides that class from the bell and toasts. */
 export interface NotificationClassPrefs {
   update: boolean;
+  extension: boolean;
   error: boolean;
   warning: boolean;
   info: boolean;
@@ -75,6 +80,7 @@ export interface NotificationClassPrefs {
  */
 export const DEFAULT_NOTIFICATION_CLASSES: NotificationClassPrefs = {
   update: true,
+  extension: true,
   error: true,
   warning: true,
   info: false,
@@ -121,7 +127,7 @@ export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
 };
 
 /** What clicking a notification can do besides being dismissed. */
-export type NotificationAction = { kind: "open-updates" };
+export type NotificationAction = { kind: "open-updates" } | { kind: "open-extensions" };
 
 /**
  * One row in the unified archive. Extension notifications carry the tab that
@@ -228,6 +234,43 @@ export function updateNotification(version: string, at = Date.now()): AppNotific
     tabId: null,
     at,
     action: { kind: "open-updates" },
+  };
+}
+
+/** FNV-1a, so a long update signature becomes a short stable row id. */
+function notificationKeyFingerprint(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+/**
+ * The stable id of the "extensions can be updated" row. The signature is the
+ * *set* of outdated packages, so a new package or a newer target raises a new
+ * row while a dismissed identical set stays dismissed.
+ */
+export function packageUpdateNotificationId(signature: string): string {
+  return `app:packages:${notificationKeyFingerprint(signature)}`;
+}
+
+/** The one notification raised when installed packages have newer versions. */
+export function packageUpdateNotification(
+  count: number,
+  signature: string,
+  at = Date.now(),
+): AppNotification {
+  const safeCount = Number.isFinite(count) && count > 0 ? Math.floor(count) : 1;
+  return {
+    id: packageUpdateNotificationId(signature),
+    message: `${safeCount} extension update${safeCount === 1 ? "" : "s"} available.`,
+    type: "info",
+    class: "extension",
+    tabId: null,
+    at,
+    action: { kind: "open-extensions" },
   };
 }
 

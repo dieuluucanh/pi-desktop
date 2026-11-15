@@ -14,6 +14,7 @@ import { hashPromptText } from "../../src/shared/prompt-origin";
 import { MIN_SCAN_INTERVAL_MS } from "../../src/shared/checkpoints";
 import { DEFAULT_RAIL_WIDTH, MAX_RAIL_WIDTH, MIN_RAIL_WIDTH } from "../../src/shared/rail";
 import { DEFAULT_NOTIFICATION_CLASSES, muteRuleFor } from "../../src/shared/notifications";
+import { MAX_PACKAGE_UPDATE_SIGNATURE } from "../../src/shared/packages";
 
 describe("sanitizePrefs", () => {
   it("returns defaults for non-objects", () => {
@@ -36,6 +37,7 @@ describe("sanitizePrefs", () => {
         "grid",
         "notifications",
         "onboardingCompletedAt",
+        "packages",
         "privacyAcknowledged",
         "profileMode",
         "promptOrigins",
@@ -251,6 +253,23 @@ describe("sanitizePrefs", () => {
     ).toBe(201);
   });
 
+  it("defaults extension update checks on and bounds the notified signature", () => {
+    expect(sanitizePrefs({}).packages).toEqual({ autoCheck: true, notifiedSignature: null });
+    expect(sanitizePrefs({ packages: { autoCheck: false } }).packages).toEqual({
+      autoCheck: false,
+      notifiedSignature: null,
+    });
+    // A non-boolean keeps the default, like every other switch.
+    expect(sanitizePrefs({ packages: { autoCheck: "yes" } }).packages.autoCheck).toBe(true);
+    expect(
+      sanitizePrefs({ packages: { notifiedSignature: "x".repeat(2_000) } }).packages
+        .notifiedSignature,
+    ).toHaveLength(MAX_PACKAGE_UPDATE_SIGNATURE);
+    expect(
+      sanitizePrefs({ packages: { notifiedSignature: "" } }).packages.notifiedSignature,
+    ).toBeNull();
+  });
+
   it("accepts every documented theme", () => {
     for (const theme of ["dark", "light", "system"] as const) {
       expect(sanitizePrefs({ theme }).theme).toBe(theme);
@@ -286,6 +305,22 @@ describe("mergePrefs", () => {
     expect(mergePrefs(current, { updates: { notifiedVersion: null } }).updates).toEqual({
       autoCheck: true,
       notifiedVersion: null,
+    });
+  });
+
+  it("preserves the package-check prefs unless the patch replaces a field", () => {
+    const current = sanitizePrefs({
+      packages: { autoCheck: true, notifiedSignature: "npm:foo@2.0.0" },
+    });
+    // Turning background checks off must keep the marker for a dismissed set.
+    expect(mergePrefs(current, { packages: { autoCheck: false } }).packages).toEqual({
+      autoCheck: false,
+      notifiedSignature: "npm:foo@2.0.0",
+    });
+    expect(mergePrefs(current, { theme: "light" }).packages).toEqual(current.packages);
+    expect(mergePrefs(current, { packages: { notifiedSignature: null } }).packages).toEqual({
+      autoCheck: true,
+      notifiedSignature: null,
     });
   });
 

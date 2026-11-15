@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  PACKAGE_METHODS,
+  PACKAGE_MUTATION_METHODS,
+  isPackageMutationMethod,
+} from "../../src/host/packages";
+import {
   SAFE_MODE_PACKAGE_REFUSAL,
   SAFE_MODE_RESOURCE_LOADER_OPTIONS,
   checkpointExtensionEnabled,
@@ -32,6 +37,22 @@ describe("safe mode resource loader options", () => {
   it("names the reason a package mutation is refused", () => {
     expect(SAFE_MODE_PACKAGE_REFUSAL).toMatch(/Safe mode is on/);
     expect(SAFE_MODE_PACKAGE_REFUSAL).toMatch(/package changes are disabled/);
+  });
+
+  it("refuses only the methods that change installed code", () => {
+    // The composition root loops over this list when safe mode is on, so the
+    // decision has to be a value here, not a comment in `src/host/index.ts`.
+    expect(PACKAGE_MUTATION_METHODS).toEqual([
+      "packages.install",
+      "packages.remove",
+      "packages.update",
+    ]);
+    expect(PACKAGE_METHODS).toContain("packages.checkUpdates");
+    expect(isPackageMutationMethod("packages.checkUpdates")).toBe(false);
+    expect(isPackageMutationMethod("packages.list")).toBe(false);
+    for (const method of PACKAGE_MUTATION_METHODS) {
+      expect(isPackageMutationMethod(method)).toBe(true);
+    }
   });
 });
 

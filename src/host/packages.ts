@@ -19,6 +19,7 @@
 import type { HostMethod } from "../shared/host-protocol";
 import {
   PACKAGES_CHANGED_EVENT,
+  PACKAGE_CHECK_CACHE_MS,
   PACKAGE_PROGRESS_EVENT,
   isPackageConsent,
   parsePackageSource,
@@ -27,6 +28,8 @@ import {
   type PackageProgressEvent,
   type PackageScope,
   type PackageSummary,
+  type PackageUpdatesSnapshot,
+  type PackageUpdateSummary,
 } from "../shared/packages";
 import type { HostHandler } from "./service";
 
@@ -57,6 +60,11 @@ export interface PackageTarget {
 
 export interface PackagePort {
   list(cwd: string | null): Promise<PackageSummary[]>;
+  /**
+   * A read-only registry/Git sweep for newer versions — no consent, no npm
+   * install, and nothing written to `settings.json`.
+   */
+  checkUpdates(cwd: string | null): Promise<PackageCheckResult>;
   install(source: string, target: PackageTarget, onProgress?: PackageProgressSink): Promise<void>;
   remove(source: string, target: PackageTarget, onProgress?: PackageProgressSink): Promise<void>;
   update(
@@ -66,13 +74,35 @@ export interface PackagePort {
   ): Promise<void>;
 }
 
+/** What a check answers: the outdated entries plus whether it could run at all. */
+export interface PackageCheckResult {
+  updates: PackageUpdateSummary[];
+  offline: boolean;
+}
+
 /** The control-host methods this module answers (plan step 14). */
 export const PACKAGE_METHODS = [
   "packages.list",
+  "packages.checkUpdates",
   "packages.install",
   "packages.remove",
   "packages.update",
 ] as const satisfies readonly HostMethod[];
+
+/**
+ * The methods safe mode refuses (plan step 22): each one installs or replaces
+ * code. `packages.list` and `packages.checkUpdates` only read, so a safe-mode
+ * build can still tell the user an update exists.
+ */
+export const PACKAGE_MUTATION_METHODS = [
+  "packages.install",
+  "packages.remove",
+  "packages.update",
+] as const satisfies readonly HostMethod[];
+
+export function isPackageMutationMethod(method: string): boolean {
+  return (PACKAGE_MUTATION_METHODS as readonly string[]).includes(method);
+}
 
 /** Matches the shape the host service turns into an error frame. */
 export class PackageError extends Error {
@@ -218,6 +248,15 @@ export function createPackageHandlers(options: PackageHandlerOptions): PackageHa
 
   let queue: Promise<unknown> = Promise.resolve();
 
+  // One registry sweep per project is cached briefly, because the renderer may
+  // ask from several windows and because opening the page twice must not spawn
+  // two `npm view` batches. A successful mutation invalidates every entry: what
+  // is installed is the other half of "is there an update".
+  let checkEpoch = 0;
+  const checks = new Map<string, { snapshot: PackageUpdatesSnapshot; epoch: number }>();
+  const checksInFlight = new Map<string, Promise<PackageUpdatesSnapshot>>();
+  const checkKey = (cwd: string | null): string => cwd ?? "";
+
   const port = (): PackagePort => {
     const current = options.resolvePort();
     if (!current) {
@@ -237,6 +276,55 @@ export function createPackageHandlers(options: PackageHandlerOptions): PackageHa
       () => undefined,
     );
     return next;
+  };
+
+  const runCheck = async (cwd: string | null): Promise<PackageUpdatesSnapshot> => {
+    try {
+      const result = await port().checkUpdates(cwd);
+      return { updates: result.updates, checkedAt: now(), offline: result.offline };
+    } catch (error) {
+      // A read-only refusal (no package manager, no registry) keeps its code so
+      // the renderer can stay quiet instead of showing a failure banner.
+      throw toPackageError(error);
+    }
+  };
+
+  /**
+   * Serves a cached sweep, joins an in-flight one, or starts a new one.
+   *
+   * `force` skips the freshness window but never starts a second concurrent
+   * sweep: two callers asking at once share one `npm view` batch.
+   */
+  const checkSnapshot = (cwd: string | null, force: boolean): Promise<PackageUpdatesSnapshot> => {
+    const key = checkKey(cwd);
+    const cached = checks.get(key);
+    if (
+      !force &&
+      cached &&
+      cached.epoch === checkEpoch &&
+      now() - cached.snapshot.checkedAt < PACKAGE_CHECK_CACHE_MS
+    ) {
+      return Promise.resolve(cached.snapshot);
+    }
+    const pending = checksInFlight.get(key);
+    if (pending) return pending;
+
+    const startedAt = checkEpoch;
+    const promise = runCheck(cwd);
+    checksInFlight.set(key, promise);
+    promise
+      .then(
+        (snapshot) => {
+          // A mutation that landed while the sweep ran makes this answer stale;
+          // the caller still gets it, but the cache must not keep it.
+          if (startedAt === checkEpoch) checks.set(key, { snapshot, epoch: startedAt });
+        },
+        () => undefined,
+      )
+      .finally(() => {
+        if (checksInFlight.get(key) === promise) checksInFlight.delete(key);
+      });
+    return promise;
   };
 
   const run = async (
@@ -264,6 +352,10 @@ export function createPackageHandlers(options: PackageHandlerOptions): PackageHa
       throw toPackageError(error);
     }
 
+    // Installed code changed, so every cached sweep is now a stale answer.
+    checkEpoch += 1;
+    checks.clear();
+
     // The package manager wrote `settings.json` with its own manager; refresh the
     // app's cached one so the hub and the Settings view agree immediately.
     try {
@@ -287,6 +379,13 @@ export function createPackageHandlers(options: PackageHandlerOptions): PackageHa
           typeof input.cwd === "string" && input.cwd.trim().length > 0 ? input.cwd.trim() : null;
         const packages = await port().list(cwd);
         return { packages, loadedAt: now() };
+      },
+
+      "packages.checkUpdates": async (params) => {
+        const input = asRecord(params);
+        const cwd =
+          typeof input.cwd === "string" && input.cwd.trim().length > 0 ? input.cwd.trim() : null;
+        return checkSnapshot(cwd, input.force === true);
       },
 
       "packages.install": async (params, context) => {

@@ -50,7 +50,12 @@ export interface BuildInfoDocument {
   commit: string | null;
   builtAt: string | null;
   macSigning: MacSigning;
+  /** The bundled `@earendil-works/pi-coding-agent` version. */
+  piVersion: string | null;
 }
+
+/** The bundled Pi agent version from `node_modules`, or null. */
+export function readPiAgentVersion(projectDir: string): string | null;
 
 /** The JSON document written into `resources/build-info.json`. */
 export function buildInfoDocument(input: {
@@ -61,6 +66,8 @@ export function buildInfoDocument(input: {
   /** `context.electronPlatformName`; signing is only recorded for `darwin`. */
   platform?: string;
   macSigning?: unknown;
+  /** Read by `readPiAgentVersion(packager.projectDir)` at pack time. */
+  piVersion?: unknown;
 }): BuildInfoDocument;
 
 /** Writes the provenance file and returns its path. */

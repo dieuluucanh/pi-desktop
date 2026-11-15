@@ -135,6 +135,11 @@ export function UpdatePanel() {
           {info?.buildCommit ? ` · commit ${info.buildCommit}` : ""}
           {builtAt ? ` · built ${builtAt}` : ""}
         </p>
+        <p className="text-xs text-ink-faint" data-testid="bundled-pi-agent">
+          {info?.piVersion
+            ? `Pi agent ${info.piVersion} · bundled with this build; updating Pi Desktop updates it.`
+            : "Pi agent version unavailable for this build."}
+        </p>
         {versionMismatch ? (
           <p className="text-xs text-warn" data-testid="settings-update-version-mismatch">
             This package reports v{info?.version}, but its build metadata says v{info?.buildVersion}

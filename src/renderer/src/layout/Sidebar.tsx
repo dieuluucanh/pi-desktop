@@ -37,6 +37,7 @@ const VIEW_ITEMS: readonly NavItem[] = [
 export function Sidebar() {
   const view = useAppStore((state) => state.view);
   const update = useAppStore((state) => state.update);
+  const packageUpdates = useAppStore((state) => state.packageUpdates);
   const collapsed = useAppStore((state) => state.prefs.sidebarCollapsed);
   const width = useAppStore((state) => state.prefs.sidebarWidth);
   const setView = useAppStore((state) => state.setView);
@@ -59,6 +60,15 @@ export function Sidebar() {
               : update.phase === "downloading"
                 ? "bg-info"
                 : "bg-accent",
+        }
+      : null;
+  const packageSign =
+    packageUpdates.length > 0
+      ? {
+          title: `${packageUpdates.length} extension update${
+            packageUpdates.length === 1 ? "" : "s"
+          } available`,
+          label: "Extension updates available",
         }
       : null;
   // Mirrors RightRail's width drag: local state follows the pointer; one
@@ -144,6 +154,16 @@ export function Sidebar() {
                   <span
                     data-testid="nav-update-badge"
                     className={`size-1.5 rounded-full ${updateSign.dot}`}
+                    aria-hidden
+                  />
+                </span>
+              ) : null}
+              {item.view === "extensions" && packageSign ? (
+                <span className="flex items-center" title={packageSign.title}>
+                  <span className="sr-only">{packageSign.label}</span>
+                  <span
+                    data-testid="nav-package-update-badge"
+                    className="size-1.5 rounded-full bg-accent"
                     aria-hidden
                   />
                 </span>

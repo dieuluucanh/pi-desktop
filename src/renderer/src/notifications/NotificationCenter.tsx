@@ -27,6 +27,7 @@ import { MultilineText } from "../ui/multiline-text";
 
 const CLASS_TONE: Record<NotificationClass, "neutral" | "accent" | "info" | "warn" | "danger"> = {
   update: "accent",
+  extension: "accent",
   error: "danger",
   warning: "warn",
   info: "neutral",
@@ -42,6 +43,10 @@ export function NotificationCenter() {
   const setNotificationClass = useAppStore((state) => state.setNotificationClass);
   const openNotificationSettings = useAppStore((state) => state.openNotificationSettings);
   const openUpdatesView = useAppStore((state) => state.openUpdatesView);
+  // The hub is reached through `setView`, which already exists on the store
+  // surface; the toast (raised inside the store) additionally scrolls to the
+  // Packages card via `openExtensionsView`.
+  const setView = useAppStore((state) => state.setView);
   const [open, setOpen] = useState(false);
   const [showHidden, setShowHidden] = useState(false);
 
@@ -63,6 +68,11 @@ export function NotificationCenter() {
     if (entry.action?.kind === "open-updates") {
       close();
       openUpdatesView();
+      return;
+    }
+    if (entry.action?.kind === "open-extensions") {
+      close();
+      setView("extensions");
     }
   };
 

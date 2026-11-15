@@ -33,7 +33,7 @@ import { readWorkspaceFile, writeWorkspaceFile } from "../workspace/workspace-fi
 import { inspectProject } from "./project-inspect";
 import { createProjectTrust } from "./project-trust";
 import { createProviderLoginHandlers } from "./provider-login";
-import { PACKAGE_METHODS, PackageError } from "./packages";
+import { PACKAGE_MUTATION_METHODS, PackageError } from "./packages";
 import { SAFE_MODE_PACKAGE_REFUSAL } from "./safe-mode";
 import type { CustomProviderStore } from "./custom-providers";
 import type { ProviderPort } from "./providers";
@@ -508,7 +508,7 @@ export function runService(
     // removing a package is the one mutation that could re-introduce third-party
     // code, so every package mutation is refused outright.
     if (safeMode) {
-      for (const method of PACKAGE_METHODS) {
+      for (const method of PACKAGE_MUTATION_METHODS) {
         handlers[method] = async () => {
           throw new PackageError(SAFE_MODE_PACKAGE_REFUSAL, "safe_mode");
         };

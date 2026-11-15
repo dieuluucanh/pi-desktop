@@ -19,6 +19,8 @@ import {
   notificationRuleId,
   notificationRuleLabel,
   notificationSignature,
+  packageUpdateNotification,
+  packageUpdateNotificationId,
   removeMuteRule,
   removeMutesForNotification,
   sanitizeNotificationPrefs,
@@ -234,9 +236,10 @@ describe("notification classes", () => {
     }
   });
 
-  it("defaults to showing updates, errors and warnings, hiding info", () => {
+  it("defaults to showing updates, extension updates, errors and warnings, hiding info", () => {
     expect(DEFAULT_NOTIFICATION_CLASSES).toEqual({
       update: true,
+      extension: true,
       error: true,
       warning: true,
       info: false,
@@ -244,6 +247,29 @@ describe("notification classes", () => {
     expect(isNotificationClassEnabled(DEFAULT_NOTIFICATION_PREFS, "info")).toBe(false);
     expect(isNotificationClassEnabled(DEFAULT_NOTIFICATION_PREFS, "warning")).toBe(true);
     expect(isNotificationClassEnabled(undefined, "update")).toBe(true);
+    expect(isNotificationClassEnabled(undefined, "extension")).toBe(true);
+  });
+
+  it("builds one stable extension-update row per update set", () => {
+    const signature = "npm:alpha@2.0.0|npm:beta@";
+    const notification = packageUpdateNotification(3, signature, 1);
+
+    expect(notification).toEqual({
+      id: packageUpdateNotificationId(signature),
+      message: "3 extension updates available.",
+      type: "info",
+      class: "extension",
+      tabId: null,
+      at: 1,
+      action: { kind: "open-extensions" },
+    });
+    expect(packageUpdateNotification(1, signature).message).toBe("1 extension update available.");
+    // The id is stable for one set and changes when the set changes.
+    expect(packageUpdateNotificationId(signature)).toBe(packageUpdateNotificationId(signature));
+    expect(packageUpdateNotificationId(signature)).not.toBe(
+      packageUpdateNotificationId("npm:alpha@2.0.1|npm:beta@"),
+    );
+    expect(packageUpdateNotificationId(signature)).toMatch(/^app:packages:[0-9a-f]{8}$/);
   });
 
   it("derives the class from the severity unless an app class is explicit", () => {

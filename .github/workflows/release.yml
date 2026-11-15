@@ -37,6 +37,11 @@ on:
         description: "Publish the draft once all three platforms pass"
         type: boolean
         default: false
+      require_latest_pi:
+        description: >-
+          Fail when the bundled Pi agent is behind the latest published version
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.ref }}
@@ -102,6 +107,61 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "release $tag publish=$publish" >> "$GITHUB_STEP_SUMMARY"
+
+      # The bundled Pi agent (2026-11-15 update-channels plan). Runs before any
+      # `npm ci`: `scripts/pi-agent.mjs` imports only `node:*`. A stale agent is
+      # a warning by default — an upstream publish minutes before a tag must not
+      # block an unrelated fix — and a hard failure only when the operator asks
+      # for it. A registry failure never blocks a release.
+      - name: Check the bundled Pi agent
+        shell: bash
+        env:
+          INPUT_REQUIRE_LATEST_PI: ${{ inputs.require_latest_pi }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! node scripts/pi-agent.mjs --status --json \
+            > pi-agent-status.json; then
+            echo "::warning::could not read the Pi agent registry;" \
+              "skipping the agent check"
+            exit 0
+          fi
+          current="$(node -p \
+            "require('./pi-agent-status.json').current ?? 'unknown'")"
+          latest="$(node -p "require('./pi-agent-status.json').latest")"
+          state="$(node -p "require('./pi-agent-status.json').status")"
+          bundled_node="$(node -p \
+            "require('./pi-agent-status.json').bundledNode ?? 'unknown'")"
+          summary="bundled Pi agent ${current}"
+          summary="${summary} (latest ${latest}, ${state});"
+          echo "${summary} bundled Node ${bundled_node}" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+          if node scripts/pi-agent.mjs --check; then
+            agent_code=0
+          else
+            agent_code=$?
+          fi
+          if [ "$agent_code" -eq 2 ]; then
+            echo "::warning::the npm registry could not be read;" \
+              "the agent check is inconclusive"
+            exit 0
+          fi
+          if [ "$agent_code" -ne 0 ]; then
+            if [ "$INPUT_REQUIRE_LATEST_PI" = "true" ]; then
+              echo "::error::require_latest_pi is set and" \
+                "the bundled Pi agent is behind"
+              exit 1
+            fi
+            echo "::warning::the bundled Pi agent is behind;" \
+              "merge the pi-agent-watch PR to bundle it"
+            exit 0
+          fi
+
+          if ! grep -q -- "$current" "docs/releases/$TAG.md"; then
+            echo "::warning::docs/releases/$TAG.md does not mention" \
+              "the bundled Pi agent ${current}"
+          fi
 
       - name: Create the draft release
         if: steps.resolve.outputs.publish == 'true'

@@ -172,6 +172,8 @@ legacy await-the-operation behavior is preserved for other callers.
 normalised source, kind (`npm`/`git`/`path`), scope, installed version, pin
 state and installed path. `packages.install`, `packages.remove` and
 `packages.update` take `{source?, scope, cwd?}` and answer the refreshed list.
+`packages.checkUpdates` takes `{cwd?, force?}` and answers
+`{updates, checkedAt, offline}` — see the update check below.
 
 - **Bare names are normalised to `npm:`** before anything else happens, because
   Pi's package manager treats a bare string as a _local path_ (`isLocalPath`).
@@ -185,6 +187,27 @@ state and installed path. `packages.install`, `packages.remove` and
 - **`packages.progress`** events carry `{operationId, action, phase, source,
 message?, percent?}` (npm reports no percentage, so `percent` is coarse), and
   a successful mutation emits `packages.changed` so every open hub re-reads.
+
+### Package update checks (2026-11-15 update-channels plan)
+
+`packages.checkUpdates` is **read-only**: Pi's own
+`DefaultPackageManager.checkForAvailableUpdates()` shells `npm view <spec>
+version` per unpinned package (10 s timeout, concurrency 4) and `git ls-remote`
+for a floating Git source, so pinned and local sources are skipped. Safe mode
+still answers it — it runs no third-party code; only `packages.install`,
+`packages.remove` and `packages.update` are refused.
+
+- **Answer:** `{updates: [{source, name, kind, scope, latestVersion}], checkedAt,
+offline}`. `latestVersion` is filled only for a floating `npm:name` (where
+  `latest` is what an update installs); a ranged or Git source reports an update
+  with `null` rather than a number that would not be installed.
+- **Cache:** one sweep per project for 60 s, with concurrent callers joining the
+  in-flight promise; `force: true` (Check now) skips the freshness window but
+  never starts a second sweep. Every successful mutation clears the cache.
+- **Offline:** `PI_OFFLINE` short-circuits before npm runs and answers
+  `offline: true`, so the UI says "offline" instead of "up to date".
+- **Failure:** a registry error is a `PackageError` (`offline`/`not_found`/…);
+  the renderer keeps the previous list and shows the reason quietly.
 
 `DefaultPackageManager` lives in `src/host/sdk/packages.ts` (the only module
 that constructs one). The bundled npm is injected as a **runtime-only**

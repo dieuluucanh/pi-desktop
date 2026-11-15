@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PackageConsentDialog } from "../../src/renderer/src/extensions/PackageConsentDialog";
 import { PackagesSection } from "../../src/renderer/src/extensions/PackagesSection";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
-import type { PackageSummary } from "../../src/shared/packages";
+import type { PackageSummary, PackageUpdateSummary } from "../../src/shared/packages";
+import type { TabRecord } from "../../src/shared/session-ipc";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { installBridge } from "./fixtures";
 
@@ -42,6 +43,7 @@ function resetStore(packages: PackageSummary[] = [summary()]): void {
   installBridge();
   useAppStore.setState({
     prefs: { ...DEFAULT_PREFS },
+    prefsLoaded: true,
     project: { path: PROJECT, name: "app" },
     tabs: [],
     activeTabId: null,
@@ -52,6 +54,14 @@ function resetStore(packages: PackageSummary[] = [summary()]): void {
     packagesCwd: PROJECT,
     packageProgress: null,
     packageConsent: null,
+    packageUpdates: [],
+    packageUpdatesCheckedAt: null,
+    packageUpdatesBusy: false,
+    packageUpdatesError: null,
+    packageUpdatesOffline: false,
+    packageUpdatesUnavailable: false,
+    packageUpdatesCwd: null,
+    packagesMutatedAt: null,
   });
 }
 
@@ -153,6 +163,179 @@ describe("PackagesSection", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Pin to 0.3.2" }));
     expect(screen.getByTestId("consent-source")).toHaveTextContent("npm:@dieulc/workflow@0.3.2");
+  });
+});
+
+describe("available updates", () => {
+  function updateEntry(overrides: Partial<PackageUpdateSummary> = {}): PackageUpdateSummary {
+    return {
+      source: "npm:@dieulc/workflow",
+      name: "@dieulc/workflow",
+      kind: "npm",
+      scope: "user",
+      latestVersion: "0.4.0",
+      ...overrides,
+    };
+  }
+
+  function stubCheck(updates: PackageUpdateSummary[] = [updateEntry()]) {
+    return stubRequest(async (method) => {
+      if (method === "packages.checkUpdates") {
+        return { updates, checkedAt: Date.now(), offline: false };
+      }
+      if (method === "packages.list") return { packages: [summary()], loadedAt: 1 };
+      return {};
+    });
+  }
+
+  it("badges the version an update would install and counts it", () => {
+    useAppStore.setState({ packageUpdates: [updateEntry()] });
+    stubCheck();
+    render(<PackagesSection />);
+
+    expect(screen.getByTestId("package-update-badge-npm:@dieulc/workflow")).toHaveTextContent(
+      "0.4.0 available",
+    );
+    expect(screen.getByTestId("package-update-npm:@dieulc/workflow")).toHaveAttribute(
+      "title",
+      "Update to 0.4.0",
+    );
+    expect(screen.getByTestId("package-check-status")).toHaveTextContent("1 update available");
+    expect(screen.getByRole("button", { name: "Update all (1)" })).toBeInTheDocument();
+  });
+
+  it("says only 'available' when the target is not knowable (git or a range)", () => {
+    resetStore([
+      summary({ source: "git:github.com/owner/repo", name: "repo", kind: "git", version: "main" }),
+    ]);
+    useAppStore.setState({
+      packageUpdates: [
+        updateEntry({
+          source: "git:github.com/owner/repo",
+          name: "repo",
+          kind: "git",
+          latestVersion: null,
+        }),
+      ],
+    });
+    stubCheck();
+    render(<PackagesSection />);
+
+    const badge = screen.getByTestId("package-update-badge-git:github.com/owner/repo");
+    expect(badge).toHaveTextContent("available");
+    expect(badge).not.toHaveTextContent("0.4.0");
+  });
+
+  it("keeps a pinned row disabled and explains why", () => {
+    resetStore([summary({ pinned: true, version: "0.3.2" })]);
+    useAppStore.setState({ packageUpdates: [updateEntry()] });
+    stubCheck();
+    render(<PackagesSection />);
+
+    const action = screen.getByTestId("package-update-npm:@dieulc/workflow");
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("title", "Pinned to 0.3.2 — unpin to follow latest");
+    // The sweep skips a pin, so the row must not claim an update either.
+    expect(screen.queryByTestId("package-update-badge-npm:@dieulc/workflow")).toBeNull();
+  });
+
+  it("labels a configured-but-missing package Install", () => {
+    resetStore([summary({ installed: false, installedPath: null, version: null })]);
+    stubCheck();
+    render(<PackagesSection />);
+    expect(screen.getByTestId("package-update-npm:@dieulc/workflow")).toHaveTextContent("Install");
+  });
+
+  it("reports up to date, offline, unavailable and failure states", () => {
+    stubCheck();
+    useAppStore.setState({ packageUpdatesCheckedAt: Date.now() });
+    const { unmount } = render(<PackagesSection />);
+    expect(screen.getByTestId("package-check-status")).toHaveTextContent(
+      "Up to date · checked just now",
+    );
+    unmount();
+
+    useAppStore.setState({ packageUpdatesOffline: true });
+    const offline = render(<PackagesSection />);
+    expect(screen.getByTestId("package-check-status")).toHaveTextContent("Offline");
+    offline.unmount();
+
+    useAppStore.setState({ packageUpdatesOffline: false, packageUpdatesUnavailable: true });
+    const unavailable = render(<PackagesSection />);
+    expect(screen.getByTestId("package-check-status")).toHaveTextContent(
+      "unavailable in this build",
+    );
+    unavailable.unmount();
+
+    useAppStore.setState({
+      packageUpdatesUnavailable: false,
+      packageUpdatesError: "registry unreachable\n\nHint: retry later",
+    });
+    render(<PackagesSection />);
+    // The hint body stays out of the status row.
+    expect(screen.getByTestId("package-check-status")).toHaveTextContent(
+      "Could not check for updates: registry unreachable",
+    );
+  });
+
+  it("checks on demand with force", async () => {
+    const request = stubCheck([]);
+    render(<PackagesSection />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Check now" }));
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: "control",
+        method: "packages.checkUpdates",
+        params: { cwd: PROJECT, force: true },
+      }),
+    );
+  });
+
+  it("persists the automatic-check switch", async () => {
+    stubCheck([]);
+    render(<PackagesSection />);
+
+    await userEvent.click(screen.getByRole("switch", { name: /Check for updates automatically/i }));
+
+    expect(useAppStore.getState().prefs.packages.autoCheck).toBe(false);
+  });
+
+  it("spins the row whose operation is running", () => {
+    useAppStore.setState({
+      packageProgress: {
+        operationId: "op-1",
+        action: "update",
+        phase: "start",
+        source: "npm:@dieulc/workflow",
+        percent: 0,
+      },
+    });
+    stubCheck([]);
+    render(<PackagesSection />);
+    expect(screen.getByTestId("package-row-spinner")).toBeInTheDocument();
+  });
+
+  it("offers a reload only while a session is open, and dismisses it", async () => {
+    useAppStore.setState({
+      tabs: [{ id: "t1", kind: "session", cwd: PROJECT } as TabRecord],
+      packagesMutatedAt: Date.now(),
+    });
+    stubCheck([]);
+    render(<PackagesSection />);
+
+    expect(screen.getByTestId("package-reload-hint")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByTestId("package-reload-hint")).toBeNull();
+    expect(useAppStore.getState().packagesMutatedAt).toBeNull();
+  });
+
+  it("hides the reload hint when no session is open", () => {
+    useAppStore.setState({ tabs: [], packagesMutatedAt: Date.now() });
+    stubCheck([]);
+    render(<PackagesSection />);
+    expect(screen.queryByTestId("package-reload-hint")).toBeNull();
   });
 });
 
