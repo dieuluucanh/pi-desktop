@@ -159,7 +159,9 @@ Actual Size use explicit `Ctrl/Cmd+=`, `Ctrl/Cmd+-` and `Ctrl/Cmd+0`
 accelerators. The Electron zoom roles were removed because `zoomIn` binds
 `Ctrl+Shift+=` on Windows/Linux (`electron#40674`) — the reported "zoom does
 not work". The factor is re-applied on `did-finish-load` because Chromium keeps
-a per-origin zoom map.
+a per-origin zoom map. Layout follows the factor: the transcript column is
+pane-relative, so zooming out shows more content rather than wider side gutters
+(2026-11-15 transcript-width).
 
 **The chrome palette is app-owned and high-contrast (2026-10-31).** The active
 Pi theme still supplies accent and status hues, but the Desktop owns the neutral

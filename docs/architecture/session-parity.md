@@ -1,6 +1,6 @@
 # Session parity contract
 
-**Last updated:** 2026-11-14 · **Terminal reference:** `@earendil-works/pi-coding-agent` 1.5.0 · **Plan:** `.pi/plans/2026-10-26-pi-desktop-session-parity.md` · `.pi/plans/2026-11-14-transcript-line-parity.md`
+**Last updated:** 2026-11-15 · **Terminal reference:** `@earendil-works/pi-coding-agent` 1.5.0 · **Plan:** `.pi/plans/2026-10-26-pi-desktop-session-parity.md` · `.pi/plans/2026-11-14-transcript-line-parity.md` · `.pi/plans/2026-11-15-transcript-full-width.md`
 
 **Status:** Phase A–F (steps 1–24) shipped. **Phase G (steps 25–28, updates) is deferred whole**, as the plan permits; `/bug` writes a local zip and does not upload to Radius.
 
@@ -54,8 +54,11 @@ drift from the terminal.
     info string has no class). Block text is read from the AST, not from
     stringified React children, so a find `<mark>` inside a fence cannot corrupt
     the source. Inline code carries the token-driven `--color-code-bg` pill;
-    the transcript content column is capped at `--transcript-measure` (110ch) so
-    a wide window keeps a readable line length.
+    the transcript content column fills the scroll area (the pane width minus
+    its `px-4` gutter) at every zoom level, so display zoom changes how much
+    content fits instead of adding side gutters. A fixed `ch` measure is
+    absolute in CSS px and cannot follow a zoomed-out pane, which is why the
+    old 110ch cap was removed (2026-11-15).
 12. **A transcript re-render never resets syntax highlighting.** Two mechanisms
     keep a coloured fence coloured. First, the Markdown element overrides
     (`components`) are a module-level constant and `Markdown` is memoized; a
@@ -152,7 +155,7 @@ drift from the terminal.
   fixtures used by every later test.
 - `tests/renderer/transcript.test.tsx` — content order, one card per call,
   previews, images, auto-follow, find, collapsed command rows, the
-  inline-code sentence and the transcript measure cap.
+  inline-code sentence and the pane-wide content column.
 - `tests/renderer/markdown-code.test.ts` — the pure `pre > code` extractor
   (language-less fences, `mark` flattening, the trailing-newline rule).
 - `tests/renderer/markdown.test.tsx` — inline spans stay inside their paragraph,
@@ -207,12 +210,15 @@ drift from the terminal.
 - **Paste markers** are persisted with a bounded paste map; the terminal keeps
   them in memory only.
 - **Mermaid** renders SVG in the desktop (terminal renders Unicode diagrams).
-- **Transcript measure.** Assistant prose is capped at `--transcript-measure`
-  (110ch) on wide windows; terminal Pi is bounded by its pane width. Code blocks
-  and tables keep their own horizontal scroll inside the capped column.
+- **No transcript measure.** The transcript column is the pane width (minus the
+  scroll area's 16 px gutter) at every zoom level, so a zoomed-out window shows
+  more content instead of adding side gutters; terminal Pi is bounded by its pane
+  width in the same way. There is no readable-measure cap, so a maximised wide
+  display gives long prose lines (the 110ch cap was removed 2026-11-15). Code
+  blocks and tables keep their own horizontal scroll inside the column.
 - **Markdown chrome stays desktop-native.** Bubbles, native list bullets, styled
-  headings, syntax-highlighted code cards and the 110ch measure are kept; only
-  line semantics follow `pi-tui`. A find query spanning a soft break is counted
+  headings and syntax-highlighted code cards are kept; only line semantics follow
+  `pi-tui`. A find query spanning a soft break is counted
   but cannot paint one `<mark>` across the `<br>`; copy uses the raw text.
 - **Code colours are `github-dark` in both appearances.** Shiki token colours do
   not follow the light palette; only the block chrome (`bg-sunken`, `border-line`)

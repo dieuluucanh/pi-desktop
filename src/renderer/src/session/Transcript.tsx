@@ -1047,7 +1047,12 @@ export function Transcript({
             <div
               ref={contentRef}
               data-testid="transcript-content"
-              className="mx-auto w-full max-w-[var(--transcript-measure)]"
+              // The column takes the pane width (minus this scroller's `px-4`).
+              // Any fixed measure (`ch`, `rem`, px) is absolute in CSS px, so a
+              // zoomed-out window would grow the pane and leave side gutters;
+              // display zoom must change how much content fits, not the margin
+              // (2026-11-15 transcript-width).
+              className="w-full"
             >
               {items.map((item, index) => (
                 <div key={item.id} data-row-index={index} data-item-id={item.id}>
@@ -1075,7 +1080,9 @@ export function Transcript({
           <div
             ref={contentRef}
             data-testid="transcript-content"
-            className="relative mx-auto w-full max-w-[var(--transcript-measure)]"
+            // Same invariant as the plain path above: the column is the pane
+            // width, never a fixed measure (2026-11-15 transcript-width).
+            className="relative w-full"
             style={{ height: virtualizer.getTotalSize() }}
           >
             {virtualizer.getVirtualItems().map((virtualRow) => {

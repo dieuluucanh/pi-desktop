@@ -62,24 +62,17 @@ test("Settings no longer renders a theme control", async () => {
   await expect(app.window.getByRole("button", { name: "Open theme settings" })).toBeVisible();
 });
 
-async function zoomPercent(current: FakeApp): Promise<number> {
-  return current.app.evaluate(({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    return Math.round((window?.webContents.getZoomFactor() ?? 1) * 100);
-  });
-}
-
 test("@smoke round-trips the display zoom across a restart", async () => {
   const current = (app = await launchFakeApp());
 
   await current.menuCommand("zoom-in");
-  await expect.poll(() => zoomPercent(current), { timeout: 15_000 }).toBe(110);
+  await expect.poll(() => current.zoomPercent(), { timeout: 15_000 }).toBe(110);
 
   await current.relaunch();
-  await expect.poll(() => zoomPercent(current), { timeout: 15_000 }).toBe(110);
+  await expect.poll(() => current.zoomPercent(), { timeout: 15_000 }).toBe(110);
 
   await current.menuCommand("zoom-reset");
-  await expect.poll(() => zoomPercent(current), { timeout: 15_000 }).toBe(100);
+  await expect.poll(() => current.zoomPercent(), { timeout: 15_000 }).toBe(100);
 });
 
 test("round-trips the telemetry opt-in and defaults it off", async () => {
