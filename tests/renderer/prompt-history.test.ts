@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAX_PROMPT_HISTORY,
+  atHistoryEdge,
   mergePromptHistory,
   promptHistoryFromTranscript,
   promptHistoryText,
@@ -347,5 +348,39 @@ describe("mergePromptHistory", () => {
     expect(mergePromptHistory([], ["seed"])).toEqual(["seed"]);
     expect(mergePromptHistory(["live"], [])).toEqual(["live"]);
     expect(mergePromptHistory([], [])).toEqual([]);
+  });
+});
+
+describe("atHistoryEdge", () => {
+  const visual = (row: number, lastRow: number) => ({ row, lastRow });
+
+  it("enters history on the first displayed row, whatever the logical line", () => {
+    expect(atHistoryEdge({ direction: -1, visual: visual(0, 4), line: 3, lineCount: 3 })).toBe(
+      true,
+    );
+  });
+
+  it("keeps Up native inside a wrapped paragraph", () => {
+    // The bug: one logical line, but the caret is on the third displayed row.
+    expect(atHistoryEdge({ direction: -1, visual: visual(2, 4), line: 1, lineCount: 1 })).toBe(
+      false,
+    );
+  });
+
+  it("walks Down on the last displayed row", () => {
+    expect(atHistoryEdge({ direction: 1, visual: visual(4, 4), line: 1, lineCount: 1 })).toBe(true);
+  });
+
+  it("keeps Down native inside a wrapped paragraph", () => {
+    expect(atHistoryEdge({ direction: 1, visual: visual(1, 4), line: 1, lineCount: 1 })).toBe(
+      false,
+    );
+  });
+
+  it("falls back to logical lines when layout cannot be measured", () => {
+    expect(atHistoryEdge({ direction: -1, visual: null, line: 1, lineCount: 3 })).toBe(true);
+    expect(atHistoryEdge({ direction: -1, visual: null, line: 2, lineCount: 3 })).toBe(false);
+    expect(atHistoryEdge({ direction: 1, visual: null, line: 3, lineCount: 3 })).toBe(true);
+    expect(atHistoryEdge({ direction: 1, visual: null, line: 2, lineCount: 3 })).toBe(false);
   });
 });

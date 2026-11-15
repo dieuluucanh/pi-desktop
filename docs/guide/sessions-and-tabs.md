@@ -201,8 +201,11 @@ The composer is a plain text area with Pi’s autocomplete contract:
   interrupted text into the composer — the same recipe terminal Pi uses.
 - Drafts are kept per tab, so switching tabs or restarting the app does not lose
   an unfinished prompt.
-- `↑` recalls prompts already sent in this tab, newest first; `↓` walks forward
-  and returns to the draft (and caret) you had when you started. Editing a
+- `↑` recalls prompts already sent in this tab, newest first, once the caret is
+  on the first **displayed** row — a long soft-wrapped prompt moves the caret up
+  one row at a time first; `↓` mirrors this from the last displayed row and
+  returns to the draft (and caret) you had when you started. `Shift+↑` / `Ctrl+↑`
+  keep their native selection/word movement and never recall history. Editing a
   recalled prompt — or sending it — ends history mode and adopts the visible
   text, exactly like terminal Pi. History is rebuilt from the session when a tab
   loads, so it survives an app restart and includes sessions created in terminal

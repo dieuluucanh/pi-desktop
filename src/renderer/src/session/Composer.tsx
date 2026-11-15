@@ -5,7 +5,8 @@ import { cn } from "../ui/cn";
 import { PROMPT_MAX_HEIGHT_PX, useAutoGrowTextarea } from "../ui/auto-grow";
 import { fileToAttachment, isImageFile, type ImageAttachment } from "./image-attachment";
 import { lostPasteIds, shouldCollapsePaste } from "./paste-markers";
-import type { PromptHistoryStep } from "./prompt-history";
+import { atHistoryEdge, type PromptHistoryStep } from "./prompt-history";
+import { textareaVisualLines } from "./textarea-visual-lines";
 import { useAppStore } from "../state/app-store";
 import { sameFolder } from "../../../shared/rail-scope";
 import type { WorkspaceEntryKind } from "../../../shared/workspace";
@@ -49,10 +50,11 @@ import type {
  *    Enter steers; Alt+Enter / Ctrl+Q queue a follow-up. The choice is the
  *    chord, not a remembered toggle — the same model as terminal Pi.
  *  - **Escape**: stop the run and put the queued text back in the editor.
- *  - **History**: Up on the first line recalls a sent prompt; Down on the last
- *    line walks forward and, at the newest entry, restores the draft and caret
- *    stashed when browsing began. The store owns both buffers, so a history
- *    step writes the text and the composer only places the returned caret.
+ *  - **History**: Up on the first displayed row (soft-wrapped rows count)
+ *    recalls a sent prompt; Down on the last displayed row walks forward and, at
+ *    the newest entry, restores the draft and caret stashed when browsing
+ *    began. The store owns both buffers, so a history step writes the text and
+ *    the composer only places the returned caret.
  */
 
 export interface ComposerProps {
@@ -845,14 +847,22 @@ export function Composer({
                 })();
                 return;
               }
-              // History walks only at the buffer's edges, so the arrow keys keep
-              // their native caret movement inside a multi-line draft. The line is
-              // read from the live selection rather than React state: a keydown
-              // follows a caret move in the same frame, before the state commits.
-              const value = event.currentTarget.value;
-              const offset = event.currentTarget.selectionStart ?? 0;
-              const caretLine = value.slice(0, offset).split("\n").length;
-              const lineCount = value.split("\n").length;
+              // History walks only at the buffer's **displayed** edges, so a
+              // soft-wrapped paragraph keeps the browser's native caret movement
+              // until the caret reaches the first or last row. Pi's editor measures
+              // visual lines the same way (`isOnFirstVisualLine` /
+              // `isOnLastVisualLine`, editor.js:328-337). The offset and value come
+              // from the live selection rather than React state: a keydown follows a
+              // caret move in the same frame, before the state commits.
+              const plainArrow =
+                (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+                !event.shiftKey &&
+                !event.ctrlKey &&
+                !event.metaKey &&
+                !event.altKey;
+              const node = event.currentTarget;
+              const offset = node.selectionStart ?? 0;
+              const collapsed = offset === (node.selectionEnd ?? offset);
               const applyHistory = (direction: 1 | -1): void => {
                 const step = onHistoryStep(direction, offset);
                 // "none" means the textarea keeps the key: no history movement.
@@ -869,13 +879,18 @@ export function Composer({
                 // effect does not re-run (same pattern as insertMention).
                 queueMicrotask(applyPendingCaret);
               };
-              if (event.key === "ArrowUp" && caretLine <= 1) {
-                applyHistory(-1);
-                return;
-              }
-              if (event.key === "ArrowDown" && caretLine >= lineCount) {
-                applyHistory(1);
-                return;
+              // Shift/Ctrl/Meta/Alt chords and an active selection stay native:
+              // Shift+Up extends the selection, Ctrl+Up moves by word/paragraph,
+              // and Alt+Up was the dequeue chord above.
+              if (plainArrow && collapsed) {
+                const value = node.value;
+                const visual = textareaVisualLines(node, offset);
+                const line = value.slice(0, offset).split("\n").length;
+                const lineCount = value.split("\n").length;
+                const direction = event.key === "ArrowUp" ? -1 : 1;
+                if (atHistoryEdge({ direction, visual, line, lineCount })) {
+                  applyHistory(direction);
+                }
               }
               if (
                 isSendKey({

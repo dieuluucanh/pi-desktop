@@ -75,8 +75,15 @@ drift from the terminal.
 13. **Prompt history is a draft-stashing walk.** The first `↑` stashes the draft
     text and caret in `historyBrowse` and shows the newest sent prompt; `↓` walks
     forward and, at the newest entry, restores the stash (including an empty
-    draft). Any real write (`setDraft`) or submit ends the walk and drops the
-    stash, exactly like pi-tui's `setText`/`submitValue` calling
+    draft). **Both gates are the buffer's displayed rows, soft wrap included:**
+    `↑` enters history only on the first displayed row and `↓` walks forward only
+    on the last, so a long paragraph keeps the browser's native caret movement.
+    The row is measured from an offscreen mirror of the textarea's computed text
+    styles plus a one-character `Range` probe — a collapsed range cannot tell the
+    two sides of a soft-wrap boundary apart. When layout is unavailable
+    (`line-height: normal`, a hidden box, jsdom) the composer falls back to the
+    logical-line check. Any real write (`setDraft`) or submit ends the walk and
+    drops the stash, exactly like pi-tui's `setText`/`submitValue` calling
     `exitHistoryBrowsing`. While a preview is visible, the debounced
     `prefs.set` and the `oi.editorText` mirror carry the stashed draft, never the
     recalled prompt. The walked entries are the merge of prompts sent in this
@@ -216,9 +223,11 @@ status` notices print with the default `info: false` prefs and keep every
   terminal kill-ring, `Ctrl+W/K/U`, `Ctrl+C` clear, double-Esc tree/fork, `Ctrl+D`
   exit and `Ctrl+Z` suspend are not ported. The menu/tabs own those actions.
 - **Prompt-history carets.** `↑` places the caret at the end of a recalled
-  prompt (pi-tui puts it at the start), so `↓` from the last line returns to the
-  draft in one press even for a multi-line prompt. `↑` enters history from line 1
-  at any column; pi-tui requires column 0.
+  prompt (pi-tui puts it at the start), so `↓` from the last displayed row
+  returns to the draft in one press even for a multi-line prompt. Both directions
+  use the **displayed** rows (soft wrap included), like pi-tui's visual lines.
+  `↑` enters history from the first displayed row at any column; pi-tui requires
+  column 0.
 - **Prompt-history reconstruction.** `!` shell commands are not in the resumed
   transcript, so history after a restart contains only typed prompts (terminal
   Pi behaves the same). Pressing `↑` before the session finishes loading is a

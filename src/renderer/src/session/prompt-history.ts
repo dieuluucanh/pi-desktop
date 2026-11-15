@@ -15,10 +15,12 @@
  *
  * The one deliberate caret difference is documented on the recall branch: the
  * caret lands at the end of a recalled entry, not at its start. The composer
- * only leaves history from the last line, so pi-tui's start-of-entry caret
- * would make the first `ArrowDown` walk a multi-line entry instead of returning
- * to the draft.
+ * only leaves history from the last displayed row (soft wrap included), so
+ * pi-tui's start-of-entry caret would make the first `ArrowDown` walk a
+ * multi-line entry instead of returning to the draft.
  */
+
+import type { VisualLinePosition } from "./textarea-visual-lines";
 
 /** pi-tui keeps 100 entries (`editor.js:316-318`); the store caps with this. */
 export const MAX_PROMPT_HISTORY = 100;
@@ -105,6 +107,43 @@ export function stepPromptHistory(input: PromptHistoryInput): PromptHistoryStep 
 function clampCaret(caret: number, length: number): number {
   if (!Number.isFinite(caret)) return 0;
   return Math.min(Math.max(Math.trunc(caret), 0), length);
+}
+
+/**
+ * Where the caret sits for the Up/Down edge decision.
+ *
+ * `visual` is the measured displayed row (soft wrap included); when it is null
+ * the caller could not measure layout and the logical 1-based line numbers are
+ * the fallback. Keeping both inputs here means the composer's keydown handler is
+ * a thin wire and the edge contract is unit-tested without a DOM.
+ */
+export interface HistoryEdgeInput {
+  /** `-1` is ArrowUp (older), `1` is ArrowDown (newer). */
+  direction: 1 | -1;
+  /** The measured caret row, or null when layout is unavailable. */
+  visual: VisualLinePosition | null;
+  /** The caret's logical 1-based line, used when `visual` is null. */
+  line: number;
+  /** The buffer's logical line count, used when `visual` is null. */
+  lineCount: number;
+}
+
+/**
+ * Whether a plain arrow press should try the history walk.
+ *
+ * Terminal Pi gates both directions on its visual-line map
+ * (`editor.js:753-779`): Up enters history on the first displayed row, Down walks
+ * forward on the last one. Soft wrap is therefore part of the line count — a long
+ * paragraph keeps the browser's native caret movement until the caret reaches a
+ * real edge. When no visual measurement exists, fall back to the logical lines so
+ * a no-layout environment (the jsdom tests) behaves exactly as before.
+ */
+export function atHistoryEdge(input: HistoryEdgeInput): boolean {
+  const { direction, visual, line, lineCount } = input;
+  if (visual) {
+    return direction === -1 ? visual.row <= 0 : visual.row >= visual.lastRow;
+  }
+  return direction === -1 ? line <= 1 : line >= lineCount;
 }
 
 /**

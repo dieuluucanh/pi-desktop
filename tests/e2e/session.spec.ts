@@ -142,6 +142,85 @@ test("@smoke keeps two session tabs independent", async () => {
 });
 
 /**
+ * Prompt history must follow **displayed** rows (2026-11-15 composer-soft-wrap
+ * plan). jsdom has no layout, so this is the only proof that a soft-wrapped
+ * draft keeps its native caret movement: the old logical-line gate recalled
+ * history from every wrapped row.
+ */
+test("walks a soft-wrapped draft with Up and recalls history only at the top", async () => {
+  const current = (app = await launchFakeApp());
+  const composer = await startSession(current);
+
+  // One sent prompt becomes the newest history entry.
+  current.provider.enqueue({ kind: "text", text: "seed reply" });
+  await composer.fill("seed prompt");
+  await composer.press("Enter");
+  await expect(current.window.getByText("seed reply")).toBeVisible({ timeout: 30_000 });
+
+  // No `\n`: the composer must wrap this into several displayed rows.
+  const wrapped = "lorem ipsum ".repeat(60).trim();
+  await composer.fill(wrapped);
+  const caretAtEnd = await composer.evaluate(
+    (node) => (node as HTMLTextAreaElement).selectionStart,
+  );
+  expect(caretAtEnd).toBeGreaterThan(0);
+
+  // The end of the value is the last displayed row. Count the rows from the
+  // textarea's own layout (not the mirror under test), then walk to the top.
+  const displayedRows = async (): Promise<number> =>
+    composer.evaluate((node) => {
+      const ta = node as HTMLTextAreaElement;
+      const styles = getComputedStyle(ta);
+      const lineHeight = Number.parseFloat(styles.getPropertyValue("line-height"));
+      const paddingTop = Number.parseFloat(styles.getPropertyValue("padding-top") || "0");
+      const paddingBottom = Number.parseFloat(styles.getPropertyValue("padding-bottom") || "0");
+      return Math.max(1, Math.round((ta.scrollHeight - paddingTop - paddingBottom) / lineHeight));
+    });
+
+  const rows = await displayedRows();
+  expect(rows).toBeGreaterThan(1);
+
+  // Up on the last row moves the caret; it does not recall history.
+  await composer.press("ArrowUp");
+  const afterFirstUp = await composer.evaluate(
+    (node) => (node as HTMLTextAreaElement).selectionStart,
+  );
+  await expect(composer).toHaveValue(wrapped);
+  expect(afterFirstUp).toBeLessThan(caretAtEnd);
+
+  // `rows - 1` presses reach the first displayed row; the draft survives all of
+  // them, including the nonzero column the browser keeps at the top.
+  for (let press = 1; press < rows - 1; press += 1) {
+    await composer.press("ArrowUp");
+    await expect(composer).toHaveValue(wrapped);
+  }
+  const topCaret = await composer.evaluate((node) => (node as HTMLTextAreaElement).selectionStart);
+  // The top row is reached at a nonzero offset: recall is not "offset 0".
+  expect(topCaret).toBeGreaterThan(0);
+  await expect(composer).toHaveValue(wrapped);
+
+  // Only the press from the first displayed row leaves the draft.
+  await composer.press("ArrowUp");
+  await expect(composer).toHaveValue("seed prompt");
+
+  // Hard newlines and an empty line use the same displayed-row gate.
+  const hard = "first line\nsecond line\n\nfourth line";
+  await composer.fill(hard);
+  await expect(composer).toHaveValue(hard);
+  const hardRows = await displayedRows();
+  expect(hardRows).toBe(4);
+
+  await composer.press("ArrowUp");
+  await expect(composer).toHaveValue(hard);
+  for (let press = 1; press < hardRows - 1; press += 1) {
+    await composer.press("ArrowUp");
+    await expect(composer).toHaveValue(hard);
+  }
+  await composer.press("ArrowUp");
+  await expect(composer).toHaveValue("seed prompt");
+});
+
+/**
  * The transcript column must be the pane width, not a fixed measure
  * (2026-11-15 transcript-width).
  *
