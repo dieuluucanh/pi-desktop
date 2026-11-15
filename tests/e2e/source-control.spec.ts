@@ -180,24 +180,35 @@ test.describe("source control", () => {
     const top = app.window.getByTestId("source-control-block");
     const before = await top.boundingBox();
     const splitter = app.window.getByTestId("rail-splitter-top");
-    const handle = await splitter.boundingBox();
     expect(before).not.toBeNull();
-    expect(handle).not.toBeNull();
-    await app.window.mouse.move(handle!.x + handle!.width / 2, handle!.y + handle!.height / 2);
-    await app.window.mouse.down();
-    try {
-      await app.window.mouse.move(handle!.x + handle!.width / 2, handle!.y + 80, { steps: 8 });
-      // The blocks follow the pointer *before* release (2026-10-31 UI plan).
-      // `BlockSplitter` keeps the preview in React state and a pointermove is a
-      // continuous-priority update, so poll for the commit instead of reading
-      // `boundingBox()` in the same task (the CI Windows runner always lost that
-      // race).
-      await expect
-        .poll(async () => (await top.boundingBox())?.height ?? 0, { timeout: 10_000 })
-        .toBeGreaterThan(before!.height);
-    } finally {
-      await app.window.mouse.up();
+
+    // The handle is a 1 px line with a ±4 px hit area, and the blocks follow the
+    // pointer *before* release (2026-10-31 UI plan): `BlockSplitter` keeps the
+    // preview in React state and a pointermove is a continuous-priority update,
+    // so poll for the commit instead of reading `boundingBox()` in the same task.
+    // Retry the whole gesture: the Windows runner occasionally misses the
+    // pointerdown on the 1 px target (2026-11-15: the poll timed out with the
+    // height unchanged), and a retry cannot over-grow a drag that really landed.
+    let grown = false;
+    for (let attempt = 0; attempt < 3 && !grown; attempt += 1) {
+      const handle = await splitter.boundingBox();
+      expect(handle).not.toBeNull();
+      const x = handle!.x + handle!.width / 2;
+      const y = handle!.y + handle!.height / 2;
+      await app.window.mouse.move(x, y);
+      await app.window.mouse.down();
+      try {
+        await app.window.mouse.move(x, y + 80, { steps: 8 });
+        await expect
+          .poll(async () => (await top.boundingBox())?.height ?? 0, { timeout: 4_000 })
+          .toBeGreaterThan(before!.height)
+          .catch(() => undefined);
+        grown = ((await top.boundingBox())?.height ?? 0) > before!.height;
+      } finally {
+        await app.window.mouse.up();
+      }
     }
+    expect(grown).toBe(true);
 
     const after = await top.boundingBox();
     expect(after).not.toBeNull();
