@@ -68,7 +68,10 @@ describe.skipIf(!buildReady)("live host process", () => {
     await expect(host.request("host.ping")).resolves.toMatchObject({ pong: true });
 
     // Session semantics landed in plan step 5, so creating a session now works…
-    await expect(host.request("session.create")).resolves.toBeDefined();
+    // The checkout may contain the gitignored `.pi/settings.json`, which makes
+    // the repo trust-requiring; the scratch profile has no stored decision, so
+    // answer trust for this run only (`"session"`, not `"trust"`).
+    await expect(host.request("session.create", { trust: "session" })).resolves.toBeDefined();
     // …while a method no step has wired yet still answers instead of hanging.
     await expect(host.request("providers.list")).rejects.toThrow(/not implemented/i);
 

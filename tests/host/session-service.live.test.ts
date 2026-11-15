@@ -99,8 +99,10 @@ describe.skipIf(!buildReady)("live session service", () => {
     expect(control).toBeDefined();
     expect((await control!.ready()).role).toBe("control");
 
-    // A session host creates a real session in the fixture profile.
-    const envelope = await service.createTab({ cwd: repoRoot });
+    // A session host creates a real session in the fixture profile. Answer trust
+    // for this run only: the repo may contain a trust-requiring
+    // `.pi/settings.json`, and the scratch profile has no stored decision.
+    const envelope = await service.createTab({ cwd: repoRoot, trust: "session" });
     const tab = envelope.tabs[0]!;
     expect(tab.status).toBe("idle");
     expect(tab.sessionFile).toEqual(expect.stringContaining("sessions"));

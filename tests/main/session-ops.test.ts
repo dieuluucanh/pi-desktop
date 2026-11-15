@@ -1,3 +1,4 @@
+import { join, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 import { isDeletableSessionPath, sessionsDirOf } from "../../src/main/session-ops";
 
@@ -6,65 +7,54 @@ import { isDeletableSessionPath, sessionsDirOf } from "../../src/main/session-op
  *
  * `shell.trashItem` is a destructive, recoverable-only operation: the tests below
  * pin that nothing but a JSONL inside the profile's own `sessions/` directory can
- * reach it, on both Windows and POSIX path syntaxes.
+ * reach it. The fixtures use the **host** path flavour because the module calls
+ * the host `node:path` functions (`isAbsolute`, `resolve`, `relative`); the
+ * Windows containment rules are covered by the Windows CI job.
  */
+
+const ROOT = sep === "\\" ? "C:\\" : "/";
+const PROFILE = join(ROOT, "users", "u", ".pi", "agent");
+const SESSIONS = join(PROFILE, "sessions");
+const session = (...parts: string[]): string => join(SESSIONS, ...parts);
+/** `join` collapses `..`, so the traversal cases need a literal join. */
+const escape = (...parts: string[]): string => [SESSIONS, ...parts].join(sep);
 
 describe("sessionsDirOf", () => {
   it("puts every session under the profile's sessions directory", () => {
-    expect(sessionsDirOf("C:\\Users\\u\\.pi\\agent")).toContain("sessions");
-    expect(sessionsDirOf("/home/u/.pi/agent")).toContain("sessions");
+    expect(sessionsDirOf(PROFILE)).toBe(SESSIONS);
   });
 });
 
 describe("isDeletableSessionPath", () => {
-  const profiles = ["C:\\Users\\u\\.pi\\agent", "/home/u/.pi/agent"];
-
   it("accepts a session JSONL inside the profile", () => {
-    for (const profile of profiles) {
-      const file =
-        profile === profiles[0]
-          ? "C:\\Users\\u\\.pi\\agent\\sessions\\--work--\\s1.jsonl"
-          : "/home/u/.pi/agent/sessions/--work--/s1.jsonl";
-      expect(isDeletableSessionPath(file, profile), file).toBe(true);
-    }
+    const file = session("--work--", "s1.jsonl");
+    expect(isDeletableSessionPath(file, PROFILE), file).toBe(true);
   });
 
   it("refuses a file outside the sessions directory", () => {
-    expect(isDeletableSessionPath("C:\\Users\\u\\.pi\\agent\\auth.json", profiles[0]!)).toBe(false);
-    expect(isDeletableSessionPath("/home/u/.pi/agent/settings.json", profiles[1]!)).toBe(false);
-    expect(isDeletableSessionPath("C:\\Users\\u\\.pi\\agent\\sessions.jsonl", profiles[0]!)).toBe(
-      false,
-    );
+    expect(isDeletableSessionPath(join(PROFILE, "auth.json"), PROFILE)).toBe(false);
+    expect(isDeletableSessionPath(join(PROFILE, "settings.json"), PROFILE)).toBe(false);
+    expect(isDeletableSessionPath(join(PROFILE, "sessions.jsonl"), PROFILE)).toBe(false);
   });
 
   it("refuses traversal and absolute escapes", () => {
     expect(
-      isDeletableSessionPath(
-        "C:\\Users\\u\\.pi\\agent\\sessions\\..\\..\\..\\Windows\\system.jsonl",
-        profiles[0]!,
-      ),
+      isDeletableSessionPath(escape("..", "..", "..", "Windows", "system.jsonl"), PROFILE),
     ).toBe(false);
-    expect(
-      isDeletableSessionPath("/home/u/.pi/agent/sessions/../../../etc/pass.jsonl", profiles[1]!),
-    ).toBe(false);
+    expect(isDeletableSessionPath(escape("..", "..", "..", "etc", "pass.jsonl"), PROFILE)).toBe(
+      false,
+    );
   });
 
   it("refuses a directory, a non-jsonl file and a non-string", () => {
-    expect(
-      isDeletableSessionPath("C:\\Users\\u\\.pi\\agent\\sessions\\--work--", profiles[0]!),
-    ).toBe(false);
-    expect(
-      isDeletableSessionPath(
-        "C:\\Users\\u\\.pi\\agent\\sessions\\--work--\\notes.txt",
-        profiles[0]!,
-      ),
-    ).toBe(false);
-    expect(isDeletableSessionPath(undefined, profiles[0]!)).toBe(false);
-    expect(isDeletableSessionPath(42, profiles[0]!)).toBe(false);
-    expect(isDeletableSessionPath("", profiles[0]!)).toBe(false);
+    expect(isDeletableSessionPath(session("--work--"), PROFILE)).toBe(false);
+    expect(isDeletableSessionPath(session("--work--", "notes.txt"), PROFILE)).toBe(false);
+    expect(isDeletableSessionPath(undefined, PROFILE)).toBe(false);
+    expect(isDeletableSessionPath(42, PROFILE)).toBe(false);
+    expect(isDeletableSessionPath("", PROFILE)).toBe(false);
   });
 
   it("refuses the sessions directory itself", () => {
-    expect(isDeletableSessionPath(sessionsDirOf(profiles[1]!), profiles[1]!)).toBe(false);
+    expect(isDeletableSessionPath(SESSIONS, PROFILE)).toBe(false);
   });
 });

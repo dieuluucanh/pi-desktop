@@ -24,6 +24,7 @@
     "dev:host": "vite build --watch --config vite.host.config.ts",
     "dev:electron": "electron-vite dev --watch",
     "build": "npm run build:host && electron-vite build",
+    "postinstall": "node scripts/fix-node-pty-permissions.mjs",
     "build:host": "vite build --config vite.host.config.ts",
     "build:extension": "node scripts/build-extension.mjs",
     "verify:extension": "node scripts/verify-extension.mjs",

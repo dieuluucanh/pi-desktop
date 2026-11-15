@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Packaged terminal smoke test (2026-11-08 linux-terminal plan, step 6).
  *
@@ -19,6 +18,9 @@
  * The script imports only `node:*`, so the Linux release job can run it *inside*
  * the oldest supported glibc container (with the app's own bundled Node) to
  * prove the floor on a real distribution.
+ *
+ * Invoked as `node scripts/…`; no shebang so the Vitest module runner can
+ * import it on a CRLF checkout.
  */
 
 import { spawn } from "node:child_process";

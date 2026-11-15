@@ -29,6 +29,7 @@ import {
   type TrustStoreLike,
 } from "./project-trust";
 import { createCommandHandlers, type CommandRunner } from "./commands";
+import { isTrustAnswer } from "../shared/projects";
 import { createPromptOriginTracker } from "./prompt-origin";
 import { createSettingsHandlers, SettingsError, type SettingsPort } from "./settings";
 import { createShortcutHandlers, ShortcutError, type ShortcutRunner } from "./shortcuts";
@@ -985,10 +986,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const input = asRecord(params);
       const targetCwd =
         typeof input.cwd === "string" && input.cwd.length > 0 ? input.cwd : deps.cwd;
-      const trustAnswer =
-        input.trust === "trust" || input.trust === "never" || input.trust === "session"
-          ? (input.trust as TrustAnswer)
-          : undefined;
+      const trustAnswer = isTrustAnswer(input.trust) ? input.trust : undefined;
       const model =
         typeof input.model === "string" && input.model.length > 0 ? input.model : undefined;
       const thinking =
@@ -1029,10 +1027,15 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         return snapshot();
       }
       const sessionFile = requireString(input.sessionFile ?? input.path, "sessionFile");
+      // A restarted host has a fresh in-memory trust store. The service re-sends
+      // the tab's answer (a "session" grant does not survive process death on
+      // its own), so resume must accept it exactly like create.
+      const trustAnswer = isTrustAnswer(input.trust) ? input.trust : undefined;
       return startSession({
         cwd,
         sessionManager: openManager(deps, sessionFile, cwd),
         reason: "resume",
+        ...(trustAnswer ? { trustAnswer } : {}),
       });
     },
 

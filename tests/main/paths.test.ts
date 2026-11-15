@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   PROFILE_ENV,
@@ -89,16 +90,19 @@ describe("resolveAppPaths", () => {
 
 describe("resolveAppRoots", () => {
   it("resolves the repository root in development", () => {
+    // A native absolute path: `join("C:", "repo")` is relative on POSIX, so
+    // `resolve(mainDir, "..", "..")` would anchor it to `process.cwd()`.
+    const root = resolve(tmpdir(), "pi-desktop-repo");
     const roots = resolveAppRoots({
       isPackaged: false,
-      resourcesPath: join("D:", "unused"),
-      mainDir: join("C:", "repo", "out", "main"),
+      resourcesPath: resolve(tmpdir(), "pi-desktop-unused"),
+      mainDir: join(root, "out", "main"),
     });
 
-    expect(roots.appRoot).toBe(join("C:", "repo"));
-    expect(roots.resourcesDir).toBe(join("C:", "repo", "resources"));
-    expect(roots.runtimeDir).toBe(join("C:", "repo", "resources", "runtime"));
-    expect(roots.manifestPath).toBe(join("C:", "repo", "resources", "office", "manifest.prod.xml"));
+    expect(roots.appRoot).toBe(root);
+    expect(roots.resourcesDir).toBe(join(root, "resources"));
+    expect(roots.runtimeDir).toBe(join(root, "resources", "runtime"));
+    expect(roots.manifestPath).toBe(join(root, "resources", "office", "manifest.prod.xml"));
   });
 
   it("resolves the resources directory when packaged", () => {

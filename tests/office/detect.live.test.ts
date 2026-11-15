@@ -3,8 +3,8 @@
  *
  * This is the real "doctor" run: it executes the actual detection code against
  * this machine (registry, filesystem, app bundles) and prints the diagnostics
- * report. It asserts only invariants that must hold on every platform, so it is
- * safe in CI, and it is the manual acceptance check for step 1.
+ * report. It asserts only invariants that hold on the host platform, so it is
+ * safe in CI (Linux intentionally reports no Office apps).
  *
  *   npx vitest run tests/office/detect.live.test.ts --disable-console-intercept
  */
@@ -22,8 +22,10 @@ describe("live environment probe", () => {
       process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
     expect(result.os).toBe(expectedOs);
     expect(result.supported).toBe(expectedOs !== "linux");
-    expect(result.apps).toHaveLength(3);
-    expect(result.apps.map((app) => app.host)).toEqual(["excel", "word", "powerpoint"]);
+    expect(result.apps).toHaveLength(expectedOs === "linux" ? 0 : 3);
+    if (expectedOs !== "linux") {
+      expect(result.apps.map((app) => app.host)).toEqual(["excel", "word", "powerpoint"]);
+    }
     expect(new Date(result.checkedAt).toString()).not.toBe("Invalid Date");
 
     if (expectedOs === "windows") {

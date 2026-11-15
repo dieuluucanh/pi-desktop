@@ -251,18 +251,24 @@ describe("host supervisor startup", () => {
     expect(spawnCalls[0]?.env.PLANNOTATOR_BROWSER).toBe("none");
   });
 
-  it("keeps one path-like env key and merges a base Path spelling on Windows", async () => {
-    const { supervisor, spawnCalls } = harness({
-      env: { Path: normalize("C:/Windows/System32") },
-    });
-    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+  // The supervisor passes `platform: process.platform` to `composeChildEnv`, so
+  // this integration case is Windows-only by construction. The merge rule itself
+  // is covered on every platform by `tests/main/runtime/child-env.test.ts`.
+  it.skipIf(process.platform !== "win32")(
+    "keeps one path-like env key and merges a base Path spelling on Windows",
+    async () => {
+      const { supervisor, spawnCalls } = harness({
+        env: { Path: normalize("C:/Windows/System32") },
+      });
+      await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
 
-    const pathKeys = Object.keys(spawnCalls[0]?.env ?? {}).filter(
-      (key) => key.toLowerCase() === "path",
-    );
-    expect(pathKeys).toHaveLength(1);
-    expect(spawnCalls[0]?.env[pathKeys[0] ?? ""]).toContain(normalize("C:/Windows/System32"));
-  });
+      const pathKeys = Object.keys(spawnCalls[0]?.env ?? {}).filter(
+        (key) => key.toLowerCase() === "path",
+      );
+      expect(pathKeys).toHaveLength(1);
+      expect(spawnCalls[0]?.env[pathKeys[0] ?? ""]).toContain(normalize("C:/Windows/System32"));
+    },
+  );
 
   it("stamps the spawn with the host bundle fingerprint", async () => {
     const { supervisor, spawnCalls } = harness({ hostBuildId: () => "build-1" });

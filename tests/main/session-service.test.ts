@@ -1256,6 +1256,20 @@ describe("crash recovery", () => {
     ).toEqual(["session.recovered"]);
     expect(host.requests.map((request) => request.method)).toContain("session.resume");
   });
+
+  it("re-sends the tab's trust answer when a crashed host resumes", async () => {
+    const { service, newest } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app", trust: "session" });
+    const host = newest();
+    host.requests.length = 0;
+
+    host.emitLifecycle("crashed", { code: 1 });
+    host.emitLifecycle("status", "ready");
+    await vi.waitFor(() => expect(service.tabs()[0]!.status).toBe("idle"));
+
+    const resume = host.requests.find((request) => request.method === "session.resume");
+    expect(resume?.params).toMatchObject({ trust: "session" });
+  });
 });
 
 describe("reliability and recovery (plan step 22)", () => {

@@ -25,7 +25,9 @@ const PROCEDURE_TIMEOUT_MS = 15_000;
 
 function shellPath(): string {
   if (process.platform === "win32") return process.env.ComSpec ?? "cmd.exe";
-  return process.env.SHELL ?? "/bin/sh";
+  // Pin the POSIX shell: the GitHub runner's `SHELL` is not part of the contract
+  // under test, and node-pty's helper is what this test is proving.
+  return process.platform === "darwin" ? "/bin/zsh" : "/bin/sh";
 }
 
 function hostEnv(): Record<string, string> {
@@ -145,6 +147,9 @@ describe("terminal host integration", () => {
               "id" in frame && frame.id === 1,
           );
           expect(opened).toMatchObject({ id: 1 });
+          // An error frame has no `result`; include it in the failure instead of
+          // crashing on `info.id` (the macOS helper/permission failure was opaque).
+          expect(opened, JSON.stringify(opened)).not.toHaveProperty("error");
           const info = (opened as { result: TerminalInfo }).result;
           expect(info.id).toMatch(/^t-/);
           expect(info.cols).toBe(80);

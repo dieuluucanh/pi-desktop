@@ -32,6 +32,13 @@ jobs:
       - name: Install
         run: npm ci
 
+      # The npm tarball ships node-pty's POSIX spawn-helper with mode 0644 and the
+      # installer accepts the prebuild, so node-gyp never fixes it. The package
+      # postinstall runs the same script; make it explicit here too.
+      - name: Make the POSIX node-pty helper executable
+        if: matrix.os != 'windows-latest'
+        run: node scripts/fix-node-pty-permissions.mjs
+
       # `npm ci` can leave node-pty without a binary (npm 12 blocks install
       # scripts without `allowScripts`; Linux has no prebuild). Fail here, with
       # the loader error, instead of at first terminal use.

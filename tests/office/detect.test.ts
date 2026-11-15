@@ -46,7 +46,10 @@ function ctrOutput(products: string): string {
 }
 
 function installRootOutput(): string {
-  return [INSTALL_ROOT_KEY, `    Path    REG_SZ    ${INSTALL_ROOT}\\`, ""].join("\r\n");
+  // The real registry value ends in a directory separator. Use the host
+  // separator so this fixture stays comparable with `windowsExeCandidates`,
+  // which the app builds with the host `node:path`.
+  return [INSTALL_ROOT_KEY, `    Path    REG_SZ    ${INSTALL_ROOT}${path.sep}`, ""].join("\r\n");
 }
 
 function developerOutput(manifestPath: string): string {

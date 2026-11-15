@@ -77,8 +77,16 @@ const SPAWN_TIMEOUT_MS = 90_000;
  * `npm test` runs anywhere (CI has no fetched runtime, so these suites skip).
  * `npm run runtime:verify` sets the flag and turns a missing runtime into a
  * hard failure — that is the acceptance check for plan step 2.
+ *
+ * A system-Node fallback makes `resolution.ok` true without a bundled runtime, so
+ * the live suites also require the bundled source and the fetched shim directory;
+ * otherwise they would assert a runtime that CI never fetched.
  */
-const runtimeReady = resolution.ok && existsSync(resolution.piHostPath);
+const runtimeReady =
+  resolution.ok &&
+  resolution.source === "bundled" &&
+  existsSync(resolution.binDir) &&
+  existsSync(resolution.piHostPath);
 const runtimeRequired = process.env.PI_DESKTOP_REQUIRE_RUNTIME === "1";
 
 /** A PATH containing only the app's runtime directories: no system node/npm. */

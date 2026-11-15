@@ -1232,7 +1232,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     try {
       const extra = createParams.get(tab.id);
       const snapshot = tab.sessionFile
-        ? await host.request("session.resume", { sessionFile: tab.sessionFile })
+        ? await host.request("session.resume", {
+            sessionFile: tab.sessionFile,
+            // A crash restart is a new process with a fresh trust store. Re-send
+            // the tab's answer so a "session" grant still resumes the session.
+            ...(extra?.trust ? { trust: extra.trust } : {}),
+          })
         : await host.request("session.create", {
             cwd: tab.cwd,
             ...(extra?.model ? { model: extra.model } : {}),

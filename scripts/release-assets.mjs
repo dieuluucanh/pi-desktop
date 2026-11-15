@@ -147,7 +147,16 @@ export function inspectRelease({ dir, platform, version, arch }) {
   for (const name of platformManifests(platform, arch)) {
     const file = join(root, name);
     if (!isFile(file)) continue; // already reported as missing
-    const parsed = parseManifest(readFileSync(file, "utf8"));
+    let text;
+    try {
+      text = readFileSync(file, "utf8");
+    } catch (error) {
+      problems.push(
+        `${name}: could not be read (${error instanceof Error ? error.message : String(error)})`,
+      );
+      continue;
+    }
+    const parsed = parseManifest(text);
     manifests[name] = parsed;
     if (parsed.version !== version) {
       problems.push(`${name}: version is ${parsed.version ?? "(missing)"}, expected ${version}`);
@@ -166,8 +175,17 @@ export function inspectRelease({ dir, platform, version, arch }) {
 }
 
 function packageVersion() {
-  const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  return typeof packageJson.version === "string" ? packageJson.version : "";
+  try {
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    );
+    return typeof packageJson.version === "string" ? packageJson.version : "";
+  } catch (error) {
+    process.stderr.write(
+      `release-assets: could not read package.json (${error instanceof Error ? error.message : String(error)})\n`,
+    );
+    process.exit(2);
+  }
 }
 
 function main() {

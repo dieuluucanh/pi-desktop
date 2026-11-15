@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Builds `node-pty` for Linux inside a pinned old-glibc container
  * (2026-11-08 linux-terminal plan, step 5).
@@ -23,6 +22,9 @@
  * The image tag can be overridden with `--image` or `PI_PTY_IMAGE`; the release
  * workflow pins a digest there. The resolved digest is recorded in
  * `prebuilds/linux-<arch>/BUILD-INFO.json` for auditability.
+ *
+ * Invoked as `node scripts/…`; no shebang so the Vitest module runner can
+ * import it on a CRLF checkout.
  */
 
 import { execFileSync } from "node:child_process";

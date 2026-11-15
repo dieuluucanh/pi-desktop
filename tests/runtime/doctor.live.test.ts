@@ -116,7 +116,9 @@ describe("doctor", () => {
     // Invariants that must hold on any machine.
     expect(paths.profileDir.endsWith(join(".pi", "agent"))).toBe(true);
     expect(["ok", "unreachable", "not-our-bridge", "invalid-response"]).toContain(health.status);
-    expect(office.apps).toHaveLength(3);
+    // Linux detection intentionally reports no Office apps (there is no registry
+    // or app bundle to find), so the count is platform-aware.
+    expect(office.apps).toHaveLength(office.os === "linux" ? 0 : 3);
     if (!resolution.ok) {
       expect(resolution.hint).toContain("runtime:fetch");
     }

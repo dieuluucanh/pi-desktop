@@ -1,4 +1,4 @@
-import { join, normalize } from "node:path";
+import { join, normalize, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   resolveRuntime,
@@ -6,8 +6,10 @@ import {
   type RuntimeEnvironment,
 } from "../../src/main/runtime/resolve-runtime";
 
-const APP_ROOT = normalize("C:/repo");
-const RESOURCES = normalize("C:/repo/resources");
+/** A host-absolute Windows-shaped fixture: `C:\…` on win32, `/…` elsewhere. */
+const abs = (...parts: string[]): string => join(sep === "\\" ? "C:\\" : "/", ...parts);
+const APP_ROOT = abs("repo");
+const RESOURCES = abs("repo", "resources");
 
 interface FakeOptions {
   platform?: string;
@@ -121,7 +123,7 @@ describe("resolveRuntime — bundled runtime", () => {
 
 describe("resolveRuntime — overrides", () => {
   it("lets PI_DESKTOP_RUNTIME_DIR relocate the runtime", () => {
-    const dir = normalize("D:/runtime");
+    const dir = abs("runtime");
     const node = join(dir, "node", "win32-x64", "node.exe");
     const resolution = resolveRuntime(
       fakeEnv({
@@ -136,10 +138,11 @@ describe("resolveRuntime — overrides", () => {
   });
 
   it("lets PI_DESKTOP_NODE win over the bundled runtime", () => {
-    const custom = normalize("C:/tools/node/node.exe");
+    const custom = abs("tools", "node", sep === "\\" ? "node.exe" : "node");
+    const npmCli = abs("tools", "node", "npm-cli.js");
     const resolution = resolveRuntime(
       fakeEnv({
-        env: { PI_DESKTOP_NODE: custom, PI_DESKTOP_NPM_CLI: normalize("C:/tools/node/npm-cli.js") },
+        env: { PI_DESKTOP_NODE: custom, PI_DESKTOP_NPM_CLI: npmCli },
         files: [NODE, NPM_CLI, custom],
         versions: { [normalize(custom)]: "v23.0.0\n" },
       }),
@@ -147,12 +150,12 @@ describe("resolveRuntime — overrides", () => {
 
     expect(resolution.source).toBe("override");
     expect(resolution.nodePath).toBe(custom);
-    expect(resolution.nodeBinDir).toBe(normalize("C:/tools/node"));
-    expect(resolution.npmCommand).toEqual([custom, normalize("C:/tools/node/npm-cli.js")]);
+    expect(resolution.nodeBinDir).toBe(abs("tools", "node"));
+    expect(resolution.npmCommand).toEqual([custom, npmCli]);
   });
 
   it("lets PI_DESKTOP_HOST_ENTRY relocate the host bundle", () => {
-    const entry = normalize("D:/build/host.mjs");
+    const entry = abs("build", "host.mjs");
     const resolution = resolveRuntime(fakeEnv({ env: { PI_DESKTOP_HOST_ENTRY: entry } }));
 
     expect(resolution.piHostPath).toBe(entry);
@@ -225,7 +228,7 @@ describe("resolveRuntime — system fallback and failure", () => {
 
   it("reports an explicit override path that does not exist", () => {
     const resolution = resolveRuntime(
-      fakeEnv({ env: { PI_DESKTOP_NODE: normalize("C:/nope/node.exe") } }),
+      fakeEnv({ env: { PI_DESKTOP_NODE: abs("nope", sep === "\\" ? "node.exe" : "node") } }),
     );
 
     expect(resolution.ok).toBe(false);

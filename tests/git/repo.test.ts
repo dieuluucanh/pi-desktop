@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { initRepository, isRepository, readIdentity, readRepo } from "../../src/git/repo";
 import { createFakeGitRunner, createNodeGitRunner, type FakeGitSpec } from "../../src/git/runner";
 import { gitFixture, type GitFixture } from "./fixture";
@@ -290,8 +290,12 @@ describe("readRepo against a real repository", () => {
     const runner = createNodeGitRunner();
     const result = await readRepo(runner, join(fixture.root, "nested", "deep"), { pathKind });
     expect(result.available).toBe(true);
-    // `rev-parse --show-toplevel` reports the work-tree root, not the cwd.
-    expect(resolve(result.repo?.root ?? "")).toBe(resolve(fixture.root));
+    // `rev-parse --show-toplevel` reports the work-tree root, not the cwd. Compare
+    // real paths: macOS resolves `/var` to `/private/var` and Windows can return
+    // the long form of an 8.3 temp path.
+    const repoRoot = result.repo?.root ?? "";
+    expect(repoRoot).not.toBe("");
+    expect(await realpath(repoRoot)).toBe(await realpath(fixture.root));
   });
 
   it("reports a plain folder as not_a_repo", async () => {

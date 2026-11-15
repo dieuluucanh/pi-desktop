@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { launchFakeApp, type FakeApp } from "./fixtures/fake-app";
 import { removeTempDirs } from "./fixtures/app";
@@ -14,9 +14,10 @@ import { removeTempDirs } from "./fixtures/app";
  * commit reaches the real log, and that a restore round-trips through the rail's
  * own buttons and then Undo puts the second edit back.
  *
- * A second test removes `git` from `PATH` and asserts the *explicit* disabled
- * states. The supervisor prepends its own `binDir` shims, which cover
- * `node`/`npm`/`npx`/`pi` only — git really is absent, which is the R1 case.
+ * A second test removes `git` from `PATH` (while keeping the Node that runs the
+ * spec) and asserts the *explicit* disabled states. CI does not fetch the
+ * gitignored `resources/runtime`, so the app's system-Node fallback is what
+ * spawns the host; the Node install directory does not contain git.
  */
 
 /** True when a `git` answers; the whole file skips without one. */
@@ -184,12 +185,19 @@ test.describe("source control", () => {
     expect(handle).not.toBeNull();
     await app.window.mouse.move(handle!.x + handle!.width / 2, handle!.y + handle!.height / 2);
     await app.window.mouse.down();
-    await app.window.mouse.move(handle!.x + handle!.width / 2, handle!.y + 80, { steps: 8 });
-    // The blocks follow the pointer *before* release (2026-10-31 UI plan).
-    const during = await top.boundingBox();
-    expect(during).not.toBeNull();
-    expect(during!.height).toBeGreaterThan(before!.height);
-    await app.window.mouse.up();
+    try {
+      await app.window.mouse.move(handle!.x + handle!.width / 2, handle!.y + 80, { steps: 8 });
+      // The blocks follow the pointer *before* release (2026-10-31 UI plan).
+      // `BlockSplitter` keeps the preview in React state and a pointermove is a
+      // continuous-priority update, so poll for the commit instead of reading
+      // `boundingBox()` in the same task (the CI Windows runner always lost that
+      // race).
+      await expect
+        .poll(async () => (await top.boundingBox())?.height ?? 0, { timeout: 10_000 })
+        .toBeGreaterThan(before!.height);
+    } finally {
+      await app.window.mouse.up();
+    }
 
     const after = await top.boundingBox();
     expect(after).not.toBeNull();
@@ -376,9 +384,15 @@ test.describe("folder checkpoints", () => {
 
 test.describe("git missing (R1)", () => {
   test("states the disabled surfaces explicitly, never a silent failure", async () => {
-    // A PATH with only the bare system directory: the supervisor's own shims
-    // cover node/npm/npx/pi, so git really is absent here.
-    const emptyPath = process.platform === "win32" ? "C:\\Windows\\System32" : "/usr/bin";
+    // A PATH with only the bare system directory plus the Node that runs this
+    // spec: CI never fetches the gitignored `resources/runtime`, so the app's
+    // system-Node fallback is what spawns the host. The Node install directory
+    // does not contain git, so git really is absent here.
+    const nodeDir = dirname(process.execPath);
+    const emptyPath =
+      process.platform === "win32"
+        ? ["C:\\Windows\\System32", nodeDir].join(delimiter)
+        : [nodeDir, "/usr/bin"].join(delimiter);
     app = await launchFakeApp({ launch: { env: { PATH: emptyPath } } });
 
     await app.window

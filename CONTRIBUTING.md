@@ -27,6 +27,23 @@ app compares the running host's build id with the bundle on disk and recycles an
 idle stale host before the next request, so editing `src/host/**` takes effect
 without a manual restart. `npm run build:host` remains the one-shot build.
 
+## Project settings
+
+`.pi/settings.json` is **not committed** here. Pi and Pi Desktop load it as
+project-scope configuration, and its presence makes the folder trust-requiring
+on first open. The Workflow extension's policy commands and “Always allow”
+dialogs write machine-specific grants into it (absolute `readPolicy.allowedPaths`
+/ `writePolicy.allowedPaths`, sometimes `writePolicy.mode: "allow"`), so a
+committed copy would leak a contributor's paths and weaken every clone. The
+app's **Use project settings** toggle can also empty the file, so tracking it
+would churn.
+
+Copy `.pi/settings.example.json` to `.pi/settings.json` when you need portable
+project defaults, and keep grants in the global profile. Do not add absolute
+paths, `writePolicy.mode: "allow"` or `commitPolicy` release workarounds to a
+committed project file. Shared, curated project settings are tracked as backlog
+B23.
+
 ## Gates
 
 Run all of these before opening a pull request; CI runs the same set plus the

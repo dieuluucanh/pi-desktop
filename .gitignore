@@ -38,4 +38,6 @@ site/public/brand/
 site/public/docs/
 site/public/favicon.svg
 site/test-results/
+# Machine-local Pi project settings (absolute policy grants); the tracked
+# template is .pi/settings.example.json.
 .pi/settings.json
