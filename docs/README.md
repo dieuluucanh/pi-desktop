@@ -14,6 +14,10 @@
 
 ## Release notes
 
+- [`releases/v0.10.1.md`](releases/v0.10.1.md) — v0.10.1 release notes (prompt history
+  gates on displayed rows, the plain-arrow chord table, the layout-independent fallback
+  and the real-Chromium E2E proof), install table, known limitations and verification
+  status.
 - [`releases/v0.10.0.md`](releases/v0.10.0.md) — v0.10.0 release notes (extension
   update checks with consent-gated updates, the Pi agent release channel, every
   extension notification in the transcript, a full-width transcript, the
