@@ -272,6 +272,21 @@ same `→` marker and selection surface as the TUI surface, `↑`/`↓` move the
 selection (wrapping), `Enter` answers with it and `Esc` cancels. A click still
 answers immediately.
 
+### The Workflow todo panel’s native controls (2026-11-18)
+
+A component widget frame now carries its `ctx.ui.setWidget` key as
+`TuiFrame.key`. The host already holds that key in its `widgetsAbove` map; it is
+no longer discarded in `buildSnapshot`. The desktop uses it to identify
+`workflow-todos` without guessing from content (a keyless frame still falls back
+to the summary/row shape). `TodoPanelBar` renders above the above-editor strips
+and dispatches the extension’s `/todos auto|expand|collapse|hide` through
+`commands.run` with `ack: "started"`; it never touches the draft. The bar
+survives Hide, and the extension’s compact `workflow-todos` status
+(`☐ Todos 3/12 · hidden`) supplies progress/state while the panel is hidden or
+Review owns the turn. The desktop footer omits that status while the bar is
+visible. `Ctrl+Alt+L` toggles the panel; `Ctrl+Alt+O` remains Sessions, so the
+extension registers its terminal-only chord on terminal hosts only.
+
 ### Pi-parity rules for custom transcript items (2026-10-19 UI rework)
 
 Pi hides some custom items entirely, and the app must match it or a mode switch

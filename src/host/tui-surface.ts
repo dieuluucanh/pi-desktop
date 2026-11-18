@@ -410,17 +410,29 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
     return null;
   };
 
-  const makeFrame = (component: SurfaceComponent | null, width: number): TuiFrame | null => {
+  const makeFrame = (
+    component: SurfaceComponent | null,
+    width: number,
+    key?: string,
+  ): TuiFrame | null => {
     if (!component) return null;
     const lines = renderComponent(component, width);
     const cursor = component === focusedComponent ? extractCursor(lines) : null;
-    return { seq: ++frameSeq, width: Math.max(1, width), height: lines.length, cursor, lines };
+    const frame: TuiFrame = {
+      seq: ++frameSeq,
+      width: Math.max(1, width),
+      height: lines.length,
+      cursor,
+      lines,
+    };
+    if (key) frame.key = key;
+    return frame;
   };
 
   const buildSnapshot = (): TuiSurfaceSnapshot => {
     const widgetFrames = (widgets: Map<string, SurfaceComponent>): TuiFrame[] =>
-      [...widgets.values()]
-        .map((component) => makeFrame(component, cols))
+      [...widgets.entries()]
+        .map(([key, component]) => makeFrame(component, cols, key))
         .filter((frame): frame is TuiFrame => frame !== null);
     const widgetsAboveFrames = widgetFrames(widgetsAbove);
     const widgetsBelowFrames = widgetFrames(widgetsBelow);

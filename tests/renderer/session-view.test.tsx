@@ -874,6 +874,104 @@ describe("extension-owned review status (2026-11-10; one row 2026-11-18)", () =>
     expect(bar.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it("mounts the todo bar above the panel and the review row", () => {
+    useAppStore.setState({
+      extensionUi: {
+        [TAB]: {
+          ...EMPTY_EXTENSION_UI,
+          statuses: {
+            workflow: "🔍 review",
+            "workflow-todos": "☐ Todos 3/12 · expanded",
+          },
+        },
+      },
+      tuiSurfaces: {
+        [TAB]: {
+          ...EMPTY_TUI_SURFACE,
+          active: true,
+          widgetsAbove: [
+            {
+              seq: 1,
+              key: "workflow-todos",
+              width: 40,
+              height: 2,
+              lines: ["▶ 3. Build", "☐ 4. Test"],
+              cursor: null,
+            },
+          ],
+        },
+      },
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    const todoBar = screen.getByTestId("todo-panel-bar");
+    const widget = screen.getByText("▶ 3. Build");
+    const review = screen.getByTestId("review-bar");
+    const composer = screen.getByTestId("composer-drop");
+    expect(todoBar).toHaveTextContent("3/12");
+    expect(todoBar.compareDocumentPosition(widget) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(widget.compareDocumentPosition(review) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      review.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // The bar promotes the compact status; the footer omits its copy.
+    expect(screen.queryByTestId("extension-status-workflow-todos")).toBeNull();
+  });
+
+  it("keeps the bar when the list is hidden and dispatches the toggle", async () => {
+    const runTodoPanelAction = vi.fn(async (_tabId: string, _action: string) => true);
+    const spy = vi
+      .spyOn(
+        useAppStore.getState() as unknown as {
+          runTodoPanelAction: typeof runTodoPanelAction;
+        },
+        "runTodoPanelAction",
+      )
+      .mockImplementation(runTodoPanelAction);
+    useAppStore.setState({
+      extensionUi: {
+        [TAB]: {
+          ...EMPTY_EXTENSION_UI,
+          statuses: {
+            workflow: "▶ build 3/12",
+            "workflow-todos": "☐ Todos 3/12 · hidden",
+          },
+        },
+      },
+    });
+
+    try {
+      render(<SessionView tabId={TAB} />);
+      expect(screen.getByTestId("todo-panel-bar")).toHaveAttribute("data-state", "hidden");
+      expect(screen.getByTestId("todo-panel-bar")).toHaveTextContent("Hidden");
+      fireEvent.click(screen.getByTestId("todo-panel-bar-toggle"));
+      await waitFor(() => expect(runTodoPanelAction).toHaveBeenCalledWith(TAB, "expand"));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("degrades to no bar on an old extension's hidden Review panel", () => {
+    useAppStore.setState({
+      extensionUi: {
+        [TAB]: {
+          ...EMPTY_EXTENSION_UI,
+          statuses: { workflow: "🔍 review" },
+        },
+      },
+      tuiSurfaces: { [TAB]: { ...EMPTY_TUI_SURFACE, active: false } },
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    // 0.12.1 carries no `workflow-todos` status and the hidden panel has no
+    // frame; the menu/palette still dispatch /todos, but there is nothing to
+    // anchor a native bar to. The documented degradation must not crash.
+    expect(screen.queryByTestId("todo-panel-bar")).toBeNull();
+    expect(screen.getByTestId("review-bar")).toBeInTheDocument();
+  });
+
   it("keeps a residual workflow-review in the footer when no review row is visible", () => {
     useAppStore.setState({
       extensionUi: {

@@ -210,6 +210,56 @@ describe("runReviewCommand", () => {
   });
 });
 
+describe("runExtensionCommand and the todo bar action", () => {
+  it("returns ran/missing/unavailable without touching the draft", async () => {
+    useAppStore.getState().setDraft("tab-1", "keep this");
+    const request = stubRequest(async () => ({ ran: false }));
+
+    await expect(
+      useAppStore.getState().runExtensionCommand("tab-1", "todos", "collapse"),
+    ).resolves.toBe("missing");
+    expect(request).toHaveBeenCalledWith({
+      tabId: "tab-1",
+      method: "commands.run",
+      params: { name: "todos", args: "collapse", ack: "started" },
+    });
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("keep this");
+
+    stubRequest(async () => ({ ran: true }));
+    await expect(
+      useAppStore.getState().runExtensionCommand("tab-1", "todos", "expand"),
+    ).resolves.toBe("ran");
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("keep this");
+
+    stubRequest(async () => {
+      throw new Error("not implemented");
+    });
+    await expect(
+      useAppStore.getState().runExtensionCommand("tab-1", "todos", "hide"),
+    ).resolves.toBe("unavailable");
+  });
+
+  it("hints when the todo command is missing or the host cannot run it", async () => {
+    stubRequest(async () => ({ ran: false }));
+    await expect(useAppStore.getState().runTodoPanelAction("tab-1", "auto")).resolves.toBe(false);
+    expect(useAppStore.getState().hint).toContain("update @dieulc/workflow");
+
+    stubRequest(async () => {
+      throw new Error("not implemented");
+    });
+    await expect(useAppStore.getState().runTodoPanelAction("tab-1", "hide")).resolves.toBe(false);
+    expect(useAppStore.getState().hint).toContain("cannot run extension commands");
+  });
+
+  it("reports success from the todo bar action", async () => {
+    stubRequest(async () => ({ ran: true }));
+    await expect(useAppStore.getState().runTodoPanelAction("tab-1", "collapse")).resolves.toBe(
+      true,
+    );
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBeUndefined();
+  });
+});
+
 describe("bash mode", () => {
   it("routes `!command` to bash.run and never to prompt", async () => {
     const request = stubRequest(async () => ({ result: { output: "/work/app" } }));

@@ -5,6 +5,7 @@ import type { BlobRef, HostMethod } from "../../../shared/host-protocol";
 import { DEFAULT_PREFS, type PackageCheckPrefs, type UiPrefs } from "../../../shared/prefs";
 import { mergeTerminalPrefs, type TerminalPrefs } from "../../../shared/terminal-prefs";
 import { parseWorkflowStatus } from "../../../shared/workflow-mode";
+import type { TodoPanelActionId } from "../../../shared/workflow-todos";
 import {
   findProject,
   projectNameOf,
@@ -1105,6 +1106,19 @@ export interface AppStateShape {
    * keeping for after the review (2026-11-14 review-mode-isolation step 13).
    */
   runReviewCommand: (tabId: string, name: string) => Promise<boolean>;
+  /**
+   * Runs one extension command directly in the host. Used by the Review bar and
+   * the todo bar; it never clears or injects a draft. `missing` means the host
+   * answered but has no such command; `unavailable` means the request itself
+   * failed (an older host).
+   */
+  runExtensionCommand: (
+    tabId: string,
+    name: string,
+    args: string,
+  ) => Promise<ExtensionCommandOutcome>;
+  /** Runs `/todos <action>` and turns a failure into a precise hint. */
+  runTodoPanelAction: (tabId: string, action: TodoPanelActionId) => Promise<boolean>;
 
   /** Model, thinking and usage UX (plan step 8). */
   modelCatalog: Record<string, ModelCatalogEntry[]>;
@@ -1932,6 +1946,9 @@ export interface CommandOutcome {
   /** True when something was actually sent to the agent (or a host method ran). */
   sent: boolean;
 }
+
+/** One direct `commands.run` attempt. */
+export type ExtensionCommandOutcome = "ran" | "missing" | "unavailable";
 
 /** Which model/thinking dialog is open (plan step 8). */
 export type PickerKind = "model" | "thinking";
@@ -4406,63 +4423,34 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         return { handled: true, sent };
       }
 
-      const api = bridge();
-      if (!api?.sessions) {
-        set({ hint: "The preload bridge is unavailable." });
-        return { handled: true, sent: false };
-      }
-
-      let state: "ran" | "missing" | "unavailable";
-      try {
-        const response = await api.sessions.request({
-          tabId,
-          method: "commands.run",
-          params: { name, args: argument, ack: "started" },
-        });
-        state = parseCommandRunResult(response).ran ? "ran" : "missing";
-      } catch {
-        // An older host answers `not_implemented`; fall through to `prompt` so
-        // idle use still works after a downgrade.
-        state = "unavailable";
-      }
-
-      if (state === "ran") {
+      const outcome = await get().runExtensionCommand(tabId, name, argument);
+      if (outcome === "ran") {
         get().setDraft(tabId, "");
         rememberDraft(tabId, text);
         return { handled: true, sent: true };
       }
 
-      if (state === "missing") {
+      if (outcome === "missing") {
         const fresh = await get().loadCommands(tabId, { refresh: true });
         const retry = context(fresh);
         if (retry.kind === "host" && retry.command.source === "extension") {
-          try {
-            const response = await api.sessions.request({
-              tabId,
-              method: "commands.run",
-              params: { name: retry.name, args: retry.argument, ack: "started" },
-            });
-            if (parseCommandRunResult(response).ran) {
-              get().setDraft(tabId, "");
-              rememberDraft(tabId, text);
-              return { handled: true, sent: true };
-            }
-          } catch {
-            state = "unavailable";
+          const retried = await get().runExtensionCommand(tabId, retry.name, retry.argument);
+          if (retried === "ran") {
+            get().setDraft(tabId, "");
+            rememberDraft(tabId, text);
+            return { handled: true, sent: true };
           }
-        }
-        if (state === "missing") {
-          if (retry.kind === "unknown") {
+          if (retried === "missing") {
             set({ hint: `/${name} is no longer available — run /reload and try again.` });
             return { handled: true, sent: false };
           }
-          // The command changed kind (e.g. became a prompt template): dispatch
-          // again against the freshly cached list.
-          if (retry.kind !== "host" || retry.command.source !== "extension") {
-            return get().runCommandInput(tabId, text, options);
-          }
+        } else if (retry.kind === "unknown") {
           set({ hint: `/${name} is no longer available — run /reload and try again.` });
           return { handled: true, sent: false };
+        } else {
+          // The command changed kind (e.g. became a prompt template): dispatch
+          // again against the freshly cached list.
+          return get().runCommandInput(tabId, text, options);
         }
       }
 
@@ -4672,27 +4660,43 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  runReviewCommand: async (tabId, name) => {
+  runExtensionCommand: async (tabId, name, args) => {
     const api = bridge();
-    if (!api?.sessions) {
-      set({ hint: "The preload bridge is unavailable." });
-      return false;
-    }
+    if (!api?.sessions) return "unavailable";
     try {
       const response = await api.sessions.request({
         tabId,
         method: "commands.run",
-        params: { name, args: "", ack: "started" },
+        params: { name, args, ack: "started" },
       });
-      if (!parseCommandRunResult(response).ran) {
-        set({ hint: `/${name} is not available in this session.` });
-        return false;
-      }
-      return true;
-    } catch (error) {
-      get().noteFailure(error);
+      return parseCommandRunResult(response).ran ? "ran" : "missing";
+    } catch {
+      // An older host answers `not_implemented`; callers decide whether to fall
+      // back to a prompt (the composer) or explain the requirement (the bars).
+      return "unavailable";
+    }
+  },
+
+  runTodoPanelAction: async (tabId, action) => {
+    const outcome = await get().runExtensionCommand(tabId, "todos", action);
+    if (outcome === "missing") {
+      set({
+        hint: "The todo panel command is unavailable — update @dieulc/workflow in Extensions…",
+      });
       return false;
     }
+    if (outcome === "unavailable") {
+      set({ hint: "This host cannot run extension commands; restart the session and try again." });
+      return false;
+    }
+    return true;
+  },
+
+  runReviewCommand: async (tabId, name) => {
+    const outcome = await get().runExtensionCommand(tabId, name, "");
+    if (outcome === "ran") return true;
+    set({ hint: `/${name} is not available in this session.` });
+    return false;
   },
 
   stopRun: async (tabId) => {

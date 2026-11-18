@@ -4,10 +4,14 @@ import {
   handleMenuCommand,
   newSessionAction,
   openProjectAction,
+  runTodoPanelActionForActiveTab,
+  toggleTodoPanelForActiveTab,
 } from "../../src/renderer/src/menu-actions";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { TabRecord } from "../../src/shared/session-ipc";
 import { useEditorStore } from "../../src/renderer/src/editor/editor-store";
+import { EMPTY_EXTENSION_UI } from "../../src/shared/extension-ui";
+import { EMPTY_TUI_SURFACE } from "../../src/shared/tui-surface";
 import { documentsViewFixture, installBridge } from "./fixtures";
 
 /**
@@ -364,5 +368,89 @@ describe("grid layout commands", () => {
   ] as const)("%s selects the %s preset", (command, layout) => {
     handleMenuCommand(command);
     expect(useAppStore.getState().prefs.grid.layout).toBe(layout);
+  });
+});
+
+describe("todo panel menu commands", () => {
+  const sessionTab = (): TabRecord => ({
+    id: "tab-1",
+    kind: "session",
+    cwd: "/work/app",
+    title: "app",
+    sessionFile: null,
+    status: "idle",
+    createdAt: 1,
+    lastActiveAt: 1,
+    model: null,
+  });
+
+  function spyTodoAction() {
+    const action = vi.fn(async (_tabId: string, _verb: string) => true);
+    const spy = vi
+      .spyOn(
+        useAppStore.getState() as unknown as { runTodoPanelAction: typeof action },
+        "runTodoPanelAction",
+      )
+      .mockImplementation(action);
+    return { action, spy };
+  }
+
+  it("explains that a session is required", () => {
+    useAppStore.setState({ tabs: [], activeTabId: null, hint: null });
+    runTodoPanelActionForActiveTab("expand");
+    expect(useAppStore.getState().hint).toMatch(/open a session first/i);
+    useAppStore.setState({ hint: null });
+    toggleTodoPanelForActiveTab();
+    expect(useAppStore.getState().hint).toMatch(/open a session first/i);
+  });
+
+  it("routes the four explicit verbs to the active session", () => {
+    useAppStore.setState({ tabs: [sessionTab()], activeTabId: "tab-1" });
+    const { action, spy } = spyTodoAction();
+    try {
+      for (const [command, verb] of [
+        ["todos-auto", "auto"],
+        ["todos-expand", "expand"],
+        ["todos-collapse", "collapse"],
+        ["todos-hide", "hide"],
+      ] as const) {
+        handleMenuCommand(command);
+        expect(action, command).toHaveBeenLastCalledWith("tab-1", verb);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("derives the toggle from the effective state", () => {
+    useAppStore.setState({
+      tabs: [sessionTab()],
+      activeTabId: "tab-1",
+      extensionUi: {
+        "tab-1": {
+          ...EMPTY_EXTENSION_UI,
+          statuses: { "workflow-todos": "☐ Todos 3/12 · expanded" },
+        },
+      },
+      tuiSurfaces: { "tab-1": { ...EMPTY_TUI_SURFACE, active: true } },
+    });
+    const { action, spy } = spyTodoAction();
+    try {
+      handleMenuCommand("todos-toggle");
+      expect(action).toHaveBeenLastCalledWith("tab-1", "collapse");
+
+      useAppStore.setState({
+        extensionUi: {
+          "tab-1": {
+            ...EMPTY_EXTENSION_UI,
+            statuses: { "workflow-todos": "☐ Todos 3/12 · hidden" },
+          },
+        },
+      });
+      handleMenuCommand("todos-toggle");
+      expect(action).toHaveBeenLastCalledWith("tab-1", "expand");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

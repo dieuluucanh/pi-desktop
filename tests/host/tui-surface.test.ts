@@ -301,6 +301,7 @@ describe("tui surface widgets (2026-10-26 plan, step 5)", () => {
     port.setWidget("w", () => ({ render: () => ["first"], dispose: firstDispose }), "aboveEditor");
     await tick();
     expect(frames().at(-1)?.widgetsAbove[0]?.lines).toEqual(["first"]);
+    expect(frames().at(-1)?.widgetsAbove[0]?.key).toBe("w");
 
     const secondDispose = vi.fn();
     port.setWidget(
@@ -311,6 +312,7 @@ describe("tui surface widgets (2026-10-26 plan, step 5)", () => {
     await tick();
     expect(firstDispose).toHaveBeenCalledTimes(1);
     expect(frames().at(-1)?.widgetsAbove[0]?.lines).toEqual(["second"]);
+    expect(frames().at(-1)?.widgetsAbove[0]?.key).toBe("w");
 
     port.setWidget("w", undefined, "aboveEditor");
     await tick();
@@ -325,7 +327,9 @@ describe("tui surface widgets (2026-10-26 plan, step 5)", () => {
     port.setWidget("above", () => ({ render: () => ["above"] }), "aboveEditor");
     await tick();
     expect(frames().at(-1)?.widgetsBelow[0]?.lines).toEqual(["below"]);
+    expect(frames().at(-1)?.widgetsBelow[0]?.key).toBe("below");
     expect(frames().at(-1)?.widgetsAbove[0]?.lines).toEqual(["above"]);
+    expect(frames().at(-1)?.widgetsAbove[0]?.key).toBe("above");
 
     port.invalidate();
     expect(invalidate).toHaveBeenCalled();

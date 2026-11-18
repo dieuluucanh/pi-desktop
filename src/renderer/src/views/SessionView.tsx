@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Cpu } from "lucide-react";
 import { Composer } from "../session/Composer";
 import { ReviewBar } from "../session/ReviewBar";
+import { TodoPanelBar } from "../session/TodoPanelBar";
 import { StartingBanner } from "../session/StartingBanner";
 import { SessionFooter } from "../session/SessionFooter";
 import { Transcript } from "../session/Transcript";
@@ -40,6 +41,11 @@ import {
   reviewLineText,
   WORKFLOW_REVIEW_STATUS_KEY,
 } from "../../../shared/workflow-mode";
+import {
+  resolveTodoPanel,
+  TODO_STATUS_KEY,
+  type TodoPanelActionId,
+} from "../../../shared/workflow-todos";
 import { isLoopbackUrl } from "../../../shared/web-tabs";
 
 /**
@@ -187,6 +193,22 @@ export function SessionView({ tabId }: { tabId: string }) {
   const loadShortcuts = useAppStore((state) => state.loadShortcuts);
   const invokeShortcut = useAppStore((state) => state.invokeShortcut);
   const tuiSurface = useAppStore((state) => state.tuiSurfaces[tabId]);
+  const runTodoPanelAction = useAppStore((state) => state.runTodoPanelAction);
+  // The native todo bar's view model. The panel stays extension-owned; this
+  // adapter only reads the widget frame and the compact status (step 2).
+  const todoPanel = resolveTodoPanel({
+    frames: tuiSurface?.widgetsAbove ?? [],
+    widgets: extensionUi?.widgets ?? [],
+    statuses: extensionUi?.statuses ?? {},
+  });
+  // The bar promotes the compact todo status; the footer must not repeat it.
+  const hiddenSessionStatusKeys = useMemo(() => {
+    const keys = [
+      ...(reviewPhase ? REVIEW_HIDDEN_STATUS_KEYS : []),
+      ...(todoPanel.present ? [TODO_STATUS_KEY] : []),
+    ];
+    return keys.length > 0 ? keys : undefined;
+  }, [reviewPhase, todoPanel.present]);
   // Only the count drove a section header; the strip's badges now come from the
   // snapshot and the checkpoint store directly.
   const [composerFocusToken, setComposerFocusToken] = useState(0);
@@ -364,6 +386,18 @@ export function SessionView({ tabId }: { tabId: string }) {
   // composer — otherwise Tab/arrow keys silently stop reaching the extension.
   const surfaceOwnsKeyboard = tuiOwnsComposer || floatingOverlay || dialog !== null;
   const composerUnavailable = surfaceOwnsKeyboard;
+
+  const restoreComposerFocus = (): void => {
+    // A dialog owns the keys while it is open; never pull them away from it.
+    if (dialog !== null) return;
+    if (tuiOwnsComposer || floatingOverlay) setSurfaceFocusToken((token) => token + 1);
+    else setComposerFocusToken((token) => token + 1);
+  };
+
+  const handleTodoAction = async (action: TodoPanelActionId): Promise<void> => {
+    await runTodoPanelAction(active.id, action);
+    restoreComposerFocus();
+  };
 
   const resetDrop = (): void => {
     dropDepth.current = 0;
@@ -566,6 +600,9 @@ export function SessionView({ tabId }: { tabId: string }) {
               className="shrink-0 border-t border-line py-1"
             />
           ) : null}
+          {todoPanel.present ? (
+            <TodoPanelBar panel={todoPanel} onAction={handleTodoAction} />
+          ) : null}
           <WidgetStrip tabId={active.id} placement="aboveEditor" />
           <TuiWidgetStrip frames={tuiSurface?.widgetsAbove ?? []} placement="aboveEditor" />
           {reviewPhase ? (
@@ -699,7 +736,7 @@ export function SessionView({ tabId }: { tabId: string }) {
             <SessionFooter
               className="shrink-0 px-3 pb-1"
               homeDir={homeDir}
-              hiddenStatusKeys={reviewPhase ? REVIEW_HIDDEN_STATUS_KEYS : undefined}
+              hiddenStatusKeys={hiddenSessionStatusKeys}
               widgets={
                 belowSplit.inline.length > 0 ? <TuiWidgetInline frames={belowSplit.inline} /> : null
               }

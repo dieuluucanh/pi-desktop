@@ -7,6 +7,11 @@ import {
 } from "../../shared/zoom";
 import { useAppStore } from "./state/app-store";
 import { useEditorStore } from "./editor/editor-store";
+import {
+  resolveTodoPanel,
+  todoPanelToggle,
+  type TodoPanelActionId,
+} from "../../shared/workflow-todos";
 
 /**
  * Menu-command handling (plan step 1).
@@ -35,6 +40,39 @@ export const SHORTCUTS_HINT =
  */
 export function newSessionAction(): void {
   void useAppStore.getState().createSessionTab();
+}
+
+function activeSessionTabId(): string | null {
+  const store = useAppStore.getState();
+  const tab = store.activeTabId
+    ? store.tabs.find((entry) => entry.id === store.activeTabId)
+    : undefined;
+  if (!store.activeTabId || !tab || tab.kind !== "session") {
+    store.setHint("Open a session first — the todo panel belongs to a session.");
+    return null;
+  }
+  return store.activeTabId;
+}
+
+/** Runs one explicit `/todos` display verb for the active session. */
+export function runTodoPanelActionForActiveTab(action: TodoPanelActionId): void {
+  const tabId = activeSessionTabId();
+  if (!tabId) return;
+  void useAppStore.getState().runTodoPanelAction(tabId, action);
+}
+
+/** Mirrors the extension's terminal Ctrl+Alt+O on the active session. */
+export function toggleTodoPanelForActiveTab(): void {
+  const tabId = activeSessionTabId();
+  if (!tabId) return;
+  const store = useAppStore.getState();
+  const panel = resolveTodoPanel({
+    frames: store.tuiSurfaces[tabId]?.widgetsAbove ?? [],
+    widgets: store.extensionUi[tabId]?.widgets ?? [],
+    statuses: store.extensionUi[tabId]?.statuses ?? {},
+  });
+  const action = todoPanelToggle(panel).action;
+  void store.runTodoPanelAction(tabId, action);
 }
 
 /** Opens the same Sessions dialog as `/resume`, the menu and the strip button. */
@@ -103,6 +141,21 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
       return;
     case "view-sessions":
       void store.openSessionBrowser();
+      return;
+    case "todos-auto":
+      runTodoPanelActionForActiveTab("auto");
+      return;
+    case "todos-expand":
+      runTodoPanelActionForActiveTab("expand");
+      return;
+    case "todos-collapse":
+      runTodoPanelActionForActiveTab("collapse");
+      return;
+    case "todos-hide":
+      runTodoPanelActionForActiveTab("hide");
+      return;
+    case "todos-toggle":
+      toggleTodoPanelForActiveTab();
       return;
     case "next-tab":
       void store.cycleTab(1);

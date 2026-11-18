@@ -138,6 +138,10 @@ skip`. The row adds Pause/Abort while running, Resume/Abort while paused, and
 - **Composer.** The Review badge uses the `info` tone, Stop is hidden while
   Review owns the turn (Stop would abort the parent run, not the review), and
   the hint row explains that only review/model/profile commands are accepted.
+- **Todo panel.** The native Todo bar above the panel exposes the four display
+  verbs in Review; the extension's `workflow-todos` status supplies progress
+  while the panel is hidden or Review owns the turn, and a same-path Review
+  rewrite keeps the user's collapse/hide choice (plan-scoped preference).
 
 Both halves must be upgraded together. A new extension with an old desktop
 degrades to no badge but keeps the extension-side lock; an old extension with

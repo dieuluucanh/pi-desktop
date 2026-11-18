@@ -189,6 +189,22 @@ rendered as a footer column instead of its own strip (2026-10-31 UI plan);
 multi-line frames keep Pi's placement. The TUI grid is measured from this column,
 never from the surface's own rendered frame (`src/renderer/src/tui/use-tui-viewport.ts`).
 
+**The Workflow todo panel has a native control bar (2026-11-18).** The panel
+itself stays the extension's read-only `workflow-todos` frame. `TodoPanelBar`
+sits above the above-editor strips in every workflow mode, including Review and
+while a questionnaire owns the composer. It shows `Todos done/total`, the
+effective state, and settled/stale markers, with an Expand/Collapse toggle and a
+menu for Automatic / Show full list / Collapse / Hide. The bar stays mounted when
+the list is hidden, so Hide is reversible. Actions dispatch `/todos <verb>`
+through `commands.run` (not a prompt), so they work in Review and behind a TUI
+overlay; focus returns to the surface or composer afterwards. The desktop chord
+is `Ctrl+Alt+L`; `Ctrl+Alt+O` remains Sessions. The extension publishes a compact
+`workflow-todos` status while its panel is hidden or Review owns the turn; the
+bar hides that key from the footer to avoid a duplicate. A widget frame now
+carries its `setWidget` key (`TuiFrame.key`), which is how the bar identifies the
+panel. Older `@dieulc/workflow` versions degrade to no Review+hidden bar, while
+the menu/palette still dispatch the command.
+
 **The workflow mode is shown as text, not just colour.** The composer's textarea
 border reflects the Workflow extension's mode (`Plan` → warn, `Build` → accent,
 `Review` → info), decoded from its status text by

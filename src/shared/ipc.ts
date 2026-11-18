@@ -329,6 +329,14 @@ export const MENU_COMMANDS = [
   "open-web-url",
   "close-session",
   "view-sessions",
+  // Todo panel display control (2026-11-18 todo-panel-all-states plan).
+  // Explicit verbs plus a toggle; the toggle owns CmdOrCtrl+Alt+L because
+  // Ctrl+Alt+O is already Sessions. The renderer dispatches /todos <verb>.
+  "todos-auto",
+  "todos-expand",
+  "todos-collapse",
+  "todos-hide",
+  "todos-toggle",
   "next-tab",
   "previous-tab",
   "command-palette",
