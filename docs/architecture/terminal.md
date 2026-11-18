@@ -193,7 +193,7 @@ clipboard through `navigator.clipboard` and call `term.paste()`; the native
 `paste` event (Edit ▸ Paste, the right-click menu, middle-click, a macOS menu
 accelerator) is captured on the terminal host with `capture: true`,
 `preventDefault()` and `stopPropagation()`, then written through the same path.
-`src/renderer/src/terminal/paste-intake.ts` is the one decision point: an
+`src/renderer/src/ui/paste-intake.ts` is the one decision point: an
 identical text arriving from the _other_ source within 200 ms is treated as the
 same gesture and dropped, while same-source repeats (holding Ctrl+V, two
 deliberate pastes) always pass. `term.paste()` applies xterm's own line-ending
@@ -204,6 +204,26 @@ terminal has focus, so menu accelerators cannot steal those chords; macOS
 accelerators are Cmd-based, and the intake makes a menu paste that races the
 renderer keydown safe. Menu items (`New Terminal`, `Toggle Terminal`) are the
 non-terminal entry point.
+
+### Mouse wheel in the alternate screen
+
+xterm.js keeps xterm's `alternateScroll` rule: while the **alternate screen** is
+active and the running program has not enabled a mouse protocol that reports the
+wheel, a wheel event is written to the PTY as `ESC[A` / `ESC[B`. Inside a
+full-screen TUI (the Pi agent, `less`, `vim`) those are arrow keys, so scrolling
+the transcript recalled previous prompts instead of scrolling anything.
+
+`src/shared/terminal-wheel.ts` is the policy behind the renderer's
+`term.attachCustomWheelEventHandler` and takes exactly that state over: one
+**PageUp/PageDown** per wheel gesture (a same-direction burst of events within
+180 ms), and a swallow for a zoom chord or a horizontal wheel. Page keys scroll
+Pi's alt-screen viewport (`tui.altScreen.pageUp`/`pageDown`), pagers and editors,
+and no arrow is ever synthesized. Every other state is `native`: the normal
+screen keeps xterm's scrollback, and a program that reports the wheel
+(`mouseTrackingMode` is `vt200`/`drag`/`any`; `x10` has no wheel report) keeps
+xterm's line-by-line SGR path, so Pi fullscreen in mouse mode is unchanged.
+`TerminalView` restores a pass-through handler when it unmounts, because the
+pooled xterm outlives the view.
 
 ## Theme and appearance
 

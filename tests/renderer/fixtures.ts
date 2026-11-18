@@ -165,6 +165,9 @@ export interface BridgeHandles {
   gitCalls: Array<{ kind: string; projectPath: string; payload?: unknown }>;
   /** Every terminal:create request, in order. */
   terminalCalls: TerminalCreateInput[];
+  /** Every `tui.setFocus` ping, in order. */
+  tuiFocusCalls: Array<{ tabId: string; focused: boolean }>;
+  emitTuiPaste(tabId: string): void;
   /** Every session:create request, in order. */
   sessionCreateCalls: CreateTabInput[];
   checkpointCalls: Array<{ kind: string; projectPath: string; payload?: unknown }>;
@@ -205,6 +208,8 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
   const gitListeners = new Set<(snapshot: GitSnapshot) => void>();
   const gitCalls: Array<{ kind: string; projectPath: string; payload?: unknown }> = [];
   const terminalCalls: TerminalCreateInput[] = [];
+  const tuiFocusCalls: Array<{ tabId: string; focused: boolean }> = [];
+  const tuiPasteListeners = new Set<(tabId: string) => void>();
   const sessionCreateCalls: CreateTabInput[] = [];
   const terminalProfiles: TerminalProfileSnapshot = options.terminalProfiles ?? {
     profiles: [],
@@ -262,6 +267,15 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
       profiles: async () => terminalProfiles,
       setFocus: () => undefined,
       onEvent: () => () => undefined,
+    },
+    tui: {
+      setFocus: (tabId, focused) => {
+        tuiFocusCalls.push({ tabId, focused });
+      },
+      onPasteRequest: (listener) => {
+        tuiPasteListeners.add(listener);
+        return () => tuiPasteListeners.delete(listener);
+      },
     },
     prefs: {
       get: async () => ({ ...prefs }),
@@ -647,6 +661,11 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
     bridge,
     prefs,
     terminalCalls,
+    tuiFocusCalls,
+    /** Pushes a menu/context-menu Paste to the focused extension frame. */
+    emitTuiPaste: (tabId: string) => {
+      for (const listener of tuiPasteListeners) listener(tabId);
+    },
     sessionCreateCalls,
     gitCalls,
     emitGitSnapshot: (snapshot: GitSnapshot) => {

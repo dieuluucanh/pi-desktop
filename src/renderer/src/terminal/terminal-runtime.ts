@@ -19,6 +19,7 @@ import {
 import { terminalThemeFromCssVariables } from "../../../shared/terminal-theme";
 import type { TerminalKeyPlatform } from "../../../shared/terminal-keys";
 import { terminalFontFamilyFromDocument } from "./terminal-font";
+import { platformFromNavigator } from "../ui/platform";
 import {
   createTerminalStore,
   type TerminalStore,
@@ -51,12 +52,7 @@ const config: RuntimeConfig = {
   macOptionIsMeta: DEFAULT_TERMINAL_PREFS.macOptionIsMeta,
   copyOnSelection: DEFAULT_TERMINAL_PREFS.copyOnSelection,
   enableBell: DEFAULT_TERMINAL_PREFS.enableBell,
-  platform:
-    typeof navigator !== "undefined" && /Mac/i.test(navigator.platform)
-      ? "darwin"
-      : typeof navigator !== "undefined" && /Win/i.test(navigator.platform)
-        ? "win32"
-        : "linux",
+  platform: platformFromNavigator(typeof navigator === "undefined" ? null : navigator.platform),
   requestTrust: async () => false,
 };
 

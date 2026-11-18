@@ -42,14 +42,27 @@ export interface PoolTerminal {
   setOptions(options: TerminalOptionsPatch): void;
   /** Raw user input; the view owns the key policy and writes to the PTY. */
   onData(listener: (data: string) => void): () => void;
-  /**
-   * xterm's custom key handler: return false to keep a chord for the app.
+  /** xterm's custom key handler: return false to keep a chord for the app.
    *
    * xterm invokes it for keydown, keypress **and** keyup, so the owner decides
    * which of those acts (the terminal view acts on keydown only and cancels the
    * DOM event, which is what stops the browser's own clipboard command).
    */
   attachKeyHandler(handler: (event: KeyboardEvent) => boolean): void;
+  /** The active buffer; a full-screen program runs in the `alternate` one. */
+  bufferType(): "normal" | "alternate";
+  /**
+   * True when the program enabled a mouse protocol that reports the wheel.
+   *
+   * x10 only reports button presses, so it counts as false — the same rule
+   * xterm uses when it decides whether to install its wheel handler.
+   */
+  mouseWheelReports(): boolean;
+  /**
+   * xterm's custom wheel hook. Returning false cancels xterm's own handling,
+   * which is what stops the alternate screen's wheel → arrow fallback.
+   */
+  attachWheelHandler(handler: (event: WheelEvent) => boolean): void;
   paste(text: string): void;
   onTitleChange(listener: (title: string) => void): () => void;
   onSelectionChange(listener: () => void): () => void;

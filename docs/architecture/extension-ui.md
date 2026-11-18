@@ -173,6 +173,35 @@ proposed commit message out of the Workflow questionnaire. Two rules fix it:
 
 The renderer's right-click menu offers the same Copy action.
 
+**Pasting into a TUI surface (2026-11-18 questionnaire paste plan).** The
+questionnaire's free-text answer is the extension's own component, not a DOM
+input, so Chromium's paste command never runs on it: Ctrl+V used to reach the
+frame as the raw byte `\x16`, Cmd+V was dropped, and `webContents.paste()` is a
+no-op on a non-editable `div`. This is a desktop-only gap — terminal Pi gets a
+bracketed paste from its terminal emulator — so the surface now supplies the
+same gesture:
+
+- **The surface recognises the chord.** Ctrl+V and Ctrl+Shift+V (Windows/Linux),
+  Cmd+V (macOS) and Shift+Insert read the clipboard through
+  `readClipboardText()` and send **one bracketed paste** to the extension; the
+  `paste` event path (middle-click, a menu paste) goes through the same
+  `createPasteIntake` decision point, so one gesture writes once and two
+  deliberate pastes still both pass. The paste body has its own delimiters
+  stripped, so text can never escape the framing.
+- **The extension keeps its own semantics.** A bracketed paste makes pi-tui's
+  `Input` strip newlines and its `Editor` normalise line endings and collapse a
+  large paste into its own `[paste #N +lines]` marker — exactly terminal Pi. The
+  composer's `[paste #N]` markers are deliberately **not** applied here: the
+  extension owns the field and its submit, so a marker would be sent as literal
+  text.
+- **Menus work.** The surface reports keyboard ownership (`IPC.tuiFocus`), and
+  main's right-click Paste and Edit ▸ Paste send the renderer a paste request
+  for that tab instead of running the native command. With no extension frame
+  focused, Edit ▸ Paste is the ordinary `webContents.paste()`.
+
+Image/file paste still has no path into an extension frame (`onPasteImage` is not
+bridged); the native composer keeps its attachments for that.
+
 **A custom editor is recorded, not mounted (2026-10-26).** Pi’s interactive
 mode’s `setCustomEditorComponent` wires `onSubmit`, `onChange`, the autocomplete
 provider, `actionHandlers`, `onExtensionShortcut`, `onEscape`, `onCtrlD` and

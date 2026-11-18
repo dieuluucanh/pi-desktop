@@ -1,4 +1,4 @@
-import type { MenuItemConstructorOptions } from "electron";
+import type { BrowserWindow, MenuItemConstructorOptions, WebContents } from "electron";
 import type { MenuCommand } from "../shared/ipc";
 
 /**
@@ -24,6 +24,13 @@ export interface AppMenuDeps {
    * default. The menu is rebuilt when the prefs change.
    */
   accelerators?: Partial<Record<MenuCommand, string | null>>;
+  /**
+   * Edit ▸ Paste. Main routes it by the focused surface: an extension TUI frame
+   * is not editable, so `webContents.paste()` cannot reach it and the window
+   * sends a paste request to the renderer instead. Without this callback the
+   * item falls back to the native command, which is what tests exercise.
+   */
+  onPaste?: (contents: WebContents | null) => void;
 }
 
 export const DOCS_URL = "https://github.com/earendil-works/pi";
@@ -136,7 +143,7 @@ function toItems(
  * contract the renderer's keyboard handling mirrors.
  */
 export function menuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
-  const { appName, isMac, onCommand, onOpenExternal, accelerators = {} } = deps;
+  const { appName, isMac, onCommand, onOpenExternal, accelerators = {}, onPaste } = deps;
 
   const template: MenuItemConstructorOptions[] = [];
 
@@ -174,7 +181,21 @@ export function menuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
       { type: "separator" },
       { role: "cut" },
       { role: "copy" },
-      { role: "paste" },
+      {
+        // A custom item rather than `role: "paste"`: a role always runs the
+        // native command, which is a no-op on a focused extension frame.
+        label: "Paste",
+        accelerator: "CmdOrCtrl+V",
+        click: (_item, window) => {
+          // `Menu` hands us a BaseWindow; this app only creates BrowserWindows.
+          const contents = (window as BrowserWindow | undefined)?.webContents ?? null;
+          if (onPaste) {
+            onPaste(contents);
+            return;
+          }
+          contents?.paste();
+        },
+      },
       { role: "selectAll" },
     ],
   });

@@ -3,7 +3,7 @@ import {
   PASTE_DUPLICATE_WINDOW_MS,
   createPasteIntake,
   type PasteIntake,
-} from "../../src/renderer/src/terminal/paste-intake";
+} from "../../src/renderer/src/ui/paste-intake";
 
 /**
  * The paste intake (2026-11-14 terminal paste plan, step 4).

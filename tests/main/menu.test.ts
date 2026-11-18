@@ -28,7 +28,10 @@ function allItems(
   return into;
 }
 
-function build(isMac = false): {
+function build(
+  isMac = false,
+  onPaste?: (contents: unknown) => void,
+): {
   template: MenuItemConstructorOptions[];
   onCommand: ReturnType<typeof vi.fn>;
   onOpenExternal: ReturnType<typeof vi.fn>;
@@ -40,11 +43,46 @@ function build(isMac = false): {
     isMac,
     onCommand,
     onOpenExternal,
+    ...(onPaste ? { onPaste: onPaste as never } : {}),
   });
   return { template, onCommand, onOpenExternal };
 }
 
+function editPaste(template: MenuItemConstructorOptions[]): MenuItemConstructorOptions {
+  const edit = template.find((item) => item.label === "Edit");
+  const paste = (edit?.submenu as MenuItemConstructorOptions[] | undefined)?.find(
+    (item) => item.label === "Paste",
+  );
+  if (!paste) throw new Error("no Edit ▸ Paste item");
+  return paste;
+}
+
 describe("menuTemplate", () => {
+  it("routes Edit ▸ Paste through the focused-surface router", () => {
+    const onPaste = vi.fn();
+    const { template } = build(false, onPaste);
+    const paste = editPaste(template);
+    expect(paste.accelerator).toBe("CmdOrCtrl+V");
+
+    const nativePaste = vi.fn();
+    (paste.click as unknown as (item: unknown, window: unknown) => void)(
+      {},
+      { webContents: { paste: nativePaste } },
+    );
+    expect(onPaste).toHaveBeenCalledWith({ paste: nativePaste });
+    expect(nativePaste).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the native paste command without a router", () => {
+    const { template } = build();
+    const nativePaste = vi.fn();
+    (editPaste(template).click as unknown as (item: unknown, window: unknown) => void)(
+      {},
+      { webContents: { paste: nativePaste } },
+    );
+    expect(nativePaste).toHaveBeenCalledTimes(1);
+  });
+
   it("exposes every MenuCommand exactly once", () => {
     const { template } = build();
     const ids = collectIds(template);

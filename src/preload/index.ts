@@ -13,6 +13,7 @@ import {
   type SessionDeleteResult,
   type DiagnosticsSaveResult,
   type SessionsBridge,
+  type TuiBridge,
   type UpdatesBridge,
   type WebBridge,
   type GitBridge,
@@ -373,6 +374,11 @@ const terminal: TerminalBridge = {
     subscribe<TerminalEventFrame>(IPC.terminalEvent, listener),
 };
 
+const tui: TuiBridge = {
+  setFocus: (tabId: string, focused: boolean) => ipcRenderer.send(IPC.tuiFocus, { tabId, focused }),
+  onPasteRequest: (listener: (tabId: string) => void) => subscribe<string>(IPC.tuiPaste, listener),
+};
+
 const bridge: PiDesktopBridge = {
   getAppInfo: () => ipcRenderer.invoke(IPC.appInfo) as Promise<AppInfo>,
   openExternal: (url: string) => ipcRenderer.invoke(IPC.openExternal, url) as Promise<boolean>,
@@ -420,6 +426,7 @@ const bridge: PiDesktopBridge = {
   prefs,
   sessions,
   terminal,
+  tui,
   projects,
   office,
   integrations,

@@ -48,6 +48,7 @@ interface Recording {
   officeCalls: { kind: string; tabId?: string; takeover?: boolean }[];
   workspaceCalls: { kind: string; input?: unknown }[];
   sessionCalls: { kind: string; arg?: unknown }[];
+  tuiFocusCalls: { windowId: number; tabId: string | null }[];
 }
 
 const OPEN_PROJECT = "/work/app";
@@ -104,6 +105,11 @@ async function register(recording: Recording): Promise<void> {
       list: async () => [],
       profiles: async () => ({ profiles: [], defaultProfileId: null, problems: [] }),
       setFocus: () => undefined,
+    },
+    tui: {
+      setFocus: (windowId, tabId) => {
+        recording.tuiFocusCalls.push({ windowId, tabId });
+      },
     },
     sessions: {
       knownTabIds: () => ["t1"],
@@ -343,6 +349,13 @@ function invoke(channel: string, ...args: unknown[]): unknown {
   return handler({}, ...args);
 }
 
+/** Delivers one `ipcMain.on` frame from a fake window, like a renderer send. */
+function send(channel: string, senderId: number, payload: unknown): void {
+  const listener = listeners.get(channel);
+  if (!listener) throw new Error(`no listener for ${channel}`);
+  listener({ sender: { id: senderId } }, payload);
+}
+
 let recording: Recording;
 
 beforeEach(async () => {
@@ -353,6 +366,7 @@ beforeEach(async () => {
     officeCalls: [],
     workspaceCalls: [],
     sessionCalls: [],
+    tuiFocusCalls: [],
   };
   await register(recording);
 });
@@ -747,5 +761,31 @@ describe("workspace mutation channels", () => {
       }),
     ).rejects.toThrow(/not an open project/);
     expect(recording.workspaceCalls).toEqual([]);
+  });
+});
+
+describe("extension TUI focus frames", () => {
+  it("records the focused tab and clears it when focus leaves", () => {
+    send(IPC.tuiFocus, 7, { tabId: "t1", focused: true });
+    expect(recording.tuiFocusCalls).toEqual([{ windowId: 7, tabId: "t1" }]);
+
+    send(IPC.tuiFocus, 7, { tabId: "t1", focused: false });
+    expect(recording.tuiFocusCalls).toEqual([
+      { windowId: 7, tabId: "t1" },
+      { windowId: 7, tabId: null },
+    ]);
+  });
+
+  it("drops a malformed frame instead of clearing another tab", () => {
+    const malformed = [
+      null,
+      {},
+      { tabId: "", focused: true },
+      { tabId: "t1", focused: "yes" },
+      { tabId: 1, focused: true },
+      { tabId: "x".repeat(129), focused: true },
+    ];
+    for (const payload of malformed) send(IPC.tuiFocus, 7, payload);
+    expect(recording.tuiFocusCalls).toEqual([]);
   });
 });

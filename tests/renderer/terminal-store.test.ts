@@ -61,6 +61,13 @@ class FakeTerm implements PoolTerminal {
     return () => undefined;
   }
   attachKeyHandler(): void {}
+  bufferType(): "normal" | "alternate" {
+    return "normal";
+  }
+  mouseWheelReports(): boolean {
+    return false;
+  }
+  attachWheelHandler(): void {}
   paste(): void {}
   onTitleChange(): () => void {
     return () => undefined;

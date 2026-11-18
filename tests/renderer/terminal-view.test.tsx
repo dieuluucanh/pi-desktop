@@ -45,6 +45,9 @@ class FakeTerm implements PoolTerminal {
   private readonly bellListeners = new Set<() => void>();
   selection = "";
   keyHandler: ((event: KeyboardEvent) => boolean) | null = null;
+  wheelHandler: ((event: WheelEvent) => boolean) | null = null;
+  buffer: "normal" | "alternate" = "normal";
+  mouseWheelReporting = false;
   fitCalls = 0;
   fitSize = { cols: 80, rows: 24 };
 
@@ -92,6 +95,15 @@ class FakeTerm implements PoolTerminal {
   }
   attachKeyHandler(handler: (event: KeyboardEvent) => boolean): void {
     this.keyHandler = handler;
+  }
+  bufferType(): "normal" | "alternate" {
+    return this.buffer;
+  }
+  mouseWheelReports(): boolean {
+    return this.mouseWheelReporting;
+  }
+  attachWheelHandler(handler: (event: WheelEvent) => boolean): void {
+    this.wheelHandler = handler;
   }
   paste(text: string): void {
     this.pasted.push(text);
@@ -213,7 +225,7 @@ describe("TerminalView", () => {
   /** Mounts the view and returns the pooled fake terminal plus its host. */
   async function mountTerminal(platform: TerminalKeyPlatform = "linux") {
     const harness = setup();
-    render(
+    const view = render(
       <TerminalView
         tab={TAB}
         store={harness.store}
@@ -225,6 +237,7 @@ describe("TerminalView", () => {
     await waitFor(() => expect(harness.store.getState().forTab(TAB.id)?.status).toBe("attached"));
     return {
       ...harness,
+      unmount: view.unmount,
       host: screen.getByTestId("terminal-host"),
       term: harness.terms[0]!,
     };
@@ -638,5 +651,75 @@ describe("TerminalView", () => {
     act(() => observer.trigger());
     expect(terms[0]!.fitCalls).toBe(before + 1);
     await waitFor(() => expect(resizes).toEqual([["t-1", 100, 40]]));
+  });
+
+  describe("mouse wheel", () => {
+    function wheel(init: WheelEventInit = {}): WheelEvent {
+      return new WheelEvent("wheel", { deltaY: 100, cancelable: true, bubbles: true, ...init });
+    }
+
+    it("pages the alternate screen instead of sending arrow keys", async () => {
+      const { term, writes } = await mountTerminal();
+      term.buffer = "alternate";
+
+      const event = wheel({ deltaY: 120 });
+      expect(term.wheelHandler?.(event)).toBe(false);
+      expect(event.defaultPrevented).toBe(true);
+      await waitFor(() => expect(writes).toEqual([["t-1", "\x1b[6~"]]));
+    });
+
+    it("sends one page per gesture and a page the other way on reversal", async () => {
+      const { term, writes } = await mountTerminal();
+      term.buffer = "alternate";
+
+      act(() => term.wheelHandler?.(wheel({ deltaY: -120 })));
+      await waitFor(() => expect(writes).toEqual([["t-1", "\x1b[5~"]]));
+
+      // Same direction inside the burst window: swallowed, no second page.
+      const repeat = wheel({ deltaY: -120 });
+      expect(term.wheelHandler?.(repeat)).toBe(false);
+      expect(repeat.defaultPrevented).toBe(true);
+      expect(writes).toHaveLength(1);
+
+      act(() => term.wheelHandler?.(wheel({ deltaY: 120 })));
+      await waitFor(() =>
+        expect(writes).toEqual([
+          ["t-1", "\x1b[5~"],
+          ["t-1", "\x1b[6~"],
+        ]),
+      );
+    });
+
+    it("leaves the normal screen and a wheel-reporting program to xterm", async () => {
+      const { term, writes } = await mountTerminal();
+      expect(term.wheelHandler?.(wheel())).toBe(true);
+
+      term.buffer = "alternate";
+      term.mouseWheelReporting = true;
+      expect(term.wheelHandler?.(wheel())).toBe(true);
+      expect(writes).toHaveLength(0);
+    });
+
+    it("swallows zoom and horizontal wheels without synthesizing a key", async () => {
+      const { term, writes } = await mountTerminal();
+      term.buffer = "alternate";
+
+      for (const init of [{ ctrlKey: true }, { metaKey: true }, { deltaY: 0, deltaX: 80 }]) {
+        const event = wheel(init);
+        expect(term.wheelHandler?.(event)).toBe(false);
+        expect(event.defaultPrevented).toBe(true);
+      }
+      expect(writes).toHaveLength(0);
+    });
+
+    it("restores xterm's own handling when the view unmounts", async () => {
+      const { term, unmount } = await mountTerminal();
+      term.buffer = "alternate";
+      unmount();
+
+      const event = wheel();
+      expect(term.wheelHandler?.(event)).toBe(true);
+      expect(event.defaultPrevented).toBe(false);
+    });
   });
 });

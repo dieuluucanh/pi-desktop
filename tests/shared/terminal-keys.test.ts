@@ -4,6 +4,7 @@ import {
   bracketedPaste,
   domKeyToTerminalData,
   domWheelToTerminalData,
+  isPasteChord,
   terminalKeyDecision,
   type TerminalKeyContext,
 } from "../../src/shared/terminal-keys";
@@ -63,6 +64,48 @@ describe("domKeyToTerminalData", () => {
     expect(data.startsWith("\x1b[200~")).toBe(true);
     expect(data.endsWith("\x1b[201~")).toBe(true);
     expect(data).toContain("hi\nthere");
+  });
+
+  it("strips embedded paste delimiters so the framing cannot be escaped", () => {
+    const data = bracketedPaste("a\x1b[201~b\x1b[200~c");
+    expect(data).toBe("\x1b[200~abc\x1b[201~");
+  });
+});
+
+describe("isPasteChord", () => {
+  const base = { key: "v" };
+
+  it("accepts Ctrl+V and Ctrl+Shift+V on Windows and Linux", () => {
+    for (const platform of ["win32", "linux"] as const) {
+      expect(isPasteChord({ ...base, ctrlKey: true, platform })).toBe(true);
+      expect(isPasteChord({ ...base, ctrlKey: true, shiftKey: true, platform })).toBe(true);
+    }
+  });
+
+  it("accepts Shift+Insert on Windows and Linux", () => {
+    for (const platform of ["win32", "linux"] as const) {
+      expect(isPasteChord({ key: "Insert", shiftKey: true, platform })).toBe(true);
+      expect(isPasteChord({ key: "Insert", platform })).toBe(false);
+      expect(isPasteChord({ key: "Insert", ctrlKey: true, platform })).toBe(false);
+    }
+  });
+
+  it("rejects the Windows key chord (OS clipboard history)", () => {
+    expect(isPasteChord({ ...base, metaKey: true, platform: "win32" })).toBe(false);
+    expect(isPasteChord({ ...base, metaKey: true, platform: "linux" })).toBe(false);
+  });
+
+  it("uses Cmd+V on macOS and leaves Ctrl+V to the editor", () => {
+    expect(isPasteChord({ ...base, metaKey: true, platform: "darwin" })).toBe(true);
+    expect(isPasteChord({ ...base, ctrlKey: true, platform: "darwin" })).toBe(false);
+    expect(isPasteChord({ ...base, metaKey: true, ctrlKey: true, platform: "darwin" })).toBe(false);
+    expect(isPasteChord({ key: "Insert", shiftKey: true, platform: "darwin" })).toBe(false);
+  });
+
+  it("never treats an Alt chord or another key as paste", () => {
+    expect(isPasteChord({ ...base, altKey: true, ctrlKey: true, platform: "linux" })).toBe(false);
+    expect(isPasteChord({ key: "c", ctrlKey: true, platform: "linux" })).toBe(false);
+    expect(isPasteChord({ key: "V", ctrlKey: true, platform: "linux" })).toBe(true);
   });
 });
 

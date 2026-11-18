@@ -114,6 +114,14 @@ export function createXtermFactory(): TerminalFactory {
           return () => disposable.dispose();
         },
         attachKeyHandler: (handler) => term.attachCustomKeyEventHandler(handler),
+        bufferType: () => term.buffer.active.type,
+        // x10 (mode 9) reports button presses only, so it never delivers a
+        // wheel; every other protocol does.
+        mouseWheelReports: () => {
+          const mode = term.modes.mouseTrackingMode;
+          return mode !== "none" && mode !== "x10";
+        },
+        attachWheelHandler: (handler) => term.attachCustomWheelEventHandler(handler),
         paste: (text) => term.paste(text),
         onTitleChange: (listener) => {
           const disposable = term.onTitleChange(listener);

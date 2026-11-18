@@ -171,6 +171,12 @@ export const IPC = {
   /** Main → renderer: a `terminal.data` / `terminal.exit` / `terminal.error`. */
   terminalEvent: "terminal:event",
 
+  /** Extension TUI surface focus and paste routing (2026-11-18 paste plan). */
+  /** Renderer → main: which extension TUI tab owns the window's keyboard. */
+  tuiFocus: "tui:focus",
+  /** Main → renderer: a menu/context-menu Paste for that frame. */
+  tuiPaste: "tui:paste",
+
   /** Projects and workspace management (plan step 10). */
   projectsGet: "projects:get",
   projectsMutate: "projects:mutate",
@@ -778,6 +784,20 @@ export interface WorkspaceBridge {
 }
 
 /** The complete API exposed to the renderer as `window.pi`. */
+/**
+ * The extension TUI surface bridge (2026-11-18 questionnaire paste plan).
+ *
+ * The surface is a non-editable frame, so Electron's native paste command never
+ * reaches it. The renderer reports keyboard ownership and performs the paste
+ * itself when main asks, which keeps one writer for every gesture.
+ */
+export interface TuiBridge {
+  /** Fire-and-forget: reports which extension frame owns the keyboard. */
+  setFocus(tabId: string, focused: boolean): void;
+  /** Main → renderer: the focused frame should paste the clipboard now. */
+  onPasteRequest(listener: (tabId: string) => void): () => void;
+}
+
 export interface PiDesktopBridge {
   getAppInfo(): Promise<AppInfo>;
   openExternal(url: string): Promise<boolean>;
@@ -794,6 +814,7 @@ export interface PiDesktopBridge {
   prefs: PrefsBridge;
   sessions: SessionsBridge;
   terminal: TerminalBridge;
+  tui: TuiBridge;
   share: ShareBridge;
   projects: ProjectsBridge;
   office: OfficeBridge;

@@ -207,7 +207,47 @@ function namedKeyOf(key: string): string | null {
 
 /** Bracketed-paste framing so a custom editor applies its paste handling. */
 export function bracketedPaste(text: string): string {
-  return `${ESC}[200~${text}${ESC}[201~`;
+  // A body that carries the end marker would terminate the paste early and the
+  // remainder would be interpreted as key input. A start marker would leave a
+  // TUI editor inside `isInPaste` state. Neither can be legitimate pasted text
+  // from a clipboard; strip both.
+  const body = text.replaceAll(`${ESC}[200~`, "").replaceAll(`${ESC}[201~`, "");
+  return `${ESC}[200~${body}${ESC}[201~`;
+}
+
+export interface PasteChordInput {
+  key: string;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+  altKey?: boolean;
+  platform: TerminalKeyPlatform;
+}
+
+/**
+ * Whether one DOM key event is a clipboard-paste chord.
+ *
+ * A terminal-style surface (the extension TUI frame, the terminal itself) is not
+ * an editable element for the chords' purposes, so Chromium never runs its own
+ * paste command there: the surface has to recognise the gesture and read the
+ * clipboard. The table follows the platform's terminal convention:
+ *
+ * - macOS: Cmd+V. Ctrl+V stays the shell/editor's `^V`.
+ * - Windows/Linux: Ctrl+V and Ctrl+Shift+V (paste-as-plain-text), plus
+ *   Shift+Insert. Win+V belongs to the OS clipboard history, so a Meta chord is
+ *   never a paste there.
+ *
+ * Alt is the compose/meta layer and never pastes.
+ */
+export function isPasteChord(input: PasteChordInput): boolean {
+  if (input.altKey) return false;
+  const key = input.key.toLowerCase();
+  if (input.platform === "darwin") {
+    return input.metaKey === true && input.ctrlKey !== true && key === "v";
+  }
+  if (input.metaKey) return false;
+  if (input.ctrlKey) return key === "v";
+  return input.shiftKey === true && key === "insert";
 }
 
 /**

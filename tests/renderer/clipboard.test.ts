@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   copyText,
   hasSelectionWithin,
+  readClipboardText,
   selectedTextWithin,
 } from "../../src/renderer/src/ui/clipboard";
 
@@ -87,6 +88,33 @@ describe("copyText", () => {
 
     await expect(copyText("")).resolves.toBe(false);
     expect(writeText).not.toHaveBeenCalled();
+  });
+});
+
+describe("readClipboardText", () => {
+  it("reads the async clipboard", async () => {
+    const readText = vi.fn(async () => "clipboard body");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText } });
+
+    await expect(readClipboardText()).resolves.toBe("clipboard body");
+    expect(readText).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns an empty string when the API is missing", async () => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    await expect(readClipboardText()).resolves.toBe("");
+  });
+
+  it("returns an empty string when the read is denied", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        readText: async () => {
+          throw new Error("denied");
+        },
+      },
+    });
+    await expect(readClipboardText()).resolves.toBe("");
   });
 });
 

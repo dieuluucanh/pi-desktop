@@ -25,6 +25,11 @@ import {
   type TerminalKeyPlatform,
 } from "../../../shared/terminal-keys";
 import {
+  IDLE_TERMINAL_WHEEL,
+  pageSequence,
+  stepTerminalWheel,
+} from "../../../shared/terminal-wheel";
+import {
   clampFontSize,
   configureTerminalRuntime,
   ensureTerminalEventPump,
@@ -34,7 +39,7 @@ import {
   terminalStore,
 } from "../terminal/terminal-runtime";
 import type { PoolTerminal, TerminalPool } from "../terminal/terminal-pool";
-import { createPasteIntake, type PasteSource } from "../terminal/paste-intake";
+import { createPasteIntake, type PasteSource } from "../ui/paste-intake";
 import { terminalFontFamilyFromDocument } from "../terminal/terminal-font";
 import type { TerminalStore } from "../state/terminal-store";
 
@@ -291,6 +296,37 @@ export function TerminalView({
       return false;
     });
 
+    // xterm's `alternateScroll` rule turns a wheel into ↑/↓ while the alternate
+    // screen is active and the program has no wheel reporting. Inside the Pi
+    // agent (or any full-screen TUI) those are prompt-history keys, so the app
+    // takes exactly that state over and pages the viewport instead — one page
+    // per gesture. A page is also how Pi's alt-screen viewport, pagers and
+    // editors scroll; every other state stays native. See
+    // `src/shared/terminal-wheel.ts`.
+    let wheelState = IDLE_TERMINAL_WHEEL;
+    term.attachWheelHandler((event) => {
+      const step = stepTerminalWheel(
+        {
+          deltaY: event.deltaY,
+          deltaX: event.deltaX,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+        },
+        { buffer: term.bufferType(), mouseWheelReports: term.mouseWheelReports() },
+        wheelState,
+        performance.now(),
+      );
+      wheelState = step.state;
+      if (step.decision.kind === "native") return true;
+      // Never let xterm reach its arrow fallback: swallow the event even when
+      // this one belongs to a burst whose page was already sent.
+      event.preventDefault();
+      if (step.decision.kind === "page") {
+        store.getState().write(tab.id, pageSequence(step.decision.page));
+      }
+      return false;
+    });
+
     const onFocus = (): void => window.pi?.terminal.setFocus(true);
     const onBlur = (): void => window.pi?.terminal.setFocus(false);
     host.addEventListener("focusin", onFocus);
@@ -323,6 +359,9 @@ export function TerminalView({
       host.removeEventListener("paste", onNativePaste, true);
       host.removeEventListener("focusin", onFocus);
       host.removeEventListener("focusout", onBlur);
+      // The pooled terminal outlives this view: never leave a handler closing
+      // over a disposed store behind.
+      term.attachWheelHandler(() => true);
       pool.detach(terminalId);
       window.pi?.terminal.setFocus(false);
     };

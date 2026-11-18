@@ -169,6 +169,15 @@ export interface IpcTerminalDeps {
   setFocus(windowId: number, focused: boolean): void;
 }
 
+export interface IpcTuiDeps {
+  /**
+   * Records (or clears, with `null`) the extension TUI tab that owns a window's
+   * keyboard. The menu and context-menu Paste read it to decide whether the
+   * renderer or `webContents.paste()` performs the gesture.
+   */
+  setFocus(windowId: number, tabId: string | null): void;
+}
+
 export interface IpcDependencies {
   appInfo: () => AppInfo;
   openExternal: (url: unknown) => Promise<boolean>;
@@ -195,6 +204,8 @@ export interface IpcDependencies {
   sessions: IpcSessionDeps;
   /** Native terminal surface (2026-11-05 terminal plan). */
   terminal: IpcTerminalDeps;
+  /** Extension TUI surface focus (2026-11-18 questionnaire paste plan). */
+  tui: IpcTuiDeps;
   /** Projects and workspace management (plan step 10). */
   projects: {
     get(): Promise<ProjectsSnapshot>;
@@ -310,6 +321,8 @@ export interface IpcDependencies {
 }
 
 const MAX_TITLE_LENGTH = 200;
+/** One tab id from the renderer's TUI focus ping. */
+const MAX_TUI_TAB_ID_LENGTH = 128;
 
 /** Pushes a main → renderer event to every live window. */
 export function broadcastToWindows(channel: string, payload: unknown): void {
@@ -690,6 +703,24 @@ function parseTerminalAck(value: unknown): { terminalId: string; bytes: number }
   return { terminalId, bytes };
 }
 
+/**
+ * A `tui:focus` frame. A malformed frame is dropped instead of clearing another
+ * tab's focus, because a wrong clear would silently disable menu Paste.
+ */
+function parseTuiFocus(value: unknown): { tabId: string; focused: boolean } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.focused !== "boolean") return null;
+  if (
+    typeof record.tabId !== "string" ||
+    record.tabId.length === 0 ||
+    record.tabId.length > MAX_TUI_TAB_ID_LENGTH
+  ) {
+    return null;
+  }
+  return { tabId: record.tabId, focused: record.focused };
+}
+
 export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.appInfo, () => deps.appInfo());
   ipcMain.handle(IPC.openExternal, (_event, url: unknown) => deps.openExternal(url));
@@ -810,6 +841,13 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   });
   ipcMain.on(IPC.terminalFocus, (event, focused: unknown) => {
     if (typeof focused === "boolean") deps.terminal.setFocus(event.sender.id, focused);
+  });
+  // The extension TUI surface reports keyboard ownership so main can route a
+  // menu/context-menu Paste that `webContents.paste()` cannot deliver to a
+  // non-editable frame (2026-11-18 questionnaire paste plan).
+  ipcMain.on(IPC.tuiFocus, (event, input: unknown) => {
+    const parsed = parseTuiFocus(input);
+    if (parsed) deps.tui.setFocus(event.sender.id, parsed.focused ? parsed.tabId : null);
   });
 
   ipcMain.handle(IPC.projectsGet, () => deps.projects.get());

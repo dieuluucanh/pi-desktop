@@ -1,14 +1,17 @@
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { Copy } from "lucide-react";
 
 import {
   bracketedPaste,
   domKeyToTerminalData,
   domWheelToTerminalData,
+  isPasteChord,
 } from "../../../shared/terminal-keys";
 import type { TuiFrame, TuiSurfaceSnapshot } from "../../../shared/tui-surface";
 import { useAppStore } from "../state/app-store";
-import { copyText, selectedTextWithin } from "../ui/clipboard";
+import { copyText, readClipboardText, selectedTextWithin } from "../ui/clipboard";
+import { createPasteIntake, type PasteSource } from "../ui/paste-intake";
+import { appPlatform } from "../ui/platform";
 import { AnsiBlock } from "./AnsiBlock";
 import { frameText } from "./frame-text";
 import { overlayPixelRect, type CellSize, type TuiGrid } from "./tui-geometry";
@@ -42,12 +45,31 @@ interface SurfaceInputHandlers {
 /** Keys become terminal bytes; a plain wheel goes to the extension unless the fallback scroller overflows. */
 function useSurfaceInput(
   onInput: (data: string) => void,
+  requestPaste: (source: PasteSource) => void,
+  deliverPaste: (text: string, source: PasteSource) => void,
   scrollRef: React.RefObject<HTMLDivElement | null>,
   surfaceRef: React.RefObject<HTMLDivElement | null>,
   cell: CellSize,
 ): SurfaceInputHandlers {
   const onKeyDown = (event: React.KeyboardEvent): void => {
     if (event.nativeEvent.isComposing) return;
+    // An extension frame is not an editable element, so Chromium never runs its
+    // own paste command here: the surface recognises the chord and reads the
+    // clipboard itself (2026-11-18 questionnaire paste plan).
+    if (
+      isPasteChord({
+        key: event.key,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        platform: appPlatform(),
+      })
+    ) {
+      event.preventDefault();
+      requestPaste("app");
+      return;
+    }
     // A real selection wins over the terminal chord (2026-10-30 copy plan).
     // Ctrl+C with nothing selected must still reach the extension as `^C`,
     // because that is how a Pi component aborts; Esc keeps doing the same.
@@ -83,7 +105,7 @@ function useSurfaceInput(
     const text = event.clipboardData?.getData("text");
     if (!text) return;
     event.preventDefault();
-    onInput(bracketedPaste(text));
+    deliverPaste(text, "native");
   };
 
   const onWheel = (event: React.WheelEvent): void => {
@@ -193,12 +215,74 @@ export function TuiSurface({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [copied, setCopied] = useState(false);
-  const input = useSurfaceInput((data) => sendTuiInput(tabId, data), scrollRef, containerRef, cell);
+  // One intake per surface: the chord path and a native `paste` event can both
+  // fire for a single gesture (a menu accelerator racing the keydown), and the
+  // clipboard text must reach the extension once.
+  const intakeRef = useRef(createPasteIntake());
+  const readingRef = useRef(false);
+
+  const deliverPaste = useCallback(
+    (text: string, source: PasteSource) => {
+      if (text.length === 0) return;
+      if (!intakeRef.current.accept(text, source)) return;
+      void sendTuiInput(tabId, bracketedPaste(text));
+    },
+    [sendTuiInput, tabId],
+  );
+
+  const requestPaste = useCallback(
+    (source: PasteSource) => {
+      // A second request while the read is in flight is the same gesture; two
+      // deliberate pastes cannot overlap inside one clipboard read.
+      if (readingRef.current) return;
+      readingRef.current = true;
+      void readClipboardText().then((text) => {
+        readingRef.current = false;
+        deliverPaste(text, source);
+      });
+    },
+    [deliverPaste],
+  );
+
+  const input = useSurfaceInput(
+    (data) => sendTuiInput(tabId, data),
+    requestPaste,
+    deliverPaste,
+    scrollRef,
+    containerRef,
+    cell,
+  );
 
   const frame = snapshot.custom;
   useEffect(() => {
     if (frame) containerRef.current?.focus();
   }, [frame, focusToken]);
+
+  // Main routes a menu/context-menu Paste to the tab whose extension frame owns
+  // the keyboard; another tab's surface must not answer it.
+  useEffect(() => {
+    const api = window.pi;
+    if (!api?.tui) return;
+    return api.tui.onPasteRequest((requested) => {
+      if (requested !== tabId) return;
+      requestPaste("native");
+    });
+  }, [tabId, requestPaste]);
+
+  // Focus is reported the way a terminal reports it, so main can send menu
+  // Paste here instead of running a native command the frame cannot receive.
+  useEffect(() => {
+    const api = window.pi;
+    return () => api?.tui?.setFocus(tabId, false);
+  }, [tabId]);
+
+  const reportFocus = (focused: boolean): void => {
+    window.pi?.tui?.setFocus(tabId, focused);
+  };
+  const handleBlur = (event: React.FocusEvent<HTMLDivElement>): void => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    reportFocus(false);
+  };
 
   if (!frame) return null;
 
@@ -258,6 +342,8 @@ export function TuiSurface({
         style={rect}
         onKeyDown={input.onKeyDown}
         onPaste={input.onPaste}
+        onFocus={() => reportFocus(true)}
+        onBlur={handleBlur}
       >
         {body}
         {copyFloating}
@@ -280,6 +366,8 @@ export function TuiSurface({
       style={{ maxHeight: dockMaxHeight }}
       onKeyDown={input.onKeyDown}
       onPaste={input.onPaste}
+      onFocus={() => reportFocus(true)}
+      onBlur={handleBlur}
     >
       {snapshot.overlay ? null : (
         <div className="flex shrink-0 items-center gap-2 border-b border-line px-2 py-1 text-[11px] text-ink-faint">

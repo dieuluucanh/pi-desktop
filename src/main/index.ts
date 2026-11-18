@@ -101,6 +101,7 @@ import { createGitService } from "../git/service";
 import { readUntrackedSource } from "../git/untracked";
 import { requireProjectPath } from "../shared/git";
 import { createDiagnosticsService } from "./diagnostics-service";
+import { createTuiFocusRegistry } from "./tui-focus";
 import { createElectronUpdatePort } from "./electron-updater";
 import { createUpdateService, type UpdateService } from "./updater";
 import { readBuildInfo } from "./build-info";
@@ -263,6 +264,12 @@ const appState = createAppStore({
 });
 
 let mainWindow: BrowserWindow | null = null;
+/**
+ * Which extension TUI tab owns each window's keyboard (2026-11-18 paste plan).
+ * The menu and context-menu Paste use it to route the gesture to the renderer
+ * instead of the native paste command, which a non-editable frame ignores.
+ */
+const tuiFocus = createTuiFocusRegistry();
 
 /**
  * Raise the app when a review web tab is opened/activated. The review handoff
@@ -930,13 +937,22 @@ function createWindow(): BrowserWindow {
         canCopy: params.editFlags.canCopy,
         canPaste: params.editFlags.canPaste,
         canSelectAll: params.editFlags.canSelectAll,
+        // Resolved once, at menu-build time: the popup must not lose its target
+        // if DOM focus moves while the menu is open.
+        tuiTabId: tuiFocus.tabId(window.webContents.id),
       },
       {
         undo: () => withContents(() => contents.undo()),
         redo: () => withContents(() => contents.redo()),
         cut: () => withContents(() => contents.cut()),
         copy: () => withContents(() => contents.copy()),
-        paste: () => withContents(() => contents.paste()),
+        paste: () => {
+          // `webContents.paste()` is a no-op on the extension frame; ask the
+          // renderer that owns the frame to read the clipboard and deliver a
+          // bracketed paste (2026-11-18 questionnaire paste plan).
+          const tabId = tuiFocus.tabId(window.webContents.id);
+          withContents(() => (tabId ? contents.send(IPC.tuiPaste, tabId) : contents.paste()));
+        },
         selectAll: () => withContents(() => contents.selectAll()),
       },
     );
@@ -945,6 +961,7 @@ function createWindow(): BrowserWindow {
   });
 
   window.on("closed", () => {
+    tuiFocus.clear(window.id);
     mainWindow = null;
   });
 
@@ -1566,6 +1583,12 @@ if (!app.requestSingleInstanceLock()) {
           void openExternal(url);
         },
         accelerators: menuAcceleratorsFor(resolveDesktopKeymap(prefs.desktopKeybindings)),
+        onPaste: (contents) => {
+          if (!contents || contents.isDestroyed()) return;
+          const tabId = tuiFocus.tabId(contents.id);
+          if (tabId) contents.send(IPC.tuiPaste, tabId);
+          else contents.paste();
+        },
       });
     };
     await installMenu();
@@ -1706,6 +1729,9 @@ if (!app.requestSingleInstanceLock()) {
           // Ctrl keys; on Windows/Linux the shell must receive Ctrl+N/W/B/G.
           if (process.platform !== "darwin") contents.setIgnoreMenuShortcuts(focused);
         },
+      },
+      tui: {
+        setFocus: (windowId, tabId) => tuiFocus.set(windowId, tabId),
       },
       projects: {
         get: () => projectsService.snapshot(),
