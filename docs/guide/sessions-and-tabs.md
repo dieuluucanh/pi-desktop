@@ -101,6 +101,12 @@ at still sleep after a long idle period, and wake on the next click or keystroke
 A background review/web tab does not steal the selection: it opens beside the
 session and keeps that session's host protected while the review is open.
 
+A web tab closes like a browser tab. If the page asks to close (Plannotator's
+auto-close), or you press its `×`, the app returns to the session that opened it
+when that tab is still open; otherwise the most recently active tab wins. Closing
+that session also closes its linked review tabs, while a web tab opened manually
+with **Open URL in Tab…** is independent.
+
 ## Resuming and the session browser
 
 Click the **History** button in the session strip (between **New terminal** and the

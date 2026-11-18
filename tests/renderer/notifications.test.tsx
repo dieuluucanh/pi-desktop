@@ -7,11 +7,13 @@ import { NotificationCenter } from "../../src/renderer/src/notifications/Notific
 import { overlayOpenIn } from "../../src/renderer/src/web/overlay-detect";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import {
+  muteRuleFor,
   updateNotification,
-  packageUpdateNotification,
   type AppNotification,
 } from "../../src/shared/notifications";
+import type { PackageUpdateSummary } from "../../src/shared/packages";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
+import { initialUpdateState } from "../../src/shared/updates";
 import { installBridge } from "./fixtures";
 
 /**
@@ -37,10 +39,28 @@ function entry(overrides: Partial<AppNotification> = {}): AppNotification {
   };
 }
 
+function packageUpdate(
+  source: string,
+  latestVersion: string | null = "2.0.0",
+): PackageUpdateSummary {
+  return { source, name: source.replace(/^npm:/, ""), kind: "npm", scope: "user", latestVersion };
+}
+
+/** A live app-update offer in the shape main pushes. */
+function updateOffer(version = "0.4.0") {
+  return {
+    ...initialUpdateState(true),
+    phase: "available" as const,
+    version,
+    checkedAt: 1,
+  };
+}
+
 function reset(): void {
   installBridge();
   useAppStore.setState({
     prefs: { ...DEFAULT_PREFS, drafts: {} },
+    prefsLoaded: true,
     info: null,
     hint: null,
     view: "welcome",
@@ -48,6 +68,9 @@ function reset(): void {
     notifications: [],
     muteTarget: null,
     notificationCooldowns: {},
+    update: null,
+    packageUpdates: [],
+    packageUpdatesCheckedAt: null,
   });
 }
 
@@ -276,9 +299,9 @@ describe("NotificationCenter", () => {
     expect(message.className).toContain("whitespace-pre-wrap");
   });
 
-  it("opens the update view from the offer row", async () => {
+  it("opens the update view from the derived offer row", async () => {
     const user = userEvent.setup();
-    useAppStore.setState({ notifications: [updateNotification("0.4.0", 1)] });
+    useAppStore.setState({ update: updateOffer() });
     render(<NotificationCenter />);
 
     await user.click(screen.getByRole("button", { name: "Notifications (1)" }));
@@ -286,16 +309,89 @@ describe("NotificationCenter", () => {
     expect(useAppStore.getState().view).toBe("updates");
   });
 
-  it("opens the Extensions hub from an extension-update row", async () => {
+  it("opens the Extensions hub from a derived extension-update row", async () => {
     const user = userEvent.setup();
     useAppStore.setState({
-      notifications: [packageUpdateNotification(2, "npm:alpha@2.0.0|npm:beta@")],
+      packageUpdates: [packageUpdate("npm:alpha"), packageUpdate("npm:beta")],
+      packageUpdatesCheckedAt: 1,
     });
     render(<NotificationCenter />);
 
     await user.click(screen.getByRole("button", { name: "Notifications (1)" }));
     await user.click(screen.getByRole("button", { name: "2 extension updates available." }));
     expect(useAppStore.getState().view).toBe("extensions");
+  });
+
+  it("derives offers from live state and drops them when the condition clears", () => {
+    useAppStore.setState({ update: updateOffer() });
+    const { rerender } = render(<NotificationCenter />);
+    expect(screen.getByTestId("notification-count")).toHaveTextContent("1");
+
+    // The app answered "up to date": the row must vanish with the condition.
+    useAppStore.setState({ update: { ...initialUpdateState(true), phase: "up-to-date" } });
+    rerender(<NotificationCenter />);
+    expect(screen.queryByTestId("notification-count")).toBeNull();
+
+    // The update set shrinks rather than stacking a second row.
+    useAppStore.setState({
+      packageUpdates: [packageUpdate("npm:alpha"), packageUpdate("npm:beta")],
+      packageUpdatesCheckedAt: 1,
+    });
+    rerender(<NotificationCenter />);
+    expect(screen.getByTestId("notification-count")).toHaveTextContent("1");
+
+    useAppStore.setState({
+      packageUpdates: [packageUpdate("npm:alpha")],
+      packageUpdatesCheckedAt: 1,
+    });
+    rerender(<NotificationCenter />);
+    expect(screen.getByTestId("notification-count")).toHaveTextContent("1");
+
+    useAppStore.setState({ packageUpdates: [], packageUpdatesCheckedAt: 1 });
+    rerender(<NotificationCenter />);
+    expect(screen.queryByTestId("notification-count")).toBeNull();
+  });
+
+  it("dismisses a derived offer through its persisted marker", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({ packageUpdates: [packageUpdate("npm:alpha")] });
+    render(<NotificationCenter />);
+
+    await user.click(screen.getByRole("button", { name: "Notifications (1)" }));
+    await user.click(
+      screen.getByRole("button", { name: "Dismiss notification: 1 extension update available." }),
+    );
+
+    const state = useAppStore.getState();
+    expect(state.prefs.packages.dismissedSignature).not.toBeNull();
+    expect(state.notifications).toHaveLength(0);
+    await waitFor(() => expect(screen.queryByTestId("notification-count")).toBeNull());
+  });
+
+  it("Clears a live offer by persisting its dismissal", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({ update: updateOffer() });
+    render(<NotificationCenter />);
+
+    await user.click(screen.getByRole("button", { name: "Notifications (1)" }));
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+
+    expect(useAppStore.getState().prefs.updates.dismissedVersion).toBe("0.4.0");
+    expect(screen.getByText("No notifications.")).toBeInTheDocument();
+  });
+
+  it("does not hide an offer behind a type:info mute rule", () => {
+    const rule = muteRuleFor({ message: "Server logs ready (local)", type: "info" }, "type");
+    useAppStore.setState({
+      prefs: {
+        ...DEFAULT_PREFS,
+        notifications: { ...DEFAULT_PREFS.notifications, muted: [rule] },
+      },
+      update: updateOffer(),
+    });
+    render(<NotificationCenter />);
+
+    expect(screen.getByTestId("notification-count")).toHaveTextContent("1");
   });
 
   it("marks a muted row behind Show hidden and unmutes it", async () => {

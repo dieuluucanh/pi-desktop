@@ -418,16 +418,16 @@ auto-spaced one.
   that needs a host-side branch watcher and a provider count; the built-in
   footer is unaffected (2026-10-31 minimal-session-ui).
 
-## Notification classes and muting (2026-11-08; transcript rule amended 2026-11-15)
+## Notification classes, offers and muting (2026-11-08; offers derived 2026-11-18)
 
 `ctx.ui.notify` has no extension/source field, so the coarse class is **severity
-plus the app-owned update kind**: `update`, `error`, `warning`, `info`. Classes
-are toggled in Settings → Notifications and default to updates/errors/warnings
-**on**, info **off** — background chatter such as “Server logs ready (local)”
-never reaches the bell or a toast. The transcript always prints extension
-output, like terminal Pi's status line. There are deliberately no content
-heuristics; a noisy info message is handled by the class switch or a rule for
-the bell and toasts.
+plus the two app-owned offer kinds**: `update`, `extension`, `error`, `warning`,
+`info`. Classes are toggled in Settings → Notifications and default to
+everything except info **on** — background chatter such as “Server logs ready
+(local)” never reaches the bell or a toast. The transcript always prints
+extension output, like terminal Pi's status line. There are deliberately no
+content heuristics; a noisy info message is handled by the class switch or a rule
+for the bell and toasts.
 
 Per-message rules remain the fine-grained switch for the bell and toasts,
 derived from the message: **exact text**, a **template** signature (numbers,
@@ -435,29 +435,49 @@ quoted values, `provider/model` refs and thinking-level words become `*`), or
 the whole **type**. The gear on a warning/error toast (and on a row) opens the
 dialog; Settings → Notifications lists the rules with Unmute/Unmute all. All
 three scopes are selectable; when a message has no variable parts the template
-rule is equivalent to the exact one and the dialog says so.
+rule is equivalent to the exact one and the dialog says so. Rules apply to
+**archive rows only** (extension output), never to app-owned offers.
 
 A suppressed notification (class off or rule match) is **not deleted**: it stays
 in the archive, is marked `hidden`/`muted`, and is hidden from the bell and
 future toasts, while its transcript row still prints (2026-11-15). The bell
-always renders, counts only unsuppressed rows, and closes its popover on an
-outside click, Escape or the bell (there is no header `×`); it keeps a per-row
-`×`, class badges and **Show hidden (N)**. A class-hidden row offers
+always renders, counts unsuppressed archive rows plus live offers, and closes its
+popover on an outside click, Escape or the bell (there is no header `×`); it keeps
+a per-row `×`, class badges and **Show hidden (N)**. A class-hidden row offers
 **Show** (enable the class); a rule-muted row offers **Unmute**. Only an
 immediately repeated identical `oi.notify` row collapses in the transcript; a
 repeat after any other content adds a row. Toasts are suppressed per tab for
 five minutes.
 
-An **app update offer** is the one app-owned row: class `update`, one per
-version (`prefs.updates.notifiedVersion`), with a **View update** action that
-opens About & updates. Its toast action is the same. The About & updates sidebar
+**Two channels, one bell (2026-11-18).** The archive holds _events_: extension
+`ctx.ui.notify` output, bounded at 100 rows. The app's own **offers** are state,
+not arrivals: the renderer derives them from live updater/package state on every
+render (`offerNotifications` in `src/shared/notifications.ts`) and never stores
+them. A row exists exactly while its condition holds, so an applied update clears
+it without any bookkeeping, and a new version/set replaces rather than stacks.
+
+An **app update offer** is class `update`, one per offered version, with a
+**View update** action that opens About & updates. Its copy follows the updater:
+available → “is available.”, downloading → “is downloading.”, downloaded → “is
+ready to install.”; any other phase produces no row. The About & updates sidebar
 item carries a dot while a version is offered/downloading/downloaded.
 
-An **extension update offer** is the other app-owned row (2026-11-15): class
-`extension`, one per update _set_ (`prefs.packages.notifiedSignature`, a sorted
-`source@latestVersion` fingerprint), with a **View extensions** action that opens
-the Extensions hub on the Packages card. The class is on by default and has its
-own Settings switch, so muting app updates does not mute extension updates. The
-sidebar **Extensions** item carries a dot while the set is non-empty, and each
-outdated package row shows a `1.6.0 available` badge; a pinned row never does
-(the sweep skips a deliberate pin).
+An **extension update offer** is class `extension`, one per update _set_ (a
+sorted `source@latestVersion` fingerprint), with a **View extensions** action that
+opens the Extensions hub on the Packages card. A partial update narrows the row
+to the remaining count. The class is on by default and has its own Settings
+switch, so muting app updates does not mute extension updates. The sidebar
+**Extensions** item carries a dot while the set is non-empty, and each outdated
+package row shows a `1.6.0 available` badge; a pinned row never does (the sweep
+skips a deliberate pin).
+
+**Dismissal, not a row cache.** `prefs.updates.dismissedVersion` and
+`prefs.packages.dismissedSignature` record an offer the user removed with `×` or
+**Clear**; they are the only reason a live offer stays hidden. A newer version or
+a changed set no longer matches and raises the row again, and the surface that
+owns the offer (About & updates for the app, the Packages card for extensions)
+carries **Notify me again** to clear the marker. Both offers survive a relaunch
+until dismissed or resolved. `prefs.updates.notifiedVersion` /
+`prefs.packages.notifiedSignature` remain the toast-dedupe markers (one toast per
+offer per profile). Navigation never dismisses: opening Extensions or About &
+updates is not the action the offer is asking for.

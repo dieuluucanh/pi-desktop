@@ -12,6 +12,7 @@ import {
   isNotificationClassEnabled,
   isNotificationMuted,
   isNotificationSuppressed,
+  isUpdateOfferPhase,
   matchingMuteRule,
   muteRuleFor,
   normalizeNotificationText,
@@ -19,6 +20,7 @@ import {
   notificationRuleId,
   notificationRuleLabel,
   notificationSignature,
+  offerNotifications,
   packageUpdateNotification,
   packageUpdateNotificationId,
   removeMuteRule,
@@ -29,8 +31,11 @@ import {
   updateNotificationId,
   withMuteRule,
   type NotificationMuteRule,
+  type NotificationOfferInput,
   type NotificationPrefs,
 } from "../../src/shared/notifications";
+import { packageUpdateSignature } from "../../src/shared/packages";
+import type { PackageUpdateSummary } from "../../src/shared/packages";
 
 const THINKING_HIGH =
   "Workflow plan: thinking xhigh → high (opencode-go/deepseek-v4.1-flash does not support xhigh).";
@@ -342,6 +347,175 @@ describe("app notifications", () => {
       action: { kind: "open-updates" },
     });
     expect(updateNotification("v0.8.0").message).toBe("Pi Desktop v0.8.0 is available.");
+  });
+
+  it("follows the updater phase in the offer copy", () => {
+    expect(updateNotification("0.8.0", 1, "downloading").message).toBe(
+      "Pi Desktop v0.8.0 is downloading.",
+    );
+    expect(updateNotification("0.8.0", 1, "downloaded").message).toBe(
+      "Pi Desktop v0.8.0 is ready to install.",
+    );
+    expect(isUpdateOfferPhase("available")).toBe(true);
+    expect(isUpdateOfferPhase("downloading")).toBe(true);
+    expect(isUpdateOfferPhase("downloaded")).toBe(true);
+    expect(isUpdateOfferPhase("up-to-date")).toBe(false);
+    expect(isUpdateOfferPhase("error")).toBe(false);
+  });
+});
+
+const updateEntry = (overrides: Partial<PackageUpdateSummary> = {}): PackageUpdateSummary => ({
+  source: "npm:@dieulc/workflow",
+  name: "@dieulc/workflow",
+  kind: "npm",
+  scope: "user",
+  latestVersion: "0.5.0",
+  ...overrides,
+});
+
+function offerInput(overrides: Partial<NotificationOfferInput> = {}): NotificationOfferInput {
+  return {
+    prefsLoaded: true,
+    prefs: DEFAULT_NOTIFICATION_PREFS,
+    update: null,
+    packageUpdates: [],
+    packageUpdatesCheckedAt: null,
+    dismissedVersion: null,
+    dismissedSignature: null,
+    ...overrides,
+  };
+}
+
+describe("offerNotifications", () => {
+  it("stays blank until the stored class switches have loaded", () => {
+    const offers = offerNotifications(
+      offerInput({
+        prefsLoaded: false,
+        update: { phase: "available", version: "0.9.0", checkedAt: 5 },
+        packageUpdates: [updateEntry()],
+      }),
+    );
+    expect(offers).toEqual([]);
+  });
+
+  it("derives one release offer per phase that still needs the user", () => {
+    const cases = [
+      ["available", "Pi Desktop v0.9.0 is available."],
+      ["downloading", "Pi Desktop v0.9.0 is downloading."],
+      ["downloaded", "Pi Desktop v0.9.0 is ready to install."],
+    ] as const;
+    for (const [phase, message] of cases) {
+      const offers = offerNotifications(
+        offerInput({ update: { phase, version: "0.9.0", checkedAt: 25 } }),
+      );
+      expect(offers).toHaveLength(1);
+      expect(offers[0]).toMatchObject({
+        id: updateNotificationId("0.9.0"),
+        message,
+        class: "update",
+        at: 25,
+        action: { kind: "open-updates" },
+      });
+    }
+  });
+
+  it("derives no release offer once the updater has nothing to offer", () => {
+    for (const phase of [
+      "idle",
+      "checking",
+      "up-to-date",
+      "no-feed",
+      "error",
+      "unsupported",
+    ] as const) {
+      expect(
+        offerNotifications(offerInput({ update: { phase, version: "0.9.0", checkedAt: 1 } })),
+      ).toEqual([]);
+    }
+    expect(
+      offerNotifications(
+        offerInput({ update: { phase: "available", version: null, checkedAt: 1 } }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("gates the release offer on its class switch and dismissal marker", () => {
+    const update = { phase: "available", version: "0.9.0", checkedAt: 1 } as const;
+    const muted = {
+      ...DEFAULT_NOTIFICATION_PREFS,
+      classes: { ...DEFAULT_NOTIFICATION_CLASSES, update: false },
+    };
+    expect(offerNotifications(offerInput({ update, prefs: muted }))).toEqual([]);
+    expect(offerNotifications(offerInput({ update, dismissedVersion: "0.9.0" }))).toEqual([]);
+    expect(offerNotifications(offerInput({ update, dismissedVersion: "0.8.0" }))).toHaveLength(1);
+  });
+
+  it("describes the current package update set, not a remembered one", () => {
+    const one = offerNotifications(offerInput({ packageUpdates: [updateEntry()] }));
+    expect(one).toHaveLength(1);
+    expect(one[0]).toMatchObject({
+      id: packageUpdateNotificationId(packageUpdateSignature([updateEntry()])),
+      message: "1 extension update available.",
+      class: "extension",
+      action: { kind: "open-extensions" },
+    });
+
+    const two = offerNotifications(
+      offerInput({
+        packageUpdates: [updateEntry(), updateEntry({ source: "npm:other", name: "other" })],
+      }),
+    );
+    expect(two).toHaveLength(1);
+    expect(two[0]?.message).toBe("2 extension updates available.");
+    expect(offerNotifications(offerInput({ packageUpdates: [] }))).toEqual([]);
+  });
+
+  it("keeps a dismissed set dismissed until the set changes", () => {
+    const signature = packageUpdateSignature([updateEntry()]);
+    expect(
+      offerNotifications(
+        offerInput({ packageUpdates: [updateEntry()], dismissedSignature: signature }),
+      ),
+    ).toEqual([]);
+    expect(
+      offerNotifications(
+        offerInput({
+          packageUpdates: [updateEntry()],
+          dismissedSignature: packageUpdateSignature([updateEntry({ latestVersion: "0.4.0" })]),
+        }),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("orders the release offer first and keeps `at` stable", () => {
+    const input = offerInput({
+      update: { phase: "available", version: "0.9.0", checkedAt: 10 },
+      packageUpdates: [updateEntry()],
+      packageUpdatesCheckedAt: 20,
+    });
+    const offers = offerNotifications(input);
+    expect(offers.map((entry) => entry.class)).toEqual(["update", "extension"]);
+    expect(offers.map((entry) => entry.at)).toEqual([10, 20]);
+    expect(offerNotifications(input).map((entry) => entry.id)).toEqual(
+      offers.map((entry) => entry.id),
+    );
+  });
+
+  it("never consults per-message mute rules", () => {
+    const infoRule = muteRuleFor({ message: "Server logs ready (local)", type: "info" }, "type");
+    const prefs = { ...DEFAULT_NOTIFICATION_PREFS, muted: [infoRule] };
+    const offers = offerNotifications(
+      offerInput({
+        prefs,
+        update: { phase: "available", version: "0.9.0", checkedAt: 1 },
+        packageUpdates: [updateEntry()],
+      }),
+    );
+    expect(offers).toHaveLength(2);
+    // The archive predicate still hides an archived info row with the same rule.
+    expect(
+      isNotificationSuppressed({ message: "Server logs ready (local)", type: "info" }, prefs),
+    ).toBe(true);
   });
 });
 

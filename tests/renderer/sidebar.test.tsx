@@ -53,6 +53,19 @@ describe("Sidebar update sign", () => {
     rerender(<Sidebar />);
     expect(screen.queryByTestId("nav-update-badge")).toBeNull();
   });
+
+  it("keeps the sign through the download and drops it while checking", () => {
+    useAppStore.setState({
+      update: { ...initialUpdateState(true), phase: "downloading", version: "0.4.0" },
+    });
+    const { rerender } = render(<Sidebar />);
+    expect(screen.getByTestId("nav-update-badge")).toBeInTheDocument();
+    expect(screen.getByTitle(/downloading/i)).toBeInTheDocument();
+
+    useAppStore.setState({ update: { ...initialUpdateState(true), phase: "checking" } });
+    rerender(<Sidebar />);
+    expect(screen.queryByTestId("nav-update-badge")).toBeNull();
+  });
 });
 
 describe("Sidebar package-update sign", () => {

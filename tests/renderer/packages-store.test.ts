@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { SettingsSnapshot } from "../../src/shared/settings";
@@ -8,7 +9,17 @@ import {
   type PackageSummary,
   type PackageUpdateSummary,
 } from "../../src/shared/packages";
+import { offerNotifications, type AppNotification } from "../../src/shared/notifications";
 import { installBridge } from "./fixtures";
+
+vi.mock("sonner", () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  },
+}));
 
 /**
  * The package store actions (plan step 14).
@@ -88,6 +99,7 @@ function defaultImpl(method: string): Promise<unknown> {
 }
 
 function resetStore() {
+  vi.clearAllMocks();
   installBridge();
   useAppStore.setState({
     prefs: { ...DEFAULT_PREFS },
@@ -120,6 +132,20 @@ function resetStore() {
 }
 
 beforeEach(resetStore);
+
+/** The bell's derived offer rows (offers are never stored in the archive). */
+function offers(): AppNotification[] {
+  const state = useAppStore.getState();
+  return offerNotifications({
+    prefsLoaded: state.prefsLoaded,
+    prefs: state.prefs.notifications,
+    update: state.update,
+    packageUpdates: state.packageUpdates,
+    packageUpdatesCheckedAt: state.packageUpdatesCheckedAt,
+    dismissedVersion: state.prefs.updates.dismissedVersion,
+    dismissedSignature: state.prefs.packages.dismissedSignature,
+  });
+}
 
 describe("package listing", () => {
   it("asks the control host for the active project's packages", async () => {
@@ -382,6 +408,7 @@ describe("extension update checks", () => {
     expect(state.packageUpdatesCheckedAt).toBe(100);
     expect(state.packageUpdatesError).toMatch(/registry unreachable/);
     expect(state.packageUpdatesBusy).toBe(false);
+    expect(offers()).toHaveLength(1);
     // Background failures stay quiet.
     expect(state.hint).toBeNull();
   });
@@ -406,28 +433,29 @@ describe("extension update checks", () => {
     expect(useAppStore.getState().hint).toMatch(/Could not check for extension updates/);
   });
 
-  it("raises one notification per update set and remembers the signature", async () => {
+  it("announces one update set without storing a row", async () => {
     stubCheck({ updates: [updateEntry()], checkedAt: 500, offline: false });
     await useAppStore.getState().checkPackageUpdates();
 
     const first = useAppStore.getState();
-    const rows = first.notifications.filter((entry) => entry.class === "extension");
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
+    expect(offers()).toHaveLength(1);
+    expect(offers()[0]).toMatchObject({
       action: { kind: "open-extensions" },
       message: "1 extension update available.",
     });
-    expect(rows[0]?.id).toMatch(/^app:packages:/);
+    expect(offers()[0]?.id).toMatch(/^app:packages:/);
+    // The offer is state, not an arrived row.
+    expect(first.notifications).toHaveLength(0);
     expect(first.prefs.packages.notifiedSignature).toBe(packageUpdateSignature([updateEntry()]));
+    expect(toast.info).toHaveBeenCalledTimes(1);
 
     // The same set is not announced twice.
     await useAppStore.getState().checkPackageUpdates();
-    expect(
-      useAppStore.getState().notifications.filter((entry) => entry.class === "extension"),
-    ).toHaveLength(1);
+    expect(offers()).toHaveLength(1);
+    expect(toast.info).toHaveBeenCalledTimes(1);
   });
 
-  it("re-raises when a newer target changes the set", async () => {
+  it("replaces the offer when a newer target changes the set", async () => {
     stubCheck({ updates: [updateEntry()], checkedAt: 500, offline: false });
     await useAppStore.getState().checkPackageUpdates();
 
@@ -438,12 +466,22 @@ describe("extension update checks", () => {
     });
     await useAppStore.getState().checkPackageUpdates();
 
-    expect(
-      useAppStore.getState().notifications.filter((entry) => entry.class === "extension"),
-    ).toHaveLength(2);
+    expect(offers()).toHaveLength(1);
+    expect(offers()[0]?.id).toBe(
+      offerNotifications({
+        prefsLoaded: true,
+        prefs: DEFAULT_PREFS.notifications,
+        update: null,
+        packageUpdates: [updateEntry({ latestVersion: "0.5.0" })],
+        packageUpdatesCheckedAt: 600,
+        dismissedVersion: null,
+        dismissedSignature: null,
+      })[0]?.id,
+    );
+    expect(toast.info).toHaveBeenCalledTimes(2);
   });
 
-  it("adds no row and no marker for a muted class", async () => {
+  it("adds no offer and no marker for a muted class", async () => {
     useAppStore.setState({
       prefs: {
         ...DEFAULT_PREFS,
@@ -457,9 +495,16 @@ describe("extension update checks", () => {
     await useAppStore.getState().checkPackageUpdates();
 
     const state = useAppStore.getState();
+    expect(offers()).toHaveLength(0);
     expect(state.notifications).toHaveLength(0);
-    // Enabling the class later must raise the offer instead of finding a hidden row.
+    // Enabling the class later must announce the offer instead of finding a hidden row.
     expect(state.prefs.packages.notifiedSignature).toBeNull();
+    expect(toast.info).not.toHaveBeenCalled();
+
+    useAppStore.getState().setNotificationClass("extension", true);
+    expect(offers()).toHaveLength(1);
+    expect(useAppStore.getState().prefs.packages.notifiedSignature).not.toBeNull();
+    expect(toast.info).toHaveBeenCalledTimes(1);
   });
 
   it("drops the matching update after a consented update", async () => {
@@ -470,6 +515,7 @@ describe("extension update checks", () => {
     expect(await useAppStore.getState().confirmPackageConsent()).toBe(true);
 
     expect(useAppStore.getState().packageUpdates).toEqual([]);
+    expect(offers()).toEqual([]);
     expect(useAppStore.getState().packagesMutatedAt).toEqual(expect.any(Number));
   });
 
@@ -477,12 +523,15 @@ describe("extension update checks", () => {
     useAppStore.setState({
       packageUpdates: [updateEntry(), updateEntry({ source: "npm:other", name: "other" })],
     });
+    expect(offers()).toHaveLength(1);
+    expect(offers()[0]?.message).toBe("2 extension updates available.");
     stubRequest(defaultImpl);
     useAppStore.getState().requestPackageUpdate(null, "user");
 
     await useAppStore.getState().confirmPackageConsent();
 
     expect(useAppStore.getState().packageUpdates).toEqual([]);
+    expect(offers()).toEqual([]);
   });
 
   it("drops the matching update when another window reports a change", async () => {
@@ -499,20 +548,44 @@ describe("extension update checks", () => {
     expect(useAppStore.getState().packageUpdates.map((entry) => entry.source)).toEqual([
       "npm:other",
     ]);
+    expect(offers()).toHaveLength(1);
+    expect(offers()[0]?.message).toBe("1 extension update available.");
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it("dismisses and restores the set through the persisted markers", async () => {
+    stubCheck({ updates: [updateEntry()], checkedAt: 500, offline: false });
+    await useAppStore.getState().checkPackageUpdates();
+    const id = offers()[0]?.id ?? "";
+
+    useAppStore.getState().dismissNotification(id);
+    expect(offers()).toHaveLength(0);
+    expect(useAppStore.getState().prefs.packages.dismissedSignature).toBe(
+      packageUpdateSignature([updateEntry()]),
+    );
+
+    await useAppStore.getState().checkPackageUpdates();
+    expect(offers()).toHaveLength(0);
+    expect(toast.info).toHaveBeenCalledTimes(1);
+
+    useAppStore.getState().restorePackageUpdateOffer();
+    expect(offers()).toHaveLength(1);
+    expect(useAppStore.getState().prefs.packages.dismissedSignature).toBeNull();
+    expect(toast.info).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the other package-check pref when one is patched", () => {
     useAppStore.setState({
       prefs: {
         ...DEFAULT_PREFS,
-        packages: { autoCheck: true, notifiedSignature: "npm:foo@2.0.0" },
+        packages: { autoCheck: true, notifiedSignature: "npm:foo@2.0.0", dismissedSignature: null },
       },
     });
     useAppStore.getState().setPackageCheckPrefs({ autoCheck: false });
     expect(useAppStore.getState().prefs.packages).toEqual({
       autoCheck: false,
       notifiedSignature: "npm:foo@2.0.0",
+      dismissedSignature: null,
     });
   });
 
@@ -520,5 +593,60 @@ describe("extension update checks", () => {
     useAppStore.setState({ packagesMutatedAt: 123 });
     useAppStore.getState().dismissPackageReloadHint();
     expect(useAppStore.getState().packagesMutatedAt).toBeNull();
+  });
+
+  it("removes the offer when a sweep finds nothing", async () => {
+    stubCheck({ updates: [updateEntry()], checkedAt: 500, offline: false });
+    await useAppStore.getState().checkPackageUpdates();
+    expect(offers()).toHaveLength(1);
+
+    // The package was updated outside the app: the next sweep is the truth.
+    stubCheck({ updates: [], checkedAt: 600, offline: false });
+    await useAppStore.getState().checkPackageUpdates();
+
+    expect(offers()).toEqual([]);
+    expect(useAppStore.getState().prefs.packages.dismissedSignature).toBeNull();
+  });
+
+  it("narrows the offer after a partial update", async () => {
+    useAppStore.setState({
+      packageUpdates: [updateEntry(), updateEntry({ source: "npm:other", name: "other" })],
+    });
+    expect(offers()[0]?.message).toBe("2 extension updates available.");
+    stubRequest(defaultImpl);
+    useAppStore.getState().requestPackageUpdate("npm:@dieulc/workflow", "user");
+
+    expect(await useAppStore.getState().confirmPackageConsent()).toBe(true);
+
+    expect(offers()).toHaveLength(1);
+    expect(offers()[0]?.message).toBe("1 extension update available.");
+  });
+
+  it("drops a pinned package from the offer", async () => {
+    useAppStore.setState({ packageUpdates: [updateEntry()] });
+    expect(offers()).toHaveLength(1);
+    stubRequest(defaultImpl);
+
+    useAppStore.getState().pinPackage(packageSummary());
+    expect(await useAppStore.getState().confirmPackageConsent()).toBe(true);
+
+    expect(offers()).toEqual([]);
+  });
+
+  it("keeps a dismissed set dismissed across a relaunch", async () => {
+    stubCheck({ updates: [updateEntry()], checkedAt: 500, offline: false });
+    await useAppStore.getState().checkPackageUpdates();
+    useAppStore.getState().dismissNotification(offers()[0]!.id);
+
+    // Relaunch: the archive is in-memory, the persisted markers are not.
+    useAppStore.setState({ notifications: [], notificationCooldowns: {} });
+    expect(offers()).toEqual([]);
+
+    // A changed set is a new offer.
+    useAppStore.setState({
+      packageUpdates: [updateEntry({ latestVersion: "0.5.0" })],
+      packageUpdatesCheckedAt: 600,
+    });
+    expect(offers()).toHaveLength(1);
   });
 });

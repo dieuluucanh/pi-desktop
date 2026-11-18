@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
-import { updateNotificationId } from "../../src/shared/notifications";
+import {
+  offerNotifications,
+  updateNotificationId,
+  type AppNotification,
+} from "../../src/shared/notifications";
 import { initialUpdateState } from "../../src/shared/updates";
 import { installBridge, removeBridge } from "./fixtures";
 
@@ -35,6 +39,23 @@ beforeEach(() => {
     offlineNotice: null,
   });
 });
+
+/**
+ * The bell's offer rows. Offers are derived from live state, so the tests assert
+ * this derivation instead of looking for a stored archive row.
+ */
+function offers(): AppNotification[] {
+  const state = useAppStore.getState();
+  return offerNotifications({
+    prefsLoaded: state.prefsLoaded,
+    prefs: state.prefs.notifications,
+    update: state.update,
+    packageUpdates: state.packageUpdates,
+    packageUpdatesCheckedAt: state.packageUpdatesCheckedAt,
+    dismissedVersion: state.prefs.updates.dismissedVersion,
+    dismissedSignature: state.prefs.packages.dismissedSignature,
+  });
+}
 
 describe("update store (plan step 26)", () => {
   it("loads the current state from main", async () => {
@@ -166,7 +187,7 @@ describe("update store (plan step 26)", () => {
     expect(useAppStore.getState().settingsFocus).toBeNull();
   });
 
-  it("raises one notification per offered version and remembers it", () => {
+  it("announces one offer per version without storing a row", () => {
     const offer = (version: string) => ({
       ...initialUpdateState(true),
       phase: "available" as const,
@@ -175,29 +196,27 @@ describe("update store (plan step 26)", () => {
 
     useAppStore.getState().applyUpdateState(offer("0.4.0"));
     let state = useAppStore.getState();
-    expect(state.notifications).toHaveLength(1);
-    expect(state.notifications[0]).toMatchObject({
+    expect(offers()).toHaveLength(1);
+    expect(offers()[0]).toMatchObject({
       id: updateNotificationId("0.4.0"),
       message: "Pi Desktop v0.4.0 is available.",
       class: "update",
       action: { kind: "open-updates" },
     });
+    // The offer is state, not an archived arrival.
+    expect(state.notifications).toHaveLength(0);
     expect(state.prefs.updates.notifiedVersion).toBe("0.4.0");
     expect(toast.info).toHaveBeenCalledTimes(1);
 
     // A repeated push does not duplicate the row or the toast.
     useAppStore.getState().applyUpdateState(offer("0.4.0"));
-    state = useAppStore.getState();
-    expect(state.notifications).toHaveLength(1);
+    expect(offers()).toHaveLength(1);
     expect(toast.info).toHaveBeenCalledTimes(1);
 
-    // A newer offer notifies again.
+    // A newer offer replaces the row and notifies again.
     useAppStore.getState().applyUpdateState(offer("0.5.0"));
     state = useAppStore.getState();
-    expect(state.notifications.map((entry) => entry.id)).toEqual([
-      updateNotificationId("0.5.0"),
-      updateNotificationId("0.4.0"),
-    ]);
+    expect(offers().map((entry) => entry.id)).toEqual([updateNotificationId("0.5.0")]);
     expect(state.prefs.updates.notifiedVersion).toBe("0.5.0");
     expect(toast.info).toHaveBeenCalledTimes(2);
   });
@@ -209,15 +228,16 @@ describe("update store (plan step 26)", () => {
       phase: "available",
       version: "0.4.0",
     });
-    expect(useAppStore.getState().notifications).toHaveLength(0);
+    expect(offers()).toHaveLength(0);
     expect(useAppStore.getState().prefs.updates.notifiedVersion).toBeNull();
 
     await useAppStore.getState().loadPrefs();
-    expect(useAppStore.getState().notifications).toHaveLength(1);
+    expect(offers()).toHaveLength(1);
     expect(useAppStore.getState().prefs.updates.notifiedVersion).toBe("0.4.0");
+    expect(toast.info).toHaveBeenCalledTimes(1);
   });
 
-  it("respects the update class and raises once it is enabled", () => {
+  it("respects the update class and announces once it is enabled", () => {
     useAppStore.setState({
       prefs: {
         ...DEFAULT_PREFS,
@@ -232,16 +252,18 @@ describe("update store (plan step 26)", () => {
       phase: "available",
       version: "0.4.0",
     });
-    expect(useAppStore.getState().notifications).toHaveLength(0);
+    expect(offers()).toHaveLength(0);
     expect(useAppStore.getState().prefs.updates.notifiedVersion).toBeNull();
+    expect(toast.info).not.toHaveBeenCalled();
 
     useAppStore.getState().setNotificationClass("update", true);
     expect(useAppStore.getState().prefs.notifications.classes.update).toBe(true);
-    expect(useAppStore.getState().notifications).toHaveLength(1);
+    expect(offers()).toHaveLength(1);
     expect(useAppStore.getState().prefs.updates.notifiedVersion).toBe("0.4.0");
+    expect(toast.info).toHaveBeenCalledTimes(1);
   });
 
-  it("dismisses without re-raising and restores on demand", () => {
+  it("dismisses through the persisted marker and restores on demand", () => {
     const offer = {
       ...initialUpdateState(true),
       phase: "available" as const,
@@ -251,19 +273,22 @@ describe("update store (plan step 26)", () => {
     const id = updateNotificationId("0.4.0");
 
     useAppStore.getState().dismissNotification(id);
-    expect(useAppStore.getState().notifications).toHaveLength(0);
-    expect(useAppStore.getState().prefs.updates.notifiedVersion).toBe("0.4.0");
+    expect(offers()).toHaveLength(0);
+    expect(useAppStore.getState().prefs.updates.dismissedVersion).toBe("0.4.0");
 
-    // A repeated push does not resurrect a dismissed notification.
+    // A repeated push does not resurrect a dismissed offer.
     useAppStore.getState().applyUpdateState(offer);
-    expect(useAppStore.getState().notifications).toHaveLength(0);
+    expect(offers()).toHaveLength(0);
+    expect(toast.info).toHaveBeenCalledTimes(1);
 
     useAppStore.getState().restoreUpdateNotification();
-    expect(useAppStore.getState().notifications).toHaveLength(1);
-    expect(useAppStore.getState().notifications[0]?.id).toBe(id);
+    expect(offers()).toHaveLength(1);
+    expect(offers()[0]?.id).toBe(id);
+    expect(useAppStore.getState().prefs.updates.dismissedVersion).toBeNull();
+    expect(toast.info).toHaveBeenCalledTimes(2);
   });
 
-  it("clears the archive without letting the same version raise again", () => {
+  it("clears without letting the same version return", () => {
     const offer = {
       ...initialUpdateState(true),
       phase: "available" as const,
@@ -271,11 +296,55 @@ describe("update store (plan step 26)", () => {
     };
     useAppStore.getState().applyUpdateState(offer);
     useAppStore.getState().clearNotifications();
-    expect(useAppStore.getState().notifications).toHaveLength(0);
+    expect(offers()).toHaveLength(0);
+    expect(useAppStore.getState().prefs.updates.dismissedVersion).toBe("0.4.0");
 
     useAppStore.getState().applyUpdateState(offer);
-    expect(useAppStore.getState().notifications).toHaveLength(0);
-    expect(useAppStore.getState().prefs.updates.notifiedVersion).toBe("0.4.0");
+    expect(offers()).toHaveLength(0);
+    expect(toast.info).toHaveBeenCalledTimes(1);
+  });
+
+  it("follows the updater phase and never stacks versions", () => {
+    const base = { ...initialUpdateState(true), version: "0.4.0", checkedAt: 1 };
+    useAppStore.getState().applyUpdateState({ ...base, phase: "available" });
+    expect(offers().map((entry) => entry.message)).toEqual(["Pi Desktop v0.4.0 is available."]);
+
+    useAppStore.getState().applyUpdateState({ ...base, phase: "downloaded" });
+    expect(offers()).toHaveLength(1);
+    expect(offers()[0]?.message).toBe("Pi Desktop v0.4.0 is ready to install.");
+
+    useAppStore.getState().applyUpdateState({ ...base, phase: "up-to-date", version: null });
+    expect(offers()).toEqual([]);
+
+    useAppStore.getState().applyUpdateState({
+      ...base,
+      phase: "error",
+      problemKind: "network",
+    });
+    expect(offers()).toEqual([]);
+
+    useAppStore.getState().applyUpdateState({ ...base, phase: "available" });
+    expect(offers()).toHaveLength(1);
+  });
+
+  it("keeps a dismissed version dismissed across a relaunch", () => {
+    const offer = {
+      ...initialUpdateState(true),
+      phase: "available" as const,
+      version: "0.4.0",
+      checkedAt: 1,
+    };
+    useAppStore.getState().applyUpdateState(offer);
+    useAppStore.getState().dismissNotification(updateNotificationId("0.4.0"));
+
+    // Relaunch: in-memory state is rebuilt; persisted prefs survive.
+    useAppStore.setState({ notifications: [], notificationCooldowns: {}, update: null });
+    useAppStore.getState().applyUpdateState(offer);
+    expect(offers()).toEqual([]);
+
+    useAppStore.getState().applyUpdateState({ ...offer, version: "0.5.0" });
+    expect(offers()).toHaveLength(1);
+    expect(offers()[0]?.id).toBe(updateNotificationId("0.5.0"));
   });
 
   it("routes the update toast action to About & updates", () => {

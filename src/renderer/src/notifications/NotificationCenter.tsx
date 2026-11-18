@@ -6,6 +6,7 @@ import {
   isNotificationSuppressed,
   matchingMuteRule,
   notificationClassOf,
+  offerNotifications,
   type AppNotification,
   type NotificationClass,
 } from "../../../shared/notifications";
@@ -17,13 +18,20 @@ import { MultilineText } from "../ui/multiline-text";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 
 /**
- * The notification centre (plan step 16; rebuilt 2026-11-08).
+ * The notification centre (plan step 16; rebuilt 2026-11-08; offers derived
+ * 2026-11-18).
  *
- * `ctx.ui.notify()` and the app's own update offer share one bounded archive.
- * The bell is the only entry point: its count covers unsuppressed rows, and the
- * popover groups each row by class so the Settings class switches explain what
- * is hidden. A class-disabled or rule-matched notification stays in the archive
- * (`Show hidden`) so a user can recover it instead of losing it to a mute.
+ * One bell, two channels. `ctx.ui.notify()` output is an archive of *events*:
+ * bounded, dismissible row by row, muted by class/rule. The app's own offers (a
+ * newer release, outdated extensions) are *state*: derived here with
+ * `offerNotifications`, they exist exactly while their condition holds, so an
+ * applied update clears them without any bookkeeping. `×`/Clear on an offer
+ * writes its persisted dismissal marker (`dismissedVersion` /
+ * `dismissedSignature`); opening the destination only navigates.
+ *
+ * Class-disabled and rule-matched archive rows stay behind `Show hidden`; an
+ * offer whose class is off is simply absent (it is not an arrival). Offers are
+ * never passed through the per-message mute rules.
  *
  * The panel is a light-dismiss Radix popover: an outside click, Escape or the
  * bell closes it, and the header carries no `×` (the per-row `×` still dismisses
@@ -40,8 +48,14 @@ const CLASS_TONE: Record<NotificationClass, "neutral" | "accent" | "info" | "war
 };
 
 export function NotificationCenter() {
-  const notifications = useAppStore((state) => state.notifications);
+  const archived = useAppStore((state) => state.notifications);
   const prefs = useAppStore((state) => state.prefs.notifications);
+  const prefsLoaded = useAppStore((state) => state.prefsLoaded);
+  const update = useAppStore((state) => state.update);
+  const packageUpdates = useAppStore((state) => state.packageUpdates);
+  const packageUpdatesCheckedAt = useAppStore((state) => state.packageUpdatesCheckedAt);
+  const dismissedVersion = useAppStore((state) => state.prefs.updates.dismissedVersion);
+  const dismissedSignature = useAppStore((state) => state.prefs.packages.dismissedSignature);
   const clear = useAppStore((state) => state.clearNotifications);
   const dismiss = useAppStore((state) => state.dismissNotification);
   const openMuteDialog = useAppStore((state) => state.openMuteDialog);
@@ -57,11 +71,24 @@ export function NotificationCenter() {
   const [showHidden, setShowHidden] = useState(false);
   const contentRef = useRef<HTMLDivElement | null>(null);
 
-  const visible = notifications.filter((entry) => !isNotificationSuppressed(entry, prefs));
-  const hidden = notifications.filter((entry) => isNotificationSuppressed(entry, prefs));
+  // Derived state, not an archive row: the offer disappears as soon as the
+  // update is applied, removed or no longer offered.
+  const offers = offerNotifications({
+    prefsLoaded,
+    prefs,
+    update,
+    packageUpdates,
+    packageUpdatesCheckedAt,
+    dismissedVersion,
+    dismissedSignature,
+  });
+  const archiveVisible = archived.filter((entry) => !isNotificationSuppressed(entry, prefs));
+  const hidden = archived.filter((entry) => isNotificationSuppressed(entry, prefs));
+  const visible = [...offers, ...archiveVisible];
   const count = visible.length;
-  const errors = visible.filter((entry) => entry.class === "error").length;
-  const list = showHidden ? notifications : visible;
+  const errors = archiveVisible.filter((entry) => entry.class === "error").length;
+  const list = showHidden ? [...offers, ...archived] : visible;
+  const total = offers.length + archived.length;
 
   const close = (): void => {
     setOpen(false);
@@ -123,14 +150,14 @@ export function NotificationCenter() {
       >
         <div className="mb-1 flex items-center justify-between gap-2 px-1">
           <span className="text-xs font-semibold">Notifications</span>
-          {notifications.length > 0 ? (
+          {total > 0 ? (
             <Button size="sm" variant="ghost" onClick={clear}>
               Clear
             </Button>
           ) : null}
         </div>
 
-        {notifications.length === 0 ? (
+        {total === 0 ? (
           <p className="px-1 py-3 text-xs text-ink-faint">No notifications.</p>
         ) : (
           <>

@@ -238,14 +238,16 @@ describe("sanitizePrefs", () => {
     expect(sanitizePrefs({}).updates).toEqual({
       autoCheck: true,
       notifiedVersion: null,
+      dismissedVersion: null,
     });
     expect(sanitizePrefs({ updates: { autoCheck: false } }).updates).toEqual({
       autoCheck: false,
       notifiedVersion: null,
+      dismissedVersion: null,
     });
     expect(
       sanitizePrefs({ updates: { autoCheck: "yes", notifiedVersion: " 0.5.0 " } }).updates,
-    ).toEqual({ autoCheck: true, notifiedVersion: "0.5.0" });
+    ).toEqual({ autoCheck: true, notifiedVersion: "0.5.0", dismissedVersion: null });
     expect(sanitizePrefs({ updates: { notifiedVersion: "" } }).updates.notifiedVersion).toBeNull();
     expect(
       sanitizePrefs({ updates: { notifiedVersion: "x".repeat(500) } }).updates.notifiedVersion
@@ -253,11 +255,35 @@ describe("sanitizePrefs", () => {
     ).toBe(201);
   });
 
+  it("bounds the dismissed update version and keeps it independent of notified", () => {
+    expect(sanitizePrefs({}).updates.dismissedVersion).toBeNull();
+    expect(
+      sanitizePrefs({ updates: { dismissedVersion: " v0.5.0 " } }).updates.dismissedVersion,
+    ).toBe("v0.5.0");
+    expect(
+      sanitizePrefs({ updates: { dismissedVersion: "" } }).updates.dismissedVersion,
+    ).toBeNull();
+    expect(
+      sanitizePrefs({ updates: { dismissedVersion: "x".repeat(500) } }).updates.dismissedVersion
+        ?.length,
+    ).toBe(201);
+    expect(
+      sanitizePrefs({
+        updates: { notifiedVersion: "0.5.0", dismissedVersion: "0.4.0" },
+      }).updates,
+    ).toEqual({ autoCheck: true, notifiedVersion: "0.5.0", dismissedVersion: "0.4.0" });
+  });
+
   it("defaults extension update checks on and bounds the notified signature", () => {
-    expect(sanitizePrefs({}).packages).toEqual({ autoCheck: true, notifiedSignature: null });
+    expect(sanitizePrefs({}).packages).toEqual({
+      autoCheck: true,
+      notifiedSignature: null,
+      dismissedSignature: null,
+    });
     expect(sanitizePrefs({ packages: { autoCheck: false } }).packages).toEqual({
       autoCheck: false,
       notifiedSignature: null,
+      dismissedSignature: null,
     });
     // A non-boolean keeps the default, like every other switch.
     expect(sanitizePrefs({ packages: { autoCheck: "yes" } }).packages.autoCheck).toBe(true);
@@ -268,6 +294,26 @@ describe("sanitizePrefs", () => {
     expect(
       sanitizePrefs({ packages: { notifiedSignature: "" } }).packages.notifiedSignature,
     ).toBeNull();
+  });
+
+  it("bounds the dismissed update signature and keeps it independent of notified", () => {
+    expect(sanitizePrefs({}).packages.dismissedSignature).toBeNull();
+    expect(
+      sanitizePrefs({ packages: { dismissedSignature: "x".repeat(2_000) } }).packages
+        .dismissedSignature,
+    ).toHaveLength(MAX_PACKAGE_UPDATE_SIGNATURE);
+    expect(
+      sanitizePrefs({ packages: { dismissedSignature: "" } }).packages.dismissedSignature,
+    ).toBeNull();
+    expect(
+      sanitizePrefs({
+        packages: { notifiedSignature: "npm:foo@2.0.0", dismissedSignature: "npm:foo@1.0.0" },
+      }).packages,
+    ).toEqual({
+      autoCheck: true,
+      notifiedSignature: "npm:foo@2.0.0",
+      dismissedSignature: "npm:foo@1.0.0",
+    });
   });
 
   it("accepts every documented theme", () => {
@@ -295,32 +341,53 @@ describe("mergePrefs", () => {
 
   it("preserves the update prefs unless the patch replaces a field", () => {
     const current = sanitizePrefs({
-      updates: { autoCheck: true, notifiedVersion: "0.4.0" },
+      updates: { autoCheck: true, notifiedVersion: "0.4.0", dismissedVersion: "0.3.0" },
     });
-    // A patch that only turns auto-check off must keep the notified version.
+    // A patch that only turns auto-check off must keep both markers.
     const merged = mergePrefs(current, { updates: { autoCheck: false } });
-    expect(merged.updates).toEqual({ autoCheck: false, notifiedVersion: "0.4.0" });
+    expect(merged.updates).toEqual({
+      autoCheck: false,
+      notifiedVersion: "0.4.0",
+      dismissedVersion: "0.3.0",
+    });
     // An unrelated patch must not touch the updater prefs at all.
     expect(mergePrefs(current, { theme: "light" }).updates).toEqual(current.updates);
     expect(mergePrefs(current, { updates: { notifiedVersion: null } }).updates).toEqual({
       autoCheck: true,
       notifiedVersion: null,
+      dismissedVersion: "0.3.0",
+    });
+    expect(mergePrefs(current, { updates: { dismissedVersion: null } }).updates).toEqual({
+      autoCheck: true,
+      notifiedVersion: "0.4.0",
+      dismissedVersion: null,
     });
   });
 
   it("preserves the package-check prefs unless the patch replaces a field", () => {
     const current = sanitizePrefs({
-      packages: { autoCheck: true, notifiedSignature: "npm:foo@2.0.0" },
+      packages: {
+        autoCheck: true,
+        notifiedSignature: "npm:foo@2.0.0",
+        dismissedSignature: "npm:foo@1.9.0",
+      },
     });
-    // Turning background checks off must keep the marker for a dismissed set.
+    // Turning background checks off must keep both markers.
     expect(mergePrefs(current, { packages: { autoCheck: false } }).packages).toEqual({
       autoCheck: false,
       notifiedSignature: "npm:foo@2.0.0",
+      dismissedSignature: "npm:foo@1.9.0",
     });
     expect(mergePrefs(current, { theme: "light" }).packages).toEqual(current.packages);
     expect(mergePrefs(current, { packages: { notifiedSignature: null } }).packages).toEqual({
       autoCheck: true,
       notifiedSignature: null,
+      dismissedSignature: "npm:foo@1.9.0",
+    });
+    expect(mergePrefs(current, { packages: { dismissedSignature: null } }).packages).toEqual({
+      autoCheck: true,
+      notifiedSignature: "npm:foo@2.0.0",
+      dismissedSignature: null,
     });
   });
 

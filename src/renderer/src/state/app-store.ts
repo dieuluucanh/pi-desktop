@@ -54,13 +54,10 @@ import {
   isNotificationSuppressed,
   muteRuleFor,
   normalizeNotificationText,
+  offerNotifications,
   removeMuteRule,
   removeMutesForNotification,
-  packageUpdateNotification,
-  packageUpdateNotificationId,
   shouldCollapseNotification,
-  updateNotification,
-  updateNotificationId,
   withMuteRule,
   type AppNotification,
   type NotificationClass,
@@ -1326,10 +1323,16 @@ export interface AppStateShape {
   clearUpdateProblem: () => Promise<void>;
   /** Merges a partial updater preference without dropping the other fields. */
   setUpdatePrefs: (patch: Partial<UpdatePrefs>) => void;
-  /** Raises the one update-offer notification for the current state. */
-  raiseUpdateNotification: () => void;
-  /** Clears the notified marker and raises the current offer again. */
+  /**
+   * Toasts each derived offer once per profile. The rows themselves are state
+   * (`currentOffers`), never stored, so this is the only side effect of a new
+   * offer arriving.
+   */
+  announceNotificationOffers: () => void;
+  /** Clears both markers and announces the current app-update offer again. */
   restoreUpdateNotification: () => void;
+  /** Clears both markers for the extension-update set (Packages “Notify me again”). */
+  restorePackageUpdateOffer: () => void;
   /**
    * Bodies of spilled large payloads, fetched on demand and cached by blob path
    * (plan step 24). A 50 MB tool result never crosses the event frame; it is
@@ -1572,8 +1575,6 @@ export interface AppStateShape {
   /** Sweeps the configured packages; `force` skips the host's 60 s cache. */
   checkPackageUpdates: (options?: { force?: boolean; automatic?: boolean }) => Promise<void>;
   setPackageCheckPrefs: (patch: Partial<PackageCheckPrefs>) => void;
-  /** Raises the one "extensions can be updated" notification for this set. */
-  raisePackageUpdateNotification: () => void;
   dismissPackageReloadHint: () => void;
 
   /** Themes (plan step 15): the catalogue with the active theme marked. */
@@ -1659,9 +1660,15 @@ export interface AppStateShape {
     dialog: ExtensionDialogRequest,
     answer: { value?: string; confirmed?: boolean; cancelled?: boolean },
   ) => Promise<void>;
-  /** Empties the archive and the repeat cooldowns (the popover's Clear). */
+  /**
+   * Empties the archive and the repeat cooldowns, and persists a dismissal for
+   * every live offer (the popover's Clear).
+   */
   clearNotifications: () => void;
-  /** Removes one row (the popover's per-row ×). */
+  /**
+   * Removes one row (the popover's per-row ×). An offer id writes its dismissal
+   * marker; an archived extension row is filtered out of the archive.
+   */
   dismissNotification: (id: string) => void;
   /** Turns one notification class on or off. */
   setNotificationClass: (klass: NotificationClass, enabled: boolean) => void;
@@ -2020,6 +2027,29 @@ function dropPackageUpdates(
   if (source === null) return [];
   const identity = packageUpdateIdentity({ source });
   return updates.filter((entry) => packageUpdateIdentity(entry) !== identity);
+}
+
+/**
+ * The app-owned offers that describe the current state. There is deliberately no
+ * stored copy: every surface renders this derivation, so an offer row cannot
+ * outlive the condition it reports (see `offerNotifications`).
+ */
+function currentOffers(state: {
+  prefsLoaded: boolean;
+  prefs: UiPrefs;
+  update: UpdateState | null;
+  packageUpdates: PackageUpdateSummary[];
+  packageUpdatesCheckedAt: number | null;
+}): AppNotification[] {
+  return offerNotifications({
+    prefsLoaded: state.prefsLoaded,
+    prefs: state.prefs.notifications,
+    update: state.update,
+    packageUpdates: state.packageUpdates,
+    packageUpdatesCheckedAt: state.packageUpdatesCheckedAt,
+    dismissedVersion: state.prefs.updates.dismissedVersion,
+    dismissedSignature: state.prefs.packages.dismissedSignature,
+  });
 }
 
 /** True for the main process's "this tab is asleep" refusal. */
@@ -3043,7 +3073,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api) {
       set({ prefsLoaded: true });
-      get().raiseUpdateNotification();
+      get().announceNotificationOffers();
       return;
     }
     try {
@@ -3073,8 +3103,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       set({ prefsLoaded: true });
     }
     // The updater state can arrive before the stored prefs (and the class
-    // defaults); now that the loaded prefs are in place, raise the offer once.
-    get().raiseUpdateNotification();
+    // defaults); now that the loaded prefs are in place, announce the offers once.
+    get().announceNotificationOffers();
   },
 
   loadTabs: () =>
@@ -3107,7 +3137,6 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const adoptSelection =
       options?.adoptSelection !== false &&
       (selectionSeq === null || selectionSeq >= localSelectionSeq);
-    const effectiveActiveTabId = adoptSelection ? envelope.activeTabId : state.activeTabId;
     // Main sends a deep copy of the whole table on every publish (including
     // every session state frame). Reusing a record whose fields did not change
     // keeps the editor's mount effect from re-reading the file just because a
@@ -3119,6 +3148,14 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return before && sameTabRecord(before, next) ? before : next;
     });
     const ids = new Set(tabs.map((tab) => tab.id));
+    // A background push must not move the window, but it must not leave the
+    // renderer on a tab that no longer exists either: staying on the dead id
+    // renders Welcome even though main has already chosen the next tab. Adopt
+    // main's id only in that case; a still-present user selection and a
+    // deliberately cleared one (null) stay untouched.
+    const currentGone = state.activeTabId !== null && !ids.has(state.activeTabId);
+    const effectiveActiveTabId =
+      adoptSelection || currentGone ? envelope.activeTabId : state.activeTabId;
     const closedIds: string[] = [];
     for (const tab of state.tabs) {
       if (ids.has(tab.id)) continue;
@@ -3619,17 +3656,56 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  clearNotifications: () => set({ notifications: [], notificationCooldowns: {} }),
+  clearNotifications: () => {
+    const state = get();
+    const offers = currentOffers(state);
+    const updateVersion = state.update?.version ?? null;
+    const signature = packageUpdateSignature(state.packageUpdates);
+    const dismissUpdate = offers.some((entry) => entry.action?.kind === "open-updates");
+    const dismissExtensions = offers.some((entry) => entry.action?.kind === "open-extensions");
+    set({ notifications: [], notificationCooldowns: {} });
+    if (!dismissUpdate && !dismissExtensions) return;
+    // Clear means "not now" for the live offers too: without these markers the
+    // derived rows would return on the next render.
+    get().setPrefs({
+      updates:
+        dismissUpdate && updateVersion
+          ? { ...state.prefs.updates, dismissedVersion: updateVersion }
+          : state.prefs.updates,
+      packages:
+        dismissExtensions && signature.length > 0
+          ? { ...state.prefs.packages, dismissedSignature: signature }
+          : state.prefs.packages,
+    });
+  },
 
-  dismissNotification: (id) =>
-    set({ notifications: get().notifications.filter((entry) => entry.id !== id) }),
+  dismissNotification: (id) => {
+    const state = get();
+    const offer = currentOffers(state).find((entry) => entry.id === id);
+    if (offer?.action?.kind === "open-updates") {
+      const version = state.update?.version;
+      if (version) get().setUpdatePrefs({ dismissedVersion: version });
+      return;
+    }
+    if (offer?.action?.kind === "open-extensions") {
+      const signature = packageUpdateSignature(state.packageUpdates);
+      if (signature.length > 0) get().setPackageCheckPrefs({ dismissedSignature: signature });
+      return;
+    }
+    set({ notifications: state.notifications.filter((entry) => entry.id !== id) });
+  },
 
   setNotificationClass: (klass, enabled) => {
     const prefs = get().prefs.notifications;
     get().setPrefs({
       notifications: { ...prefs, classes: { ...prefs.classes, [klass]: enabled } },
     });
-    if (klass === "update" && enabled) get().raiseUpdateNotification();
+    // Enabling an offer class makes its derived row visible; announce it (once) so
+    // the user who just turned the class on also sees why the bell lit up. Other
+    // classes are archive filters and need no announcement.
+    if (enabled && (klass === "update" || klass === "extension")) {
+      get().announceNotificationOffers();
+    }
   },
 
   openNotificationSettings: () =>
@@ -5807,7 +5883,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   applyUpdateState: (state) => {
     set({ update: sanitizeUpdateState(state) });
-    get().raiseUpdateNotification();
+    // Progress pushes arrive often; the persisted toast marker makes the repeat a
+    // no-op, while a phase/version change is announced exactly once.
+    get().announceNotificationOffers();
   },
 
   checkForUpdates: async () => {
@@ -5870,33 +5948,49 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   setUpdatePrefs: (patch) => get().setPrefs({ updates: { ...get().prefs.updates, ...patch } }),
 
-  raiseUpdateNotification: () => {
-    const { update, prefs, prefsLoaded, notifications } = get();
-    if (!prefsLoaded || !update || update.phase !== "available" || !update.version) return;
-    // A muted class does not get a marker either: enabling it later raises the
-    // offer instead of leaving a hidden row behind.
-    if (!prefs.notifications.classes.update) return;
-    const id = updateNotificationId(update.version);
-    if (notifications.some((entry) => entry.id === id)) {
-      if (prefs.updates.notifiedVersion !== update.version) {
-        get().setUpdatePrefs({ notifiedVersion: update.version });
+  /**
+   * Toasts each derived offer once per profile and writes the notified marker.
+   * Offers are state, so this never adds a row; `currentOffers` supplies them.
+   */
+  announceNotificationOffers: () => {
+    const state = get();
+    if (!state.prefsLoaded) return;
+    const offers = currentOffers(state);
+    if (offers.length === 0) return;
+    let updates = state.prefs.updates;
+    let packages = state.prefs.packages;
+    for (const offer of offers) {
+      if (offer.action?.kind === "open-updates") {
+        const version = state.update?.version;
+        if (!version || updates.notifiedVersion === version) continue;
+        updates = { ...updates, notifiedVersion: version };
+        notifyToast(offer, { onOpen: () => get().openUpdatesView() });
+        continue;
       }
-      return;
+      if (offer.action?.kind === "open-extensions") {
+        const signature = packageUpdateSignature(state.packageUpdates);
+        if (signature.length === 0 || packages.notifiedSignature === signature) continue;
+        packages = { ...packages, notifiedSignature: signature };
+        notifyToast(offer, { onOpen: () => get().setView("extensions") });
+      }
     }
-    // Dismissed (and cleared) rows keep the marker, so a relaunch or a repeated
-    // push does not re-raise the same version. A new version does.
-    if (prefs.updates.notifiedVersion === update.version) return;
-    const notification = updateNotification(update.version);
-    set({ notifications: [notification, ...notifications].slice(0, 100) });
-    get().setUpdatePrefs({ notifiedVersion: update.version });
-    notifyToast(notification, { onOpen: () => get().openUpdatesView() });
+    if (updates === state.prefs.updates && packages === state.prefs.packages) return;
+    // One write for both markers: a partial write cannot announce a toast whose
+    // marker never landed.
+    get().setPrefs({ updates, packages });
   },
 
   restoreUpdateNotification: () => {
     const { update } = get();
     if (!update?.version) return;
-    get().setUpdatePrefs({ notifiedVersion: null });
-    get().raiseUpdateNotification();
+    get().setUpdatePrefs({ notifiedVersion: null, dismissedVersion: null });
+    get().announceNotificationOffers();
+  },
+
+  restorePackageUpdateOffer: () => {
+    if (get().packageUpdates.length === 0) return;
+    get().setPackageCheckPrefs({ notifiedSignature: null, dismissedSignature: null });
+    get().announceNotificationOffers();
   },
 
   // ---- Onboarding (plan step 26) ----
@@ -6755,7 +6849,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
           packageUpdatesUnavailable: false,
           packageUpdatesCwd: cwd,
         });
-        get().raisePackageUpdateNotification();
+        get().announceNotificationOffers();
       } catch (error) {
         // A failed sweep is not proof that nothing is outdated, so the previous
         // list stays. The page shows the reason inline (D8); a manual check also
@@ -6773,30 +6867,6 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   setPackageCheckPrefs: (patch) =>
     get().setPrefs({ packages: { ...get().prefs.packages, ...patch } }),
-
-  raisePackageUpdateNotification: () => {
-    const { packageUpdates, prefs, prefsLoaded, notifications } = get();
-    if (!prefsLoaded || packageUpdates.length === 0) return;
-    // A muted class gets no marker either: enabling it later raises the offer
-    // instead of leaving a hidden row behind.
-    if (!prefs.notifications.classes.extension) return;
-    const signature = packageUpdateSignature(packageUpdates);
-    if (signature.length === 0) return;
-    const id = packageUpdateNotificationId(signature);
-    if (notifications.some((entry) => entry.id === id)) {
-      if (prefs.packages.notifiedSignature !== signature) {
-        get().setPackageCheckPrefs({ notifiedSignature: signature });
-      }
-      return;
-    }
-    // Dismissed rows keep the marker, so a relaunch or a repeated sweep does not
-    // re-raise the same set; a new package or a newer target changes it (D7).
-    if (prefs.packages.notifiedSignature === signature) return;
-    const notification = packageUpdateNotification(packageUpdates.length, signature);
-    set({ notifications: [notification, ...notifications].slice(0, 100) });
-    get().setPackageCheckPrefs({ notifiedSignature: signature });
-    notifyToast(notification, { onOpen: () => get().setView("extensions") });
-  },
 
   dismissPackageReloadHint: () => set({ packagesMutatedAt: null }),
 

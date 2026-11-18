@@ -114,19 +114,33 @@ export function sanitizeDialogPrefs(input: unknown): DialogPrefs {
  *
  * `autoCheck` gates only the *background* sweep (after launch and every six
  * hours); opening the Extensions page or pressing Check now always checks.
- * `notifiedSignature` is the update set the bell already announced — a
- * fingerprint rather than a version, because an extension update is a set, not
- * one release (see `packageUpdateSignature`).
+ *
+ * The two markers are fingerprints of an update *set*, not a version, because an
+ * extension update is a set (see `packageUpdateSignature`). They record two
+ * different facts: `notifiedSignature` is the set whose toast has already been
+ * announced (so a relaunch does not toast again), and `dismissedSignature` is
+ * the set whose bell row the user removed with `×`/Clear. Neither is a row
+ * cache: the row itself is derived from the live set, so a new set raises it and
+ * an applied update removes it.
  */
 export interface PackageCheckPrefs {
   autoCheck: boolean;
   notifiedSignature: string | null;
+  dismissedSignature: string | null;
 }
 
 export const DEFAULT_PACKAGE_CHECK_PREFS: PackageCheckPrefs = {
   autoCheck: true,
   notifiedSignature: null,
+  dismissedSignature: null,
 };
+
+/** The same bound for every persisted update-set fingerprint. */
+function boundedPackageSignature(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0
+    ? value.slice(0, MAX_PACKAGE_UPDATE_SIGNATURE)
+    : null;
+}
 
 /** Rebuilds from defaults: an older app-state.json has no `packages` block. */
 export function sanitizePackageCheckPrefs(input: unknown): PackageCheckPrefs {
@@ -134,16 +148,14 @@ export function sanitizePackageCheckPrefs(input: unknown): PackageCheckPrefs {
     input && typeof input === "object" && !Array.isArray(input)
       ? (input as Record<string, unknown>)
       : {};
-  const signature = source.notifiedSignature;
   return {
     autoCheck:
       typeof source.autoCheck === "boolean"
         ? source.autoCheck
         : DEFAULT_PACKAGE_CHECK_PREFS.autoCheck,
-    notifiedSignature:
-      typeof signature === "string" && signature.length > 0
-        ? signature.slice(0, MAX_PACKAGE_UPDATE_SIGNATURE)
-        : null,
+    notifiedSignature: boundedPackageSignature(source.notifiedSignature),
+    // Absent in an older app-state.json: no set has been dismissed yet.
+    dismissedSignature: boundedPackageSignature(source.dismissedSignature),
   };
 }
 

@@ -92,6 +92,46 @@ describe("tab revisions (2026-11-06 tab-switch plan)", () => {
 
     expect(useAppStore.getState().activeTabId).toBe("b");
   });
+
+  it("adopts main's id when a background push removed the shown tab", () => {
+    // The user was on `a`; another window/main closed it and published `b` as
+    // the next selection. `adoptSelection: false` models a state frame, which
+    // must not move a live user selection — but `a` no longer exists, so staying
+    // on it would render Welcome even though main already chose `b`.
+    const a = tab({ id: "a" });
+    const b = tab({ id: "b" });
+    useAppStore.setState({ tabs: [a, b], activeTabId: "a" });
+
+    useAppStore
+      .getState()
+      .applyTabs({ tabs: [b], activeTabId: "b", revision: 4 }, { adoptSelection: false });
+
+    expect(useAppStore.getState().activeTabId).toBe("b");
+  });
+
+  it("keeps the user's tab when a background push still contains it", () => {
+    const a = tab({ id: "a" });
+    const b = tab({ id: "b" });
+    useAppStore.setState({ tabs: [a, b], activeTabId: "a" });
+
+    useAppStore
+      .getState()
+      .applyTabs({ tabs: [a, b], activeTabId: "b", revision: 5 }, { adoptSelection: false });
+
+    expect(useAppStore.getState().activeTabId).toBe("a");
+  });
+
+  it("keeps a deliberately cleared selection cleared when a tab closes", () => {
+    const a = tab({ id: "a" });
+    const b = tab({ id: "b" });
+    useAppStore.setState({ tabs: [a, b], activeTabId: null });
+
+    useAppStore
+      .getState()
+      .applyTabs({ tabs: [b], activeTabId: "b", revision: 6 }, { adoptSelection: false });
+
+    expect(useAppStore.getState().activeTabId).toBeNull();
+  });
 });
 
 describe("web tab selection (2026-11-06 tab-switch plan)", () => {

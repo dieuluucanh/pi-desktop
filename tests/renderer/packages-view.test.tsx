@@ -5,6 +5,7 @@ import { PackageConsentDialog } from "../../src/renderer/src/extensions/PackageC
 import { PackagesSection } from "../../src/renderer/src/extensions/PackagesSection";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import type { PackageSummary, PackageUpdateSummary } from "../../src/shared/packages";
+import { packageUpdateSignature } from "../../src/shared/packages";
 import type { TabRecord } from "../../src/shared/session-ipc";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { installBridge } from "./fixtures";
@@ -202,6 +203,29 @@ describe("available updates", () => {
     );
     expect(screen.getByTestId("package-check-status")).toHaveTextContent("1 update available");
     expect(screen.getByRole("button", { name: "Update all (1)" })).toBeInTheDocument();
+    // A live offer needs no restore control.
+    expect(screen.queryByTestId("package-notify-again")).toBeNull();
+  });
+
+  it("offers Notify me again after the offer is dismissed", async () => {
+    useAppStore.setState({
+      packageUpdates: [updateEntry()],
+      prefs: {
+        ...DEFAULT_PREFS,
+        packages: {
+          ...DEFAULT_PREFS.packages,
+          dismissedSignature: packageUpdateSignature([updateEntry()]),
+        },
+      },
+    });
+    stubCheck();
+    render(<PackagesSection />);
+
+    await userEvent.click(screen.getByTestId("package-notify-again"));
+
+    const state = useAppStore.getState();
+    expect(state.prefs.packages.dismissedSignature).toBeNull();
+    expect(state.prefs.packages.notifiedSignature).toBe(packageUpdateSignature([updateEntry()]));
   });
 
   it("says only 'available' when the target is not knowable (git or a range)", () => {

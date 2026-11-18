@@ -422,7 +422,15 @@ renderer's Tailwind scan root, so `styles.css` also declares them with
   is refused and answered through `WebNavigationDialog`. Security is structural:
   every web tab shares one partition with no preload, `sandbox: true`,
   `contextIsolation: true` and all permissions denied, so `window.pi` never
-  exists in it and it cannot reach the Pi bridge.
+  exists in it and it cannot reach the Pi bridge. A page's `window.close()` is a
+  **request**, not a tab teardown: the adapter installs a `window.close`
+  interceptor at `dom-ready` through `executeJavaScript` and treats a destroyed
+  `webContents` as the fallback, both normalized to `close-requested`; main
+  closes the tab through the session service. The close policy prefers the web
+  tab's `sessionTabId` and falls back to MRU
+  (`src/main/tab-selection.ts`); closing a session also removes its linked
+  review tabs in the same publish. The interceptor adds no preload, Node or
+  `window.pi` surface.
 
 ## Command ownership (no double-firing)
 
@@ -678,11 +686,12 @@ and the renderer all read it, so a budget change is one edit.
   recycling probe `state.get` first, so a streaming turn or a long tool call is
   never stopped mid-work.
 - **Bounded live renderers and caches.** Unlimited web tabs are URL records; at
-  most four `WebContentsView`s stay live (active + three recent), and an evicted
-  view reloads its URL on activation. The renderer keeps at most four hydrated
-  transcripts and a bounded lazy blob cache; closed tabs lose every per-tab
-  cache immediately. These bounds are independent of the tab count, so opening
-  many tabs cannot grow Chromium or the renderer without limit.
+  most six `WebContentsView`s stay live (`MAX_LIVE_WEB_VIEWS`: the active tab
+  plus recent/visible ones), and an evicted view reloads its URL on activation.
+  The renderer keeps at most four hydrated transcripts and a bounded lazy blob
+  cache; closed tabs lose every per-tab cache immediately. These bounds are
+  independent of the tab count, so opening many tabs cannot grow Chromium or
+  the renderer without limit.
 - **Host process lifetime.** A service host shuts down when its stdin pipe
   closes, which is what happens when main exits (including an `electron-vite`
   dev restart). A failed `start()` or `restart()` terminates the child it
@@ -889,27 +898,33 @@ and safe-mode launches never auto-check; a manual check is still allowed.
 
 Events reduce into `UpdateState` (`src/shared/updates.ts`), whose phases include
 the benign `no-feed` state for an unpublished build/feed. `prefs.updates` carries
-`autoCheck` and the per-version `notifiedVersion`: a check that finds a release
-raises exactly one app-owned notification (class `update`) in the bell, with a
-**View update** action, and puts a dot on the **About & updates** sidebar item.
-That item is the last product view, below Diagnostics; there is no status-bar
-update chip. Downloading and downloaded change the dot; every other outcome — up
-to date, no feed, an error — lives in that view, with the raw updater text under
+`autoCheck`, the toast marker `notifiedVersion` and the row marker
+`dismissedVersion`. An app-owned **offer** is not stored: the renderer derives it
+from `phase`/`version` (`offerNotifications`), so `available`, `downloading` and
+`downloaded` show one row with phase-appropriate copy and **View update**, while
+every other phase shows none. A new version replaces the row instead of stacking;
+`×`/Clear persists `dismissedVersion`, and **Notify me again** in About & updates
+clears it. The **About & updates** sidebar item carries a dot while a version is
+offered/downloading/downloaded. That item is the last product view, below
+Diagnostics; there is no status-bar update chip. Every other outcome — up to
+date, no feed, an error — lives in that view, with the raw updater text under
 Technical details. `Help → Check for Updates…` opens the view and checks; on
 Windows and Linux `Help → About Pi Desktop` opens the same view, while macOS
 keeps its native About panel. Automatic failures stay silent; a manual failure is
 a dismissible status hint plus the view. There is no full-width update banner.
 
-**Notifications.** The status-bar bell always renders and counts only
-unsuppressed rows. Notifications are classed as **App updates**, **Errors**,
-**Warnings** and **Informational messages**; classes are severity-based because
-Pi's `ctx.ui.notify` has no source field. Info is off by default for the bell and
-toasts, so background chatter such as “Server logs ready (local)” stays out of
-them; the transcript always prints extension notifications, as terminal Pi does.
-The popover closes on an outside click or Escape (and the bell toggles it), so
-there is no header `×`; it keeps a per-row `×`, class badges and **Show hidden
-(N)** for archived suppressed rows. Settings → Notifications owns the class
-switches and the per-message mute rules.
+**Notifications.** The status-bar bell always renders and composes two channels.
+The archive holds extension `ctx.ui.notify` **events** (classed as **Errors**,
+**Warnings**, **Informational messages**, plus the app-owned **App updates** and
+**Extension updates**). App-owned **offers** are state, not arrivals: the renderer
+derives them from the live updater and package state, so an applied update clears
+its row automatically. Info is off by default for the bell and toasts, so
+background chatter such as “Server logs ready (local)” stays out of them; the
+transcript always prints extension notifications, as terminal Pi does. The
+popover closes on an outside click or Escape (and the bell toggles it), so there
+is no header `×`; it keeps a per-row `×`, class badges and **Show hidden (N)** for
+archived suppressed rows. Per-message mute rules apply to archive rows only, never
+to offers. Settings → Notifications owns the class switches and the mute rules.
 
 **Packaging.** `electron-builder.yml` targets Windows NSIS + portable, macOS
 dmg/zip on arm64 + x64, and Linux AppImage/deb on x64 + arm64. The bundled

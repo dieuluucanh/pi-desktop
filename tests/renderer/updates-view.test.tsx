@@ -148,15 +148,26 @@ describe("UpdatesView", () => {
     useAppStore.setState({
       prefs: {
         ...DEFAULT_PREFS,
-        updates: { ...DEFAULT_PREFS.updates, notifiedVersion: "0.4.0" },
+        updates: { ...DEFAULT_PREFS.updates, dismissedVersion: "0.4.0" },
       },
-      notifications: [],
     });
     render(<UpdatesView />);
 
     await user.click(screen.getByRole("button", { name: /notify me again/i }));
-    expect(useAppStore.getState().notifications).toHaveLength(1);
-    expect(useAppStore.getState().prefs.updates.notifiedVersion).toBe("0.4.0");
+
+    const state = useAppStore.getState();
+    // The row is derived from the live offer, so this clears the dismissal (and
+    // re-announces) instead of pushing an archive row.
+    expect(state.prefs.updates.dismissedVersion).toBeNull();
+    expect(state.prefs.updates.notifiedVersion).toBe("0.4.0");
+    expect(state.notifications).toHaveLength(0);
+  });
+
+  it("keeps Notify me again hidden while the offer is live", () => {
+    setUpdate({ phase: "available", version: "0.4.0" });
+    render(<UpdatesView />);
+
+    expect(screen.queryByRole("button", { name: /notify me again/i })).toBeNull();
   });
 
   it("opens the public releases page", async () => {

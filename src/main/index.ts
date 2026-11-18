@@ -489,6 +489,15 @@ const webTabs = createWebTabManager({
   createView: createElectronWebViewHost({ window: () => mainWindow }),
   emitState: (state) => broadcastToWindows(IPC.webState, state),
   emitNavigationRequest: (request) => broadcastToWindows(IPC.webNavigationRequest, request),
+  requestClose: (tabId) => {
+    // Defer so the adapter finishes dispatching close-requested/destroyed before
+    // a publish can synchronously tear the view down from inside the listener
+    // (the destroyed fallback is synchronous). A page can ask to close before
+    // the session service exists only during shutdown; the guard covers it.
+    queueMicrotask(() => {
+      void sessions?.closeTab(tabId).catch(() => undefined);
+    });
+  },
 });
 
 /**
@@ -1874,6 +1883,12 @@ if (!app.requestSingleInstanceLock()) {
             ?.tabs()
             .find((tab) => tab.kind === "web" && tab.url === input.url);
           if (existing) {
+            // A reused review URL belongs to the session that just handed it
+            // off; the first opener must not keep the link forever. This runs
+            // for a background open too, before the early return below.
+            if (input.sessionTabId) {
+              await requireSessions().linkWebTabSession(existing.id, input.sessionTabId);
+            }
             if (input.activate === false) return requireSessions().envelope();
             // Activate first: the tabs emit runs webTabs.sync, which creates a
             // parked view before the reload command runs. Sending reload before
@@ -1912,6 +1927,9 @@ if (!app.requestSingleInstanceLock()) {
               ?.tabs()
               .find((tab) => tab.kind === "web" && tab.url === decision.url);
             if (existing) {
+              if (decision.sessionTabId) {
+                await requireSessions().linkWebTabSession(existing.id, decision.sessionTabId);
+              }
               await requireSessions().activateTab(existing.id);
               return true;
             }

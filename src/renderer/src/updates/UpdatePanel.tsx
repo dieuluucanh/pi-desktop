@@ -7,7 +7,6 @@ import {
   type UpdatePhase,
   type UpdateState,
 } from "../../../shared/updates";
-import { updateNotificationId } from "../../../shared/notifications";
 import { useAppStore } from "../state/app-store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -105,7 +104,6 @@ export function UpdatePanel() {
   const downloadUpdate = useAppStore((state) => state.downloadUpdate);
   const installUpdate = useAppStore((state) => state.installUpdate);
   const clearUpdateProblem = useAppStore((state) => state.clearUpdateProblem);
-  const notifications = useAppStore((state) => state.notifications);
   const restoreUpdateNotification = useAppStore((state) => state.restoreUpdateNotification);
 
   const channel = info?.buildChannel ?? "unknown";
@@ -117,10 +115,12 @@ export function UpdatePanel() {
   const builtAt = formatBuiltAt(info?.builtAt);
   const versionMismatch =
     typeof info?.buildVersion === "string" && info.buildVersion !== info.version;
-  const updateNotificationPresent =
+  // The row is derived from this state (see `offerNotifications`), so "absent"
+  // means the user dismissed this exact version — not that the class is off.
+  const offerDismissed =
     update?.version !== null &&
     update?.version !== undefined &&
-    notifications.some((entry) => entry.id === updateNotificationId(update.version!));
+    prefs.updates.dismissedVersion === update.version;
 
   return (
     <section className="card flex flex-col gap-3" data-testid="updates-panel">
@@ -208,11 +208,7 @@ export function UpdatePanel() {
           </Button>
         ) : null}
 
-        {phase === "available" &&
-        update?.version !== null &&
-        update?.version !== undefined &&
-        prefs.updates.notifiedVersion === update.version &&
-        !updateNotificationPresent ? (
+        {phase === "available" && offerDismissed ? (
           <Button
             size="sm"
             variant="ghost"

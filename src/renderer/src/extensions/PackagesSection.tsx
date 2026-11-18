@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Download, Loader2, Pin, PinOff, RefreshCw, Trash2 } from "lucide-react";
 import {
   packageUpdateIdentity,
+  packageUpdateSignature,
   pinnedPackageSource,
   unpinnedPackageSource,
   type PackageScope,
@@ -88,7 +89,9 @@ export function PackagesSection() {
   const updatesCheckedAt = useAppStore((state) => state.packageUpdatesCheckedAt);
   const checkPackageUpdates = useAppStore((state) => state.checkPackageUpdates);
   const autoCheck = useAppStore((state) => state.prefs.packages.autoCheck);
+  const dismissedSignature = useAppStore((state) => state.prefs.packages.dismissedSignature);
   const setPackageCheckPrefs = useAppStore((state) => state.setPackageCheckPrefs);
+  const restorePackageUpdateOffer = useAppStore((state) => state.restorePackageUpdateOffer);
   const packagesMutatedAt = useAppStore((state) => state.packagesMutatedAt);
   const dismissPackageReloadHint = useAppStore((state) => state.dismissPackageReloadHint);
   const reloadResources = useAppStore((state) => state.reloadResources);
@@ -107,6 +110,9 @@ export function PackagesSection() {
   );
 
   const updateCount = updates.length;
+  // The bell row is derived from `updates`; an absent row with a non-empty set
+  // means the user removed it with ×/Clear, so offer a way back.
+  const offerDismissed = updateCount > 0 && dismissedSignature === packageUpdateSignature(updates);
   const checked = updatesCheckedAt === null ? null : checkedAgo(updatesCheckedAt);
   let status: string;
   if (updatesUnavailable) {
@@ -181,6 +187,17 @@ export function PackagesSection() {
             />
             Check automatically
           </label>
+          {offerDismissed ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              data-testid="package-notify-again"
+              title="Raise the extension-update notification again"
+              onClick={() => restorePackageUpdateOffer()}
+            >
+              Notify me again
+            </Button>
+          ) : null}
           <Button
             size="sm"
             variant="ghost"

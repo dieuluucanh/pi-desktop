@@ -26,9 +26,27 @@
  * They are deliberately *not* a second notification archive: the history keeps
  * every arrival, and muting only hides it from the bell/toast surfaces so it can
  * be restored with Unmute.
+ *
+ * ## Two channels, one bell
+ *
+ * The archive holds *events*: extension `ctx.ui.notify` output only. The app's
+ * own offers — a newer release and a set of outdated packages — are **state**,
+ * not arrivals: {@link offerNotifications} derives them from live renderer state
+ * on every render, and they are never stored. That makes a stale row
+ * structurally impossible: an offer row exists iff its condition is true and the
+ * user has not dismissed it (`prefs.updates.dismissedVersion` /
+ * `prefs.packages.dismissedSignature`). Adding a third app-owned offer means
+ * adding it to that one function and to the store's dismissal routing.
+ *
+ * Because offers are state, per-message mute rules never apply to them
+ * ({@link isNotificationSuppressed} is for archived rows). An offer is gated by
+ * its class switch and by an explicit `×`/Clear only.
  */
 
+import { packageUpdateSignature } from "./packages";
+import type { PackageUpdateSummary } from "./packages";
 import type { ExtensionNotification, ExtensionNotifyType } from "./extension-ui";
+import type { UpdatePhase } from "./updates";
 
 /** The coarse classes the notification surfaces group and toggle. */
 export const NOTIFICATION_CLASSES = ["update", "extension", "error", "warning", "info"] as const;
@@ -130,6 +148,21 @@ export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
 export type NotificationAction = { kind: "open-updates" } | { kind: "open-extensions" };
 
 /**
+ * The updater phases that still ask the user to act (or are acting on their
+ * behalf). Every other phase means there is nothing to offer.
+ */
+export const UPDATE_OFFER_PHASES = ["available", "downloading", "downloaded"] as const;
+
+export type UpdateOfferPhase = (typeof UPDATE_OFFER_PHASES)[number];
+
+/** Narrows any updater phase to the ones an offer row describes. */
+export function isUpdateOfferPhase(
+  phase: UpdatePhase | null | undefined,
+): phase is UpdateOfferPhase {
+  return typeof phase === "string" && (UPDATE_OFFER_PHASES as readonly string[]).includes(phase);
+}
+
+/**
  * One row in the unified archive. Extension notifications carry the tab that
  * raised them; app-owned notifications have no tab and may carry an action.
  */
@@ -223,12 +256,27 @@ export function updateNotificationId(version: string): string {
   return `app:update:${version}`;
 }
 
-/** The one notification raised when a newer release is offered. */
-export function updateNotification(version: string, at = Date.now()): AppNotification {
+/** The copy for each phase an update offer can describe. */
+const UPDATE_OFFER_MESSAGES: Record<UpdateOfferPhase, (label: string) => string> = {
+  available: (label) => `Pi Desktop v${label} is available.`,
+  downloading: (label) => `Pi Desktop v${label} is downloading.`,
+  downloaded: (label) => `Pi Desktop v${label} is ready to install.`,
+};
+
+/**
+ * The row describing an offered release. `phase` is appended so the existing
+ * positional `(version, at)` calls keep working; the copy follows the updater so
+ * a downloaded release never reads "is available".
+ */
+export function updateNotification(
+  version: string,
+  at = Date.now(),
+  phase: UpdateOfferPhase = "available",
+): AppNotification {
   const label = version.trim().replace(/^v/i, "");
   return {
     id: updateNotificationId(version),
-    message: `Pi Desktop v${label} is available.`,
+    message: UPDATE_OFFER_MESSAGES[phase](label),
     type: "info",
     class: "update",
     tabId: null,
@@ -272,6 +320,66 @@ export function packageUpdateNotification(
     at,
     action: { kind: "open-extensions" },
   };
+}
+
+/**
+ * Everything {@link offerNotifications} reads. Deliberately structural (phase,
+ * version, the update list and the prefs it needs) so the renderer can pass its
+ * state without this module importing the prefs module.
+ */
+export interface NotificationOfferInput {
+  /** Offers stay blank until the stored class switches have loaded. */
+  prefsLoaded: boolean;
+  prefs: NotificationPrefs;
+  update: { phase: UpdatePhase; version: string | null; checkedAt: number | null } | null;
+  packageUpdates: readonly PackageUpdateSummary[];
+  packageUpdatesCheckedAt: number | null;
+  /** The release whose row the user removed with `×`/Clear. */
+  dismissedVersion: string | null;
+  /** The update set whose row the user removed with `×`/Clear. */
+  dismissedSignature: string | null;
+}
+
+/**
+ * The app-owned offer rows that describe *current* state, newest concern first:
+ * the release offer, then the extension-update offer. An empty answer is the
+ * normal "nothing to do" case.
+ *
+ * Each row is produced only when its class switch is on and its identity is not
+ * the persisted dismissal marker, so a stale row cannot survive a state change
+ * and a dismissed set stays dismissed until a new version/set appears. Per-message
+ * mute rules are intentionally ignored here (see the module header).
+ */
+export function offerNotifications(input: NotificationOfferInput): AppNotification[] {
+  if (!input.prefsLoaded) return [];
+  const offers: AppNotification[] = [];
+
+  const update = input.update;
+  if (
+    update &&
+    isNotificationClassEnabled(input.prefs, "update") &&
+    typeof update.version === "string" &&
+    update.version.length > 0 &&
+    isUpdateOfferPhase(update.phase) &&
+    input.dismissedVersion !== update.version
+  ) {
+    offers.push(updateNotification(update.version, update.checkedAt ?? 0, update.phase));
+  }
+
+  if (isNotificationClassEnabled(input.prefs, "extension") && input.packageUpdates.length > 0) {
+    const signature = packageUpdateSignature(input.packageUpdates);
+    if (signature.length > 0 && input.dismissedSignature !== signature) {
+      offers.push(
+        packageUpdateNotification(
+          input.packageUpdates.length,
+          signature,
+          input.packageUpdatesCheckedAt ?? 0,
+        ),
+      );
+    }
+  }
+
+  return offers;
 }
 
 /** Builds the rule a mute-dialog choice would save. */
@@ -330,10 +438,12 @@ export function isNotificationMuted(
 }
 
 /**
- * True when the notification must not appear in the bell or a toast: its class
- * is off, or a per-message rule silences it. The transcript always prints
- * `ctx.ui.notify` output (terminal parity); the archive still keeps every
- * arrival (see the module header).
+ * True when an *archived* notification must not appear in the bell or a toast:
+ * its class is off, or a per-message rule silences it. The transcript always
+ * prints `ctx.ui.notify` output (terminal parity); the archive still keeps every
+ * arrival (see the module header). App-owned offers are not archived and are
+ * never passed through this predicate: a `type: "info"` rule must not hide an
+ * update offer.
  */
 export function isNotificationSuppressed(
   notification: NotificationLike,

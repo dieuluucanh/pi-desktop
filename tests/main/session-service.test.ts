@@ -2572,6 +2572,295 @@ describe("web tabs (plan step 21)", () => {
   });
 });
 
+describe("close selection (2026-11-18 web-tab plan)", () => {
+  it("returns to the session that opened a web tab even when another tab is newer", async () => {
+    let clock = 1_000;
+    const { service } = createHarness({ now: () => clock });
+    await service.createTab({ cwd: "C:/work/one" });
+    clock = 2_000;
+    await service.createTab({ cwd: "C:/work/two" });
+    clock = 3_000;
+    await service.createTab({
+      kind: "web",
+      url: "http://127.0.0.1:19432/review",
+      sessionTabId: "tab-1",
+    });
+
+    // tab-2 is newer than the opener; the explicit link still wins.
+    const envelope = await service.closeTab("tab-3");
+
+    expect(envelope.activeTabId).toBe("tab-1");
+  });
+
+  it("falls back to the most recently active tab when a web tab has no link", async () => {
+    let clock = 1_000;
+    const { service } = createHarness({ now: () => clock });
+    await service.createTab({ cwd: "C:/work/one" });
+    clock = 2_000;
+    await service.createTab({ cwd: "C:/work/two" });
+    clock = 3_000;
+    await service.createTab({ kind: "web", url: "http://127.0.0.1:19432/review" });
+
+    const envelope = await service.closeTab("tab-3");
+
+    expect(envelope.activeTabId).toBe("tab-2");
+  });
+
+  it("uses createdAt when the remaining activity clocks are equal", async () => {
+    let clock = 1_000;
+    const { service } = createHarness({ now: () => clock });
+    await service.createTab({ cwd: "C:/work/one" });
+    clock = 2_000;
+    await service.createTab({ cwd: "C:/work/two" });
+    // Make both activity clocks equal; tab-2 is still the newer record.
+    clock = 3_000;
+    await service.activateTab("tab-1");
+    await service.activateTab("tab-2");
+    await service.createTab({ kind: "web", url: "http://127.0.0.1:19432/review" });
+
+    const envelope = await service.closeTab("tab-3");
+
+    expect(envelope.activeTabId).toBe("tab-2");
+  });
+
+  it("bumps and persists the selected tab's activity clock", async () => {
+    let clock = 1_000;
+    const { service, stored } = createHarness({ now: () => clock });
+    await service.createTab({ cwd: "C:/work/one" });
+    clock = 2_000;
+    await service.createTab({ cwd: "C:/work/two" });
+    clock = 3_000;
+    await service.createTab({
+      kind: "web",
+      url: "http://127.0.0.1:19432/review",
+      sessionTabId: "tab-1",
+    });
+    clock = 4_000;
+
+    await service.closeTab("tab-3");
+
+    expect(stored.activeTabId).toBe("tab-1");
+    expect(stored.tabs.find((entry) => entry.id === "tab-1")?.lastActiveAt).toBe(4_000);
+  });
+
+  it("does not move the selection when a background web tab closes", async () => {
+    let clock = 1_000;
+    const { service } = createHarness({ now: () => clock });
+    await service.createTab({ cwd: "C:/work/one" });
+    clock = 2_000;
+    await service.createTab({ cwd: "C:/work/two" });
+    clock = 3_000;
+    await service.createTab({ kind: "web", url: "http://127.0.0.1:19432/review" });
+    await service.activateTab("tab-2");
+
+    const envelope = await service.closeTab("tab-3");
+
+    expect(envelope.activeTabId).toBe("tab-2");
+  });
+
+  it("selects null when the last web tab closes", async () => {
+    const { service } = createHarness();
+    await service.createTab({ kind: "web", url: "http://127.0.0.1:19432/review" });
+
+    const envelope = await service.closeTab("tab-1");
+
+    expect(envelope.tabs).toEqual([]);
+    expect(envelope.activeTabId).toBeNull();
+  });
+
+  it("keeps a deliberately cleared selection cleared", async () => {
+    let clock = 1_000;
+    const { service } = createHarness({ now: () => clock });
+    await service.createTab({ cwd: "C:/work/one" });
+    clock = 2_000;
+    await service.createTab({ cwd: "C:/work/two" });
+    await service.deactivate();
+
+    const envelope = await service.closeTab("tab-1");
+
+    expect(envelope.activeTabId).toBeNull();
+  });
+
+  it("closes a session's linked web tabs in one table change", async () => {
+    let clock = 1_000;
+    const { service, pushes, stored } = createHarness({ now: () => clock });
+    await service.createTab({ cwd: "C:/work/a" });
+    clock = 2_000;
+    await service.createTab({ cwd: "C:/work/b" });
+    clock = 3_000;
+    await service.createTab({
+      kind: "web",
+      url: "http://127.0.0.1:19432/a",
+      sessionTabId: "tab-1",
+    });
+    clock = 4_000;
+    await service.createTab({
+      kind: "web",
+      url: "http://127.0.0.1:19432/b",
+      sessionTabId: "tab-2",
+    });
+    clock = 5_000;
+    await service.createTab({ kind: "web", url: "http://127.0.0.1:19432/manual" });
+    await service.activateTab("tab-2");
+    pushes.length = 0;
+
+    const envelope = await service.closeTab("tab-1");
+
+    // The owner and its review view go; the other session's review view and the
+    // unlinked manual tab stay.
+    expect(envelope.tabs.map((entry) => entry.id)).toEqual(["tab-2", "tab-4", "tab-5"]);
+    expect(envelope.activeTabId).toBe("tab-2");
+    expect(stored.tabs.map((entry) => entry.id)).toEqual(["tab-2", "tab-4", "tab-5"]);
+    // One publish for the whole cascade, never an intermediate empty selection.
+    expect(pushes.filter((push) => push.channel === "tabs")).toHaveLength(1);
+  });
+
+  it("cascades a pinned linked web tab too", async () => {
+    const { service } = createHarness();
+    await service.createTab({ cwd: "C:/work/a" });
+    await service.createTab({
+      kind: "web",
+      url: "http://127.0.0.1:19432/review",
+      sessionTabId: "tab-1",
+    });
+    await service.setPinned("tab-2", true);
+
+    const envelope = await service.closeTab("tab-1");
+
+    expect(envelope.tabs).toEqual([]);
+    expect(envelope.activeTabId).toBeNull();
+  });
+
+  it("moves off a doomed linked web tab to the MRU remaining tab", async () => {
+    let clock = 1_000;
+    const { service } = createHarness({ now: () => clock });
+    await service.createTab({ cwd: "C:/work/a" });
+    clock = 2_000;
+    await service.createTab({ cwd: "C:/work/b" });
+    clock = 3_000;
+    await service.createTab({
+      kind: "web",
+      url: "http://127.0.0.1:19432/review",
+      sessionTabId: "tab-1",
+    });
+    // The user is looking at the review when the review's session is closed.
+    await service.activateTab("tab-3");
+
+    const envelope = await service.closeTab("tab-1");
+
+    expect(envelope.tabs.map((entry) => entry.id)).toEqual(["tab-2"]);
+    expect(envelope.activeTabId).toBe("tab-2");
+  });
+
+  it("does not cascade when a web tab itself closes", async () => {
+    let clock = 1_000;
+    const { service } = createHarness({ now: () => clock });
+    await service.createTab({ cwd: "C:/work/a" });
+    clock = 2_000;
+    await service.createTab({
+      kind: "web",
+      url: "http://127.0.0.1:19432/one",
+      sessionTabId: "tab-1",
+    });
+    clock = 3_000;
+    await service.createTab({
+      kind: "web",
+      url: "http://127.0.0.1:19432/two",
+      sessionTabId: "tab-1",
+    });
+    await service.activateTab("tab-2");
+
+    const envelope = await service.closeTab("tab-2");
+
+    expect(envelope.tabs.map((entry) => entry.id)).toEqual(["tab-1", "tab-3"]);
+    expect(envelope.activeTabId).toBe("tab-1");
+  });
+});
+
+describe("web tab links (2026-11-18 plan)", () => {
+  it("updates and persists the owner link of a web tab", async () => {
+    const { service, stored, pushes } = createHarness();
+    await service.createTab({ cwd: "C:/work/a" });
+    await service.createTab({ cwd: "C:/work/b" });
+    await service.createTab({
+      kind: "web",
+      url: "http://127.0.0.1:19432/review",
+      sessionTabId: "tab-1",
+    });
+    pushes.length = 0;
+
+    const envelope = await service.linkWebTabSession("tab-3", "tab-2");
+
+    expect(envelope.tabs.find((entry) => entry.id === "tab-3")?.sessionTabId).toBe("tab-2");
+    expect(stored.tabs.find((entry) => entry.id === "tab-3")?.sessionTabId).toBe("tab-2");
+    expect(pushes.filter((push) => push.channel === "tabs")).toHaveLength(1);
+  });
+
+  it("does not publish or persist when the link is unchanged", async () => {
+    const { service, pushes } = createHarness();
+    await service.createTab({ cwd: "C:/work/a" });
+    await service.createTab({
+      kind: "web",
+      url: "http://127.0.0.1:19432/review",
+      sessionTabId: "tab-1",
+    });
+    pushes.length = 0;
+
+    const envelope = await service.linkWebTabSession("tab-2", "tab-1");
+
+    expect(envelope.tabs.find((entry) => entry.id === "tab-2")?.sessionTabId).toBe("tab-1");
+    expect(pushes.filter((push) => push.channel === "tabs")).toHaveLength(0);
+  });
+
+  it("clears a link whose target is missing, a web tab or an editor tab", async () => {
+    const { service } = createHarness();
+    await service.createTab({ cwd: "C:/work/a" });
+    await service.createTab({
+      kind: "web",
+      url: "http://127.0.0.1:19432/review",
+      sessionTabId: "tab-1",
+    });
+    await service.createTab({ cwd: "C:/work/b" });
+    await service.createTab({ cwd: "C:/work/app", kind: "editor", filePath: "src/app.ts" });
+
+    const missing = await service.linkWebTabSession("tab-2", "tab-missing");
+    expect(missing.tabs.find((entry) => entry.id === "tab-2")?.sessionTabId).toBeNull();
+
+    await service.linkWebTabSession("tab-2", "tab-1");
+    const linkedToWeb = await service.linkWebTabSession("tab-2", "tab-2");
+    expect(linkedToWeb.tabs.find((entry) => entry.id === "tab-2")?.sessionTabId).toBeNull();
+
+    await service.linkWebTabSession("tab-2", "tab-1");
+    const linkedToEditor = await service.linkWebTabSession("tab-2", "tab-4");
+    // tab-4 is an editor tab, not a session surface.
+    expect(linkedToEditor.tabs.find((entry) => entry.id === "tab-2")?.sessionTabId).toBeNull();
+  });
+
+  it("refuses to link a non-web tab", async () => {
+    const { service } = createHarness();
+    await service.createTab({ cwd: "C:/work/a" });
+    await service.createTab({ cwd: "C:/work/b" });
+
+    await expect(service.linkWebTabSession("tab-1", "tab-2")).rejects.toThrow(/only a web tab/);
+  });
+
+  it("keeps the link across a restore", async () => {
+    const { service } = createHarness();
+    await service.createTab({ cwd: "C:/work/a" });
+    await service.createTab({ cwd: "C:/work/b" });
+    await service.createTab({
+      kind: "web",
+      url: "http://127.0.0.1:19432/review",
+      sessionTabId: "tab-1",
+    });
+    await service.linkWebTabSession("tab-3", "tab-2");
+
+    const envelope = await service.restoreTabs();
+
+    expect(envelope.tabs.find((entry) => entry.id === "tab-3")?.sessionTabId).toBe("tab-2");
+  });
+});
+
 describe("pinned tabs and scoped close", () => {
   it("pins a tab to the front and persists the flag", async () => {
     const harness = createHarness();

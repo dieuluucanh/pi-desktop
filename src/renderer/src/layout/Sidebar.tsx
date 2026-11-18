@@ -1,6 +1,7 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Activity, Blocks, Info, Plug, Settings as SettingsIcon, Sparkles } from "lucide-react";
 import { clampSidebarWidth } from "../../../shared/prefs";
+import { isUpdateOfferPhase } from "../../../shared/notifications";
 import { describeUpdate } from "../../../shared/updates";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
@@ -42,10 +43,7 @@ export function Sidebar() {
   const width = useAppStore((state) => state.prefs.sidebarWidth);
   const setView = useAppStore((state) => state.setView);
   const updateSign =
-    update &&
-    (update.phase === "available" ||
-      update.phase === "downloading" ||
-      update.phase === "downloaded")
+    update && isUpdateOfferPhase(update.phase)
       ? {
           title: describeUpdate(update),
           label:

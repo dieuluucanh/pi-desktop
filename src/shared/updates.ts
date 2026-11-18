@@ -131,13 +131,23 @@ export interface InitialUpdateOptions {
 export interface UpdatePrefs {
   /** Check once after launch (effective off for local/dev/offline builds). */
   autoCheck: boolean;
-  /** The offered version the notification bell has already announced. */
+  /**
+   * The offered version whose toast has already been announced. Persisted so a
+   * relaunch does not toast the same offer again; it never gates the bell row.
+   */
   notifiedVersion: string | null;
+  /**
+   * The offered version whose bell row the user removed with `×`/Clear. The row
+   * is derived from live state, so this marker is the only thing that keeps a
+   * dismissed offer dismissed; a newer version clears it by not matching.
+   */
+  dismissedVersion: string | null;
 }
 
 export const DEFAULT_UPDATE_PREFS: UpdatePrefs = {
   autoCheck: true,
   notifiedVersion: null,
+  dismissedVersion: null,
 };
 
 /** Keeps the updater preference object valid; unknown keys are dropped. */
@@ -148,6 +158,8 @@ export function sanitizeUpdatePrefs(input: unknown): UpdatePrefs {
     // update checks, and a fresh install should notice a new release.
     autoCheck: typeof source.autoCheck === "boolean" ? source.autoCheck : true,
     notifiedVersion: boundedVersion(source.notifiedVersion),
+    // Absent in an older app-state.json: no offer has been dismissed yet.
+    dismissedVersion: boundedVersion(source.dismissedVersion),
   };
 }
 

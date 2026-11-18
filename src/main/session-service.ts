@@ -32,6 +32,7 @@ import {
 import { sameFolder } from "../shared/rail-scope";
 import { MAX_GRID_PANES } from "../shared/session-grid";
 import { moveTabWithinPinGroup, partitionPinnedTabs } from "../shared/tab-order";
+import { nextActiveTabAfterClose } from "./tab-selection";
 import { PI_OFFICE_BRIDGE } from "../shared/office";
 import {
   CONTROL_TAB_ID,
@@ -310,6 +311,12 @@ export interface SessionService {
   retargetEditorTabs(input: RetargetEditorTabsInput): Promise<SessionTabsEnvelope>;
   /** Moves a tab to `toIndex`, persisted so the strip order survives a relaunch. */
   reorderTab(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
+  /**
+   * Links a web tab to the session that opened it (or clears the link with
+   * `null`). Only a web tab can be linked; a target that is no longer an open
+   * session surface clears the link instead of keeping a dead one.
+   */
+  linkWebTabSession(tabId: string, sessionTabId: string | null): Promise<SessionTabsEnvelope>;
   /**
    * Makes `tabId` the single Office host (plan step 20): demotes every other
    * `office`-kind tab and restarts this one so its host binds port 38617. The
@@ -885,6 +892,21 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     sessionReady.delete(tabId);
     sessionIdentities.delete(tabId);
     recovering.delete(tabId);
+  };
+
+  /**
+   * Drops a tab from the table and every per-tab map, without touching the
+   * supervisor. A web tab has no host, so closing a session's linked review tabs
+   * uses the same cleanup as closing the session itself.
+   */
+  const forgetTab = (tabId: string): void => {
+    forgetHost(tabId);
+    recycling.delete(tabId);
+    parking.delete(tabId);
+    sequences.delete(tabId);
+    generations.delete(tabId);
+    createParams.delete(tabId);
+    tabs.delete(tabId);
   };
 
   /**
@@ -1823,23 +1845,45 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     async closeTab(tabId) {
       const tab = tabs.get(tabId);
       if (!tab) return envelope();
-      forgetHost(tabId);
-      recycling.delete(tabId);
-      parking.delete(tabId);
-      sequences.delete(tabId);
-      generations.delete(tabId);
-      createParams.delete(tabId);
-      tabs.delete(tabId);
+      // Capture the selection's record before the table changes: the next tab is
+      // chosen from what remains, and a linked web tab must be able to name its
+      // opener even though the opener is no longer the active tab.
+      const activeRecord = activeId ? tabs.get(activeId) : undefined;
+      // A web tab is a view of the session that opened it. Closing that session
+      // must not leave a dead review page in the strip, so remove its linked web
+      // tabs in the same pass. Pinned children are included: the page's server is
+      // gone, and the user asked to close the owner.
+      const linkedWebTabs =
+        tab.kind === "web"
+          ? []
+          : [...tabs.values()].filter(
+              (entry) => entry.kind === "web" && entry.sessionTabId === tabId,
+            );
+      const doomedIds = new Set([tabId, ...linkedWebTabs.map((entry) => entry.id)]);
+      const selectionLost = activeRecord !== undefined && doomedIds.has(activeRecord.id);
+      for (const entry of linkedWebTabs) forgetTab(entry.id);
+      forgetTab(tabId);
       try {
-        // A web or editor tab has no supervisor host to stop (plan step 7).
+        // A web or editor tab has no supervisor host to stop (plan step 7); the
+        // cascaded web tabs have no host either.
         if (isHostBackedTab(tab.kind)) await deps.supervisor.stop(tabId);
       } catch {
         // A host that is already gone is not an error for the user.
       }
-      if (activeId === tabId) {
-        const next = [...tabs.values()].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
-        selectTab(next ? next.id : null);
+      if (selectionLost) {
+        const next = nextActiveTabAfterClose(activeRecord, tabs.values());
+        if (next) {
+          // The app is now showing this tab, so it is the most recently used one.
+          // Persisting the bump keeps the next close's fallback coherent.
+          const record = tabs.get(next.id);
+          if (record) record.lastActiveAt = now();
+          selectTab(next.id);
+        } else {
+          selectTab(null);
+        }
       }
+      // One table change for the owner and every cascaded web tab; the renderer
+      // never sees an intermediate empty selection.
       publishTabs();
       await persist();
       return envelope();
@@ -1907,6 +1951,24 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // the strip order, so this is the only place it is defined.
       tabs.clear();
       for (const record of ordered) tabs.set(record.id, record);
+      publishTabs();
+      await persist();
+      return envelope();
+    },
+
+    async linkWebTabSession(tabId, sessionTabId) {
+      const tab = requireTab(tabId);
+      if (tab.kind !== "web") {
+        throw new SessionServiceError("only a web tab can be linked to a session", "bad_request");
+      }
+      const candidate =
+        typeof sessionTabId === "string" && sessionTabId.length > 0 ? sessionTabId : null;
+      const target = candidate ? tabs.get(candidate) : undefined;
+      // A link to another web/editor tab is not an owner; clear it rather than
+      // keeping a link the close policy would ignore anyway.
+      const link = target && target.kind !== "web" && target.kind !== "editor" ? target.id : null;
+      if ((tab.sessionTabId ?? null) === link) return envelope();
+      tab.sessionTabId = link;
       publishTabs();
       await persist();
       return envelope();
