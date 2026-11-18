@@ -1,8 +1,10 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { DEFAULT_NOTIFICATION_PREFS, muteRuleFor } from "../../src/shared/notifications";
+import type { KeybindingsSnapshot } from "../../src/shared/keybindings";
+import { CONTROL_TAB_ID } from "../../src/shared/session-ipc";
 import type { ExtensionDialogRequest } from "../../src/shared/extension-ui";
 import { ExtensionDialogDock } from "../../src/renderer/src/extension-ui/ExtensionDialog";
 import { WidgetStrip } from "../../src/renderer/src/extension-ui/WidgetStrip";
@@ -18,6 +20,10 @@ import { installBridge } from "./fixtures";
  */
 
 const TAB = "tab-1";
+
+/** The shape of the workflow read/write gate's select title (hard newlines). */
+const MULTILINE_TITLE =
+  "Read policy: allow 2 reads?\nOutside: C:/repo\n  • read → ../secret/a.txt\n  • read → ../secret/b.txt";
 
 function stubRequest(
   impl: (method: string, params?: unknown) => Promise<unknown> = async () => ({}),
@@ -55,6 +61,10 @@ function resetStore() {
     notifications: [],
     muteTarget: null,
     notificationCooldowns: {},
+    // Most dialog tests should not also issue keybindings.get; the one test
+    // that exercises the load resets this to false explicitly.
+    keybindings: null,
+    keybindingsLoaded: true,
   });
 }
 
@@ -63,6 +73,19 @@ beforeEach(() => {
 });
 
 describe("ExtensionDialog", () => {
+  function keybindings(effective: Record<string, string[]>): KeybindingsSnapshot {
+    return {
+      path: "C:/state/keybindings.json",
+      user: {},
+      exists: true,
+      effective,
+      definitions: [],
+      unknownIds: [],
+      issues: [],
+      conflicts: [],
+    };
+  }
+
   function dialogFixture(overrides: Partial<ExtensionDialogRequest>): ExtensionDialogRequest {
     return {
       id: "ui-1",
@@ -79,8 +102,10 @@ describe("ExtensionDialog", () => {
     };
   }
 
-  function renderDialog(overrides: Partial<ExtensionDialogRequest>) {
-    return render(<ExtensionDialogDock dialog={dialogFixture(overrides)} maxHeight={480} />);
+  function renderDialog(overrides: Partial<ExtensionDialogRequest>, active = true) {
+    return render(
+      <ExtensionDialogDock dialog={dialogFixture(overrides)} maxHeight={480} active={active} />,
+    );
   }
 
   it("renders a select and answers with the chosen option", async () => {
@@ -125,6 +150,284 @@ describe("ExtensionDialog", () => {
       method: "oi.respond",
       params: { id: "ui-3", value: "Sheet2" },
     });
+  });
+
+  it("keeps every line of a select title", () => {
+    renderDialog({ id: "ui-title", title: MULTILINE_TITLE, options: ["Allow", "Deny"] });
+
+    // The select title is extension-owned text, like a confirm message and an
+    // option label: every hard newline (and the bullet indentation) must survive.
+    const heading = screen.getByRole("heading", { level: 2 });
+    const text = heading.querySelector(".whitespace-pre-wrap.break-words");
+    expect(text).not.toBeNull();
+    expect(text?.textContent).toBe(MULTILINE_TITLE);
+
+    const scroller = screen.getByTestId("extension-dialog-title");
+    expect(scroller.className).toContain("overflow-y-auto");
+    expect(scroller).toHaveStyle({ maxHeight: "216px" });
+  });
+
+  it("answers the highlighted option when focus is outside the dialog", async () => {
+    // The reported case: the permission prompt is on screen, but focus stayed on
+    // the page (a grid pane, a clicked title, a background window). Terminal Pi's
+    // selector still owns Up/Down and Enter there; the desktop must too.
+    const request = stubRequest();
+    renderDialog({
+      id: "ui-body",
+      options: ["Allow once (this turn)", "Always allow this folder", "Deny"],
+    });
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.keyDown(document.body, { key: "ArrowDown" });
+    fireEvent.keyDown(document.body, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: TAB,
+        method: "oi.respond",
+        params: { id: "ui-body", value: "Always allow this folder" },
+      }),
+    );
+  });
+
+  it("cancels from the page when focus is outside the dialog", async () => {
+    const request = stubRequest();
+    renderDialog({ id: "ui-esc", options: ["Allow", "Deny"] });
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: TAB,
+        method: "oi.respond",
+        params: { id: "ui-esc", cancelled: true },
+      }),
+    );
+  });
+
+  it("cancels a select with Ctrl+C from the page", async () => {
+    const request = stubRequest();
+    renderDialog({ id: "ui-ctrlc", options: ["Allow", "Deny"] });
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.keyDown(document.body, { key: "c", ctrlKey: true });
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: TAB,
+        method: "oi.respond",
+        params: { id: "ui-ctrlc", cancelled: true },
+      }),
+    );
+  });
+
+  it("keeps Ctrl+C as copy when text is selected", () => {
+    const request = stubRequest();
+    renderDialog({ id: "ui-copy", options: ["Allow", "Deny"] });
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(screen.getByTestId("extension-dialog-title"));
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    fireEvent.keyDown(document.body, { key: "c", ctrlKey: true });
+    expect(request).not.toHaveBeenCalled();
+    selection?.removeAllRanges();
+  });
+
+  it("does not take keys when its pane is not active", () => {
+    const request = stubRequest();
+    renderDialog({ id: "ui-inactive", options: ["Allow", "Deny"] }, false);
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("cancels an editor from the page with Escape only", async () => {
+    const request = stubRequest();
+    renderDialog({ id: "ui-editor-esc", method: "editor", title: "Notes" });
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: TAB,
+        method: "oi.respond",
+        params: { id: "ui-editor-esc", cancelled: true },
+      }),
+    );
+  });
+
+  it("settles a request once when Escape is pressed twice", async () => {
+    const request = stubRequest();
+    renderDialog({ id: "ui-once", options: ["Allow", "Deny"] });
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    expect(request).toHaveBeenCalledWith({
+      tabId: TAB,
+      method: "oi.respond",
+      params: { id: "ui-once", cancelled: true },
+    });
+  });
+
+  it("moves the select with j/k from the page", async () => {
+    const request = stubRequest();
+    renderDialog({ id: "ui-jk", options: ["a", "b", "c"] });
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(screen.getAllByRole("option")[1]).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(screen.getAllByRole("option")[2]).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(document.body, { key: "k" });
+    expect(screen.getAllByRole("option")[1]).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.keyDown(document.body, { key: "Enter" });
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: TAB,
+        method: "oi.respond",
+        params: { id: "ui-jk", value: "b" },
+      }),
+    );
+  });
+
+  it("clamps the select at the first and last option", () => {
+    renderDialog({ options: ["a", "b", "c"] });
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.keyDown(document.body, { key: "ArrowUp" });
+    expect(screen.getAllByRole("option")[0]).toHaveAttribute("aria-selected", "true");
+
+    for (let index = 0; index < 4; index += 1) {
+      fireEvent.keyDown(document.body, { key: "ArrowDown" });
+    }
+    expect(screen.getAllByRole("option")[2]).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("honours a tui.select.down remap", () => {
+    useAppStore.setState({
+      keybindings: keybindings({ "tui.select.down": ["ctrl+shift+d"] }),
+      keybindingsLoaded: true,
+    });
+    renderDialog({ options: ["a", "b"] });
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.keyDown(document.body, { key: "ArrowDown" });
+    expect(screen.getAllByRole("option")[0]).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.keyDown(document.body, { key: "D", ctrlKey: true, shiftKey: true });
+    expect(screen.getAllByRole("option")[1]).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("shows the effective select keys in the hint", () => {
+    useAppStore.setState({
+      keybindings: keybindings({ "tui.select.down": ["ctrl+shift+d"] }),
+      keybindingsLoaded: true,
+    });
+    renderDialog({ options: ["a", "b"] });
+
+    const hint = screen.getByTestId("extension-dialog-select-hint");
+    expect(hint).toHaveTextContent("ctrl+shift+d");
+    expect(hint).not.toHaveTextContent("↓");
+    expect(hint).toHaveTextContent(/navigate/);
+  });
+
+  it("loads the profile keybindings once when the snapshot is missing", async () => {
+    useAppStore.setState({ keybindings: null, keybindingsLoaded: false });
+    const request = stubRequest();
+    renderDialog({ id: "ui-keys", options: ["a"] });
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: CONTROL_TAB_ID,
+        method: "keybindings.get",
+      }),
+    );
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("moves confirm focus with Up/Down and keeps Enter native", async () => {
+    const request = stubRequest();
+    renderDialog({
+      id: "ui-confirm-arrows",
+      method: "confirm",
+      title: "Delete?",
+      message: "This cannot be undone.",
+    });
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.keyDown(document.body, { key: "ArrowDown" });
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
+
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: TAB,
+        method: "oi.respond",
+        params: { id: "ui-confirm-arrows", cancelled: true },
+      }),
+    );
+  });
+
+  it("returns confirm focus to Confirm with ArrowUp", async () => {
+    const request = stubRequest();
+    renderDialog({
+      id: "ui-confirm-up",
+      method: "confirm",
+      title: "Delete?",
+      message: "This cannot be undone.",
+    });
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.keyDown(document.body, { key: "ArrowDown" });
+    fireEvent.keyDown(document.body, { key: "ArrowUp" });
+    expect(screen.getByRole("button", { name: "Confirm" })).toHaveFocus();
+
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: TAB,
+        method: "oi.respond",
+        params: { id: "ui-confirm-up", confirmed: true },
+      }),
+    );
+  });
+
+  it("cancels a confirm from the page", async () => {
+    const request = stubRequest();
+    renderDialog({ id: "ui-confirm-esc", method: "confirm", title: "Delete?", message: "Sure?" });
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: TAB,
+        method: "oi.respond",
+        params: { id: "ui-confirm-esc", cancelled: true },
+      }),
+    );
+  });
+
+  it("keeps Ctrl+C out of the editor's cancel path", () => {
+    const request = stubRequest();
+    renderDialog({ id: "ui-editor-copy", method: "editor", title: "Notes", prefill: "abc" });
+
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Notes" }), {
+      key: "c",
+      ctrlKey: true,
+    });
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("keeps every line of a confirm message", () => {
@@ -200,7 +503,10 @@ describe("ExtensionDialog", () => {
     renderDialog({ options: Array.from({ length: 40 }, (_, index) => `option ${index}`) });
     const dialog = screen.getByRole("dialog", { name: "Pick a target" });
     expect(dialog).toHaveStyle({ maxHeight: "480px" });
-    expect(dialog.querySelector(".overflow-y-auto")).toBeTruthy();
+    // The options have their own scroller; the title now has one too, so this
+    // must target the body rather than the first `.overflow-y-auto`.
+    const body = screen.getByTestId("extension-dialog-body");
+    expect(body.className).toContain("overflow-y-auto");
   });
 
   it("enforces the extension's timeout in the store, even off-screen", () => {

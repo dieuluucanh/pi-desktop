@@ -586,6 +586,7 @@ export function SessionView({ tabId }: { tabId: string }) {
               dialog={dialog}
               maxHeight={viewport.rows * viewport.cell.height}
               focusToken={surfaceFocusToken}
+              active={active.id === focusedTabId}
             />
           ) : tuiOwnsComposer && tuiSurface ? (
             <TuiSurface

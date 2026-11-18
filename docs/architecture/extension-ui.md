@@ -112,6 +112,45 @@ editor and `Shift+Enter` inserts a newline. The extension's `opts.timeout` is
 enforced by the renderer store, so it still fires while its tab is in the
 background; `closeTab` purges that tab's queued dialogs and timers.
 
+**Dialog text keeps terminal line semantics.** The select title is
+extension-owned text: the workflow read/write gate puts `Outside:` and one
+`• command` bullet per line into it. It renders through `MultilineText`
+(`whitespace-pre-wrap break-words`), with tabs normalised to three spaces, inside
+a height-capped scroll region, so every command keeps its own rendered line and
+a very long title never squeezes the answers out of the dock. The same rule
+already applied to confirm messages, option labels, notifications and working
+messages.
+
+**The active dialog owns the keyboard, not the focused DOM node.** Up/Down and
+Escape used to be attached to the listbox/root, so a prompt whose focus stayed on
+`document.body` ignored them. The dock now installs a window listener while its
+pane is active: Escape and Ctrl+C cancel every method (a real text selection
+wins over Ctrl+C so copy still works), select moves with `tui.select.up/down`
+plus `j`/`k` (clamped at the ends, as in terminal Pi), Enter selects the
+highlighted option even when focus is on the page, and confirm moves its
+focus between Confirm/Cancel. Input/editor keep normal typing and Ctrl+C, and
+only gain the focus-independent Escape. That Ctrl+C rule is a deliberate
+desktop divergence: Pi's input/editor dialogs cancel on `tui.select.cancel`
+(which includes Ctrl+C), but a desktop text field must keep Ctrl+C as copy.
+Confirm also keeps Enter on the focused button; Pi's selector confirms the
+highlighted "Yes" even with no list focus, and the desktop deliberately refuses
+to let a lost-focus Enter answer a permission. `tui.select.*` comes from the
+profile's `keybindings.json`; the dock loads it once with the same lazy no-arg
+`loadKeybindings()` as the shortcuts help dialog, with Pi's defaults until the
+snapshot arrives.
+Every answer/cancel path is one-shot, so a double Enter or Enter+click sends one
+`oi.respond`.
+
+**Only the focused pane's dialog takes global keys.** `SessionView` passes
+`active={active.id === focusedTabId}`; a prompt in a non-focused grid pane waits
+for the pane to be activated instead of stealing keys or focus. While a dialog
+owns the active tab, `ShortcutDispatcher` blocks app shortcuts and `app.interrupt`
+even when the event target is `body`; `Ctrl+O` (`app.tools.expand`) stays
+available because terminal Pi's selector explicitly supports it. The regression
+coverage is `tests/renderer/dialog-keys.test.ts`,
+`tests/renderer/extension-ui.test.tsx`, `tests/renderer/shortcut-dispatcher.test.tsx`
+and the Electron `tests/e2e/extension-dialog.spec.ts`.
+
 The shell/orchestration details live in
 `src/renderer/src/tui/tui-geometry.ts`, `use-tui-viewport.ts`,
 `TuiSurface.tsx`, `TuiWidgetStrip.tsx` and `src/renderer/src/extension-ui/ExtensionDialog.tsx`.

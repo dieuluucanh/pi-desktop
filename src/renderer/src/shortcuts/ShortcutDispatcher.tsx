@@ -51,10 +51,17 @@ export function ShortcutDispatcher() {
       // CodeMirror owns its own keys. Pi's editor/composer actions below are
       // meant for the transcript side and must not fire while a file is edited.
       const inCodeEditor = isEditorSurfaceTarget(event.target);
+      // A dialog is the active interaction for its tab. Terminal Pi's selector
+      // owns every key while shown, even when DOM focus stayed on the page, so
+      // app shortcuts and the run interrupt must not fire underneath it.
+      const dialogOwnsKeyboard =
+        state.view === "session" &&
+        state.activeTabId !== null &&
+        state.extensionDialogs.some((dialog) => dialog.tabId === state.activeTabId);
 
       // `Ctrl+G` (Pi's `app.editor.external`) opens the expanded editor even
       // while the composer owns the keyboard — that is where the draft is.
-      if (!inCodeEditor && state.activeTabId) {
+      if (!dialogOwnsKeyboard && !inCodeEditor && state.activeTabId) {
         const editorKeys =
           state.keybindings?.effective["app.editor.external"] ?? DEFAULT_EXTERNAL_EDITOR_KEYS;
         if (editorKeys.length > 0 && matchesBinding(event, editorKeys)) {
@@ -66,6 +73,8 @@ export function ShortcutDispatcher() {
 
       // The app's own binding resolves through the same effective table as an
       // extension shortcut, so a remap in Settings is honoured.
+      // Terminal Pi's selector explicitly supports `app.tools.expand`, so
+      // Ctrl+O stays available while a dialog owns the keyboard.
       if (!inCodeEditor && state.activeTabId) {
         const keys = state.keybindings?.effective["app.tools.expand"] ?? DEFAULT_EXPAND_KEYS;
         if (keys.length > 0 && matchesBinding(event, keys)) {
@@ -74,6 +83,8 @@ export function ShortcutDispatcher() {
           return;
         }
       }
+
+      if (dialogOwnsKeyboard) return;
 
       if (isEditableTarget(event.target)) return;
       // `Ctrl+X` copies the last assistant answer outside an editor; inside one

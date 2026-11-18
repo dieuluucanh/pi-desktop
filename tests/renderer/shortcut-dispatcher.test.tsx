@@ -7,6 +7,7 @@ import { ShortcutDispatcher } from "../../src/renderer/src/shortcuts/ShortcutDis
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { KeybindingsSnapshot } from "../../src/shared/keybindings";
+import type { ExtensionDialogRequest } from "../../src/shared/extension-ui";
 import { installBridge } from "./fixtures";
 
 /**
@@ -18,6 +19,22 @@ import { installBridge } from "./fixtures";
  */
 
 const TAB = "tab-1";
+
+function dialogFixture(overrides: Partial<ExtensionDialogRequest> = {}): ExtensionDialogRequest {
+  return {
+    id: "ui-1",
+    method: "select",
+    title: "Read policy: allow this read?",
+    options: ["Allow once (this turn)", "Deny"],
+    message: "",
+    placeholder: null,
+    prefill: null,
+    timeout: null,
+    tabId: TAB,
+    at: 1,
+    ...overrides,
+  };
+}
 
 function keybindings(effective: Record<string, string[]>): KeybindingsSnapshot {
   return {
@@ -37,8 +54,10 @@ beforeEach(() => {
   useAppStore.setState({
     prefs: { ...DEFAULT_PREFS, drafts: {} },
     activeTabId: TAB,
+    view: "session",
     toolsExpanded: {},
     keybindings: null,
+    extensionDialogs: [],
     shortcutsHelpOpen: false,
     paletteOpen: false,
     shortcuts: { shortcuts: [] } as never,
@@ -190,6 +209,65 @@ describe("ShortcutDispatcher app.interrupt (plan step 24)", () => {
     fireEvent.keyDown(textarea, { key: "Escape" });
     expect(interrupt).not.toHaveBeenCalled();
     textarea.remove();
+  });
+
+  it("leaves Escape to an open dialog even when focus is on the page", () => {
+    // The reported case: the permission prompt is mounted but focus stayed on
+    // `body`. Escape must cancel the prompt, not stop the run.
+    const interrupt = vi.fn(async () => {});
+    useAppStore.setState({ interruptRun: interrupt, extensionDialogs: [dialogFixture()] });
+    render(<ShortcutDispatcher />);
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    expect(interrupt).not.toHaveBeenCalled();
+  });
+
+  it("keeps Ctrl+O available while a dialog owns the keyboard", () => {
+    // Terminal Pi's selector still handles app.tools.expand.
+    useAppStore.setState({ extensionDialogs: [dialogFixture()] });
+    render(<ShortcutDispatcher />);
+
+    fireEvent.keyDown(document.body, { key: "o", ctrlKey: true });
+
+    expect(useAppStore.getState().toolsExpanded[TAB]).toBe(true);
+  });
+
+  it("keeps Ctrl+G out of a dialog", () => {
+    const openEditor = vi.fn(async () => {});
+    useAppStore.setState({
+      openExternalEditor: openEditor,
+      extensionDialogs: [dialogFixture()],
+    });
+    render(<ShortcutDispatcher />);
+
+    fireEvent.keyDown(document.body, { key: "g", ctrlKey: true });
+    expect(openEditor).not.toHaveBeenCalled();
+  });
+
+  it("does not block the active tab for a dialog in another tab", () => {
+    const interrupt = vi.fn(async () => {});
+    useAppStore.setState({
+      interruptRun: interrupt,
+      extensionDialogs: [dialogFixture({ tabId: "tab-2" })],
+    });
+    render(<ShortcutDispatcher />);
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(interrupt).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not block shortcuts outside the session view", () => {
+    const interrupt = vi.fn(async () => {});
+    useAppStore.setState({
+      interruptRun: interrupt,
+      view: "settings",
+      extensionDialogs: [dialogFixture()],
+    });
+    render(<ShortcutDispatcher />);
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(interrupt).toHaveBeenCalledTimes(1);
   });
 
   it("leaves Escape to a dialog and to a mounted TuiSurface", () => {
