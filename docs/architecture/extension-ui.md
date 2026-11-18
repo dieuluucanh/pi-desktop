@@ -277,9 +277,16 @@ extension emitted it in every Plan mode merely because Plannotator was
 installed), and the composer label always reads `Plan` for it while the raw
 phrase stays visible in the label’s tooltip and the footer’s extension-status
 row (2026-10-20 startup-tab-cycle plan). While Review owns the turn,
-`SessionView` renders a `ReviewBar` with Pause/Resume/Abort (or the review-tab
-link during the handoff) and the store refuses prose with a preserved draft
-(2026-11-14 review-mode-isolation plan).
+`SessionView` renders one `ReviewBar` after the above-editor widget strips (the
+TODO panel) and before the composer. Its text is the extension's own
+`workflow-review` status — the same line terminal Pi paints, including
+`ESC or /review-pause to pause · /review-abort to stop`, the paused form and the
+handoff form — and the row adds Pause/Resume/Abort (or the review-tab link
+during the handoff). The generic `WorkingRow` is suppressed while the row is
+visible, and the footer omits the promoted status key so the review text
+appears once. The store refuses prose with a preserved draft (2026-11-14
+review-mode-isolation plan; one row, shared text and placement from the
+2026-11-18 review-status-line plan).
 
 **Colour is never the only signal (2026-10-19, tightened 2026-10-31).** The mode
 is named in the composer’s top-right corner and exposed with `role="status"`.

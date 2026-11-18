@@ -108,12 +108,21 @@ unrelated extension text.
 
 The desktop half of the contract:
 
-- **A visible control surface.** `ReviewBar` sits above the working row and
-  offers Pause/Abort while running, Resume/Abort while paused, and **Open review
-  tab** during the handoff (there is nothing to abort once the reviewer has
-  finished; `/review-abort` remains the command escape). The bar reads the
-  linked loopback web tab for this session, so a closed review tab degrades to
-  the command path instead of a dead button.
+- **One visible status row.** `ReviewBar` renders after the above-editor widget
+  strips (the TODO panel) and immediately above the composer, matching terminal
+  Pi's placement. Its text is the extension's `workflow-review` status:
+  `🔍 Reviewing plan… · ESC or /review-pause to pause · /review-abort to stop ·
+<phase detail>`, `⏸ Review paused — /review-resume to continue,
+/review-abort to stop`, or `🔍 review · awaiting decision — /review-abort to
+skip`. The row adds Pause/Abort while running, Resume/Abort while paused, and
+  **Open review tab** during the handoff. The generic working row is suppressed
+  while it is visible and the footer omits `workflow-review` so the line
+  appears once. The bar reads the linked loopback web tab for this session, so
+  a closed review tab degrades to the command path instead of a dead button.
+- **An older extension still gets a line.** If `workflow-review` is absent, the
+  desktop composes the canonical phase line and appends the running hints. The
+  fallback has the commands and phase, but not the extension's live
+  pass/finding detail; the next companion release supplies the full line.
 - **The store refuses prose, not commands.** `sendPrompt`/`sendPromptNow`
   reject anything that does not start with `/` while the workflow status is
   Review, set a hint, and leave the draft untouched. The extension remains the
@@ -137,7 +146,8 @@ Plan and never as Review.
 
 Verification: `tests/renderer/review-bar.test.tsx`,
 `tests/shared/workflow-mode.test.ts`, `tests/renderer/session-view.test.tsx`,
-`tests/renderer/composer.test.tsx`, `tests/renderer/composer-store.test.ts`,
-`tests/renderer/web-tab-store.test.ts` and `tests/main/host-supervisor.test.ts`.
+`tests/renderer/session-footer.test.tsx`, `tests/renderer/composer.test.tsx`,
+`tests/renderer/composer-store.test.ts`, `tests/renderer/web-tab-store.test.ts`
+and `tests/main/host-supervisor.test.ts`.
 The manual cross-version matrix in the 2026-11-14 plan (step 19) has not been
 exercised on real provider sessions for this release.

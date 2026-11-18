@@ -201,8 +201,11 @@ Plannotator `⏸ plan — reviewing in browser` phrase is still parsed as Plan
 because the old extension emitted it in every Plan mode (2026-11-14
 review-mode-isolation plan). While Review owns the turn the store refuses prose
 and `!` commands with a hint (the draft is preserved), slash commands stay
-available, and a `ReviewBar` above the working row offers Pause/Resume/Abort —
-the handoff phase instead links to the review tab. Desktop hosts are launched
+available, and one `ReviewBar` below the TODO widget and above the composer
+carries the extension's own `workflow-review` line plus Pause/Resume/Abort. It
+reuses terminal Pi's text (including the command hints) and is the only review
+line: the generic working row is suppressed while it is visible, and the footer
+omits the promoted status. The handoff phase instead links to the review tab. Desktop hosts are launched
 with `PLANNOTATOR_BROWSER=none`, so a review opens in an app tab and never the
 system browser; the web tab's **Open in browser** button remains the escape
 hatch. Because colour alone is not an indicator, the mode is also named in the

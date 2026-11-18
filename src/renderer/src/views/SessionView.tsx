@@ -35,7 +35,11 @@ import { contextUsageOf, modelKeyOf, thinkingLevelsOf } from "../session/model-c
 import { sameFolder } from "../../../shared/rail-scope";
 import type { WorkspaceEntryKind } from "../../../shared/workspace";
 import { isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
-import { parseWorkflowStatus } from "../../../shared/workflow-mode";
+import {
+  parseWorkflowStatus,
+  reviewLineText,
+  WORKFLOW_REVIEW_STATUS_KEY,
+} from "../../../shared/workflow-mode";
 import { isLoopbackUrl } from "../../../shared/web-tabs";
 
 /**
@@ -51,6 +55,12 @@ import { isLoopbackUrl } from "../../../shared/web-tabs";
 /** Stable empty scope for a tab whose scope has not loaded yet. */
 const EMPTY_SCOPE: readonly string[] = [];
 const EMPTY_DIAGNOSTICS: readonly ScopeDiagnosticInfo[] = [];
+
+/**
+ * The review row promotes the extension's live review status; the footer must
+ * not repeat the same line below the composer while that row is visible.
+ */
+const REVIEW_HIDDEN_STATUS_KEYS = [WORKFLOW_REVIEW_STATUS_KEY] as const;
 
 /**
  * The `#` completion source.
@@ -137,8 +147,9 @@ export function SessionView({ tabId }: { tabId: string }) {
   const defaultModelIssue = useAppStore(selectDefaultModelProblem);
   const extensionUi = useAppStore((state) => state.extensionUi[tabId]);
   // An extension can own long-running work while the parent tab is idle
-  // (a manual Review round). That is still "busy" for the working row and
-  // Escape, even though `tab.status` stays idle.
+  // (a manual Review round). That is still "busy" for Escape, even though
+  // `tab.status` stays idle; the review row replaces the generic working row
+  // while the extension reports a Review phase.
   const extensionWorking = extensionUi?.working;
   const extensionBusy = extensionWorking?.message != null && extensionWorking.visible !== false;
   const workflowStatus = extensionUi?.statuses?.workflow ?? null;
@@ -149,14 +160,16 @@ export function SessionView({ tabId }: { tabId: string }) {
   const workflowMode = parseWorkflowStatus(workflowStatus);
   const reviewMode = workflowMode?.mode === "review";
   const reviewPhase = reviewMode ? (workflowMode?.reviewPhase ?? "running") : null;
-  const workingHint =
-    reviewPhase === "handoff"
-      ? "Approve or annotate in the review tab · /review-abort to skip"
-      : reviewPhase === "paused"
-        ? "/review-resume to continue · /review-abort to stop"
-        : reviewMode
-          ? "ESC to pause · /review-pause, /review-abort"
-          : "Esc to cancel";
+  // The desktop row is the extension's own line (the same `workflow-review`
+  // status terminal Pi paints); the fallback keeps the hints on an older
+  // extension. `WorkingRow` is suppressed while this line owns the turn.
+  const reviewLine = reviewPhase
+    ? reviewLineText({
+        phase: reviewPhase,
+        status: extensionUi?.statuses?.[WORKFLOW_REVIEW_STATUS_KEY],
+        workingMessage: extensionWorking?.message,
+      })
+    : null;
   const extensionDialogs = useAppStore((state) => state.extensionDialogs);
   const toolsExpandedState = useAppStore((state) => state.toolsExpanded[tabId]);
   const toggleToolsExpanded = useAppStore((state) => state.toggleToolsExpanded);
@@ -533,19 +546,7 @@ export function SessionView({ tabId }: { tabId: string }) {
               }}
             />
           ) : null}
-          {reviewPhase ? (
-            <ReviewBar
-              phase={reviewPhase}
-              canOpenReview={reviewTabId !== null}
-              onPause={() => void runReviewCommand(active.id, "review-pause")}
-              onResume={() => void runReviewCommand(active.id, "review-resume")}
-              onAbort={() => void runReviewCommand(active.id, "review-abort")}
-              onOpenReview={() => {
-                if (reviewTabId) void activateTab(reviewTabId);
-              }}
-            />
-          ) : null}
-          {active.status === "running" || extensionBusy ? (
+          {(active.status === "running" || extensionBusy) && reviewPhase === null ? (
             <WorkingRow
               working={
                 extensionUi?.working ?? {
@@ -557,7 +558,6 @@ export function SessionView({ tabId }: { tabId: string }) {
               }
               startedAt={transcript?.runStartedAt ?? null}
               showCancelHint
-              cancelHint={workingHint}
             />
           ) : null}
           {tuiSurface?.header ? (
@@ -568,6 +568,19 @@ export function SessionView({ tabId }: { tabId: string }) {
           ) : null}
           <WidgetStrip tabId={active.id} placement="aboveEditor" />
           <TuiWidgetStrip frames={tuiSurface?.widgetsAbove ?? []} placement="aboveEditor" />
+          {reviewPhase ? (
+            <ReviewBar
+              phase={reviewPhase}
+              text={reviewLine ?? ""}
+              canOpenReview={reviewTabId !== null}
+              onPause={() => void runReviewCommand(active.id, "review-pause")}
+              onResume={() => void runReviewCommand(active.id, "review-resume")}
+              onAbort={() => void runReviewCommand(active.id, "review-abort")}
+              onOpenReview={() => {
+                if (reviewTabId) void activateTab(reviewTabId);
+              }}
+            />
+          ) : null}
           {dialog ? (
             <ExtensionDialogDock
               dialog={dialog}
@@ -685,6 +698,7 @@ export function SessionView({ tabId }: { tabId: string }) {
             <SessionFooter
               className="shrink-0 px-3 pb-1"
               homeDir={homeDir}
+              hiddenStatusKeys={reviewPhase ? REVIEW_HIDDEN_STATUS_KEYS : undefined}
               widgets={
                 belowSplit.inline.length > 0 ? <TuiWidgetInline frames={belowSplit.inline} /> : null
               }

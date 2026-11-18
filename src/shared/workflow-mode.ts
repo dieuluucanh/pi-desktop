@@ -33,6 +33,20 @@ export type WorkflowMode = (typeof WORKFLOW_MODES)[number];
 
 export type ReviewPhase = "running" | "paused" | "handoff";
 
+/** The extension status key that carries the live Review line. */
+export const WORKFLOW_REVIEW_STATUS_KEY = "workflow-review";
+
+/**
+ * Canonical Review line fragments. These mirror `@dieulc/workflow`'s
+ * `review.ts`; the extension's status is authoritative when it is present, and
+ * these values are the tolerant fallback for an older extension.
+ */
+export const REVIEW_RUNNING_HINT = "ESC or /review-pause to pause · /review-abort to stop";
+export const REVIEW_RUNNING_LINE = `🔍 Reviewing plan… · ${REVIEW_RUNNING_HINT}`;
+export const REVIEW_PAUSED_LINE =
+  "⏸ Review paused — /review-resume to continue, /review-abort to stop";
+export const REVIEW_HANDOFF_LINE = "🔍 review · awaiting decision — /review-abort to skip";
+
 export interface WorkflowModeView {
   mode: WorkflowMode;
   /** The exclusive Review turn when `mode === "review"`. */
@@ -185,4 +199,60 @@ export function statusLineText(text: string | null | undefined): string {
     .replace(/ +/g, " ")
     .trim();
   return plain.length > MAX_STATUS_CHARS ? `${plain.slice(0, MAX_STATUS_CHARS - 1)}…` : plain;
+}
+
+/** A status with only ANSI/whitespace is absent. */
+function hasVisibleReviewText(text: string | null | undefined): text is string {
+  return typeof text === "string" && stripAnsi(text).trim().length > 0;
+}
+
+/** Append the shared running hints unless the line already names the command. */
+function withRunningHints(text: string): string {
+  return text.includes("/review-pause") ? text : `${text} · ${REVIEW_RUNNING_HINT}`;
+}
+
+/**
+ * Resolve the one live Review line the desktop row renders.
+ *
+ * The extension's `workflow-review` status is authoritative: it already carries
+ * the phase detail and the command hints, and its ANSI colour is preserved.
+ * Older extensions (or a host that only sends the working message) fall back to
+ * the canonical line for the phase, with the missing hints appended so the row
+ * never loses the command affordances. A marker-less status (for example a lone
+ * `🔒 modes locked`) is treated as absent.
+ */
+export function reviewLineText(input: {
+  phase: ReviewPhase;
+  status?: string | null;
+  workingMessage?: string | null;
+}): string {
+  const visibleStatus = hasVisibleReviewText(input.status) ? input.status : null;
+  const status =
+    visibleStatus !== null && (visibleStatus.includes("🔍") || visibleStatus.includes("⏸"))
+      ? visibleStatus
+      : null;
+
+  if (status) {
+    if (input.phase === "paused" && !status.includes("/review-abort")) {
+      return REVIEW_PAUSED_LINE;
+    }
+    if (input.phase === "handoff" && !status.includes("/review-abort")) {
+      return REVIEW_HANDOFF_LINE;
+    }
+    if (
+      input.phase === "running" &&
+      !status.includes("/review-pause") &&
+      !/applying the decision/i.test(status)
+    ) {
+      return withRunningHints(status);
+    }
+    return status;
+  }
+
+  const working = hasVisibleReviewText(input.workingMessage) ? input.workingMessage : null;
+  if (input.phase === "running") {
+    return working ? withRunningHints(working) : REVIEW_RUNNING_LINE;
+  }
+  if (input.phase === "paused") return REVIEW_PAUSED_LINE;
+  return REVIEW_HANDOFF_LINE;
 }

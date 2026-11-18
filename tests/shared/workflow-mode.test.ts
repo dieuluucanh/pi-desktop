@@ -2,11 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   parseWorkflowStatus,
+  reviewLineText,
   statusLineText,
   workflowBadgeClass,
   workflowBorderClass,
   workflowModeLabel,
+  REVIEW_HANDOFF_LINE,
+  REVIEW_PAUSED_LINE,
+  REVIEW_RUNNING_HINT,
+  REVIEW_RUNNING_LINE,
   WORKFLOW_MODES,
+  WORKFLOW_REVIEW_STATUS_KEY,
 } from "../../src/shared/workflow-mode";
 
 /**
@@ -294,5 +300,69 @@ describe("statusLineText", () => {
     expect(statusLineText("")).toBe("");
     expect(statusLineText("\x1b[0m")).toBe("");
     expect(statusLineText("   ")).toBe("");
+  });
+});
+
+describe("reviewLineText", () => {
+  it("keeps the extension's live line, hints and ANSI included", () => {
+    const running = colored(`${REVIEW_RUNNING_LINE} · pass 2/2 · 1 finding · ● verifying`);
+    expect(reviewLineText({ phase: "running", status: running })).toBe(running);
+
+    const paused = colored(REVIEW_PAUSED_LINE);
+    expect(reviewLineText({ phase: "paused", status: paused })).toBe(paused);
+
+    const handoff = colored(REVIEW_HANDOFF_LINE);
+    expect(reviewLineText({ phase: "handoff", status: handoff })).toBe(handoff);
+  });
+
+  it("adds the missing running hints to an older extension status", () => {
+    expect(
+      reviewLineText({
+        phase: "running",
+        status: "🔍 review · pass 2/2 · 1 finding · ● verifying",
+      }),
+    ).toBe(`🔍 review · pass 2/2 · 1 finding · ● verifying · ${REVIEW_RUNNING_HINT}`);
+  });
+
+  it("replaces an old paused line that omits the abort hint", () => {
+    expect(
+      reviewLineText({
+        phase: "paused",
+        status: "🔍 review paused — /review-resume to continue",
+      }),
+    ).toBe(REVIEW_PAUSED_LINE);
+  });
+
+  it("does not add running hints to the decision transition", () => {
+    expect(reviewLineText({ phase: "running", status: "🔍 review · applying the decision…" })).toBe(
+      "🔍 review · applying the decision…",
+    );
+  });
+
+  it("uses the canonical phase line when the status is absent or marker-less", () => {
+    expect(reviewLineText({ phase: "running" })).toBe(REVIEW_RUNNING_LINE);
+    expect(reviewLineText({ phase: "paused" })).toBe(REVIEW_PAUSED_LINE);
+    expect(reviewLineText({ phase: "handoff" })).toBe(REVIEW_HANDOFF_LINE);
+    expect(reviewLineText({ phase: "running", status: "🔒 modes locked" })).toBe(
+      REVIEW_RUNNING_LINE,
+    );
+    expect(reviewLineText({ phase: "running", status: colored("   ") })).toBe(REVIEW_RUNNING_LINE);
+  });
+
+  it("falls back to the working message and appends the hints", () => {
+    expect(reviewLineText({ phase: "running", workingMessage: "🔍 Reviewing plan…" })).toBe(
+      `${REVIEW_RUNNING_LINE}`,
+    );
+    expect(
+      reviewLineText({
+        phase: "running",
+        workingMessage: `🔍 Reviewing plan… · ${REVIEW_RUNNING_HINT}`,
+      }),
+    ).toBe(REVIEW_RUNNING_LINE);
+  });
+
+  it("pins the status key and the canonical fragments", () => {
+    expect(WORKFLOW_REVIEW_STATUS_KEY).toBe("workflow-review");
+    expect(REVIEW_RUNNING_LINE).toBe(`🔍 Reviewing plan… · ${REVIEW_RUNNING_HINT}`);
   });
 });
