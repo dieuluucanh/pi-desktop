@@ -5,11 +5,8 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
-  FolderClock,
   FolderOpen,
-  FolderPlus,
   GitBranch,
-  PanelLeftClose,
   Plus,
   RefreshCw,
   Terminal,
@@ -17,18 +14,10 @@ import {
 } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "../ui/dropdown-menu";
 import { Switch } from "../ui/switch";
 import { InlineRename } from "../ui/inline-rename";
 import { TabMenu } from "../layout/TabMenu";
 import { useAppStore } from "../state/app-store";
-import { openProjectAction } from "../menu-actions";
-import { CloneProjectDialog, CreateProjectDialog } from "./ProjectDialogs";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
 import { writeTabDrag } from "../layout/tab-drag";
 import { beginTabDrag, endTabDrag } from "../state/tab-drag-session";
@@ -46,7 +35,7 @@ import {
 } from "../../../shared/session-ipc";
 
 /**
- * The sidebar's project section (plan step 10, IA per D-A4).
+ * The sidebar's project list (plan step 10, IA per D-A4).
  *
  * Each project is a group: its header shows name, activity and trust, and the
  * expanded body shows the workspace facts the header promises (path, git branch,
@@ -55,6 +44,11 @@ import {
  *
  * Everything the group displays comes from `project.inspect` on the control host,
  * so a project with no open session is still described correctly.
+ *
+ * This section is **list-only**. The Projects header — the label, the `+` menu,
+ * open-folder and hide-sidebar controls — is `ProjectsHeader`, rendered by
+ * `layout/Sidebar.tsx` outside the sidebar's scroll container so it stays
+ * visible while this list scrolls.
  */
 
 const STATUS_TONE: Record<TabStatus, "neutral" | "accent" | "ok" | "warn" | "danger"> = {
@@ -76,75 +70,9 @@ export function ProjectsSection() {
   const activePath = useAppStore((state) => state.project?.path ?? null);
   const tabs = useAppStore((state) => state.tabs);
   const projectsLoaded = useAppStore((state) => state.projectsLoaded);
-  const toggleSidebar = useAppStore((state) => state.toggleSidebar);
-  // Both dialogs already exist for the welcome view; the Projects header is the
-  // in-workspace entry point (minimal-session-ui step 2).
-  const [createOpen, setCreateOpen] = useState(false);
-  const [cloneOpen, setCloneOpen] = useState(false);
-  const [defaultBusy, setDefaultBusy] = useState(false);
-
-  // One click, no dialog: create the dated folder in Documents/Pi-Desktop,
-  // make it active and open a session, exactly like the two dialogs do.
-  const createDefault = async (): Promise<void> => {
-    setDefaultBusy(true);
-    try {
-      if (await useAppStore.getState().createDefaultProject()) {
-        await useAppStore.getState().createSessionTab();
-      }
-    } finally {
-      setDefaultBusy(false);
-    }
-  };
 
   return (
     <div className="flex flex-col gap-1 px-1" data-testid="projects-section">
-      <div className="mt-3 flex items-center justify-between px-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">
-          Projects
-        </span>
-        <div className="flex items-center gap-0.5">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="icon-sm" variant="ghost" aria-label="New project" title="New project…">
-                <Plus className="size-3.5" aria-hidden />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem disabled={defaultBusy} onSelect={() => void createDefault()}>
-                <FolderClock className="size-3.5" aria-hidden />
-                New default project
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setCreateOpen(true)}>
-                <FolderPlus className="size-3.5" aria-hidden />
-                New project…
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setCloneOpen(true)}>
-                <GitBranch className="size-3.5" aria-hidden />
-                Clone repository…
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            aria-label="Open project folder"
-            title="Open project folder…"
-            onClick={() => void openProjectAction()}
-          >
-            <FolderOpen className="size-3.5" aria-hidden />
-          </Button>
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            aria-label="Hide sidebar"
-            title="Hide sidebar (Ctrl+B)"
-            onClick={toggleSidebar}
-          >
-            <PanelLeftClose className="size-3.5" aria-hidden />
-          </Button>
-        </div>
-      </div>
-
       {projects.length === 0 ? (
         <p className="px-2 py-1 text-xs text-ink-muted">
           {projectsLoaded
@@ -163,9 +91,6 @@ export function ProjectsSection() {
           />
         ))
       )}
-
-      <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} />
-      <CloneProjectDialog open={cloneOpen} onOpenChange={setCloneOpen} />
     </div>
   );
 }

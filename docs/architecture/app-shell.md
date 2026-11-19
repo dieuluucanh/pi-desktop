@@ -11,8 +11,8 @@ tab strip        session tabs (the topmost app row; the OS frame owns the window
                  and the grid-layout switcher at the right
 editor tab strip editor tabs in a second row under the session strip; it
                  renders only while at least one file is open
-sidebar          Projects (+ menu: default · new · clone · open folder) ·
-                 Sessions · Views
+sidebar          pinned Projects header (+ menu: default · new · clone ·
+                 open folder · hide) above a scrolling project list and Views
 main area        the active view (welcome | session | settings | extensions |
                  connections | skills | diagnostics | updates)
 status bar       active project path · build version · Pi profile · bundled
@@ -32,6 +32,17 @@ strip, step 10 fills the project section — neither re-lays-out the window. The
 in-app title bar was removed in the 2026-10-31 minimal-session-ui pass; the brand
 mark survives in the welcome/onboarding views and the OS window title is set by
 `app:set-title`.
+
+**Pinned Projects header (2026-11-19).** The sidebar's first row — the Projects
+label, the `+` menu (default · new · clone), open folder and hide sidebar — is
+pinned above the scroller: `layout/Sidebar.tsx` renders
+`projects/ProjectsHeader` as a sibling _before_ the `ScrollArea`, so a long
+project list or the Views items scroll without carrying the header away. This is
+a structural pin, not `position: sticky` (no opaque repaint, `z-index` or fixed
+sticky offset), matching `rail/RightRail.tsx`, whose panel header is likewise
+outside its scroller. The wrapper's `px-3` is the old
+`nav px-2 + projects-section px-1`, and the row's own `px-2` keeps the label and
+icons at their 20px inset; change both paddings together or the header drifts.
 
 **Two tab rows, one workbench (2026-11-02 editor-tabs plan).** Sessions, the
 Office host and web tabs stay in the top strip. File tabs get their own row

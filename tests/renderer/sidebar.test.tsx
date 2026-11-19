@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -90,6 +90,27 @@ describe("Sidebar package-update sign", () => {
   it("shows no sign when nothing is outdated", () => {
     render(<Sidebar />);
     expect(screen.queryByTestId("nav-package-update-badge")).toBeNull();
+  });
+});
+
+describe("Sidebar pinned Projects header", () => {
+  it("renders the header outside the scroller and before it", () => {
+    render(<Sidebar />);
+
+    const sidebar = screen.getByTestId("sidebar");
+    const header = screen.getByTestId("projects-header");
+    const scroll = screen.getByTestId("sidebar-scroll");
+
+    // The pin (2026-11-19): the header is sidebar chrome, not scroll content.
+    // jsdom has no layout, so this asserts the structure that makes it pinned —
+    // a sticky header inside the scroller would be a descendant and fail here.
+    expect(sidebar).toContainElement(header);
+    expect(within(scroll).queryByTestId("projects-header")).toBeNull();
+    expect(header.compareDocumentPosition(scroll) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+    for (const name of ["New project", "Open project folder", "Hide sidebar"]) {
+      expect(within(sidebar).getByRole("button", { name })).toBeInTheDocument();
+    }
   });
 });
 
