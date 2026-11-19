@@ -22,8 +22,8 @@ const currentVersion = packageJson.version;
 describe("docs sync", () => {
   it("maps every docs source and keeps the release routes dotted", () => {
     const manifest = syncDocs({ validate: true });
-    expect(manifest.docs).toHaveLength(46);
-    expect(manifest.releases).toHaveLength(16);
+    expect(manifest.docs).toHaveLength(47);
+    expect(manifest.releases).toHaveLength(17);
     expect(manifest.version).toBe(currentVersion);
     expect(manifest.docs.map((doc: { route: string }) => doc.route)).toEqual(
       expect.arrayContaining([
@@ -33,24 +33,27 @@ describe("docs sync", () => {
         `/releases/v${currentVersion}/`,
       ]),
     );
-    expect(manifest.releases.map((release: { version: string }) => release.version)).toEqual([
-      currentVersion,
-      "0.10.0",
-      "0.9.0",
-      "0.8.2",
-      "0.8.1",
-      "0.8.0",
-      "0.7.3",
-      "0.7.2",
-      "0.7.1",
-      "0.7.0",
-      "0.6.0",
-      "0.5.0",
-      "0.4.0",
-      "0.3.0",
-      "0.2.0",
-      "0.1.0",
-    ]);
+    expect(manifest.releases.map((release: { version: string | null }) => release.version)).toEqual(
+      [
+        currentVersion,
+        "0.10.1",
+        "0.10.0",
+        "0.9.0",
+        "0.8.2",
+        "0.8.1",
+        "0.8.0",
+        "0.7.3",
+        "0.7.2",
+        "0.7.1",
+        "0.7.0",
+        "0.6.0",
+        "0.5.0",
+        "0.4.0",
+        "0.3.0",
+        "0.2.0",
+        "0.1.0",
+      ],
+    );
   });
 
   it("routes docs README to /docs/ and keeps the source for edit links", () => {

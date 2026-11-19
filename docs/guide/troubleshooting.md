@@ -185,7 +185,7 @@ resource. The window shows a safe-mode banner.
 
   ```bash
   mkdir -p /tmp/pty && cd /tmp/pty && npm init -y && npm install node-pty@1.1.0
-  cd /tmp && /path/Pi-Desktop-0.10.1-linux-x86_64-appimage.AppImage --appimage-extract
+  cd /tmp && /path/Pi-Desktop-0.11.0-linux-x86_64-appimage.AppImage --appimage-extract
   cp /tmp/pty/node_modules/node-pty/build/Release/pty.node \
      /tmp/squashfs-root/resources/app.asar.unpacked/node_modules/node-pty/build/Release/
   /tmp/squashfs-root/AppRun
@@ -418,16 +418,38 @@ Diagnostics → Save         redacted support bundle (no credentials)
 The bundle runs `redactSecrets` over the whole document, so it is safe to attach
 to an issue.
 
-## Known limitations in v0.10.1
+## Known limitations in v0.11.0
 
 Every known limitation is recorded with the release notes:
-[`docs/releases/v0.10.1.md`](../releases/v0.10.1.md). The short version:
+[`docs/releases/v0.11.0.md`](../releases/v0.11.0.md). The short version:
 
 - **Unsigned builds** — SmartScreen/Gatekeeper warn on first launch; signing is
   deferred ([backlog](../product/backlog.md)).
 - **macOS and Linux are beta** — built and structurally verified in CI, but no
   real macOS launch and no fresh Linux desktop install have been exercised by a
   person for this release. Windows is the verified target.
+- **The live Review line needs the matching extension** — the desktop prefers the
+  extension's `workflow-review` text, but `@dieulc/workflow` 0.13.0 (which
+  publishes it and the hidden-panel `workflow-todos` status) is a separate
+  package. With 0.12.x the row falls back to the canonical phase line and the
+  todo bar is absent while the list is hidden or Review owns the turn (there is
+  no compact status to read); commands and controls keep working.
+- **Extension dialogs diverge from terminal Pi in two deliberate places** —
+  Ctrl+C in an input/editor stays copy rather than cancel, and confirm needs a
+  focused button for Enter rather than answering the highlighted “Yes”. Both
+  protect a desktop text field or a permission prompt from a stray key.
+- **The wheel policy is a gesture heuristic** — a same-direction burst within
+  180 ms is one PageUp/PageDown, and a zoom chord or horizontal wheel is
+  swallowed. A trackpad that emits slower events pages more than once; the
+  normal screen and programs that report the wheel keep xterm's own behaviour.
+- **Paste into an extension frame is text only** — image and file paste still
+  have no path there; use the native composer for attachments. A page or
+  extension that expects a DOM paste event will not see one.
+- **A page can still bypass the close interceptor** — a page that saved a
+  native `window.close` reference is handled by the `destroyed` fallback, but a
+  page that keeps the view alive without closing it at all cannot be detected.
+  Closing a review tab returns to its linked session, which can collapse a split
+  grid when no pane holds that session (the normal strip-tab rule).
 - **Extension update checks are registry-based** — they need the network, pause
   under `PI_OFFLINE`, and can lag a fresh publish by a few seconds. A pinned
   package is skipped by design, and a Git or ranged source has no single target
@@ -461,14 +483,17 @@ Every known limitation is recorded with the release notes:
 - **The update offer is in-app only** — the bell row, its toast and the
   About & updates dot are the whole surface; there is no OS notification, and
   dismissing the row keeps the dot until the offer is installed or replaced.
+  Per-message mute rules apply to archive rows, never to offers.
 - **Verified structurally, not on a live machine:** provider OAuth flows,
   extension TUI/renderer fidelity in the packaged app, the Office wizard and
   bridge end to end, the Plannotator round trip, web-tab isolation on a _loaded_
   page, crash/timeout banners, safe mode against a genuinely broken extension,
   the terminal inside a packaged build on a real desktop (CI now opens a real PTY
   from the packaged app on every platform, including inside Debian 11), and the
-  60 fps / RSS numbers. Review Mode's manual provider matrix was not re-walked
-  for this release.
+  60 fps / RSS numbers. Review Mode's manual provider matrix, the extension-dialog
+  walkthrough against the real folder policy, the Review-line cross-version
+  matrix, the todo-panel eleven-case matrix and the Plannotator auto-close matrix
+  were not re-walked for this release.
 - **Upstream:** Pi's own `settings.json` and session-JSONL writes are not
   crash-atomic; the app's own profile writes are (`fsync` + rename).
 - **Deferred features** are listed in [`../product/backlog.md`](../product/backlog.md).
@@ -479,5 +504,5 @@ useful issue.
 ## Related
 
 - [FAQ](faq.md) · [Getting started](getting-started.md)
-- [Release notes v0.10.1](../releases/v0.10.1.md) · [Backlog](../product/backlog.md)
+- [Release notes v0.11.0](../releases/v0.11.0.md) · [Backlog](../product/backlog.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)

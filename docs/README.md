@@ -14,6 +14,11 @@
 
 ## Release notes
 
+- [`releases/v0.11.0.md`](releases/v0.11.0.md) — v0.11.0 release notes (extension
+  dialogs that own the keyboard, one extension-owned Review line below the todo panel, the
+  native Workflow todo bar, terminal wheel paging and questionnaire paste, web tabs that
+  close and return to their opener, offers derived from live state, and the pinned
+  Projects header), install table, known limitations and verification status.
 - [`releases/v0.10.1.md`](releases/v0.10.1.md) — v0.10.1 release notes (prompt history
   gates on displayed rows, the plain-arrow chord table, the layout-independent fallback
   and the real-Chromium E2E proof), install table, known limitations and verification

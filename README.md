@@ -5,23 +5,24 @@
 [Website](https://dieuluucanh.github.io/pi-desktop/) ·
 [Installation](https://dieuluucanh.github.io/pi-desktop/#installation) ·
 [Documentation](https://dieuluucanh.github.io/pi-desktop/docs/) ·
-[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.10.1/)
+[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.11.0/)
 
 A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global
 installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
 `~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
-> **Status:** v0.10.1 — the ninth public release, a composer-navigation release. `↑` and
-> `↓` walk prompt history only from the buffer's displayed rows, so a soft-wrapped prompt
-> keeps the browser's native caret movement until the caret reaches the real top or bottom
-> row. Only a plain arrow with a collapsed caret recalls history; `Shift`/`Ctrl`/`Meta`
-> chords keep their native selection and word movement, and `Alt+↑` stays the dequeue
-> chord. A real-Chromium E2E test proves the wrapped layout. The bundled Pi SDK is 1.5.0.
-> Windows, Linux and macOS installers are built and published from CI on a version tag;
-> Windows is the primary artefact, macOS and Linux are beta, and builds are unsigned.
-> Known limitations and the deferred backlog are recorded in
-> [docs/releases/v0.10.1.md](docs/releases/v0.10.1.md) and
+> **Status:** v0.11.0 — the tenth public release, a workflow-parity release. Extension
+> dialogs take the keyboard wherever focus is and keep the title's real lines; Review Mode
+> paints one extension-owned line below the todo panel; the Workflow todo panel gains a
+> native control bar in every mode; the terminal pages an alternate screen on the wheel
+> instead of turning it into prompt history; paste reaches the questionnaire's own editor;
+> closed web tabs return to the opening session; app offers are derived from live state;
+> and the sidebar's Projects header stays pinned. The bundled Pi SDK is 1.5.0. Windows,
+> Linux and macOS installers are built and published from CI on a version tag; Windows is
+> the primary artefact, macOS and Linux are beta, and builds are unsigned. Known
+> limitations and the deferred backlog are recorded in
+> [docs/releases/v0.11.0.md](docs/releases/v0.11.0.md) and
 > [docs/product/backlog.md](docs/product/backlog.md).
 >
 > **Pi for Office is an optional integration.** It installs from Extensions →
@@ -141,7 +142,7 @@ the Markdown in `docs/` remains the source.
   host protocol + RPC mapping, extension UI host + TUI surface, Office
   integration, runtime, pinned versions).
 - **Parity** — [docs/product/parity.md](docs/product/parity.md).
-- **Release notes** — [docs/releases/v0.10.1.md](docs/releases/v0.10.1.md)
+- **Release notes** — [docs/releases/v0.11.0.md](docs/releases/v0.11.0.md)
   (install table, known limitations, verification status).
 - **Backlog** — [docs/product/backlog.md](docs/product/backlog.md).
 - **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md) and

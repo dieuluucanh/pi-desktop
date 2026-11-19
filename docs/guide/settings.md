@@ -110,4 +110,4 @@ notification's gear or from the bell; each rule can be unmuted individually, or
 use **Unmute all**. Both layers only hide a notification from the bell and
 toasts: the archive keeps it, and the bell's **Show hidden (N)** can recover it.
 See
-[extension UI](../architecture/extension-ui.md#notification-classes-and-muting-2026-11-08-transcript-rule-amended-2026-11-15).
+[extension UI](../architecture/extension-ui.md#notification-classes-offers-and-muting-2026-11-08-offers-derived-2026-11-18).
