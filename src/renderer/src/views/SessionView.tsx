@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Cpu } from "lucide-react";
 import { Composer } from "../session/Composer";
+import { useAttachmentDraft } from "../attachments/use-attachment-draft";
 import { ReviewBar } from "../session/ReviewBar";
 import { TodoPanelBar } from "../session/TodoPanelBar";
 import { StartingBanner } from "../session/StartingBanner";
@@ -97,6 +98,7 @@ const documentMentionSource = (tabId: string) => ({
  */
 
 export function SessionView({ tabId }: { tabId: string }) {
+  const attachmentDraft = useAttachmentDraft(tabId);
   const project = useAppStore((state) => state.project);
   const homeDir = useAppStore((state) => state.info?.homeDir ?? null);
   const tabs = useAppStore((state) => state.tabs);
@@ -111,6 +113,8 @@ export function SessionView({ tabId }: { tabId: string }) {
   const cancelSession = useAppStore((state) => state.cancelSession);
   const hydrateTranscript = useAppStore((state) => state.hydrateTranscript);
   const sendPrompt = useAppStore((state) => state.sendPrompt);
+  const sendAttachmentPrompt = useAppStore((state) => state.sendAttachmentPrompt);
+  const expandPastes = useAppStore((state) => state.expandPastes);
   const stopRun = useAppStore((state) => state.stopRun);
   const interruptRun = useAppStore((state) => state.interruptRun);
   // Review is an isolated turn: the bar's controls run the same extension
@@ -354,13 +358,72 @@ export function SessionView({ tabId }: { tabId: string }) {
   // rail follows the selected project, not this tab — 2026-10-30 plan), so the
   // session view no longer owns a scope of its own.
 
+  // Proactive attachment readiness: metadata-only, debounced and never a send.
+  // Hooks must stay above the early return, so the idle predicate is derived
+  // from the tab record/state directly instead of the later `attachmentReady`.
+  const readinessSessionState = active
+    ? (sessionStates[active.id] as
+        | {
+            idle?: unknown;
+            streaming?: unknown;
+            compacting?: unknown;
+            retrying?: unknown;
+          }
+        | undefined)
+    : undefined;
+  const readinessText = active ? (drafts[active.id] ?? "") : "";
+  const readinessAvailable = attachmentDraft.available;
+  const readiness = attachmentDraft.readiness;
+  const hasAttachmentDescriptors = attachmentDraft.state.descriptors.length > 0;
+  const attachmentDescriptorIds = attachmentDraft.state.descriptors
+    .map((descriptor) => descriptor.id)
+    .join(",");
+  const attachmentIdleForReadiness =
+    active !== null &&
+    active.status === "idle" &&
+    readinessSessionState?.idle === true &&
+    readinessSessionState.streaming !== true &&
+    readinessSessionState.compacting !== true &&
+    readinessSessionState.retrying !== true &&
+    !reviewMode;
+  useEffect(() => {
+    if (!readinessAvailable || !attachmentIdleForReadiness || !hasAttachmentDescriptors) return;
+    const timer = setTimeout(() => {
+      void readiness(readinessText);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [
+    readinessAvailable,
+    readiness,
+    attachmentIdleForReadiness,
+    hasAttachmentDescriptors,
+    attachmentDescriptorIds,
+    readinessText,
+  ]);
+
   if (!active) return <WelcomeView />;
 
   const transcript = transcripts[active.id];
   const contextUsage = contextUsageOf(sessionStates[active.id]);
   const levels = thinkingLevels[active.id] ?? thinkingLevelsOf(sessionStates[active.id]);
   const activeState = sessionStates[active.id] as
-    { model?: unknown; thinkingLevel?: unknown; tokens?: { cost?: unknown } } | undefined;
+    | {
+        model?: unknown;
+        thinkingLevel?: unknown;
+        tokens?: { cost?: unknown };
+        idle?: unknown;
+        streaming?: unknown;
+        compacting?: unknown;
+        retrying?: unknown;
+      }
+    | undefined;
+  const attachmentReady =
+    active.status === "idle" &&
+    activeState?.idle === true &&
+    activeState.streaming !== true &&
+    activeState.compacting !== true &&
+    activeState.retrying !== true &&
+    !reviewMode;
   const cost = typeof activeState?.tokens?.cost === "number" ? activeState.tokens.cost : null;
   const thinkingLevel =
     typeof activeState?.thinkingLevel === "string" ? activeState.thinkingLevel : null;
@@ -679,6 +742,33 @@ export function SessionView({ tabId }: { tabId: string }) {
                 }
                 draft={drafts[active.id] ?? ""}
                 queue={transcript?.queue ?? { steering: [], followUp: [] }}
+                attachmentState={attachmentDraft.available ? attachmentDraft.state : undefined}
+                attachmentReady={attachmentReady}
+                onAttachmentFiles={
+                  attachmentDraft.available ? attachmentDraft.importFiles : undefined
+                }
+                onPickAttachments={attachmentDraft.available ? attachmentDraft.pick : undefined}
+                onRemoveAttachment={attachmentDraft.available ? attachmentDraft.remove : undefined}
+                onPreviewAttachment={
+                  attachmentDraft.available ? attachmentDraft.preview : undefined
+                }
+                onDismissAttachmentIssue={
+                  attachmentDraft.available ? attachmentDraft.dismissIssue : undefined
+                }
+                onDismissAttachmentImport={
+                  attachmentDraft.available ? attachmentDraft.dismissImport : undefined
+                }
+                onRetryAttachmentDelivery={
+                  attachmentDraft.available
+                    ? () =>
+                        sendAttachmentPrompt(active.id, drafts[active.id] ?? "", () =>
+                          attachmentDraft.retryDelivery(),
+                        )
+                    : undefined
+                }
+                onResetAttachmentDraft={
+                  attachmentDraft.available ? attachmentDraft.resetDraft : undefined
+                }
                 workspaceRoot={active.cwd}
                 mentionRequest={mentionRequest?.tabId === active.id ? mentionRequest : null}
                 onMentionHandled={(id) =>
@@ -690,6 +780,15 @@ export function SessionView({ tabId }: { tabId: string }) {
                 onRequestShortcuts={() => void loadShortcuts()}
                 onDraftChange={(text) => setDraft(active.id, text)}
                 onSend={async (text, images, options) => {
+                  if (attachmentDraft.state.descriptors.length > 0) {
+                    if (images.length > 0) {
+                      setHint("Remove legacy image payloads before sending managed files.");
+                      return false;
+                    }
+                    return sendAttachmentPrompt(active.id, text, () =>
+                      attachmentDraft.submit(expandPastes(active.id, text)),
+                    );
+                  }
                   const mode = options?.followUp ? "followUp" : "steer";
                   return sendPrompt(active.id, text, {
                     ...(active.status === "running" ? { mode } : {}),

@@ -644,7 +644,13 @@ describe("queue modes and retry", () => {
 describe("prompt semantics", () => {
   it("passes images, streamingBehavior and the RPC source through", async () => {
     const { call, session } = await started();
-    const images = [{ type: "image", data: "abc", mimeType: "image/png" }];
+    const images = [
+      {
+        type: "image",
+        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        mimeType: "image/png",
+      },
+    ];
     await call("prompt", { text: "look", images, streamingBehavior: "steer" });
     expect(session.prompt).toHaveBeenCalledWith("look", {
       images,

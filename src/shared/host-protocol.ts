@@ -178,6 +178,28 @@ export const HOST_METHODS = [
   "session.reload",
   // conversation
   "prompt",
+  // Dedicated method: old hosts reject it rather than silently dropping file
+  // references supplied as unknown fields on `prompt`.
+  "attachments.prompt",
+  "attachments.submissions.list",
+  // Parent-only staging/planning channel. These are deliberately rejected by
+  // the renderer-facing session.request allowlist; they are not capabilities.
+  "attachments.context",
+  "attachments.plan",
+  "attachments.transfer.begin",
+  "attachments.transfer.chunk",
+  "attachments.transfer.seal",
+  "attachments.transfer.cancel",
+  // Purpose-scoped original-image preparation. The host decodes and resizes one
+  // owner-checked original and main pulls the prepared bytes back; these are
+  // parent-only and grant no renderer file access or delivery authorization.
+  "attachments.image.begin",
+  "attachments.image.chunk",
+  "attachments.image.prepare",
+  "attachments.image.read",
+  "attachments.image.cancel",
+  // Non-submitting readiness: metadata only, no staging, no dispatch attempt.
+  "attachments.readiness",
   "steer",
   "followUp",
   "abort",
@@ -301,6 +323,42 @@ export const HOST_METHODS = [
 ] as const;
 
 export type HostMethod = (typeof HOST_METHODS)[number];
+export type AttachmentPrivateHostMethod =
+  | "attachments.context"
+  | "attachments.plan"
+  | "attachments.prompt"
+  | "attachments.submissions.list"
+  | "attachments.transfer.begin"
+  | "attachments.transfer.chunk"
+  | "attachments.transfer.seal"
+  | "attachments.transfer.cancel"
+  | "attachments.image.begin"
+  | "attachments.image.chunk"
+  | "attachments.image.prepare"
+  | "attachments.image.read"
+  | "attachments.image.cancel"
+  | "attachments.readiness";
+
+const ATTACHMENT_PRIVATE_METHODS: readonly AttachmentPrivateHostMethod[] = [
+  "attachments.context",
+  "attachments.plan",
+  "attachments.prompt",
+  "attachments.submissions.list",
+  "attachments.transfer.begin",
+  "attachments.transfer.chunk",
+  "attachments.transfer.seal",
+  "attachments.transfer.cancel",
+  "attachments.image.begin",
+  "attachments.image.chunk",
+  "attachments.image.prepare",
+  "attachments.image.read",
+  "attachments.image.cancel",
+  "attachments.readiness",
+];
+
+export function isPrivateHostMethod(value: unknown): value is AttachmentPrivateHostMethod {
+  return ATTACHMENT_PRIVATE_METHODS.includes(value as AttachmentPrivateHostMethod);
+}
 
 export function isHostMethod(value: unknown): value is HostMethod {
   return typeof value === "string" && (HOST_METHODS as readonly string[]).includes(value);

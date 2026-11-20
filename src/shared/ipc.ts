@@ -1,4 +1,19 @@
 import type { OfficeSetupStepId, OfficeSetupView } from "./office-setup";
+import type {
+  AttachmentDeliveryRequest,
+  AttachmentDraftGrant,
+  AttachmentImportGrant,
+  AttachmentImportRequest,
+  AttachmentPickResult,
+  AttachmentPromptResult,
+  AttachmentDescriptor,
+  AttachmentPreview,
+  AttachmentReadiness,
+  AttachmentReadinessRequest,
+  AttachmentSnapshot,
+  AttachmentStatusRequest,
+  AttachmentSubmissionStatus,
+} from "./attachments";
 import type { OfficeBridgeControlResult, OfficeStopResult } from "./office-bridge";
 import type { OfficeDocumentsView } from "./office-documents";
 import type { DiagnosticsExport, DiagnosticsSnapshot } from "./diagnostics";
@@ -105,6 +120,21 @@ export const IPC = {
   windowState: "app:window-state",
   /** Main → renderer: an application-menu command (New Session, Settings, …). */
   appMenuCommand: "app:menu-command",
+
+  /** Attachments: scoped, bounded imports and previews; never paths. */
+  attachmentsOpenDraft: "attachments:open-draft",
+  attachmentsCloseDraft: "attachments:close-draft",
+  attachmentsPick: "attachments:pick",
+  attachmentsBegin: "attachments:begin",
+  attachmentsAppend: "attachments:append",
+  attachmentsCommit: "attachments:commit",
+  attachmentsCancel: "attachments:cancel",
+  attachmentsList: "attachments:list",
+  attachmentsPreview: "attachments:preview",
+  attachmentsRemove: "attachments:remove",
+  attachmentsSubmit: "attachments:submit",
+  attachmentsStatus: "attachments:status",
+  attachmentsReadiness: "attachments:readiness",
 
   /** Sessions (plan step 3): tabs are the renderer's handle on a Pi host. */
   sessionTabs: "session:tabs",
@@ -452,6 +482,31 @@ export interface WindowState {
   focused: boolean;
   maximized: boolean;
   fullScreen: boolean;
+}
+
+/** Main-authorized attachment ingestion; a draft grant is scoped to one tab. */
+export interface AttachmentsBridge {
+  openDraft(tabId: string, draftId?: string): Promise<AttachmentDraftGrant>;
+  closeDraft(draft: AttachmentDraftGrant): Promise<void>;
+  pick(draft: AttachmentDraftGrant): Promise<readonly AttachmentPickResult[] | null>;
+  begin(input: AttachmentImportRequest): Promise<AttachmentImportGrant>;
+  append(
+    draft: AttachmentDraftGrant,
+    token: string,
+    offset: number,
+    bytes: Uint8Array,
+  ): Promise<number>;
+  commit(draft: AttachmentDraftGrant, token: string): Promise<AttachmentSnapshot>;
+  cancel(draft: AttachmentDraftGrant, token: string): Promise<void>;
+  list(draft: AttachmentDraftGrant): Promise<readonly AttachmentDescriptor[]>;
+  preview(draft: AttachmentDraftGrant, id: string, maxBytes: number): Promise<AttachmentPreview>;
+  remove(draft: AttachmentDraftGrant, id: string): Promise<void>;
+  /** Managed attachment send uses a dedicated sender-checked route, never session.request. */
+  submit(input: AttachmentDeliveryRequest): Promise<AttachmentPromptResult>;
+  /** Metadata-only recovery status for the draft's latest managed attempt. */
+  status(input: AttachmentStatusRequest): Promise<AttachmentSubmissionStatus>;
+  /** Non-submitting per-file + aggregate readiness against the live host. */
+  readiness(input: AttachmentReadinessRequest): Promise<AttachmentReadiness>;
 }
 
 /** Session tabs and host events (plan step 3). */
@@ -821,6 +876,8 @@ export interface PiDesktopBridge {
   onMenuCommand(listener: (command: MenuCommand) => void): () => void;
   prefs: PrefsBridge;
   sessions: SessionsBridge;
+  /** Absent when the renderer is connected to an older preload. */
+  attachments?: AttachmentsBridge;
   terminal: TerminalBridge;
   tui: TuiBridge;
   share: ShareBridge;

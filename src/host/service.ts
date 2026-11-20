@@ -351,7 +351,12 @@ export function createHostService(options: HostServiceOptions): HostService {
     env: { blobDir: blobDir || process.env[BLOB_DIR_ENV] || null },
     startedAt: options.info.startedAt,
     buildId: options.info.buildId ?? null,
-    capabilities: options.info.capabilities ?? { checkpointsExtension: false },
+    capabilities: {
+      ...(options.info.capabilities ?? { checkpointsExtension: false }),
+      // The contract exists, but delivery is not implemented yet. Never let a
+      // client mistake an updated host for one that can actually send files.
+      attachmentDeliveryVersion: null,
+    },
   });
 
   handlers["host.blobs.read"] = async (params: unknown): Promise<BlobReadResult> => {

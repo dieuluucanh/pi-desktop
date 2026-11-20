@@ -7,12 +7,17 @@
  * summary says whether a key is stored, never the key itself.
  */
 
+/** The two input modalities accepted by Pi's public model definition. */
+export type CustomModelInputModality = "text" | "image";
+
 /** One model entry the gateway advertises. */
 export interface CustomProviderModelInput {
   id: string;
   name?: string;
   contextWindow?: number;
   maxTokens?: number;
+  /** Omitted means preserve the existing models.json value (or Pi's text default). */
+  input?: CustomModelInputModality[];
 }
 
 /** What the editor submits. `apiKey` is write-only. */

@@ -1,5 +1,23 @@
-import { BrowserWindow, ipcMain, shell } from "electron";
-import { isHostMethod, type HostMethod } from "../shared/host-protocol";
+import { BrowserWindow, ipcMain, shell, type IpcMainInvokeEvent } from "electron";
+import {
+  ATTACHMENT_LIMITS,
+  isAttachmentId,
+  isWellFormedAttachmentText,
+  type AttachmentDeliveryRequest,
+  type AttachmentDraftGrant,
+  type AttachmentImportGrant,
+  type AttachmentImportRequest,
+  type AttachmentDescriptor,
+  type AttachmentPickResult,
+  type AttachmentPromptResult,
+  type AttachmentReadiness,
+  type AttachmentReadinessRequest,
+  type AttachmentPreview,
+  type AttachmentSnapshot,
+  type AttachmentStatusRequest,
+  type AttachmentSubmissionStatus,
+} from "../shared/attachments";
+import { isHostMethod, isPrivateHostMethod, type HostMethod } from "../shared/host-protocol";
 import { IPC, type AppInfo, type ProjectOpResponse, type SessionDeleteResult } from "../shared/ipc";
 import type { UiPrefs } from "../shared/prefs";
 import type {
@@ -169,6 +187,42 @@ export interface IpcTerminalDeps {
   setFocus(windowId: number, focused: boolean): void;
 }
 
+export interface IpcAttachmentDeps {
+  isTrustedSender(senderId: number): boolean;
+  openDraft(senderId: number, tabId: string, draftId?: unknown): Promise<AttachmentDraftGrant>;
+  closeDraft(senderId: number, draft: AttachmentDraftGrant): Promise<void>;
+  pick(
+    senderId: number,
+    draft: AttachmentDraftGrant,
+  ): Promise<readonly AttachmentPickResult[] | null>;
+  begin(senderId: number, input: AttachmentImportRequest): Promise<AttachmentImportGrant>;
+  append(
+    senderId: number,
+    draft: AttachmentDraftGrant,
+    token: string,
+    offset: number,
+    bytes: Uint8Array,
+  ): Promise<number>;
+  commit(senderId: number, draft: AttachmentDraftGrant, token: string): Promise<AttachmentSnapshot>;
+  cancel(senderId: number, draft: AttachmentDraftGrant, token: string): Promise<void>;
+  list(senderId: number, draft: AttachmentDraftGrant): Promise<readonly AttachmentDescriptor[]>;
+  preview(
+    senderId: number,
+    draft: AttachmentDraftGrant,
+    id: string,
+    maxBytes: number,
+  ): Promise<AttachmentPreview>;
+  remove(senderId: number, draft: AttachmentDraftGrant, id: string): Promise<void>;
+  deliver(senderId: number, input: AttachmentDeliveryRequest): Promise<AttachmentPromptResult>;
+  status(senderId: number, input: AttachmentStatusRequest): Promise<AttachmentSubmissionStatus>;
+  readiness(
+    senderId: number,
+    draft: AttachmentDraftGrant,
+    attachmentIds: readonly string[],
+    text: string,
+  ): Promise<AttachmentReadiness>;
+}
+
 export interface IpcTuiDeps {
   /**
    * Records (or clears, with `null`) the extension TUI tab that owns a window's
@@ -202,6 +256,8 @@ export interface IpcDependencies {
     set: (patch: unknown) => Promise<UiPrefs>;
   };
   sessions: IpcSessionDeps;
+  /** File import, scoped to the app's trusted main renderer and a live tab. */
+  attachments: IpcAttachmentDeps;
   /** Native terminal surface (2026-11-05 terminal plan). */
   terminal: IpcTerminalDeps;
   /** Extension TUI surface focus (2026-11-18 questionnaire paste plan). */
@@ -318,6 +374,17 @@ export interface IpcDependencies {
     deleteBackup(tabId: string): Promise<WorkspaceResult<boolean>>;
     format(input: WorkspaceFormatRequest): Promise<WorkspaceResult<WorkspaceFormatResult>>;
   };
+}
+
+function requireAttachmentSender(deps: IpcDependencies, event: IpcMainInvokeEvent): number {
+  if (
+    !event.senderFrame ||
+    event.senderFrame !== event.sender.mainFrame ||
+    !deps.attachments.isTrustedSender(event.sender.id)
+  ) {
+    throw new Error("attachments: untrusted renderer");
+  }
+  return event.sender.id;
 }
 
 const MAX_TITLE_LENGTH = 200;
@@ -573,6 +640,105 @@ function parseProjectSettingsToggle(value: unknown): ProjectSettingsToggleInput 
 }
 
 /** Validates the `web:open` input: a permitted URL, an optional folder and link. */
+function parseAttachmentDelivery(value: unknown): AttachmentDeliveryRequest {
+  const input = asRecord(value);
+  const draft = asRecord(input.draft);
+  const ids = input.attachmentIds;
+  const grantKeys = Object.keys(draft);
+  if (
+    Object.keys(input).length !== 6 ||
+    !Object.keys(input).every((key) =>
+      ["draft", "attachmentIds", "turnId", "attemptId", "explicitRetry", "text"].includes(key),
+    ) ||
+    grantKeys.length !== 3 ||
+    !grantKeys.every((key) => ["tabId", "draftId", "token"].includes(key)) ||
+    typeof draft.tabId !== "string" ||
+    !isAttachmentId(draft.draftId) ||
+    !isAttachmentId(draft.token) ||
+    !Array.isArray(ids) ||
+    ids.length === 0 ||
+    ids.length > ATTACHMENT_LIMITS.filesPerDraft ||
+    ids.some((id) => !isAttachmentId(id)) ||
+    new Set(ids).size !== ids.length ||
+    !isAttachmentId(input.turnId) ||
+    !isAttachmentId(input.attemptId) ||
+    typeof input.explicitRetry !== "boolean" ||
+    typeof input.text !== "string" ||
+    !isWellFormedAttachmentText(input.text)
+  ) {
+    throw new Error("attachments: invalid delivery request");
+  }
+  return {
+    draft: { tabId: draft.tabId, draftId: draft.draftId, token: draft.token },
+    attachmentIds: ids,
+    turnId: input.turnId,
+    attemptId: input.attemptId,
+    explicitRetry: input.explicitRetry,
+    text: input.text,
+  };
+}
+
+function parseAttachmentStatus(value: unknown): AttachmentStatusRequest {
+  const input = asRecord(value);
+  const draft = asRecord(input.draft);
+  const ids = input.attachmentIds;
+  const grantKeys = Object.keys(draft);
+  if (
+    Object.keys(input).length !== 3 ||
+    !Object.keys(input).every((key) => ["draft", "text", "attachmentIds"].includes(key)) ||
+    grantKeys.length !== 3 ||
+    !grantKeys.every((key) => ["tabId", "draftId", "token"].includes(key)) ||
+    typeof draft.tabId !== "string" ||
+    !isAttachmentId(draft.draftId) ||
+    !isAttachmentId(draft.token) ||
+    typeof input.text !== "string" ||
+    !isWellFormedAttachmentText(input.text) ||
+    input.text.length > 4 * 1024 * 1024 ||
+    !Array.isArray(ids) ||
+    ids.length > ATTACHMENT_LIMITS.filesPerDraft ||
+    ids.some((id) => !isAttachmentId(id)) ||
+    new Set(ids).size !== ids.length
+  ) {
+    throw new Error("attachments: invalid status request");
+  }
+  return {
+    draft: { tabId: draft.tabId, draftId: draft.draftId, token: draft.token },
+    text: input.text,
+    attachmentIds: ids as string[],
+  };
+}
+
+function parseAttachmentReadiness(value: unknown): AttachmentReadinessRequest {
+  const input = asRecord(value);
+  const draft = asRecord(input.draft);
+  const ids = input.attachmentIds;
+  const grantKeys = Object.keys(draft);
+  if (
+    Object.keys(input).length !== 3 ||
+    !Object.keys(input).every((key) => ["draft", "text", "attachmentIds"].includes(key)) ||
+    grantKeys.length !== 3 ||
+    !grantKeys.every((key) => ["tabId", "draftId", "token"].includes(key)) ||
+    typeof draft.tabId !== "string" ||
+    !isAttachmentId(draft.draftId) ||
+    !isAttachmentId(draft.token) ||
+    typeof input.text !== "string" ||
+    !isWellFormedAttachmentText(input.text) ||
+    input.text.length > 4 * 1024 * 1024 ||
+    !Array.isArray(ids) ||
+    ids.length === 0 ||
+    ids.length > ATTACHMENT_LIMITS.filesPerDraft ||
+    ids.some((id) => !isAttachmentId(id)) ||
+    new Set(ids).size !== ids.length
+  ) {
+    throw new Error("attachments: invalid readiness request");
+  }
+  return {
+    draft: { tabId: draft.tabId, draftId: draft.draftId, token: draft.token },
+    text: input.text,
+    attachmentIds: ids as string[],
+  };
+}
+
 export function parseWebOpen(value: unknown): WebTabOpenInput {
   const record = asRecord(value);
   const url = sanitizeWebUrl(record.url);
@@ -599,6 +765,11 @@ function parseSessionRequest(
   const method = record.method;
   if (!isHostMethod(method)) {
     throw new Error(`session: unsupported host method ${String(method)}`);
+  }
+  // A generic request carries no authenticated draft grant or host pin. The
+  // future attachment broker must use its own sender-checked route instead.
+  if (method === "attachments.prompt" || isPrivateHostMethod(method)) {
+    throw new Error("session: attachment delivery requires an authorized route");
   }
   return "params" in record ? { tabId, method, params: record.params } : { tabId, method };
 }
@@ -744,6 +915,83 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.appRelaunch, () => deps.relaunch());
   ipcMain.handle(IPC.prefsGet, () => deps.prefs.get());
   ipcMain.handle(IPC.prefsSet, (_event, patch: unknown) => deps.prefs.set(patch));
+
+  ipcMain.handle(IPC.attachmentsOpenDraft, (event, tabId: unknown, draftId: unknown) =>
+    deps.attachments.openDraft(
+      requireAttachmentSender(deps, event),
+      requireRealTabId(deps, tabId),
+      draftId,
+    ),
+  );
+  ipcMain.handle(IPC.attachmentsCloseDraft, (event, draft: unknown) =>
+    deps.attachments.closeDraft(
+      requireAttachmentSender(deps, event),
+      draft as AttachmentDraftGrant,
+    ),
+  );
+  ipcMain.handle(IPC.attachmentsPick, (event, draft: unknown) =>
+    deps.attachments.pick(requireAttachmentSender(deps, event), draft as AttachmentDraftGrant),
+  );
+  ipcMain.handle(IPC.attachmentsBegin, (event, input: unknown) =>
+    deps.attachments.begin(requireAttachmentSender(deps, event), input as AttachmentImportRequest),
+  );
+  ipcMain.handle(
+    IPC.attachmentsAppend,
+    (event, draft: unknown, token: unknown, offset: unknown, bytes: unknown) =>
+      deps.attachments.append(
+        requireAttachmentSender(deps, event),
+        draft as AttachmentDraftGrant,
+        token as string,
+        offset as number,
+        bytes as Uint8Array,
+      ),
+  );
+  ipcMain.handle(IPC.attachmentsCommit, (event, draft: unknown, token: unknown) =>
+    deps.attachments.commit(
+      requireAttachmentSender(deps, event),
+      draft as AttachmentDraftGrant,
+      token as string,
+    ),
+  );
+  ipcMain.handle(IPC.attachmentsCancel, (event, draft: unknown, token: unknown) =>
+    deps.attachments.cancel(
+      requireAttachmentSender(deps, event),
+      draft as AttachmentDraftGrant,
+      token as string,
+    ),
+  );
+  ipcMain.handle(IPC.attachmentsList, (event, draft: unknown) =>
+    deps.attachments.list(requireAttachmentSender(deps, event), draft as AttachmentDraftGrant),
+  );
+  ipcMain.handle(IPC.attachmentsPreview, (event, draft: unknown, id: unknown, maxBytes: unknown) =>
+    deps.attachments.preview(
+      requireAttachmentSender(deps, event),
+      draft as AttachmentDraftGrant,
+      id as string,
+      maxBytes as number,
+    ),
+  );
+  ipcMain.handle(IPC.attachmentsRemove, (event, draft: unknown, id: unknown) =>
+    deps.attachments.remove(
+      requireAttachmentSender(deps, event),
+      draft as AttachmentDraftGrant,
+      id as string,
+    ),
+  );
+  ipcMain.handle(IPC.attachmentsSubmit, (event, input: unknown) => {
+    const senderId = requireAttachmentSender(deps, event);
+    const request = parseAttachmentDelivery(input);
+    return deps.attachments.deliver(senderId, request);
+  });
+  ipcMain.handle(IPC.attachmentsStatus, (event, input: unknown) => {
+    const senderId = requireAttachmentSender(deps, event);
+    return deps.attachments.status(senderId, parseAttachmentStatus(input));
+  });
+  ipcMain.handle(IPC.attachmentsReadiness, (event, input: unknown) => {
+    const senderId = requireAttachmentSender(deps, event);
+    const request = parseAttachmentReadiness(input);
+    return deps.attachments.readiness(senderId, request.draft, request.attachmentIds, request.text);
+  });
 
   ipcMain.handle(IPC.sessionTabs, () => deps.sessions.list());
   ipcMain.handle(IPC.sessionRestore, () => deps.sessions.restore());

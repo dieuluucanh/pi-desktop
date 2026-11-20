@@ -403,6 +403,9 @@ function CustomGatewaySheet({
   const [baseUrl, setBaseUrl] = useState(gateway?.baseUrl ?? "");
   const [api, setApi] = useState(gateway?.api ?? "openai-completions");
   const [models, setModels] = useState(gateway?.modelIds.join(", ") ?? "");
+  const [modelInput, setModelInput] = useState<"preserve" | "text" | "text-image">(
+    gateway ? "preserve" : "text",
+  );
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -435,7 +438,15 @@ function CustomGatewaySheet({
         baseUrl: baseUrl.trim(),
         ...(api.trim() ? { api: api.trim() } : {}),
         ...(apiKey.length > 0 ? { apiKey } : {}),
-        models: modelIds.map((model) => ({ id: model })),
+        models: modelIds.map((model) => ({
+          id: model,
+          ...(modelInput === "preserve"
+            ? {}
+            : {
+                input:
+                  modelInput === "text-image" ? (["text", "image"] as const) : (["text"] as const),
+              }),
+        })),
       });
       setApiKey("");
       onClose();
@@ -522,6 +533,25 @@ function CustomGatewaySheet({
             &quot;@&quot; (e.g.{" "}
             <code className="font-mono">hf:deepseek-ai/DeepSeek-V4.1-Flash</code>) — but no spaces
             and no commas, and up to 200 characters.
+          </p>
+          <label className="flex items-center gap-2">
+            <span className="w-24 text-xs text-ink-muted">Model input</span>
+            <select
+              aria-label="Model input capabilities"
+              value={modelInput}
+              onChange={(event) =>
+                setModelInput(event.target.value as "preserve" | "text" | "text-image")
+              }
+              className={field}
+            >
+              <option value="preserve">Leave each model as configured</option>
+              <option value="text">Text only</option>
+              <option value="text-image">Text and images</option>
+            </select>
+          </label>
+          <p className="text-[11px] text-ink-faint">
+            Use only capabilities verified for this gateway. Pi accepts text and image input;
+            document files are not a model input type.
           </p>
           <label className="flex items-center gap-2">
             <span className="w-24 text-xs text-ink-muted">API key</span>

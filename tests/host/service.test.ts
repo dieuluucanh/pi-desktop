@@ -154,6 +154,14 @@ describe("host service dispatch", () => {
     });
   });
 
+  it("does not advertise reference-based attachment delivery before it is implemented", async () => {
+    const host = harness();
+    await host.request(1, "host.hello");
+    expect(host.lastResult()).toMatchObject({ capabilities: { attachmentDeliveryVersion: null } });
+    await host.request(2, "attachments.prompt", {});
+    expect(host.last()).toMatchObject({ ok: false, error: { code: "not_implemented" } });
+  });
+
   it("reports a null build id when the supervisor did not stamp one", async () => {
     const host = harness({
       info: {

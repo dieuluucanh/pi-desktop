@@ -10,6 +10,7 @@ import {
   OFFICE_BRIDGE_PORT,
   createHostSupervisor,
   type HostSpawner,
+  type HostProcessPin,
   type SpawnedHostProcess,
 } from "../../src/main/host-supervisor";
 import { createMemoryFsPort } from "../../src/main/fs-port";
@@ -210,6 +211,109 @@ function harness(
 
   return { supervisor, spawned, spawnCalls, fs };
 }
+
+describe("process reservations", () => {
+  it("reference-counts reservations, releases idempotently and isolates process generations", async () => {
+    const { supervisor } = harness({
+      isPinned: () => {
+        throw new Error("policy failed");
+      },
+    });
+    const host = await supervisor.start({ sessionId: "reserved", cwd: normalize("C:/work") });
+    const first = host.acquirePin();
+    const second = host.acquirePin();
+    expect(host.pinned()).toBe(true);
+    expect(first.isCurrent()).toBe(true);
+    first.release();
+    first.release();
+    expect(first.isCurrent()).toBe(false);
+    expect(host.pinned()).toBe(true);
+    second.release();
+    expect(host.pinned()).toBe(false);
+    const stale = host.acquirePin();
+    await host.restart();
+    expect(stale.isCurrent()).toBe(false);
+    const fresh = host.acquirePin();
+    expect(fresh.generation).toBeGreaterThan(stale.generation);
+    stale.release();
+    expect(host.pinned()).toBe(true);
+    expect(fresh.isCurrent()).toBe(true);
+    fresh.release();
+    expect(host.pinned()).toBe(false);
+    await supervisor.stopAll();
+    expect(() => host.acquirePin()).toThrow();
+  });
+
+  it("protects against idle recycling, including a reservation acquired inside the state probe", async () => {
+    vi.useFakeTimers();
+    const { supervisor, spawned } = harness({
+      idleTimeoutMs: 5,
+      behaviours: [
+        {
+          answer: (request) => {
+            if (request.method === "state.get") {
+              reservation.pin ??= host.acquirePin();
+              return { streaming: false };
+            }
+            return undefined;
+          },
+        },
+      ],
+    });
+    const reservation: { pin: HostProcessPin | null } = { pin: null };
+    const host = await supervisor.start({ sessionId: "reserved", cwd: normalize("C:/work") });
+    try {
+      await vi.advanceTimersByTimeAsync(20);
+      expect(reservation.pin).not.toBeNull();
+      expect(host.pinned()).toBe(true);
+      expect(spawned[0]?.killed).toBe(false);
+      reservation.pin?.release();
+      // The probe does not acquire again: only the first reservation was held.
+      await vi.advanceTimersByTimeAsync(10);
+      expect(spawned[0]?.killed).toBe(true);
+    } finally {
+      await supervisor.stopAll();
+      vi.useRealTimers();
+    }
+  });
+
+  it("honors a reservation acquired while the RSS state probe is in flight", async () => {
+    vi.useFakeTimers();
+    let armed = false;
+    const reservation: { pin: HostProcessPin | null } = { pin: null };
+    const { supervisor, spawned } = harness({
+      memoryPollMs: 5,
+      memoryGraceMs: 0,
+      memoryOverBudgetSamples: 1,
+      maxRssBytes: 100,
+      behaviours: [
+        {
+          answer: (request) => {
+            if (request.method === "host.metrics")
+              return { rssBytes: 200, heapUsedBytes: 1, heapTotalBytes: 1, uptimeMs: 1_000, at: 1 };
+            if (request.method === "state.get") {
+              if (armed) reservation.pin ??= host.acquirePin();
+              return { streaming: !armed };
+            }
+            return undefined;
+          },
+        },
+      ],
+    });
+    const host = await supervisor.start({ sessionId: "reserved", cwd: normalize("C:/work") });
+    try {
+      armed = true;
+      await vi.advanceTimersByTimeAsync(10);
+      expect(reservation.pin).not.toBeNull();
+      expect(host.pinned()).toBe(true);
+      expect(spawned[0]?.killed).toBe(false);
+      reservation.pin?.release();
+    } finally {
+      await supervisor.stopAll();
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe("host supervisor startup", () => {
   it("spawns with the bundled runtime, the shim PATH and the session env", async () => {

@@ -1,9 +1,15 @@
-import type { HostMethod, HostRole } from "../shared/host-protocol";
+import {
+  isPrivateHostMethod,
+  type AttachmentPrivateHostMethod,
+  type HostMethod,
+  type HostRole,
+} from "../shared/host-protocol";
 import {
   DEFAULT_REQUEST_TIMEOUT_MS,
   HostAlreadyRunningError,
   HostStoppedError,
   HostTimeoutError,
+  type HostProcessPin,
 } from "./host-supervisor";
 import type { CommandCompleteResult } from "../shared/commands";
 import {
@@ -161,7 +167,9 @@ export interface SupervisorHostLike {
   info?(): HostInfoLike | null;
   /** Last self-reported RSS sample (plan step 24). Optional for test doubles. */
   metrics?(): HostMemoryMetrics | null;
-  /** Whether the host is pinned by policy (bridge owner/active/control). */
+  /** Main-only process reservation. Absence fails closed for older/test hosts. */
+  acquirePin?(): HostProcessPin;
+  /** Whether the host is pinned by policy or a live reservation. */
   pinned?(): boolean;
   /** Whether the host is ready with no request in flight. */
   isIdle?(): boolean;
@@ -262,11 +270,26 @@ export interface SessionServiceDeps {
   officeBridgePort?: number;
 }
 
+/** Main-only session fence; branch/revision and draft authority are separate. */
+export interface SessionHostPin {
+  readonly tabId: string;
+  readonly generation: number;
+  readonly processGeneration: number;
+  readonly sessionId: string;
+  readonly sessionEpoch: number;
+  isCurrent(): boolean;
+  /** Parent-only bounded transfer operations; never exposed through session.request. */
+  request(method: AttachmentPrivateHostMethod, params: unknown): Promise<unknown>;
+  release(): void;
+}
+
 export interface SessionService {
   /** Lazily starts (and returns) the control host. */
   controlHost(): Promise<SupervisorHostLike>;
   tabs(): TabRecord[];
   activeTabId(): string | null;
+  /** Pin an already-ready session only; never wakes a tab or starts a host. */
+  pinSessionHost(tabId: string): SessionHostPin;
   /**
    * Declares which tabs the renderer currently shows (the grid's panes, or the
    * solo tab). Advisory and cheap: it parks nothing and spawns nothing, it only
@@ -973,6 +996,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       if (tabId === activeId) return;
       if (visibleTabs.has(tabId)) return;
       if (starting.has(tabId) || opening.has(tabId) || recycling.has(tabId)) return;
+      if (hosts.get(tabId) !== host || host.pinned?.()) return;
       const record = asRecord(snapshot);
       if (typeof record.sessionFile === "string") tab.sessionFile = record.sessionFile;
       await detachHost(tabId, { reason: "park" });
@@ -1539,6 +1563,78 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     tabs: () => [...tabs.values()],
     activeTabId: () => activeId,
+
+    pinSessionHost(tabId) {
+      const tab = requireTab(tabId);
+      const host = hosts.get(tabId);
+      const identity = sessionIdentities.get(tabId);
+      const generation = generations.get(tabId) ?? 0;
+      const inTransition = (): boolean =>
+        starting.has(tabId) || opening.has(tabId) || recycling.has(tabId) || parking.has(tabId);
+      if (
+        disposed ||
+        !isHostBackedTab(tab.kind) ||
+        !sessionReady.has(tabId) ||
+        !host?.acquirePin ||
+        host.status() !== "ready" ||
+        !identity?.sessionId ||
+        !Number.isSafeInteger(identity.epoch) ||
+        identity.epoch < 1 ||
+        inTransition()
+      )
+        throw new SessionServiceError(
+          "session is not ready for a reservation",
+          "session_not_ready",
+        );
+      const process = host.acquirePin();
+      const sessionId = identity.sessionId;
+      const sessionEpoch = identity.epoch;
+      let released = false;
+      let invalidated = false;
+      const isCurrent = (): boolean => {
+        if (released || invalidated) return false;
+        const current = sessionIdentities.get(tabId);
+        const live =
+          !disposed &&
+          tabs.has(tabId) &&
+          hosts.get(tabId) === host &&
+          (generations.get(tabId) ?? 0) === generation &&
+          sessionReady.has(tabId) &&
+          current?.sessionId === sessionId &&
+          current.epoch === sessionEpoch &&
+          !inTransition() &&
+          process.isCurrent();
+        // Revocation must not release the process while a reader is still
+        // draining. The owner explicitly releases after its operations settle.
+        if (!live) invalidated = true;
+        return live;
+      };
+      return Object.freeze({
+        tabId,
+        generation,
+        processGeneration: process.generation,
+        sessionId,
+        sessionEpoch,
+        isCurrent,
+        request: async (method: AttachmentPrivateHostMethod, params: unknown) => {
+          if (!isPrivateHostMethod(method) || !isCurrent()) {
+            throw new SessionServiceError("attachment host reservation is stale", "host_stopped");
+          }
+          const result = await host.request(method, params, { timeoutMs: 10_000 });
+          if (!isCurrent()) {
+            throw new SessionServiceError("attachment host reservation is stale", "host_stopped");
+          }
+          return result;
+        },
+        release: () => {
+          if (released) return;
+          invalidated = true;
+          // A failing port must remain retryable, without reviving authority.
+          process.release();
+          released = true;
+        },
+      });
+    },
 
     setVisibleTabs(ids) {
       // Advisory and idempotent: an unknown or already-closed id is dropped (a

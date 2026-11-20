@@ -98,6 +98,23 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 | `#document` Office mentions             | ✅ (bridge extension) | ✅ step 20 (the app's own provider is fed by the live pane registry, so mentions work even when the bridge's provider is absent)                          |
 | External editor for long prompts        | ✅                    | ✅ step 21 (`Ctrl+G` expanded editor, OS editor spawned without a shell and awaited; TUI editors need a TTY)                                              |
 
+### File references versus attachments
+
+Pi 1.5's CLI accepts `@path` arguments at startup and includes text-file
+contents or supported images in the first prompt. Interactive `@path` completion
+instead inserts a file reference for the agent's tools. Desktop's `@` completion
+and Explorer drops follow that reference workflow; its current paperclip,
+clipboard-file, and external-drop attachment path accepts **images only**.
+Direct text-file attachment is planned, not yet implemented.
+
+Pi's SDK user-message contract is text and image content, not native PDF or
+Office document blocks. The approved attachment refactor will send validated
+text directly and offer **explicit local text extraction** for PDF, modern Office,
+and OpenDocument files. Extracted text does not give the model native visual or
+spreadsheet understanding. Audio/video processing belongs to Pi-Studio. Until
+that work is delivered, do not treat provider API documentation as evidence that
+Desktop accepts those file types.
+
 ## Office
 
 | Capability                                                                | Terminal Pi                         | Pi Desktop                                                                                                                                                |

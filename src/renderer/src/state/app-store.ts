@@ -2,6 +2,10 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import type { AppInfo, WebTabOpenInput } from "../../../shared/ipc";
 import type { BlobRef, HostMethod } from "../../../shared/host-protocol";
+import {
+  validateAttachmentTranscriptCard,
+  type AttachmentPromptResult,
+} from "../../../shared/attachments";
 import { DEFAULT_PREFS, type PackageCheckPrefs, type UiPrefs } from "../../../shared/prefs";
 import { mergeTerminalPrefs, type TerminalPrefs } from "../../../shared/terminal-prefs";
 import { parseWorkflowStatus } from "../../../shared/workflow-mode";
@@ -219,6 +223,7 @@ import {
   type PackageUpdateSummary,
 } from "../../../shared/packages";
 import {
+  applyAttachmentTranscriptCard,
   applyPromptOrigins,
   createTranscriptState,
   hydrateMessages,
@@ -1011,6 +1016,8 @@ export interface AppStateShape {
   applySessionState: (envelope: SessionStateEnvelope) => void;
   /** Loads history from `messages.get` once per tab (plan step 5). */
   hydrateTranscript: (tabId: string) => Promise<void>;
+  /** Reconciles a persisted attachment association after an accepted/uncertain send. */
+  reconcileAttachmentSubmission: (tabId: string, result: AttachmentPromptResult) => Promise<void>;
   /** Aborts the run of a tab (the transcript's error banner action). */
   abortTab: (tabId: string) => Promise<void>;
   /** Stops and re-spawns a tab's host, resuming its session (plan step 22). */
@@ -1055,6 +1062,12 @@ export interface AppStateShape {
     tabId: string,
     text: string,
     options?: { mode?: SendMode; images?: PromptImage[]; promptOrigin?: string },
+  ) => Promise<boolean>;
+  /** Managed attachment turns bypass command routing and never enter streaming queues. */
+  sendAttachmentPrompt: (
+    tabId: string,
+    text: string,
+    dispatch: () => Promise<boolean | AttachmentPromptResult | null>,
   ) => Promise<boolean>;
   /** `clearQueue` then `abort`, restoring the queued text into the draft. */
   stopRun: (tabId: string) => Promise<void>;
@@ -3475,6 +3488,35 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
+  reconcileAttachmentSubmission: async (tabId, result) => {
+    if (result.outcome !== "accepted" && result.outcome !== "uncertain") return;
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      const response = (await api.sessions.request({
+        tabId,
+        method: "messages.get",
+        params: { attachmentTurnId: result.turnId },
+      })) as { attachmentCard?: unknown };
+      if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
+      const card = validateAttachmentTranscriptCard(response.attachmentCard);
+      if (
+        !card ||
+        card.turnId !== result.turnId ||
+        (result.outcome === "accepted" && card.userEntryId !== result.userEntryId)
+      )
+        return;
+      const transcript = get().transcripts[tabId];
+      if (!transcript) return;
+      const reconciled = applyAttachmentTranscriptCard(transcript, card);
+      if (reconciled !== transcript) {
+        set({ transcripts: { ...get().transcripts, [tabId]: reconciled } });
+      }
+    } catch {
+      // History hydration remains authoritative; reconciliation is best-effort.
+    }
+  },
+
   abortTab: async (tabId) => {
     const api = bridge();
     if (!api?.sessions) return;
@@ -4316,6 +4358,60 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
    * The send path (plan step 7): a leading `/` is resolved before anything is
    * sent, so an unknown command becomes a hint instead of a literal prompt.
    */
+  sendAttachmentPrompt: async (tabId, text, dispatch) => {
+    const trimmed = text.trim();
+    const tab = get().tabs.find((entry) => entry.id === tabId);
+    if (!tab || !bridge()?.attachments) return false;
+    const sessionState = get().sessionStates[tabId] as
+      { streaming?: unknown; compacting?: unknown; retrying?: unknown } | undefined;
+    if (
+      tab.status === "running" ||
+      sessionState?.streaming === true ||
+      sessionState?.compacting === true ||
+      sessionState?.retrying === true
+    ) {
+      set({ hint: "Files can only be sent while the session is idle; they are not queued." });
+      return false;
+    }
+    if (
+      parseWorkflowStatus(get().extensionUi[tabId]?.statuses?.workflow ?? null)?.mode === "review"
+    ) {
+      set({ hint: "Review in progress — file attachments cannot be sent during review." });
+      return false;
+    }
+    if (trimmed.startsWith("/") || isShellCommand(trimmed)) {
+      set({
+        hint: "Commands cannot consume selected files. Send a normal prompt or remove the files.",
+      });
+      return false;
+    }
+    const previous = get().prefs.drafts[tabId] ?? "";
+    const sequence = beginDraftSend(tabId);
+    get().setDraft(tabId, "");
+    rememberDraft(tabId, trimmed);
+    const ready = await get().ensureSession(tabId, { force: true });
+    if (!ready) {
+      restoreDraftAfterRefusal(tabId, previous, sequence);
+      return false;
+    }
+    try {
+      const result = await dispatch();
+      const accepted =
+        result === true || (typeof result === "object" && result?.outcome === "accepted");
+      if (typeof result === "object" && result !== null) {
+        await get().reconcileAttachmentSubmission(tabId, result);
+      }
+      if (accepted) return true;
+      restoreDraftAfterRefusal(tabId, previous, sequence);
+      set({ hint: "Files were not sent. Review the attachment tray for the blocking reason." });
+      return false;
+    } catch (error) {
+      restoreDraftAfterRefusal(tabId, previous, sequence);
+      get().noteFailure(error);
+      return false;
+    }
+  },
+
   sendPrompt: async (tabId, text, options = {}) => {
     const trimmedInput = text.trim();
     // Immediate UI refusal; `sendPromptNow` repeats it as the final backstop.
