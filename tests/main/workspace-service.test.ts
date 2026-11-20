@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { WorkspaceNodeIo } from "../../src/main/workspace-io";
@@ -35,9 +35,9 @@ function fakeIo(initial: Record<string, FakeNode> = {}): WorkspaceNodeIo & {
 
   const children = (directory: string): string[] => {
     const base = normalize(directory);
-    const prefix = `${base}\\`;
+    const prefix = `${base}${sep}`;
     return [...nodes.keys()]
-      .filter((path) => path.startsWith(prefix) && !path.slice(prefix.length).includes("\\"))
+      .filter((path) => path.startsWith(prefix) && !path.slice(prefix.length).includes(sep))
       .map((path) => path.slice(prefix.length));
   };
 
@@ -47,7 +47,7 @@ function fakeIo(initial: Record<string, FakeNode> = {}): WorkspaceNodeIo & {
     async realpath(target) {
       const key = normalize(target);
       const exists =
-        nodes.has(key) || [...nodes.keys()].some((path) => path.startsWith(`${key}\\`));
+        nodes.has(key) || [...nodes.keys()].some((path) => path.startsWith(`${key}${sep}`));
       return exists ? key : null;
     },
     async readDirectory(directory) {
@@ -88,7 +88,7 @@ function fakeIo(initial: Record<string, FakeNode> = {}): WorkspaceNodeIo & {
     async remove(target) {
       const key = normalize(target);
       for (const path of [...nodes.keys()]) {
-        if (path === key || path.startsWith(`${key}\\`)) nodes.delete(path);
+        if (path === key || path.startsWith(`${key}${sep}`)) nodes.delete(path);
       }
       return true;
     },
@@ -121,7 +121,7 @@ function fakeIo(initial: Record<string, FakeNode> = {}): WorkspaceNodeIo & {
     async trash(target) {
       const key = normalize(target);
       for (const path of [...nodes.keys()]) {
-        if (path === key || path.startsWith(`${key}\\`)) nodes.delete(path);
+        if (path === key || path.startsWith(`${key}${sep}`)) nodes.delete(path);
       }
       return true;
     },

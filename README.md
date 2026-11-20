@@ -2,16 +2,27 @@
 
 <img src="assets/pi-desktop-logo-full.svg" alt="pi — PI DESKTOP" width="440">
 
+[Website](https://dieuluucanh.github.io/pi-desktop/) ·
+[Installation](https://dieuluucanh.github.io/pi-desktop/#installation) ·
+[Documentation](https://dieuluucanh.github.io/pi-desktop/docs/) ·
+[Release notes](https://dieuluucanh.github.io/pi-desktop/releases/v0.11.0/)
+
 A desktop app for the [Pi coding agent](https://pi.dev) — no terminal, no global
 installs. Projects, sessions, chat, providers, models, extensions, packages,
 skills, themes and settings are managed through a UI, using the **same
 `~/.pi/agent` profile as terminal Pi**, so the two are interchangeable.
 
-> **Status:** v0.5.0 — the first public release. Windows, Linux and macOS
-> installers are built and published from CI on a version tag. The Windows
-> installer is the primary artefact; macOS and Linux are beta, and builds are
-> unsigned. Known limitations and the deferred backlog are recorded in
-> [docs/releases/v0.5.0.md](docs/releases/v0.5.0.md) and
+> **Status:** v0.11.0 — the tenth public release, a workflow-parity release. Extension
+> dialogs take the keyboard wherever focus is and keep the title's real lines; Review Mode
+> paints one extension-owned line below the todo panel; the Workflow todo panel gains a
+> native control bar in every mode; the terminal pages an alternate screen on the wheel
+> instead of turning it into prompt history; paste reaches the questionnaire's own editor;
+> closed web tabs return to the opening session; app offers are derived from live state;
+> and the sidebar's Projects header stays pinned. The bundled Pi SDK is 1.5.0. Windows,
+> Linux and macOS installers are built and published from CI on a version tag; Windows is
+> the primary artefact, macOS and Linux are beta, and builds are unsigned. Known
+> limitations and the deferred backlog are recorded in
+> [docs/releases/v0.11.0.md](docs/releases/v0.11.0.md) and
 > [docs/product/backlog.md](docs/product/backlog.md).
 >
 > **Pi for Office is an optional integration.** It installs from Extensions →
@@ -33,6 +44,10 @@ skills, themes and settings are managed through a UI, using the **same
   `Esc` to stop, retry/compaction status with cancel, `!`/`!!` shell commands,
   transcript find (`Ctrl+F`), paste markers, `Ctrl+G` expanded editor, Mermaid
   and LaTeX, usage and cost.
+- **Integrated terminal** — a real PTY-backed shell in a tab (PowerShell 7,
+  Windows PowerShell, cmd, Git Bash and WSL on Windows; `$SHELL` elsewhere), with
+  scrollback that survives tab switches, copy-on-selection, shell-key ownership,
+  theme-matched colours, terminal settings and a one-off profile menu.
 - **Context and commands** — `/` commands (app, extension, prompt, skill), `@`
   files, image paste/drop, `#` Office document mentions, plus `/session`,
   `/copy`, `/import`, `/export jsonl`, `/share`, `/bug`, `/changelog`,
@@ -60,7 +75,8 @@ The feature-by-feature comparison with terminal Pi (including the explicit
 
 ## Install
 
-Download the installer for your platform from GitHub Releases. The Windows NSIS
+Download the installer for your platform from the [website](https://dieuluucanh.github.io/pi-desktop/#installation)
+or [GitHub Releases](https://github.com/dieuluucanh/pi-desktop/releases). The Windows NSIS
 installer and portable `.exe` are the primary artefacts; macOS `.dmg`/`.zip`
 (arm64 + x64) and Linux AppImage/`.deb` (x64 + arm64) are beta. Builds are
 unsigned, so SmartScreen/Gatekeeper will warn on first launch (instructions in
@@ -68,16 +84,17 @@ the guide, including the macOS approval steps and the Linux FUSE and apt notes).
 macOS updates are download-only for now — see the release notes.
 
 Installed release builds check GitHub Releases in the background. When a newer
-version exists, the status bar shows a small **Update vX** chip; Download and
-**Restart & install** live in **Settings → About & updates**. Locally built
-packages are stamped `local`, skip automatic checks, and say so in that card.
+version exists, the app raises a notification in the bell and marks **About &
+updates** in the sidebar; Download and **Restart & install** live in that view.
+Locally built packages are stamped `local`, skip automatic checks, and say so
+there.
 
 ## Develop
 
 ```bash
 npm ci
 npm run runtime:fetch      # bundled Node + npm + shims (~37 MB, not committed)
-npm run dev                # Electron with main/preload + host watch and the renderer dev server
+npm run dev                # Electron + watch builds; renderer dev server on 127.0.0.1:5273
 ```
 
 Gates (run before every commit; CI runs the same set):
@@ -108,10 +125,15 @@ src/shared/          types, constants and the single IPC allowlist
 packages/checkpoints/  the publishable @dieulc/checkpoints package
 resources/           vendored Office manifest, fetched Node/npm runtime
 tests/               vitest (node project + jsdom renderer project) and Playwright E2E
+site/                the public Astro/Starlight site and docs build (separate lockfile)
 docs/                product/parity + backlog, the user guide, releases and the architecture docs
 ```
 
 ## Docs
+
+The same docs are published at
+[dieluucanh.github.io/pi-desktop/docs](https://dieuluucanh.github.io/pi-desktop/docs/);
+the Markdown in `docs/` remains the source.
 
 - **User guide** — [docs/guide/](docs/guide/) (getting started, projects,
   sessions and tabs, providers, models, extensions and packages, settings,
@@ -120,7 +142,7 @@ docs/                product/parity + backlog, the user guide, releases and the 
   host protocol + RPC mapping, extension UI host + TUI surface, Office
   integration, runtime, pinned versions).
 - **Parity** — [docs/product/parity.md](docs/product/parity.md).
-- **Release notes** — [docs/releases/v0.4.0.md](docs/releases/v0.4.0.md)
+- **Release notes** — [docs/releases/v0.11.0.md](docs/releases/v0.11.0.md)
   (install table, known limitations, verification status).
 - **Backlog** — [docs/product/backlog.md](docs/product/backlog.md).
 - **Contributing** — [CONTRIBUTING.md](CONTRIBUTING.md) and

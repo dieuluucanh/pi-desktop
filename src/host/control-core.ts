@@ -21,6 +21,14 @@ import { createThemeHandlers, THEME_METHODS, type ThemePort } from "./themes";
 import { resolveListedSession, SessionFileError } from "./session-files";
 import { createSettingsHandlers, SETTINGS_METHODS, type SettingsPort } from "./settings";
 import type { HostHandler } from "./service";
+import {
+  parseSessionListQuery,
+  projectSessionListPage,
+  sanitizeSessionList,
+  type SessionListEntry,
+  type SessionListPage,
+  type SessionListQuery,
+} from "../shared/session-browser";
 
 /**
  * The control core (plan step 3, decision D-A3).
@@ -43,6 +51,15 @@ export interface ControlCoreDeps {
   settings: SettingsPort;
   /** Lists every session of the profile (all projects), for the session browser. */
   listSessions(): Promise<unknown[]>;
+  /**
+   * Answers `session.list` with a filtered, sorted, bounded page (session
+   * browser fix). The full listing above stays the authority for delete/rename
+   * validation; without this port the control host projects the same page from
+   * `listSessions()` locally — it never returns raw `SessionInfo[]`.
+   */
+  listSessionPage?(query: SessionListQuery): Promise<SessionListPage<SessionListEntry>>;
+  /** Drops any cached session listing (the control host's shutdown path). */
+  disposeCatalog?(): void;
   /**
    * The Extensions hub's loader source (plan step 13). Optional like the other
    * ports: a control host without it answers `resources.list` with
@@ -124,7 +141,17 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
 
     handlers: () => ({
       ...createSettingsHandlers({ resolvePort: () => deps.settings }).handlers(),
-      "session.list": async () => ({ sessions: await deps.listSessions() }),
+      "session.list": async (params) => {
+        const query = parseSessionListQuery(params);
+        if (deps.listSessionPage) return deps.listSessionPage(query);
+        // A host without a catalog still answers the same projected shape: the
+        // query filters/sorts the rows and the byte budget keeps the page under
+        // the spill threshold. The full text stays here so search is complete.
+        const sessions = sanitizeSessionList(await deps.listSessions(), {
+          maxTextChars: Number.MAX_SAFE_INTEGER,
+        });
+        return projectSessionListPage(sessions, query);
+      },
       // Validation only: the app performs the recoverable delete with the OS
       // trash API, which a host process does not have (see `session-files.ts`).
       "session.delete": async (params) =>
@@ -197,6 +224,7 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
       } catch {
         // Intentionally ignored: the write path already surfaces its own errors.
       }
+      deps.disposeCatalog?.();
     },
   };
 }

@@ -8,14 +8,20 @@
  *   `#…`                                    → open Office documents
  *   Tab (`force`) on a path-shaped token     → workspace files
  *
+ * A `!` / `!!` line is a shell command and has **no built-in source**: it is
+ * never a `/` command, an `@` mention, a `#` document or a forced file list.
+ * That matches terminal Pi, which has no shell autocomplete provider. The
+ * extension chain still runs after the built-ins and may answer `!` itself.
+ *
  * Extension providers are not merged into that decision. They are applied as
  * **wrappers** in registration order — Pi's own
  * `addAutocompleteProvider((current) => …)` shape — so an extension sees every
  * keystroke first, may answer it, and may delegate to us when it has nothing.
  * That is what makes host-forwarded providers (step 16) behave exactly like they
- * do in the terminal.
+ * do in the terminal, including an extension that opts into `!` completion.
  */
 
+import { isShellCommand } from "../../../shared/shell-command";
 import { tokenAtCursor } from "./token";
 import {
   applyCompletionInPlace,
@@ -26,12 +32,10 @@ import {
   createExtensionCompletionProvider,
   type ExtensionCompletionBridge,
 } from "./extension-source";
-import { isShellLine } from "./shell-source";
 
 export interface CompletionStackOptions {
   command?: CompletionProvider | null;
   file?: CompletionProvider | null;
-  shell?: CompletionProvider | null;
   document?: CompletionProvider | null;
   /**
    * Host-run extension providers (plan step 16). The factories live in the host
@@ -53,7 +57,7 @@ export function createCompletionProvider(options: CompletionStackOptions = {}): 
 export function createBaseProvider(options: CompletionStackOptions): CompletionProvider {
   return {
     id: "pi-desktop-completion",
-    triggerCharacters: ["/", "!", "@", "#"],
+    triggerCharacters: ["/", "@", "#"],
     async getSuggestions(lines, cursorLine, cursorCol, completionOptions) {
       const provider = selectProvider(
         options,
@@ -74,6 +78,10 @@ export function createBaseProvider(options: CompletionStackOptions): CompletionP
     },
     applyCompletion: applyCompletionInPlace,
     shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+      // Deliberately permissive on a shell line: the base provider returns
+      // null there, but Tab must still reach an extension that opts into `!`
+      // completion. Do not turn this into a shell-line guard.
+      //
       // A `/` command line is never a file path — including its argument
       // section, where Tab asks the command hook again (Pi parity).
       if (cursorLine === 0 && (lines[0] ?? "").startsWith("/")) return false;
@@ -97,6 +105,10 @@ export function applyProviderFactories(
   return current;
 }
 
+function isShellBuffer(lines: readonly string[]): boolean {
+  return isShellCommand(lines.join("\n"));
+}
+
 function selectProvider(
   options: CompletionStackOptions,
   lines: readonly string[],
@@ -106,9 +118,9 @@ function selectProvider(
 ): CompletionProvider | null {
   const token = tokenAtCursor(lines, cursorLine, cursorCol).query;
 
-  // A `!` line is a shell command, never a `/` command or an `@` mention. The
-  // shell provider completes workspace paths after the command word.
-  if (isShellLine(lines, cursorLine)) return options.shell ?? null;
+  // A `!`/`!!` buffer is a shell command and has no built-in source. Returning
+  // null here still lets the extension wrapper answer it after the built-ins.
+  if (isShellBuffer(lines)) return null;
 
   // A `/` on the first line is always a command line (name or arguments),
   // never a path. Checking the whole line matters after the first space: the

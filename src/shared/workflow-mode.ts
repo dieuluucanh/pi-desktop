@@ -28,11 +28,29 @@ import { stripAnsi } from "./ansi";
  * `default` is the extension's "workflow off" state (it renders `◦ …`); it is a
  * real mode with an explicit neutral presentation, not an unknown value.
  */
-export const WORKFLOW_MODES = ["plan", "build", "default"] as const;
+export const WORKFLOW_MODES = ["plan", "build", "default", "review"] as const;
 export type WorkflowMode = (typeof WORKFLOW_MODES)[number];
+
+export type ReviewPhase = "running" | "paused" | "handoff";
+
+/** The extension status key that carries the live Review line. */
+export const WORKFLOW_REVIEW_STATUS_KEY = "workflow-review";
+
+/**
+ * Canonical Review line fragments. These mirror `@dieulc/workflow`'s
+ * `review.ts`; the extension's status is authoritative when it is present, and
+ * these values are the tolerant fallback for an older extension.
+ */
+export const REVIEW_RUNNING_HINT = "ESC or /review-pause to pause · /review-abort to stop";
+export const REVIEW_RUNNING_LINE = `🔍 Reviewing plan… · ${REVIEW_RUNNING_HINT}`;
+export const REVIEW_PAUSED_LINE =
+  "⏸ Review paused — /review-resume to continue, /review-abort to stop";
+export const REVIEW_HANDOFF_LINE = "🔍 review · awaiting decision — /review-abort to skip";
 
 export interface WorkflowModeView {
   mode: WorkflowMode;
+  /** The exclusive Review turn when `mode === "review"`. */
+  reviewPhase: ReviewPhase | null;
   /**
    * True while the plan is under review in the browser (`⏸ plan — reviewing
    * in browser`). This is a sub-state of Plan, not a mode: it must never
@@ -62,6 +80,8 @@ const PROGRESS = /(\d+)\s*\/\s*(\d+)/;
  */
 const BUILD_STATUS = /^\u25b6\s*build\b/; // ▶ build
 const PLAN_STATUS = /^\u23f8\s*plan\b/; // ⏸ plan
+/** Review owns the turn: `🔍 review`, `🔍 review — paused`. */
+const REVIEW_STATUS = /^\u{1F50D}\s*review\b/u;
 /** Default (workflow off): `◦ 3/8` or `◦ commits:never`. */
 const DEFAULT_STATUS = /^\u25e6\s*(?:\d+\s*\/\s*\d+|commits\b)/;
 
@@ -94,18 +114,27 @@ export function parseWorkflowStatus(text: string | null | undefined): WorkflowMo
 
   const progress = progressOf(plain);
 
+  if (REVIEW_STATUS.test(plain)) {
+    const reviewPhase: ReviewPhase = /—\s*paused\b/i.test(plain)
+      ? "paused"
+      : /—\s*awaiting decision\b/i.test(plain)
+        ? "handoff"
+        : "running";
+    return { mode: "review", reviewPhase, browserReview: false, ...progress };
+  }
   if (BUILD_STATUS.test(plain)) {
-    return { mode: "build", browserReview: false, ...progress };
+    return { mode: "build", reviewPhase: null, browserReview: false, ...progress };
   }
   if (PLAN_STATUS.test(plain)) {
     return {
       mode: "plan",
+      reviewPhase: null,
       browserReview: plain.includes(REVIEWING_MARKER),
       ...progress,
     };
   }
   if (DEFAULT_STATUS.test(plain)) {
-    return { mode: "default", browserReview: false, ...progress };
+    return { mode: "default", reviewPhase: null, browserReview: false, ...progress };
   }
   return null;
 }
@@ -122,6 +151,7 @@ export function workflowBorderClass(mode: WorkflowModeView | null): string {
   if (!mode) return "border-line";
   if (mode.mode === "build") return "border-accent";
   if (mode.mode === "plan") return "border-warn";
+  if (mode.mode === "review") return "border-info";
   return "border-line";
 }
 
@@ -135,6 +165,7 @@ export function workflowBadgeClass(mode: WorkflowModeView | null): string {
   if (!mode) return "text-ink-faint";
   if (mode.mode === "build") return "text-accent";
   if (mode.mode === "plan") return "text-warn";
+  if (mode.mode === "review") return "text-info";
   return "text-ink-faint";
 }
 
@@ -149,6 +180,7 @@ export function workflowModeLabel(mode: WorkflowModeView | null): string | null 
   if (!mode) return null;
   if (mode.mode === "build") return "Build";
   if (mode.mode === "plan") return "Plan";
+  if (mode.mode === "review") return "Review";
   return "Default";
 }
 
@@ -167,4 +199,60 @@ export function statusLineText(text: string | null | undefined): string {
     .replace(/ +/g, " ")
     .trim();
   return plain.length > MAX_STATUS_CHARS ? `${plain.slice(0, MAX_STATUS_CHARS - 1)}…` : plain;
+}
+
+/** A status with only ANSI/whitespace is absent. */
+function hasVisibleReviewText(text: string | null | undefined): text is string {
+  return typeof text === "string" && stripAnsi(text).trim().length > 0;
+}
+
+/** Append the shared running hints unless the line already names the command. */
+function withRunningHints(text: string): string {
+  return text.includes("/review-pause") ? text : `${text} · ${REVIEW_RUNNING_HINT}`;
+}
+
+/**
+ * Resolve the one live Review line the desktop row renders.
+ *
+ * The extension's `workflow-review` status is authoritative: it already carries
+ * the phase detail and the command hints, and its ANSI colour is preserved.
+ * Older extensions (or a host that only sends the working message) fall back to
+ * the canonical line for the phase, with the missing hints appended so the row
+ * never loses the command affordances. A marker-less status (for example a lone
+ * `🔒 modes locked`) is treated as absent.
+ */
+export function reviewLineText(input: {
+  phase: ReviewPhase;
+  status?: string | null;
+  workingMessage?: string | null;
+}): string {
+  const visibleStatus = hasVisibleReviewText(input.status) ? input.status : null;
+  const status =
+    visibleStatus !== null && (visibleStatus.includes("🔍") || visibleStatus.includes("⏸"))
+      ? visibleStatus
+      : null;
+
+  if (status) {
+    if (input.phase === "paused" && !status.includes("/review-abort")) {
+      return REVIEW_PAUSED_LINE;
+    }
+    if (input.phase === "handoff" && !status.includes("/review-abort")) {
+      return REVIEW_HANDOFF_LINE;
+    }
+    if (
+      input.phase === "running" &&
+      !status.includes("/review-pause") &&
+      !/applying the decision/i.test(status)
+    ) {
+      return withRunningHints(status);
+    }
+    return status;
+  }
+
+  const working = hasVisibleReviewText(input.workingMessage) ? input.workingMessage : null;
+  if (input.phase === "running") {
+    return working ? withRunningHints(working) : REVIEW_RUNNING_LINE;
+  }
+  if (input.phase === "paused") return REVIEW_PAUSED_LINE;
+  return REVIEW_HANDOFF_LINE;
 }

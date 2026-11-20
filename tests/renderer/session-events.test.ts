@@ -243,6 +243,28 @@ describe("queue and notices", () => {
     expect(notices[2]).toMatchObject({ severity: "error", detail: "kaboom" });
   });
 
+  it('keeps one "Session started" row per session, not per host recycle', () => {
+    // 2026-11-06 plan, step 15: idle/RSS/stale-build recycles resumed the same
+    // session and each one appended the notice again.
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "session_started", payload: { sessionId: "s1", reason: "new" } },
+      { event: "session_started", payload: { sessionId: "s1", reason: "resume" } },
+      { event: "session_started", payload: { sessionId: "s1", reason: "reload" } },
+    ]);
+
+    expect(items(state).filter((item) => item.kind === "notice")).toHaveLength(1);
+    expect(state.lastStartedSessionId).toBe("s1");
+  });
+
+  it("announces a different session as a new boundary", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "session_started", payload: { sessionId: "s1", reason: "new" } },
+      { event: "session_started", payload: { sessionId: "s2", reason: "new" } },
+    ]);
+
+    expect(items(state).filter((item) => item.kind === "notice")).toHaveLength(2);
+  });
+
   it("turns oi.notify into a transcript notice with the full message and severity", () => {
     const state = reduceSessionEvents(createTranscriptState(), [
       { event: "oi.notify", payload: { message: "line one\nline two", type: "warning" } },
@@ -262,7 +284,7 @@ describe("queue and notices", () => {
     expect(notices[2]).toMatchObject({ severity: "error", text: "failed" });
   });
 
-  it("keeps only one transcript row for an identical repeated oi.notify", () => {
+  it("collapses only an immediately repeated identical oi.notify", () => {
     const state = reduceSessionEvents(createTranscriptState(), [
       { event: "oi.notify", payload: { message: "same warning", type: "warning" } },
       { event: "oi.notify", payload: { message: "same warning", type: "warning" } },
@@ -271,6 +293,38 @@ describe("queue and notices", () => {
     ]);
     const notices = items(state).filter((item) => item.kind === "notice");
     expect(notices).toHaveLength(3);
+  });
+
+  it("appends the same notice again after other transcript content", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "oi.notify", payload: { message: "same", type: "info" } },
+      {
+        event: "message_end",
+        payload: { message: { id: "m1", role: "assistant", content: "ok" } },
+      },
+      { event: "oi.notify", payload: { message: "same", type: "info" } },
+    ]);
+    const notices = items(state).filter((item) => item.kind === "notice");
+    expect(notices).toHaveLength(2);
+  });
+
+  it("appends the same notice after a different notice", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "oi.notify", payload: { message: "same", type: "info" } },
+      { event: "oi.notify", payload: { message: "other", type: "info" } },
+      { event: "oi.notify", payload: { message: "same", type: "info" } },
+    ]);
+    const notices = items(state).filter((item) => item.kind === "notice");
+    expect(notices).toHaveLength(3);
+  });
+
+  it("keeps a same-text notice with a different severity", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      { event: "oi.notify", payload: { message: "same", type: "info" } },
+      { event: "oi.notify", payload: { message: "same", type: "warning" } },
+    ]);
+    const notices = items(state).filter((item) => item.kind === "notice");
+    expect(notices).toHaveLength(2);
   });
 
   it("renders compaction as a card, a cancellation, and a failure", () => {
@@ -798,6 +852,22 @@ describe("aborted tool runs", () => {
 
     state = reduceSessionEvents(state, [fixtures.agentEnd()]);
     expect(state.items.filter((item) => item.kind === "tool")).toHaveLength(1);
+  });
+
+  it("sweeps running tools on SDK 1.5.0's aborted agent_settled", () => {
+    // 1.5.0 reports `agent_settled: { aborted: true }` when a run is cancelled
+    // before the tool produced an end event. The card must stop spinning even if
+    // no `agent_end` reached the renderer.
+    const state = reduceSessionEvents(createTranscriptState(), [
+      fixtures.toolStart("call-1", "read", { path: "note.txt" }),
+      event("agent_settled", { aborted: true }),
+    ]);
+    const tool = state.items.find((item) => item.kind === "tool");
+    expect(tool?.kind === "tool" ? tool.tool : null).toMatchObject({
+      done: true,
+      cancelled: true,
+    });
+    expect(state.runStartedAt).toBeNull();
   });
 });
 

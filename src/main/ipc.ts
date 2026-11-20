@@ -40,6 +40,15 @@ import {
 import type { DiagnosticsSaveResult } from "../shared/ipc";
 import type { UpdateState } from "../shared/updates";
 import { isTrustAnswer } from "../shared/projects";
+import {
+  isTerminalId,
+  isTerminalSize,
+  type TerminalAttachResult,
+  type TerminalInfo,
+} from "../shared/terminal-protocol";
+import type { TerminalCreateInput, TerminalCreateOutcome } from "../shared/terminal-ipc";
+import type { TerminalProfileSnapshot } from "../shared/terminal-profiles";
+import { isTerminalProfileId } from "../shared/terminal-prefs";
 import type { OfficeBridgeControlResult, OfficeStopResult } from "../shared/office-bridge";
 import type {
   EditorBackup,
@@ -121,6 +130,8 @@ export interface IpcSessionDeps {
   /** Makes one tab the single Office host (plan step 20). */
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Wakes the host/session without moving the selection. */
+  ensure(tabId: string): Promise<SessionTabsEnvelope>;
   /** Declares the tabs the renderer shows; advisory, parks and spawns nothing. */
   setVisibleTabs(ids: readonly string[]): void;
   /** Clears the active tab without closing or stopping any host. */
@@ -130,6 +141,8 @@ export interface IpcSessionDeps {
   restore(): Promise<SessionTabsEnvelope>;
   /** Stops and re-spawns a tab's host, resuming its session (plan step 22). */
   restart(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Stops a tab's host without closing it; the next activation resumes. */
+  stop(tabId: string): Promise<SessionTabsEnvelope>;
   request(input: { tabId: string; method: HostMethod; params?: unknown }): Promise<unknown>;
   /**
    * Deletes a session file to the OS trash (plan step 11). The session service's
@@ -137,6 +150,32 @@ export interface IpcSessionDeps {
    * implementation (this layer only validates the argument shape).
    */
   deleteSession(sessionFile: string): Promise<SessionDeleteResult>;
+}
+
+/**
+ * The per-window terminal surface. `windowId` is the WebContents id, so one
+ * window's terminals can never be addressed from another window.
+ */
+export interface IpcTerminalDeps {
+  create(windowId: number, input: TerminalCreateInput): Promise<TerminalCreateOutcome>;
+  attach(windowId: number, terminalId: string): Promise<TerminalAttachResult | null>;
+  write(windowId: number, terminalId: string, data: string): Promise<void>;
+  resize(windowId: number, terminalId: string, cols: number, rows: number): Promise<void>;
+  close(windowId: number, terminalId: string): Promise<boolean>;
+  ack(windowId: number, terminalId: string, bytes: number): void;
+  list(windowId: number): Promise<TerminalInfo[]>;
+  profiles(windowId: number, force: boolean): Promise<TerminalProfileSnapshot>;
+  /** Suppresses menu accelerators while a terminal has focus (Windows/Linux). */
+  setFocus(windowId: number, focused: boolean): void;
+}
+
+export interface IpcTuiDeps {
+  /**
+   * Records (or clears, with `null`) the extension TUI tab that owns a window's
+   * keyboard. The menu and context-menu Paste read it to decide whether the
+   * renderer or `webContents.paste()` performs the gesture.
+   */
+  setFocus(windowId: number, tabId: string | null): void;
 }
 
 export interface IpcDependencies {
@@ -163,6 +202,10 @@ export interface IpcDependencies {
     set: (patch: unknown) => Promise<UiPrefs>;
   };
   sessions: IpcSessionDeps;
+  /** Native terminal surface (2026-11-05 terminal plan). */
+  terminal: IpcTerminalDeps;
+  /** Extension TUI surface focus (2026-11-18 questionnaire paste plan). */
+  tui: IpcTuiDeps;
   /** Projects and workspace management (plan step 10). */
   projects: {
     get(): Promise<ProjectsSnapshot>;
@@ -278,6 +321,8 @@ export interface IpcDependencies {
 }
 
 const MAX_TITLE_LENGTH = 200;
+/** One tab id from the renderer's TUI focus ping. */
+const MAX_TUI_TAB_ID_LENGTH = 128;
 
 /** Pushes a main → renderer event to every live window. */
 export function broadcastToWindows(channel: string, payload: unknown): void {
@@ -528,7 +573,7 @@ function parseProjectSettingsToggle(value: unknown): ProjectSettingsToggleInput 
 }
 
 /** Validates the `web:open` input: a permitted URL, an optional folder and link. */
-function parseWebOpen(value: unknown): WebTabOpenInput {
+export function parseWebOpen(value: unknown): WebTabOpenInput {
   const record = asRecord(value);
   const url = sanitizeWebUrl(record.url);
   if (!url) throw new Error("web: a permitted http(s) URL is required");
@@ -537,6 +582,10 @@ function parseWebOpen(value: unknown): WebTabOpenInput {
   if (typeof record.sessionTabId === "string" && record.sessionTabId.length > 0) {
     input.sessionTabId = record.sessionTabId;
   }
+  // These were previously dropped, so a tool-result URL opened in the
+  // foreground and a reused review URL could not be reloaded.
+  if (typeof record.activate === "boolean") input.activate = record.activate;
+  if (typeof record.reload === "boolean") input.reload = record.reload;
   return input;
 }
 
@@ -567,6 +616,21 @@ function parseCreateTab(value: unknown): CreateTabInput {
   }
   const input: CreateTabInput = { cwd };
   if (isTabKind(kind)) input.kind = kind;
+  if (record.activate !== undefined) {
+    if (typeof record.activate !== "boolean") {
+      throw new Error("session: activate must be a boolean");
+    }
+    input.activate = record.activate;
+  }
+  if (record.profileId !== undefined && record.profileId !== null) {
+    if (kind !== "terminal") {
+      throw new Error("session: profileId is only valid for a terminal tab");
+    }
+    if (!isTerminalProfileId(record.profileId)) {
+      throw new Error("session: invalid terminal profile id");
+    }
+    input.profileId = record.profileId;
+  }
   if (kind === "editor") {
     if (typeof record.filePath !== "string" || !isWorkspaceRelativePath(record.filePath)) {
       throw new Error("session: an editor tab requires a project-relative file");
@@ -585,6 +649,76 @@ function parseCreateTab(value: unknown): CreateTabInput {
     input.trust = record.trust;
   }
   return input;
+}
+
+export function parseTerminalCreateInput(value: unknown): TerminalCreateInput {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const tabId = record.tabId;
+  if (typeof tabId !== "string" || tabId.length === 0) {
+    throw new Error("terminal: a tab id is required");
+  }
+  if (!isTerminalSize(record.cols, record.rows)) {
+    throw new Error("terminal: invalid terminal size");
+  }
+  const profileId = record.profileId;
+  if (profileId !== undefined && profileId !== null && !isTerminalProfileId(profileId)) {
+    throw new Error("terminal: invalid profile id");
+  }
+  const trust = isTrustAnswer(record.trust) ? record.trust : undefined;
+  return {
+    tabId,
+    cols: record.cols as number,
+    rows: record.rows as number,
+    ...(typeof profileId === "string" ? { profileId } : {}),
+    ...(trust ? { trust } : {}),
+  };
+}
+
+function parseTerminalId(value: unknown): string {
+  if (!isTerminalId(value)) throw new Error("terminal: invalid terminal id");
+  return value;
+}
+
+function parseTerminalWrite(value: unknown): { terminalId: string; data: string } {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const terminalId = parseTerminalId(record.terminalId);
+  if (typeof record.data !== "string") throw new Error("terminal: invalid input");
+  return { terminalId, data: record.data };
+}
+
+function parseTerminalResize(value: unknown): { terminalId: string; cols: number; rows: number } {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const terminalId = parseTerminalId(record.terminalId);
+  if (!isTerminalSize(record.cols, record.rows)) throw new Error("terminal: invalid size");
+  return { terminalId, cols: record.cols as number, rows: record.rows as number };
+}
+
+function parseTerminalAck(value: unknown): { terminalId: string; bytes: number } {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const terminalId = parseTerminalId(record.terminalId);
+  const bytes = record.bytes;
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= 0) {
+    throw new Error("terminal: invalid credit");
+  }
+  return { terminalId, bytes };
+}
+
+/**
+ * A `tui:focus` frame. A malformed frame is dropped instead of clearing another
+ * tab's focus, because a wrong clear would silently disable menu Paste.
+ */
+function parseTuiFocus(value: unknown): { tabId: string; focused: boolean } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.focused !== "boolean") return null;
+  if (
+    typeof record.tabId !== "string" ||
+    record.tabId.length === 0 ||
+    record.tabId.length > MAX_TUI_TAB_ID_LENGTH
+  ) {
+    return null;
+  }
+  return { tabId: record.tabId, focused: record.focused };
 }
 
 export function registerIpcHandlers(deps: IpcDependencies): void {
@@ -648,6 +782,9 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.sessionActivate, (_event, tabId: unknown) =>
     deps.sessions.activate(requireTabId(deps, tabId)),
   );
+  ipcMain.handle(IPC.sessionEnsure, (_event, tabId: unknown) =>
+    deps.sessions.ensure(requireTabId(deps, tabId)),
+  );
   ipcMain.handle(IPC.sessionDeactivate, () => deps.sessions.deactivate());
   ipcMain.handle(IPC.sessionSetVisible, (_event, ids: unknown) => {
     // Advisory by design: a close or a drop races this push, so an unknown id or
@@ -658,6 +795,9 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.sessionRestart, (_event, tabId: unknown) =>
     deps.sessions.restart(requireTabId(deps, tabId)),
   );
+  ipcMain.handle(IPC.sessionStop, (_event, tabId: unknown) =>
+    deps.sessions.stop(requireTabId(deps, tabId)),
+  );
   ipcMain.handle(IPC.sessionRequest, (_event, input: unknown) =>
     deps.sessions.request(parseSessionRequest(deps, input)),
   );
@@ -666,6 +806,48 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
       return { ok: false, error: "session: a session file is required" } as SessionDeleteResult;
     }
     return deps.sessions.deleteSession(sessionFile);
+  });
+
+  ipcMain.handle(IPC.terminalCreate, (event, input: unknown) =>
+    deps.terminal.create(event.sender.id, parseTerminalCreateInput(input)),
+  );
+  ipcMain.handle(IPC.terminalAttach, (event, terminalId: unknown) =>
+    deps.terminal.attach(event.sender.id, parseTerminalId(terminalId)),
+  );
+  ipcMain.handle(IPC.terminalWrite, (event, input: unknown) => {
+    const parsed = parseTerminalWrite(input);
+    return deps.terminal.write(event.sender.id, parsed.terminalId, parsed.data);
+  });
+  ipcMain.handle(IPC.terminalResize, (event, input: unknown) => {
+    const parsed = parseTerminalResize(input);
+    return deps.terminal.resize(event.sender.id, parsed.terminalId, parsed.cols, parsed.rows);
+  });
+  ipcMain.handle(IPC.terminalClose, (event, terminalId: unknown) =>
+    deps.terminal.close(event.sender.id, parseTerminalId(terminalId)),
+  );
+  ipcMain.handle(IPC.terminalList, (event) => deps.terminal.list(event.sender.id));
+  ipcMain.handle(IPC.terminalProfiles, (event, force: unknown) =>
+    deps.terminal.profiles(event.sender.id, force === true),
+  );
+  // Flow control and focus are fire-and-forget: a keystroke must not wait for a
+  // round trip, and a malformed credit frame is dropped rather than surfaced.
+  ipcMain.on(IPC.terminalAck, (event, input: unknown) => {
+    try {
+      const parsed = parseTerminalAck(input);
+      deps.terminal.ack(event.sender.id, parsed.terminalId, parsed.bytes);
+    } catch {
+      // An invalid credit frame only delays the PTY; it is not user-facing.
+    }
+  });
+  ipcMain.on(IPC.terminalFocus, (event, focused: unknown) => {
+    if (typeof focused === "boolean") deps.terminal.setFocus(event.sender.id, focused);
+  });
+  // The extension TUI surface reports keyboard ownership so main can route a
+  // menu/context-menu Paste that `webContents.paste()` cannot deliver to a
+  // non-editable frame (2026-11-18 questionnaire paste plan).
+  ipcMain.on(IPC.tuiFocus, (event, input: unknown) => {
+    const parsed = parseTuiFocus(input);
+    if (parsed) deps.tui.setFocus(event.sender.id, parsed.focused ? parsed.tabId : null);
   });
 
   ipcMain.handle(IPC.projectsGet, () => deps.projects.get());

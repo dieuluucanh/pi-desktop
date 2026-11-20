@@ -43,6 +43,121 @@ beforeEach(() => {
   });
 });
 
+describe("tab revisions (2026-11-06 tab-switch plan)", () => {
+  // The counters are process-lifetime by design (main's revision only grows), so
+  // these cases use strictly increasing revisions instead of resetting them.
+  it("ignores a table older than the newest applied revision", () => {
+    const a = tab({ id: "a" });
+    useAppStore.getState().applyTabs({ tabs: [a], activeTabId: "a", revision: 1, selectionSeq: 1 });
+
+    const stale = tab({ id: "stale", title: "stale" });
+    useAppStore
+      .getState()
+      .applyTabs({ tabs: [stale], activeTabId: "stale", revision: 0, selectionSeq: 1 });
+
+    expect(useAppStore.getState().tabs.map((entry) => entry.id)).toEqual(["a"]);
+    expect(useAppStore.getState().activeTabId).toBe("a");
+  });
+
+  it("keeps the user's tab when a push carries an older selection", async () => {
+    const a = tab({ id: "a" });
+    const b = tab({ id: "b" });
+    useAppStore.setState({ tabs: [a, b], activeTabId: "a" });
+
+    // A real gesture: this window's selection sequence moves past main's.
+    await useAppStore.getState().activateTab("b");
+    // A push that main published before it processed the gesture (a background
+    // wake, a reconcile, a late response) must not move the window back.
+    useAppStore.getState().applyTabs(
+      { tabs: [a, b], activeTabId: "a", revision: 2, selectionSeq: 0 },
+      {
+        adoptSelection: true,
+      },
+    );
+
+    expect(useAppStore.getState().activeTabId).toBe("b");
+  });
+
+  it("adopts a newer selection made elsewhere", () => {
+    const a = tab({ id: "a" });
+    const b = tab({ id: "b" });
+    useAppStore.setState({ tabs: [a, b], activeTabId: "a" });
+
+    useAppStore.getState().applyTabs(
+      { tabs: [a, b], activeTabId: "b", revision: 3, selectionSeq: 3 },
+      {
+        adoptSelection: true,
+      },
+    );
+
+    expect(useAppStore.getState().activeTabId).toBe("b");
+  });
+
+  it("adopts main's id when a background push removed the shown tab", () => {
+    // The user was on `a`; another window/main closed it and published `b` as
+    // the next selection. `adoptSelection: false` models a state frame, which
+    // must not move a live user selection — but `a` no longer exists, so staying
+    // on it would render Welcome even though main already chose `b`.
+    const a = tab({ id: "a" });
+    const b = tab({ id: "b" });
+    useAppStore.setState({ tabs: [a, b], activeTabId: "a" });
+
+    useAppStore
+      .getState()
+      .applyTabs({ tabs: [b], activeTabId: "b", revision: 4 }, { adoptSelection: false });
+
+    expect(useAppStore.getState().activeTabId).toBe("b");
+  });
+
+  it("keeps the user's tab when a background push still contains it", () => {
+    const a = tab({ id: "a" });
+    const b = tab({ id: "b" });
+    useAppStore.setState({ tabs: [a, b], activeTabId: "a" });
+
+    useAppStore
+      .getState()
+      .applyTabs({ tabs: [a, b], activeTabId: "b", revision: 5 }, { adoptSelection: false });
+
+    expect(useAppStore.getState().activeTabId).toBe("a");
+  });
+
+  it("keeps a deliberately cleared selection cleared when a tab closes", () => {
+    const a = tab({ id: "a" });
+    const b = tab({ id: "b" });
+    useAppStore.setState({ tabs: [a, b], activeTabId: null });
+
+    useAppStore
+      .getState()
+      .applyTabs({ tabs: [b], activeTabId: "b", revision: 6 }, { adoptSelection: false });
+
+    expect(useAppStore.getState().activeTabId).toBeNull();
+  });
+});
+
+describe("web tab selection (2026-11-06 tab-switch plan)", () => {
+  it("reports a web tab selection to main so the next push cannot revert it", async () => {
+    const session = tab({ id: "session-1" });
+    const web = tab({
+      id: "web-1",
+      kind: "web",
+      title: "127.0.0.1:8080",
+      url: "http://127.0.0.1:8080/",
+      sessionTabId: session.id,
+    });
+    useAppStore.setState({ tabs: [session, web], activeTabId: session.id });
+    const activate = vi.fn(async (tabId: string) => ({
+      tabs: useAppStore.getState().tabs,
+      activeTabId: tabId,
+    }));
+    (window.pi as unknown as { sessions: { activate: unknown } }).sessions.activate = activate;
+
+    await useAppStore.getState().activateTab(web.id);
+
+    expect(activate).toHaveBeenCalledWith(web.id);
+    expect(useAppStore.getState().activeTabId).toBe(web.id);
+  });
+});
+
 describe("applyTabs", () => {
   it("reuses unchanged records and skips the state write entirely", () => {
     const first = tab();
@@ -132,6 +247,8 @@ describe("applyTabs", () => {
       sessionStates: { [first.id]: { model: "test" } },
       modelCatalog: { [first.id]: [] },
       pasteBodies: { [first.id]: { 1: "large paste" } },
+      draftHistory: { [first.id]: ["a prompt"] },
+      historySeed: { [first.id]: ["from the session"] },
     });
     expect(useAppStore.getState().blobs["C:/blobs/a.json"]).toBeDefined();
 
@@ -142,6 +259,8 @@ describe("applyTabs", () => {
     expect(state.sessionStates[first.id]).toBeUndefined();
     expect(state.modelCatalog[first.id]).toBeUndefined();
     expect(state.pasteBodies[first.id]).toBeUndefined();
+    expect(state.draftHistory[first.id]).toBeUndefined();
+    expect(state.historySeed[first.id]).toBeUndefined();
     expect(state.blobs["C:/blobs/a.json"]).toBeUndefined();
   });
 
@@ -170,7 +289,10 @@ describe("applyTabs", () => {
       .mockResolvedValue({ messages: [] });
     await useAppStore.getState().activateTab("session-1");
 
-    expect(useAppStore.getState().transcripts["session-1"]?.hydrated).toBe(true);
+    // `activateTab` starts hydration fire-and-forget; wait for the async read.
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().transcripts["session-1"]?.hydrated).toBe(true);
+    });
     expect(request).toHaveBeenCalledWith({ tabId: "session-1", method: "messages.get" });
   });
 
@@ -260,5 +382,59 @@ describe("applyTabs", () => {
     }
 
     expect(Object.keys(useAppStore.getState().blobs)).toHaveLength(MAX_RETAINED_BLOBS);
+  });
+});
+
+describe("transcript hydration from a spilled response", () => {
+  it("hydrates a large messages.get answer through the blob reader", async () => {
+    const handles = installBridge();
+    const first = tab({ id: "session-spilled" });
+    useAppStore.getState().applyTabs({ tabs: [first], activeTabId: first.id });
+    const request = vi
+      .spyOn(handles.bridge.sessions, "request")
+      .mockImplementation(async (input: { method: string }) => {
+        if (input.method === "messages.get") {
+          return { $blob: "C:/blobs/messages.json", bytes: 120 };
+        }
+        if (input.method === "host.blobs.read") {
+          return {
+            path: "C:/blobs/messages.json",
+            contents: JSON.stringify({
+              messages: [{ role: "assistant", content: "recovered history" }],
+            }),
+            offset: 0,
+            nextOffset: 120,
+            size: 120,
+            done: true,
+          };
+        }
+        return {};
+      });
+
+    await useAppStore.getState().hydrateTranscript(first.id);
+
+    const transcript = useAppStore.getState().transcripts[first.id];
+    expect(transcript?.hydrated).toBe(true);
+    expect(transcript?.items.length).toBeGreaterThan(0);
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: "host.blobs.read" }));
+  });
+
+  it("reports a failed hydration instead of showing an empty session", async () => {
+    const handles = installBridge();
+    const first = tab({ id: "session-failed" });
+    useAppStore.getState().applyTabs({ tabs: [first], activeTabId: first.id });
+    const request = vi
+      .spyOn(handles.bridge.sessions, "request")
+      .mockRejectedValueOnce(new Error("the spilled result is gone"));
+
+    await useAppStore.getState().hydrateTranscript(first.id);
+
+    expect(useAppStore.getState().transcripts[first.id]?.hydrated).toBe(false);
+    expect(useAppStore.getState().hint).toMatch(/spilled result is gone/);
+
+    // The failure is not cached as success: the next attempt can recover.
+    request.mockResolvedValueOnce({ messages: [] });
+    await useAppStore.getState().hydrateTranscript(first.id);
+    expect(useAppStore.getState().transcripts[first.id]?.hydrated).toBe(true);
   });
 });

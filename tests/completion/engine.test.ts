@@ -14,7 +14,6 @@ import {
   type DocumentMention,
 } from "../../src/renderer/src/completion/document-source";
 import { createFileProvider } from "../../src/renderer/src/completion/file-source";
-import { createShellProvider } from "../../src/renderer/src/completion/shell-source";
 import { createCompletionProvider } from "../../src/renderer/src/completion/stack";
 import {
   applyCompletionInPlace,
@@ -496,43 +495,63 @@ describe("the stack", () => {
   });
 });
 
-describe("shell completion", () => {
-  const shell = createShellProvider({
-    loadFiles: async () => ({ files: ["src/app.ts", "src/renderer/main.ts", "docs/readme.md"] }),
-  });
-  const provider = createCompletionProvider({
-    command: createCommandProvider({ loadCommands: async () => HOST_COMMANDS }),
-    file: createFileProvider({ loadFiles: async () => ({ files: ["src/app.ts"] }) }),
-    shell,
+describe("shell lines", () => {
+  const command = createCommandProvider({ loadCommands: async () => HOST_COMMANDS });
+  const loadFiles = vi.fn(async () => ({ files: ["src/app.ts"] }));
+  const file = createFileProvider({ loadFiles });
+  const document = createDocumentProvider({ list: () => [{ id: "1", name: "Book.xlsx" }] });
+  const provider = createCompletionProvider({ command, file, document });
+
+  it("leaves ! and !! to the extension chain with no built-in suggestions", async () => {
+    for (const line of ["!git add src", "!!git add src"]) {
+      loadFiles.mockClear();
+      expect(
+        await provider.getSuggestions([line], 0, line.length, { signal: signal() }),
+      ).toBeNull();
+      expect(
+        await provider.getSuggestions([line], 0, line.length, {
+          signal: signal(),
+          force: true,
+        }),
+      ).toBeNull();
+      expect(loadFiles).not.toHaveBeenCalled();
+    }
   });
 
-  it("completes workspace paths after ! and !!", async () => {
-    expect(
-      (await provider.getSuggestions(["!git add src"], 0, 12, { signal: signal() }))?.items[0]
-        ?.value,
-    ).toBe("src/app.ts");
-    expect(
-      (await provider.getSuggestions(["!!git add src"], 0, 13, { signal: signal() }))?.items[0]
-        ?.value,
-    ).toBe("src/app.ts");
+  it("still asks a host extension provider and returns its ! suggestion", async () => {
+    const suggest = vi.fn(async () => ({
+      prefix: "!",
+      items: [{ value: "!remote", label: "!remote" }],
+    }));
+    const apply = vi.fn(async () => null);
+    const withHost = createCompletionProvider({ file, extension: { suggest, apply } });
+
+    const natural = await withHost.getSuggestions(["!pi"], 0, 3, { signal: signal() });
+    expect(natural?.items[0]).toMatchObject({
+      value: "!remote",
+      label: "!remote",
+      source: "extension",
+      remote: true,
+    });
+
+    const forced = await withHost.getSuggestions(["!pi"], 0, 3, {
+      signal: signal(),
+      force: true,
+    });
+    expect(forced?.items[0]?.value).toBe("!remote");
+    expect(suggest).toHaveBeenCalledTimes(2);
   });
 
-  it("does not invent a completion for a flag, an absolute path or a non-path word", async () => {
-    expect(
-      await provider.getSuggestions(["!git push -u origin"], 0, 20, { signal: signal() }),
-    ).toBeNull();
-    expect(
-      await provider.getSuggestions(["!cat /etc/hosts"], 0, 15, { signal: signal() }),
-    ).toBeNull();
-    expect(
-      await provider.getSuggestions(["!git add --force"], 0, 17, { signal: signal() }),
-    ).toBeNull();
-  });
-
-  it("keeps / on the first line a command line", async () => {
+  it("keeps /, @ and # on ordinary lines untouched", async () => {
     expect(
       (await provider.getSuggestions(["/he"], 0, 3, { signal: signal() }))?.items[0]?.label,
     ).toBe("/help");
+    expect(
+      (await provider.getSuggestions(["@src"], 0, 4, { signal: signal() }))?.items[0]?.value,
+    ).toBe("@src/app.ts");
+    expect(
+      (await provider.getSuggestions(["#bo"], 0, 3, { signal: signal() }))?.items[0]?.value,
+    ).toBe("#Book.xlsx");
   });
 });
 

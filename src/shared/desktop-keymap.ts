@@ -32,6 +32,7 @@ export type DesktopActionId =
   | "session.previousTab"
   | "palette.open"
   | "sessions.open"
+  | "todos.toggle"
   | "settings.open"
   | "updates.check"
   | "sidebar.toggle"
@@ -92,6 +93,13 @@ export const DESKTOP_ACTIONS: readonly DesktopActionDefinition[] = [
     label: "Session browser",
     scope: "menu",
     defaults: ["ctrl+alt+o"],
+    menu: true,
+  },
+  {
+    id: "todos.toggle",
+    label: "Toggle todo panel",
+    scope: "menu",
+    defaults: ["ctrl+alt+l"],
     menu: true,
   },
   {
@@ -351,6 +359,7 @@ export const MENU_COMMAND_ACTIONS: Partial<Record<MenuCommand, DesktopActionId>>
   "new-session": "session.new",
   "close-session": "session.close",
   "view-sessions": "sessions.open",
+  "todos-toggle": "todos.toggle",
   "view-settings": "settings.open",
   "command-palette": "palette.open",
   "toggle-sidebar": "sidebar.toggle",

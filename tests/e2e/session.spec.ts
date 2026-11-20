@@ -140,3 +140,164 @@ test("@smoke keeps two session tabs independent", async () => {
   // Two tabs exist in the strip.
   await expect(app.window.getByRole("tab")).toHaveCount(2);
 });
+
+/**
+ * Prompt history must follow **displayed** rows (2026-11-15 composer-soft-wrap
+ * plan). jsdom has no layout, so this is the only proof that a soft-wrapped
+ * draft keeps its native caret movement: the old logical-line gate recalled
+ * history from every wrapped row.
+ */
+test("walks a soft-wrapped draft with Up and recalls history only at the top", async () => {
+  const current = (app = await launchFakeApp());
+  const composer = await startSession(current);
+
+  // One sent prompt becomes the newest history entry.
+  current.provider.enqueue({ kind: "text", text: "seed reply" });
+  await composer.fill("seed prompt");
+  await composer.press("Enter");
+  await expect(current.window.getByText("seed reply")).toBeVisible({ timeout: 30_000 });
+
+  // No `\n`: the composer must wrap this into several displayed rows.
+  const wrapped = "lorem ipsum ".repeat(60).trim();
+  await composer.fill(wrapped);
+  const caretAtEnd = await composer.evaluate(
+    (node) => (node as HTMLTextAreaElement).selectionStart,
+  );
+  expect(caretAtEnd).toBeGreaterThan(0);
+
+  // The end of the value is the last displayed row. Count the rows from the
+  // textarea's own layout (not the mirror under test), then walk to the top.
+  const displayedRows = async (): Promise<number> =>
+    composer.evaluate((node) => {
+      const ta = node as HTMLTextAreaElement;
+      const styles = getComputedStyle(ta);
+      const lineHeight = Number.parseFloat(styles.getPropertyValue("line-height"));
+      const paddingTop = Number.parseFloat(styles.getPropertyValue("padding-top") || "0");
+      const paddingBottom = Number.parseFloat(styles.getPropertyValue("padding-bottom") || "0");
+      return Math.max(1, Math.round((ta.scrollHeight - paddingTop - paddingBottom) / lineHeight));
+    });
+
+  const rows = await displayedRows();
+  expect(rows).toBeGreaterThan(1);
+
+  // Up on the last row moves the caret; it does not recall history.
+  await composer.press("ArrowUp");
+  const afterFirstUp = await composer.evaluate(
+    (node) => (node as HTMLTextAreaElement).selectionStart,
+  );
+  await expect(composer).toHaveValue(wrapped);
+  expect(afterFirstUp).toBeLessThan(caretAtEnd);
+
+  // `rows - 1` presses reach the first displayed row; the draft survives all of
+  // them, including the nonzero column the browser keeps at the top.
+  for (let press = 1; press < rows - 1; press += 1) {
+    await composer.press("ArrowUp");
+    await expect(composer).toHaveValue(wrapped);
+  }
+  const topCaret = await composer.evaluate((node) => (node as HTMLTextAreaElement).selectionStart);
+  // The top row is reached at a nonzero offset: recall is not "offset 0".
+  expect(topCaret).toBeGreaterThan(0);
+  await expect(composer).toHaveValue(wrapped);
+
+  // Only the press from the first displayed row leaves the draft.
+  await composer.press("ArrowUp");
+  await expect(composer).toHaveValue("seed prompt");
+
+  // Hard newlines and an empty line use the same displayed-row gate.
+  const hard = "first line\nsecond line\n\nfourth line";
+  await composer.fill(hard);
+  await expect(composer).toHaveValue(hard);
+  const hardRows = await displayedRows();
+  expect(hardRows).toBe(4);
+
+  await composer.press("ArrowUp");
+  await expect(composer).toHaveValue(hard);
+  for (let press = 1; press < hardRows - 1; press += 1) {
+    await composer.press("ArrowUp");
+    await expect(composer).toHaveValue(hard);
+  }
+  await composer.press("ArrowUp");
+  await expect(composer).toHaveValue("seed prompt");
+});
+
+/**
+ * The transcript column must be the pane width, not a fixed measure
+ * (2026-11-15 transcript-width).
+ *
+ * Display zoom scales CSS px (`webContents.setZoomFactor`), so zooming out
+ * grows the CSS-px pane. The old `--transcript-measure: 110ch` cap was absolute
+ * in CSS px (≈980 px at the 16 px root font), so the column stayed put while
+ * the pane grew: at 50 % zoom it filled ~50 % of the pane with empty gutters on
+ * both sides. jsdom has no layout engine, so this is the only real guard.
+ */
+async function transcriptWidths(current: FakeApp): Promise<{ pane: number; content: number }> {
+  return current.window.evaluate(() => {
+    const scroll = document.querySelector<HTMLElement>('[data-testid="transcript"]');
+    const content = document.querySelector<HTMLElement>('[data-testid="transcript-content"]');
+    if (!scroll || !content) throw new Error("transcript is not mounted");
+    return { pane: scroll.clientWidth, content: content.getBoundingClientRect().width };
+  });
+}
+
+test("fills the pane with the transcript at every zoom level", async () => {
+  const current = (app = await launchFakeApp());
+  const composer = await startSession(current);
+  current.provider.enqueue({ kind: "text", text: "a line of prose in the transcript" });
+  await composer.fill("Fill the pane");
+  await composer.press("Enter");
+  await expect(current.window.getByText("a line of prose in the transcript")).toBeVisible({
+    timeout: 30_000,
+  });
+
+  // The scroll area's `px-4` is the only inset: 16 px on each side.
+  const fill = async (): Promise<number> => {
+    const { pane, content } = await transcriptWidths(current);
+    return Math.round((content / (pane - 32)) * 100) / 100;
+  };
+  const contentWidth = async (): Promise<number> => (await transcriptWidths(current)).content;
+
+  await expect.poll(fill, { timeout: 10_000 }).toBeGreaterThanOrEqual(0.99);
+  const width100 = await contentWidth();
+
+  // 100 % → 50 % is five levels of `ZOOM_LEVELS`.
+  for (const percent of [90, 80, 75, 67, 50]) {
+    await current.menuCommand("zoom-out");
+    await expect.poll(() => current.zoomPercent(), { timeout: 15_000 }).toBe(percent);
+    await expect.poll(fill, { timeout: 10_000 }).toBeGreaterThanOrEqual(0.99);
+  }
+
+  // Growing, not parked at the retired ~980 px cap.
+  await expect.poll(contentWidth, { timeout: 10_000 }).toBeGreaterThan(width100 + 200);
+
+  await current.menuCommand("zoom-reset");
+});
+
+test("prints multi-line info command output in the transcript with default prefs", async () => {
+  const current = (app = await launchFakeApp({
+    launch: {
+      extensions: {
+        "audit-output.js": `export default function (pi) {
+  pi.registerCommand("audit", {
+    description: "Print multi-line command output",
+    handler: async (_args, ctx) => {
+      ctx.ui.notify("Folder policy: cwd\\n  outside: ask\\n  base: C:/repo", "info");
+    },
+  });
+}`,
+      },
+    },
+  }));
+  const composer = await startSession(current);
+  const requestsBefore = current.provider.requests.length;
+  await composer.fill("/audit");
+  await composer.press("Enter");
+
+  // Info notifications are off for the bell by default; the transcript must
+  // still print extension command output, exactly like terminal Pi.
+  const notice = current.window
+    .getByTestId("transcript-notice-text")
+    .filter({ hasText: "Folder policy: cwd" });
+  await expect(notice).toBeVisible({ timeout: 30_000 });
+  await expect(notice).toContainText("outside: ask");
+  expect(current.provider.requests).toHaveLength(requestsBefore);
+});

@@ -15,6 +15,7 @@ import {
 import type { ScopeDiagnosticInfo, ScopeSnapshot } from "../shared/model-scope";
 import type { ExtensionRuntimeErrorSummary } from "../shared/resources";
 import type { SettingsScope } from "../shared/settings-schema";
+import type { HostOpenTimings } from "../shared/performance";
 import {
   eventToFrame,
   sessionSnapshot,
@@ -28,6 +29,7 @@ import {
   type TrustStoreLike,
 } from "./project-trust";
 import { createCommandHandlers, type CommandRunner } from "./commands";
+import { isTrustAnswer } from "../shared/projects";
 import { createPromptOriginTracker } from "./prompt-origin";
 import { createSettingsHandlers, SettingsError, type SettingsPort } from "./settings";
 import { createShortcutHandlers, ShortcutError, type ShortcutRunner } from "./shortcuts";
@@ -57,11 +59,6 @@ import type { HostHandler } from "./service";
 export interface ClearedQueue {
   steering?: readonly string[];
   followUp?: readonly string[];
-}
-
-/** One row of the session browser (passed through from the SDK's listing). */
-export interface SessionListEntry {
-  [key: string]: unknown;
 }
 
 /**
@@ -305,6 +302,11 @@ export interface SessionRuntimeRequest {
    * composition root resolves it next to the host bundle; safe mode ignores it.
    */
   checkpointsExtensionPath?: string | null;
+  /**
+   * Sub-phase timings this request wants reported (2026-11-07 plan). Passed
+   * through to the SDK adapter, which owns `services`/`scope`/`session`.
+   */
+  onPhase?: (phase: "services" | "scope" | "session", ms: number) => void;
 }
 
 export interface SessionCoreDeps {
@@ -326,8 +328,6 @@ export interface SessionCoreDeps {
   newSessionManager?(cwd: string, sessionDir?: string): SessionManagerHandle;
   trustStore?: TrustStoreLike;
   requiresTrust?(cwd: string): boolean;
-  /** Session browser listing (plan step 11 surfaces it). */
-  listSessions?(cwd: string): Promise<SessionListEntry[]>;
   /**
    * Workspace files for `@` completion (plan step 7). The root is this host's
    * own cwd, never a renderer-supplied path, so the listing cannot escape the
@@ -430,6 +430,14 @@ export interface SessionCore {
   handlers(): Partial<Record<HostMethod, HostHandler>>;
   snapshot(): SessionSnapshot;
   session(): HostSession | null;
+  /** Current session identity for event fencing (id + attachment epoch). */
+  identity(): { sessionId: string | null; epoch: number };
+  /**
+   * Phase breakdown of the last `session.create`/`session.resume` in this
+   * process, or null before the first (2026-11-07 plan). Optional: the control
+   * core has no session to open.
+   */
+  lastOpenTimings?(): HostOpenTimings | null;
   cwd(): string;
   dispose(): Promise<void>;
 }
@@ -462,6 +470,8 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
   let cwd = deps.cwd;
   let session: HostSession | null = null;
+  /** Monotonic per-host attachment counter; a reload keeps the id but bumps this. */
+  let sessionEpoch = 0;
   let runtime: RuntimeLike | null = null;
   let manager: SessionManagerHandle | null = null;
   let unsubscribe: (() => void) | null = null;
@@ -510,6 +520,55 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   let settingsPortManager: SettingsLike | null = null;
   let settingsPortCwd: string | null = null;
   let scopeFingerprint: string | null = null;
+  /**
+   * The open currently being measured and the last one that finished
+   * (2026-11-07 host-singleton plan). The host reports the result through
+   * `host.metrics`, so Diagnostics can say *which* leg of an open is slow
+   * instead of only logging a total once it crosses two seconds.
+   */
+  let activeOpen: {
+    startedAt: number;
+    trustMs: number;
+    servicesMs: number;
+    scopeMs: number;
+    sessionMs: number;
+    bindMs: number;
+    reconcileMs: number;
+  } | null = null;
+  let lastOpen: HostOpenTimings | null = null;
+  const clock = (): number => deps.now?.() ?? Date.now();
+  const beginOpen = (): void => {
+    activeOpen = {
+      startedAt: clock(),
+      trustMs: 0,
+      servicesMs: 0,
+      scopeMs: 0,
+      sessionMs: 0,
+      bindMs: 0,
+      reconcileMs: 0,
+    };
+  };
+  const recordOpenPhase = (phase: "services" | "scope" | "session", ms: number): void => {
+    if (!activeOpen) return;
+    if (phase === "services") activeOpen.servicesMs = ms;
+    else if (phase === "scope") activeOpen.scopeMs = ms;
+    else activeOpen.sessionMs = ms;
+  };
+  const finishOpen = (): void => {
+    if (!activeOpen) return;
+    const at = clock();
+    lastOpen = {
+      totalMs: at - activeOpen.startedAt,
+      trustMs: activeOpen.trustMs,
+      servicesMs: activeOpen.servicesMs,
+      scopeMs: activeOpen.scopeMs,
+      sessionMs: activeOpen.sessionMs,
+      bindMs: activeOpen.bindMs,
+      reconcileMs: activeOpen.reconcileMs,
+      at,
+    };
+    activeOpen = null;
+  };
   const resolveSettingsPort = (): SettingsPort | null => {
     if (!deps.createSettingsPort) return null;
     if (!settingsPort || settingsPortManager !== settingsManager || settingsPortCwd !== cwd) {
@@ -728,6 +787,10 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     unsubscribeModelChanges?.();
     promptOrigins.reset();
     session = next;
+    sessionEpoch += 1;
+    // The Extensions hub reads this list; errors from the outgoing runner must
+    // not be attributed to the replacement session.
+    runtimeErrors.length = 0;
     unsubscribeErrors = next.extensionRunner?.onError?.(recordRuntimeError) ?? null;
     // A broken observer must not prevent the session from opening; the state
     // still refreshes on the ordinary SDK events above.
@@ -746,15 +809,58 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     unsubscribe = next.subscribe ? next.subscribe(listener) : null;
   };
 
+  /**
+   * How many times `rebind()` actually ran.
+   *
+   * The SDK invokes the callback registered with `setRebindSession()` after it
+   * replaces the session, and the lifecycle handlers below used to call it a
+   * second time. One `session.new`/`switch`/`fork`/`clone`/`import` therefore ran
+   * the whole bind twice — extension `session_start`, `resources_discover`, a
+   * settings reload and a second scope resolve — which doubled the slowest part
+   * of those actions (2026-11-07 plan). The counter lets a handler skip its own
+   * call when the runtime already did it, and still bind exactly once on a
+   * runtime that does not report back.
+   */
+  let rebindCount = 0;
+
+  const rebindIfRuntimeSkipped = async (before: number): Promise<void> => {
+    if (rebindCount === before) await rebind();
+  };
+
   const rebind = async (): Promise<void> => {
     if (!runtime) return;
+    rebindCount += 1;
     attach(runtime.session);
     settingsManager = runtime.services?.settingsManager ?? settingsManager;
+    const bindStartedAt = clock();
     await deps.bindSession?.(runtime.session, runtime);
+    if (activeOpen) activeOpen.bindMs = clock() - bindStartedAt;
     scopeFingerprint = null;
+    const reconcileStartedAt = clock();
     await reconcileModelScope({ reload: true });
+    if (activeOpen) activeOpen.reconcileMs = clock() - reconcileStartedAt;
     deps.emit("session_replaced", snapshot(), runtime.session.sessionId ?? undefined);
     emitState();
+  };
+
+  /**
+   * Session replacement is one transition at a time.
+   *
+   * Main coalesces opens per tab, but a host can still receive two lifecycle
+   * requests from different callers (an explicit resume plus a repair path, or
+   * an extension command mid-restart). Running `runtime.switchSession` twice
+   * concurrently replaces the session under one caller and invalidates the
+   * extension runner it is about to use. Serializing here makes the second call
+   * wait for the first and observe its snapshot, instead of replacing again.
+   */
+  let sessionTransition: Promise<void> = Promise.resolve();
+  const serializeSessionTransition = <T>(run: () => Promise<T>): Promise<T> => {
+    const next = sessionTransition.then(run, run);
+    sessionTransition = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
   };
 
   const snapshot = (): SessionSnapshot => {
@@ -799,12 +905,21 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     cwd: string;
     sessionManager: SessionManagerHandle;
     trustAnswer?: TrustAnswer;
+    /**
+     * Why this session exists, carried to the renderer so a routine host
+     * recycle (`resume`) is not announced as a new conversation (2026-11-06
+     * plan, step 15).
+     */
+    reason?: "new" | "open" | "resume" | "reload";
     /** Per-project default applied only to a brand-new session (plan step 10). */
     model?: string;
     /** Per-project default thinking level for a brand-new session. */
     thinking?: string;
   }): Promise<SessionSnapshot> => {
+    beginOpen();
+    const trustStartedAt = clock();
     const status = trust.status(options.cwd);
+    if (activeOpen) activeOpen.trustMs = clock() - trustStartedAt;
     if (status.needsPrompt && !options.trustAnswer) {
       deps.emit("project_trust", status, undefined);
       throw new SessionCoreError(
@@ -821,11 +936,12 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       agentDir: deps.agentDir,
       sessionManager: options.sessionManager,
       npmCommand: deps.npmCommand,
-      projectTrusted: trust.status(cwd).trusted,
+      projectTrusted: status.trusted,
       ...(deps.safeMode ? { safeMode: true } : {}),
       ...(deps.checkpointsExtensionPath
         ? { checkpointsExtensionPath: deps.checkpointsExtensionPath }
         : {}),
+      onPhase: recordOpenPhase,
     });
     runtime = created.runtime;
     settingsManager = created.runtime.services?.settingsManager ?? null;
@@ -837,11 +953,30 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     if (options.thinking) {
       created.session.setThinkingLevel?.(options.thinking, { persist: false });
     }
+    const bindStartedAt = clock();
     await deps.bindSession?.(created.session, created.runtime);
+    if (activeOpen) activeOpen.bindMs = clock() - bindStartedAt;
     scopeFingerprint = null;
-    await reconcileModelScope({ reload: true });
+    const reconcileStartedAt = clock();
+    // The runtime factory has just built `SettingsManager` from disk and
+    // `resourceLoader.reload()` re-read it, so a third read here bought nothing
+    // (2026-11-07 plan). `reload: true` stays on `rebind()`, where it is the only
+    // read.
+    await reconcileModelScope({ reload: false });
+    if (activeOpen) activeOpen.reconcileMs = clock() - reconcileStartedAt;
+    finishOpen();
 
-    deps.emit("session_started", snapshot(), created.session.sessionId ?? undefined);
+    deps.emit(
+      "session_started",
+      {
+        ...snapshot(),
+        // Additive: the transcript dedupes on (sessionId) and the service drops a
+        // routine `resume`, so nine recycles of one session read as one start.
+        reason: options.reason ?? "new",
+        sessionId: created.session.sessionId ?? null,
+      },
+      created.session.sessionId ?? undefined,
+    );
     emitState();
     return snapshot();
   };
@@ -851,10 +986,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const input = asRecord(params);
       const targetCwd =
         typeof input.cwd === "string" && input.cwd.length > 0 ? input.cwd : deps.cwd;
-      const trustAnswer =
-        input.trust === "trust" || input.trust === "never" || input.trust === "session"
-          ? (input.trust as TrustAnswer)
-          : undefined;
+      const trustAnswer = isTrustAnswer(input.trust) ? input.trust : undefined;
       const model =
         typeof input.model === "string" && input.model.length > 0 ? input.model : undefined;
       const thinking =
@@ -867,6 +999,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       return startSession({
         cwd: targetCwd,
         sessionManager,
+        reason: "new",
         ...(trustAnswer ? { trustAnswer } : {}),
         ...(model ? { model } : {}),
         ...(thinking ? { thinking } : {}),
@@ -879,22 +1012,31 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       return startSession({
         cwd: typeof input.cwd === "string" && input.cwd.length > 0 ? input.cwd : deps.cwd,
         sessionManager: openManager(deps, sessionFile, cwd),
+        reason: "open",
       });
     },
 
     "session.resume": async (params) => {
       const input = asRecord(params);
       if (runtime?.switchSession && typeof input.sessionFile === "string") {
+        // The SDK rebuilds the whole runtime here (services + extensions +
+        // bind), so the switch gets its own measurement window.
+        beginOpen();
         await runtime.switchSession(input.sessionFile);
+        finishOpen();
         return snapshot();
       }
       const sessionFile = requireString(input.sessionFile ?? input.path, "sessionFile");
-      return startSession({ cwd, sessionManager: openManager(deps, sessionFile, cwd) });
-    },
-
-    "session.list": async () => {
-      if (!deps.listSessions) return { sessions: [] };
-      return { sessions: await deps.listSessions(cwd) };
+      // A restarted host has a fresh in-memory trust store. The service re-sends
+      // the tab's answer (a "session" grant does not survive process death on
+      // its own), so resume must accept it exactly like create.
+      const trustAnswer = isTrustAnswer(input.trust) ? input.trust : undefined;
+      return startSession({
+        cwd,
+        sessionManager: openManager(deps, sessionFile, cwd),
+        reason: "resume",
+        ...(trustAnswer ? { trustAnswer } : {}),
+      });
     },
 
     "session.fork": async (params) => {
@@ -902,10 +1044,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const entryId = requireString(input.entryId ?? input.id, "entryId");
       if (!runtime?.fork)
         throw new SessionCoreError("fork is not supported by this runtime", "unsupported");
+      const rebuiltAt = rebindCount;
       const result = await runtime.fork(entryId, {
         position: input.position === "before" ? "before" : "at",
       });
-      await rebind();
+      await rebindIfRuntimeSkipped(rebuiltAt);
       return {
         ...snapshot(),
         cancelled: result.cancelled,
@@ -1236,10 +1379,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         throw new SessionCoreError("starting a new session is not supported", "unsupported");
       }
       const parent = asRecord(params).parentSession;
+      const rebuiltAt = rebindCount;
       const result = await runtime.newSession(
         typeof parent === "string" && parent.length > 0 ? { parentSession: parent } : undefined,
       );
-      await rebind();
+      await rebindIfRuntimeSkipped(rebuiltAt);
       return { ...snapshot(), cancelled: result.cancelled };
     },
 
@@ -1249,8 +1393,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       if (!runtime?.switchSession) {
         throw new SessionCoreError("switching sessions is not supported", "unsupported");
       }
+      const rebuiltAt = rebindCount;
       const result = await runtime.switchSession(sessionFile);
-      await rebind();
+      await rebindIfRuntimeSkipped(rebuiltAt);
       return { ...snapshot(), cancelled: result.cancelled };
     },
 
@@ -1268,12 +1413,14 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         if (!leafId) {
           throw new SessionCoreError("this session has no entry to clone from", "no_leaf");
         }
+        const rebuiltAt = rebindCount;
         const forked = await runtime.fork(leafId, { position: "at" });
-        await rebind();
+        await rebindIfRuntimeSkipped(rebuiltAt);
         return { ...snapshot(), cancelled: forked.cancelled };
       }
+      const rebuiltAt = rebindCount;
       const result = await runtime.clone();
-      await rebind();
+      await rebindIfRuntimeSkipped(rebuiltAt);
       return { ...snapshot(), cancelled: result.cancelled };
     },
 
@@ -1311,8 +1458,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const cwdOverride =
         typeof input.cwd === "string" && input.cwd.length > 0 ? input.cwd : undefined;
       try {
+        const rebuiltAt = rebindCount;
         const result = await runtime.importFromJsonl(path, cwdOverride);
-        await rebind();
+        await rebindIfRuntimeSkipped(rebuiltAt);
         return { ...snapshot(), cancelled: result.cancelled };
       } catch (error) {
         // Pi's two documented import failures need actionable text: the renderer
@@ -1858,10 +2006,34 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     },
   };
 
+  // These handlers replace the runtime/session or rebuild its extension runner.
+  // The wrapper is applied here rather than in every handler body so a future
+  // lifecycle method is covered by adding one id to this list.
+  const SESSION_TRANSITION_METHODS = [
+    "session.create",
+    "session.open",
+    "session.resume",
+    "session.new",
+    "session.switch",
+    "session.clone",
+    "session.fork",
+    "session.reload",
+    "session.importJsonl",
+    "session.navigateTree",
+  ] as const;
+  for (const method of SESSION_TRANSITION_METHODS) {
+    const handler = handlers[method];
+    if (!handler) continue;
+    handlers[method] = (params, context) =>
+      serializeSessionTransition(() => Promise.resolve().then(() => handler(params, context)));
+  }
+
   return {
     handlers: () => handlers,
     snapshot,
     session: () => session,
+    identity: () => ({ sessionId: session?.sessionId ?? null, epoch: sessionEpoch }),
+    lastOpenTimings: () => lastOpen,
     cwd: () => cwd,
     dispose: async () => {
       promptOrigins.reset();

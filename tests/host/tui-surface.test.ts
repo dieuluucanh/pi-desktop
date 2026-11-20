@@ -155,6 +155,73 @@ describe("tui surface input", () => {
     expect(seen).toEqual(["a"]);
     void pending;
   });
+
+  it("reports consumption through tui.input so Escape can skip stopRun", async () => {
+    const { port, terminalInput } = harness();
+    terminalInput.push((data) => (data === "\x1b" ? { consume: true } : undefined));
+    const handlers = port.handlers();
+
+    const consumed = handlers["tui.input"]?.({ data: "\x1b" }, {} as never);
+    expect(consumed).toEqual({ ok: true, consumed: true, dispatched: true });
+
+    // Nothing claims a plain letter and no component is focused: delivered
+    // nowhere, so the renderer must not treat it as an interruption.
+    const untouched = handlers["tui.input"]?.({ data: "z" }, {} as never);
+    expect(untouched).toEqual({ ok: true, consumed: false, dispatched: false });
+  });
+
+  it("reports consumption by a TUI input listener, not just an extension filter", async () => {
+    const { port } = harness();
+    const pending = port.custom<string>((tui) => {
+      tui.addInputListener((data) => (data === "\x1b" ? { consume: true } : undefined));
+      return component(() => ["x"]);
+    });
+    await tick();
+    expect(port.handlers()["tui.input"]?.({ data: "\x1b" }, {} as never)).toEqual({
+      ok: true,
+      consumed: true,
+      dispatched: true,
+    });
+    void pending;
+  });
+
+  it("applies data transformations before the component sees the key", async () => {
+    const { port, terminalInput } = harness();
+    const seen: string[] = [];
+    terminalInput.push((data) => (data === "j" ? { data: "\x1b[B" } : undefined));
+    const pending = port.custom<string>(() =>
+      component(
+        () => ["x"],
+        (data) => seen.push(data),
+      ),
+    );
+    await tick();
+    expect(port.handlers()["tui.input"]?.({ data: "j" }, {} as never)).toEqual({
+      ok: true,
+      consumed: false,
+      dispatched: true,
+    });
+    expect(seen).toEqual(["\x1b[B"]);
+    void pending;
+  });
+
+  it("a throwing handler neither escapes nor loses the key", async () => {
+    const { port, terminalInput } = harness();
+    const seen: string[] = [];
+    terminalInput.push(() => {
+      throw new Error("broken extension");
+    });
+    const pending = port.custom<string>(() =>
+      component(
+        () => ["x"],
+        (data) => seen.push(data),
+      ),
+    );
+    await tick();
+    expect(() => port.handlers()["tui.input"]?.({ data: "\x1b" }, {} as never)).not.toThrow();
+    expect(seen).toEqual(["\x1b"]);
+    void pending;
+  });
 });
 
 describe("tui surface overlays", () => {
@@ -234,6 +301,7 @@ describe("tui surface widgets (2026-10-26 plan, step 5)", () => {
     port.setWidget("w", () => ({ render: () => ["first"], dispose: firstDispose }), "aboveEditor");
     await tick();
     expect(frames().at(-1)?.widgetsAbove[0]?.lines).toEqual(["first"]);
+    expect(frames().at(-1)?.widgetsAbove[0]?.key).toBe("w");
 
     const secondDispose = vi.fn();
     port.setWidget(
@@ -244,6 +312,7 @@ describe("tui surface widgets (2026-10-26 plan, step 5)", () => {
     await tick();
     expect(firstDispose).toHaveBeenCalledTimes(1);
     expect(frames().at(-1)?.widgetsAbove[0]?.lines).toEqual(["second"]);
+    expect(frames().at(-1)?.widgetsAbove[0]?.key).toBe("w");
 
     port.setWidget("w", undefined, "aboveEditor");
     await tick();
@@ -258,7 +327,9 @@ describe("tui surface widgets (2026-10-26 plan, step 5)", () => {
     port.setWidget("above", () => ({ render: () => ["above"] }), "aboveEditor");
     await tick();
     expect(frames().at(-1)?.widgetsBelow[0]?.lines).toEqual(["below"]);
+    expect(frames().at(-1)?.widgetsBelow[0]?.key).toBe("below");
     expect(frames().at(-1)?.widgetsAbove[0]?.lines).toEqual(["above"]);
+    expect(frames().at(-1)?.widgetsAbove[0]?.key).toBe("above");
 
     port.invalidate();
     expect(invalidate).toHaveBeenCalled();
@@ -296,7 +367,11 @@ describe("tui surface handlers", () => {
       cols: 40,
     });
     expect(() => handlers["tui.resize"]?.({ rows: 0, cols: 40 }, {} as never)).toThrow();
-    expect(handlers["tui.input"]?.({ data: "a" }, {} as never)).toEqual({ ok: true });
+    expect(handlers["tui.input"]?.({ data: "a" }, {} as never)).toEqual({
+      ok: true,
+      consumed: false,
+      dispatched: false,
+    });
     expect(() => handlers["tui.input"]?.({}, {} as never)).toThrow();
   });
 

@@ -2,11 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   parseWorkflowStatus,
+  reviewLineText,
   statusLineText,
   workflowBadgeClass,
   workflowBorderClass,
   workflowModeLabel,
+  REVIEW_HANDOFF_LINE,
+  REVIEW_PAUSED_LINE,
+  REVIEW_RUNNING_HINT,
+  REVIEW_RUNNING_LINE,
   WORKFLOW_MODES,
+  WORKFLOW_REVIEW_STATUS_KEY,
 } from "../../src/shared/workflow-mode";
 
 /**
@@ -28,12 +34,14 @@ describe("parseWorkflowStatus", () => {
     expect(parseWorkflowStatus("▶ build")).toEqual({
       mode: "build",
       browserReview: false,
+      reviewPhase: null,
       done: null,
       total: null,
     });
     expect(parseWorkflowStatus("▶ build 3/8")).toEqual({
       mode: "build",
       browserReview: false,
+      reviewPhase: null,
       done: 3,
       total: 8,
     });
@@ -43,14 +51,34 @@ describe("parseWorkflowStatus", () => {
     expect(parseWorkflowStatus("⏸ plan")).toEqual({
       mode: "plan",
       browserReview: false,
+      reviewPhase: null,
       done: null,
       total: null,
     });
     expect(parseWorkflowStatus("⏸ plan 2/8")).toEqual({
       mode: "plan",
       browserReview: false,
+      reviewPhase: null,
       done: 2,
       total: 8,
+    });
+  });
+
+  it("decodes the Review turn and its phase", () => {
+    expect(parseWorkflowStatus("🔍 review")).toEqual({
+      mode: "review",
+      reviewPhase: "running",
+      browserReview: false,
+      done: null,
+      total: null,
+    });
+    expect(parseWorkflowStatus("🔍 review — paused")).toMatchObject({
+      mode: "review",
+      reviewPhase: "paused",
+    });
+    expect(parseWorkflowStatus("🔍 review — awaiting decision")).toMatchObject({
+      mode: "review",
+      reviewPhase: "handoff",
     });
   });
 
@@ -58,12 +86,14 @@ describe("parseWorkflowStatus", () => {
     expect(parseWorkflowStatus("⏸ plan — reviewing in browser")).toEqual({
       mode: "plan",
       browserReview: true,
+      reviewPhase: null,
       done: null,
       total: null,
     });
     expect(parseWorkflowStatus("⏸ plan — reviewing in browser 1/4")).toMatchObject({
       mode: "plan",
       browserReview: true,
+      reviewPhase: null,
       done: 1,
       total: 4,
     });
@@ -73,12 +103,14 @@ describe("parseWorkflowStatus", () => {
     expect(parseWorkflowStatus("◦ 3/8")).toEqual({
       mode: "default",
       browserReview: false,
+      reviewPhase: null,
       done: 3,
       total: 8,
     });
     expect(parseWorkflowStatus("◦ commits:never")).toEqual({
       mode: "default",
       browserReview: false,
+      reviewPhase: null,
       done: null,
       total: null,
     });
@@ -151,6 +183,7 @@ describe("workflowBorderClass", () => {
     expect(workflowBorderClass(parseWorkflowStatus("⏸ plan — reviewing in browser"))).toBe(
       "border-warn",
     );
+    expect(workflowBorderClass(parseWorkflowStatus("🔍 review"))).toBe("border-info");
   });
 
   it("stays neutral for default mode and for no mode", () => {
@@ -167,12 +200,23 @@ describe("workflowBorderClass", () => {
           mode === null
             ? null
             : parseWorkflowStatus(
-                mode === "build" ? "▶ build" : mode === "plan" ? "⏸ plan" : "◦ 1/2",
+                mode === "build"
+                  ? "▶ build"
+                  : mode === "plan"
+                    ? "⏸ plan"
+                    : mode === "review"
+                      ? "🔍 review"
+                      : "◦ 1/2",
               ),
         ),
       ),
     );
-    expect([...classes].sort()).toEqual(["border-accent", "border-line", "border-warn"]);
+    expect([...classes].sort()).toEqual([
+      "border-accent",
+      "border-info",
+      "border-line",
+      "border-warn",
+    ]);
   });
 });
 
@@ -181,6 +225,7 @@ describe("workflowBadgeClass", () => {
     expect(workflowBadgeClass(parseWorkflowStatus("▶ build"))).toBe("text-accent");
     expect(workflowBadgeClass(parseWorkflowStatus("⏸ plan"))).toBe("text-warn");
     expect(workflowBadgeClass(parseWorkflowStatus("◦ commits:never"))).toBe("text-ink-faint");
+    expect(workflowBadgeClass(parseWorkflowStatus("🔍 review"))).toBe("text-info");
     expect(workflowBadgeClass(null)).toBe("text-ink-faint");
   });
 
@@ -191,12 +236,23 @@ describe("workflowBadgeClass", () => {
           mode === null
             ? null
             : parseWorkflowStatus(
-                mode === "build" ? "▶ build" : mode === "plan" ? "⏸ plan" : "◦ 1/2",
+                mode === "build"
+                  ? "▶ build"
+                  : mode === "plan"
+                    ? "⏸ plan"
+                    : mode === "review"
+                      ? "🔍 review"
+                      : "◦ 1/2",
               ),
         ),
       ),
     );
-    expect([...classes].sort()).toEqual(["text-accent", "text-ink-faint", "text-warn"]);
+    expect([...classes].sort()).toEqual([
+      "text-accent",
+      "text-info",
+      "text-ink-faint",
+      "text-warn",
+    ]);
   });
 });
 
@@ -207,6 +263,8 @@ describe("workflowModeLabel", () => {
     // The plannotator "reviewing in browser" phrase is a Plan sub-state, not a
     // mode: the badge always reads Plan (2026-10-20 startup-tab-cycle plan).
     expect(workflowModeLabel(parseWorkflowStatus("⏸ plan — reviewing in browser"))).toBe("Plan");
+    expect(workflowModeLabel(parseWorkflowStatus("🔍 review"))).toBe("Review");
+    expect(workflowModeLabel(parseWorkflowStatus("🔍 review — paused"))).toBe("Review");
   });
 
   it("names the default mode instead of returning nothing", () => {
@@ -242,5 +300,69 @@ describe("statusLineText", () => {
     expect(statusLineText("")).toBe("");
     expect(statusLineText("\x1b[0m")).toBe("");
     expect(statusLineText("   ")).toBe("");
+  });
+});
+
+describe("reviewLineText", () => {
+  it("keeps the extension's live line, hints and ANSI included", () => {
+    const running = colored(`${REVIEW_RUNNING_LINE} · pass 2/2 · 1 finding · ● verifying`);
+    expect(reviewLineText({ phase: "running", status: running })).toBe(running);
+
+    const paused = colored(REVIEW_PAUSED_LINE);
+    expect(reviewLineText({ phase: "paused", status: paused })).toBe(paused);
+
+    const handoff = colored(REVIEW_HANDOFF_LINE);
+    expect(reviewLineText({ phase: "handoff", status: handoff })).toBe(handoff);
+  });
+
+  it("adds the missing running hints to an older extension status", () => {
+    expect(
+      reviewLineText({
+        phase: "running",
+        status: "🔍 review · pass 2/2 · 1 finding · ● verifying",
+      }),
+    ).toBe(`🔍 review · pass 2/2 · 1 finding · ● verifying · ${REVIEW_RUNNING_HINT}`);
+  });
+
+  it("replaces an old paused line that omits the abort hint", () => {
+    expect(
+      reviewLineText({
+        phase: "paused",
+        status: "🔍 review paused — /review-resume to continue",
+      }),
+    ).toBe(REVIEW_PAUSED_LINE);
+  });
+
+  it("does not add running hints to the decision transition", () => {
+    expect(reviewLineText({ phase: "running", status: "🔍 review · applying the decision…" })).toBe(
+      "🔍 review · applying the decision…",
+    );
+  });
+
+  it("uses the canonical phase line when the status is absent or marker-less", () => {
+    expect(reviewLineText({ phase: "running" })).toBe(REVIEW_RUNNING_LINE);
+    expect(reviewLineText({ phase: "paused" })).toBe(REVIEW_PAUSED_LINE);
+    expect(reviewLineText({ phase: "handoff" })).toBe(REVIEW_HANDOFF_LINE);
+    expect(reviewLineText({ phase: "running", status: "🔒 modes locked" })).toBe(
+      REVIEW_RUNNING_LINE,
+    );
+    expect(reviewLineText({ phase: "running", status: colored("   ") })).toBe(REVIEW_RUNNING_LINE);
+  });
+
+  it("falls back to the working message and appends the hints", () => {
+    expect(reviewLineText({ phase: "running", workingMessage: "🔍 Reviewing plan…" })).toBe(
+      `${REVIEW_RUNNING_LINE}`,
+    );
+    expect(
+      reviewLineText({
+        phase: "running",
+        workingMessage: `🔍 Reviewing plan… · ${REVIEW_RUNNING_HINT}`,
+      }),
+    ).toBe(REVIEW_RUNNING_LINE);
+  });
+
+  it("pins the status key and the canonical fragments", () => {
+    expect(WORKFLOW_REVIEW_STATUS_KEY).toBe("workflow-review");
+    expect(REVIEW_RUNNING_LINE).toBe(`🔍 Reviewing plan… · ${REVIEW_RUNNING_HINT}`);
   });
 });

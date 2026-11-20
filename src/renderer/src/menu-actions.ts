@@ -7,6 +7,11 @@ import {
 } from "../../shared/zoom";
 import { useAppStore } from "./state/app-store";
 import { useEditorStore } from "./editor/editor-store";
+import {
+  resolveTodoPanel,
+  todoPanelToggle,
+  type TodoPanelActionId,
+} from "../../shared/workflow-todos";
 
 /**
  * Menu-command handling (plan step 1).
@@ -37,6 +42,44 @@ export function newSessionAction(): void {
   void useAppStore.getState().createSessionTab();
 }
 
+function activeSessionTabId(): string | null {
+  const store = useAppStore.getState();
+  const tab = store.activeTabId
+    ? store.tabs.find((entry) => entry.id === store.activeTabId)
+    : undefined;
+  if (!store.activeTabId || !tab || tab.kind !== "session") {
+    store.setHint("Open a session first — the todo panel belongs to a session.");
+    return null;
+  }
+  return store.activeTabId;
+}
+
+/** Runs one explicit `/todos` display verb for the active session. */
+export function runTodoPanelActionForActiveTab(action: TodoPanelActionId): void {
+  const tabId = activeSessionTabId();
+  if (!tabId) return;
+  void useAppStore.getState().runTodoPanelAction(tabId, action);
+}
+
+/** Mirrors the extension's terminal Ctrl+Alt+O on the active session. */
+export function toggleTodoPanelForActiveTab(): void {
+  const tabId = activeSessionTabId();
+  if (!tabId) return;
+  const store = useAppStore.getState();
+  const panel = resolveTodoPanel({
+    frames: store.tuiSurfaces[tabId]?.widgetsAbove ?? [],
+    widgets: store.extensionUi[tabId]?.widgets ?? [],
+    statuses: store.extensionUi[tabId]?.statuses ?? {},
+  });
+  const action = todoPanelToggle(panel).action;
+  void store.runTodoPanelAction(tabId, action);
+}
+
+/** Opens the same Sessions dialog as `/resume`, the menu and the strip button. */
+export function openSessionBrowserAction(): void {
+  void useAppStore.getState().openSessionBrowser();
+}
+
 export async function openProjectAction(deps?: Partial<MenuActionDeps>): Promise<void> {
   const api = window.pi;
   const pick = deps?.pickDirectory ?? (api ? () => api.pickDirectory() : null);
@@ -56,6 +99,15 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "new-session":
       newSessionAction();
       return;
+    case "new-terminal":
+      void store.createSessionTab("terminal");
+      return;
+    case "toggle-terminal": {
+      const existing = store.tabs.find((tab) => tab.kind === "terminal");
+      if (existing) void store.activateTab(existing.id);
+      else void store.createSessionTab("terminal");
+      return;
+    }
     case "open-project":
       void openProjectAction(deps);
       return;
@@ -89,6 +141,21 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
       return;
     case "view-sessions":
       void store.openSessionBrowser();
+      return;
+    case "todos-auto":
+      runTodoPanelActionForActiveTab("auto");
+      return;
+    case "todos-expand":
+      runTodoPanelActionForActiveTab("expand");
+      return;
+    case "todos-collapse":
+      runTodoPanelActionForActiveTab("collapse");
+      return;
+    case "todos-hide":
+      runTodoPanelActionForActiveTab("hide");
+      return;
+    case "todos-toggle":
+      toggleTodoPanelForActiveTab();
       return;
     case "next-tab":
       void store.cycleTab(1);
@@ -218,6 +285,9 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
     case "view-diagnostics":
       store.setView("diagnostics");
       return;
+    case "view-updates":
+      store.setView("updates");
+      return;
     case "view-office":
       // Pi for Office is an integration, not a primary view (plan D-A10): the
       // menu item opens the Extensions hub on its Integrations card.
@@ -227,13 +297,12 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
       store.setShortcutsHelpOpen(true);
       return;
     case "check-updates":
-      // Opens the durable About & updates card and starts a check; the status
-      // bar then carries available/downloading/downloaded, and the card carries
-      // every outcome including a missing published feed.
-      store.openUpdateSettings({ check: true });
+      // Opens the About & updates view and starts a check; the bell carries the
+      // offer and the view carries every outcome including a missing feed.
+      store.openUpdatesView({ check: true });
       return;
     case "view-about":
-      store.openUpdateSettings();
+      store.openUpdatesView();
       return;
     default: {
       // Exhaustive today: every MenuCommand is handled above, so `command` is

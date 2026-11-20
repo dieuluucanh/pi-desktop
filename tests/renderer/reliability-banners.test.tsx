@@ -7,7 +7,7 @@ import {
   useAppStore,
 } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
-import { installBridge } from "./fixtures";
+import { installBridge, removeBridge } from "./fixtures";
 
 /**
  * The reliability banners (plan step 22): safe mode must be visible whenever
@@ -79,5 +79,17 @@ describe("reliability banners", () => {
     expect(screen.getByTestId("stale-host-banner")).toHaveTextContent(HOST_STALE_MESSAGE);
     fireEvent.click(screen.getByText(/restart session/i));
     await waitFor(() => expect(restart).toHaveBeenCalledWith("tab-1"));
+  });
+
+  it("explains that a browser at the dev server is Pi Desktop, not the project", async () => {
+    removeBridge();
+
+    render(<App />);
+
+    // jsdom serves the page over http:, like `electron-vite dev` does; the hint
+    // must never appear for the packaged file: page.
+    expect(await screen.findByTestId("bridge-missing-hint")).toHaveTextContent(
+      /own renderer dev server/i,
+    );
   });
 });

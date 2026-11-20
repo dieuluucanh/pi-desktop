@@ -1,9 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { TabRecord } from "../../src/shared/session-ipc";
-import type { SessionSummary } from "../../src/shared/session-browser";
+import { normalizeSessionListQuery, type SessionSummary } from "../../src/shared/session-browser";
 import { ForkDialog } from "../../src/renderer/src/sessions/ForkDialog";
 import { SessionBrowserDialog } from "../../src/renderer/src/sessions/SessionBrowser";
 import { SessionTreeDialog } from "../../src/renderer/src/sessions/SessionTree";
@@ -68,9 +68,18 @@ function resetStore(): void {
     sessionStates: {},
     sessionBrowserOpen: false,
     sessionBrowserQuery: "",
+    sessionBrowserScope: "all",
+    sessionBrowserSort: "recent",
+    sessionBrowserNamedOnly: false,
+    projectSessionsQuery: normalizeSessionListQuery(),
     projectSessions: [],
     projectSessionsLoaded: true,
     projectSessionsError: null,
+    projectSessionsErrorKind: null,
+    projectSessionsSearching: false,
+    projectSessionsTotal: 0,
+    projectSessionsMatched: 0,
+    projectSessionsTruncated: false,
     sessionTreeOpen: false,
     sessionTreeTabId: null,
     sessionTree: null,
@@ -114,8 +123,160 @@ describe("SessionBrowserDialog", () => {
     });
   });
 
-  it("filters the list with the search box", async () => {
+  it("hides the browser as soon as a row's title is clicked", async () => {
+    const { bridge } = installBridge();
+    let release!: (value: { tabs: TabRecord[]; activeTabId: string | null }) => void;
+    const pending = new Promise<{ tabs: TabRecord[]; activeTabId: string | null }>((resolve) => {
+      release = resolve;
+    });
+    const create = vi.fn(() => pending);
+    (bridge.sessions as unknown as { create: unknown }).create = create;
+    useAppStore.setState({
+      sessionBrowserOpen: true,
+      projectSessions: [summary()],
+      projectSessionsLoaded: true,
+    });
+
+    render(<SessionBrowserDialog />);
+    await userEvent.click(screen.getByRole("button", { name: "Fix host protocol" }));
+
+    // The host is still opening the session; the pick itself must dismiss.
+    await waitFor(() => expect(screen.queryByTestId("session-browser")).toBeNull());
+    expect(useAppStore.getState().sessionBrowserOpen).toBe(false);
+    expect(create).toHaveBeenCalledTimes(1);
+
+    release({ tabs: [tab()], activeTabId: "tab-1" });
+    await waitFor(() => expect(useAppStore.getState().tabs).toHaveLength(1));
+  });
+
+  it("hides the browser when the play button starts a resume", async () => {
+    const { bridge } = installBridge();
+    let release!: (value: { tabs: TabRecord[]; activeTabId: string | null }) => void;
+    const pending = new Promise<{ tabs: TabRecord[]; activeTabId: string | null }>((resolve) => {
+      release = resolve;
+    });
+    (bridge.sessions as unknown as { create: unknown }).create = vi.fn(() => pending);
+    useAppStore.setState({
+      sessionBrowserOpen: true,
+      projectSessions: [summary()],
+      projectSessionsLoaded: true,
+    });
+
+    render(<SessionBrowserDialog />);
+    await userEvent.click(screen.getByRole("button", { name: "Resume session" }));
+
+    await waitFor(() => expect(screen.queryByTestId("session-browser")).toBeNull());
+    expect(useAppStore.getState().sessionBrowserOpen).toBe(false);
+
+    release({ tabs: [tab()], activeTabId: "tab-1" });
+    await waitFor(() => expect(useAppStore.getState().tabs).toHaveLength(1));
+  });
+
+  it("hides the browser when Continue starts the resume", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async () => ({
+      sessions: [summary()],
+      total: 1,
+      matched: 1,
+      truncated: false,
+      error: null,
+    }));
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+    let release!: (value: { tabs: TabRecord[]; activeTabId: string | null }) => void;
+    const pending = new Promise<{ tabs: TabRecord[]; activeTabId: string | null }>((resolve) => {
+      release = resolve;
+    });
+    (bridge.sessions as unknown as { create: unknown }).create = vi.fn(() => pending);
+    useAppStore.setState({
+      sessionBrowserOpen: true,
+      projectSessions: [summary()],
+      projectSessionsLoaded: true,
+    });
+
+    render(<SessionBrowserDialog />);
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    // Continue looks the newest row up first; the dialog closes as soon as the
+    // resume starts, not when the host has loaded the session.
+    await waitFor(() => expect(screen.queryByTestId("session-browser")).toBeNull());
+    expect(useAppStore.getState().sessionBrowserOpen).toBe(false);
+
+    release({ tabs: [tab()], activeTabId: "tab-1" });
+    await waitFor(() => expect(useAppStore.getState().tabs).toHaveLength(1));
+  });
+
+  it("marks the session in the active tab as current", () => {
     installBridge();
+    const current = tab({ id: "tab-current", sessionFile: `${WORK}\\sessions\\s1.jsonl` });
+    useAppStore.setState({
+      sessionBrowserOpen: true,
+      projectSessions: [
+        summary(),
+        summary({ path: `${WORK}\\sessions\\s2.jsonl`, id: "s2", name: "Second task" }),
+      ],
+      projectSessionsLoaded: true,
+      tabs: [current],
+      activeTabId: current.id,
+    });
+
+    render(<SessionBrowserDialog />);
+
+    const badge = screen.getByTestId("session-current");
+    expect(badge).toHaveTextContent("Current");
+    expect(badge.closest("li")).toHaveAttribute("aria-current", "true");
+    // Only the focused tab's session is marked; the other row stays plain.
+    expect(screen.getAllByTestId("session-row")).toHaveLength(2);
+    expect(screen.getAllByTestId("session-current")).toHaveLength(1);
+  });
+
+  it("returns to the current session when its row is picked", async () => {
+    const { bridge } = installBridge();
+    const create = vi.fn(async () => ({ tabs: [], activeTabId: null }));
+    (bridge.sessions as unknown as { create: unknown }).create = create;
+    const activate = vi.fn(async (tabId: string) => ({
+      tabs: useAppStore.getState().tabs,
+      activeTabId: tabId,
+    }));
+    (bridge.sessions as unknown as { activate: unknown }).activate = activate;
+    (bridge.sessions as unknown as { request: unknown }).request = vi.fn(async () => ({
+      sessions: [summary()],
+      total: 1,
+      matched: 1,
+      truncated: false,
+      error: null,
+    }));
+    const current = tab({ id: "tab-current", sessionFile: `${WORK}\\sessions\\s1.jsonl` });
+    useAppStore.setState({
+      sessionBrowserOpen: true,
+      projectSessions: [summary()],
+      projectSessionsLoaded: true,
+      tabs: [current],
+      activeTabId: current.id,
+    });
+
+    render(<SessionBrowserDialog />);
+    await userEvent.click(screen.getByRole("button", { name: "Fix host protocol" }));
+
+    await waitFor(() => expect(screen.queryByTestId("session-browser")).toBeNull());
+    // Picking the session you are in returns to it; it never opens a second tab.
+    expect(create).not.toHaveBeenCalled();
+    expect(activate).toHaveBeenCalledWith(current.id);
+  });
+
+  it("asks the host for a filtered page and renders its rows", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async (input: { method: string }) =>
+      input.method === "session.list"
+        ? {
+            sessions: [summary({ path: "/p/a.jsonl", id: "a", name: "Alpha task" })],
+            total: 2,
+            matched: 1,
+            truncated: false,
+            error: null,
+          }
+        : {},
+    );
+    (bridge.sessions as unknown as { request: unknown }).request = request;
     useAppStore.setState({
       sessionBrowserOpen: true,
       projectSessions: [
@@ -123,13 +284,91 @@ describe("SessionBrowserDialog", () => {
         summary({ path: "/p/b.jsonl", id: "b", name: "Beta task" }),
       ],
       projectSessionsLoaded: true,
+      projectSessionsTotal: 2,
+      projectSessionsMatched: 2,
     });
 
     render(<SessionBrowserDialog />);
     await userEvent.type(screen.getByLabelText("Search sessions"), "alpha");
 
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: "session.list",
+          params: expect.objectContaining({ query: "alpha" }),
+        }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByText("Beta task")).not.toBeInTheDocument());
     expect(screen.getByText("Alpha task")).toBeInTheDocument();
-    expect(screen.queryByText("Beta task")).not.toBeInTheDocument();
+  });
+
+  it("switches scope with the request, not just the tab", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async (input: { method: string; params?: Record<string, unknown> }) => {
+      if (input.method !== "session.list") return {};
+      const current = input.params?.scope === "current";
+      return {
+        sessions: current
+          ? [summary({ path: `${WORK}\\sessions\\cur.jsonl`, id: "cur", name: "Current only" })]
+          : [
+              summary({ path: `${WORK}\\sessions\\cur.jsonl`, id: "cur", name: "Current only" }),
+              summary({
+                path: "C:\\work\\other\\sessions\\other.jsonl",
+                id: "other",
+                cwd: "C:\\work\\other",
+                name: "Other project",
+              }),
+            ],
+        total: 2,
+        matched: current ? 1 : 2,
+        truncated: false,
+        error: null,
+      };
+    });
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+    useAppStore.setState({
+      sessionBrowserOpen: true,
+      project: { path: WORK, name: "pi-desktop" },
+      sessionBrowserScope: "current",
+      projectSessionsQuery: normalizeSessionListQuery({ scope: "current", cwd: WORK }),
+      projectSessions: [
+        summary({ path: `${WORK}\\sessions\\cur.jsonl`, id: "cur", name: "Current only" }),
+      ],
+      projectSessionsLoaded: true,
+    });
+
+    render(<SessionBrowserDialog />);
+    expect(screen.getByRole("tab", { name: "This project" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "All sessions" }));
+
+    await waitFor(() => expect(screen.getByText("Other project")).toBeInTheDocument());
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "session.list",
+        params: expect.objectContaining({ scope: "all" }),
+      }),
+    );
+  });
+
+  it("shows a query error instead of an empty list", () => {
+    installBridge();
+    useAppStore.setState({
+      sessionBrowserOpen: true,
+      projectSessions: [],
+      projectSessionsLoaded: true,
+      projectSessionsError: "Unterminated group",
+      projectSessionsErrorKind: "query",
+      projectSessionsTotal: 4,
+    });
+
+    render(<SessionBrowserDialog />);
+    expect(screen.getByRole("alert")).toHaveTextContent(/Invalid regular expression/);
+    expect(screen.queryByText(/No sessions yet/)).not.toBeInTheDocument();
   });
 
   it("asks before deleting, then trashes the session", async () => {

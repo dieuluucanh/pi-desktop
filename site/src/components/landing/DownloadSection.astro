@@ -1,0 +1,80 @@
+---
+import { RELEASES_FALLBACK, PLATFORMS } from "../../data/platforms";
+import { staticAssetUrl } from "../../lib/downloads";
+import { withBase } from "../../../site.config.mjs";
+
+interface Props {
+  version: string;
+}
+
+const { version } = Astro.props;
+
+/** A direct release-asset URL, or the Releases page when the version is unusable. */
+const installUrl = (suffix: string): string => staticAssetUrl(version, suffix) || RELEASES_FALLBACK;
+---
+
+<section class="pi-section" id="download" aria-labelledby="pi-download-title">
+  <p class="pi-kicker">Installation</p>
+  <h2 id="pi-download-title">Download for your platform</h2>
+  <p class="pi-section__lede">
+    Every button downloads an installer straight from GitHub Releases. No JavaScript is needed to
+    download; the page uses it to preselect your platform and to follow the newest published
+    release. While a new release is still publishing, the buttons keep the current published
+    installer and the status line says so.
+  </p>
+  <p data-download-status aria-live="polite" class="pi-download__fine"></p>
+  <div class="pi-download-grid pi-platform-grid">
+    {PLATFORMS.map((platform) => (
+      <article class="pi-download-card" data-platform={platform.id}>
+        <div class="pi-download-card__head">
+          <h3>{platform.label}</h3>
+          <div class="pi-download-card__badges">
+            <span class="pi-badge pi-badge--gold pi-platform-flag">Your platform</span>
+            <span class:list={["pi-badge", platform.status === "primary" ? "pi-badge--gold" : ""]}>
+              {platform.status}
+            </span>
+          </div>
+        </div>
+        <p class="pi-download-card__arch">{platform.arch}</p>
+        <a
+          class="pi-button pi-button--primary pi-download-card__cta"
+          href={installUrl(platform.primary.suffix)}
+          data-download-suffix={platform.primary.suffix}
+          data-download-label={platform.primary.label}
+        >
+          {platform.primary.label}
+        </a>
+        <ul class="pi-download-card__alternates">
+          {platform.alternates.map((alternate) => (
+            <li>
+              <a
+                href={installUrl(alternate.suffix)}
+                data-download-suffix={alternate.suffix}
+                data-download-label={alternate.label}
+              >
+                {alternate.label}
+              </a>
+            </li>
+          ))}
+        </ul>
+        <p class="pi-download-card__note">{platform.note}</p>
+      </article>
+    ))}
+  </div>
+  <p class="pi-download__fine">
+    <a href={RELEASES_FALLBACK} target="_blank" rel="noopener noreferrer">
+      All releases, manifests and checksums on GitHub
+    </a>
+    · <a href={withBase(`/releases/v${version}/`)}>Release notes</a>
+  </p>
+  <noscript>
+    <p>
+      The buttons above download the installer directly. Choose the card that matches your machine;
+      GitHub Releases lists every file.
+    </p>
+  </noscript>
+</section>
+
+<script>
+  import "../../scripts/downloads";
+</script>

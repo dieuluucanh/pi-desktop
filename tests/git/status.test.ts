@@ -3,8 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseStatus, readStashes, readStatus } from "../../src/git/status";
-import { createNodeGitRunner } from "../../src/git/runner";
-import { MAX_STATUS_PATHS } from "../../src/shared/git";
+import { createFakeGitRunner, createNodeGitRunner } from "../../src/git/runner";
+import { MAX_STATUS_PATHS, isSafeRepoPath } from "../../src/shared/git";
 import { gitFixture, type GitFixture } from "./fixture";
 
 /**
@@ -108,6 +108,14 @@ describe("parseStatus", () => {
         unstaged: true,
       },
     ]);
+  });
+
+  it("skips a nested repository's folder record", () => {
+    // `-uall` descends into every untracked folder except another repository,
+    // which git still reports as one trailing-slash record.
+    const parsed = parseStatus(z("? nested/"));
+    expect(parsed.changed).toEqual([]);
+    expect(parsed.total).toBe(0);
   });
 
   it("drops ignored paths", () => {
@@ -215,6 +223,37 @@ describe("status against a real repository", () => {
     });
   });
 
+  it("lists each file inside a brand-new folder", async () => {
+    await withFixture(async (fixture) => {
+      await fixture.write("feature/new/deep.ts", "export const deep = 1;\n");
+      await fixture.write("feature/new/second.ts", "export const second = 2;\n");
+
+      const parsed = await readStatus(createNodeGitRunner(), fixture.root);
+      expect(parsed.ok).toBe(true);
+
+      const paths = parsed.changed.map((entry) => entry.path);
+      expect(paths).toContain("feature/new/deep.ts");
+      expect(paths).toContain("feature/new/second.ts");
+      // A folder row cannot be staged or diffed by this panel.
+      expect(paths.some((path) => path.endsWith("/"))).toBe(false);
+      // The wire sanitizer refuses anything this parser emits — the contract
+      // that silently dropped the pre-`-uall` folder record.
+      expect(paths.every((path) => isSafeRepoPath(path))).toBe(true);
+      expect(parsed.changed.find((entry) => entry.path === "feature/new/deep.ts")?.status).toBe(
+        "untracked",
+      );
+    });
+  });
+
+  it("skips a nested repository", async () => {
+    await withFixture(async (fixture) => {
+      await fixture.git(["init", "nested"]);
+
+      const parsed = await readStatus(createNodeGitRunner(), fixture.root);
+      expect(parsed.changed.some((entry) => entry.path.startsWith("nested"))).toBe(false);
+    });
+  });
+
   it("reads a committed rename with a CJK name and a space", async () => {
     await withFixture(async (fixture) => {
       // A rename is only detectable against a commit, so commit the source first.
@@ -271,6 +310,16 @@ describe("status against a real repository", () => {
     } finally {
       await rm(plain, { recursive: true, force: true });
     }
+  });
+});
+
+describe("readStatus argv", () => {
+  it("asks git for every untracked file, not just the folder", async () => {
+    const runner = createFakeGitRunner([{ args: ["status"], stdout: "" }]);
+
+    await readStatus(runner, "/repo");
+
+    expect(runner.calls[0]?.args).toContain("--untracked-files=all");
   });
 });
 

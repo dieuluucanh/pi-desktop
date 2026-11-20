@@ -70,7 +70,7 @@ function resetStore(): void {
     transcripts: {},
     sessionStates: {},
     draftHistory: {},
-    historyIndex: {},
+    historyBrowse: {},
     picker: null,
   });
 }

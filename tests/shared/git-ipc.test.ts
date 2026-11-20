@@ -87,6 +87,34 @@ describe("parseGitDiffRequest", () => {
     expect(parseGitDiffRequest({ staged: true })).toEqual({ staged: true });
   });
 
+  it("accepts an untracked read with a path", () => {
+    expect(parseGitDiffRequest({ path: "new.ts", untracked: true })).toEqual({
+      path: "new.ts",
+      untracked: true,
+    });
+    expect(parseGitDiffRequest({ path: "new.ts", untracked: false })).toEqual({
+      path: "new.ts",
+      untracked: false,
+    });
+  });
+
+  it("refuses an untracked read without a path or on another side", () => {
+    const sha = "a".repeat(40);
+    expect(() => parseGitDiffRequest({ untracked: true })).toThrow(/needs a path/);
+    expect(() => parseGitDiffRequest({ path: "new.ts", untracked: true, staged: true })).toThrow(
+      /working-tree read/,
+    );
+    expect(() => parseGitDiffRequest({ path: "new.ts", untracked: true, commit: sha })).toThrow(
+      /working-tree read/,
+    );
+  });
+
+  it("refuses a non-boolean untracked flag", () => {
+    expect(() => parseGitDiffRequest({ path: "new.ts", untracked: "yes" })).toThrow(
+      /untracked must be a boolean/,
+    );
+  });
+
   it("refuses an unsafe path", () => {
     expect(() => parseGitDiffRequest({ path: "../secret" })).toThrow(/invalid diff path/);
     expect(() => parseGitDiffRequest({ path: "/etc/passwd" })).toThrow(/invalid diff path/);

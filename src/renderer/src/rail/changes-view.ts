@@ -7,7 +7,12 @@
  * layout.
  */
 
-import type { GitFileEntry, GitSnapshot, GitUnavailableReason } from "../../../shared/git";
+import type {
+  GitDiffRequest,
+  GitFileEntry,
+  GitSnapshot,
+  GitUnavailableReason,
+} from "../../../shared/git";
 
 /** The two lists, plus the group-level actions they allow. */
 export interface ChangesGroups {
@@ -27,8 +32,8 @@ export interface ChangesGroups {
 
 /** Derives the two groups from a snapshot (or an absent one). */
 export function groupsOf(snapshot: GitSnapshot | undefined): ChangesGroups {
-  const staged = snapshot?.staged ?? [];
-  const changed = snapshot?.changed ?? [];
+  const staged = orderFiles(snapshot?.staged ?? []);
+  const changed = orderFiles(snapshot?.changed ?? []);
   return {
     staged,
     changed,
@@ -44,6 +49,36 @@ export function groupsOf(snapshot: GitSnapshot | undefined): ChangesGroups {
 /** True when the file is a path git does not track yet. */
 export function isUntracked(file: GitFileEntry): boolean {
   return file.status === "untracked";
+}
+
+/**
+ * The diff request a row's path click (or its Show diff icon) sends.
+ *
+ * A staged row reads the index side; an untracked file has no index side, so it
+ * is a work-tree read the engine answers with a synthesised full-file diff;
+ * everything else is the ordinary work-tree diff.
+ */
+export function diffRequestFor(file: GitFileEntry, staged: boolean): GitDiffRequest {
+  if (staged) return { path: file.path, staged: true };
+  if (isUntracked(file)) return { path: file.path, untracked: true };
+  return { path: file.path };
+}
+
+/** True when the work-tree file exists, so an editor tab can open it. */
+export function canOpenFile(file: GitFileEntry): boolean {
+  return file.status !== "deleted";
+}
+
+/**
+ * Path order for the two groups (VS Code's SCM order). Numeric-aware so `f2`
+ * sorts before `f10`, case-insensitive so `A.ts` and `a.ts` do not straddle the
+ * list, with the raw path as a deterministic tie-break.
+ */
+export function orderFiles(files: readonly GitFileEntry[]): GitFileEntry[] {
+  return [...files].sort((a, b) => {
+    const byPath = a.path.localeCompare(b.path, "en", { numeric: true, sensitivity: "base" });
+    return byPath === 0 ? a.path.localeCompare(b.path) : byPath;
+  });
 }
 
 /**
@@ -129,6 +164,14 @@ export function emptyStateFor(
         body:
           snapshot?.message ??
           "A merge, rebase or cherry-pick is in progress. Finish it in a terminal first.",
+        action: null,
+      };
+    case "timeout":
+      return {
+        title: "Git did not answer",
+        body:
+          snapshot?.message ??
+          "Git timed out while reading this repository. Try again, or use a terminal.",
         action: null,
       };
     default:

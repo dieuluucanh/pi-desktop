@@ -4,8 +4,9 @@
  *
  * No provider is contacted — this asserts the wiring: services come up, the SDK
  * writes a v3 JSONL session header, state/settings are readable, and the session
- * can be resumed from its own file. Network-dependent prompt streaming is covered
- * by the fake-provider harness in plan step 24.
+ * can be resumed from its own file. The model-switch case needs a configured
+ * provider in the throw-away profile; it skips otherwise. Network-dependent
+ * prompt streaming is covered by the fake-provider harness in plan step 24.
  */
 
 import { mkdtempSync } from "node:fs";
@@ -54,13 +55,15 @@ function buildCore(): SessionCore {
     },
     openSessionManager: (sessionFile, cwd, sessionDir) =>
       SessionManager.open(sessionFile, sessionDir, cwd) as never,
-    listSessions: (cwd) => SessionManager.list(cwd) as Promise<never[]>,
     createRuntime: async (request) => {
       const created = await createSdkSessionRuntime({
         cwd: request.cwd,
         agentDir: request.agentDir,
         sessionManager: request.sessionManager as never,
         ...(request.projectTrusted === undefined ? {} : { projectTrusted: request.projectTrusted }),
+        // Forward the phase hook exactly as the composition root does, so this
+        // suite measures the same legs the app reports (2026-11-07 plan).
+        ...(request.onPhase ? { onPhase: request.onPhase } : {}),
       });
       return { runtime: created.runtime, session: created.session };
     },
@@ -124,9 +127,6 @@ describe("session core against the real SDK", () => {
 
     const tools = (await call(core, "tools.list")) as { tools: unknown[] };
     expect(Array.isArray(tools.tools)).toBe(true);
-
-    const listed = (await call(core, "session.list")) as { sessions: unknown[] };
-    expect(Array.isArray(listed.sessions)).toBe(true);
   }, 180_000);
 
   it("reports the model catalog, provider auth and thinking levels", async () => {
@@ -152,6 +152,36 @@ describe("session core against the real SDK", () => {
       // Every provider has an answer, which is what the "Sign in" badge reads.
       expect(available.auth).toHaveProperty(model.provider ?? "");
     }
+  }, 180_000);
+
+  it("reports the open phase breakdown and stays inside a loose budget", async () => {
+    core = buildCore();
+    const created = (await call(core, "session.create")) as { sessionFile: string };
+
+    const first = core.lastOpenTimings?.() ?? null;
+    expect(first).not.toBeNull();
+    expect(first!.servicesMs).toBeGreaterThan(0);
+    expect(first!.totalMs).toBeGreaterThanOrEqual(first!.servicesMs);
+
+    // Resume through the in-place switch path; the SDK owns the legs there, so
+    // only the total is asserted.
+    const resumed = (await call(core, "session.resume", {
+      sessionFile: created.sessionFile,
+    })) as { sessionFile: string };
+    expect(resumed.sessionFile).toBe(created.sessionFile);
+    const second = core.lastOpenTimings?.() ?? null;
+    expect(second?.totalMs).toBeGreaterThan(0);
+
+    // Report rather than gate: a shared machine owns the absolute numbers. The
+    // loose ceiling only catches a hang (a wedged open would sit in the SDK).
+    console.info(
+      `[perf] live open: create ${first!.totalMs} ms ` +
+        `(services ${first!.servicesMs}, scope ${first!.scopeMs}, session ${first!.sessionMs}, ` +
+        `bind ${first!.bindMs}, reconcile ${first!.reconcileMs}) · ` +
+        `resume ${second?.totalMs ?? 0} ms`,
+    );
+    expect(first!.totalMs).toBeLessThan(120_000);
+    expect(second!.totalMs).toBeLessThan(120_000);
   }, 180_000);
 
   it("switches model mid-session, records a model_change entry, and resumes with it", async (ctx) => {

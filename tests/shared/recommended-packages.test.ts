@@ -9,9 +9,10 @@ import {
 import { PI_OFFICE_BRIDGE } from "../../src/shared/office";
 
 /**
- * The recommended set (plan step 13). The list is checked in, so the one name
- * this repo can prove — the Office bridge — is pinned here; everything else is
- * an npm source that the package manager must resolve at install time.
+ * The recommended set. The list is checked in, so the exact ordered id list and
+ * the one name this repo can prove — the Office bridge — are pinned here;
+ * everything else is an npm source that the package manager must resolve at
+ * install time.
  */
 
 describe("recommended packages", () => {
@@ -29,6 +30,32 @@ describe("recommended packages", () => {
     for (const entry of RECOMMENDED_PACKAGES) {
       expect(entry.source.startsWith("npm:")).toBe(true);
       expect(packageNameOf(entry.source)).toBe(entry.name);
+    }
+  });
+
+  it("pins the exact set, in the order the UI renders", () => {
+    expect(RECOMMENDED_PACKAGES.map((entry) => entry.id)).toEqual([
+      "dieulc-autocompact",
+      "pi-office-bridge",
+      "dieulc-workflow",
+      "plannotator",
+      "pi-lens",
+      "pi-memory",
+      "pi-web-access",
+    ]);
+  });
+
+  it("does not recommend packages that were dropped from the set", () => {
+    const names = RECOMMENDED_PACKAGES.map((entry) => entry.name);
+    expect(names).not.toContain("@dieulc/server-logs");
+    expect(names).not.toContain("pi-commandcode-provider");
+  });
+
+  it("keeps every card renderable: a chip label and a description", () => {
+    for (const entry of RECOMMENDED_PACKAGES) {
+      expect(entry.provides.trim()).not.toBe("");
+      expect(entry.provides.length).toBeLessThanOrEqual(24);
+      expect(entry.description.trim()).not.toBe("");
     }
   });
 

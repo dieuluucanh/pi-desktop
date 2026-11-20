@@ -120,6 +120,34 @@ describe("SessionFooter", () => {
     expect(workflow).toHaveAttribute("title", "Extension status: workflow\n⏸ plan");
   });
 
+  it("omits promoted status keys and keeps the rest of the rail", () => {
+    render(
+      <SessionFooter
+        facts={{}}
+        statuses={{
+          workflow: "🔍 review",
+          "workflow-review": "🔍 Reviewing plan… · /review-pause",
+        }}
+        hiddenStatusKeys={["workflow-review"]}
+      />,
+    );
+
+    expect(screen.getByTestId("extension-status-workflow")).toHaveTextContent("🔍 review");
+    expect(screen.queryByTestId("extension-status-workflow-review")).toBeNull();
+  });
+
+  it("does not keep an otherwise empty rail alive for a hidden status", () => {
+    const { container } = render(
+      <SessionFooter
+        facts={{}}
+        statuses={{ "workflow-review": "🔍 Reviewing plan…" }}
+        hiddenStatusKeys={["workflow-review"]}
+      />,
+    );
+
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it("renders the status row even without session facts", () => {
     render(<SessionFooter facts={{}} statuses={{ "server-logs": "tailing app.log" }} />);
     expect(screen.getByTestId("session-footer-statuses")).toBeInTheDocument();

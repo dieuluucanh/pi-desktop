@@ -25,6 +25,7 @@ import { requireProjectPath } from "../../src/shared/git";
 type Handler = (...args: unknown[]) => unknown;
 
 const handlers = new Map<string, Handler>();
+const listeners = new Map<string, Handler>();
 
 vi.mock("electron", () => ({
   BrowserWindow: { getAllWindows: (): unknown[] => [] },
@@ -32,6 +33,10 @@ vi.mock("electron", () => ({
     handle: (channel: string, handler: Handler): void => {
       handlers.set(channel, handler);
     },
+    on: (channel: string, handler: Handler): void => {
+      listeners.set(channel, handler);
+    },
+    removeListener: (): void => undefined,
   },
   shell: { showItemInFolder: (): void => undefined },
 }));
@@ -43,6 +48,7 @@ interface Recording {
   officeCalls: { kind: string; tabId?: string; takeover?: boolean }[];
   workspaceCalls: { kind: string; input?: unknown }[];
   sessionCalls: { kind: string; arg?: unknown }[];
+  tuiFocusCalls: { windowId: number; tabId: string | null }[];
 }
 
 const OPEN_PROJECT = "/work/app";
@@ -89,10 +95,29 @@ async function register(recording: Recording): Promise<void> {
     setTitle: () => true,
     relaunch: () => true,
     prefs: { get: async () => DEFAULT_PREFS, set: async () => DEFAULT_PREFS },
+    terminal: {
+      create: async () => ({ kind: "error", code: "not_found", message: "unused" }) as never,
+      attach: async () => null,
+      write: async () => undefined,
+      resize: async () => undefined,
+      close: async () => false,
+      ack: () => undefined,
+      list: async () => [],
+      profiles: async () => ({ profiles: [], defaultProfileId: null, problems: [] }),
+      setFocus: () => undefined,
+    },
+    tui: {
+      setFocus: (windowId, tabId) => {
+        recording.tuiFocusCalls.push({ windowId, tabId });
+      },
+    },
     sessions: {
       knownTabIds: () => ["t1"],
       list: envelope,
-      create: async () => envelope(),
+      create: async (input) => {
+        recording.sessionCalls.push({ kind: "create", arg: input });
+        return envelope();
+      },
       close: async () => envelope(),
       closeAll: async (kind) => {
         recording.sessionCalls.push({ kind: "closeAll", arg: kind });
@@ -124,6 +149,8 @@ async function register(recording: Recording): Promise<void> {
       reconcile: async () => envelope(),
       restore: async () => envelope(),
       restart: async () => envelope(),
+      stop: async () => envelope(),
+      ensure: async () => envelope(),
       request: async () => null,
       deleteSession: async () => ({ ok: true }) as never,
     },
@@ -322,6 +349,13 @@ function invoke(channel: string, ...args: unknown[]): unknown {
   return handler({}, ...args);
 }
 
+/** Delivers one `ipcMain.on` frame from a fake window, like a renderer send. */
+function send(channel: string, senderId: number, payload: unknown): void {
+  const listener = listeners.get(channel);
+  if (!listener) throw new Error(`no listener for ${channel}`);
+  listener({ sender: { id: senderId } }, payload);
+}
+
 let recording: Recording;
 
 beforeEach(async () => {
@@ -332,6 +366,7 @@ beforeEach(async () => {
     officeCalls: [],
     workspaceCalls: [],
     sessionCalls: [],
+    tuiFocusCalls: [],
   };
   await register(recording);
 });
@@ -507,6 +542,27 @@ describe("checkpoint action validation", () => {
 });
 
 describe("session tab lifecycle channels", () => {
+  it("forwards a terminal profile id and rejects it elsewhere", async () => {
+    await invoke(IPC.sessionCreate, {
+      cwd: OPEN_PROJECT,
+      kind: "terminal",
+      profileId: "git-bash",
+    });
+    expect(recording.sessionCalls).toEqual([
+      {
+        kind: "create",
+        arg: { cwd: OPEN_PROJECT, kind: "terminal", profileId: "git-bash" },
+      },
+    ]);
+
+    expect(() =>
+      invoke(IPC.sessionCreate, { cwd: OPEN_PROJECT, kind: "session", profileId: "git-bash" }),
+    ).toThrow(/only valid for a terminal/);
+    expect(() =>
+      invoke(IPC.sessionCreate, { cwd: OPEN_PROJECT, kind: "terminal", profileId: "../x" }),
+    ).toThrow(/invalid terminal profile/);
+  });
+
   it("forwards kind-scoped close, project close, pin and retarget", async () => {
     await invoke(IPC.sessionCloseAll, "editor");
     await invoke(IPC.sessionCloseProject, "/work/app/");
@@ -705,5 +761,31 @@ describe("workspace mutation channels", () => {
       }),
     ).rejects.toThrow(/not an open project/);
     expect(recording.workspaceCalls).toEqual([]);
+  });
+});
+
+describe("extension TUI focus frames", () => {
+  it("records the focused tab and clears it when focus leaves", () => {
+    send(IPC.tuiFocus, 7, { tabId: "t1", focused: true });
+    expect(recording.tuiFocusCalls).toEqual([{ windowId: 7, tabId: "t1" }]);
+
+    send(IPC.tuiFocus, 7, { tabId: "t1", focused: false });
+    expect(recording.tuiFocusCalls).toEqual([
+      { windowId: 7, tabId: "t1" },
+      { windowId: 7, tabId: null },
+    ]);
+  });
+
+  it("drops a malformed frame instead of clearing another tab", () => {
+    const malformed = [
+      null,
+      {},
+      { tabId: "", focused: true },
+      { tabId: "t1", focused: "yes" },
+      { tabId: 1, focused: true },
+      { tabId: "x".repeat(129), focused: true },
+    ];
+    for (const payload of malformed) send(IPC.tuiFocus, 7, payload);
+    expect(recording.tuiFocusCalls).toEqual([]);
   });
 });

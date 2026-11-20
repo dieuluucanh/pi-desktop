@@ -1,4 +1,10 @@
 import type { HostMethod, HostRole } from "../shared/host-protocol";
+import {
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  HostAlreadyRunningError,
+  HostStoppedError,
+  HostTimeoutError,
+} from "./host-supervisor";
 import type { CommandCompleteResult } from "../shared/commands";
 import {
   appendIncident,
@@ -26,9 +32,11 @@ import {
 import { sameFolder } from "../shared/rail-scope";
 import { MAX_GRID_PANES } from "../shared/session-grid";
 import { moveTabWithinPinGroup, partitionPinnedTabs } from "../shared/tab-order";
+import { nextActiveTabAfterClose } from "./tab-selection";
 import { PI_OFFICE_BRIDGE } from "../shared/office";
 import {
   CONTROL_TAB_ID,
+  SESSION_ASLEEP_MESSAGE,
   isEditorTab,
   isHostBackedTab,
   isSessionBusyState,
@@ -43,7 +51,40 @@ import {
   type TabKind,
   type TabRecord,
   type TabStatus,
+  type TabStopReason,
 } from "../shared/session-ipc";
+import { collapseDuplicateSessionTabs, findTabBySessionFile } from "../shared/session-file";
+
+/**
+ * Methods whose answer scans the whole profile get more than the supervisor's
+ * 30 s default. `session.list` reads every session JSONL once (and the control
+ * host then caches it), so a several-hundred-megabyte profile can legitimately
+ * take longer than an ordinary request.
+ */
+export const HOST_OPEN_TIMEOUT_MS = 90_000;
+
+const REQUEST_TIMEOUT_OVERRIDES: Readonly<Partial<Record<HostMethod, number>>> = {
+  "session.list": 120_000,
+  "messages.get": 60_000,
+  "tree.get": 60_000,
+  // Opening a session loads its whole JSONL (multi-megabyte in a long-lived
+  // profile) and boots the extension stack. 30 s was enough to time out a
+  // healthy host and then look like "the session stopped responding"
+  // (2026-11-06 hang plan).
+  "session.create": HOST_OPEN_TIMEOUT_MS,
+  "session.resume": HOST_OPEN_TIMEOUT_MS,
+  "session.open": HOST_OPEN_TIMEOUT_MS,
+  // A sweep shells `npm view` per unpinned package (10 s each, concurrency 4)
+  // and may enrich a few floating ones; 30 s is too tight for a cold registry.
+  "packages.checkUpdates": 120_000,
+};
+
+export function requestTimeoutFor(
+  method: HostMethod,
+  fallbackMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+): number {
+  return REQUEST_TIMEOUT_OVERRIDES[method] ?? fallbackMs;
+}
 
 /**
  * The session service (plan step 3): the app's only way to reach a Pi host.
@@ -99,6 +140,10 @@ export interface HostInfoLike {
   pids?: { pid?: number };
   /** Build fingerprint reported by `host.hello` (2026-10-24 stale-host plan). */
   buildId?: string | null;
+  /** The Pi agent version the host reported in `host.hello`. */
+  piVersion?: string | null;
+  /** Spawn → handshake in ms, measured by the supervisor (2026-11-07 plan). */
+  bootMs?: number;
   /** Optional host features (git-checkpoint plan step 24); absent = unknown. */
   capabilities?: {
     checkpointsExtension?: boolean;
@@ -120,9 +165,19 @@ export interface SupervisorHostLike {
   pinned?(): boolean;
   /** Whether the host is ready with no request in flight. */
   isIdle?(): boolean;
+  /** Why the supervisor last stopped this host. Optional for test doubles. */
+  stopReason?(): TabStopReason | null;
+  /** True when a protected host is over the RSS budget. Optional for doubles. */
+  overMemory?(): boolean;
+  /** Crash auto-restarts in this process lifetime. Optional for doubles. */
+  restartCount?(): number;
+  /** The last restart reason (`crash`, `manual`, …). Optional for doubles. */
+  lastRestartReason?(): string | null;
   /** The tail of the host's own log (plan step 22). Optional for test doubles. */
   logs?(): string[];
-  shutdown(): Promise<void>;
+  /** Service-level context (a retry reason) in the per-tab host log. */
+  note?(message: string): void;
+  shutdown(reason?: TabStopReason): Promise<void>;
 }
 
 export interface SupervisorLike {
@@ -135,7 +190,7 @@ export interface SupervisorLike {
   }): Promise<SupervisorHostLike>;
   get(sessionId: string): SupervisorHostLike | undefined;
   list(): SupervisorHostLike[];
-  stop(sessionId: string): Promise<void>;
+  stop(sessionId: string, reason?: TabStopReason): Promise<void>;
   stopAll(): Promise<void>;
   /** Used/limit of the memory-derived host-process ceiling. Optional for test doubles. */
   capacity?(): { used: number; limit: number; atCapacity: boolean };
@@ -155,6 +210,13 @@ export interface SessionServiceDeps {
   controlCwd: string;
   /** Pushes to the renderer; the main process maps these to IPC channels. */
   emit(channel: SessionEmitChannel, payload: unknown): void;
+  /**
+   * Called with the full tab table after every publish (2026-11-05 terminal
+   * plan). The terminal service uses it to close PTYs whose tab disappeared,
+   * including close-others/close-project paths it does not own. A listener must
+   * never break publishing.
+   */
+  onTabsChanged?: (tabs: readonly TabRecord[]) => void;
   /**
    * Fingerprint of the host bundle currently on disk (2026-10-24 stale-host
    * plan). Absent in tests and when the bundle cannot be read; the stale check
@@ -218,6 +280,12 @@ export interface SessionService {
   createTab(input: CreateTabInput): Promise<SessionTabsEnvelope>;
   activateTab(tabId: string): Promise<SessionTabsEnvelope>;
   /**
+   * Makes sure a tab has a live host and an open session *without* touching the
+   * selection (2026-11-06 tab-switch plan). Selection belongs to an explicit
+   * gesture; a background wake must never move the user's tab.
+   */
+  ensureTab(tabId: string): Promise<SessionTabsEnvelope>;
+  /**
    * Clears the active tab without closing one (2026-10-30 project-scoped rail
    * plan). Every tab and every host stays exactly as it was; only the selection
    * is dropped, so a project with no open session can show Welcome while the
@@ -244,12 +312,24 @@ export interface SessionService {
   /** Moves a tab to `toIndex`, persisted so the strip order survives a relaunch. */
   reorderTab(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
   /**
+   * Links a web tab to the session that opened it (or clears the link with
+   * `null`). Only a web tab can be linked; a target that is no longer an open
+   * session surface clears the link instead of keeping a dead one.
+   */
+  linkWebTabSession(tabId: string, sessionTabId: string | null): Promise<SessionTabsEnvelope>;
+  /**
    * Makes `tabId` the single Office host (plan step 20): demotes every other
    * `office`-kind tab and restarts this one so its host binds port 38617. The
    * session is resumed from its JSONL, so promoting never loses history.
    */
   promoteToOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   request(tabId: string, method: HostMethod, params?: unknown): Promise<unknown>;
+  /**
+   * Stops a tab's host without touching its session file and leaves the tab
+   * `stopped`; the next activation resumes it. This is the Cancel action for an
+   * open that is taking too long (2026-11-06 hang plan).
+   */
+  stopTab(tabId: string): Promise<SessionTabsEnvelope>;
   /**
    * Stops and re-spawns a tab's host, resuming its session from the JSONL
    * (plan step 22). This is the recovery action for a crashed or wedged host.
@@ -327,8 +407,38 @@ function isSessionLostError(error: unknown): boolean {
   return (
     error.name === "no_session" ||
     error.name === "host_not_running" ||
+    error instanceof HostStoppedError ||
+    error.name === "host_stopped" ||
     code === "no_session" ||
+    code === "host_not_running" ||
+    code === "host_stopped"
+  );
+}
+
+/**
+ * True when the *process* went away (or stopped answering) before the session
+ * could open, so a fresh process is a legitimate retry. A refusal such as a
+ * trust prompt or a malformed request is not: it needs the user, not a respawn.
+ */
+function isRecoverableOpenError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return (
+    error instanceof HostTimeoutError ||
+    error instanceof HostStoppedError ||
+    error.name === "host_stopped" ||
+    error.name === "host_not_running" ||
+    code === "host_stopped" ||
     code === "host_not_running"
+  );
+}
+
+/** True when the host is already gone, regardless of what it last reported. */
+function isHostGoneError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return (
+    error instanceof HostStoppedError || error.name === "host_stopped" || code === "host_stopped"
   );
 }
 
@@ -353,6 +463,34 @@ const SESSION_ESTABLISHING_METHODS: ReadonlySet<string> = new Set([
   "session.fork",
 ]);
 
+/**
+ * Reads that must never be the reason a stopped host is spawned.
+ *
+ * The renderer sends `tui.resize` on every status change (the measured viewport
+ * effect keys on the tab status), and `messages.get`/`shortcuts.list`/`oi.state`
+ * are retried by view effects. Without this guard, an RSS/idle recycle is
+ * immediately undone by a passive read: status `stopped` -> resize -> ensure ->
+ * spawn -> the same large host -> recycle again (2026-11-06 Strata loop).
+ * Only an explicit activation/ensure, a prompt or a lifecycle command may wake
+ * a stopped tab.
+ */
+const PASSIVE_METHODS: ReadonlySet<string> = new Set([
+  "messages.get",
+  "entries.get",
+  "tree.get",
+  "stats.get",
+  "commands.list",
+  "commands.complete",
+  "shortcuts.list",
+  "files.list",
+  "oi.state",
+  "tui.state",
+  "tui.resize",
+  "model.available",
+  "render.request",
+  "render.markdown",
+]);
+
 /** Repair-and-retry is safe only for methods that cannot change user state. */
 const READ_ONLY_RETRY_METHODS: ReadonlySet<string> = new Set([
   "state.get",
@@ -372,7 +510,17 @@ function toEntry(payload: unknown): SessionEventEntry | null {
   const record = asRecord(payload);
   const event = typeof record.event === "string" ? record.event : null;
   if (!event) return null;
-  return "payload" in record ? { event, payload: record.payload } : { event };
+  const sessionId = typeof record.sessionId === "string" ? record.sessionId : null;
+  const sessionEpoch =
+    typeof record.sessionEpoch === "number" && Number.isFinite(record.sessionEpoch)
+      ? record.sessionEpoch
+      : undefined;
+  return {
+    event,
+    ...("payload" in record ? { payload: record.payload } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(sessionEpoch === undefined ? {} : { sessionEpoch }),
+  };
 }
 
 export function createSessionService(deps: SessionServiceDeps): SessionService {
@@ -399,15 +547,34 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    * In-flight session opens/resumes, separate from process starts. A tab can
    * have a live host that is not session-ready (crash restart, failed resume,
    * trust retry); only this map coalesces the reopen.
+   *
+   * The generation is part of the entry because `detachHost` bumps it while an
+   * open is still running. The entry must survive that bump: deleting it let a
+   * second caller start a second open during the retry window, which is how a
+   * tab produced two `session.resume` calls 6 ms apart and a spurious session
+   * replacement (2026-11-06 Strata loop). A caller either joins the current
+   * generation or waits for the stale run to settle before starting its own.
    */
-  const opening = new Map<string, Promise<SupervisorHostLike>>();
+  interface OpeningTransition {
+    promise: Promise<SupervisorHostLike>;
+    generation: number;
+  }
+  const opening = new Map<string, OpeningTransition>();
   /** Tabs whose host has confirmed `session.create`/`resume` / a state frame. */
   const sessionReady = new Set<string>();
+  /**
+   * The session identity currently allowed to write to a tab's transcript.
+   * A reload can keep the same id, so the attachment epoch is the real fence;
+   * an outgoing runner's late event must not land in the replacement session.
+   */
+  const sessionIdentities = new Map<string, { sessionId: string | null; epoch: number }>();
   /**
    * Per-tab generation, bumped by every detach. A late spawn/open compares it
    * and stops the process it just started instead of publishing a stale host.
    */
   const generations = new Map<string, number>();
+  /** Bumped only by an explicit detach, so an open can tell cancel from repair. */
+  const cancelEpochs = new Map<string, number>();
   /** Tabs recovering from an unexpected crash (drives the recovered notice). */
   const recovering = new Set<string>();
   /**
@@ -444,8 +611,21 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   /** Bounded `extension_error` history across every tab (plan step 22). */
   const extensionErrors: DiagnosticsExtensionError[] = [];
   let incidentCounter = 0;
+  /** Per-tab start timestamps, used to name a restart loop instead of hiding it. */
+  const startHistory = new Map<string, number[]>();
+  /** Recycled/looped notices already recorded, so a loop does not flood the list. */
+  const recordedRecycles = new Set<string>();
+  const recordedLoops = new Set<string>();
 
   let activeId: string | null = null;
+  /** Monotonic table version: bumped whenever a publish actually changes it. */
+  let revision = 0;
+  /**
+   * Monotonic selection version. Only a selection change bumps it, and the
+   * renderer compares it against its own gesture counter, so a push that merely
+   * woke a host can never reassign the active tab (2026-11-06 tab-switch plan).
+   */
+  let selectionSeq = 0;
   /**
    * Tabs the renderer shows (2026-11-03 grid plan): the visible grid panes, or
    * the single solo tab. Bounded by the largest layout, because it comes from a
@@ -453,12 +633,26 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    */
   const visibleTabs = new Set<string>();
   let control: SupervisorHostLike | null = null;
+  /**
+   * In-flight control-host start (2026-11-07 host-singleton plan). Without it,
+   * every concurrent caller passed the `if (control)` check before any of them
+   * assigned `control`, and each spawned its own process under one registry key.
+   */
+  let controlStarting: Promise<SupervisorHostLike> | null = null;
   let disposed = false;
 
   const envelope = (): SessionTabsEnvelope => ({
     tabs: [...tabs.values()].map((tab) => ({ ...tab })),
     activeTabId: activeId,
+    revision,
+    selectionSeq,
   });
+
+  /** The one writer of the selection, so every change carries a fresh sequence. */
+  const selectTab = (id: string | null): void => {
+    activeId = id;
+    selectionSeq += 1;
+  };
 
   /**
    * The last table handed to the renderer. A state frame that did not change a
@@ -470,9 +664,20 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
   const publishTabs = (force = false): void => {
     const next = envelope();
-    const signature = JSON.stringify(next);
+    // The signature covers the content only (never the counters), so an
+    // unchanged table stays a no-op and a repeated publish cannot inflate the
+    // revision. Serialising a handful of small records per state frame is cheap
+    // and, unlike a field list, cannot forget a future TabRecord field.
+    const signature = JSON.stringify({ tabs: next.tabs, activeTabId: next.activeTabId });
     if (!force && signature === lastPublishedTabs) return;
     lastPublishedTabs = signature;
+    revision += 1;
+    next.revision = revision;
+    try {
+      deps.onTabsChanged?.(next.tabs);
+    } catch {
+      // A tab-table observer must never break the table itself.
+    }
     deps.emit("tabs", next);
   };
 
@@ -486,10 +691,25 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     return tab;
   };
 
-  const setStatus = (tab: TabRecord, status: TabStatus, error?: string): void => {
+  const setStatus = (
+    tab: TabRecord,
+    status: TabStatus,
+    error?: string,
+    stop?: { reason: TabStopReason; at: number; memoryOverBudget?: boolean },
+  ): void => {
     tab.status = status;
     if (error === undefined) delete tab.error;
     else tab.error = error;
+    if (stop) {
+      tab.stopReason = stop.reason;
+      tab.stoppedAt = stop.at;
+      if (stop.memoryOverBudget === true) tab.memoryOverBudget = true;
+      else delete tab.memoryOverBudget;
+    } else if (status === "idle" || status === "running") {
+      delete tab.stopReason;
+      delete tab.stoppedAt;
+      delete tab.memoryOverBudget;
+    }
     publishTabs();
   };
 
@@ -501,7 +721,13 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     if (entries.length === 0) return;
     const seq = (sequences.get(tabId) ?? 0) + 1;
     sequences.set(tabId, seq);
-    deps.emit("event", { tabId, seq, events: entries } satisfies SessionEventEnvelope);
+    const identity = sessionIdentities.get(tabId);
+    deps.emit("event", {
+      tabId,
+      seq,
+      events: entries,
+      ...(identity ? { sessionId: identity.sessionId, sessionEpoch: identity.epoch } : {}),
+    } satisfies SessionEventEnvelope);
   };
 
   const flushPending = (
@@ -554,7 +780,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
   };
 
   const emitState = (tabId: string, state: unknown): void => {
-    deps.emit("state", { tabId, state } satisfies SessionStateEnvelope);
+    const identity = sessionIdentities.get(tabId);
+    deps.emit("state", {
+      tabId,
+      state,
+      ...(identity ? { sessionId: identity.sessionId, sessionEpoch: identity.epoch } : {}),
+    } satisfies SessionStateEnvelope);
   };
 
   /** Records a failure for the Diagnostics view and returns it for a notice. */
@@ -608,6 +839,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     const model = record.model;
     if (model && typeof model === "object" && typeof model.id === "string") tab.model = model.id;
     tab.status = record.streaming === true ? "running" : "idle";
+    // A live state frame means the session is open again; a previous stop reason
+    // is no longer the tab's current fact (the memory warning is refreshed by
+    // the host's ready/metrics path, not by this JSONL snapshot).
+    delete tab.stopReason;
+    delete tab.stoppedAt;
   };
 
   const applySnapshot = (tab: TabRecord, snapshot: unknown): void => {
@@ -654,7 +890,23 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     hosts.delete(tabId);
     starting.delete(tabId);
     sessionReady.delete(tabId);
+    sessionIdentities.delete(tabId);
     recovering.delete(tabId);
+  };
+
+  /**
+   * Drops a tab from the table and every per-tab map, without touching the
+   * supervisor. A web tab has no host, so closing a session's linked review tabs
+   * uses the same cleanup as closing the session itself.
+   */
+  const forgetTab = (tabId: string): void => {
+    forgetHost(tabId);
+    recycling.delete(tabId);
+    parking.delete(tabId);
+    sequences.delete(tabId);
+    generations.delete(tabId);
+    createParams.delete(tabId);
+    tabs.delete(tabId);
   };
 
   /**
@@ -662,14 +914,23 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    * The generation bump makes any in-flight spawn/open stop the process it just
    * created instead of publishing it over the replacement.
    */
-  const detachHost = async (tabId: string): Promise<void> => {
+  const detachHost = async (
+    tabId: string,
+    options: { cancelled?: boolean; reason?: TabStopReason } = {},
+  ): Promise<void> => {
     generations.set(tabId, (generations.get(tabId) ?? 0) + 1);
-    // Do not let a new spawn reuse the old open promise; the generation guard is
-    // what cancels the late completion.
-    opening.delete(tabId);
+    // An explicit stop/close/park cancels the retry an in-flight open would
+    // otherwise perform. A repair detach inside that same open passes
+    // `cancelled: false`, so the retry it needs is not mistaken for a cancel.
+    if (options.cancelled !== false) {
+      cancelEpochs.set(tabId, (cancelEpochs.get(tabId) ?? 0) + 1);
+    }
+    // Keep `opening`: it is generation-scoped and the run's guard is what
+    // cancels the late completion. Deleting it here opened a duplicate-open
+    // window during the retry's own detach → ensureProcess → open sequence.
     forgetHost(tabId);
     try {
-      await deps.supervisor.stop(tabId);
+      await deps.supervisor.stop(tabId, options.reason ?? "manual");
     } catch {
       // A host that is already gone is exactly the state we want.
     }
@@ -714,7 +975,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       if (starting.has(tabId) || opening.has(tabId) || recycling.has(tabId)) return;
       const record = asRecord(snapshot);
       if (typeof record.sessionFile === "string") tab.sessionFile = record.sessionFile;
-      await detachHost(tabId);
+      await detachHost(tabId, { reason: "park" });
       await persist();
     })().finally(() => {
       if (parking.get(tabId) === run) parking.delete(tabId);
@@ -771,6 +1032,38 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       host.on("event", (payload) => {
         const entry = toEntry(payload);
         if (!entry) return;
+        const current = sessionIdentities.get(tab.id);
+        const incomingId = entry.sessionId ?? null;
+        const incomingEpoch = entry.sessionEpoch;
+        const lifecycle =
+          entry.event === "session_started" ||
+          entry.event === "session_replaced" ||
+          entry.event === "state";
+        if (current) {
+          // A lower attachment epoch is always stale, even for a lifecycle
+          // event. A different id is stale only for content: a replacement or
+          // state frame is the event that legitimately introduces the new id.
+          if (incomingEpoch !== undefined && incomingEpoch < current.epoch) return;
+          if (
+            !lifecycle &&
+            incomingId !== null &&
+            current.sessionId !== null &&
+            incomingId !== current.sessionId
+          ) {
+            return;
+          }
+        }
+        if (lifecycle) {
+          // Flush deltas against the *old* identity first, so the batch that
+          // carries a replacement cannot also carry the old session's text.
+          flushPending(tab.id);
+          if (incomingId !== null || incomingEpoch !== undefined) {
+            sessionIdentities.set(tab.id, {
+              sessionId: incomingId ?? current?.sessionId ?? null,
+              epoch: incomingEpoch ?? current?.epoch ?? 0,
+            });
+          }
+        }
         if (entry.event === "state") {
           flushPending(tab.id);
           const snapshot = asRecord(entry.payload);
@@ -789,6 +1082,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           accumulate(tab.id, entry);
           return;
         }
+        if (entry.event === "session_started") {
+          // A host recycle resumes the same conversation. Announcing it is what
+          // produced nine "Session started" rows in one session (2026-11-06
+          // plan, step 15); only a real new/open/reload session is content.
+          if (asRecord(entry.payload).reason === "resume") return;
+        }
         if (entry.event === "extension_error") {
           recordExtensionError(tab.id, entry.payload);
         }
@@ -804,6 +1103,10 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           if (!opening.has(tab.id) && !sessionReady.has(tab.id) && tabs.has(tab.id)) {
             void ensureSession(tab).catch(() => undefined);
           }
+          // The host may have been over budget while protected; keep the warning
+          // visible until it drops below the threshold or is restarted.
+          if (host.overMemory?.() === true) tab.memoryOverBudget = true;
+          else delete tab.memoryOverBudget;
         } else if (next === "restarting") {
           sessionReady.delete(tab.id);
           if (tabs.has(tab.id) && tab.status !== "failed") setStatus(tab, "starting");
@@ -825,9 +1128,23 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           }
         } else if (next === "stopped") {
           // A stopped host (idle/RSS recycle) must not stay in the handle map:
-          // the next interaction spawns/resumes a fresh one.
+          // the next interaction spawns/resumes a fresh one. Capture why before
+          // `forgetHost` drops the handle.
+          const reason = host.stopReason?.() ?? "manual";
+          const recycleKey = `${tab.id}\u0000${reason}`;
+          if (!recordedRecycles.has(recycleKey)) {
+            recordedRecycles.add(recycleKey);
+            recordIncident("host_recycled", `host for ${tab.id} stopped (${reason})`, {
+              tabId: tab.id,
+              detail: reason,
+            });
+          }
           forgetHost(tab.id);
-          setStatus(tab, "stopped");
+          setStatus(tab, "stopped", undefined, {
+            reason,
+            at: now(),
+            ...(host.overMemory?.() === true ? { memoryOverBudget: true } : {}),
+          });
         }
       }),
       host.on("crashed", (payload) => {
@@ -856,6 +1173,17 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    */
   const startProcess = async (tab: TabRecord): Promise<SupervisorHostLike> => {
     setStatus(tab, "starting");
+    const startedAt = now();
+    const history = (startHistory.get(tab.id) ?? []).filter((at) => startedAt - at <= 120_000);
+    history.push(startedAt);
+    startHistory.set(tab.id, history);
+    if (history.length >= 4 && !recordedLoops.has(tab.id)) {
+      recordedLoops.add(tab.id);
+      recordIncident("host_restart_loop", `host for ${tab.id} started 4 times in 2 minutes`, {
+        tabId: tab.id,
+        detail: "RSS or crash recycle loop; see the per-tab log",
+      });
+    }
     const generation = generations.get(tab.id) ?? 0;
     let host: SupervisorHostLike;
     try {
@@ -901,7 +1229,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     if (inPark) await inPark;
     const existing = hosts.get(tab.id);
     if (existing && existing.status() === "ready") return existing;
-    if (existing) await detachHost(tab.id);
+    if (existing) await detachHost(tab.id, { cancelled: false });
     const raced = starting.get(tab.id);
     if (raced) return raced;
     await requestSlot(tab.id);
@@ -931,7 +1259,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     try {
       const extra = createParams.get(tab.id);
       const snapshot = tab.sessionFile
-        ? await host.request("session.resume", { sessionFile: tab.sessionFile })
+        ? await host.request("session.resume", {
+            sessionFile: tab.sessionFile,
+            // A crash restart is a new process with a fresh trust store. Re-send
+            // the tab's answer so a "session" grant still resumes the session.
+            ...(extra?.trust ? { trust: extra.trust } : {}),
+          })
         : await host.request("session.create", {
             cwd: tab.cwd,
             ...(extra?.model ? { model: extra.model } : {}),
@@ -953,12 +1286,22 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       return host;
     } catch (error) {
       sessionReady.delete(tab.id);
+      // A `tab_closed` failure has no tab record left to update: the generation
+      // bump already stopped the process it just opened.
+      if (error instanceof SessionServiceError && error.code === "tab_closed") throw error;
+      const message = error instanceof Error ? error.message : String(error);
       // A trust refusal leaves a live host so the renderer's prompt can retry
       // `session.create`; every other failure drops the process so the next
       // ensure starts cleanly rather than talking to a sessionless host.
-      if (host.status() !== "ready") await detachHost(tab.id);
-      const message = error instanceof Error ? error.message : String(error);
-      setStatus(tab, "failed", message);
+      if (host.status() !== "ready" || isHostGoneError(error)) {
+        await detachHost(tab.id, { cancelled: false });
+      }
+      // A host that stopped or timed out is a lifetime failure, not a refused
+      // session. Keep the tab retryable (`stopped`) so `ensureSession` can
+      // respawn, and report `failed` only for a real refusal. This is what
+      // turned a 30 s phantom wait into an error the user had to restart for.
+      const recoverable = isRecoverableOpenError(error);
+      setStatus(tab, recoverable ? "stopped" : "failed", recoverable ? undefined : message);
       throw error;
     }
   };
@@ -975,29 +1318,65 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         tab.kind === "editor" ? "editor_tab" : "web_tab",
       );
     }
+    const generationAtStart = generations.get(tab.id) ?? 0;
     const inFlight = opening.get(tab.id);
-    if (inFlight) return inFlight;
+    if (inFlight) {
+      if (inFlight.generation === generationAtStart) return inFlight.promise;
+      // A detach superseded this run while it was opening. Let it finish its own
+      // cleanup (it stops the host it started), then fall through to a new run
+      // for the current generation. Never run both at once.
+      await inFlight.promise.catch(() => undefined);
+      const current = opening.get(tab.id);
+      const currentGeneration = generations.get(tab.id) ?? 0;
+      if (current && current.generation === currentGeneration) return current.promise;
+    }
     // Capture before `detachHost` clears it: a crash recovery gets one notice,
     // a normal open/wake does not.
     const wasRecovering = recovering.has(tab.id);
     const reason = wasRecovering ? "recover" : "spawn";
     const run = (async (): Promise<SupervisorHostLike> => {
+      // This run may repair a non-ready host itself. Its own detach bumps the
+      // host generation, so track the generation this run currently owns and
+      // use it to distinguish its repair from an external stop/close.
+      const cancelEpochAtStart = cancelEpochs.get(tab.id) ?? 0;
       let host = await ensureProcess(tab);
       if (host.status() === "ready" && sessionReady.has(tab.id)) return host;
-      if (host.status() === "ready") return openSession(tab, host, reason);
-      // The supervisor is restarting, failed, or has no child: preempt its
-      // backoff with a deterministic fresh process, then open once.
-      await detachHost(tab.id);
-      host = await ensureProcess(tab);
-      return openSession(tab, host, reason);
+      if (host.status() !== "ready") {
+        // The supervisor is restarting, failed, or has no child: preempt its
+        // backoff with a deterministic fresh process, then open once.
+        await detachHost(tab.id, { cancelled: false });
+        host = await ensureProcess(tab);
+      }
+      try {
+        return await openSession(tab, host, reason);
+      } catch (error) {
+        // The host stopped or timed out, so the process — not the session — was
+        // the problem. Retry exactly once on a fresh process; a second failure
+        // propagates and the tab keeps the reason. An external detach (Stop,
+        // close, park) bumps the generation and cancels the retry.
+        if (
+          !isRecoverableOpenError(error) ||
+          disposed ||
+          !tabs.has(tab.id) ||
+          cancelEpochAtStart !== (cancelEpochs.get(tab.id) ?? 0)
+        ) {
+          throw error;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        host.note?.(`open failed (${message}); retrying on a fresh process`);
+        await detachHost(tab.id, { cancelled: false });
+        const retryHost = await ensureProcess(tab);
+        return await openSession(tab, retryHost, reason);
+      }
     })();
-    opening.set(tab.id, run);
+    const transition: OpeningTransition = { promise: run, generation: generationAtStart };
+    opening.set(tab.id, transition);
     void run.then(
       () => {
-        if (opening.get(tab.id) === run) opening.delete(tab.id);
+        if (opening.get(tab.id) === transition) opening.delete(tab.id);
       },
       () => {
-        if (opening.get(tab.id) === run) opening.delete(tab.id);
+        if (opening.get(tab.id) === transition) opening.delete(tab.id);
       },
     );
     return run;
@@ -1060,6 +1439,68 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     );
   };
 
+  /**
+   * Starts (or joins the in-flight start of) the single control host.
+   *
+   * The renderer's boot fan-out asks several control-addressed questions at
+   * once, so `controlHost()` had several concurrent callers. The old shape —
+   * `if (control) return control; await requestSlot(); start()` — let every one
+   * of them pass the check before any assigned `control`, and each spawned a
+   * host under the same `sessionId`. Six of the seven became immortal orphans
+   * (pinned by `host-policy`, invisible to `list()`), each holding ~95 MB of
+   * commit and a port for the app's lifetime (2026-11-07 host-singleton plan).
+   *
+   * This is the `ensureProcess` shape: one in-flight promise, a re-check after
+   * the budget slot, and adoption of a host that won the race in the supervisor.
+   */
+  const startControlHost = (): Promise<SupervisorHostLike> => {
+    if (control) return Promise.resolve(control);
+    if (controlStarting) return controlStarting;
+    const run = (async (): Promise<SupervisorHostLike> => {
+      await requestSlot(CONTROL_HOST_ID);
+      // A queued caller may have started it, or a crash may have cleared it.
+      if (control) return control;
+      if (disposed) throw new SessionServiceError("session service is disposed", "disposed");
+      let host: SupervisorHostLike;
+      try {
+        host = await deps.supervisor.start({
+          sessionId: CONTROL_HOST_ID,
+          cwd: deps.controlCwd,
+          role: "control",
+        });
+      } catch (error) {
+        // Defence in depth: the supervisor refuses a second live host for one
+        // id. If one is already serving, reuse it instead of failing the
+        // request that needed app-wide state.
+        const existing = deps.supervisor.get(CONTROL_HOST_ID) ?? null;
+        // A `stopped` entry is a corpse the supervisor is about to delete; the
+        // retry after it is gone is the one that should spawn. Adopting it would
+        // hand the caller a host that can only reject.
+        if (!(error instanceof HostAlreadyRunningError) || !existing) throw error;
+        if (existing.status() === "stopped") throw error;
+        recordIncident(
+          "host_duplicate_start",
+          `a second control host was refused; adopted the running one (${existing.status()})`,
+        );
+        host = existing;
+      }
+      // A dispose that raced the spawn must not publish a host over it.
+      if (disposed) {
+        await deps.supervisor.stop(CONTROL_HOST_ID).catch(() => undefined);
+        throw new SessionServiceError("session service is disposed", "disposed");
+      }
+      control = host;
+      subscribeControl(host);
+      return host;
+    })();
+    controlStarting = run;
+    const clear = (): void => {
+      if (controlStarting === run) controlStarting = null;
+    };
+    void run.then(clear, clear);
+    return run;
+  };
+
   /** One row per tab (plus the control host) for the Diagnostics view (step 22). */
   const describeHost = (tabId: string, host: SupervisorHostLike): DiagnosticsHostInfo => {
     const tab = tabs.get(tabId);
@@ -1078,24 +1519,22 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       pid: typeof pads?.pid === "number" ? pads.pid : null,
       startedAt: typeof info?.startedAt === "number" ? info.startedAt : null,
       rssBytes: host.metrics?.()?.rssBytes ?? null,
+      bootMs: info?.bootMs ?? null,
+      lastOpen: host.metrics?.()?.lastOpen ?? null,
       buildId,
+      piVersion: typeof info?.piVersion === "string" ? info.piVersion : null,
       stale,
+      stopReason: host.stopReason?.() ?? null,
+      overMemory: host.overMemory?.() === true,
+      restartCount: host.restartCount?.() ?? 0,
+      lastRestartReason: host.lastRestartReason?.() ?? null,
       logLines: host.logs?.() ?? [],
     };
   };
 
   const service: SessionService = {
-    async controlHost() {
-      if (control) return control;
-      await requestSlot(CONTROL_HOST_ID);
-      const host = await deps.supervisor.start({
-        sessionId: CONTROL_HOST_ID,
-        cwd: deps.controlCwd,
-        role: "control",
-      });
-      control = host;
-      subscribeControl(host);
-      return host;
+    controlHost() {
+      return startControlHost();
     },
 
     tabs: () => [...tabs.values()],
@@ -1188,7 +1627,12 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           startedAt: null,
           rssBytes: null,
           buildId: null,
+          piVersion: null,
           stale: false,
+          stopReason: tab.stopReason ?? null,
+          overMemory: tab.memoryOverBudget === true,
+          restartCount: 0,
+          lastRestartReason: null,
           logLines: [],
         });
       }
@@ -1197,18 +1641,29 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     async restoreTabs() {
       const state = await deps.store.read();
+      // Older builds minted a new tab for every resume of an already-open
+      // session, so a profile can carry several records for one JSONL. Keep the
+      // most recently active record (with any pin) and drop the rest: the
+      // restored table must satisfy the one-manager-per-file invariant too.
+      const collapsed = collapseDuplicateSessionTabs(sanitizeTabs(state.tabs));
       tabs.clear();
       hosts.clear();
       starting.clear();
       opening.clear();
       sessionReady.clear();
+      sessionIdentities.clear();
       generations.clear();
       recovering.clear();
-      for (const tab of sanitizeTabs(state.tabs)) {
+      for (const tab of collapsed.tabs) {
         // A tab is a resumable record, not a process. Nothing is running yet
         // after a relaunch, so a restored tab is idle/stopped until activated;
         // the full table is restored, however many tabs the user keeps.
-        tabs.set(tab.id, { ...tab, status: isHostBackedTab(tab.kind) ? "stopped" : "idle" });
+        tabs.set(tab.id, {
+          ...tab,
+          status: isHostBackedTab(tab.kind) ? "stopped" : "idle",
+          // A relaunch has no live host, so a saved memory warning is stale.
+          memoryOverBudget: false,
+        });
       }
       // Persisted order is authoritative, but an older profile may have a
       // pinned tab below an unpinned one. Stable-partition once on restore.
@@ -1216,8 +1671,30 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       tabs.clear();
       for (const tab of restored) tabs.set(tab.id, tab);
       const persistedActive = typeof state.activeTabId === "string" ? state.activeTabId : null;
-      activeId = persistedActive && tabs.has(persistedActive) ? persistedActive : null;
+      // A dropped duplicate's id must resolve to the record that replaced it
+      // before the generic "named tab is gone" repair runs.
+      const repairedActive =
+        persistedActive !== null && collapsed.replacedTabIds.has(persistedActive)
+          ? (collapsed.replacedTabIds.get(persistedActive) ?? persistedActive)
+          : persistedActive;
+      // The repair is for a *named* tab that no longer exists: fall back to the
+      // most recently used session so the app opens where the user last worked
+      // instead of on an empty shell. A deliberately cleared selection (`null`)
+      // stays cleared.
+      const mruSession = [...tabs.values()]
+        .filter((tab) => isHostBackedTab(tab.kind))
+        .sort((left, right) => right.lastActiveAt - left.lastActiveAt)[0];
+      selectTab(
+        repairedActive === null
+          ? null
+          : tabs.has(repairedActive)
+            ? repairedActive
+            : (mruSession?.id ?? null),
+      );
       publishTabs();
+      // Make the repair durable: otherwise the same duplicates come back on the
+      // next launch. Only a table that actually changed is rewritten.
+      if (collapsed.replacedTabIds.size > 0) await persist();
       return envelope();
     },
 
@@ -1237,6 +1714,22 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       if (isEditor && (!filePath || !isWorkspaceRelativePath(filePath))) {
         throw new SessionServiceError("createTab requires a project-relative file", "bad_request");
       }
+      const requestedFile =
+        typeof input.sessionFile === "string" && input.sessionFile.length > 0
+          ? input.sessionFile
+          : null;
+      // A session file is one conversation with one live manager: the SDK takes
+      // no lock and every host appends from its own in-memory leaf, so a second
+      // tab on one JSONL branches the transcript. The renderer checks first;
+      // this is the invariant behind every caller. Reuse is reported so the UI
+      // can take the "return to that tab" path instead of a new-tab path.
+      if (isHostBackedTab(kind) && requestedFile !== null) {
+        const existing = findTabBySessionFile(tabs.values(), requestedFile);
+        if (existing) {
+          if (input.activate !== false) await service.activateTab(existing.id);
+          return { ...envelope(), reusedTabId: existing.id };
+        }
+      }
       const id = newId();
       const timestamp = now();
       const cwd = typeof input.cwd === "string" ? input.cwd : "";
@@ -1249,16 +1742,18 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           : kind === "web"
             ? webTabTitle(webUrl)
             : sessionTitle(cwd),
-        sessionFile: input.sessionFile ?? null,
+        sessionFile: requestedFile,
         status: isHostBackedTab(kind) ? "starting" : "idle",
         createdAt: timestamp,
         lastActiveAt: timestamp,
         model: null,
         ...(kind === "web" ? { url: webUrl, sessionTabId: input.sessionTabId ?? null } : {}),
         ...(isEditor ? { filePath } : {}),
+        ...(kind === "terminal" && input.profileId ? { profileId: input.profileId } : {}),
       };
       tabs.set(id, tab);
-      activeId = id;
+      const activate = input.activate !== false;
+      if (activate) selectTab(id);
       if (isHostBackedTab(kind) && (input.model || input.thinking || input.trust)) {
         createParams.set(id, {
           ...(input.model ? { model: input.model } : {}),
@@ -1268,13 +1763,23 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       }
       publishTabs();
       await persist();
-      await service.activateTab(id);
+      // A background web tab (a review URL discovered in a tool result) must not
+      // select itself or spawn anything. Only a user gesture activates.
+      if (activate) await service.activateTab(id);
+      return envelope();
+    },
+
+    async ensureTab(tabId) {
+      const tab = requireTab(tabId);
+      // A web or editor tab has no host to wake; the envelope still lets the
+      // caller apply the latest table.
+      if (isHostBackedTab(tab.kind)) await ensureSession(tab);
       return envelope();
     },
 
     async activateTab(tabId) {
       const tab = requireTab(tabId);
-      activeId = tabId;
+      selectTab(tabId);
       tab.lastActiveAt = now();
       publishTabs();
       // A web or editor tab has no host to start (plan step 7); main reconciles
@@ -1290,7 +1795,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // lets a project with no open session own the rail while the session column
       // shows Welcome (2026-10-30 project-scoped rail plan).
       if (activeId === null) return envelope();
-      activeId = null;
+      selectTab(null);
       publishTabs();
       await persist();
       return envelope();
@@ -1340,23 +1845,45 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     async closeTab(tabId) {
       const tab = tabs.get(tabId);
       if (!tab) return envelope();
-      forgetHost(tabId);
-      recycling.delete(tabId);
-      parking.delete(tabId);
-      sequences.delete(tabId);
-      generations.delete(tabId);
-      createParams.delete(tabId);
-      tabs.delete(tabId);
+      // Capture the selection's record before the table changes: the next tab is
+      // chosen from what remains, and a linked web tab must be able to name its
+      // opener even though the opener is no longer the active tab.
+      const activeRecord = activeId ? tabs.get(activeId) : undefined;
+      // A web tab is a view of the session that opened it. Closing that session
+      // must not leave a dead review page in the strip, so remove its linked web
+      // tabs in the same pass. Pinned children are included: the page's server is
+      // gone, and the user asked to close the owner.
+      const linkedWebTabs =
+        tab.kind === "web"
+          ? []
+          : [...tabs.values()].filter(
+              (entry) => entry.kind === "web" && entry.sessionTabId === tabId,
+            );
+      const doomedIds = new Set([tabId, ...linkedWebTabs.map((entry) => entry.id)]);
+      const selectionLost = activeRecord !== undefined && doomedIds.has(activeRecord.id);
+      for (const entry of linkedWebTabs) forgetTab(entry.id);
+      forgetTab(tabId);
       try {
-        // A web or editor tab has no supervisor host to stop (plan step 7).
+        // A web or editor tab has no supervisor host to stop (plan step 7); the
+        // cascaded web tabs have no host either.
         if (isHostBackedTab(tab.kind)) await deps.supervisor.stop(tabId);
       } catch {
         // A host that is already gone is not an error for the user.
       }
-      if (activeId === tabId) {
-        const next = [...tabs.values()].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
-        activeId = next ? next.id : null;
+      if (selectionLost) {
+        const next = nextActiveTabAfterClose(activeRecord, tabs.values());
+        if (next) {
+          // The app is now showing this tab, so it is the most recently used one.
+          // Persisting the bump keeps the next close's fallback coherent.
+          const record = tabs.get(next.id);
+          if (record) record.lastActiveAt = now();
+          selectTab(next.id);
+        } else {
+          selectTab(null);
+        }
       }
+      // One table change for the owner and every cascaded web tab; the renderer
+      // never sees an intermediate empty selection.
       publishTabs();
       await persist();
       return envelope();
@@ -1429,6 +1956,24 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       return envelope();
     },
 
+    async linkWebTabSession(tabId, sessionTabId) {
+      const tab = requireTab(tabId);
+      if (tab.kind !== "web") {
+        throw new SessionServiceError("only a web tab can be linked to a session", "bad_request");
+      }
+      const candidate =
+        typeof sessionTabId === "string" && sessionTabId.length > 0 ? sessionTabId : null;
+      const target = candidate ? tabs.get(candidate) : undefined;
+      // A link to another web/editor tab is not an owner; clear it rather than
+      // keeping a link the close policy would ignore anyway.
+      const link = target && target.kind !== "web" && target.kind !== "editor" ? target.id : null;
+      if ((tab.sessionTabId ?? null) === link) return envelope();
+      tab.sessionTabId = link;
+      publishTabs();
+      await persist();
+      return envelope();
+    },
+
     async promoteToOfficeHost(tabId) {
       const tab = requireTab(tabId);
       if (tab.kind === "web") {
@@ -1461,7 +2006,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
       // Restart the promoted tab so its host is spawned with `officeHost: true`.
       recycling.delete(tabId);
-      await detachHost(tabId);
+      await detachHost(tabId, { reason: "restart" });
 
       // Free the bridge port *before* the new host binds it (2026-10-30 plan).
       // Stopping our own host is not enough: an earlier app run, terminal Pi, or
@@ -1505,26 +2050,45 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // for every host (plan D-A3); it simply has no per-session state.
       if (tabId === CONTROL_TAB_ID) {
         const host = await service.controlHost();
-        return host.request(method, params);
+        return host.request(method, params, { timeoutMs: requestTimeoutFor(method) });
       }
       const tab = requireTab(tabId);
-      // LRU is about real use, not merely an open tab: every user request keeps
-      // the session warm. Internal `state.get` probes call `host.request`
-      // directly, so they do not distort the ordering.
-      tab.lastActiveAt = now();
       if (!isHostBackedTab(tab.kind)) {
         throw new SessionServiceError(
           tab.kind === "editor" ? "an editor tab has no Pi host" : "a web tab has no Pi host",
           tab.kind === "editor" ? "editor_tab" : "web_tab",
         );
       }
+      if (PASSIVE_METHODS.has(method) && !sessionReady.has(tab.id)) {
+        // An open already in flight may make this readable. Wait for that open
+        // (never start another) and refuse if it did not establish a session.
+        const inFlight = opening.get(tab.id);
+        if (inFlight) await inFlight.promise.catch(() => undefined);
+        if (!sessionReady.has(tab.id)) {
+          throw new SessionServiceError(SESSION_ASLEEP_MESSAGE, "host_stopped");
+        }
+      }
+      // LRU is about real use, not merely an open tab: every request that is
+      // allowed to reach a host keeps the session warm. Internal `state.get`
+      // probes call `host.request` directly, so they do not distort the ordering.
+      // A passive read that was refused above deliberately does not bump this.
+      tab.lastActiveAt = now();
       // Explicit session lifecycle commands bypass auto-open: the caller owns
       // the operation (trust retry, /new, fork). Only the process is ensured.
       if (SESSION_ESTABLISHING_METHODS.has(method)) {
         const inFlight = opening.get(tab.id);
-        if (inFlight) await inFlight.catch(() => undefined);
+        if (inFlight) await inFlight.promise.catch(() => undefined);
         const host = await ensureProcess(tab);
-        const result = await host.request(method, params);
+        let result: unknown;
+        try {
+          result = await host.request(method, params, { timeoutMs: requestTimeoutFor(method) });
+        } catch (error) {
+          // The caller owns the operation, so it is not replayed here — but a
+          // host that died mid-open must not leave the tab on `starting`
+          // forever. `stopped` is retryable: the next interaction respawns.
+          if (isRecoverableOpenError(error)) await detachHost(tab.id);
+          throw error;
+        }
         if (isSessionSnapshot(result)) {
           applySnapshot(tab, result);
           sessionReady.add(tab.id);
@@ -1542,7 +2106,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         }
       }
       try {
-        return await host.request(method, params);
+        return await host.request(method, params, { timeoutMs: requestTimeoutFor(method) });
       } catch (error) {
         if (method === "commands.complete" && isMissingCommandComplete(error)) {
           return { items: null, unsupported: true } satisfies CommandCompleteResult;
@@ -1554,7 +2118,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           recovering.add(tab.id);
           try {
             host = await ensureSession(tab);
-            if (READ_ONLY_RETRY_METHODS.has(method)) return await host.request(method, params);
+            if (READ_ONLY_RETRY_METHODS.has(method)) {
+              return await host.request(method, params, { timeoutMs: requestTimeoutFor(method) });
+            }
           } catch {
             // Keep the original error: it names the operation that failed.
           }
@@ -1567,6 +2133,24 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         }
         throw error;
       }
+    },
+
+    async stopTab(tabId) {
+      const tab = requireTab(tabId);
+      if (!isHostBackedTab(tab.kind)) {
+        throw new SessionServiceError(
+          tab.kind === "editor"
+            ? "an editor tab has no Pi host to stop"
+            : "a web tab has no Pi host to stop",
+          tab.kind === "editor" ? "editor_tab" : "web_tab",
+        );
+      }
+      // Deliberately does not wait for `opening`: Cancel has to answer now. The
+      // generation bump inside `detachHost` makes the late open stop the process
+      // it just started instead of publishing it over this stop.
+      await detachHost(tabId, { reason: "manual" });
+      await persist();
+      return envelope();
     },
 
     async restartTab(tabId) {
@@ -1586,7 +2170,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       recycling.delete(tabId);
       // Detach the old host the same way `closeTab` does, then let `activateTab`
       // spawn a fresh one. The session file is untouched, so history returns.
-      await detachHost(tabId);
+      await detachHost(tabId, { reason: "restart" });
       return service.activateTab(tabId);
     },
 
@@ -1624,11 +2208,13 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       starting.clear();
       opening.clear();
       sessionReady.clear();
+      sessionIdentities.clear();
       generations.clear();
       recovering.clear();
       recycling.clear();
       createParams.clear();
       control = null;
+      controlStarting = null;
       await deps.supervisor.stopAll();
     },
   };

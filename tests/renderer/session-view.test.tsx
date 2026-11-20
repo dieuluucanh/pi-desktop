@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { SessionView } from "../../src/renderer/src/views/SessionView";
@@ -8,6 +8,12 @@ import { ShortcutDispatcher } from "../../src/renderer/src/shortcuts/ShortcutDis
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { EMPTY_EXTENSION_UI } from "../../src/shared/extension-ui";
 import { EMPTY_TUI_SURFACE } from "../../src/shared/tui-surface";
+import {
+  REVIEW_HANDOFF_LINE,
+  REVIEW_PAUSED_LINE,
+  REVIEW_RUNNING_HINT,
+  REVIEW_RUNNING_LINE,
+} from "../../src/shared/workflow-mode";
 import { documentsViewFixture, installBridge } from "./fixtures";
 import {
   WORKSPACE_PATH_DRAG_MIME,
@@ -71,6 +77,9 @@ function resetStore(): void {
     extensionUi: {},
     tuiSurfaces: {},
     picker: null,
+    draftHistory: {},
+    historySeed: {},
+    historyBrowse: {},
   });
 }
 
@@ -176,6 +185,25 @@ describe("session chrome", () => {
     });
     render(<SessionView tabId={TAB} />);
     expect(screen.getByText("host failed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restart" })).toBeInTheDocument();
+  });
+
+  it("keeps every line of a session error", () => {
+    useAppStore.setState({
+      tabs: [
+        {
+          ...useAppStore.getState().tabs[0]!,
+          status: "crashed",
+          error: "host failed\nsecond line",
+        },
+      ],
+    });
+    render(<SessionView tabId={TAB} />);
+
+    const message = screen.getByText(/host failed\s+second line/);
+    expect(message.className).toContain("whitespace-pre-wrap");
+    expect(message.className).toContain("break-words");
+    expect(message.textContent).toBe("host failed\nsecond line");
     expect(screen.getByRole("button", { name: "Restart" })).toBeInTheDocument();
   });
 
@@ -442,6 +470,9 @@ describe("two panes at once", () => {
       tuiSurfaces: {},
       picker: null,
       pickerTabId: null,
+      draftHistory: {},
+      historySeed: {},
+      historyBrowse: {},
     });
   }
 
@@ -466,6 +497,52 @@ describe("two panes at once", () => {
     expect(composers[1]).toHaveValue("second");
   });
 
+  it("keeps history browsing in the pane that pressed the arrow", async () => {
+    const user = userEvent.setup();
+    twoTabs();
+    useAppStore.setState({
+      prefs: { ...DEFAULT_PREFS, drafts: { [TAB]: "first draft", [OTHER]: "second draft" } },
+      draftHistory: { [TAB]: ["first history"], [OTHER]: ["second history"] },
+      historyBrowse: {},
+    });
+
+    render(
+      <>
+        <SessionView tabId={TAB} />
+        <SessionView tabId={OTHER} />
+      </>,
+    );
+
+    const [first, second] = screen.getAllByLabelText("Prompt") as HTMLTextAreaElement[];
+    await user.click(first!);
+    first!.setSelectionRange(first!.value.length, first!.value.length);
+
+    await user.keyboard("{ArrowUp}");
+
+    expect(first).toHaveValue("first history");
+    expect(second).toHaveValue("second draft");
+    expect(useAppStore.getState().prefs.drafts[OTHER]).toBe("second draft");
+    expect(useAppStore.getState().historyBrowse[OTHER]).toBeUndefined();
+  });
+
+  it("explains a slow open and cancels it", async () => {
+    resetStore();
+    useAppStore.setState({
+      tabs: [{ ...useAppStore.getState().tabs[0]!, status: "starting" }],
+    });
+    const stop = vi.fn(async () => ({
+      tabs: useAppStore.getState().tabs,
+      activeTabId: TAB,
+    }));
+    (window.pi as unknown as { sessions: { stop: unknown } }).sessions.stop = stop;
+
+    render(<SessionView tabId={TAB} />);
+
+    expect(screen.getByTestId("session-starting")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("session-starting-cancel"));
+    await waitFor(() => expect(stop).toHaveBeenCalledWith(TAB));
+  });
+
   it("opens the model picker only in the pane that asked", () => {
     twoTabs();
 
@@ -481,5 +558,460 @@ describe("two panes at once", () => {
     fireEvent.click(within(tools[0]!).getByRole("button", { name: "Change model" }));
 
     expect(useAppStore.getState().pickerTabId).toBe(TAB);
+  });
+});
+
+/**
+ * Prompt history (2026-11-07 plan): `ArrowUp` recalls a sent prompt and
+ * `ArrowDown` must restore the draft that was being typed, including its caret.
+ */
+describe("prompt history", () => {
+  it("restores the pending draft after recalling a previous prompt", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({ draftHistory: { [TAB]: ["older prompt"] }, historyBrowse: {} });
+    render(<SessionView tabId={TAB} />);
+
+    const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(prompt);
+    await user.type(prompt, "pending prompt");
+
+    await user.keyboard("{ArrowUp}");
+    expect(prompt).toHaveValue("older prompt");
+
+    await user.keyboard("{ArrowDown}");
+    expect(prompt).toHaveValue("pending prompt");
+    expect(useAppStore.getState().prefs.drafts[TAB]).toBe("pending prompt");
+  });
+
+  it("restores the caret inside a multi-line draft", async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({ draftHistory: { [TAB]: ["older prompt"] }, historyBrowse: {} });
+    render(<SessionView tabId={TAB} />);
+
+    const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(prompt);
+    fireEvent.change(prompt, { target: { value: "first line\nsecond line" } });
+    prompt.setSelectionRange(4, 4);
+
+    await user.keyboard("{ArrowUp}");
+    expect(prompt).toHaveValue("older prompt");
+
+    await user.keyboard("{ArrowDown}");
+    expect(prompt).toHaveValue("first line\nsecond line");
+    expect(prompt.selectionStart).toBe(4);
+  });
+
+  it("recalls a resumed session's prompts after hydration", async () => {
+    const user = userEvent.setup();
+    (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = vi.fn(
+      async (input: { method: string }) =>
+        input.method === "messages.get"
+          ? {
+              messages: [{ id: "m1", role: "user", content: "prompt from before the restart" }],
+            }
+          : {},
+    );
+
+    render(<SessionView tabId={TAB} />);
+    await waitFor(() => expect(useAppStore.getState().transcripts[TAB]?.hydrated).toBe(true));
+
+    const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(prompt);
+    await user.type(prompt, "pending draft");
+
+    // The session-derived seed is what makes this work after a restart.
+    await user.keyboard("{ArrowUp}");
+    expect(prompt).toHaveValue("prompt from before the restart");
+
+    await user.keyboard("{ArrowDown}");
+    expect(prompt).toHaveValue("pending draft");
+  });
+
+  it("leaves the draft alone when Up is pressed before hydration finishes", async () => {
+    const user = userEvent.setup();
+    let resolveMessages: (messages: unknown[]) => void = () => undefined;
+    const pending = new Promise<unknown[]>((resolve) => {
+      resolveMessages = resolve;
+    });
+    (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = vi.fn(
+      async (input: { method: string }) =>
+        input.method === "messages.get" ? { messages: await pending } : {},
+    );
+
+    render(<SessionView tabId={TAB} />);
+    const prompt = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(prompt);
+    await user.type(prompt, "pending draft");
+
+    // No seed yet: Up must stay a native caret move and keep the draft.
+    await user.keyboard("{ArrowUp}");
+    expect(prompt).toHaveValue("pending draft");
+
+    await act(async () => {
+      resolveMessages([{ id: "m1", role: "user", content: "older prompt" }]);
+      await pending;
+    });
+    await waitFor(() => expect(useAppStore.getState().transcripts[TAB]?.hydrated).toBe(true));
+
+    await user.keyboard("{ArrowUp}");
+    expect(prompt).toHaveValue("older prompt");
+    await user.keyboard("{ArrowDown}");
+    expect(prompt).toHaveValue("pending draft");
+  });
+});
+
+describe("Escape parity (plan step 24)", () => {
+  function runningTab() {
+    useAppStore.setState({
+      tabs: useAppStore.getState().tabs.map((tab) => ({ ...tab, status: "running" })),
+    });
+  }
+
+  it("sends composer Escape through interruptRun, not stopRun", async () => {
+    const user = userEvent.setup();
+    const interrupt = vi.fn(async () => {});
+    const stop = vi.fn(async () => {});
+    useAppStore.setState({ interruptRun: interrupt, stopRun: stop });
+    runningTab();
+
+    render(<SessionView tabId={TAB} />);
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("{Escape}");
+
+    expect(interrupt).toHaveBeenCalledWith(TAB);
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("sends transcript Escape through the global interrupt too", () => {
+    const interrupt = vi.fn(async () => {});
+    const stop = vi.fn(async () => {});
+    useAppStore.setState({ interruptRun: interrupt, stopRun: stop });
+    runningTab();
+
+    render(
+      <>
+        <SessionView tabId={TAB} />
+        <ShortcutDispatcher />
+      </>,
+    );
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    expect(interrupt).toHaveBeenCalledWith(TAB, expect.objectContaining({ key: "Escape" }));
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("does not intercept Escape outside a running session", () => {
+    const interrupt = vi.fn(async () => {});
+    useAppStore.setState({ interruptRun: interrupt });
+
+    render(
+      <>
+        <SessionView tabId={TAB} />
+        <ShortcutDispatcher />
+      </>,
+    );
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    // The dispatcher forwards; the store decides (an idle tab is a no-op).
+    expect(interrupt).toHaveBeenCalled();
+    expect(useAppStore.getState().tabs[0]?.status).toBe("idle");
+  });
+});
+
+describe("extension-owned review status (2026-11-10; one row 2026-11-18)", () => {
+  const reviewing = {
+    message: REVIEW_RUNNING_LINE,
+    visible: null,
+    frames: null,
+    intervalMs: null,
+  };
+  const REVIEW_LINE = `${REVIEW_RUNNING_LINE} · pass 2/2 · 1 finding · ● verifying`;
+  const reviewStatus = (workflow: string, line: string | null = REVIEW_LINE) => ({
+    ...EMPTY_EXTENSION_UI,
+    statuses: {
+      workflow,
+      ...(line === null ? {} : { "workflow-review": line }),
+    },
+    working: reviewing,
+  });
+
+  it("shows one review row for a manual review while the tab is idle", () => {
+    useAppStore.setState({ extensionUi: { [TAB]: reviewStatus("🔍 review") } });
+
+    render(<SessionView tabId={TAB} />);
+
+    expect(screen.queryByTestId("extension-working-row")).toBeNull();
+    expect(screen.getByTestId("review-bar")).toHaveAttribute("data-phase", "running");
+    expect(screen.getByTestId("review-bar")).toHaveTextContent(REVIEW_LINE);
+    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Abort" })).toBeInTheDocument();
+    // The review row promotes `workflow-review`; the footer keeps only the mode.
+    expect(screen.getByTestId("extension-status-workflow")).toHaveTextContent("🔍 review");
+    expect(screen.queryByTestId("extension-status-workflow-review")).toBeNull();
+    expect(useAppStore.getState().tabs[0]?.status).toBe("idle");
+  });
+
+  it("shows the full paused line and a Resume button while a review is paused", () => {
+    useAppStore.setState({
+      extensionUi: { [TAB]: reviewStatus("🔍 review — paused", REVIEW_PAUSED_LINE) },
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    expect(screen.queryByTestId("extension-working-row")).toBeNull();
+    expect(screen.getByTestId("review-bar")).toHaveTextContent(REVIEW_PAUSED_LINE);
+    expect(screen.getByTestId("review-bar")).toHaveAttribute("data-phase", "paused");
+    expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+  });
+
+  it("keeps the handoff row alive after the reviewer finishes", () => {
+    useAppStore.setState({
+      extensionUi: {
+        [TAB]: {
+          ...EMPTY_EXTENSION_UI,
+          statuses: {
+            workflow: "🔍 review — awaiting decision",
+            "workflow-review": REVIEW_HANDOFF_LINE,
+          },
+        },
+      },
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    expect(screen.getByTestId("review-bar")).toHaveAttribute("data-phase", "handoff");
+    expect(screen.getByTestId("review-bar")).toHaveTextContent(REVIEW_HANDOFF_LINE);
+    expect(screen.queryByTestId("extension-working-row")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Abort" })).toBeNull();
+  });
+
+  it("runs the review command without clearing the draft", async () => {
+    const request = vi.fn(async (input: { method: string }) =>
+      input.method === "commands.run" ? { ran: true } : {},
+    );
+    (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = request;
+    useAppStore.setState({ extensionUi: { [TAB]: reviewStatus("🔍 review") } });
+
+    render(<SessionView tabId={TAB} />);
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: TAB,
+        method: "commands.run",
+        params: { name: "review-pause", args: "", ack: "started" },
+      }),
+    );
+  });
+
+  it("focuses the linked loopback review tab from the handoff bar", async () => {
+    useAppStore.setState({
+      extensionUi: {
+        [TAB]: {
+          ...EMPTY_EXTENSION_UI,
+          statuses: { workflow: "🔍 review — awaiting decision" },
+        },
+      },
+      tabs: [
+        ...useAppStore.getState().tabs,
+        {
+          id: "web-review",
+          kind: "web" as const,
+          cwd: "C:/work/app",
+          title: "Review",
+          sessionFile: null,
+          status: "idle" as const,
+          createdAt: 2,
+          lastActiveAt: 2,
+          model: null,
+          url: "http://127.0.0.1:4317/review",
+          sessionTabId: TAB,
+        },
+      ],
+    });
+
+    render(<SessionView tabId={TAB} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open review tab" }));
+
+    await waitFor(() => expect(useAppStore.getState().activeTabId).toBe("web-review"));
+  });
+
+  it("falls back to the canonical line when the extension sends no workflow-review", () => {
+    useAppStore.setState({
+      extensionUi: {
+        [TAB]: {
+          ...EMPTY_EXTENSION_UI,
+          statuses: { workflow: "🔍 review" },
+          working: { ...reviewing, message: "🔍 Reviewing plan…" },
+        },
+      },
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    expect(screen.getByTestId("review-bar")).toHaveTextContent(REVIEW_RUNNING_LINE);
+    expect(screen.getByTestId("review-bar")).toHaveTextContent(REVIEW_RUNNING_HINT);
+  });
+
+  it("places the review row below the above-editor widgets and above the composer", () => {
+    useAppStore.setState({
+      extensionUi: { [TAB]: reviewStatus("🔍 review") },
+      tuiSurfaces: {
+        [TAB]: {
+          ...EMPTY_TUI_SURFACE,
+          active: true,
+          widgetsAbove: [{ seq: 1, width: 20, height: 1, lines: ["TODO PANEL"], cursor: null }],
+        },
+      },
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    const todo = screen.getByText("TODO PANEL");
+    const bar = screen.getByTestId("review-bar");
+    const composer = screen.getByTestId("composer-drop");
+    expect(todo.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(bar.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("mounts the todo bar above the panel and the review row", () => {
+    useAppStore.setState({
+      extensionUi: {
+        [TAB]: {
+          ...EMPTY_EXTENSION_UI,
+          statuses: {
+            workflow: "🔍 review",
+            "workflow-todos": "☐ Todos 3/12 · expanded",
+          },
+        },
+      },
+      tuiSurfaces: {
+        [TAB]: {
+          ...EMPTY_TUI_SURFACE,
+          active: true,
+          widgetsAbove: [
+            {
+              seq: 1,
+              key: "workflow-todos",
+              width: 40,
+              height: 2,
+              lines: ["▶ 3. Build", "☐ 4. Test"],
+              cursor: null,
+            },
+          ],
+        },
+      },
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    const todoBar = screen.getByTestId("todo-panel-bar");
+    const widget = screen.getByText("▶ 3. Build");
+    const review = screen.getByTestId("review-bar");
+    const composer = screen.getByTestId("composer-drop");
+    expect(todoBar).toHaveTextContent("3/12");
+    expect(todoBar.compareDocumentPosition(widget) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(widget.compareDocumentPosition(review) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      review.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // The bar promotes the compact status; the footer omits its copy.
+    expect(screen.queryByTestId("extension-status-workflow-todos")).toBeNull();
+  });
+
+  it("keeps the bar when the list is hidden and dispatches the toggle", async () => {
+    const runTodoPanelAction = vi.fn(async (_tabId: string, _action: string) => true);
+    const spy = vi
+      .spyOn(
+        useAppStore.getState() as unknown as {
+          runTodoPanelAction: typeof runTodoPanelAction;
+        },
+        "runTodoPanelAction",
+      )
+      .mockImplementation(runTodoPanelAction);
+    useAppStore.setState({
+      extensionUi: {
+        [TAB]: {
+          ...EMPTY_EXTENSION_UI,
+          statuses: {
+            workflow: "▶ build 3/12",
+            "workflow-todos": "☐ Todos 3/12 · hidden",
+          },
+        },
+      },
+    });
+
+    try {
+      render(<SessionView tabId={TAB} />);
+      expect(screen.getByTestId("todo-panel-bar")).toHaveAttribute("data-state", "hidden");
+      expect(screen.getByTestId("todo-panel-bar")).toHaveTextContent("Hidden");
+      fireEvent.click(screen.getByTestId("todo-panel-bar-toggle"));
+      await waitFor(() => expect(runTodoPanelAction).toHaveBeenCalledWith(TAB, "expand"));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("degrades to no bar on an old extension's hidden Review panel", () => {
+    useAppStore.setState({
+      extensionUi: {
+        [TAB]: {
+          ...EMPTY_EXTENSION_UI,
+          statuses: { workflow: "🔍 review" },
+        },
+      },
+      tuiSurfaces: { [TAB]: { ...EMPTY_TUI_SURFACE, active: false } },
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    // 0.12.1 carries no `workflow-todos` status and the hidden panel has no
+    // frame; the menu/palette still dispatch /todos, but there is nothing to
+    // anchor a native bar to. The documented degradation must not crash.
+    expect(screen.queryByTestId("todo-panel-bar")).toBeNull();
+    expect(screen.getByTestId("review-bar")).toBeInTheDocument();
+  });
+
+  it("keeps a residual workflow-review in the footer when no review row is visible", () => {
+    useAppStore.setState({
+      extensionUi: {
+        [TAB]: {
+          ...EMPTY_EXTENSION_UI,
+          statuses: {
+            workflow: "⏸ plan",
+            "workflow-review": "handoff pending — browser",
+          },
+        },
+      },
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    expect(screen.queryByTestId("review-bar")).toBeNull();
+    expect(screen.getByTestId("extension-status-workflow-review")).toHaveTextContent(
+      "handoff pending — browser",
+    );
+  });
+
+  it("hides the row when the extension hides its indicator", () => {
+    useAppStore.setState({
+      extensionUi: {
+        [TAB]: {
+          ...EMPTY_EXTENSION_UI,
+          working: { ...reviewing, visible: false },
+        },
+      },
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    expect(screen.queryByTestId("extension-working-row")).toBeNull();
+  });
+
+  it("keeps a genuinely idle tab empty", () => {
+    render(<SessionView tabId={TAB} />);
+
+    expect(screen.queryByTestId("extension-working-row")).toBeNull();
+    expect(screen.queryByTestId("review-bar")).toBeNull();
   });
 });

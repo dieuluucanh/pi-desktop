@@ -85,6 +85,8 @@ describe("menu grammar", () => {
     expect(accelerators["new-session"]).toBe("CmdOrCtrl+N");
     expect(accelerators["check-updates"]).toBeNull();
     expect(accelerators["view-settings"]).toBe("CmdOrCtrl+,");
+    expect(accelerators["view-sessions"]).toBe("CmdOrCtrl+Alt+O");
+    expect(accelerators["todos-toggle"]).toBe("CmdOrCtrl+Alt+L");
   });
 });
 
@@ -98,6 +100,25 @@ describe("conflicts", () => {
       chord: "ctrl+x",
       left: "app.message.copy",
       right: "palette.open",
+      severity: "warning",
+    });
+  });
+
+  it("does not collide the todo toggle with Sessions, but flags a remap onto it", () => {
+    const defaults = detectDesktopConflicts({ desktop: resolveDesktopKeymap({}) });
+    expect(
+      defaults.some(
+        (conflict) => conflict.left === "sessions.open" && conflict.right === "todos.toggle",
+      ),
+    ).toBe(false);
+
+    const remapped = detectDesktopConflicts({
+      desktop: resolveDesktopKeymap({ "todos.toggle": ["ctrl+alt+o"] }),
+    });
+    expect(remapped).toContainEqual({
+      chord: "alt+ctrl+o",
+      left: "sessions.open",
+      right: "todos.toggle",
       severity: "warning",
     });
   });

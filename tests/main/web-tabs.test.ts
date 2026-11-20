@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MAX_LIVE_WEB_VIEWS,
   createWebTabManager,
@@ -64,6 +64,7 @@ class FakeView implements WebViewLike {
   bounds = { x: 0, y: 0, width: 0, height: 0 };
   visible = false;
   closed = false;
+  destroyed = false;
   private readonly listeners = new Map<WebViewEvent, Set<(payload?: unknown) => void>>();
 
   readonly webContents = {
@@ -90,6 +91,7 @@ class FakeView implements WebViewLike {
     setZoomFactor: (factor: number): void => {
       this.zoom = factor;
     },
+    isDestroyed: (): boolean => this.destroyed,
   };
 
   on(event: WebViewEvent, listener: (payload?: unknown) => void): () => void {
@@ -114,6 +116,12 @@ class FakeView implements WebViewLike {
   close(): void {
     this.closed = true;
   }
+
+  /** Simulates Electron's `destroyed` event (a page-initiated native close). */
+  destroy(): void {
+    this.destroyed = true;
+    this.emit("destroyed");
+  }
 }
 
 function harness(): {
@@ -122,11 +130,13 @@ function harness(): {
   closed: Set<string>;
   states: WebTabState[];
   requests: Array<{ tabId: string; url: string; disposition: string }>;
+  closeRequests: string[];
 } {
   const views = new Map<string, FakeView>();
   const closed = new Set<string>();
   const states: WebTabState[] = [];
   const requests: Array<{ tabId: string; url: string; disposition: string }> = [];
+  const closeRequests: string[] = [];
   const manager = createWebTabManager({
     createView: {
       create: ({ tabId, url }) => {
@@ -142,9 +152,10 @@ function harness(): {
     },
     emitState: (state) => states.push(state),
     emitNavigationRequest: (request) => requests.push(request),
+    requestClose: (tabId) => closeRequests.push(tabId),
     now: () => 1_000,
   });
-  return { manager, views, closed, states, requests };
+  return { manager, views, closed, states, requests, closeRequests };
 }
 
 describe("createWebTabManager", () => {
@@ -358,6 +369,49 @@ describe("createWebTabManager", () => {
     expect(manager.state("w1")?.sessionTabId).toBe("s1");
   });
 
+  it("reconciles a live view's owner link from the tab table", () => {
+    const { manager, states } = harness();
+    const initial = webTab("w1", "http://localhost:19432/review", "s1");
+    manager.sync(envelope([initial], "w1"));
+    states.length = 0;
+
+    manager.sync(envelope([{ ...initial, sessionTabId: "s2" }], "w1"));
+
+    expect(states.at(-1)?.sessionTabId).toBe("s2");
+    expect(manager.state("w1")?.sessionTabId).toBe("s2");
+  });
+
+  it("reconciles a parked state's owner link without a live view", () => {
+    const { manager } = harness();
+    const tabs = Array.from({ length: 7 }, (_, index) => ({
+      ...webTab(`w${index + 1}`, `http://localhost:${index + 1}/`, "s1"),
+      lastActiveAt: index + 1,
+    }));
+    manager.sync(envelope(tabs, "w7"));
+    manager.sync(envelope(tabs, "w1"));
+    expect(manager.state("w2")?.sessionTabId).toBe("s1");
+
+    manager.sync(
+      envelope(
+        tabs.map((tab) => (tab.id === "w2" ? { ...tab, sessionTabId: "s2" } : tab)),
+        "w1",
+      ),
+    );
+
+    expect(manager.state("w2")?.sessionTabId).toBe("s2");
+  });
+
+  it("emits no state when the owner link is unchanged", () => {
+    const { manager, states } = harness();
+    const initial = webTab("w1", "http://localhost:19432/review", "s1");
+    manager.sync(envelope([initial], "w1"));
+    states.length = 0;
+
+    manager.sync(envelope([{ ...initial }], "w1"));
+
+    expect(states).toEqual([]);
+  });
+
   it("keeps only MAX_LIVE_WEB_VIEWS views and parks the rest", () => {
     const { manager, views, closed } = harness();
     const tabs = Array.from({ length: 7 }, (_, index) => ({
@@ -448,5 +502,71 @@ describe("createWebTabManager", () => {
     );
 
     expect(manager.state("w2")).toBeNull();
+  });
+
+  it("asks to close once when the page requests it", () => {
+    const { manager, views, closeRequests } = harness();
+    manager.sync(
+      envelope([webTab("w1", "http://localhost:1/"), webTab("w2", "http://localhost:2/")], "w1"),
+    );
+    const view = views.get("w1")!;
+
+    view.emit("close-requested");
+    view.emit("close-requested");
+
+    expect(closeRequests).toEqual(["w1"]);
+  });
+
+  it("keeps a destroyed view's last state and ignores chrome commands", () => {
+    const { manager, views } = harness();
+    manager.sync(envelope([webTab("w1", "http://localhost:1/")], "w1"));
+    const view = views.get("w1")!;
+    view.emit("title", "Plannotator review");
+
+    view.destroy();
+
+    expect(manager.state("w1")).toMatchObject({
+      tabId: "w1",
+      url: "http://localhost:1/",
+      title: "Plannotator review",
+    });
+    manager.command("w1", { command: "reload" });
+    expect(view.reloadCount).toBe(0);
+    expect(manager.navigate("w1", "http://localhost:2/")).toBe(false);
+    manager.setBounds("w1", { x: 0, y: 0, width: 10, height: 10, visible: true });
+    expect(view.visible).toBe(false);
+  });
+
+  it("does not call getURL when a destroyed view is projected", () => {
+    const { manager, views } = harness();
+    manager.sync(envelope([webTab("w1", "http://localhost:1/")], "w1"));
+    const view = views.get("w1")!;
+    const getURL = vi.spyOn(view.webContents, "getURL");
+
+    // Destroyed before the event arrives (a crash/teardown race): the projection
+    // must fall back to the last state instead of throwing.
+    view.destroyed = true;
+
+    expect(manager.state("w1")?.url).toBe("http://localhost:1/");
+    expect(getURL).not.toHaveBeenCalled();
+  });
+
+  it("tears a gone view down without recreating it in the same sync pass", () => {
+    const { manager, views, closed } = harness();
+    const tab = webTab("w1", "http://localhost:1/");
+    manager.sync(envelope([tab], "w1"));
+    views.get("w1")!.destroy();
+    expect(manager.liveViewCount()).toBe(1);
+
+    // The tab table has not caught up yet; the gone view must not be rebuilt.
+    manager.sync(envelope([tab], "w1"));
+
+    expect(manager.liveViewCount()).toBe(0);
+    expect(closed.has("w1")).toBe(true);
+    // Its last state stays available while the record is still in the table...
+    expect(manager.state("w1")).not.toBeNull();
+    // ...and is pruned when the record goes.
+    manager.sync(envelope([], null));
+    expect(manager.state("w1")).toBeNull();
   });
 });

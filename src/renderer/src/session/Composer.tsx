@@ -5,10 +5,13 @@ import { cn } from "../ui/cn";
 import { PROMPT_MAX_HEIGHT_PX, useAutoGrowTextarea } from "../ui/auto-grow";
 import { fileToAttachment, isImageFile, type ImageAttachment } from "./image-attachment";
 import { lostPasteIds, shouldCollapsePaste } from "./paste-markers";
+import { atHistoryEdge, type PromptHistoryStep } from "./prompt-history";
+import { textareaVisualLines } from "./textarea-visual-lines";
 import { useAppStore } from "../state/app-store";
 import { sameFolder } from "../../../shared/rail-scope";
 import type { WorkspaceEntryKind } from "../../../shared/workspace";
 import { insertWorkspaceMention, workspaceMention } from "../../../shared/workspace-drag";
+import { isExcludedShellCommand, isShellCommand } from "../../../shared/shell-command";
 import { isExternalFileDrag, isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
 import { isTabDrag } from "../layout/tab-drag";
 import {
@@ -47,6 +50,11 @@ import type {
  *    Enter steers; Alt+Enter / Ctrl+Q queue a follow-up. The choice is the
  *    chord, not a remembered toggle — the same model as terminal Pi.
  *  - **Escape**: stop the run and put the queued text back in the editor.
+ *  - **History**: Up on the first displayed row (soft-wrapped rows count)
+ *    recalls a sent prompt; Down on the last displayed row walks forward and, at
+ *    the newest entry, restores the draft and caret stashed when browsing
+ *    began. The store owns both buffers, so a history step writes the text and
+ *    the composer only places the returned caret.
  */
 
 export interface ComposerProps {
@@ -69,6 +77,19 @@ export interface ComposerProps {
     options?: { preferredSource?: CompletionSource; followUp?: boolean },
   ) => Promise<boolean>;
   onStop: () => void;
+  /**
+   * Escape while a run is streaming (plan step 23). Terminal Pi gives the key
+   * to the extension's `onTerminalInput` handlers first and pauses a review; the
+   * composer only forwards, the store decides whether anything consumed it.
+   * Defaults to `onStop`, so an un-wired caller behaves exactly as before.
+   */
+  onEscape?: () => void;
+  /**
+   * True while an extension owns long-running work on an idle tab (a manual
+   * Review round). The composer then routes Escape through `onEscape` even
+   * though no parent turn is streaming.
+   */
+  escapeActive?: boolean;
   onClearQueue: () => void;
   /** `clearQueue` and put the queued text back in the draft (Alt+Up, plan step 9). */
   onRestoreQueue: () => void;
@@ -86,6 +107,12 @@ export interface ComposerProps {
   /** The `workflow` extension status, decoded into a composer border colour. */
   workflowStatus?: string | null;
   /**
+   * True while Review owns the turn (2026-11-14 review-mode-isolation plan).
+   * The store refuses prose and the Review bar owns Pause/Resume/Abort, so the
+   * composer must not offer Stop: it would abort the parent run, not the review.
+   */
+  reviewMode?: boolean;
+  /**
    * The session's registered extension shortcuts, used to give Tab to the mode
    * cycle (the workflow extension registers `tab`). Empty until the store loads
    * them, which the composer requests through `onRequestShortcuts`.
@@ -95,7 +122,7 @@ export interface ComposerProps {
   onInvokeShortcut?: (key: string) => void;
   /** Asks the store to load the extension shortcuts (once). */
   onRequestShortcuts?: () => void;
-  onHistoryStep: (direction: 1 | -1) => string | null;
+  onHistoryStep: (direction: 1 | -1, caret: number) => PromptHistoryStep;
   /** The completion engine (plan step 7); omit it to disable completion. */
   completion?: ComposerCompletion;
   /** Step 7 attaches the completion overlay here. */
@@ -242,6 +269,7 @@ export function Composer({
   draft,
   queue,
   workflowStatus,
+  reviewMode = false,
   extensionShortcuts,
   onInvokeShortcut,
   onRequestShortcuts,
@@ -251,6 +279,8 @@ export function Composer({
   onDraftChange,
   onSend,
   onStop,
+  onEscape,
+  escapeActive = false,
   onClearQueue,
   onRestoreQueue,
   onHistoryStep,
@@ -285,8 +315,8 @@ export function Composer({
   const handledMentionRef = useRef<number | null>(null);
 
   const queued = [...queue.steering, ...queue.followUp];
-  const bashMode = draft.trimStart().startsWith("!");
-  const shellExcluded = draft.trimStart().startsWith("!!");
+  const bashMode = isShellCommand(draft);
+  const shellExcluded = isExcludedShellCommand(draft);
   const registerPaste = useAppStore((state) => state.registerPaste);
   const pasteBodies = useAppStore((state) => state.pasteBodies[tabId]);
   // A marker restored from a previous launch has no body: say so, because the
@@ -609,7 +639,7 @@ export function Composer({
                   : enabled
                     ? running
                       ? "Type to steer the run — Enter steers, Alt+Enter queues a follow-up…"
-                      : "Ask Pi to change something…  / commands · @ files · # documents"
+                      : "Ask Pi to change something…  / commands · ! shell · @ files · # documents"
                     : "This session is not running — start it above to send a prompt."
             }
             disabled={!enabled}
@@ -788,9 +818,11 @@ export function Composer({
                 }
               }
 
-              if (event.key === "Escape" && running) {
+              if (event.key === "Escape" && (running || escapeActive)) {
                 event.preventDefault();
-                onStop();
+                // The extension gets the first look (a review pauses); only an
+                // unconsumed Escape reaches the stop path.
+                (onEscape ?? onStop)();
                 return;
               }
               // Pi's dequeue chord (alt+up): take every queued message back into
@@ -815,29 +847,50 @@ export function Composer({
                 })();
                 return;
               }
-              // History walks only at the buffer's edges, so the arrow keys keep
-              // their native caret movement inside a multi-line draft. The line is
-              // read from the live selection rather than React state: a keydown
-              // follows a caret move in the same frame, before the state commits.
-              const value = event.currentTarget.value;
-              const offset = event.currentTarget.selectionStart ?? 0;
-              const caretLine = value.slice(0, offset).split("\n").length;
-              const lineCount = value.split("\n").length;
-              if (event.key === "ArrowUp" && caretLine <= 1) {
-                const previous = onHistoryStep(-1);
-                if (previous !== null) {
-                  event.preventDefault();
-                  onDraftChange(previous);
+              // History walks only at the buffer's **displayed** edges, so a
+              // soft-wrapped paragraph keeps the browser's native caret movement
+              // until the caret reaches the first or last row. Pi's editor measures
+              // visual lines the same way (`isOnFirstVisualLine` /
+              // `isOnLastVisualLine`, editor.js:328-337). The offset and value come
+              // from the live selection rather than React state: a keydown follows a
+              // caret move in the same frame, before the state commits.
+              const plainArrow =
+                (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+                !event.shiftKey &&
+                !event.ctrlKey &&
+                !event.metaKey &&
+                !event.altKey;
+              const node = event.currentTarget;
+              const offset = node.selectionStart ?? 0;
+              const collapsed = offset === (node.selectionEnd ?? offset);
+              const applyHistory = (direction: 1 | -1): void => {
+                const step = onHistoryStep(direction, offset);
+                // "none" means the textarea keeps the key: no history movement.
+                if (step.kind === "none") return;
+                event.preventDefault();
+                // Pi cancels autocomplete when it navigates history; do the same
+                // so a menu built from the old buffer cannot survive the step.
+                closeCompletion();
+                setPickedSource(undefined);
+                pendingCaretRef.current = { text: step.text, caret: step.caret };
+                // The store already wrote the text. The caret can only be placed
+                // once the controlled value commits; the microtask also covers a
+                // preview identical to the current draft, where the `draft`
+                // effect does not re-run (same pattern as insertMention).
+                queueMicrotask(applyPendingCaret);
+              };
+              // Shift/Ctrl/Meta/Alt chords and an active selection stay native:
+              // Shift+Up extends the selection, Ctrl+Up moves by word/paragraph,
+              // and Alt+Up was the dequeue chord above.
+              if (plainArrow && collapsed) {
+                const value = node.value;
+                const visual = textareaVisualLines(node, offset);
+                const line = value.slice(0, offset).split("\n").length;
+                const lineCount = value.split("\n").length;
+                const direction = event.key === "ArrowUp" ? -1 : 1;
+                if (atHistoryEdge({ direction, visual, line, lineCount })) {
+                  applyHistory(direction);
                 }
-                return;
-              }
-              if (event.key === "ArrowDown" && caretLine >= lineCount) {
-                const next = onHistoryStep(1);
-                if (next !== null) {
-                  event.preventDefault();
-                  onDraftChange(next);
-                }
-                return;
               }
               if (
                 isSendKey({
@@ -886,7 +939,7 @@ export function Composer({
             >
               <Send className="size-4" aria-hidden />
             </Button>
-            {running ? (
+            {running && !reviewMode ? (
               <Button
                 size="icon-md"
                 variant="danger"
@@ -941,7 +994,11 @@ export function Composer({
           </span>
           <span className="shrink-0">
             Enter sends · Shift+Enter newline
-            {running ? " · Alt+Enter queues a follow-up · Esc stops" : ""}
+            {reviewMode
+              ? " · Review in progress — pause, resume, abort, or change model/profile"
+              : running
+                ? " · Alt+Enter queues a follow-up · Esc pauses a review or stops the run"
+                : ""}
           </span>
         </div>
         {/* Where the cursor is. The browser's caret is a thin blinking line that

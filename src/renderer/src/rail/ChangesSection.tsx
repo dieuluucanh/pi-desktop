@@ -6,7 +6,7 @@
  * `D`, `R`, `C`, `U`, `!`), per-file actions, and the group actions that make a
  * multi-file change one click.
  *
- * Two deliberate differences from VS Code, both for honesty:
+ * Three deliberate differences from VS Code, all for honesty:
  *
  *  - **Discard only appears on an unstaged row.** The service's discard reverts
  *    the work tree to the index, which is exactly what that row shows; a staged
@@ -14,16 +14,37 @@
  *    offering an action whose meaning would be ambiguous.
  *  - **An untracked discard says "Move to trash".** It calls the OS trash, not
  *    `rm`, and the confirmation names the file (plan D11).
+ *  - **A new file is staged whole, never by hunk.** Its diff shows every line
+ *    as added, like VS Code, but an untracked file has no index side to apply a
+ *    single hunk to; only the row's Stage action is offered.
  */
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, FileText, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  FileText,
+  Plus,
+  RotateCcw,
+  Trash2,
+  X,
+} from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { ConfirmDialog } from "../ui/confirm-dialog";
 import { useAppStore } from "../state/app-store";
 import { gitStatusLetter, gitStatusTone, type GitFileEntry } from "../../../shared/git";
-import { discardPrompt, emptyStateFor, groupsOf, isUntracked, renameLabel } from "./changes-view";
+import {
+  canOpenFile,
+  diffRequestFor,
+  discardPrompt,
+  emptyStateFor,
+  groupsOf,
+  isUntracked,
+  renameLabel,
+} from "./changes-view";
+import { useEditorStore } from "../editor/editor-store";
 import { RailBlockHeader } from "./RailBlockHeader";
 
 export interface ChangesSectionProps {
@@ -59,8 +80,10 @@ function FileRow({
 }) {
   const runGitAction = useAppStore((state) => state.runGitAction);
   const openGitDiff = useAppStore((state) => state.openGitDiff);
+  const openFileTab = useEditorStore((state) => state.openFileTab);
   const untracked = isUntracked(file);
   const renamed = renameLabel(file);
+  const request = diffRequestFor(file, staged);
 
   return (
     <li
@@ -68,7 +91,13 @@ function FileRow({
       data-testid={`change-row-${file.path}`}
     >
       <StatusBadge file={file} />
-      <span className="min-w-0 flex-1 truncate" title={file.path}>
+      <button
+        type="button"
+        className="min-w-0 flex-1 truncate text-left"
+        title={file.path}
+        data-testid={`change-path-${file.path}`}
+        onClick={() => void openGitDiff(projectPath, request)}
+      >
         {renamed ? (
           <>
             <span className="text-ink-faint">{file.origPath} → </span>
@@ -77,21 +106,30 @@ function FileRow({
         ) : (
           file.path
         )}
-      </span>
+      </button>
 
       {/* Hover-revealed, but always in the DOM so keyboard and tests reach them. */}
       <span className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-        {untracked ? null : (
+        <button
+          type="button"
+          className="text-ink-faint hover:text-ink"
+          aria-label={`Show diff for ${file.path}`}
+          title="Show diff"
+          onClick={() => void openGitDiff(projectPath, request)}
+        >
+          <FileText className="size-3" aria-hidden />
+        </button>
+        {canOpenFile(file) ? (
           <button
             type="button"
             className="text-ink-faint hover:text-ink"
-            aria-label={`Show diff for ${file.path}`}
-            title="Show diff"
-            onClick={() => void openGitDiff(projectPath, { path: file.path, staged })}
+            aria-label={`Open ${file.path}`}
+            title="Open file"
+            onClick={() => void openFileTab(projectPath, file.path)}
           >
-            <FileText className="size-3" aria-hidden />
+            <ExternalLink className="size-3" aria-hidden />
           </button>
-        )}
+        ) : null}
         <button
           type="button"
           className="text-ink-faint hover:text-ink"

@@ -9,6 +9,8 @@
  * Both sides share this module: it is the only place that knows the wire shape.
  */
 
+import { JsonlDecoder } from "./jsonl";
+
 export const HOST_PROTOCOL_VERSION = 1;
 
 /** Requests and responses larger than this are refused (blobs are the answer). */
@@ -16,6 +18,13 @@ export const MAX_FRAME_BYTES = 5 * 1024 * 1024;
 
 /** Values at or above this size are spilled to the blob cache instead of the frame. */
 export const BLOB_SPILL_THRESHOLD_BYTES = 1024 * 1024;
+
+/**
+ * Largest chunk `host.blobs.read` returns in one response. It leaves ample
+ * headroom under {@link MAX_FRAME_BYTES}, so even a large spilled response can be
+ * read back without dropping the frame.
+ */
+export const BLOB_CHUNK_BYTES = 2 * 1024 * 1024;
 
 /** Environment variable telling a host where to spill oversized payloads. */
 export const BLOB_DIR_ENV = "PI_DESKTOP_BLOB_DIR";
@@ -100,6 +109,8 @@ export type HostResponseFrame =
 export interface HostEventFrame {
   event: string;
   sessionId?: string;
+  /** Monotonic attachment counter; a reload keeps the id but bumps this. */
+  sessionEpoch?: number;
   payload?: unknown;
 }
 
@@ -113,6 +124,31 @@ export interface BlobRef {
   $blob: string;
   bytes: number;
   sha256?: string;
+}
+
+/**
+ * One chunk of a spilled blob. `offset` and `nextOffset` are **byte** offsets;
+ * `contents` always starts and ends on a UTF-8 code-point boundary, so a caller
+ * can simply concatenate the chunks and parse the result.
+ */
+export interface BlobReadResult {
+  path: string;
+  contents: string;
+  offset: number;
+  nextOffset: number;
+  size: number;
+  done: boolean;
+}
+
+/**
+ * A chunked read (or, for an older host, a legacy full read with just
+ * `path`/`contents`). Callers treat a missing `done` as "this was the whole
+ * blob", which keeps the reader compatible across a host rebuild.
+ */
+export function isBlobReadResult(value: unknown): value is BlobReadResult {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.path === "string" && typeof record.contents === "string";
 }
 
 /** Methods a host must understand. Session semantics land in plan step 5. */
@@ -188,6 +224,7 @@ export const HOST_METHODS = [
   "packages.remove",
   "packages.update",
   "packages.list",
+  "packages.checkUpdates",
   // extension UI + files
   "oi.respond",
   // Extension-UI state and the composer bridge (plan step 16). No RPC
@@ -305,56 +342,23 @@ export function isBlobRef(value: unknown): value is BlobRef {
 }
 
 /**
- * Splits a byte stream into frames.
+ * Splits a byte stream into Pi host frames.
  *
- * Guards against a single frame exceeding `maxBytes` (a bug or a hostile
- * payload): the oversized line is discarded and reported once, and the decoder
- * resynchronises on the next newline.
+ * The overflow/resync logic lives in the generic `JsonlDecoder` (shared with the
+ * terminal host); this class keeps the host-specific decode and result shape so
+ * existing call sites and tests are unchanged.
  */
 export class JsonlFrameDecoder {
-  private buffer = "";
-  private dropping = false;
-  private readonly maxBytes: number;
+  private readonly decoder: JsonlDecoder<HostFrame>;
 
   constructor(maxBytes: number = MAX_FRAME_BYTES) {
-    this.maxBytes = maxBytes;
+    this.decoder = new JsonlDecoder<HostFrame>(decodeFrame, maxBytes);
   }
 
   /** Feeds a chunk and returns every complete frame it produced. */
   push(chunk: string): { frames: HostFrame[]; overflow: boolean } {
-    this.buffer += chunk;
-    const frames: HostFrame[] = [];
-    let overflow = false;
-
-    for (;;) {
-      const newline = this.buffer.indexOf("\n");
-      if (newline === -1) break;
-      const line = this.buffer.slice(0, newline);
-      this.buffer = this.buffer.slice(newline + 1);
-      if (this.dropping) {
-        this.dropping = false;
-        overflow = true;
-        continue;
-      }
-      if (line.length > this.maxBytes) {
-        overflow = true;
-        continue;
-      }
-      frames.push(...toFrames(decodeFrame(line)));
-    }
-
-    if (this.buffer.length > this.maxBytes) {
-      this.buffer = "";
-      this.dropping = true;
-      overflow = true;
-    }
-
-    return { frames, overflow };
+    return this.decoder.push(chunk);
   }
-}
-
-function toFrames(frame: HostFrame | null): HostFrame[] {
-  return frame === null ? [] : [frame];
 }
 
 /** True when a value cannot be sent as-is inside a frame. */

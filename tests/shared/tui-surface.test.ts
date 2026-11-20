@@ -55,6 +55,22 @@ describe("tui surface sanitizers", () => {
     expect(frame?.lines[0]).toHaveLength(4000);
   });
 
+  it("keeps a widget key and drops malformed or oversized ones", () => {
+    expect(
+      sanitizeTuiFrame({ seq: 1, key: "  workflow-todos ", width: 10, height: 1, lines: ["a"] })
+        ?.key,
+    ).toBe("workflow-todos");
+    expect(sanitizeTuiFrame({ seq: 1, key: 7, width: 10, height: 1, lines: ["a"] })?.key).toBe(
+      undefined,
+    );
+    expect(sanitizeTuiFrame({ seq: 1, key: "   ", width: 10, height: 1, lines: ["a"] })?.key).toBe(
+      undefined,
+    );
+    expect(
+      sanitizeTuiFrame({ seq: 1, key: "k".repeat(200), width: 10, height: 1, lines: ["a"] })?.key,
+    ).toHaveLength(80);
+  });
+
   it("validates resize and input requests", () => {
     expect(sanitizeTuiResize({ rows: 12, cols: 80 })).toEqual({ rows: 12, cols: 80 });
     expect(sanitizeTuiResize({ rows: 0, cols: 80 })).toBeNull();

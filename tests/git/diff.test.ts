@@ -289,6 +289,14 @@ describe("readDiff command shape", () => {
     expect(args[args.length - 1]).toBe("src/app.ts");
   });
 
+  it("refuses an untracked request instead of running git diff", async () => {
+    const runner = createFakeGitRunner([]);
+    await expect(readDiff(runner, "/repo", { path: "new.ts", untracked: true })).rejects.toThrow(
+      /read from the work tree/,
+    );
+    expect(runner.calls).toEqual([]);
+  });
+
   it("returns an empty diff when git is missing", async () => {
     const runner = createFakeGitRunner([{ args: ["diff"], missing: true }]);
     const diff = await readDiff(runner, "/repo");

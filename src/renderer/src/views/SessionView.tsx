@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Cpu } from "lucide-react";
 import { Composer } from "../session/Composer";
+import { ReviewBar } from "../session/ReviewBar";
+import { TodoPanelBar } from "../session/TodoPanelBar";
+import { StartingBanner } from "../session/StartingBanner";
 import { SessionFooter } from "../session/SessionFooter";
 import { Transcript } from "../session/Transcript";
 import { Button } from "../ui/button";
+import { MultilineText } from "../ui/multiline-text";
 import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
+import { selectDefaultModelProblem } from "../state/selectors";
 import { WidgetStrip } from "../extension-ui/WidgetStrip";
 import { ExtensionDialogDock } from "../extension-ui/ExtensionDialog";
 import { WorkingRow } from "../extension-ui/WorkingRow";
@@ -18,7 +23,6 @@ import { useTuiViewport } from "../tui/use-tui-viewport";
 import { createCommandProvider } from "../completion/command-source";
 import { createDocumentProvider } from "../completion/document-source";
 import { createFileProvider } from "../completion/file-source";
-import { createShellProvider } from "../completion/shell-source";
 import { documentMentionsForHost } from "../../../shared/office-documents";
 import { createCompletionProvider } from "../completion/stack";
 import type { CompletionItem, CompletionSuggestions } from "../completion/types";
@@ -27,10 +31,22 @@ import { ModelPicker } from "../session/ModelPicker";
 import { ThinkingPicker } from "../session/ThinkingPicker";
 import { ThinkingLevelIcon } from "../session/ThinkingLevelIcon";
 import { thinkingLevelTitle } from "../../../shared/thinking";
+import type { ScopeDiagnosticInfo } from "../../../shared/model-scope";
 import { contextUsageOf, modelKeyOf, thinkingLevelsOf } from "../session/model-catalog";
 import { sameFolder } from "../../../shared/rail-scope";
 import type { WorkspaceEntryKind } from "../../../shared/workspace";
 import { isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
+import {
+  parseWorkflowStatus,
+  reviewLineText,
+  WORKFLOW_REVIEW_STATUS_KEY,
+} from "../../../shared/workflow-mode";
+import {
+  resolveTodoPanel,
+  TODO_STATUS_KEY,
+  type TodoPanelActionId,
+} from "../../../shared/workflow-todos";
+import { isLoopbackUrl } from "../../../shared/web-tabs";
 
 /**
  * Session view (plan step 5).
@@ -44,6 +60,13 @@ import { isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
 
 /** Stable empty scope for a tab whose scope has not loaded yet. */
 const EMPTY_SCOPE: readonly string[] = [];
+const EMPTY_DIAGNOSTICS: readonly ScopeDiagnosticInfo[] = [];
+
+/**
+ * The review row promotes the extension's live review status; the footer must
+ * not repeat the same line below the composer while that row is visible.
+ */
+const REVIEW_HIDDEN_STATUS_KEYS = [WORKFLOW_REVIEW_STATUS_KEY] as const;
 
 /**
  * The `#` completion source.
@@ -85,9 +108,15 @@ export function SessionView({ tabId }: { tabId: string }) {
   const transcripts = useAppStore((state) => state.transcripts);
   const ensureSession = useAppStore((state) => state.ensureSession);
   const restartTab = useAppStore((state) => state.restartTab);
+  const cancelSession = useAppStore((state) => state.cancelSession);
   const hydrateTranscript = useAppStore((state) => state.hydrateTranscript);
   const sendPrompt = useAppStore((state) => state.sendPrompt);
   const stopRun = useAppStore((state) => state.stopRun);
+  const interruptRun = useAppStore((state) => state.interruptRun);
+  // Review is an isolated turn: the bar's controls run the same extension
+  // commands a typed `/review-*` would, without touching the draft.
+  const runReviewCommand = useAppStore((state) => state.runReviewCommand);
+  const activateTab = useAppStore((state) => state.activateTab);
   const clearQueue = useAppStore((state) => state.clearQueue);
   const restoreQueue = useAppStore((state) => state.restoreQueue);
   const setDraft = useAppStore((state) => state.setDraft);
@@ -118,7 +147,35 @@ export function SessionView({ tabId }: { tabId: string }) {
   const scopedPatterns = useAppStore((state) => state.modelScopePatterns[tabId]);
   const scopeTarget = useAppStore((state) => state.modelScopeTarget[tabId]);
   const scopeBusyKey = useAppStore((state) => state.modelScopeBusy[tabId] ?? null);
+  const scopeDiagnostics = useAppStore(
+    (state) => state.modelScopeDiagnostics[tabId] ?? EMPTY_DIAGNOSTICS,
+  );
+  const defaultModelIssue = useAppStore(selectDefaultModelProblem);
   const extensionUi = useAppStore((state) => state.extensionUi[tabId]);
+  // An extension can own long-running work while the parent tab is idle
+  // (a manual Review round). That is still "busy" for Escape, even though
+  // `tab.status` stays idle; the review row replaces the generic working row
+  // while the extension reports a Review phase.
+  const extensionWorking = extensionUi?.working;
+  const extensionBusy = extensionWorking?.message != null && extensionWorking.visible !== false;
+  const workflowStatus = extensionUi?.statuses?.workflow ?? null;
+  // Review is a first-class mode since @dieulc/workflow 0.11.0: the status is
+  // the authority (and carries the phase), not the working message any more.
+  // A running review's message can differ from the mode status, and the handoff
+  // phase has no working message at all.
+  const workflowMode = parseWorkflowStatus(workflowStatus);
+  const reviewMode = workflowMode?.mode === "review";
+  const reviewPhase = reviewMode ? (workflowMode?.reviewPhase ?? "running") : null;
+  // The desktop row is the extension's own line (the same `workflow-review`
+  // status terminal Pi paints); the fallback keeps the hints on an older
+  // extension. `WorkingRow` is suppressed while this line owns the turn.
+  const reviewLine = reviewPhase
+    ? reviewLineText({
+        phase: reviewPhase,
+        status: extensionUi?.statuses?.[WORKFLOW_REVIEW_STATUS_KEY],
+        workingMessage: extensionWorking?.message,
+      })
+    : null;
   const extensionDialogs = useAppStore((state) => state.extensionDialogs);
   const toolsExpandedState = useAppStore((state) => state.toolsExpanded[tabId]);
   const toggleToolsExpanded = useAppStore((state) => state.toggleToolsExpanded);
@@ -136,11 +193,29 @@ export function SessionView({ tabId }: { tabId: string }) {
   const loadShortcuts = useAppStore((state) => state.loadShortcuts);
   const invokeShortcut = useAppStore((state) => state.invokeShortcut);
   const tuiSurface = useAppStore((state) => state.tuiSurfaces[tabId]);
+  const runTodoPanelAction = useAppStore((state) => state.runTodoPanelAction);
+  // The native todo bar's view model. The panel stays extension-owned; this
+  // adapter only reads the widget frame and the compact status (step 2).
+  const todoPanel = resolveTodoPanel({
+    frames: tuiSurface?.widgetsAbove ?? [],
+    widgets: extensionUi?.widgets ?? [],
+    statuses: extensionUi?.statuses ?? {},
+  });
+  // The bar promotes the compact todo status; the footer must not repeat it.
+  const hiddenSessionStatusKeys = useMemo(() => {
+    const keys = [
+      ...(reviewPhase ? REVIEW_HIDDEN_STATUS_KEYS : []),
+      ...(todoPanel.present ? [TODO_STATUS_KEY] : []),
+    ];
+    return keys.length > 0 ? keys : undefined;
+  }, [reviewPhase, todoPanel.present]);
   // Only the count drove a section header; the strip's badges now come from the
   // snapshot and the checkpoint store directly.
   const [composerFocusToken, setComposerFocusToken] = useState(0);
   const [surfaceFocusToken, setSurfaceFocusToken] = useState(0);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  /** The one explicit wake per mounted pane; status changes never re-trigger it. */
+  const ensuredPaneRef = useRef<string | null>(null);
 
   /**
    * The completion stack for this tab (plan step 7): commands from the host's
@@ -160,7 +235,6 @@ export function SessionView({ tabId }: { tabId: string }) {
             completeAppCommandArguments(tabId, request.name, request.prefix),
         }),
         file: createFileProvider({ loadFiles: () => loadFiles(tabId) }),
-        shell: createShellProvider({ loadFiles: () => loadFiles(tabId) }),
         document: createDocumentProvider(documentMentionSource(tabId)),
         extension: {
           suggest: (request) => extensionCompletion(tabId, request),
@@ -204,6 +278,15 @@ export function SessionView({ tabId }: { tabId: string }) {
 
   const active = tabs.find((tab) => tab.id === tabId) ?? null;
   const activeId = active?.id ?? null;
+  // The review page is a loopback web tab linked to this session. The bar can
+  // focus it; without one it stays command-only (the page may have been closed).
+  const reviewTabId =
+    reviewMode && active
+      ? (tabs.find(
+          (tab) =>
+            tab.kind === "web" && tab.sessionTabId === active.id && isLoopbackUrl(tab.url ?? null),
+        )?.id ?? null)
+      : null;
   const [mentionRequest, setMentionRequest] = useState<{
     id: number;
     tabId: string;
@@ -256,6 +339,17 @@ export function SessionView({ tabId }: { tabId: string }) {
     }
   }, [activeId, focusedTabId, active?.kind, active?.status, loadShortcuts]);
 
+  // Mounting a pane is the gesture that may wake a stopped host. This replaces
+  // the old accidental wake through `tui.resize`: the viewport effect still
+  // reports while the host is live, but a status change can no longer spawn a
+  // host that was just recycled (2026-11-06 Strata loop).
+  useEffect(() => {
+    if (!activeId || active?.kind === "web") return;
+    if (ensuredPaneRef.current === activeId) return;
+    ensuredPaneRef.current = activeId;
+    if (active?.status === "stopped") void ensureSession(activeId);
+  }, [activeId, active?.kind, active?.status, ensureSession]);
+
   // Git polling and the checkpoint timeline are seeded by `ProjectRail` (the
   // rail follows the selected project, not this tab — 2026-10-30 plan), so the
   // session view no longer owns a scope of its own.
@@ -292,6 +386,18 @@ export function SessionView({ tabId }: { tabId: string }) {
   // composer — otherwise Tab/arrow keys silently stop reaching the extension.
   const surfaceOwnsKeyboard = tuiOwnsComposer || floatingOverlay || dialog !== null;
   const composerUnavailable = surfaceOwnsKeyboard;
+
+  const restoreComposerFocus = (): void => {
+    // A dialog owns the keys while it is open; never pull them away from it.
+    if (dialog !== null) return;
+    if (tuiOwnsComposer || floatingOverlay) setSurfaceFocusToken((token) => token + 1);
+    else setComposerFocusToken((token) => token + 1);
+  };
+
+  const handleTodoAction = async (action: TodoPanelActionId): Promise<void> => {
+    await runTodoPanelAction(active.id, action);
+    restoreComposerFocus();
+  };
 
   const resetDrop = (): void => {
     dropDepth.current = 0;
@@ -379,14 +485,34 @@ export function SessionView({ tabId }: { tabId: string }) {
         </div>
       ) : null}
 
+      {active.status === "starting" && !active.error ? (
+        <StartingBanner key={active.id} onCancel={() => void cancelSession(active.id)} />
+      ) : null}
+
+      {active.memoryOverBudget && active.status !== "crashed" && active.status !== "failed" ? (
+        <div
+          data-testid="session-memory-warning"
+          className="banner banner--warn mx-4 mt-2 flex items-start justify-between gap-3"
+          role="status"
+        >
+          <span>
+            This session is using more than the 1 GB host memory budget. It is protected from
+            automatic recycling while you are viewing it; restart it to free memory.
+          </span>
+          <Button size="sm" variant="secondary" onClick={() => void restartTab(active.id)}>
+            Restart
+          </Button>
+        </div>
+      ) : null}
+
       {active.error || active.status === "crashed" || active.status === "failed" ? (
         <div className="banner banner--error mx-4 mt-2 flex items-start justify-between gap-3">
-          <span>
+          <MultilineText className="min-w-0">
             {active.error ??
               (active.status === "crashed"
                 ? "The session host crashed. History is on disk and returns after a restart."
                 : "The session host was stopped after repeated failures.")}
-          </span>
+          </MultilineText>
           <Button size="sm" variant="secondary" onClick={() => void restartTab(active.id)}>
             Restart
           </Button>
@@ -454,7 +580,7 @@ export function SessionView({ tabId }: { tabId: string }) {
               }}
             />
           ) : null}
-          {active.status === "running" ? (
+          {(active.status === "running" || extensionBusy) && reviewPhase === null ? (
             <WorkingRow
               working={
                 extensionUi?.working ?? {
@@ -474,13 +600,30 @@ export function SessionView({ tabId }: { tabId: string }) {
               className="shrink-0 border-t border-line py-1"
             />
           ) : null}
+          {todoPanel.present ? (
+            <TodoPanelBar panel={todoPanel} onAction={handleTodoAction} />
+          ) : null}
           <WidgetStrip tabId={active.id} placement="aboveEditor" />
           <TuiWidgetStrip frames={tuiSurface?.widgetsAbove ?? []} placement="aboveEditor" />
+          {reviewPhase ? (
+            <ReviewBar
+              phase={reviewPhase}
+              text={reviewLine ?? ""}
+              canOpenReview={reviewTabId !== null}
+              onPause={() => void runReviewCommand(active.id, "review-pause")}
+              onResume={() => void runReviewCommand(active.id, "review-resume")}
+              onAbort={() => void runReviewCommand(active.id, "review-abort")}
+              onOpenReview={() => {
+                if (reviewTabId) void activateTab(reviewTabId);
+              }}
+            />
+          ) : null}
           {dialog ? (
             <ExtensionDialogDock
               dialog={dialog}
               maxHeight={viewport.rows * viewport.cell.height}
               focusToken={surfaceFocusToken}
+              active={active.id === focusedTabId}
             />
           ) : tuiOwnsComposer && tuiSurface ? (
             <TuiSurface
@@ -541,7 +684,7 @@ export function SessionView({ tabId }: { tabId: string }) {
                 onMentionHandled={(id) =>
                   setMentionRequest((current) => (current?.id === id ? null : current))
                 }
-                workflowStatus={extensionUi?.statuses?.workflow ?? null}
+                workflowStatus={workflowStatus}
                 extensionShortcuts={shortcuts.shortcuts}
                 onInvokeShortcut={(key) => void invokeShortcut(key)}
                 onRequestShortcuts={() => void loadShortcuts()}
@@ -566,9 +709,15 @@ export function SessionView({ tabId }: { tabId: string }) {
                 }}
                 completion={completion}
                 onStop={() => void stopRun(active.id)}
+                // Escape goes through the extension first (plan step 24): a
+                // running review pauses instead of aborting. A manual review
+                // runs on an idle tab, so `escapeActive` forwards too.
+                onEscape={() => void interruptRun(active.id)}
+                escapeActive={extensionBusy || reviewMode}
+                reviewMode={reviewMode}
                 onClearQueue={() => void clearQueue(active.id)}
                 onRestoreQueue={() => void restoreQueue(active.id)}
-                onHistoryStep={(direction) => historyStep(active.id, direction)}
+                onHistoryStep={(direction, caret) => historyStep(active.id, direction, caret)}
               />
             </div>
           )}
@@ -587,6 +736,7 @@ export function SessionView({ tabId }: { tabId: string }) {
             <SessionFooter
               className="shrink-0 px-3 pb-1"
               homeDir={homeDir}
+              hiddenStatusKeys={hiddenSessionStatusKeys}
               widgets={
                 belowSplit.inline.length > 0 ? <TuiWidgetInline frames={belowSplit.inline} /> : null
               }
@@ -647,6 +797,8 @@ export function SessionView({ tabId }: { tabId: string }) {
         initialQuery={pickerSearch}
         scoped={scopedModels ?? EMPTY_SCOPE}
         patterns={scopedPatterns ?? EMPTY_SCOPE}
+        diagnostics={scopeDiagnostics}
+        defaultProblem={defaultModelIssue}
         scopeTarget={scopeTarget ?? "global"}
         scopeBusyKey={scopeBusyKey}
         error={pickerError}

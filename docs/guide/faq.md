@@ -38,15 +38,21 @@ then works like any other extension. See
 [parity.md](../product/parity.md#mcp).
 
 **Is there an in-app terminal?**
-Not in v0.5.0 (it is explicit post-MVP backlog). The app ships a `pi` PATH shim
-and can open an external terminal in a project folder.
+Yes, since v0.7.0: **New terminal** in the session strip (`Ctrl/Cmd+Shift+T`, or
+`Ctrl/Cmd+J` to toggle) opens a real PTY-backed shell in a tab, using the same
+shell detection as the rest of the app (PowerShell 7 / Windows PowerShell / cmd /
+Git Bash / WSL on Windows, `$SHELL` elsewhere). It is a local shell only — no
+SSH or remote sessions — and it does not spawn in an untrusted project until you
+grant trust. The composer's `!` stays the agent-visible command runner. See
+[sessions and tabs](sessions-and-tabs.md) and
+[settings](settings.md#terminal-app-owned).
 
 **Can I open several projects at once?**
 Yes — tabs are per session and sessions belong to projects; the sidebar groups
-them. There is one window in v0.5.0 (multi-window is backlog).
+them. There is one window in v0.11.0 (multi-window is backlog).
 
 **Why does Windows/macOS warn when I install it?**
-The v0.5.0 artefacts are unsigned. Windows SmartScreen: “More info → Run anyway”.
+The v0.11.0 artefacts are unsigned. Windows SmartScreen: “More info → Run anyway”.
 macOS refuses the first launch without offering a right-click override: open
 **System Settings → Privacy & Security**, scroll to the bottom and choose
 **Open Anyway**. See [Getting started](getting-started.md#installing-on-macos).
@@ -65,15 +71,15 @@ sandboxed renderer, strict CSP, allowlisted IPC, web tabs without a preload.
 
 **How do I get a newer version?**
 Release builds check GitHub Releases once after launch. An available version
-appears as a small **Update vX** chip in the status bar; the full status,
-**Download** and **Restart & install** live in **Settings → About & updates**.
-`Help → Check for Updates…` opens that card and checks on demand. Locally built
-packages are not on the update feed: automatic checks are off and the card says
-so. Package installs are separate: the app updates its own code, the package
-manager updates extensions.
+raises a bell notification and marks **About & updates** in the sidebar (below
+Diagnostics) with a dot; the full status, **Download** and **Restart & install**
+live there. `Help → Check for Updates…` opens that view and checks on demand.
+Locally built packages are not on the update feed: automatic checks are off and
+the view says so. Package installs are separate: the app updates its own code,
+the package manager updates extensions.
 
 **Is it translated?**
-Not yet (i18n is backlog). The UI is English in v0.5.0.
+Not yet (i18n is backlog). The UI is English in v0.11.0.
 
 **How do I copy the proposed commit message from `/commit`?**
 The extension renders it in a questionnaire panel. Select the text and press
@@ -92,4 +98,4 @@ launches.
 
 **Where do I report a bug?**
 Attach a Diagnostics support bundle (it is redacted) and the version from
-Settings → About or the status bar, and open an issue on the repository.
+**About & updates** or the status bar, and open an issue on the repository.

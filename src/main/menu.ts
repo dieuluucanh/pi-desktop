@@ -1,4 +1,4 @@
-import type { MenuItemConstructorOptions } from "electron";
+import type { BrowserWindow, MenuItemConstructorOptions, WebContents } from "electron";
 import type { MenuCommand } from "../shared/ipc";
 
 /**
@@ -24,6 +24,13 @@ export interface AppMenuDeps {
    * default. The menu is rebuilt when the prefs change.
    */
   accelerators?: Partial<Record<MenuCommand, string | null>>;
+  /**
+   * Edit ▸ Paste. Main routes it by the focused surface: an extension TUI frame
+   * is not editable, so `webContents.paste()` cannot reach it and the window
+   * sends a paste request to the renderer instead. Without this callback the
+   * item falls back to the native command, which is what tests exercise.
+   */
+  onPaste?: (contents: WebContents | null) => void;
 }
 
 export const DOCS_URL = "https://github.com/earendil-works/pi";
@@ -36,6 +43,10 @@ interface ItemSpec {
 
 const FILE_ITEMS: readonly ItemSpec[] = [
   { command: "new-session", label: "New Session", accelerator: "CmdOrCtrl+N" },
+  { command: "new-terminal", label: "New Terminal", accelerator: "CmdOrCtrl+Shift+T" },
+  // Menu accelerators are suppressed while a terminal has focus, so Ctrl+J can
+  // also be the shell's newline without ambiguity.
+  { command: "toggle-terminal", label: "Toggle Terminal", accelerator: "CmdOrCtrl+J" },
   // `Ctrl+O` is Pi's `app.tools.expand` (plan step 18), so Open Project moves to
   // Shift+O; otherwise the menu accelerator would swallow the expand key before
   // the renderer ever sees it.
@@ -89,6 +100,22 @@ const SESSION_ITEMS: readonly ItemSpec[] = [
   { command: "thinking-cycle", label: "Cycle Thinking Level", accelerator: "CmdOrCtrl+Alt+T" },
 ];
 
+/**
+ * The Workflow todo panel (2026-11-18 toe-panel plan).
+ *
+ * The explicit verbs mirror `/todos auto|expand|collapse|hide`; `todos-toggle`
+ * expands a hidden/collapsed panel and collapses an expanded one, matching the
+ * extension's terminal `Ctrl+Alt+O`. The desktop chord is `Ctrl+Alt+L` because
+ * `Ctrl+Alt+O` is already Sessions (see VIEW_ITEMS).
+ */
+const TODO_ITEMS: readonly ItemSpec[] = [
+  { command: "todos-auto", label: "Automatic" },
+  { command: "todos-expand", label: "Show Full Todo List" },
+  { command: "todos-collapse", label: "Collapse Todo List to One Line" },
+  { command: "todos-hide", label: "Hide Todo Panel" },
+  { command: "todos-toggle", label: "Toggle Todo Panel", accelerator: "CmdOrCtrl+Alt+L" },
+];
+
 const GO_ITEMS: readonly ItemSpec[] = [
   { command: "view-explorer", label: "Explorer", accelerator: "CmdOrCtrl+Shift+E" },
   { command: "view-source-control", label: "Source Control" },
@@ -98,12 +125,13 @@ const GO_ITEMS: readonly ItemSpec[] = [
   { command: "view-connections", label: "Connections" },
   { command: "view-skills", label: "Skills, Themes & Keys" },
   { command: "view-diagnostics", label: "Diagnostics" },
+  { command: "view-updates", label: "About & Updates" },
 ];
 
 const HELP_ITEMS: readonly ItemSpec[] = [
   { command: "shortcuts", label: "Keyboard Shortcuts", accelerator: "CmdOrCtrl+/" },
-  // Opens Settings → About & updates and starts a check. A menu accelerator
-  // here would only duplicate the status chip's own affordance.
+  // Opens the About & updates view and starts a check. A menu accelerator here
+  // would only duplicate the bell's own affordance.
   { command: "check-updates", label: "Check for Updates…" },
 ];
 
@@ -131,7 +159,7 @@ function toItems(
  * contract the renderer's keyboard handling mirrors.
  */
 export function menuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
-  const { appName, isMac, onCommand, onOpenExternal, accelerators = {} } = deps;
+  const { appName, isMac, onCommand, onOpenExternal, accelerators = {}, onPaste } = deps;
 
   const template: MenuItemConstructorOptions[] = [];
 
@@ -169,7 +197,21 @@ export function menuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
       { type: "separator" },
       { role: "cut" },
       { role: "copy" },
-      { role: "paste" },
+      {
+        // A custom item rather than `role: "paste"`: a role always runs the
+        // native command, which is a no-op on a focused extension frame.
+        label: "Paste",
+        accelerator: "CmdOrCtrl+V",
+        click: (_item, window) => {
+          // `Menu` hands us a BaseWindow; this app only creates BrowserWindows.
+          const contents = (window as BrowserWindow | undefined)?.webContents ?? null;
+          if (onPaste) {
+            onPaste(contents);
+            return;
+          }
+          contents?.paste();
+        },
+      },
       { role: "selectAll" },
     ],
   });
@@ -178,6 +220,7 @@ export function menuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
     label: "View",
     submenu: [
       ...toItems(VIEW_ITEMS, onCommand, accelerators),
+      { label: "Todo Panel", submenu: toItems(TODO_ITEMS, onCommand, accelerators) },
       { type: "separator" },
       // The session view grid presets (2026-11-03 plan).
       ...toItems(LAYOUT_ITEMS, onCommand, accelerators),

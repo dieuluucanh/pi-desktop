@@ -44,6 +44,12 @@ export interface TuiCursor {
 export interface TuiFrame {
   /** Monotonic per surface; the renderer can skip an older frame. */
   seq: number;
+  /**
+   * The extension's `ctx.ui.setWidget` key, present only on widget frames.
+   * The renderer uses it to identify a widget it owns chrome for (the Workflow
+   * todo panel); custom/header/footer frames leave it undefined.
+   */
+  key?: string;
   width: number;
   height: number;
   lines: string[];
@@ -93,6 +99,7 @@ export const EMPTY_TUI_SURFACE: TuiSurfaceSnapshot = {
 const MAX_FRAME_LINES = 1000;
 const MAX_LINE_CHARS = 4000;
 const MAX_WIDGET_FRAMES = 16;
+const MAX_WIDGET_KEY_CHARS = 80;
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -136,7 +143,16 @@ export function sanitizeTuiFrame(value: unknown): TuiFrame | null {
     if (typeof entry !== "string") continue;
     lines.push(entry.length > MAX_LINE_CHARS ? entry.slice(0, MAX_LINE_CHARS) : entry);
   }
-  return { seq, width, height, lines, cursor: sanitizeTuiCursor(record.cursor) };
+  const key = typeof record.key === "string" ? record.key.trim() : "";
+  const frame: TuiFrame = {
+    seq,
+    width,
+    height,
+    lines,
+    cursor: sanitizeTuiCursor(record.cursor),
+  };
+  if (key.length > 0) frame.key = key.slice(0, MAX_WIDGET_KEY_CHARS);
+  return frame;
 }
 
 /** Coerces an untrusted push into a snapshot the renderer can render. */
@@ -203,6 +219,21 @@ export function sanitizeTuiResize(value: unknown): TuiResizeRequest | null {
 /** `tui.input` params: raw terminal bytes. */
 export interface TuiInputRequest {
   data: string;
+}
+
+/**
+ * `tui.input` result: what the host did with the bytes.
+ *
+ * `consumed` means an extension handler or TUI listener claimed the key, so the
+ * renderer must not also run its own default action (in particular, Escape must
+ * not fall through to `stopRun`). `dispatched` means the bytes reached at least
+ * one handler, listener or component — a key nobody looked at is not an
+ * interruption.
+ */
+export interface TuiInputResult {
+  ok: true;
+  consumed: boolean;
+  dispatched: boolean;
 }
 
 export function sanitizeTuiInput(value: unknown): TuiInputRequest | null {

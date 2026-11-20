@@ -13,6 +13,7 @@ import {
   type DiagnosticsHostInfo,
   type DiagnosticsOfficeInfo,
   type DiagnosticsSnapshot,
+  type DiagnosticsTerminalInfo,
   type Incident,
   type IncidentKind,
 } from "../shared/diagnostics";
@@ -68,6 +69,12 @@ export interface DiagnosticsServiceDeps {
   systemMemory?: () => { totalBytes: number | null; freeBytes: number | null };
   /** Live web renderers; the tab records themselves are unlimited. */
   web?: () => { tabs: number; liveViews: number; limit: number };
+  /**
+   * The terminal hosts, one per window (2026-11-08 linux-terminal plan).
+   * Optional so every existing test double keeps working: an older caller
+   * reports no terminal hosts rather than inventing a healthy one.
+   */
+  terminal?: () => DiagnosticsTerminalInfo;
   /** The environment to sample; only `DIAGNOSTIC_ENV_KEYS` are ever read. */
   env?: Record<string, string | undefined>;
   now?: () => number;
@@ -158,12 +165,47 @@ export function renderDiagnosticsBundle(snapshot: DiagnosticsSnapshot, officeTex
       `- ${host.tabId} role=${host.role} status=${host.status} pid=${host.pid ?? "?"} build=${host.buildId ?? "unknown"}${host.stale ? " (stale)" : ""} cwd=${host.cwd}`,
     );
     if (host.startedAt !== null) lines.push(`  started: ${iso(host.startedAt)}`);
+    if (typeof host.bootMs === "number") lines.push(`  boot: ${host.bootMs} ms`);
+    if (host.lastOpen) {
+      const open = host.lastOpen;
+      lines.push(
+        `  open: ${open.totalMs} ms (trust ${open.trustMs}, services ${open.servicesMs}, ` +
+          `scope ${open.scopeMs}, session ${open.sessionMs}, bind ${open.bindMs}, ` +
+          `reconcile ${open.reconcileMs})`,
+      );
+    }
     if (host.sessionFile) lines.push(`  session: ${host.sessionFile}`);
     if (host.logLines.length === 0) lines.push("  log: (empty)");
     else {
       lines.push(`  log (tail ${host.logLines.length} lines):`);
       for (const line of host.logLines.slice(-40)) lines.push(`    ${line.trimEnd()}`);
     }
+  }
+  lines.push("");
+  lines.push(`## Terminal (${snapshot.terminal.hosts.length})`);
+  if (snapshot.terminal.hosts.length === 0) lines.push("(none)");
+  for (const terminal of snapshot.terminal.hosts) {
+    lines.push(
+      `- window ${terminal.windowId} · host ${terminal.running ? "running" : "stopped"}` +
+        ` · node ${terminal.nodePath || "?"}`,
+    );
+    lines.push(`  host bundle: ${terminal.hostPath}`);
+    if (terminal.pty === null) {
+      lines.push("  node-pty: not probed yet");
+    } else if (terminal.pty.loaded) {
+      lines.push(`  node-pty: loaded${terminal.pty.path ? ` (${terminal.pty.path})` : ""}`);
+    } else {
+      lines.push(`  node-pty: not loaded — ${terminal.pty.error ?? "unknown error"}`);
+    }
+    if (terminal.lastExit) {
+      lines.push(
+        `  last exit: ${terminal.lastExit.code}` +
+          `${terminal.lastExit.signal ? ` (${terminal.lastExit.signal})` : ""}` +
+          `${terminal.lastExit.expected ? " during shutdown" : ""}`,
+      );
+    }
+    if (terminal.lastError) lines.push(`  last error: ${terminal.lastError}`);
+    if (terminal.logFile) lines.push(`  log: ${terminal.logFile}`);
   }
   lines.push("");
   lines.push(`## Incidents (${snapshot.incidents.length})`);
@@ -270,6 +312,7 @@ export function createDiagnosticsService(deps: DiagnosticsServiceDeps): Diagnost
       runtime: {
         source: info.runtimeSource,
         nodeVersion: info.runtimeNodeVersion,
+        piVersion: info.piVersion,
         problems: [...info.runtimeProblems],
       },
       paths: {
@@ -311,6 +354,7 @@ export function createDiagnosticsService(deps: DiagnosticsServiceDeps): Diagnost
       environment: collectDiagnosticEnvironment(env),
       startup: deps.startup(),
       git: deps.git?.() ?? { version: null, repos: [] },
+      terminal: deps.terminal?.() ?? { hosts: [] },
       checkpoints: deps.checkpoints?.() ?? {
         root: null,
         enabled: false,

@@ -20,6 +20,7 @@ describe("build info", () => {
       commit: null,
       builtAt: null,
       macSigning: "none",
+      piVersion: null,
     });
     expect(unknownBuildInfo()).toEqual({
       channel: "unknown",
@@ -27,6 +28,7 @@ describe("build info", () => {
       commit: null,
       builtAt: null,
       macSigning: "none",
+      piVersion: null,
     });
   });
 
@@ -38,6 +40,7 @@ describe("build info", () => {
         commit: " 1a2b3c4d5e6f ",
         builtAt: "2026-11-01T12:00:00.000Z",
         macSigning: "adhoc",
+        piVersion: " 1.5.0 ",
         extra: "ignored",
       }),
     ).toEqual({
@@ -46,7 +49,14 @@ describe("build info", () => {
       commit: "1a2b3c4d5e6f",
       builtAt: "2026-11-01T12:00:00.000Z",
       macSigning: "adhoc",
+      piVersion: "1.5.0",
     });
+  });
+
+  it("reads a bundled agent version and rejects a non-string", () => {
+    expect(parseBuildInfo({ channel: "release", piVersion: "1.5.0" }).piVersion).toBe("1.5.0");
+    expect(parseBuildInfo({ channel: "release", piVersion: 7 }).piVersion).toBeNull();
+    expect(parseBuildInfo({ channel: "release" }).piVersion).toBeNull();
   });
 
   it("only trusts a known macOS signing value", () => {

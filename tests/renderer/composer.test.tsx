@@ -4,6 +4,10 @@ import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { Composer, isSendKey } from "../../src/renderer/src/session/Composer";
 import type { ImageAttachment } from "../../src/renderer/src/session/image-attachment";
+import {
+  stepPromptHistory,
+  type PromptHistoryBrowse,
+} from "../../src/renderer/src/session/prompt-history";
 import type { CompletionProvider } from "../../src/renderer/src/completion/types";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import {
@@ -41,7 +45,7 @@ function renderComposer(overrides: Partial<Parameters<typeof Composer>[0]> = {})
     onStop,
     onClearQueue,
     onRestoreQueue,
-    onHistoryStep: () => null,
+    onHistoryStep: () => ({ kind: "none" }),
     ...overrides,
   };
   const rendered = render(<Composer {...props} />);
@@ -133,10 +137,103 @@ describe("streaming delivery", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
+  it("routes Escape through onEscape when the view provides one", async () => {
+    const user = userEvent.setup();
+    const onEscape = vi.fn();
+    const { onStop } = renderComposer({ running: true, draft: "half typed", onEscape });
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("{Escape}");
+    expect(onEscape).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("routes Escape through onEscape for idle extension work", async () => {
+    const user = userEvent.setup();
+    const onEscape = vi.fn();
+    const onStop = vi.fn();
+    renderComposer({
+      running: false,
+      escapeActive: true,
+      onEscape,
+      onStop,
+      draft: "half typed",
+    });
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("{Escape}");
+    expect(onEscape).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Stop button on onStop even with an onEscape", async () => {
+    const user = userEvent.setup();
+    const onEscape = vi.fn();
+    const { onStop } = renderComposer({ running: true, draft: "half typed", onEscape });
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onEscape).not.toHaveBeenCalled();
+  });
+
   it("offers Stop only while running", () => {
     renderComposer({ running: true });
     expect(screen.getByRole("button", { name: /stop/i })).toBeInTheDocument();
     screen.getByRole("button", { name: /stop/i }).remove();
+  });
+
+  it("hides Stop and names the locked turn while Review owns it", () => {
+    renderComposer({ running: true, reviewMode: true });
+
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    expect(screen.getByText(/Review in progress/)).toBeInTheDocument();
+  });
+});
+
+describe("Escape precedence (plan step 23)", () => {
+  it("lets an open completion menu keep Escape while streaming", async () => {
+    const onEscape = vi.fn();
+    const onStop = vi.fn();
+    const provider: CompletionProvider = {
+      id: "fake",
+      async getSuggestions(lines, cursorLine, cursorCol) {
+        const line = lines[cursorLine] ?? "";
+        if (cursorLine !== 0 || !line.slice(0, cursorCol).startsWith("/")) return null;
+        return {
+          items: [{ value: "/deploy", label: "/deploy", source: "extension" }],
+          prefix: line.slice(0, cursorCol),
+        };
+      },
+      applyCompletion: (lines) => ({ lines: [...lines], cursorLine: 0, cursorCol: 7 }),
+    };
+
+    function Harness() {
+      const [draft, setDraft] = useState("/");
+      return (
+        <Composer
+          tabId="tab-1"
+          running
+          draft={draft}
+          queue={{ steering: [], followUp: [] }}
+          onDraftChange={setDraft}
+          onSend={async () => true}
+          onStop={onStop}
+          onEscape={onEscape}
+          onClearQueue={() => undefined}
+          onRestoreQueue={() => undefined}
+          onHistoryStep={() => ({ kind: "none" })}
+          completion={{ provider }}
+        />
+      );
+    }
+
+    render(<Harness />);
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("/");
+    await screen.findByTestId("completion-overlay");
+
+    await user.keyboard("{Escape}");
+    expect(onEscape).not.toHaveBeenCalled();
+    expect(onStop).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByTestId("completion-overlay")).toBeNull());
   });
 });
 
@@ -210,50 +307,100 @@ describe("queue and attachments", () => {
   });
 });
 
+/**
+ * A parent that behaves like the store: a history step writes the draft and the
+ * browse record. The composer is presentational for history, so this is where
+ * "the step wrote the text" happens.
+ */
+function HistoryHarness({
+  entries,
+  initialDraft = "",
+}: {
+  entries: string[];
+  initialDraft?: string;
+}) {
+  const [draft, setDraft] = useState(initialDraft);
+  const [browse, setBrowse] = useState<PromptHistoryBrowse | undefined>(undefined);
+  return (
+    <Composer
+      tabId="tab-1"
+      running={false}
+      draft={draft}
+      queue={{ steering: [], followUp: [] }}
+      onDraftChange={setDraft}
+      onSend={async () => true}
+      onStop={() => undefined}
+      onClearQueue={() => undefined}
+      onRestoreQueue={() => undefined}
+      onHistoryStep={(direction, caret) => {
+        const step = stepPromptHistory({ direction, entries, browse, draft, caret });
+        if (step.kind === "applied") {
+          setBrowse(step.browse ?? undefined);
+          setDraft(step.text);
+        }
+        return step;
+      }}
+    />
+  );
+}
+
 describe("history", () => {
-  it("walks back through previous prompts from an empty draft", async () => {
+  it("recalls a prompt and restores the draft and caret on the way back", async () => {
     const user = userEvent.setup();
-    const onDraftChange = vi.fn();
-    renderComposer({
-      draft: "",
-      onDraftChange,
-      onHistoryStep: (direction: 1 | -1) => (direction === -1 ? "earlier prompt" : null),
-    });
-    await user.click(screen.getByLabelText("Prompt"));
+    render(<HistoryHarness entries={["earlier prompt"]} initialDraft="pending draft" />);
+    const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(box);
+    box.setSelectionRange(7, 7);
+
     await user.keyboard("{ArrowUp}");
-    expect(onDraftChange).toHaveBeenCalledWith("earlier prompt");
+    expect(box).toHaveValue("earlier prompt");
+    expect(box.selectionStart).toBe("earlier prompt".length);
+
+    await user.keyboard("{ArrowDown}");
+    expect(box).toHaveValue("pending draft");
+    expect(box.selectionStart).toBe(7);
+  });
+
+  it("clears the composer when the pending draft was empty", async () => {
+    const user = userEvent.setup();
+    render(<HistoryHarness entries={["earlier prompt"]} />);
+    const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(box);
+
+    await user.keyboard("{ArrowUp}");
+    expect(box).toHaveValue("earlier prompt");
+
+    // Regression: returning to "" must be applied, not treated as "no step".
+    await user.keyboard("{ArrowDown}");
+    expect(box).toHaveValue("");
   });
 
   it("leaves a multi-line draft's caret movement native inside the buffer", async () => {
     const user = userEvent.setup();
-    const onDraftChange = vi.fn();
-    renderComposer({ draft: "first line\nsecond line", onDraftChange });
+    const onHistoryStep = vi.fn(() => ({ kind: "none" as const }));
+    renderComposer({ draft: "first line\nsecond line", onHistoryStep });
     const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
     await user.click(box);
     // Caret on the second line: Up must move the caret, not recall history.
     box.setSelectionRange(box.value.length, box.value.length);
     fireEvent.keyDown(box, { key: "ArrowUp" });
-    expect(onDraftChange).not.toHaveBeenCalled();
+    expect(onHistoryStep).not.toHaveBeenCalled();
   });
 
-  it("walks forward only at the last line", async () => {
+  it("walks the history only from the last line and passes the caret", async () => {
     const user = userEvent.setup();
-    const onDraftChange = vi.fn();
-    renderComposer({
-      draft: "first line\nsecond line",
-      onDraftChange,
-      onHistoryStep: (direction: 1 | -1) => (direction === 1 ? "newer prompt" : null),
-    });
+    const onHistoryStep = vi.fn(() => ({ kind: "none" as const }));
+    renderComposer({ draft: "first line\nsecond line", onHistoryStep });
     const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
     await user.click(box);
     // Middle of the first line: Down stays native.
     box.setSelectionRange(2, 2);
     fireEvent.keyDown(box, { key: "ArrowDown" });
-    expect(onDraftChange).not.toHaveBeenCalled();
-    // Last line: Down walks history.
+    expect(onHistoryStep).not.toHaveBeenCalled();
+    // Last line: Down walks history, and the offset is the live caret.
     box.setSelectionRange(box.value.length, box.value.length);
     fireEvent.keyDown(box, { key: "ArrowDown" });
-    expect(onDraftChange).toHaveBeenCalledWith("newer prompt");
+    expect(onHistoryStep).toHaveBeenCalledWith(1, box.value.length);
   });
 });
 
@@ -498,7 +645,7 @@ describe("extension shortcut dispatch (Tab)", () => {
           onStop={() => undefined}
           onClearQueue={() => undefined}
           onRestoreQueue={() => undefined}
-          onHistoryStep={() => null}
+          onHistoryStep={() => ({ kind: "none" })}
           extensionShortcuts={[{ key: "tab" }]}
           onInvokeShortcut={onInvokeShortcut}
           completion={{ provider }}
@@ -566,7 +713,7 @@ describe("sleeping session (2026-10-24 plan)", () => {
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onHistoryStep={() => null}
+        onHistoryStep={() => ({ kind: "none" })}
         focusToken={1}
       />,
     );
@@ -605,7 +752,7 @@ describe("caret readout", () => {
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onHistoryStep={() => null}
+        onHistoryStep={() => ({ kind: "none" })}
       />
     );
   }
@@ -649,6 +796,28 @@ describe("caret readout", () => {
 });
 
 describe("shell mode", () => {
+  it("advertises ! shell in the idle placeholder", () => {
+    renderComposer();
+    expect(screen.getByLabelText("Prompt")).toHaveAttribute(
+      "placeholder",
+      "Ask Pi to change something…  / commands · ! shell · @ files · # documents",
+    );
+  });
+
+  it("lets Tab cycle a shortcut on a shell line when no menu is open", () => {
+    const onInvokeShortcut = vi.fn();
+    renderComposer({
+      draft: "!git status",
+      extensionShortcuts: [{ key: "tab" }],
+      onInvokeShortcut,
+    });
+
+    fireEvent.keyDown(screen.getByLabelText("Prompt"), { key: "Tab" });
+    expect(onInvokeShortcut).toHaveBeenCalledTimes(1);
+    expect(onInvokeShortcut).toHaveBeenCalledWith("tab");
+    expect(screen.queryByTestId("completion-overlay")).toBeNull();
+  });
+
   it("names the mode and explains whether output stays in context", () => {
     const { rerender, props } = renderComposer({ draft: "!git status" });
     expect(screen.getByTestId("composer-shell-mode")).toHaveTextContent(

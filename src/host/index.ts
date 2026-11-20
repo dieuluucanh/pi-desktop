@@ -33,11 +33,12 @@ import { readWorkspaceFile, writeWorkspaceFile } from "../workspace/workspace-fi
 import { inspectProject } from "./project-inspect";
 import { createProjectTrust } from "./project-trust";
 import { createProviderLoginHandlers } from "./provider-login";
-import { PACKAGE_METHODS, PackageError } from "./packages";
+import { PACKAGE_MUTATION_METHODS, PackageError } from "./packages";
 import { SAFE_MODE_PACKAGE_REFUSAL } from "./safe-mode";
 import type { CustomProviderStore } from "./custom-providers";
 import type { ProviderPort } from "./providers";
 import { createSessionCore, type SessionCore } from "./session-core";
+import { createSessionCatalog } from "./session-catalog";
 import { createHostService, type HostHandler, type HostService } from "./service";
 import {
   ProjectTrustStore,
@@ -101,10 +102,10 @@ export function classifyInvocation(
   return wantsService ? { mode: "service", args } : { mode: "cli", args };
 }
 
-/** Delegates to the Pi coding agent CLI (the SDK's `main`). */
+/** Delegates to the Pi coding agent CLI (the SDK's `main`), via the SDK boundary. */
 export async function runCli(args: readonly string[]): Promise<void> {
-  const { main } = await import("@earendil-works/pi-coding-agent");
-  await main([...args]);
+  const { runSdkCli } = await import("./sdk/index");
+  await runSdkCli(args);
 }
 
 function flagValue(args: readonly string[], flag: string): string | null {
@@ -186,7 +187,6 @@ function createCore(options: {
     newSessionManager: (cwd, sessionDir) => SessionManager.create(cwd, sessionDir) as never,
     openSessionManager: (sessionFile, cwd, sessionDir) =>
       SessionManager.open(sessionFile, sessionDir, cwd) as never,
-    listSessions: (cwd) => SessionManager.list(cwd) as Promise<never[]>,
     listFiles: (cwd, options) => listWorkspaceFiles(createNodeFileListingIo(), cwd, options),
     // Workspace file access (plan step 23): one node adapter, rooted at the
     // session cwd by the guard inside `workspace-files.ts`.
@@ -236,6 +236,9 @@ function createCore(options: {
         sessionManager: request.sessionManager as never,
         ...(request.npmCommand ? { npmCommand: request.npmCommand } : {}),
         ...(request.projectTrusted === undefined ? {} : { projectTrusted: request.projectTrusted }),
+        // Phase timings for the last open (2026-11-07 plan): the adapter owns
+        // services/scope/session, the core owns trust/bind/reconcile.
+        ...(request.onPhase ? { onPhase: request.onPhase } : {}),
       };
       const created = await createSdkSessionRuntime(runtimeRequest);
       return { runtime: created.runtime, session: created.session };
@@ -275,6 +278,9 @@ function createControlHostCore(options: {
   const projectIo = createNodeProjectIo();
   const modelsIo = createNodeModelsFileIo();
   const fileListingIo = createNodeFileListingIo();
+  // One cache and one host-side search path for the session browser. The full
+  // text stays here; `session.list` only sends the bounded projection.
+  const sessionCatalog = createSessionCatalog({ loadAll: () => listAllSessions() });
 
   return createControlCore({
     // One port; it resolves a `SettingsManager` per project cwd on demand, so a
@@ -288,7 +294,9 @@ function createControlHostCore(options: {
       ...(options.backupDir ? { backupDir: options.backupDir } : {}),
       isProjectTrusted: (cwd) => trust.status(cwd).trusted,
     }),
-    listSessions: () => listAllSessions(),
+    listSessions: () => sessionCatalog.all(),
+    listSessionPage: (query) => sessionCatalog.page(query),
+    disposeCatalog: () => sessionCatalog.dispose(),
     // Renaming a closed session goes through `SessionManager`, the SDK's own
     // writer — the control host still never builds an `AgentSession`.
     renameSession: async (sessionFile, name) => renameStoredSession(sessionFile, name),
@@ -370,8 +378,20 @@ export function runService(
     // The core is built before the service (which owns the frame writer), so the
     // emitter is forwarded through this small indirection.
     const forward = {
-      emit: (_event: string, _payload?: unknown, _sessionId?: string): void => undefined,
+      emit: (
+        _event: string,
+        _payload?: unknown,
+        _sessionId?: string,
+        _sessionEpoch?: number,
+      ): void => undefined,
     };
+    // Filled after the core exists. Extension UI events are process-global, so
+    // without this default every `oi.*` frame would arrive with no session id
+    // and could be mistaken for the replacement session (2026-11-06 loop).
+    let coreIdentity = (): { sessionId: string | null; epoch: number } => ({
+      sessionId: null,
+      epoch: 0,
+    });
 
     // The control host owns the app-wide credential surface, so its provider port
     // is shared by the `providers.*` handlers and the login bridge below.
@@ -479,12 +499,16 @@ export function runService(
             emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
           });
 
+    if ("identity" in core && typeof core.identity === "function") {
+      coreIdentity = () => core.identity();
+    }
+
     const handlers: Partial<Record<string, HostHandler>> = { ...core.handlers() };
     // Safe mode (plan step 22) is enforced at the composition root: installing or
     // removing a package is the one mutation that could re-introduce third-party
     // code, so every package mutation is refused outright.
     if (safeMode) {
-      for (const method of PACKAGE_METHODS) {
+      for (const method of PACKAGE_MUTATION_METHODS) {
         handlers[method] = async () => {
           throw new PackageError(SAFE_MODE_PACKAGE_REFUSAL, "safe_mode");
         };
@@ -517,6 +541,11 @@ export function runService(
       stdout: process.stdout,
       blobDir,
       handlers,
+      // The control core owns no session, so it reports no open timings.
+      lastOpen: () => {
+        if (!("lastOpenTimings" in core)) return null;
+        return typeof core.lastOpenTimings === "function" ? core.lastOpenTimings() : null;
+      },
       info: {
         sessionId: flagValue(args, "--session") ?? env[SESSION_ID_ENV] ?? null,
         cwd,
@@ -546,7 +575,15 @@ export function runService(
       },
     });
 
-    forward.emit = (event, payload, sessionId) => service.emit(event, payload, sessionId);
+    forward.emit = (event, payload, sessionId, sessionEpoch) => {
+      const identity = coreIdentity();
+      service.emit(
+        event,
+        payload,
+        sessionId ?? identity.sessionId ?? undefined,
+        sessionEpoch ?? identity.epoch,
+      );
+    };
     service.start();
   });
 }

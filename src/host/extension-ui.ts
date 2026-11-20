@@ -463,6 +463,10 @@ export function createExtensionUiPort(options: ExtensionUiPortOptions): Extensio
     },
 
     resetSessionUi() {
+      // A dialog belongs to the outgoing session. Reject it now instead of
+      // leaving the extension blocked for five minutes and letting its answer
+      // arrive in the replacement session.
+      bridge.dispose("the session was replaced");
       statuses.clear();
       widgets.clear();
       working = { message: null, visible: null, frames: null, intervalMs: null };

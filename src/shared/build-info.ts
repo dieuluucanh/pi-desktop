@@ -37,6 +37,12 @@ export interface BuildInfo {
   builtAt: string | null;
   /** macOS signing identity kind; `none` on every other platform. */
   macSigning: MacSigning;
+  /**
+   * The bundled `@earendil-works/pi-coding-agent` version, stamped at pack time
+   * (or read from `node_modules` in development). It is the agent the build
+   * ships — users cannot update it independently of Pi Desktop.
+   */
+  piVersion: string | null;
 }
 
 /** The one file `afterPack` writes and `src/main/build-info.ts` reads. */
@@ -52,13 +58,27 @@ function boundedText(value: unknown, max = MAX_FIELD_LENGTH): string | null {
 }
 
 /** A development run has no packaged provenance. */
-export function devBuildInfo(): BuildInfo {
-  return { channel: "dev", version: null, commit: null, builtAt: null, macSigning: "none" };
+export function devBuildInfo(piVersion: string | null = null): BuildInfo {
+  return {
+    channel: "dev",
+    version: null,
+    commit: null,
+    builtAt: null,
+    macSigning: "none",
+    piVersion,
+  };
 }
 
 /** A packaged build whose provenance file is missing or invalid. */
 export function unknownBuildInfo(): BuildInfo {
-  return { channel: "unknown", version: null, commit: null, builtAt: null, macSigning: "none" };
+  return {
+    channel: "unknown",
+    version: null,
+    commit: null,
+    builtAt: null,
+    macSigning: "none",
+    piVersion: null,
+  };
 }
 
 /** Coerces an untrusted JSON document into a valid `BuildInfo`. */
@@ -77,5 +97,7 @@ export function parseBuildInfo(input: unknown): BuildInfo {
     macSigning: MAC_SIGNING_VALUES.includes(source.macSigning as MacSigning)
       ? (source.macSigning as MacSigning)
       : "none",
+    // Additive: a build packaged before this field existed reports null.
+    piVersion: boundedText(source.piVersion),
   };
 }

@@ -7,13 +7,14 @@ steps must extend it rather than re-invent it.
 
 ```text
 tab strip        session tabs (the topmost app row; the OS frame owns the window
-                 controls) + the "+" action
+                 controls) + New session, New terminal + its profile chevron,
+                 and the grid-layout switcher at the right
 editor tab strip editor tabs in a second row under the session strip; it
                  renders only while at least one file is open
-sidebar          Projects (+ menu: default · new · clone · open folder) ·
-                 Sessions · Views
+sidebar          pinned Projects header (+ menu: default · new · clone ·
+                 open folder · hide) above a scrolling project list and Views
 main area        the active view (welcome | session | settings | extensions |
-                 connections | skills | diagnostics)
+                 connections | skills | diagnostics | updates)
 status bar       active project path · build version · Pi profile · bundled
                  runtime · display zoom · transient hints · notifications
 panel rail       docked at the right edge of a session: an always-visible 44 px
@@ -31,6 +32,17 @@ strip, step 10 fills the project section — neither re-lays-out the window. The
 in-app title bar was removed in the 2026-10-31 minimal-session-ui pass; the brand
 mark survives in the welcome/onboarding views and the OS window title is set by
 `app:set-title`.
+
+**Pinned Projects header (2026-11-19).** The sidebar's first row — the Projects
+label, the `+` menu (default · new · clone), open folder and hide sidebar — is
+pinned above the scroller: `layout/Sidebar.tsx` renders
+`projects/ProjectsHeader` as a sibling _before_ the `ScrollArea`, so a long
+project list or the Views items scroll without carrying the header away. This is
+a structural pin, not `position: sticky` (no opaque repaint, `z-index` or fixed
+sticky offset), matching `rail/RightRail.tsx`, whose panel header is likewise
+outside its scroller. The wrapper's `px-3` is the old
+`nav px-2 + projects-section px-1`, and the row's own `px-2` keeps the label and
+icons at their 20px inset; change both paddings together or the header drifts.
 
 **Two tab rows, one workbench (2026-11-02 editor-tabs plan).** Sessions, the
 Office host and web tabs stay in the top strip. File tabs get their own row
@@ -65,7 +77,8 @@ and the panel rail stay global chrome; only the content area splits.
   Tailwind placement literals (`col-start`, `row-start`, `row-span`) so CSS
   auto-placement cannot push a pane into an implicit row. The geometry is unit
   tested without a DOM.
-- **A pane is one `TabRecord`** (`session`, `office`, `web` or `editor`, from any
+- **A pane is one `TabRecord`** (`session`, `office`, `web`, `editor` or
+  `terminal`, from any
   project), rendered by `views/TabSurface.tsx` — the same kind dispatcher the
   solo view uses. `editor-store`, `editor-registry` and the web-tab service are
   keyed by tab id, so **one tab may be visible in one pane only**: assigning a tab
@@ -106,7 +119,10 @@ and the panel rail stay global chrome; only the content area splits.
 
 Entry points: the icon-only layout switcher at the far right of the session strip
 (`layout/GridLayoutMenu.tsx`), View ▸ Layout in the menu, and the command palette.
-The switcher trigger shows the current preset. Its five icons run widest to
+The switcher trigger shows the current preset. To its left sit New Terminal,
+the Terminal profiles chevron (`layout/TerminalProfileMenu.tsx`) and New Session,
+in that order; the chevron opens a one-off terminal with another detected shell
+without changing the default. Its five icons run widest to
 narrowest — four panes at the far left, then the two three-pane shapes, two
 columns, and single at the far right. They have accessible names, not visible
 labels. Each pane has **one controlled
@@ -154,7 +170,9 @@ Actual Size use explicit `Ctrl/Cmd+=`, `Ctrl/Cmd+-` and `Ctrl/Cmd+0`
 accelerators. The Electron zoom roles were removed because `zoomIn` binds
 `Ctrl+Shift+=` on Windows/Linux (`electron#40674`) — the reported "zoom does
 not work". The factor is re-applied on `did-finish-load` because Chromium keeps
-a per-origin zoom map.
+a per-origin zoom map. Layout follows the factor: the transcript column is
+pane-relative, so zooming out shows more content rather than wider side gutters
+(2026-11-15 transcript-width).
 
 **The chrome palette is app-owned and high-contrast (2026-10-31).** The active
 Pi theme still supplies accent and status hues, but the Desktop owns the neutral
@@ -182,18 +200,46 @@ rendered as a footer column instead of its own strip (2026-10-31 UI plan);
 multi-line frames keep Pi's placement. The TUI grid is measured from this column,
 never from the surface's own rendered frame (`src/renderer/src/tui/use-tui-viewport.ts`).
 
+**The Workflow todo panel has a native control bar (2026-11-18).** The panel
+itself stays the extension's read-only `workflow-todos` frame. `TodoPanelBar`
+sits above the above-editor strips in every workflow mode, including Review and
+while a questionnaire owns the composer. It shows `Todos done/total`, the
+effective state, and settled/stale markers, with an Expand/Collapse toggle and a
+menu for Automatic / Show full list / Collapse / Hide. The bar stays mounted when
+the list is hidden, so Hide is reversible. Actions dispatch `/todos <verb>`
+through `commands.run` (not a prompt), so they work in Review and behind a TUI
+overlay; focus returns to the surface or composer afterwards. The desktop chord
+is `Ctrl+Alt+L`; `Ctrl+Alt+O` remains Sessions. The extension publishes a compact
+`workflow-todos` status while its panel is hidden or Review owns the turn; the
+bar hides that key from the footer to avoid a duplicate. A widget frame now
+carries its `setWidget` key (`TuiFrame.key`), which is how the bar identifies the
+panel. Older `@dieulc/workflow` versions degrade to no Review+hidden bar, while
+the menu/palette still dispatch the command.
+
 **The workflow mode is shown as text, not just colour.** The composer's textarea
-border reflects the Workflow extension's mode (`Plan` → warn, `Build` → accent),
-decoded from its status text by `src/shared/workflow-mode.ts`; an unrecognised
-value degrades to the neutral border rather than guessing. The desktop names
-exactly the extension's three modes (Default/Plan/Build): the Plannotator
-`reviewing in browser` phrase is a Plan sub-state, so the composer label reads
-the mode — `Plan` — never the sub-state (2026-10-20 startup-tab-cycle plan).
-Because colour alone is not an indicator, the mode is also named in the
+border reflects the Workflow extension's mode (`Plan` → warn, `Build` → accent,
+`Review` → info), decoded from its status text by
+`src/shared/workflow-mode.ts`; an unrecognised value degrades to the neutral
+border rather than guessing. Since `@dieulc/workflow` 0.11.0 the desktop names
+four modes (Default/Plan/Build/Review). Review is a real mode, not a Plan
+sub-state: the status carries the phase (`🔍 review`, `— paused`,
+`— awaiting decision`), the composer badge reads `Review`, and the legacy
+Plannotator `⏸ plan — reviewing in browser` phrase is still parsed as Plan
+because the old extension emitted it in every Plan mode (2026-11-14
+review-mode-isolation plan). While Review owns the turn the store refuses prose
+and `!` commands with a hint (the draft is preserved), slash commands stay
+available, and one `ReviewBar` below the TODO widget and above the composer
+carries the extension's own `workflow-review` line plus Pause/Resume/Abort. It
+reuses terminal Pi's text (including the command hints) and is the only review
+line: the generic working row is suppressed while it is visible, and the footer
+omits the promoted status. The handoff phase instead links to the review tab. Desktop hosts are launched
+with `PLANNOTATOR_BROWSER=none`, so a review opens in an app tab and never the
+system browser; the web tab's **Open in browser** button remains the escape
+hatch. Because colour alone is not an indicator, the mode is also named in the
 composer's top-right corner, exposed through `role="status"`. Every
-recognised mode has a label, including `Default`; Plan/Build use the same
-`text-warn`/`text-accent` tone as the border, and Default uses the readable
-faint ink. The label renders at every
+recognised mode has a label, including `Default`; Plan/Build/Review use the
+same `text-warn`/`text-accent`/`text-info` tone as the border, and Default uses
+the readable faint ink. The label renders at every
 window width — it used to be hidden below the `sm` breakpoint — and there is no
 duplicate `mode: …` chip in the footer (2026-10-31 minimal-session-ui).
 
@@ -387,20 +433,30 @@ renderer's Tailwind scan root, so `styles.css` also declares them with
   is refused and answered through `WebNavigationDialog`. Security is structural:
   every web tab shares one partition with no preload, `sandbox: true`,
   `contextIsolation: true` and all permissions denied, so `window.pi` never
-  exists in it and it cannot reach the Pi bridge.
+  exists in it and it cannot reach the Pi bridge. A page's `window.close()` is a
+  **request**, not a tab teardown: the adapter installs a `window.close`
+  interceptor at `dom-ready` through `executeJavaScript` and treats a destroyed
+  `webContents` as the fallback, both normalized to `close-requested`; main
+  closes the tab through the session service. The close policy prefers the web
+  tab's `sessionTabId` and falls back to MRU
+  (`src/main/tab-selection.ts`); closing a session also removes its linked
+  review tabs in the same publish. The interceptor adds no preload, Node or
+  `window.pi` surface.
 
 ## Command ownership (no double-firing)
 
-| Surface                                       | Owns                                                                                                                                                                                                                |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Electron menu (`src/main/menu.ts`)            | every global accelerator: `Ctrl+N` new session, `Ctrl+O` open project, `Ctrl+W` close session, `Ctrl+,` settings, `Ctrl+K` palette, `Ctrl+B` sidebar, `Ctrl+Tab` / `Ctrl+Shift+Tab` tab cycling, `Ctrl+/` shortcuts |
-| Renderer (`src/renderer/src/menu-actions.ts`) | the _behaviour_ of each command, dispatched from `app:menu-command`                                                                                                                                                 |
-| Renderer (`CommandPalette`)                   | palette-local keys only (arrow/enter/escape)                                                                                                                                                                        |
+| Surface                                       | Owns                                                                                                                                                                                                                                                                       |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Electron menu (`src/main/menu.ts`)            | every global accelerator: `Ctrl+N` new session, `Ctrl+Shift+T` new terminal, `Ctrl+J` toggle terminal, `Ctrl+O` open project, `Ctrl+W` close session, `Ctrl+,` settings, `Ctrl+K` palette, `Ctrl+B` sidebar, `Ctrl+Tab` / `Ctrl+Shift+Tab` tab cycling, `Ctrl+/` shortcuts |
+| Renderer (`src/renderer/src/menu-actions.ts`) | the _behaviour_ of each command, dispatched from `app:menu-command`                                                                                                                                                                                                        |
+| Renderer (`CommandPalette`)                   | palette-local keys only (arrow/enter/escape)                                                                                                                                                                                                                               |
 
 Menu items never touch windows: they forward a `MenuCommand` (typed in
 `src/shared/ipc.ts`), so the renderer stays the single owner of view state. A
 command whose feature lands later reports a precise hint (`hint` in the store →
-status bar) instead of failing silently.
+status bar) instead of failing silently. While a terminal has focus on
+Windows/Linux, main calls `setIgnoreMenuShortcuts(true)` so shell chords reach
+the PTY; the menu items still work through the menu bar.
 
 ## Theme tokens
 
@@ -577,6 +633,28 @@ and the renderer all read it, so a budget change is one edit.
 - **Lazy start and pre-warm.** The tab table is restored without spawning any
   host; only the most recently used tab is pre-warmed in the background, and
   safe mode skips even that.
+- **Session-open latency, measured.** A host open is the slowest routine
+  operation in the app (extension discovery plus factories, settings, scope,
+  `session_start`), and it used to be visible only once it crossed the 2 s
+  slow-request threshold. The host now reports the phases of its last open on its
+  own `host.metrics` frame (`lastOpen`: trust, services, scope, session, bind,
+  reconcile, total) and the supervisor adds `bootMs` (spawn → handshake).
+  Diagnostics prints `boot … · open … (services …, bind …)` per host, the
+  exported bundle repeats it, and `HOST_BOOT_BUDGET_MS` / `HOST_OPEN_BUDGET_MS`
+  colour the row. A `skipIf` live test (`tests/host/session-core.sdk.live.test.ts`)
+  opens a real session and prints the same breakdown with loose hang-only
+  ceilings, because wall-clock budgets on a paged machine are not a gate.
+- **One open, one bind, one settings read.** The SDK invokes the
+  `setRebindSession` callback after it replaces a session; `session.new`,
+  `switch`, `fork`, `clone` and `importJsonl` also called `rebind()` themselves,
+  so extension `session_start`, `resources_discover`, the settings reload and the
+  scope resolve ran **twice** per action. Handlers now skip their own call when
+  the runtime already reported the replacement (a counter keeps a runtime that
+  does not report it bound exactly once), and `startSession` no longer reloads
+  settings a third time after the runtime factory read them. The bundled
+  checkpoint extension's 30-day sweep moved off the awaited `session_start`
+  path; `store.ensure(cwd)` is still awaited, because the git-missing notice and
+  the first snapshot depend on it.
 - **Delta coalescing, measured.** `message_update` frames batch for 33 ms or
   1 KB before one IPC push; `sessionService.coalesceStats()` reports batches,
   deltas, flush reason and the largest batch, and a test pins that a 400-delta
@@ -589,17 +667,19 @@ and the renderer all read it, so a budget change is one edit.
   replaced in place so the card keeps its identity, and the renderer fetches the
   body through `host.blobs.read` only when the card is opened.
 - **Per-host memory.** Every host answers `host.metrics` with its own RSS (no
-  OS-specific process query). The supervisor polls it, Diagnostics shows it
-  against the soft budget, and an idle host over the hard threshold (1 GB) is
-  recycled by **stopping** it (the same path as an idle recycle), not by
-  restarting in place. The session service drops a handle that reports
-  `stopped`, so the next interaction spawns a fresh process and resumes from
-  JSONL. The 15-minute time-based idle recycler is **on by default**. The active
-  tab, the control host, an Office host and the bridge owner are protected from
-  _idle_ sleep; the active tab is deliberately **not** exempt from the RSS
-  watchdog (it is the session most likely to hold a large transcript). Only the
-  Office host and the bridge owner are RSS-exempt, because stopping them drops
-  port 38617.
+  OS-specific process query), plus heap/external/array-buffer counters so a large
+  RSS can be attributed. The supervisor polls it and Diagnostics shows it against
+  the soft budget. A **background idle** host over the hard threshold (1 GB) is
+  recycled by **stopping** it, but only after two consecutive over-budget samples
+  and a one-minute startup grace period. The session service drops a handle that
+  reports `stopped`, so the next activation spawns a fresh process and resumes
+  from JSONL. The 15-minute time-based idle recycler is **on by default**. The
+  active tab, every visible pane, the control host, an Office host, the bridge
+  owner and a session linked to an active/visible web tab are protected from
+  **both** idle sleep and the RSS watchdog: an over-budget active host gets a
+  warning and a manual Restart action instead of being killed. Passive reads
+  (`tui.resize`, `messages.get`, `oi.state`, `shortcuts.list`, …) never wake a
+  stopped host; only activation/ensure, a prompt or a lifecycle command does.
 - **Open tabs vs live hosts.** A tab is a resumable JSONL record, not a process,
   so session, Office, web and editor tabs are **unlimited**. The only resource
   budget is live host processes: `liveHostBudget(totalMemory)` reserves 20% of
@@ -607,7 +687,9 @@ and the renderer all read it, so a budget change is one edit.
   service parks the least-recently-used **idle** host (status `stopped` shows as
   "asleep"); if every live session is busy the spawn still proceeds, so a
   session count can never block the user. `hostProcessCeiling(totalMemory)` is
-  the memory-derived process ceiling (`target + 2`, 4–10). A 30-second
+  the memory-derived process ceiling (`target + 2`, 4–10), and the supervisor
+  refuses a second live host for one `sessionId`, so the live count is the real
+  child count rather than a map that could silently drop a process. A 30-second
   main-process tick parks idle hosts when the live count is over target or the
   sum of host RSS is over 50% of physical RAM. Diagnostics shows
   `live/target (ceiling)`, aggregate host RSS/limit, system free/total memory and
@@ -615,11 +697,12 @@ and the renderer all read it, so a budget change is one edit.
   recycling probe `state.get` first, so a streaming turn or a long tool call is
   never stopped mid-work.
 - **Bounded live renderers and caches.** Unlimited web tabs are URL records; at
-  most four `WebContentsView`s stay live (active + three recent), and an evicted
-  view reloads its URL on activation. The renderer keeps at most four hydrated
-  transcripts and a bounded lazy blob cache; closed tabs lose every per-tab
-  cache immediately. These bounds are independent of the tab count, so opening
-  many tabs cannot grow Chromium or the renderer without limit.
+  most six `WebContentsView`s stay live (`MAX_LIVE_WEB_VIEWS`: the active tab
+  plus recent/visible ones), and an evicted view reloads its URL on activation.
+  The renderer keeps at most four hydrated transcripts and a bounded lazy blob
+  cache; closed tabs lose every per-tab cache immediately. These bounds are
+  independent of the tab count, so opening many tabs cannot grow Chromium or
+  the renderer without limit.
 - **Host process lifetime.** A service host shuts down when its stdin pipe
   closes, which is what happens when main exits (including an `electron-vite`
   dev restart). A failed `start()` or `restart()` terminates the child it
@@ -663,9 +746,9 @@ and the renderer all read it, so a budget change is one edit.
   the mode now).
 - `tests/renderer/composer.test.tsx` — Enter vs Shift+Enter, IME safety, the
   one-Send streaming model (Enter steers, Alt+Enter queues a follow-up), the hint
-  row, the workflow mode border/badge (always visible, announced, focus ring does
-  not mask it) and Tab dispatch to a registered extension shortcut before
-  completion.
+  row, the `! shell` placeholder, the workflow mode border/badge (always visible,
+  announced, focus ring does not mask it), Tab dispatch to a registered extension
+  shortcut before completion, and no built-in completion menu on a shell line.
 - `tests/renderer/session-events.test.ts` — the reducer, including the
   hidden-item boundary: a `display: false` custom message is dropped (live and on
   reload), and the rule never keys on `customType`.
@@ -826,15 +909,33 @@ and safe-mode launches never auto-check; a manual check is still allowed.
 
 Events reduce into `UpdateState` (`src/shared/updates.ts`), whose phases include
 the benign `no-feed` state for an unpublished build/feed. `prefs.updates` carries
-`autoCheck` and the per-version `dismissedVersion`. The renderer shows only a
-compact status-bar chip for available → **Update vX**, downloading → **Updating
-N%** and downloaded → **Restart to update**; a new version re-notifies after a
-dismissal. Every other outcome — up to date, no feed, an error — lives in
-**Settings → About & updates**, with the raw updater text under Technical
-details. `Help → Check for Updates…` opens that card and checks; on Windows and
-Linux `Help → About Pi Desktop` opens the same card, while macOS keeps its native
-About panel. Automatic failures stay silent; a manual failure is a dismissible
-status hint plus the card. There is no full-width update banner.
+`autoCheck`, the toast marker `notifiedVersion` and the row marker
+`dismissedVersion`. An app-owned **offer** is not stored: the renderer derives it
+from `phase`/`version` (`offerNotifications`), so `available`, `downloading` and
+`downloaded` show one row with phase-appropriate copy and **View update**, while
+every other phase shows none. A new version replaces the row instead of stacking;
+`×`/Clear persists `dismissedVersion`, and **Notify me again** in About & updates
+clears it. The **About & updates** sidebar item carries a dot while a version is
+offered/downloading/downloaded. That item is the last product view, below
+Diagnostics; there is no status-bar update chip. Every other outcome — up to
+date, no feed, an error — lives in that view, with the raw updater text under
+Technical details. `Help → Check for Updates…` opens the view and checks; on
+Windows and Linux `Help → About Pi Desktop` opens the same view, while macOS
+keeps its native About panel. Automatic failures stay silent; a manual failure is
+a dismissible status hint plus the view. There is no full-width update banner.
+
+**Notifications.** The status-bar bell always renders and composes two channels.
+The archive holds extension `ctx.ui.notify` **events** (classed as **Errors**,
+**Warnings**, **Informational messages**, plus the app-owned **App updates** and
+**Extension updates**). App-owned **offers** are state, not arrivals: the renderer
+derives them from the live updater and package state, so an applied update clears
+its row automatically. Info is off by default for the bell and toasts, so
+background chatter such as “Server logs ready (local)” stays out of them; the
+transcript always prints extension notifications, as terminal Pi does. The
+popover closes on an outside click or Escape (and the bell toggles it), so there
+is no header `×`; it keeps a per-row `×`, class badges and **Show hidden (N)** for
+archived suppressed rows. Per-message mute rules apply to archive rows only, never
+to offers. Settings → Notifications owns the class switches and the mute rules.
 
 **Packaging.** `electron-builder.yml` targets Windows NSIS + portable, macOS
 dmg/zip on arm64 + x64, and Linux AppImage/deb on x64 + arm64. The bundled

@@ -20,26 +20,33 @@ of the SDK's `ExtensionUIContext` appears here.
 
 ## Member mapping
 
-| `ExtensionUIContext` member                                       | Where it lands                                                                                          | Notes                                                                                                                                                                                                                  |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `select` / `confirm` / `input` / `editor`                         | inline dock in the session column through `oi.request` / `oi.respond`                                   | keyboard-first, live `timeout` countdown (store-enforced), `signal` cancel, Escape cancels                                                                                                                             |
-| `notify(message, type)`                                           | transcript notice + history panel; warning/error also toast (`oi.notify`)                               | info output is chat content as in terminal Pi; the archive keeps every notification                                                                                                                                    |
-| `setStatus(key, text)`                                            | one column in the wrapping session-footer status rail (`oi.state`)                                      | `undefined` removes the entry; keep status text short so it behaves as a column; values are sanitised for `title` and rendered ANSI-aware                                                                              |
-| `setWidget(key, lines \| factory, opts)`                          | string strip (`oi.state`) or TUI widget frames (`tui.state`)                                            | string arrays keep the strip; a component factory renders above/below the editor dock; a **single-line** component frame joins the footer rail instead of taking its own strip (2026-10-31 UI plan); one owner per key |
-| `setWorkingMessage` / `setWorkingVisible` / `setWorkingIndicator` | the working row above the composer                                                                      | custom frames + interval honoured; `visible:false` hides it                                                                                                                                                            |
-| `setHiddenThinkingLabel`                                          | transcript thinking blocks                                                                              | replaces the collapsed thinking label                                                                                                                                                                                  |
-| `setTitle`                                                        | window title (validated in main)                                                                        | bounded, single-line                                                                                                                                                                                                   |
-| `getToolsExpanded` / `setToolsExpanded`                           | transcript tool-card expansion (`oi.state` + `oi.setToolsExpanded`)                                     | the app owns `Ctrl+O`; the host’s copy stays truthful                                                                                                                                                                  |
-| `pasteToEditor` / `setEditorText`                                 | composer mirror (`oi.editorText`)                                                                       | renderer reports its buffer back, debounced per tab                                                                                                                                                                    |
-| `getEditorText`                                                   | the mirror                                                                                              | **eventually consistent** — the host cannot read a textarea synchronously                                                                                                                                              |
-| `addAutocompleteProvider`                                         | the composer’s completion stack (`completion.suggest` / `apply`)                                        | the host runs `factory(current)`; the renderer sends its `/`, `@`, `#` result as `current`                                                                                                                             |
-| `onTerminalInput`                                                 | first shot at keys in the TUI surface                                                                   | runs before the surface’s own handling                                                                                                                                                                                 |
-| `custom(factory, opts)`                                           | the TUI surface (`tui.state` frames)                                                                    | `overlay`/`overlayOptions`/`onHandle` supported; returns `undefined` when nothing is shown                                                                                                                             |
-| `setFooter` / `setHeader`                                         | `setFooter` replaces the built-in session footer; `setHeader` renders a TUI frame in the session column | the factory’s component is rendered per frame; a custom footer owns the statuses (it receives the `FooterDataProvider`)                                                                                                |
-| `setEditorComponent` / `getEditorComponent`                       | recorded on the UI port; **never mounted**                                                              | the native composer is always the editor; see “A custom editor is recorded, not mounted”                                                                                                                               |
-| `theme` / `getAllThemes` / `getTheme` / `setTheme`                | host theme + `oi.theme`                                                                                 | `setTheme` installs the theme in the host process and persists Pi’s `theme` setting                                                                                                                                    |
+| `ExtensionUIContext` member                                       | Where it lands                                                                                          | Notes                                                                                                                                                                                                                                         |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `select` / `confirm` / `input` / `editor`                         | inline dock in the session column through `oi.request` / `oi.respond`                                   | keyboard-first, live `timeout` countdown (store-enforced), `signal` cancel, Escape cancels                                                                                                                                                    |
+| `notify(message, type)`                                           | transcript notice + notification bell; warning/error also toast (`oi.notify`)                           | every notification prints in the transcript, like terminal Pi's status line; classes/mute rules filter only the bell and toasts; info starts off for the bell; the archive keeps every notification and Show hidden recovers a suppressed row |
+| `setStatus(key, text)`                                            | one column in the wrapping session-footer status rail (`oi.state`)                                      | `undefined` removes the entry; keep status text short so it behaves as a column; values are sanitised for `title` and rendered ANSI-aware                                                                                                     |
+| `setWidget(key, lines \| factory, opts)`                          | string strip (`oi.state`) or TUI widget frames (`tui.state`)                                            | string arrays keep the strip; a component factory renders above/below the editor dock; a **single-line** component frame joins the footer rail instead of taking its own strip (2026-10-31 UI plan); one owner per key                        |
+| `setWorkingMessage` / `setWorkingVisible` / `setWorkingIndicator` | the working row above the composer                                                                      | custom frames + interval honoured; `visible:false` hides it                                                                                                                                                                                   |
+| `setHiddenThinkingLabel`                                          | transcript thinking blocks                                                                              | replaces the collapsed thinking label                                                                                                                                                                                                         |
+| `setTitle`                                                        | window title (validated in main)                                                                        | bounded, single-line                                                                                                                                                                                                                          |
+| `getToolsExpanded` / `setToolsExpanded`                           | transcript tool-card expansion (`oi.state` + `oi.setToolsExpanded`)                                     | the app owns `Ctrl+O`; the host’s copy stays truthful                                                                                                                                                                                         |
+| `pasteToEditor` / `setEditorText`                                 | composer mirror (`oi.editorText`)                                                                       | renderer reports its buffer back, debounced per tab                                                                                                                                                                                           |
+| `getEditorText`                                                   | the mirror                                                                                              | **eventually consistent** — the host cannot read a textarea synchronously                                                                                                                                                                     |
+| `addAutocompleteProvider`                                         | the composer’s completion stack (`completion.suggest` / `apply`)                                        | the host runs `factory(current)`; the renderer sends its `/`, `@`, `#` result as `current` (or `null` on a shell line)                                                                                                                        |
+| `onTerminalInput`                                                 | first shot at keys in the TUI surface                                                                   | runs before the surface’s own handling                                                                                                                                                                                                        |
+| `custom(factory, opts)`                                           | the TUI surface (`tui.state` frames)                                                                    | `overlay`/`overlayOptions`/`onHandle` supported; returns `undefined` when nothing is shown                                                                                                                                                    |
+| `setFooter` / `setHeader`                                         | `setFooter` replaces the built-in session footer; `setHeader` renders a TUI frame in the session column | the factory’s component is rendered per frame; a custom footer owns the statuses (it receives the `FooterDataProvider`)                                                                                                                       |
+| `setEditorComponent` / `getEditorComponent`                       | recorded on the UI port; **never mounted**                                                              | the native composer is always the editor; see “A custom editor is recorded, not mounted”                                                                                                                                                      |
+| `theme` / `getAllThemes` / `getTheme` / `setTheme`                | host theme + `oi.theme`                                                                                 | `setTheme` installs the theme in the host process and persists Pi’s `theme` setting                                                                                                                                                           |
 
 | `shortcuts` (registered via `pi.registerShortcut`) | the composer’s Tab cycle and the session’s other chords (`shortcuts.list` / `shortcuts.invoke`) | checked before the editor’s own handling, as in Pi; the list is listed per tab on activation |
+
+A `!` / `!!` shell line intentionally has **no built-in completion source**,
+matching terminal Pi. The extension chain is still called with the built-in
+result `null`, so an extension that supports `!` still opens its menu; otherwise
+the composer shows no list and Tab reaches a registered shortcut (the Workflow
+mode cycle). This is not a shell-line block on extensions: `/`, `@`, `#` and `!`
+all still flow through `factory(current)`.
 
 `ExtensionContextActions` (`getModel`, `getScopedModels`, `isIdle`,
 `isProjectTrusted`, `getSignal`, `getContextUsage`, `compact`, `getSystemPrompt`,
@@ -105,6 +112,45 @@ editor and `Shift+Enter` inserts a newline. The extension's `opts.timeout` is
 enforced by the renderer store, so it still fires while its tab is in the
 background; `closeTab` purges that tab's queued dialogs and timers.
 
+**Dialog text keeps terminal line semantics.** The select title is
+extension-owned text: the workflow read/write gate puts `Outside:` and one
+`• command` bullet per line into it. It renders through `MultilineText`
+(`whitespace-pre-wrap break-words`), with tabs normalised to three spaces, inside
+a height-capped scroll region, so every command keeps its own rendered line and
+a very long title never squeezes the answers out of the dock. The same rule
+already applied to confirm messages, option labels, notifications and working
+messages.
+
+**The active dialog owns the keyboard, not the focused DOM node.** Up/Down and
+Escape used to be attached to the listbox/root, so a prompt whose focus stayed on
+`document.body` ignored them. The dock now installs a window listener while its
+pane is active: Escape and Ctrl+C cancel every method (a real text selection
+wins over Ctrl+C so copy still works), select moves with `tui.select.up/down`
+plus `j`/`k` (clamped at the ends, as in terminal Pi), Enter selects the
+highlighted option even when focus is on the page, and confirm moves its
+focus between Confirm/Cancel. Input/editor keep normal typing and Ctrl+C, and
+only gain the focus-independent Escape. That Ctrl+C rule is a deliberate
+desktop divergence: Pi's input/editor dialogs cancel on `tui.select.cancel`
+(which includes Ctrl+C), but a desktop text field must keep Ctrl+C as copy.
+Confirm also keeps Enter on the focused button; Pi's selector confirms the
+highlighted "Yes" even with no list focus, and the desktop deliberately refuses
+to let a lost-focus Enter answer a permission. `tui.select.*` comes from the
+profile's `keybindings.json`; the dock loads it once with the same lazy no-arg
+`loadKeybindings()` as the shortcuts help dialog, with Pi's defaults until the
+snapshot arrives.
+Every answer/cancel path is one-shot, so a double Enter or Enter+click sends one
+`oi.respond`.
+
+**Only the focused pane's dialog takes global keys.** `SessionView` passes
+`active={active.id === focusedTabId}`; a prompt in a non-focused grid pane waits
+for the pane to be activated instead of stealing keys or focus. While a dialog
+owns the active tab, `ShortcutDispatcher` blocks app shortcuts and `app.interrupt`
+even when the event target is `body`; `Ctrl+O` (`app.tools.expand`) stays
+available because terminal Pi's selector explicitly supports it. The regression
+coverage is `tests/renderer/dialog-keys.test.ts`,
+`tests/renderer/extension-ui.test.tsx`, `tests/renderer/shortcut-dispatcher.test.tsx`
+and the Electron `tests/e2e/extension-dialog.spec.ts`.
+
 The shell/orchestration details live in
 `src/renderer/src/tui/tui-geometry.ts`, `use-tui-viewport.ts`,
 `TuiSurface.tsx`, `TuiWidgetStrip.tsx` and `src/renderer/src/extension-ui/ExtensionDialog.tsx`.
@@ -166,6 +212,35 @@ proposed commit message out of the Workflow questionnaire. Two rules fix it:
 
 The renderer's right-click menu offers the same Copy action.
 
+**Pasting into a TUI surface (2026-11-18 questionnaire paste plan).** The
+questionnaire's free-text answer is the extension's own component, not a DOM
+input, so Chromium's paste command never runs on it: Ctrl+V used to reach the
+frame as the raw byte `\x16`, Cmd+V was dropped, and `webContents.paste()` is a
+no-op on a non-editable `div`. This is a desktop-only gap — terminal Pi gets a
+bracketed paste from its terminal emulator — so the surface now supplies the
+same gesture:
+
+- **The surface recognises the chord.** Ctrl+V and Ctrl+Shift+V (Windows/Linux),
+  Cmd+V (macOS) and Shift+Insert read the clipboard through
+  `readClipboardText()` and send **one bracketed paste** to the extension; the
+  `paste` event path (middle-click, a menu paste) goes through the same
+  `createPasteIntake` decision point, so one gesture writes once and two
+  deliberate pastes still both pass. The paste body has its own delimiters
+  stripped, so text can never escape the framing.
+- **The extension keeps its own semantics.** A bracketed paste makes pi-tui's
+  `Input` strip newlines and its `Editor` normalise line endings and collapse a
+  large paste into its own `[paste #N +lines]` marker — exactly terminal Pi. The
+  composer's `[paste #N]` markers are deliberately **not** applied here: the
+  extension owns the field and its submit, so a marker would be sent as literal
+  text.
+- **Menus work.** The surface reports keyboard ownership (`IPC.tuiFocus`), and
+  main's right-click Paste and Edit ▸ Paste send the renderer a paste request
+  for that tab instead of running the native command. With no extension frame
+  focused, Edit ▸ Paste is the ordinary `webContents.paste()`.
+
+Image/file paste still has no path into an extension frame (`onPasteImage` is not
+bridged); the native composer keeps its attachments for that.
+
 **A custom editor is recorded, not mounted (2026-10-26).** Pi’s interactive
 mode’s `setCustomEditorComponent` wires `onSubmit`, `onChange`, the autocomplete
 provider, `actionHandlers`, `onExtensionShortcut`, `onEscape`, `onCtrlD` and
@@ -196,6 +271,21 @@ rows are `role="option"` with `aria-selected`; the selected row carries the
 same `→` marker and selection surface as the TUI surface, `↑`/`↓` move the
 selection (wrapping), `Enter` answers with it and `Esc` cancels. A click still
 answers immediately.
+
+### The Workflow todo panel’s native controls (2026-11-18)
+
+A component widget frame now carries its `ctx.ui.setWidget` key as
+`TuiFrame.key`. The host already holds that key in its `widgetsAbove` map; it is
+no longer discarded in `buildSnapshot`. The desktop uses it to identify
+`workflow-todos` without guessing from content (a keyless frame still falls back
+to the summary/row shape). `TodoPanelBar` renders above the above-editor strips
+and dispatches the extension’s `/todos auto|expand|collapse|hide` through
+`commands.run` with `ack: "started"`; it never touches the draft. The bar
+survives Hide, and the extension’s compact `workflow-todos` status
+(`☐ Todos 3/12 · hidden`) supplies progress/state while the panel is hidden or
+Review owns the turn. The desktop footer omits that status while the bar is
+visible. `Ctrl+Alt+L` toggles the panel; `Ctrl+Alt+O` remains Sessions, so the
+extension registers its terminal-only chord on terminal hosts only.
 
 ### Pi-parity rules for custom transcript items (2026-10-19 UI rework)
 
@@ -228,24 +318,38 @@ The composer’s textarea border reflects the Workflow extension’s mode, mirro
 terminal Pi’s editor border (which tracks the thinking level). The extension
 reports its mode only through `setStatus("workflow", …)`, so
 `src/shared/workflow-mode.ts` decodes that text (`⏸ plan` → warn, `▶ build` →
-accent, `◦ …` → neutral) and an unrecognised value degrades to the neutral border
-without guessing. The coupling is deliberate and documented: the extension lives
-outside this repo, so the parser is tolerant by construction.
+accent, `🔍 review` → info, `◦ …` → neutral) and an unrecognised value degrades
+to the neutral border without guessing. The coupling is deliberate and
+documented: the extension lives outside this repo, so the parser is tolerant by
+construction.
 
-The desktop shows exactly the extension’s three modes — Default, Plan, Build.
-The Plannotator phrase `⏸ plan — reviewing in browser` is a Plan **sub-state**,
-not a mode (it is Plannotator’s phase label, rendered merely because the
-Plannotator package is installed): the composer label always reads `Plan` for
-it, while the raw phrase stays visible in the label’s tooltip and in the
-footer’s extension-status row (2026-10-20 startup-tab-cycle plan).
+The desktop shows four modes — Default, Plan, Build, Review. Review is a
+first-class mode since `@dieulc/workflow` 0.11.0, and the status carries its
+phase (`— paused`, `— awaiting decision`). The legacy Plannotator phrase
+`⏸ plan — reviewing in browser` stays a Plan **sub-state**, never Review (the old
+extension emitted it in every Plan mode merely because Plannotator was
+installed), and the composer label always reads `Plan` for it while the raw
+phrase stays visible in the label’s tooltip and the footer’s extension-status
+row (2026-10-20 startup-tab-cycle plan). While Review owns the turn,
+`SessionView` renders one `ReviewBar` after the above-editor widget strips (the
+TODO panel) and before the composer. Its text is the extension's own
+`workflow-review` status — the same line terminal Pi paints, including
+`ESC or /review-pause to pause · /review-abort to stop`, the paused form and the
+handoff form — and the row adds Pause/Resume/Abort (or the review-tab link
+during the handoff). The generic `WorkingRow` is suppressed while the row is
+visible, and the footer omits the promoted status key so the review text
+appears once. The store refuses prose with a preserved draft (2026-11-14
+review-mode-isolation plan; one row, shared text and placement from the
+2026-11-18 review-status-line plan).
 
 **Colour is never the only signal (2026-10-19, tightened 2026-10-31).** The mode
 is named in the composer’s top-right corner and exposed with `role="status"`.
 Every recognised mode has a label, including `Default`, and the label is shown at
-every window width; Plan/Build use the same warn/accent tone as the border. It
-renders inside the composer, so it survives a non-overlay `ctx.ui.custom()`
-replacement of the editor; the footer has no duplicate `mode: …` chip (the raw
-`workflow` status still appears as its mode/progress column).
+every window width; Plan/Build/Review use the same warn/accent/info tone as the
+border. It renders inside the composer, so it survives a non-overlay
+`ctx.ui.custom()` replacement of the editor; the footer has no duplicate
+`mode: …` chip (the raw `workflow` status still appears as its mode/progress
+column).
 
 **Tab reaches the extension’s shortcut first.** Terminal Pi checks
 `onExtensionShortcut` _before_ the editor (`custom-editor.js`), which is how the
@@ -314,16 +418,66 @@ auto-spaced one.
   that needs a host-side branch watcher and a provider count; the built-in
   footer is unaffected (2026-10-31 minimal-session-ui).
 
-## Notification muting (2026-10-31)
+## Notification classes, offers and muting (2026-11-08; offers derived 2026-11-18)
 
-`ctx.ui.notify` has no extension/source field, so mute rules are derived from the
-message: **exact text**, a **template** signature (numbers, quoted values,
-`provider/model` refs and thinking-level words become `*`), or the whole
-**type**. The gear on a warning/error toast (and on a history row) opens the Mute
-dialog; Settings → Notifications lists the rules with Unmute/Unmute all.
+`ctx.ui.notify` has no extension/source field, so the coarse class is **severity
+plus the two app-owned offer kinds**: `update`, `extension`, `error`, `warning`,
+`info`. Classes are toggled in Settings → Notifications and default to
+everything except info **on** — background chatter such as “Server logs ready
+(local)” never reaches the bell or a toast. The transcript always prints
+extension output, like terminal Pi's status line. There are deliberately no
+content heuristics; a noisy info message is handled by the class switch or a rule
+for the bell and toasts.
 
-A muted notification is **not deleted**: it stays in the history, is marked
-`muted`, and is hidden from the transcript and future toasts. Identical
-`oi.notify` messages are deduped in the transcript and their toasts are
-suppressed per tab for five minutes, so an extension that re-emits the same
-advisory on every state change cannot flood either surface.
+Per-message rules remain the fine-grained switch for the bell and toasts,
+derived from the message: **exact text**, a **template** signature (numbers,
+quoted values, `provider/model` refs and thinking-level words become `*`), or
+the whole **type**. The gear on a warning/error toast (and on a row) opens the
+dialog; Settings → Notifications lists the rules with Unmute/Unmute all. All
+three scopes are selectable; when a message has no variable parts the template
+rule is equivalent to the exact one and the dialog says so. Rules apply to
+**archive rows only** (extension output), never to app-owned offers.
+
+A suppressed notification (class off or rule match) is **not deleted**: it stays
+in the archive, is marked `hidden`/`muted`, and is hidden from the bell and
+future toasts, while its transcript row still prints (2026-11-15). The bell
+always renders, counts unsuppressed archive rows plus live offers, and closes its
+popover on an outside click, Escape or the bell (there is no header `×`); it keeps
+a per-row `×`, class badges and **Show hidden (N)**. A class-hidden row offers
+**Show** (enable the class); a rule-muted row offers **Unmute**. Only an
+immediately repeated identical `oi.notify` row collapses in the transcript; a
+repeat after any other content adds a row. Toasts are suppressed per tab for
+five minutes.
+
+**Two channels, one bell (2026-11-18).** The archive holds _events_: extension
+`ctx.ui.notify` output, bounded at 100 rows. The app's own **offers** are state,
+not arrivals: the renderer derives them from live updater/package state on every
+render (`offerNotifications` in `src/shared/notifications.ts`) and never stores
+them. A row exists exactly while its condition holds, so an applied update clears
+it without any bookkeeping, and a new version/set replaces rather than stacks.
+
+An **app update offer** is class `update`, one per offered version, with a
+**View update** action that opens About & updates. Its copy follows the updater:
+available → “is available.”, downloading → “is downloading.”, downloaded → “is
+ready to install.”; any other phase produces no row. The About & updates sidebar
+item carries a dot while a version is offered/downloading/downloaded.
+
+An **extension update offer** is class `extension`, one per update _set_ (a
+sorted `source@latestVersion` fingerprint), with a **View extensions** action that
+opens the Extensions hub on the Packages card. A partial update narrows the row
+to the remaining count. The class is on by default and has its own Settings
+switch, so muting app updates does not mute extension updates. The sidebar
+**Extensions** item carries a dot while the set is non-empty, and each outdated
+package row shows a `1.6.0 available` badge; a pinned row never does (the sweep
+skips a deliberate pin).
+
+**Dismissal, not a row cache.** `prefs.updates.dismissedVersion` and
+`prefs.packages.dismissedSignature` record an offer the user removed with `×` or
+**Clear**; they are the only reason a live offer stays hidden. A newer version or
+a changed set no longer matches and raises the row again, and the surface that
+owns the offer (About & updates for the app, the Packages card for extensions)
+carries **Notify me again** to clear the marker. Both offers survive a relaunch
+until dismissed or resolved. `prefs.updates.notifiedVersion` /
+`prefs.packages.notifiedSignature` remain the toast-dedupe markers (one toast per
+offer per profile). Navigation never dismisses: opening Extensions or About &
+updates is not the action the offer is asking for.

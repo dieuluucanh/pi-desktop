@@ -77,6 +77,27 @@ describe("contextMenuTemplate", () => {
     expect(template.find((item) => item.id === "paste")?.enabled).toBe(true);
   });
 
+  it("offers Paste on an extension frame, which the native command cannot reach", () => {
+    const handlers = actions();
+    const template = contextMenuTemplate(state({ tuiTabId: "tab-1" }), handlers);
+
+    expect(labels(template)).toEqual(["Copy", "Paste"]);
+    expect(template.find((item) => item.id === "copy")?.enabled).toBe(false);
+    expect(template.find((item) => item.id === "paste")?.enabled).toBe(true);
+
+    (template.find((item) => item.id === "paste")?.click as unknown as () => void)();
+    expect(handlers.paste).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps Copy enabled when an extension frame has a selection", () => {
+    const template = contextMenuTemplate(
+      state({ tuiTabId: "tab-1", selectionText: "picked" }),
+      actions(),
+    );
+    expect(labels(template)).toEqual(["Copy", "Paste"]);
+    expect(template.find((item) => item.id === "copy")?.enabled).toBe(true);
+  });
+
   it("wires every item to the supplied action", () => {
     const handlers = actions();
     const template = contextMenuTemplate(state({ isEditable: true, canCopy: true }), handlers);

@@ -19,44 +19,67 @@ export interface FuzzyMatch {
   score: number;
 }
 
+/** Scores one alignment (positions of the matched characters). Lower is better. */
+function scorePositions(textLower: string, positions: readonly number[]): number {
+  let score = 0;
+  let lastMatchIndex = -1;
+  let consecutiveMatches = 0;
+  for (const index of positions) {
+    if (lastMatchIndex === index - 1) {
+      consecutiveMatches += 1;
+      score -= consecutiveMatches * 5;
+    } else {
+      consecutiveMatches = 0;
+      if (lastMatchIndex >= 0) score += (index - lastMatchIndex - 1) * 2;
+    }
+    if (index === 0 || /[\s\-_./:]/.test(textLower[index - 1]!)) score -= 10;
+    score += index * 0.1;
+    lastMatchIndex = index;
+  }
+  return score;
+}
+
+function matchQuery(normalizedQuery: string, textLower: string): FuzzyMatch {
+  if (normalizedQuery.length === 0) return { matches: true, score: 0 };
+  if (normalizedQuery.length > textLower.length) return { matches: false, score: 0 };
+
+  // Greedy alignment first: each query character at its first occurrence after
+  // the previous one (pi-tui 1.5.0 does the same).
+  const positions: number[] = [];
+  let lastMatchIndex = -1;
+  for (const character of normalizedQuery) {
+    const index = textLower.indexOf(character, lastMatchIndex + 1);
+    if (index === -1) return { matches: false, score: 0 };
+    positions.push(index);
+    lastMatchIndex = index;
+  }
+
+  let score = scorePositions(textLower, positions);
+  // The greedy alignment can scatter the query over an earlier, unrelated part
+  // of the text ("opus" in "openrouter openrouter/anthropic/claude-opus" reads
+  // o, p, u from "openrouter"). Also score every contiguous occurrence and keep
+  // the best alignment.
+  for (
+    let start = textLower.indexOf(normalizedQuery);
+    start !== -1;
+    start = textLower.indexOf(normalizedQuery, start + 1)
+  ) {
+    for (let offset = 0; offset < positions.length; offset += 1) {
+      positions[offset] = start + offset;
+    }
+    score = Math.min(score, scorePositions(textLower, positions));
+  }
+
+  if (normalizedQuery === textLower) score -= 100;
+  return { matches: true, score };
+}
+
 /** True when all query characters appear in `text` in order. Lower is better. */
 export function fuzzyMatch(query: string, text: string): FuzzyMatch {
   const queryLower = query.toLowerCase();
   const textLower = text.toLowerCase();
 
-  const matchQuery = (normalizedQuery: string): FuzzyMatch => {
-    if (normalizedQuery.length === 0) return { matches: true, score: 0 };
-    if (normalizedQuery.length > textLower.length) return { matches: false, score: 0 };
-
-    let queryIndex = 0;
-    let score = 0;
-    let lastMatchIndex = -1;
-    let consecutiveMatches = 0;
-    for (
-      let index = 0;
-      index < textLower.length && queryIndex < normalizedQuery.length;
-      index += 1
-    ) {
-      if (textLower[index] !== normalizedQuery[queryIndex]) continue;
-      const isWordBoundary = index === 0 || /[\s\-_./:]/.test(textLower[index - 1]!);
-      if (lastMatchIndex === index - 1) {
-        consecutiveMatches += 1;
-        score -= consecutiveMatches * 5;
-      } else {
-        consecutiveMatches = 0;
-        if (lastMatchIndex >= 0) score += (index - lastMatchIndex - 1) * 2;
-      }
-      if (isWordBoundary) score -= 10;
-      score += index * 0.1;
-      lastMatchIndex = index;
-      queryIndex += 1;
-    }
-    if (queryIndex < normalizedQuery.length) return { matches: false, score: 0 };
-    if (normalizedQuery === textLower) score -= 100;
-    return { matches: true, score };
-  };
-
-  const primary = matchQuery(queryLower);
+  const primary = matchQuery(queryLower, textLower);
   if (primary.matches) return primary;
 
   // `model3` also reads as `3model`; a single digit/letter transposition is common
@@ -70,7 +93,7 @@ export function fuzzyMatch(query: string, text: string): FuzzyMatch {
       : "";
   if (swapped.length === 0) return primary;
 
-  const swappedMatch = matchQuery(swapped);
+  const swappedMatch = matchQuery(swapped, textLower);
   return swappedMatch.matches ? { matches: true, score: swappedMatch.score + 5 } : primary;
 }
 

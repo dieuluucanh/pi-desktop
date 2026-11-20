@@ -1,11 +1,15 @@
 /**
- * The "Recommended for Pi Desktop" set (plan step 13).
+ * The "Recommended for Pi Desktop" set.
  *
- * A checked-in, reviewable list — not a remote feed. Only the Office bridge's
- * package name is verifiable inside this repo, so it is pinned to
- * `PI_OFFICE_BRIDGE.packageName` by a test; every other entry is a plain npm
- * source that the package manager (plan step 14) must resolve, and a failure to
+ * A checked-in, reviewed list — not a remote feed — ordered alphabetically by
+ * package name, which is the order the hub and the onboarding step render.
+ * Only the Office bridge's package name is verifiable inside this repo, so it is
+ * pinned to `PI_OFFICE_BRIDGE.packageName` by a test; every other entry is a
+ * plain npm source that the package manager must resolve, and a failure to
  * resolve surfaces on the card instead of installing something else silently.
+ *
+ * `tests/shared/recommended-packages.test.ts` pins the exact ordered id list, so
+ * adding or removing an entry is always a deliberate edit in both places.
  *
  * The hub never hides the source: the exact string passed to the package manager
  * is what the consent dialog shows.
@@ -35,6 +39,14 @@ export interface RecommendedPackage {
 
 export const RECOMMENDED_PACKAGES: readonly RecommendedPackage[] = [
   {
+    id: "dieulc-autocompact",
+    name: "@dieulc/autocompact",
+    source: "npm:@dieulc/autocompact",
+    description: "Compact a long session automatically when context pressure builds.",
+    provides: "Auto-compaction",
+    verifiableInRepo: false,
+  },
+  {
     id: "pi-office-bridge",
     name: PI_OFFICE_BRIDGE.packageName,
     source: `npm:${PI_OFFICE_BRIDGE.packageName}`,
@@ -54,27 +66,38 @@ export const RECOMMENDED_PACKAGES: readonly RecommendedPackage[] = [
     verifiableInRepo: false,
   },
   {
-    id: "dieulc-autocompact",
-    name: "@dieulc/autocompact",
-    source: "npm:@dieulc/autocompact",
-    description: "Compact a long session automatically when context pressure builds.",
-    provides: "Auto-compaction",
-    verifiableInRepo: false,
-  },
-  {
-    id: "dieulc-server-logs",
-    name: "@dieulc/server-logs",
-    source: "npm:@dieulc/server-logs",
-    description: "Tail server logs into the session as a tool.",
-    provides: "Server logs",
-    verifiableInRepo: false,
-  },
-  {
     id: "plannotator",
     name: "@plannotator/pi-extension",
     source: "npm:@plannotator/pi-extension",
     description: "Review plans and code in an annotated web surface opened as an in-app tab.",
     provides: "Plan/code review",
+    verifiableInRepo: false,
+  },
+  {
+    id: "pi-lens",
+    name: "pi-lens",
+    source: "npm:pi-lens",
+    description:
+      "Real-time code feedback: LSP diagnostics, linters, formatters and type-checking on the code the agent touches.",
+    provides: "Code intelligence",
+    verifiableInRepo: false,
+  },
+  {
+    id: "pi-memory",
+    name: "pi-memory",
+    source: "npm:pi-memory",
+    description:
+      "Persistent memory with semantic search across daily logs, long-term memory and a scratchpad.",
+    provides: "Memory",
+    verifiableInRepo: false,
+  },
+  {
+    id: "pi-web-access",
+    name: "pi-web-access",
+    source: "npm:pi-web-access",
+    description:
+      "Web search, URL and PDF fetching, GitHub repo cloning and video analysis as tools.",
+    provides: "Web access",
     verifiableInRepo: false,
   },
 ];

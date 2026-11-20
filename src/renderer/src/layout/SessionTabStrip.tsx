@@ -1,13 +1,14 @@
 import { useMemo } from "react";
-import { PanelLeftOpen, Plus } from "lucide-react";
+import { PanelLeftOpen, History, Plus } from "lucide-react";
 
 import { isSessionTab } from "../../../shared/session-ipc";
 
-import { newSessionAction } from "../menu-actions";
+import { newSessionAction, openSessionBrowserAction } from "../menu-actions";
 import { useAppStore } from "../state/app-store";
 import { Button } from "../ui/button";
 import { GridLayoutMenu } from "./GridLayoutMenu";
 import { TabList } from "./TabList";
+import { TerminalSplitButton } from "./TerminalSplitButton";
 
 /**
  * Session tabs (the app's original strip).
@@ -15,8 +16,9 @@ import { TabList } from "./TabList";
  * Host-backed sessions, the Office host and web tabs live here. Editor tabs are
  * deliberately excluded and rendered by `EditorTabStrip` in the row below, so a
  * file never competes with a running session for the same strip. The row keeps
- * the two chrome controls that belong to the session workspace: the
- * collapsed-sidebar escape hatch and the New Session action.
+ * the chrome controls that belong to the session workspace: the
+ * collapsed-sidebar escape hatch, New Session, a joined New Terminal chip
+ * (default shell + one-off profile menu) and the grid switcher.
  */
 export function SessionTabStrip(): React.JSX.Element {
   const allTabs = useAppStore((state) => state.tabs);
@@ -56,8 +58,17 @@ export function SessionTabStrip(): React.JSX.Element {
         >
           <Plus className="size-3.5" aria-hidden />
         </Button>
-        {/* Far right: the layout switcher (2026-11-03 plan). The `+` sits to its
-            left so the control cannot move as sessions are added. */}
+        <TerminalSplitButton />
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          aria-label="Session history"
+          title="Session history (Ctrl+Alt+O)"
+          onClick={openSessionBrowserAction}
+        >
+          <History className="size-3.5" aria-hidden />
+        </Button>
+        {/* Far right: the layout switcher (2026-11-03 plan). */}
         <GridLayoutMenu />
       </div>
     </div>

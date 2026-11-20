@@ -83,6 +83,9 @@ separate map from `keybindings.json`:
 - A real collision (another desktop action, a Pi binding, or a live extension
   shortcut) is flagged per scope. Pi's own cross-modal duplicates stay
   informational, exactly as in the `keybindings.json` editor.
+- **Todo panel** (`todos.toggle`, default `Ctrl+Alt+L`) expands a hidden or
+  collapsed Workflow panel and collapses an expanded one. `Ctrl+Alt+O` stays the
+  Session browser; terminal Pi keeps its extension `Ctrl+Alt+O` toggle.
 
 Pi actions (`app.message.copy`, `app.editor.external`, `app.tools.expand`,
 `app.message.followUp`, …) are **not** duplicated there: remap them in

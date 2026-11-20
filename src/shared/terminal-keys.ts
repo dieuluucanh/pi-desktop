@@ -22,6 +22,15 @@ export interface TerminalKeyInput {
   altKey?: boolean;
   shiftKey?: boolean;
   metaKey?: boolean;
+  /**
+   * The DOM event xterm is asking about, defaulting to `keydown`.
+   *
+   * xterm's custom key handler runs on keydown, keypress **and** keyup
+   * (`CoreBrowserTerminal._keyDown`/`_keyPress`/`_keyUp`), so a policy that
+   * ignored the type would perform one chord's action three times — pasting
+   * the clipboard three times for a single Ctrl+V.
+   */
+  type?: "keydown" | "keypress" | "keyup";
 }
 
 const ESC = "\x1b";
@@ -198,5 +207,217 @@ function namedKeyOf(key: string): string | null {
 
 /** Bracketed-paste framing so a custom editor applies its paste handling. */
 export function bracketedPaste(text: string): string {
-  return `${ESC}[200~${text}${ESC}[201~`;
+  // A body that carries the end marker would terminate the paste early and the
+  // remainder would be interpreted as key input. A start marker would leave a
+  // TUI editor inside `isInPaste` state. Neither can be legitimate pasted text
+  // from a clipboard; strip both.
+  const body = text.replaceAll(`${ESC}[200~`, "").replaceAll(`${ESC}[201~`, "");
+  return `${ESC}[200~${body}${ESC}[201~`;
+}
+
+export interface PasteChordInput {
+  key: string;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+  altKey?: boolean;
+  platform: TerminalKeyPlatform;
+}
+
+/**
+ * Whether one DOM key event is a clipboard-paste chord.
+ *
+ * A terminal-style surface (the extension TUI frame, the terminal itself) is not
+ * an editable element for the chords' purposes, so Chromium never runs its own
+ * paste command there: the surface has to recognise the gesture and read the
+ * clipboard. The table follows the platform's terminal convention:
+ *
+ * - macOS: Cmd+V. Ctrl+V stays the shell/editor's `^V`.
+ * - Windows/Linux: Ctrl+V and Ctrl+Shift+V (paste-as-plain-text), plus
+ *   Shift+Insert. Win+V belongs to the OS clipboard history, so a Meta chord is
+ *   never a paste there.
+ *
+ * Alt is the compose/meta layer and never pastes.
+ */
+export function isPasteChord(input: PasteChordInput): boolean {
+  if (input.altKey) return false;
+  const key = input.key.toLowerCase();
+  if (input.platform === "darwin") {
+    return input.metaKey === true && input.ctrlKey !== true && key === "v";
+  }
+  if (input.metaKey) return false;
+  if (input.ctrlKey) return key === "v";
+  return input.shiftKey === true && key === "insert";
+}
+
+/**
+ * Integrated-terminal key ownership (2026-11-05 native-terminal plan, step 2).
+ *
+ * An embedded terminal must not steal the shell's keys. VSCode solves this with
+ * `terminal.integrated.commandsToSkipShell`: a curated allowlist of app commands
+ * whose shortcuts still fire while the terminal has focus; everything else is
+ * sent to the PTY. This module is that policy, as a pure table so it can be
+ * tested without a DOM or a shell.
+ *
+ * The renderer feeds the decision into xterm's `attachCustomKeyEventHandler`:
+ * `pty` lets xterm encode the key natively (correct for IME, Alt-as-Meta and
+ * every VT sequence), `app` performs the action and returns `false`, and
+ * `ignore` returns `false` so the OS/menu keeps the chord.
+ *
+ * Menu accelerators are suppressed by main while a terminal has focus on
+ * Windows/Linux (`setIgnoreMenuShortcuts`), which is why the shell-modifier
+ * chords below can reach the PTY at all. On macOS the menu accelerators are
+ * Cmd-based and never collide with the shell's Ctrl keys.
+ */
+
+export type TerminalKeyPlatform = "win32" | "darwin" | "linux";
+
+export type TerminalAppAction =
+  | "copy"
+  | "paste"
+  | "select-all"
+  | "find"
+  | "clear"
+  | "new-terminal"
+  | "close-terminal"
+  | "toggle-terminal"
+  | "next-tab"
+  | "previous-tab"
+  | "command-palette"
+  | "zoom-in"
+  | "zoom-out"
+  | "zoom-reset";
+
+export interface TerminalKeyContext {
+  platform: TerminalKeyPlatform;
+  /** A selection exists in the terminal buffer. */
+  hasSelection: boolean;
+  /** The `copyOnSelection` preference: Ctrl+C copies instead of sending SIGINT. */
+  copyOnSelection: boolean;
+}
+
+export type TerminalKeyDecision =
+  { kind: "app"; action: TerminalAppAction } | { kind: "pty" } | { kind: "ignore" };
+
+const PTY: TerminalKeyDecision = { kind: "pty" };
+const IGNORE: TerminalKeyDecision = { kind: "ignore" };
+
+function app(action: TerminalAppAction): TerminalKeyDecision {
+  return { kind: "app", action };
+}
+
+/**
+ * Decides who owns one key event while a terminal has focus.
+ *
+ * Defaults to the PTY: ordinary typing, Tab completion, Esc, Ctrl+C (SIGINT),
+ * Ctrl+D/Z/L/N/P/B/G and every Ctrl+Shift combination we do not claim all reach
+ * the shell. Only the curated chords below are app actions, and only on the
+ * keydown: keypress/keyup are handed back to xterm, which cancels the DOM event
+ * and emits no bytes for them (`_keyPress` bails on the modifier check, `_keyUp`
+ * only restores focus). Without that rule one chord acts twice.
+ */
+export function terminalKeyDecision(
+  input: TerminalKeyInput,
+  context: TerminalKeyContext,
+): TerminalKeyDecision {
+  const decision = chordDecision(input, context);
+  if (decision.kind === "app" && (input.type ?? "keydown") !== "keydown") return PTY;
+  return decision;
+}
+
+/** The chord table itself; `terminalKeyDecision` adds the owning-event rule. */
+function chordDecision(input: TerminalKeyInput, context: TerminalKeyContext): TerminalKeyDecision {
+  const mac = context.platform === "darwin";
+  const key = input.key;
+  // Named keys are matched case-insensitively (`Tab`, `Insert`, `F1`), and a
+  // single character is lowercased so Shift+C still reads as the copy chord.
+  const lower = key.toLowerCase();
+
+  // The Windows/Alt/Win key is the OS's; never hand it to a shell.
+  if (input.metaKey && !mac) return IGNORE;
+  // Alt is xterm's concern (macOptionIsMeta / compose).
+  if (input.altKey) return PTY;
+
+  if (input.metaKey) {
+    switch (lower) {
+      case "c":
+        return app("copy");
+      case "v":
+        return app("paste");
+      case "a":
+        return app("select-all");
+      case "f":
+        return app("find");
+      case "k":
+        return app("clear");
+      case "w":
+        return app("close-terminal");
+      case "`":
+        return input.shiftKey ? app("new-terminal") : app("toggle-terminal");
+      case "=":
+      case "+":
+        return app("zoom-in");
+      case "-":
+      case "_":
+        return app("zoom-out");
+      case "0":
+        return app("zoom-reset");
+      case "p":
+        return input.shiftKey ? app("command-palette") : IGNORE;
+      default:
+        // Cmd+N / Cmd+Q / Cmd+R and friends stay with the menu and the OS.
+        return IGNORE;
+    }
+  }
+
+  if (!input.ctrlKey) {
+    // Shift+Insert is the Windows/Linux paste convention.
+    return input.shiftKey && lower === "insert" ? app("paste") : PTY;
+  }
+
+  if (lower === "tab") return input.shiftKey ? app("previous-tab") : app("next-tab");
+  if (lower === "`") return input.shiftKey ? app("new-terminal") : app("toggle-terminal");
+
+  if (input.shiftKey) {
+    switch (lower) {
+      case "c":
+        return app("copy");
+      case "v":
+        return app("paste");
+      case "f":
+        return app("find");
+      case "p":
+        return app("command-palette");
+      case "k":
+        return app("clear");
+      default:
+        return PTY;
+    }
+  }
+
+  if (!mac) {
+    switch (lower) {
+      case "insert":
+        return app("copy");
+      case "v":
+        return app("paste");
+      case "w":
+        return app("close-terminal");
+      case "=":
+      case "+":
+        return app("zoom-in");
+      case "-":
+      case "_":
+        return app("zoom-out");
+      case "0":
+        return app("zoom-reset");
+      case "c":
+        // VSCode's rule: copy only when the selection is there to copy.
+        return context.hasSelection && context.copyOnSelection ? app("copy") : PTY;
+      default:
+        return PTY;
+    }
+  }
+
+  return context.hasSelection && context.copyOnSelection && lower === "c" ? app("copy") : PTY;
 }

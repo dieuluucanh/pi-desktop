@@ -26,14 +26,14 @@ export function isControlTabId(value: unknown): value is typeof CONTROL_TAB_ID {
 }
 
 /**
- * A tab's backing: a Pi session, the single Office host, an isolated web view,
- * or a file open in the editor (plan step 7). A `web` tab has no host at all;
- * an `editor` tab has no host either — its state is the file plus the renderer's
- * buffer registry.
+ * A tab's backing: a Pi session, the single Office host, an isolated web view, a
+ * file open in the editor (plan step 7), or a native terminal (2026-11-05
+ * terminal plan). A `web` and an `editor` tab have no host at all; a `terminal`
+ * tab has a PTY host but **no Pi host**, so it is not `isHostBackedTab`.
  */
-export type TabKind = "session" | "office" | "web" | "editor";
+export type TabKind = "session" | "office" | "web" | "editor" | "terminal";
 
-export const TAB_KINDS: readonly TabKind[] = ["session", "office", "web", "editor"];
+export const TAB_KINDS: readonly TabKind[] = ["session", "office", "web", "editor", "terminal"];
 
 export function isTabKind(value: unknown): value is TabKind {
   return typeof value === "string" && (TAB_KINDS as readonly string[]).includes(value);
@@ -59,6 +59,19 @@ export function isEditorTab(tab: TabRecord): tab is TabRecord & { filePath: stri
 /** Host/tab lifecycle as the UI needs to show it. */
 export type TabStatus = "starting" | "idle" | "running" | "crashed" | "failed" | "stopped";
 
+/** Why a host-backed tab is currently stopped (Diagnostics and the tab tooltip). */
+export type TabStopReason = "idle" | "memory" | "park" | "crash" | "manual" | "restart" | "closed";
+
+const TAB_STOP_REASONS: readonly TabStopReason[] = [
+  "idle",
+  "memory",
+  "park",
+  "crash",
+  "manual",
+  "restart",
+  "closed",
+];
+
 /** One open session tab (host id === tab id). */
 export interface TabRecord {
   id: string;
@@ -78,12 +91,29 @@ export interface TabRecord {
   /** The project-relative file an `editor` tab edits (plan step 7). */
   filePath?: string | null;
   /**
+   * A terminal tab's last shell cwd (OSC 7), used only to start the restored
+   * shell where the user left it. `cwd` above stays the project folder so the
+   * rail and project activation never follow a `cd` inside a terminal.
+   */
+  lastCwd?: string | null;
+  /** The shell profile a terminal tab was opened with. */
+  profileId?: string | null;
+  /**
    * The session tab whose notification opened this web tab (Plannotator). The
    * transcript uses it to link a review back to the session that started it.
    */
   sessionTabId?: string | null;
   /** Last failure, surfaced inline in the tab instead of only in a log. */
   error?: string;
+  /** Why the host was stopped; set only while `status` is `stopped`/`crashed`. */
+  stopReason?: TabStopReason | null;
+  /** When the stop happened (epoch ms), for Diagnostics. */
+  stoppedAt?: number | null;
+  /**
+   * The host is over the RSS budget but protected (active/visible), so it was
+   * warned instead of recycled. Cleared on restart/below budget/replacement.
+   */
+  memoryOverBudget?: boolean;
   /**
    * Pinned tabs form a stable group at the front of the strip and are skipped by
    * Close Others/Close All. Omitted for a normal, unpinned tab.
@@ -127,12 +157,48 @@ export function isSessionTab(tab: TabRecord): tab is SessionTab {
   return isSessionTabKind(tab.kind);
 }
 
-export type SessionTabsEnvelope = { tabs: TabRecord[]; activeTabId: string | null };
+/**
+ * The tab table plus the selection it belongs to.
+ *
+ * `revision` is monotonic per main process and increases whenever a publish
+ * actually changes the table, so a late or reordered push can never overwrite a
+ * newer one. `selectionSeq` increases only when the *selection* changes; the
+ * renderer ignores an older selection echo, which is what keeps a background
+ * ensure or a slow `activate` from moving the user's tab (2026-11-06 plan).
+ *
+ * Both are optional so a legacy sender (or a test double) still applies: an
+ * absent number means "unknown, apply as before".
+ *
+ * `reusedTabId` is set by `createTab` only: the requested session file was
+ * already open, so that tab was activated instead of a second one being minted
+ * (one JSONL must never have two live managers).
+ */
+export type SessionTabsEnvelope = {
+  tabs: TabRecord[];
+  activeTabId: string | null;
+  revision?: number;
+  selectionSeq?: number;
+  reusedTabId?: string;
+};
+
+/**
+ * Stable refusal for a passive read when the tab's host is asleep.
+ *
+ * Electron's IPC wrapper preserves only the message, not a custom error `code`,
+ * so the renderer matches this text. It must stay a single stable sentence: the
+ * renderer uses it to distinguish "the tab is asleep" from a real failure and
+ * to avoid surfacing a toast for a resize/hydration read.
+ */
+export const SESSION_ASLEEP_MESSAGE = "The session is asleep. Activate the tab to wake its host.";
 
 /** One host event frame, as forwarded from a host process. */
 export interface SessionEventEntry {
   event: string;
   payload?: unknown;
+  /** The session that produced the frame; absent on a legacy host. */
+  sessionId?: string | null;
+  /** Monotonic per-host session attachment counter (id can repeat on reload). */
+  sessionEpoch?: number;
 }
 
 /**
@@ -144,6 +210,9 @@ export interface SessionEventEnvelope {
   tabId: string;
   seq: number;
   events: SessionEventEntry[];
+  /** Session identity at the time main pushed the batch; absent on legacy hosts. */
+  sessionId?: string | null;
+  sessionEpoch?: number;
 }
 
 /** The latest `state.get` snapshot for a tab. */
@@ -151,6 +220,9 @@ export interface SessionStateEnvelope {
   tabId: string;
   /** Opaque to shared: the host's `SessionSnapshot` (see `src/host/events.ts`). */
   state: unknown;
+  /** Session identity for this snapshot; absent on legacy hosts. */
+  sessionId?: string | null;
+  sessionEpoch?: number;
 }
 
 export interface CreateTabInput {
@@ -165,6 +237,10 @@ export interface CreateTabInput {
   filePath?: string;
   /** The session tab this web tab belongs to, for the transcript chip. */
   sessionTabId?: string;
+  /** The shell profile to open when `kind` is `terminal`. */
+  profileId?: string;
+  /** Select the new tab (default true). False opens a background web tab. */
+  activate?: boolean;
   model?: string;
   thinking?: string;
   /**
@@ -209,8 +285,27 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+/**
+ * A persisted terminal `lastCwd` is only kept when it is an absolute path; a
+ * relative value would resolve against the app's cwd, which is never what the
+ * user ran. Windows drive/UNC and POSIX forms are accepted.
+ */
+function absolutePathOrNull(value: unknown): string | null {
+  const path = stringOrNull(value);
+  if (!path || path.includes("\0")) return null;
+  const absolute =
+    /^[A-Za-z]:[\\/]/.test(path) || /^\\\\[^\\]+\\/.test(path) || path.startsWith("/");
+  return absolute ? path : null;
+}
+
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function stopReasonOrNull(value: unknown): TabStopReason | null {
+  return typeof value === "string" && TAB_STOP_REASONS.includes(value as TabStopReason)
+    ? (value as TabStopReason)
+    : null;
 }
 
 /**
@@ -248,7 +343,20 @@ export function sanitizeTabRecord(value: unknown): TabRecord | null {
     model: stringOrNull(source.model),
     ...(kind === "web" ? { url, sessionTabId: stringOrNull(source.sessionTabId) } : {}),
     ...(kind === "editor" ? { filePath } : {}),
+    ...(kind === "terminal"
+      ? {
+          lastCwd: absolutePathOrNull(source.lastCwd),
+          profileId: stringOrNull(source.profileId),
+        }
+      : {}),
     ...(typeof source.error === "string" ? { error: source.error } : {}),
+    ...(stopReasonOrNull(source.stopReason)
+      ? { stopReason: stopReasonOrNull(source.stopReason) }
+      : {}),
+    ...(typeof source.stoppedAt === "number" && Number.isFinite(source.stoppedAt)
+      ? { stoppedAt: source.stoppedAt }
+      : {}),
+    ...(source.memoryOverBudget === true ? { memoryOverBudget: true } : {}),
     ...(source.pinned === true ? { pinned: true } : {}),
   };
 }

@@ -556,19 +556,19 @@ describe("shortcuts actions", () => {
       }
       return {};
     });
-    const activate = vi.fn(async () => ({
+    const ensure = vi.fn(async () => ({
       tabs: [{ ...tab, status: "idle" } as never],
       activeTabId: "tab-1",
     }));
-    (window.pi as unknown as { sessions: { activate: unknown } }).sessions.activate = activate;
+    (window.pi as unknown as { sessions: { ensure: unknown } }).sessions.ensure = ensure;
 
     await Promise.all([
       useAppStore.getState().ensureSession("tab-1", { force: true }),
       useAppStore.getState().ensureSession("tab-1", { force: true }),
     ]);
 
-    expect(activate).toHaveBeenCalledTimes(1);
-    expect(activate).toHaveBeenCalledWith("tab-1");
+    expect(ensure).toHaveBeenCalledTimes(1);
+    expect(ensure).toHaveBeenCalledWith("tab-1");
     expect(request.mock.calls.some(([input]) => input.method === "shortcuts.list")).toBe(true);
     expect(useAppStore.getState().shortcuts.shortcuts[0]?.key).toBe("tab");
     expect(useAppStore.getState().completionCommands["tab-1"]).toBeUndefined();
@@ -581,16 +581,16 @@ describe("shortcuts actions", () => {
       ],
       activeTabId: "tab-idle",
     });
-    const activate = vi.fn(async () => ({
+    const ensure = vi.fn(async () => ({
       tabs: [
         { id: "tab-idle", kind: "session", cwd: "C:/work", title: "s", status: "idle" } as never,
       ],
       activeTabId: "tab-idle",
     }));
-    (window.pi as unknown as { sessions: { activate: unknown } }).sessions.activate = activate;
+    (window.pi as unknown as { sessions: { ensure: unknown } }).sessions.ensure = ensure;
 
     await expect(useAppStore.getState().ensureSession("tab-idle")).resolves.toBe(true);
-    expect(activate).toHaveBeenCalledWith("tab-idle");
+    expect(ensure).toHaveBeenCalledWith("tab-idle");
 
     useAppStore.setState({
       tabs: [
@@ -604,9 +604,9 @@ describe("shortcuts actions", () => {
       ],
       activeTabId: "tab-crashed",
     });
-    activate.mockClear();
+    ensure.mockClear();
     await expect(useAppStore.getState().ensureSession("tab-crashed")).resolves.toBe(false);
-    expect(activate).not.toHaveBeenCalled();
+    expect(ensure).not.toHaveBeenCalled();
   });
 
   it("reconciles the tab table on resync and ensures the active tab", async () => {
@@ -622,18 +622,18 @@ describe("shortcuts actions", () => {
     };
     useAppStore.setState({ tabs: [tab as never], activeTabId: "tab-resync" });
     const reconcile = vi.fn(async () => ({ tabs: [tab as never], activeTabId: "tab-resync" }));
-    const activate = vi.fn(async () => ({ tabs: [tab as never], activeTabId: "tab-resync" }));
+    const ensure = vi.fn(async () => ({ tabs: [tab as never], activeTabId: "tab-resync" }));
     (
-      window.pi as unknown as { sessions: { reconcile: unknown; activate: unknown } }
+      window.pi as unknown as { sessions: { reconcile: unknown; ensure: unknown } }
     ).sessions.reconcile = reconcile;
     (
-      window.pi as unknown as { sessions: { reconcile: unknown; activate: unknown } }
-    ).sessions.activate = activate;
+      window.pi as unknown as { sessions: { reconcile: unknown; ensure: unknown } }
+    ).sessions.ensure = ensure;
 
     await useAppStore.getState().resyncSessions();
 
     expect(reconcile).toHaveBeenCalledTimes(1);
-    expect(activate).toHaveBeenCalledWith("tab-resync");
+    expect(ensure).toHaveBeenCalledWith("tab-resync");
   });
 
   it("coalesces a second ensure inside the throttle window", async () => {
@@ -649,7 +649,7 @@ describe("shortcuts actions", () => {
       ],
       activeTabId: "tab-throttle",
     });
-    const activate = vi.fn(async () => ({
+    const ensure = vi.fn(async () => ({
       tabs: [
         {
           id: "tab-throttle",
@@ -661,11 +661,11 @@ describe("shortcuts actions", () => {
       ],
       activeTabId: "tab-throttle",
     }));
-    (window.pi as unknown as { sessions: { activate: unknown } }).sessions.activate = activate;
+    (window.pi as unknown as { sessions: { ensure: unknown } }).sessions.ensure = ensure;
 
     await useAppStore.getState().ensureSession("tab-throttle");
     await expect(useAppStore.getState().ensureSession("tab-throttle")).resolves.toBe(true);
-    expect(activate).toHaveBeenCalledTimes(1);
+    expect(ensure).toHaveBeenCalledTimes(1);
   });
 });
 

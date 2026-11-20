@@ -5,6 +5,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { copyText, hasSelectionWithin } from "../ui/clipboard";
 import { cn } from "../ui/cn";
+import { MultilineText } from "../ui/multiline-text";
 import { Markdown } from "./Markdown";
 import { HighlightText } from "./Highlight";
 import { FindPatternContext } from "./find-context";
@@ -16,7 +17,6 @@ import { isOfficeTool, officeToolSummary } from "./office-tool-card";
 import { useMarkdownTransform } from "./useMarkdownTransform";
 import { useAppStore } from "../state/app-store";
 import { matchesBinding } from "../shortcuts/dom-keys";
-import { isNotificationMuted } from "../../../shared/notifications";
 import { resolveDesktopKeymap } from "../../../shared/desktop-keymap";
 import { isBlobRef } from "../../../shared/host-protocol";
 import type { OfficeDocumentPane } from "../../../shared/office-documents";
@@ -323,22 +323,19 @@ function NoticeView({
   onAbort?: () => void;
   running?: boolean;
 }) {
-  const notifications = useAppStore((state) => state.prefs.notifications);
-  // A muted extension notification stays in the history archive, but it must
-  // not take a row in the transcript. The hook runs before this early return.
-  if (
-    notice.event === "oi.notify" &&
-    isNotificationMuted({ message: notice.text, type: notice.severity }, notifications)
-  ) {
-    return null;
-  }
+  // `ctx.ui.notify` is chat content in terminal Pi: showStatus / showWarning /
+  // showError append to the chat. Notification classes and mute rules are
+  // bell/toast policy, never transcript policy — a class switch must not hide
+  // command output. `MultilineText` keeps the source lines verbatim.
   const tone =
     notice.severity === "error" ? "danger" : notice.severity === "warning" ? "warn" : "neutral";
   return (
     <div className="flex items-start gap-3 rounded-sm border border-line bg-surface px-3 py-2 text-xs">
       <Badge tone={tone}>{notice.severity}</Badge>
       <div className="flex-1">
-        <div>{<HighlightText text={notice.text} />}</div>
+        <MultilineText data-testid="transcript-notice-text">
+          <HighlightText text={notice.text} />
+        </MultilineText>
         {notice.detail ? (
           <pre className="mt-1 whitespace-pre-wrap font-mono text-[11px] text-ink-faint">
             <HighlightText text={notice.detail} />
@@ -1040,7 +1037,16 @@ export function Transcript({
             onScroll={(event) => trackScroll(event.currentTarget)}
             data-testid="transcript"
           >
-            <div ref={contentRef}>
+            <div
+              ref={contentRef}
+              data-testid="transcript-content"
+              // The column takes the pane width (minus this scroller's `px-4`).
+              // Any fixed measure (`ch`, `rem`, px) is absolute in CSS px, so a
+              // zoomed-out window would grow the pane and leave side gutters;
+              // display zoom must change how much content fits, not the margin
+              // (2026-11-15 transcript-width).
+              className="w-full"
+            >
               {items.map((item, index) => (
                 <div key={item.id} data-row-index={index} data-item-id={item.id}>
                   <TranscriptRow>{row(item)}</TranscriptRow>
@@ -1064,7 +1070,14 @@ export function Transcript({
           onScroll={(event) => trackScroll(event.currentTarget)}
           data-testid="transcript"
         >
-          <div ref={contentRef} className="relative" style={{ height: virtualizer.getTotalSize() }}>
+          <div
+            ref={contentRef}
+            data-testid="transcript-content"
+            // Same invariant as the plain path above: the column is the pane
+            // width, never a fixed measure (2026-11-15 transcript-width).
+            className="relative w-full"
+            style={{ height: virtualizer.getTotalSize() }}
+          >
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const item = items[virtualRow.index];
               if (!item) return null;

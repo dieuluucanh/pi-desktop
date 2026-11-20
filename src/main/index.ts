@@ -13,6 +13,7 @@ import {
   nativeImage,
   powerMonitor,
   shell,
+  webContents,
 } from "electron";
 import {
   IPC,
@@ -42,7 +43,12 @@ import { DEFAULT_ZOOM, clampZoomFactor } from "../shared/zoom";
 import { APP_COPYRIGHT, APP_NAME, APP_USER_MODEL_ID, resolveBranding } from "./branding";
 import { createAppStore } from "./app-store";
 import { createNodeFsPort } from "./fs-port";
+import { createTerminalLog, type TerminalLog } from "./terminal-log";
 import { createHostBuildId } from "./host-build";
+import { TerminalHost } from "./terminal-host";
+import { createTerminalService, type TerminalService } from "./terminal-service";
+import { detectTerminalProfiles } from "./terminal-profiles";
+import { DEFAULT_TERMINAL_PREFS, type TerminalPrefs } from "../shared/terminal-prefs";
 import { createHostSupervisor } from "./host-supervisor";
 import { keepHostAlive } from "./host-policy";
 import { createQuitTeardown } from "./lifecycle";
@@ -92,8 +98,10 @@ import { projectConfigFromPrefs, readConfig } from "../checkpoints/config";
 import { DEFAULT_CHECKPOINT_CONFIG, checkpointsRoot } from "../shared/checkpoints";
 import { createNodeGitRunner } from "../git/runner";
 import { createGitService } from "../git/service";
+import { readUntrackedSource } from "../git/untracked";
 import { requireProjectPath } from "../shared/git";
 import { createDiagnosticsService } from "./diagnostics-service";
+import { createTuiFocusRegistry } from "./tui-focus";
 import { createElectronUpdatePort } from "./electron-updater";
 import { createUpdateService, type UpdateService } from "./updater";
 import { readBuildInfo } from "./build-info";
@@ -215,6 +223,15 @@ const buildInfo = readBuildInfo({
       return null;
     }
   },
+  // A dev run has no packaged provenance; the bundled agent version is still
+  // readable from the checkout so Diagnostics/About are not blank during dev.
+  devPiPackageJson: join(
+    app.getAppPath(),
+    "node_modules",
+    "@earendil-works",
+    "pi-coding-agent",
+    "package.json",
+  ),
 });
 
 const runtime: RuntimeResolution = resolveAppRuntime({
@@ -247,6 +264,24 @@ const appState = createAppStore({
 });
 
 let mainWindow: BrowserWindow | null = null;
+/**
+ * Which extension TUI tab owns each window's keyboard (2026-11-18 paste plan).
+ * The menu and context-menu Paste use it to route the gesture to the renderer
+ * instead of the native paste command, which a non-editable frame ignores.
+ */
+const tuiFocus = createTuiFocusRegistry();
+
+/**
+ * Raise the app when a review web tab is opened/activated. The review handoff
+ * is the user's requested destination in Desktop; a system browser or another
+ * window must not keep the in-app tab behind it.
+ */
+function focusMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
 
 /**
  * Update checking (plan step 26). Created in `whenReady` because resolving the
@@ -354,6 +389,23 @@ const activeSessionId: { current: string | null } = { current: null };
 const visibleSessionIds: { current: ReadonlySet<string> } = { current: new Set<string>() };
 
 /**
+ * Sessions whose Plannotator/web tab is active or visible. The web tab is a view
+ * of that session, so its host must be protected like the session tab itself.
+ * The closure reads `sessions` after it is initialized; the supervisor only
+ * calls it from its own timers.
+ */
+function linkedWebSessionIds(): ReadonlySet<string> {
+  const linked = new Set<string>();
+  const active = activeSessionId.current;
+  const visible = visibleSessionIds.current;
+  for (const tab of sessions?.tabs() ?? []) {
+    if (tab.kind !== "web" || !tab.sessionTabId) continue;
+    if (tab.id === active || visible.has(tab.id)) linked.add(tab.sessionTabId);
+  }
+  return linked;
+}
+
+/**
  * The soft live-host target for this machine. Total memory is stable for the
  * app's lifetime; the control host is included in the count, and the value is
  * never a hard session limit (see `liveHostBudget`).
@@ -368,6 +420,7 @@ const hosts = runtime.nodePath
       nodePath: runtime.nodePath,
       hostPath: runtime.piHostPath,
       binDir: runtime.binDir,
+      nodeBinDir: runtime.nodeBinDir,
       logDir: paths.logs,
       blobDir: paths.blobCache,
       backupDir: join(paths.userData, "backups"),
@@ -385,18 +438,18 @@ const hosts = runtime.nodePath
       // only a protocol/port sanity guard, never a session limit.
       maxHosts: hostProcessLimit,
       // Sleep a session after 15 minutes without real traffic. The active tab,
-      // the control host, an Office host and the bridge owner are protected
-      // from *idle* sleep; the active tab is not protected from the RSS
-      // watchdog (see `isBridgeOwner`).
+      // every visible pane, the control host, an Office host and the bridge
+      // owner are protected from idle sleep and from the RSS watchdog.
       idleTimeoutMs: IDLE_HOST_TIMEOUT_MS,
       isPinned: (sessionId) =>
         keepHostAlive(sessionId, {
           activeSessionId: activeSessionId.current,
           visibleSessionIds: visibleSessionIds.current,
           bridgeOwnerSessionId: bridgeOwnerSessionId.current(),
+          linkedSessionIds: linkedWebSessionIds(),
         }),
-      // The bridge owner keeps port 38617 alive; only it and the Office host
-      // are exempt from RSS recycling. The active tab is deliberately not.
+      // The bridge owner keeps port 38617 alive; the RSS guard never stops an
+      // active/visible host either (it warns instead).
       isBridgeOwner: (sessionId) => bridgeOwnerSessionId.current() === sessionId,
     })
   : null;
@@ -436,7 +489,124 @@ const webTabs = createWebTabManager({
   createView: createElectronWebViewHost({ window: () => mainWindow }),
   emitState: (state) => broadcastToWindows(IPC.webState, state),
   emitNavigationRequest: (request) => broadcastToWindows(IPC.webNavigationRequest, request),
+  requestClose: (tabId) => {
+    // Defer so the adapter finishes dispatching close-requested/destroyed before
+    // a publish can synchronously tear the view down from inside the listener
+    // (the destroyed fallback is synchronous). A page can ask to close before
+    // the session service exists only during shutdown; the guard covers it.
+    queueMicrotask(() => {
+      void sessions?.closeTab(tabId).catch(() => undefined);
+    });
+  },
 });
+
+/**
+ * One terminal service per window (2026-11-05 terminal plan). Terminal tabs are
+ * not Pi hosts: they have no session, no Office port and no idle recycling, so
+ * they are owned by a separate, lazily created supervisor per window.
+ */
+const terminalServices = new Map<number, TerminalService>();
+
+/** The prefs the terminal reads synchronously; kept in step with `prefs.set`. */
+let terminalPrefs: TerminalPrefs = DEFAULT_TERMINAL_PREFS;
+
+/**
+ * Terminal host lines land on the console (dev) and in `<logs>/terminal.log`,
+ * which is the only copy a packaged AppImage user can hand to support. Created
+ * lazily so it never runs while the app is still resolving its paths.
+ */
+let terminalLog: TerminalLog | null = null;
+
+function terminalLogPath(): string {
+  return join(paths.logs, "terminal.log");
+}
+
+function logTerminal(line: string): void {
+  console.error(`[terminal] ${line}`);
+  terminalLog ??= createTerminalLog({ file: terminalLogPath(), fs: createNodeFsPort() });
+  terminalLog.write(line);
+}
+
+/**
+ * The terminal service for one window, created on first use. The window's
+ * WebContents id is the key, so a second window can never address the first
+ * window's PTYs and a destroyed window disposes its own host.
+ */
+function terminalServiceFor(windowId: number): TerminalService {
+  const existing = terminalServices.get(windowId);
+  if (existing) return existing;
+  const contents = webContents.fromId(windowId);
+  if (!contents || contents.isDestroyed()) {
+    throw new Error("terminal: the window is gone");
+  }
+  if (!runtime.ok || !runtime.nodePath) {
+    throw new Error("The bundled Pi runtime is unavailable, so no terminal can start.");
+  }
+
+  const send = (frame: unknown): void => {
+    if (!contents.isDestroyed()) contents.send(IPC.terminalEvent, frame);
+  };
+  const host = new TerminalHost({
+    nodePath: runtime.nodePath,
+    hostPath: runtime.terminalHostPath,
+    cwd: process.cwd(),
+    profileDir: paths.profileDir,
+    binDir: runtime.binDir,
+    nodeBinDir: runtime.nodeBinDir,
+    env: process.env,
+    log: logTerminal,
+    onEvent: send,
+    onExit: () => terminalServices.get(windowId)?.handleHostExit(),
+  });
+
+  const platform =
+    process.platform === "win32" ? "win32" : process.platform === "darwin" ? "darwin" : "linux";
+  const service = createTerminalService({
+    host,
+    tabs: () => sessions?.tabs() ?? [],
+    isProjectTrusted: (cwd) => projectTrustFile.isProjectTrusted(cwd),
+    preferences: () => ({
+      defaultProfile: terminalPrefs.defaultProfile,
+      shellPath: terminalPrefs.shellPath,
+    }),
+    detectProfiles: (preferences) =>
+      detectTerminalProfiles({
+        platform,
+        env: process.env,
+        fs: createNodeFsPort(),
+        runner: createCommandRunner(),
+        preferences,
+      }),
+    isDirectory: async (path) => (await createNodeFsPort().pathKind(path)) === "directory",
+    emit: (frame) => send(frame),
+    env: process.env,
+    platform: process.platform,
+    profileDir: paths.profileDir,
+    termProgramVersion: app.getVersion(),
+    logFile: terminalLogPath(),
+    log: logTerminal,
+  });
+
+  terminalServices.set(windowId, service);
+  const releaseFocus = (): void => {
+    if (process.platform !== "darwin" && !contents.isDestroyed()) {
+      contents.setIgnoreMenuShortcuts(false);
+    }
+  };
+  contents.on("blur", releaseFocus);
+  contents.once("destroyed", () => {
+    terminalServices.delete(windowId);
+    void service.dispose().catch(() => undefined);
+  });
+  return service;
+}
+
+/** Kills every window's PTY host before the app exits. */
+async function disposeTerminalServices(): Promise<void> {
+  const services = [...terminalServices.values()];
+  terminalServices.clear();
+  await Promise.all(services.map((service) => service.dispose().catch(() => undefined)));
+}
 
 /**
  * The session service (plan step 3): the app's only path to a Pi host. It needs a
@@ -471,6 +641,9 @@ const sessions: SessionService | null = hosts
           // The tab table is the web-tab service's reconciliation input: a web
           // tab opened, closed, reordered or restored is reflected in one place.
           webTabs.sync(envelope);
+          // And the terminal service's: every close path (close, close-others,
+          // close-project, restore) lands here, so a PTY cannot outlive its tab.
+          for (const service of terminalServices.values()) service.syncTabs();
         }
       },
     })
@@ -526,7 +699,15 @@ const sessionsIpc: IpcSessionDeps = {
     void officeDocuments.refresh();
     return envelope;
   },
-  activate: (tabId: string) => requireSessions().activateTab(tabId),
+  activate: async (tabId: string) => {
+    const envelope = await requireSessions().activateTab(tabId);
+    const tab = envelope.tabs.find((entry) => entry.id === tabId);
+    // A review web tab is a handoff destination, not a background utility:
+    // raise the app so the user sees the new plan.
+    if (tab?.kind === "web" && tab.sessionTabId) focusMainWindow();
+    return envelope;
+  },
+  ensure: (tabId: string) => requireSessions().ensureTab(tabId),
   setVisibleTabs: (ids: readonly string[]) => {
     // Mirror the push into the supervisor's holder before the service stores it:
     // the idle reaper reads the holder on its own timer, so a visible pane must
@@ -538,6 +719,7 @@ const sessionsIpc: IpcSessionDeps = {
   reconcile: () => requireSessions().reconcile(),
   restore: () => requireSessions().restoreTabs(),
   restart: (tabId: string) => requireSessions().restartTab(tabId),
+  stop: (tabId: string) => requireSessions().stopTab(tabId),
   request: (input) => requireSessions().request(input.tabId, input.method, input.params),
   deleteSession: deleteSessionFile,
 };
@@ -595,6 +777,7 @@ function currentAppInfo(): AppInfo {
     buildVersion: buildInfo.version,
     buildCommit: buildInfo.commit,
     builtAt: buildInfo.builtAt,
+    piVersion: buildInfo.piVersion,
     safeMode,
     piOffline: isOfflineEnv(process.env.PI_OFFLINE),
     userDataDir: paths.userData,
@@ -763,13 +946,22 @@ function createWindow(): BrowserWindow {
         canCopy: params.editFlags.canCopy,
         canPaste: params.editFlags.canPaste,
         canSelectAll: params.editFlags.canSelectAll,
+        // Resolved once, at menu-build time: the popup must not lose its target
+        // if DOM focus moves while the menu is open.
+        tuiTabId: tuiFocus.tabId(window.webContents.id),
       },
       {
         undo: () => withContents(() => contents.undo()),
         redo: () => withContents(() => contents.redo()),
         cut: () => withContents(() => contents.cut()),
         copy: () => withContents(() => contents.copy()),
-        paste: () => withContents(() => contents.paste()),
+        paste: () => {
+          // `webContents.paste()` is a no-op on the extension frame; ask the
+          // renderer that owns the frame to read the clipboard and deliver a
+          // bracketed paste (2026-11-18 questionnaire paste plan).
+          const tabId = tuiFocus.tabId(window.webContents.id);
+          withContents(() => (tabId ? contents.send(IPC.tuiPaste, tabId) : contents.paste()));
+        },
         selectAll: () => withContents(() => contents.selectAll()),
       },
     );
@@ -778,6 +970,7 @@ function createWindow(): BrowserWindow {
   });
 
   window.on("closed", () => {
+    tuiFocus.clear(window.id);
     mainWindow = null;
   });
 
@@ -1071,6 +1264,17 @@ const checkpointService = createCheckpointService({
  * `shell.trashItem` makes an untracked discard recoverable, and a plain `stat`
  * is the folder probe the availability reasons need.
  */
+/**
+ * One Node filesystem adapter shared by the editor and the untracked-file diff.
+ * Both go through the same containment guard and the same binary heuristic, so
+ * a new file cannot be text in one view and binary in the other.
+ */
+const workspaceIo = createNodeWorkspaceIo({
+  trash: async (target) => {
+    await shell.trashItem(target);
+  },
+});
+
 const gitEngine = createGitService({
   runner: createNodeGitRunner(),
   pathKind: async (target) => {
@@ -1097,6 +1301,9 @@ const gitEngine = createGitService({
   // D11: a destructive action snapshots first. A throw aborts the action — a
   // safety snapshot that cannot be taken must not be silently skipped.
   preOpSnapshot: (projectPath, note) => checkpointService.snapshotBefore(projectPath, note),
+  // The synthetic untracked diff reuses the editor's reader: containment,
+  // binary/UTF-16 detection and the read cap all live in one place.
+  readUntrackedFile: (root, path) => readUntrackedSource(workspaceIo, root, path),
 });
 
 const gitPush = createGitPushService({
@@ -1116,11 +1323,7 @@ const gitPush = createGitPushService({
  * injected port so the service stays Electron-free and unit-testable.
  */
 const workspaceService = createWorkspaceService({
-  io: createNodeWorkspaceIo({
-    trash: async (target) => {
-      await shell.trashItem(target);
-    },
-  }),
+  io: workspaceIo,
   backupsDir: paths.editorBackups,
   reveal: (target) => {
     shell.showItemInFolder(target);
@@ -1221,6 +1424,26 @@ const diagnostics = createDiagnosticsService({
     tabs: sessions?.tabs().filter((tab) => tab.kind === "web").length ?? 0,
     liveViews: webTabs.liveViewCount(),
     limit: webTabs.webViewLimit(),
+  }),
+  // One entry per window: whether its terminal host is up, what `terminal.info`
+  // said about the native module, and the log file a support request should
+  // attach (2026-11-08 linux-terminal plan, step 3).
+  terminal: () => ({
+    hosts: [...terminalServices.entries()].map(([windowId, service]) => {
+      const view = service.diagnostics();
+      return {
+        windowId,
+        running: view.host?.running ?? false,
+        nodePath: view.host?.nodePath ?? runtime.nodePath ?? "",
+        hostPath: view.host?.hostPath ?? runtime.terminalHostPath,
+        pty: view.info
+          ? { loaded: view.info.pty.loaded, path: view.info.pty.path, error: view.info.pty.error }
+          : null,
+        lastExit: view.host?.lastExit ?? null,
+        lastError: view.host?.lastError ?? null,
+        logFile: view.logFile ?? terminalLogPath(),
+      };
+    }),
   }),
 });
 
@@ -1369,6 +1592,12 @@ if (!app.requestSingleInstanceLock()) {
           void openExternal(url);
         },
         accelerators: menuAcceleratorsFor(resolveDesktopKeymap(prefs.desktopKeybindings)),
+        onPaste: (contents) => {
+          if (!contents || contents.isDestroyed()) return;
+          const tabId = tuiFocus.tabId(contents.id);
+          if (tabId) contents.send(IPC.tuiPaste, tabId);
+          else contents.paste();
+        },
       });
     };
     await installMenu();
@@ -1457,6 +1686,8 @@ if (!app.requestSingleInstanceLock()) {
           // A telemetry change applies to hosts spawned from now on; a running
           // session keeps its environment until it restarts.
           telemetryEnabled = prefs.telemetryEnabled;
+          // Terminal preferences are read synchronously when a shell spawns.
+          terminalPrefs = prefs.terminal;
           // A desktop-keymap edit rebuilds the menu so its accelerators match
           // the new chords (plan step 23).
           if (patch && typeof patch === "object" && "desktopKeybindings" in patch) {
@@ -1490,6 +1721,27 @@ if (!app.requestSingleInstanceLock()) {
         },
       },
       sessions: sessionsIpc,
+      terminal: {
+        create: (windowId, input) => terminalServiceFor(windowId).create(input),
+        attach: (windowId, terminalId) => terminalServiceFor(windowId).attach(terminalId),
+        write: (windowId, terminalId, data) => terminalServiceFor(windowId).write(terminalId, data),
+        resize: (windowId, terminalId, cols, rows) =>
+          terminalServiceFor(windowId).resize(terminalId, cols, rows),
+        close: (windowId, terminalId) => terminalServiceFor(windowId).close(terminalId),
+        ack: (windowId, terminalId, bytes) => terminalServiceFor(windowId).ack(terminalId, bytes),
+        list: async (windowId) => terminalServiceFor(windowId).list(),
+        profiles: (windowId, force) => terminalServiceFor(windowId).profiles(force),
+        setFocus: (windowId, focused) => {
+          const contents = webContents.fromId(windowId);
+          if (!contents || contents.isDestroyed()) return;
+          // macOS accelerators are Cmd-based and do not collide with the shell's
+          // Ctrl keys; on Windows/Linux the shell must receive Ctrl+N/W/B/G.
+          if (process.platform !== "darwin") contents.setIgnoreMenuShortcuts(focused);
+        },
+      },
+      tui: {
+        setFocus: (windowId, tabId) => tuiFocus.set(windowId, tabId),
+      },
       projects: {
         get: () => projectsService.snapshot(),
         mutate: async (input: ProjectMutation) => {
@@ -1630,13 +1882,33 @@ if (!app.requestSingleInstanceLock()) {
           const existing = sessions
             ?.tabs()
             .find((tab) => tab.kind === "web" && tab.url === input.url);
-          if (existing) return requireSessions().activateTab(existing.id);
-          return requireSessions().createTab({
+          if (existing) {
+            // A reused review URL belongs to the session that just handed it
+            // off; the first opener must not keep the link forever. This runs
+            // for a background open too, before the early return below.
+            if (input.sessionTabId) {
+              await requireSessions().linkWebTabSession(existing.id, input.sessionTabId);
+            }
+            if (input.activate === false) return requireSessions().envelope();
+            // Activate first: the tabs emit runs webTabs.sync, which creates a
+            // parked view before the reload command runs. Sending reload before
+            // the view exists was the round-2 stale-plan bug.
+            const envelope = await requireSessions().activateTab(existing.id);
+            if (input.reload === true) {
+              webTabs.command(existing.id, { command: "reload" });
+            }
+            focusMainWindow();
+            return envelope;
+          }
+          const envelope = await requireSessions().createTab({
             kind: "web",
             cwd: webTabCwd(input.cwd),
             url: input.url,
             ...(input.sessionTabId ? { sessionTabId: input.sessionTabId } : {}),
+            ...(input.activate === false ? { activate: false } : {}),
           });
+          if (input.activate !== false) focusMainWindow();
+          return envelope;
         },
         setBounds: (tabId, bounds) => {
           webTabs.setBounds(tabId, bounds);
@@ -1655,6 +1927,9 @@ if (!app.requestSingleInstanceLock()) {
               ?.tabs()
               .find((tab) => tab.kind === "web" && tab.url === decision.url);
             if (existing) {
+              if (decision.sessionTabId) {
+                await requireSessions().linkWebTabSession(existing.id, decision.sessionTabId);
+              }
               await requireSessions().activateTab(existing.id);
               return true;
             }
@@ -1674,6 +1949,7 @@ if (!app.requestSingleInstanceLock()) {
     // Load the persisted display zoom before the window paints; `applyZoom`
     // after creation covers the already-loaded case and every extra window.
     const startupPrefs = (await appState.read()).prefs;
+    terminalPrefs = startupPrefs.terminal;
     windowZoomFactor = clampZoomFactor(startupPrefs.zoomFactor);
     mainWindow = createWindow();
     applyZoom(windowZoomFactor);
@@ -1752,6 +2028,9 @@ if (!app.requestSingleInstanceLock()) {
       gitPush.dispose();
       checkpointService.dispose();
       webTabs.dispose();
+      // PTYs first: the terminal host owns shell processes, and a session host
+      // shutdown must not race a shell that is still writing to its tab.
+      await disposeTerminalServices();
       await (sessions ? sessions.dispose() : hosts?.stopAll());
     },
     quit: () => app.quit(),

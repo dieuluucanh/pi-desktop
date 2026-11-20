@@ -36,7 +36,28 @@ export type FakeStep =
       text?: string;
       usage?: FakeUsage;
     }
-  | { kind: "error"; status: number; message?: string };
+  /**
+   * Streams one tool call whose JSON arguments arrive in many small deltas
+   * (plan 2026-11-09 step 29). The 1.4.0 parser re-parsed the accumulated text
+   * on every delta, so a large argument froze the stream; 1.5.0 parses each
+   * delta once.
+   */
+  | {
+      kind: "streamedToolCall";
+      name: string;
+      /** Argument JSON, streamed in `chunkSize`-character deltas. */
+      arguments: Record<string, unknown>;
+      id?: string;
+      chunkSize?: number;
+      usage?: FakeUsage;
+    }
+  | { kind: "error"; status: number; message?: string }
+  /**
+   * Streams optional text and then closes without a terminal `finish_reason`
+   * (and without `[DONE]`). This is the gateway cut that Pi reports as
+   * `Stream ended without finish_reason`.
+   */
+  | { kind: "cut"; text?: string; usage?: FakeUsage };
 
 export interface FakeRequest {
   /** The decoded JSON body the SDK sent. */
@@ -118,6 +139,16 @@ export async function createFakeProvider(): Promise<FakeProvider> {
         connection: "keep-alive",
       });
 
+      if (step.kind === "cut") {
+        if (step.text) {
+          for (const word of step.text.split(" ")) {
+            writeChunk(response, chunk({ content: `${word} ` }, null, model));
+          }
+        }
+        response.end();
+        return;
+      }
+
       if ((step.kind === "thinking" || step.kind === "toolCall") && step.text) {
         for (const word of step.text.split(" ")) {
           writeChunk(response, chunk({ content: `${word} ` }, null, model));
@@ -134,6 +165,31 @@ export async function createFakeProvider(): Promise<FakeProvider> {
           const suffix = index === words.length - 1 ? "" : " ";
           writeChunk(response, chunk({ content: `${words[index]}${suffix}` }, null, model));
           if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+      if (step.kind === "streamedToolCall") {
+        const text = JSON.stringify(step.arguments);
+        const size = Math.max(1, step.chunkSize ?? 64);
+        for (let offset = 0; offset < text.length; offset += size) {
+          writeChunk(
+            response,
+            chunk(
+              {
+                tool_calls: [
+                  {
+                    index: 0,
+                    ...(offset === 0 ? { id: step.id ?? "call_fake_big", type: "function" } : {}),
+                    function: {
+                      ...(offset === 0 ? { name: step.name } : {}),
+                      arguments: text.slice(offset, offset + size),
+                    },
+                  },
+                ],
+              },
+              null,
+              model,
+            ),
+          );
         }
       }
       if (step.kind === "toolCall") {
@@ -156,7 +212,8 @@ export async function createFakeProvider(): Promise<FakeProvider> {
         );
       }
 
-      const finish = step.kind === "toolCall" ? "tool_calls" : "stop";
+      const finish =
+        step.kind === "toolCall" || step.kind === "streamedToolCall" ? "tool_calls" : "stop";
       const final: Record<string, unknown> = {
         id: "chatcmpl-fake",
         object: "chat.completion.chunk",

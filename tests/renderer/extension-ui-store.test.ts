@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { EMPTY_EXTENSION_UI } from "../../src/shared/extension-ui";
+import { isNotificationSuppressed } from "../../src/shared/notifications";
 import { installBridge } from "./fixtures";
 
 vi.mock("sonner", () => ({
@@ -11,6 +12,7 @@ vi.mock("sonner", () => ({
     success: vi.fn(),
     error: vi.fn(),
     warning: vi.fn(),
+    info: vi.fn(),
   },
 }));
 
@@ -53,7 +55,7 @@ function resetStore() {
     transcripts: {},
     extensionUi: {},
     extensionDialogs: [],
-    extensionNotifications: [],
+    notifications: [],
     muteTarget: null,
     notificationCooldowns: {},
   });
@@ -62,6 +64,60 @@ function resetStore() {
 beforeEach(() => {
   resetStore();
   vi.clearAllMocks();
+});
+
+describe("dialog focus policy (2026-11-06 tab-switch plan)", () => {
+  const OTHER = "tab-2";
+
+  function twoTabs(): void {
+    useAppStore.setState({
+      tabs: [
+        ...useAppStore.getState().tabs,
+        {
+          id: OTHER,
+          kind: "session",
+          cwd: "C:/work/other",
+          title: "other",
+          sessionFile: null,
+          status: "idle",
+          createdAt: 1,
+          lastActiveAt: 1,
+          model: null,
+        },
+      ],
+    });
+  }
+
+  it("badges a background dialog instead of taking the window while streaming", () => {
+    twoTabs();
+    useAppStore.setState({ sessionStates: { [TAB]: { streaming: true } }, dialogAttention: {} });
+
+    useAppStore.getState().applySessionEvents({
+      tabId: OTHER,
+      seq: 1,
+      events: [
+        {
+          event: "oi.request",
+          payload: { id: "d1", method: "confirm", params: { title: "?", message: "?" } },
+        },
+      ],
+    });
+
+    expect(useAppStore.getState().activeTabId).toBe(TAB);
+    expect(useAppStore.getState().dialogAttention[OTHER]).toBe(true);
+    // The dialog itself still belongs to the tab that asked, so answering it
+    // never gets mixed up with the visible session.
+    expect(useAppStore.getState().extensionDialogs.map((dialog) => dialog.tabId)).toEqual([OTHER]);
+  });
+
+  it("clears the badge when the user opens the tab", async () => {
+    twoTabs();
+    useAppStore.setState({ dialogAttention: { [OTHER]: true } });
+
+    await useAppStore.getState().activateTab(OTHER);
+
+    expect(useAppStore.getState().dialogAttention[OTHER]).toBeUndefined();
+  });
 });
 
 describe("extension UI state", () => {
@@ -190,14 +246,46 @@ describe("notifications, theme and shutdown", () => {
       event: "oi.notify",
       payload: { id: "n1", message: "Installed", type: "warning" },
     });
-    expect(useAppStore.getState().extensionNotifications[0]).toMatchObject({
+    expect(useAppStore.getState().notifications[0]).toMatchObject({
       id: "n1",
       message: "Installed",
       type: "warning",
+      class: "warning",
       tabId: TAB,
+      action: null,
     });
-    useAppStore.getState().clearExtensionNotifications();
-    expect(useAppStore.getState().extensionNotifications).toHaveLength(0);
+    useAppStore.getState().clearNotifications();
+    expect(useAppStore.getState().notifications).toHaveLength(0);
+  });
+
+  it("archives an info notification but suppresses it by default", () => {
+    useAppStore.getState().handleExtensionUiEvent(TAB, {
+      event: "oi.notify",
+      payload: { id: "n-info", message: "Server logs ready (local)", type: "info" },
+    });
+    const [entry] = useAppStore.getState().notifications;
+    expect(entry).toMatchObject({ class: "info" });
+    expect(isNotificationSuppressed(entry!, useAppStore.getState().prefs.notifications)).toBe(true);
+    expect(toast.info).not.toHaveBeenCalled();
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it("toggles a class without dropping the mute rules", () => {
+    const notification = {
+      id: "n-class",
+      message: "Installed workflow",
+      type: "warning" as const,
+      class: "warning" as const,
+      tabId: TAB,
+      at: 1,
+      action: null,
+    };
+    useAppStore.getState().muteNotification(notification, "exact");
+    useAppStore.getState().setNotificationClass("info", true);
+
+    const prefs = useAppStore.getState().prefs.notifications;
+    expect(prefs.classes.info).toBe(true);
+    expect(prefs.muted).toHaveLength(1);
   });
 
   it("archives a muted notification but suppresses its toast", () => {
@@ -205,8 +293,10 @@ describe("notifications, theme and shutdown", () => {
       id: "n-muted",
       message: "Workflow plan: thinking xhigh → high (model does not support xhigh).",
       type: "warning" as const,
+      class: "warning" as const,
       tabId: TAB,
       at: 1,
+      action: null,
     };
     useAppStore.getState().muteNotification(notification, "template");
     expect(useAppStore.getState().prefs.notifications.muted).toHaveLength(1);
@@ -215,7 +305,7 @@ describe("notifications, theme and shutdown", () => {
       event: "oi.notify",
       payload: { id: "n-muted", message: notification.message, type: "warning" },
     });
-    expect(useAppStore.getState().extensionNotifications[0]).toMatchObject({
+    expect(useAppStore.getState().notifications[0]).toMatchObject({
       message: notification.message,
     });
     expect(toast.warning).not.toHaveBeenCalled();
@@ -246,8 +336,10 @@ describe("notifications, theme and shutdown", () => {
       id: "n-dialog",
       message: "Installed workflow",
       type: "warning" as const,
+      class: "warning" as const,
       tabId: TAB,
       at: 1,
+      action: null,
     };
     useAppStore.getState().openMuteDialog(notification);
     expect(useAppStore.getState().muteTarget).toEqual(notification);
@@ -265,8 +357,10 @@ describe("notifications, theme and shutdown", () => {
       id: "n-one",
       message: "one",
       type: "warning" as const,
+      class: "warning" as const,
       tabId: TAB,
       at: 1,
+      action: null,
     };
     const second = { ...first, id: "n-two", message: "two" };
     useAppStore.getState().muteNotification(first, "exact");
@@ -317,7 +411,7 @@ describe("applySessionEvents routing", () => {
       ],
     });
     // The archive still receives every notification.
-    expect(useAppStore.getState().extensionNotifications).toHaveLength(1);
+    expect(useAppStore.getState().notifications).toHaveLength(1);
     const items = useAppStore.getState().transcripts[TAB]?.items ?? [];
     expect(items).toHaveLength(2);
     const notice = items[0];

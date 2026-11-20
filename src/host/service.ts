@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
+  BLOB_CHUNK_BYTES,
   BLOB_DIR_ENV,
   HOST_PROTOCOL_VERSION,
   JsonlFrameDecoder,
+  MAX_FRAME_BYTES,
   encodeFrame,
   exceedsThreshold,
   isBlobRef,
   isHostMethod,
+  type BlobReadResult,
   type BlobRef,
   type HostErrorBody,
   type HostFrame,
@@ -16,7 +19,7 @@ import {
   type HostRole,
 } from "../shared/host-protocol";
 import { isPathInside } from "../workspace/path-guard";
-import type { HostMemoryMetrics } from "../shared/performance";
+import type { HostMemoryMetrics, HostOpenTimings } from "../shared/performance";
 
 /**
  * Host-side protocol service (plan step 4).
@@ -37,7 +40,7 @@ export interface HostRequestContext {
   method: HostMethod;
   requestId: number;
   /** Emits an unsolicited event frame to the supervisor. */
-  emit(event: string, payload?: unknown, sessionId?: string): void;
+  emit(event: string, payload?: unknown, sessionId?: string, sessionEpoch?: number): void;
   /** Reads a previously spilled payload back from the blob cache. */
   readBlob(path: string): Promise<string | null>;
 }
@@ -88,6 +91,12 @@ export interface HostServiceOptions {
    * so tests assert on a fixed sample instead of the test runner's own RSS.
    */
   readMemory?: () => HostMemoryMetrics;
+  /**
+   * The session core's phase breakdown for its last open (2026-11-07
+   * host-singleton plan). Optional: the control core opens no session, and a
+   * small test double reports none.
+   */
+  lastOpen?: () => HostOpenTimings | null;
   maxFrameBytes?: number;
 }
 
@@ -98,7 +107,7 @@ export interface HostService {
   start(): void;
   stop(): void;
   /** Pushes an unsolicited event frame (session events, extension UI requests). */
-  emit(event: string, payload?: unknown, sessionId?: string): void;
+  emit(event: string, payload?: unknown, sessionId?: string, sessionEpoch?: number): void;
 }
 
 class HostError extends Error {
@@ -108,6 +117,63 @@ class HostError extends Error {
     super(message);
     this.code = code;
   }
+}
+
+function isUtf8Continuation(byte: number | undefined): boolean {
+  return byte !== undefined && (byte & 0xc0) === 0x80;
+}
+
+/** Bytes in the code point starting with `lead` (1 for ASCII/invalid bytes). */
+function utf8LeadLength(lead: number | undefined): number {
+  if (lead === undefined || lead < 0xc0) return 1;
+  if (lead < 0xe0) return 2;
+  if (lead < 0xf0) return 3;
+  return 4;
+}
+
+/**
+ * One UTF-8-safe chunk of a spilled blob (session browser fix, 2026-11-05).
+ *
+ * `host.blobs.read` used to answer with the whole file. That is a dead end for
+ * a blob larger than `MAX_FRAME_BYTES`: the line is dropped and the request
+ * times out. Byte offsets keep the read O(n) for the caller, and moving the end
+ * back to a code-point boundary means concatenating the chunks reproduces the
+ * original text exactly.
+ */
+export function readBlobChunk(
+  text: string,
+  path: string,
+  offset = 0,
+  maxBytes = BLOB_CHUNK_BYTES,
+): BlobReadResult {
+  const bytes = Buffer.from(text, "utf8");
+  const size = bytes.length;
+  const requested = Number.isFinite(offset) ? Math.floor(offset) : 0;
+  const start = Math.min(Math.max(0, requested), size);
+  if (start > 0 && start < size && isUtf8Continuation(bytes[start])) {
+    throw new HostError("host.blobs.read offset is not on a UTF-8 boundary", "bad_request");
+  }
+  if (start >= size) {
+    return { path, contents: "", offset: start, nextOffset: size, size, done: true };
+  }
+
+  const limit = Math.min(
+    Math.max(1, Math.floor(Number.isFinite(maxBytes) ? maxBytes : BLOB_CHUNK_BYTES)),
+    MAX_FRAME_BYTES - 64 * 1024,
+  );
+  let end = Math.min(size, start + limit);
+  while (end < size && isUtf8Continuation(bytes[end])) end--;
+  // A limit smaller than one code point still has to make progress.
+  if (end <= start) end = Math.min(size, start + utf8LeadLength(bytes[start]));
+
+  return {
+    path,
+    contents: bytes.subarray(start, end).toString("utf8"),
+    offset: start,
+    nextOffset: end,
+    size,
+    done: end >= size,
+  };
 }
 
 function toErrorBody(error: unknown): HostErrorBody {
@@ -181,11 +247,21 @@ export function createHostService(options: HostServiceOptions): HostService {
    * relative to one another (plan step 24).
    */
   let emitChain: Promise<void> = Promise.resolve();
-  const emit = (event: string, payload?: unknown, sessionId?: string): void => {
+  const emit = (
+    event: string,
+    payload?: unknown,
+    sessionId?: string,
+    sessionEpoch?: number,
+  ): void => {
     emitChain = emitChain
       .then(async () => {
         const spilled = await spillEvent(payload);
-        send(sessionId ? { event, sessionId, payload: spilled } : { event, payload: spilled });
+        send({
+          event,
+          ...(sessionId ? { sessionId } : {}),
+          ...(typeof sessionEpoch === "number" ? { sessionEpoch } : {}),
+          payload: spilled,
+        });
       })
       .catch(() => undefined);
   };
@@ -245,6 +321,8 @@ export function createHostService(options: HostServiceOptions): HostService {
         rssBytes: usage.rss,
         heapUsedBytes: usage.heapUsed,
         heapTotalBytes: usage.heapTotal,
+        externalBytes: usage.external,
+        arrayBuffersBytes: usage.arrayBuffers,
         uptimeMs: Math.round(process.uptime() * 1_000),
         at: Date.now(),
       };
@@ -252,8 +330,14 @@ export function createHostService(options: HostServiceOptions): HostService {
 
   // The host is the only process that can read its own RSS without an
   // OS-specific query; the supervisor polls this for Diagnostics and the RSS
-  // restart threshold (plan step 24).
-  handlers["host.metrics"] = () => readMemory();
+  // restart threshold (plan step 24). The last open's phases ride along: the
+  // supervisor already stores this sample, so Diagnostics gains them without a
+  // new protocol method.
+  handlers["host.metrics"] = () => {
+    const sample = readMemory();
+    const lastOpen = options.lastOpen?.() ?? null;
+    return lastOpen ? { ...sample, lastOpen } : sample;
+  };
 
   handlers["host.hello"] = () => ({
     protocolVersion: HOST_PROTOCOL_VERSION,
@@ -270,10 +354,9 @@ export function createHostService(options: HostServiceOptions): HostService {
     capabilities: options.info.capabilities ?? { checkpointsExtension: false },
   });
 
-  handlers["host.blobs.read"] = async (
-    params: unknown,
-  ): Promise<{ path: string; contents: string | null }> => {
-    const path = (params as { path?: unknown } | null)?.path;
+  handlers["host.blobs.read"] = async (params: unknown): Promise<BlobReadResult> => {
+    const input = params && typeof params === "object" ? (params as Record<string, unknown>) : {};
+    const path = input.path;
     if (typeof path !== "string" || path.length === 0) {
       throw new HostError("host.blobs.read requires a path", "bad_request");
     }
@@ -284,7 +367,13 @@ export function createHostService(options: HostServiceOptions): HostService {
     if (blobDir.length === 0 || !isPathInside(blobDir, path)) {
       throw new HostError(`refusing to read outside the blob cache: ${path}`, "forbidden");
     }
-    return { path, contents: await readBlob(path) };
+    const text = await readBlob(path);
+    if (text === null) {
+      throw new HostError(`The spilled result is no longer on disk: ${path}`, "not_found");
+    }
+    const offset = typeof input.offset === "number" ? input.offset : 0;
+    const maxBytes = typeof input.maxBytes === "number" ? input.maxBytes : BLOB_CHUNK_BYTES;
+    return readBlobChunk(text, path, offset, maxBytes);
   };
 
   handlers["host.shutdown"] = () => {

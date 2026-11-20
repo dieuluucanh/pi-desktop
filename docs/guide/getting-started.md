@@ -124,18 +124,18 @@ parallel across projects. See [Sessions and tabs](sessions-and-tabs.md).
 ## Updates
 
 Release builds check GitHub Releases shortly after launch. A newer version
-appears as a small **Update vX** chip in the status bar; the full status,
-**Download** and **Restart & install** live in **Settings → About & updates**.
-`Help → Check for Updates…` opens that card and runs a check on demand. Locally
-built packages skip automatic checks and flag themselves as local builds;
-development builds report that updates are checked in installed builds only.
+raises a notification in the bell (with a **View update** action) and puts a dot
+on **About & updates** in the sidebar, below Diagnostics; the full status,
+**Download** and **Restart & install** live in that view. `Help → Check for
+Updates…` opens it and runs a check on demand. Locally built packages skip
+automatic checks and flag themselves as local builds; development builds report
+that updates are checked in installed builds only.
 
 **On macOS the update is a download, not an in-app install.** Squirrel.Mac only
 accepts an update signed with the same stable code-signing identity as the
-running app, and the current macOS builds are ad-hoc signed, so
-**Settings → About & updates** shows **Manual updates** and links to the Releases
-page. Download the new `.dmg` and replace the app. Windows and the Linux AppImage
-update in place.
+running app, and the current macOS builds are ad-hoc signed, so **About &
+updates** shows **Manual updates** and links to the Releases page. Download the
+new `.dmg` and replace the app. Windows and the Linux AppImage update in place.
 
 ## Where your data lives
 

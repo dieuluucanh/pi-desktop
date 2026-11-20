@@ -2,7 +2,10 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import type { AppInfo, WebTabOpenInput } from "../../../shared/ipc";
 import type { BlobRef, HostMethod } from "../../../shared/host-protocol";
-import { DEFAULT_PREFS, type UiPrefs } from "../../../shared/prefs";
+import { DEFAULT_PREFS, type PackageCheckPrefs, type UiPrefs } from "../../../shared/prefs";
+import { mergeTerminalPrefs, type TerminalPrefs } from "../../../shared/terminal-prefs";
+import { parseWorkflowStatus } from "../../../shared/workflow-mode";
+import type { TodoPanelActionId } from "../../../shared/workflow-todos";
 import {
   findProject,
   projectNameOf,
@@ -22,7 +25,12 @@ import {
   type ProviderLoginEvent,
   type ProviderSummary,
 } from "../../../shared/providers";
-import { normalizeScopePatterns, scopeKeys, scopeStarKeys } from "../../../shared/model-scope";
+import {
+  normalizeScopePatterns,
+  scopeKeys,
+  scopeStarKeys,
+  type ScopeDiagnosticInfo,
+} from "../../../shared/model-scope";
 import { mostRecentSessionTabForFolder, sameFolder } from "../../../shared/rail-scope";
 import {
   assignGridPane,
@@ -37,17 +45,22 @@ import {
 } from "../../../shared/session-grid";
 import type { WorkspaceEntryKind } from "../../../shared/workspace";
 import { workspaceMention } from "../../../shared/workspace-drag";
+import { isExcludedShellCommand, isShellCommand } from "../../../shared/shell-command";
 import { MAX_BLOB_BYTES, MAX_RETAINED_BLOBS, maxRetainedTranscripts } from "./retention";
 import { isTabDragActive } from "./tab-drag-session";
 import type { CustomProviderInput, CustomProviderSummary } from "../../../shared/custom-providers";
 import {
-  isNotificationMuted,
+  appNotificationFromExtension,
+  isNotificationSuppressed,
   muteRuleFor,
   normalizeNotificationText,
+  offerNotifications,
   removeMuteRule,
   removeMutesForNotification,
   shouldCollapseNotification,
   withMuteRule,
+  type AppNotification,
+  type NotificationClass,
   type NotificationMuteScope,
 } from "../../../shared/notifications";
 import {
@@ -73,6 +86,7 @@ import type {
 } from "../../../shared/settings";
 import {
   CONTROL_TAB_ID,
+  SESSION_ASLEEP_MESSAGE,
   hostBackedTabs,
   isHostBackedTab,
   type CreateTabInput,
@@ -129,14 +143,18 @@ import {
   type ExtensionCompletionResult,
   type ExtensionCompletionSuggestions,
   type ExtensionDialogRequest,
-  type ExtensionNotification,
   type ExtensionUiSnapshot,
 } from "../../../shared/extension-ui";
 import {
-  mostRecentSessionForProject,
-  sanitizeSessionList,
+  normalizeSessionListQuery,
+  parseSessionListPage,
+  type SessionListPage,
+  type SessionListQuery,
+  type SessionScope,
+  type SessionSort,
   type SessionSummary,
 } from "../../../shared/session-browser";
+import { findTabBySessionFile } from "../../../shared/session-file";
 import {
   EMPTY_RESOURCES,
   applyResourceOverride,
@@ -149,7 +167,7 @@ import {
   type ResourcesSnapshot,
 } from "../../../shared/resources";
 import type { RecommendedPackage } from "../../../shared/recommended-packages";
-import { notifyToast } from "../extension-ui/notify-toast";
+import { notifyToast } from "../notifications/notify-toast";
 import {
   emptyIntegrationsState,
   officeBridgePackageSource,
@@ -188,13 +206,17 @@ import {
   PACKAGES_CHANGED_EVENT,
   PACKAGE_PROGRESS_EVENT,
   normalizePackageSource,
+  packageUpdateIdentity,
+  packageUpdateSignature,
   pinnedPackageSource,
   sanitizePackageProgress,
   sanitizePackagesSnapshot,
+  sanitizePackageUpdatesSnapshot,
   unpinnedPackageSource,
   type PackageProgressEvent,
   type PackageScope,
   type PackageSummary,
+  type PackageUpdateSummary,
 } from "../../../shared/packages";
 import {
   applyPromptOrigins,
@@ -211,6 +233,14 @@ import type { HostCommandEntry } from "../completion/command-source";
 import type { FileListSnapshot } from "../completion/file-source";
 import { appArgumentItems } from "../completion/app-arguments";
 import { collapsePastes, expandPasteMarkers, pasteMarkerText } from "../session/paste-markers";
+import {
+  MAX_PROMPT_HISTORY,
+  mergePromptHistory,
+  promptHistoryFromTranscript,
+  stepPromptHistory,
+  type PromptHistoryBrowse,
+  type PromptHistoryStep,
+} from "../session/prompt-history";
 import type { CompletionItem, CompletionSource } from "../completion/types";
 import {
   isUnsupportedCommandComplete,
@@ -225,10 +255,20 @@ import {
   toCatalog,
   type ModelCatalogEntry,
 } from "../session/model-catalog";
+import { composerHasFocus, shouldFocusDialog } from "../session/dialog-focus";
+import {
+  defaultModelProblem as defaultModelProblemOf,
+  type DefaultModelProblem,
+} from "../../../shared/model-default";
 import { orderThinkingLevels } from "../../../shared/thinking";
 import { classifyFailure, isOfflineError } from "../../../shared/diagnostics";
 import type { DiagnosticsSnapshot } from "../../../shared/diagnostics";
-import { describeUpdate, sanitizeUpdateState, type UpdateState } from "../../../shared/updates";
+import {
+  describeUpdate,
+  sanitizeUpdateState,
+  type UpdatePrefs,
+  type UpdateState,
+} from "../../../shared/updates";
 import {
   clampRailSplit,
   clampRailWidth,
@@ -255,6 +295,8 @@ import {
   type OnboardingStep,
 } from "../../../shared/onboarding";
 import type { ProfileMode } from "../../../shared/profile";
+import { domKeyToTerminalData, type TerminalKeyInput } from "../../../shared/terminal-keys";
+import { readBlobText, wrapBridgeWithBlobResolution } from "./host-response";
 
 /**
  * The renderer's view state (plan step 1).
@@ -270,7 +312,14 @@ import type { ProfileMode } from "../../../shared/profile";
  */
 
 export type AppView =
-  "welcome" | "session" | "settings" | "extensions" | "connections" | "skills" | "diagnostics";
+  | "welcome"
+  | "session"
+  | "settings"
+  | "extensions"
+  | "connections"
+  | "skills"
+  | "diagnostics"
+  | "updates";
 
 /** How a message sent while the agent is streaming is delivered (plan step 6). */
 export type SendMode = "steer" | "followUp";
@@ -352,6 +401,7 @@ function purgeClosedTabDialogs(openTabs: ReadonlySet<string>): void {
 const TAB_SCOPED_RECORDS = [
   "transcripts",
   "sessionStates",
+  "sessionEpochs",
   "extensionUi",
   "tuiSurfaces",
   "toolsExpanded",
@@ -366,7 +416,8 @@ const TAB_SCOPED_RECORDS = [
   "modelScopeTarget",
   "modelScopeBusy",
   "draftHistory",
-  "historyIndex",
+  "historySeed",
+  "historyBrowse",
   "pasteBodies",
 ] as const;
 
@@ -436,6 +487,7 @@ function boundTranscripts(
     if (retained <= limit) break;
     transcripts[tab.id] = createTranscriptState();
     transcriptHydrating.delete(tab.id);
+    transcriptHydrateNoted.delete(tab.id);
     sessionEnsuring.delete(tab.id);
     retained -= 1;
     changed = true;
@@ -483,6 +535,27 @@ const MAX_CLOSED_TAB_IDS = 100;
  * two reads any more).
  */
 const transcriptHydrating = new Map<string, Promise<void>>();
+/**
+ * Tabs whose hydration failure was already reported. The view retries on every
+ * status change; without this a broken read would toast on each retry.
+ */
+const transcriptHydrateNoted = new Set<string>();
+
+/**
+ * The newest tab-table revision and selection sequence this window has applied
+ * (2026-11-06 tab-switch plan).
+ *
+ * Main is authoritative about facts (tabs, status, session files); the user's
+ * gesture is authoritative about focus. Comparing both counters is what stops a
+ * slow `activate` response, a reordered push, or a background wake from moving
+ * the window to another project's session.
+ */
+let appliedTabsRevision = 0;
+let localSelectionSeq = 0;
+/** `tabId\u0000code\u0000pattern` keys already reported this run (step 11). */
+const reportedScopeDiagnostics = new Set<string>();
+/** The default-model problem already recorded this run (step 12). */
+let reportedDefaultModelProblem: string | null = null;
 /** Last successful interaction-driven activation per tab (throttles keystrokes). */
 const sessionEnsuredAt = new Map<string, number>();
 /** Minimum gap between non-forced ensures; a send/tab switch always forces. */
@@ -491,6 +564,30 @@ export const SESSION_ENSURE_THROTTLE_MS = 2_000;
 const SESSION_RESYNC_THROTTLE_MS = 1_000;
 let lastSessionResyncAt = 0;
 /**
+ * In-flight loader reads (2026-11-07 host-singleton plan).
+ *
+ * Every control-addressed loader was guarded only by a `*Loaded` flag, which is
+ * false until the first response lands. React StrictMode mounts an effect twice
+ * in dev and two surfaces can ask for the same thing at boot, so both callers
+ * passed the check and both issued a host request. Seven of those in one tick
+ * were the concurrent `controlHost()` callers that raced the supervisor into
+ * spawning a host each. Joining the in-flight run keeps it to one request per
+ * resource; a `{ refresh: true }` call joins too (the next call re-reads).
+ */
+const loaderRuns = new Map<string, Promise<unknown>>();
+
+function singleFlight<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const running = loaderRuns.get(key);
+  if (running) return running as Promise<T>;
+  const started = run();
+  loaderRuns.set(key, started);
+  const clear = (): void => {
+    if (loaderRuns.get(key) === started) loaderRuns.delete(key);
+  };
+  void started.then(clear, clear);
+  return started;
+}
+/**
  * The last visible-tab set pushed to main, joined.
  *
  * `syncVisibleTabs` runs from an effect on every layout/pane/focus change, and
@@ -498,6 +595,26 @@ let lastSessionResyncAt = 0;
  * one call per actual change.
  */
 let lastVisibleTabsKey = "";
+/**
+ * Guards the session browser against out-of-order search responses: typing
+ * "alp" then "alpha" must never let the older page win.
+ */
+let sessionBrowserRequestId = 0;
+/**
+ * Session files with a `sessions.create` in flight. The browser dismisses the
+ * instant a row is picked, but the tab table is only pushed once main has
+ * registered it, so a second click can still arrive while the host is opening
+ * (resume takes 24-28 s on a large profile). One host per file is enough; a
+ * duplicate doubles the multi-hundred-MB RSS of the session host.
+ */
+const resumingSessionFiles = new Set<string>();
+/**
+ * Project folders with a `continueMostRecent` lookup in flight. The lookup keeps
+ * the browser on screen (8-13 s measured on a large profile), which is exactly
+ * when the Continue button can be clicked again; two lookups would then race to
+ * resume the same newest row.
+ */
+const continuingCwds = new Set<string>();
 let lastScopeSyncAt = 0;
 export const EDITOR_TEXT_DELAY_MS = 250;
 
@@ -509,6 +626,7 @@ export const APP_VIEWS: readonly AppView[] = [
   "connections",
   "skills",
   "diagnostics",
+  "updates",
 ];
 
 export interface ProjectRef {
@@ -632,6 +750,12 @@ export interface AppStateShape {
   /** Remembered projects, most recent first (plan step 10). */
   projects: ProjectRecord[];
   projectsLoaded: boolean;
+  /**
+   * Whether a tab table has been applied (a read or a push). Loaders that
+   * resolve a control-vs-session target wait for this, so "no active tab yet"
+   * is not mistaken for "there is no session" (2026-11-07 plan).
+   */
+  tabsLoaded: boolean;
   /** Host inspection per project path (git branch, `.pi/`, trust, session dir). */
   projectInspections: Record<string, ProjectInspection>;
   projectInspectionErrors: Record<string, string>;
@@ -676,14 +800,30 @@ export interface AppStateShape {
   transcripts: Record<string, TranscriptState>;
   /** Latest `state.get` snapshot per tab (opaque to the renderer). */
   sessionStates: Record<string, unknown>;
+  /** Monotonic host attachment epoch per tab, used to fence stale event batches. */
+  sessionEpochs: Record<string, number>;
 
   /** Session browser and tree (plan step 11). */
   sessionBrowserOpen: boolean;
   sessionBrowserQuery: string;
+  /** The scope/sort/toggles the dialog shows; the load uses the same values. */
+  sessionBrowserScope: SessionScope;
+  sessionBrowserSort: SessionSort;
+  sessionBrowserNamedOnly: boolean;
+  /** The normalized query that produced `projectSessions`; null until loaded. */
+  projectSessionsQuery: SessionListQuery | null;
   /** Every session of the profile, from the control host's `session.list`. */
   projectSessions: SessionSummary[];
   projectSessionsLoaded: boolean;
   projectSessionsError: string | null;
+  /** A query/regex error is separate from a transport failure. */
+  projectSessionsErrorKind: "host" | "query" | null;
+  projectSessionsSearching: boolean;
+  /** Sessions in the profile and sessions matching the current filters. */
+  projectSessionsTotal: number;
+  projectSessionsMatched: number;
+  /** The host dropped rows to keep the page under its wire budget. */
+  projectSessionsTruncated: boolean;
   /** The session tree of the tab the tree dialog is showing. */
   sessionTreeOpen: boolean;
   sessionTreeTabId: string | null;
@@ -760,21 +900,28 @@ export interface AppStateShape {
   /**
    * Which section of the Extensions hub to reveal after navigation (plan step
    * 19). The Integrations menu item routes here, since Pi for Office has no
-   * primary-navigation surface of its own.
+   * primary-navigation surface of its own; an extension-update notification
+   * routes to the Packages card (plan step 6).
    */
-  extensionsFocus: "integrations" | null;
+  extensionsFocus: "integrations" | "packages" | null;
   /** Opens the Extensions hub on the Integrations card. */
   focusIntegrations: () => void;
+  /** Opens the Extensions hub on the Packages card (the update notification). */
+  openExtensionsView: () => void;
   clearExtensionsFocus: () => void;
-  /** The Settings section to reveal after navigation (About & updates). */
-  settingsFocus: "updates" | null;
-  /** Opens Settings on the About & updates card, optionally starting a check. */
-  openUpdateSettings: (options?: { check?: boolean }) => void;
+  /** The Settings section to reveal after navigation. */
+  settingsFocus: "terminal" | "notifications" | null;
+  /** Opens the About & updates view, optionally starting a check. */
+  openUpdatesView: (options?: { check?: boolean }) => void;
+  /** Opens Settings on the Terminal card. */
+  openTerminalSettings: () => void;
   clearSettingsFocus: () => void;
   openPalette: () => void;
   closePalette: () => void;
   togglePalette: () => void;
   setPrefs: (patch: Partial<UiPrefs>) => void;
+  /** Merges and persists terminal prefs, resolving after main has applied them. */
+  setTerminalPrefs: (patch: Partial<TerminalPrefs>) => Promise<TerminalPrefs>;
   /** Persists a display-zoom level (clamped by the shared helper). */
   setZoomFactor: (factor: number) => void;
   zoomIn: () => void;
@@ -854,7 +1001,12 @@ export interface AppStateShape {
   loadPrefs: () => Promise<void>;
   /** Sessions (plan step 3). */
   loadTabs: () => Promise<void>;
-  applyTabs: (envelope: SessionTabsEnvelope) => void;
+  /**
+   * Applies a tab table. `adoptSelection: false` is the push path: facts are
+   * applied, focus is not (2026-11-06 tab-switch plan). Default is the answer to
+   * an explicit call, which may move the selection.
+   */
+  applyTabs: (envelope: SessionTabsEnvelope, options?: { adoptSelection?: boolean }) => void;
   applySessionEvents: (envelope: SessionEventEnvelope) => void;
   applySessionState: (envelope: SessionStateEnvelope) => void;
   /** Loads history from `messages.get` once per tab (plan step 5). */
@@ -863,13 +1015,30 @@ export interface AppStateShape {
   abortTab: (tabId: string) => Promise<void>;
   /** Stops and re-spawns a tab's host, resuming its session (plan step 22). */
   restartTab: (tabId: string) => Promise<void>;
+  /**
+   * Cancels an in-flight start: stops the host and leaves the tab `stopped`.
+   * The session file is untouched, so activating the tab resumes it.
+   */
+  cancelSession: (tabId: string) => Promise<void>;
   /** Drops a tab's transcript so the next hydrate rebuilds it (branch navigation). */
   resetTranscript: (tabId: string) => void;
 
   /** Composer (plan step 6). */
   draftHistory: Record<string, string[]>;
-  /** Where the user is browsing history for a tab (-1 = the live draft). */
-  historyIndex: Record<string, number>;
+  /**
+   * Prompts rebuilt from the hydrated transcript, newest first (2026-11-07
+   * restart plan). `historyStep` walks this merged below `draftHistory`, so a
+   * resumed session recalls its old prompts exactly like terminal Pi.
+   * Renderer only; never persisted.
+   */
+  historySeed: Record<string, string[]>;
+  /**
+   * Where the user is browsing a tab's sent prompts (2026-11-07 prompt-history
+   * plan). Absence means the composer shows the live draft; the record also
+   * stashes that draft and its caret so walking back restores them. Renderer
+   * only; never persisted.
+   */
+  historyBrowse: Record<string, PromptHistoryBrowse>;
   setDraft: (tabId: string, text: string) => void;
   sendPrompt: (
     tabId: string,
@@ -892,7 +1061,11 @@ export interface AppStateShape {
   clearQueue: (tabId: string) => Promise<void>;
   abortRetry: (tabId: string) => Promise<void>;
   abortCompaction: (tabId: string) => Promise<void>;
-  historyStep: (tabId: string, direction: 1 | -1) => string | null;
+  /**
+   * Steps a tab's prompt history. The store writes the returned text (the
+   * preview or the restored draft); the composer only places the caret.
+   */
+  historyStep: (tabId: string, direction: 1 | -1, caret?: number) => PromptHistoryStep;
 
   /** Completion engine (plan step 7). */
   completionCommands: Record<string, HostCommandEntry[]>;
@@ -923,6 +1096,26 @@ export interface AppStateShape {
     text: string,
     options?: { preferredSource?: CompletionSource; mode?: SendMode; images?: PromptImage[] },
   ) => Promise<CommandOutcome>;
+  /**
+   * Runs one Review command (`/review-pause`, `/review-resume`,
+   * `/review-abort`) from the Review bar. It never calls `setDraft`: unlike a
+   * typed command, a button press must not clear the draft the user is
+   * keeping for after the review (2026-11-14 review-mode-isolation step 13).
+   */
+  runReviewCommand: (tabId: string, name: string) => Promise<boolean>;
+  /**
+   * Runs one extension command directly in the host. Used by the Review bar and
+   * the todo bar; it never clears or injects a draft. `missing` means the host
+   * answered but has no such command; `unavailable` means the request itself
+   * failed (an older host).
+   */
+  runExtensionCommand: (
+    tabId: string,
+    name: string,
+    args: string,
+  ) => Promise<ExtensionCommandOutcome>;
+  /** Runs `/todos <action>` and turns a failure into a precise hint. */
+  runTodoPanelAction: (tabId: string, action: TodoPanelActionId) => Promise<boolean>;
 
   /** Model, thinking and usage UX (plan step 8). */
   modelCatalog: Record<string, ModelCatalogEntry[]>;
@@ -932,6 +1125,19 @@ export interface AppStateShape {
   modelScope: Record<string, string[]>;
   /** Persisted patterns behind each tab's stars. */
   modelScopePatterns: Record<string, string[]>;
+  /**
+   * Warnings Pi's resolver produced for those patterns (invalid thinking level,
+   * unrepresentable id, no match). Shown in the picker instead of being dropped
+   * (2026-11-06 plan, step 11).
+   */
+  modelScopeDiagnostics: Record<string, ScopeDiagnosticInfo[]>;
+  /**
+   * The saved default names a model the catalogue does not contain, so a new
+   * session will start on another one. Visible in the picker, recorded once
+   * (2026-11-06 plan, step 12).
+   */
+  defaultModelProblem: DefaultModelProblem | null;
+  noteDefaultModelProblem: (problem: DefaultModelProblem | null) => void;
   /** The project toggle's write target for each tab. */
   modelScopeTarget: Record<string, "global" | "project">;
   /** The model key a star toggle is currently writing, per tab. */
@@ -950,7 +1156,7 @@ export interface AppStateShape {
   /** Applies a host/model-scope snapshot to one tab. */
   setModelScopeSnapshot: (
     tabId: string,
-    payload: { enabledModels?: unknown; scoped?: unknown },
+    payload: { enabledModels?: unknown; scoped?: unknown; diagnostics?: unknown },
   ) => void;
   setModel: (
     tabId: string,
@@ -1115,8 +1321,18 @@ export interface AppStateShape {
   installUpdate: () => Promise<void>;
   /** Clears a no-feed/error notice without discarding an offer or download. */
   clearUpdateProblem: () => Promise<void>;
-  /** Hides the status-bar chip for the currently offered version. */
-  dismissUpdateNotification: () => void;
+  /** Merges a partial updater preference without dropping the other fields. */
+  setUpdatePrefs: (patch: Partial<UpdatePrefs>) => void;
+  /**
+   * Toasts each derived offer once per profile. The rows themselves are state
+   * (`currentOffers`), never stored, so this is the only side effect of a new
+   * offer arriving.
+   */
+  announceNotificationOffers: () => void;
+  /** Clears both markers and announces the current app-update offer again. */
+  restoreUpdateNotification: () => void;
+  /** Clears both markers for the extension-update set (Packages “Notify me again”). */
+  restorePackageUpdateOffer: () => void;
   /**
    * Bodies of spilled large payloads, fetched on demand and cached by blob path
    * (plan step 24). A 50 MB tool result never crosses the event frame; it is
@@ -1293,10 +1509,16 @@ export interface AppStateShape {
   /** Opens a page in a web tab, reusing an existing tab for the same URL. */
   openWebTab: (input: WebTabOpenInput) => Promise<boolean>;
   /**
-   * Opens a loopback URL a notification or tool result mentioned (plan step 21),
-   * without stealing focus from a tab that already shows it.
+   * Opens a loopback URL a notification or tool result mentioned (plan step 21).
+   * Notification URLs focus (a review is the common case); tool-result URLs
+   * stay in the background. An existing same-URL tab is reloaded for a focus
+   * request, never duplicated.
    */
-  openLoopbackUrl: (url: string, sessionTabId: string | null) => void;
+  openLoopbackUrl: (
+    url: string,
+    sessionTabId: string | null,
+    options?: { focus?: boolean },
+  ) => void;
   /** Runs a chrome command against a web tab. */
   webCommand: (tabId: string, command: WebCommand) => void;
   /** Records the rectangle the native view occupies; fire-and-forget. */
@@ -1337,6 +1559,23 @@ export interface AppStateShape {
   pinPackage: (summary: PackageSummary, cwd?: string | null) => void;
   /** Reinstall floating on latest (npm only); opens the consent dialog. */
   unpinPackage: (summary: PackageSummary, cwd?: string | null) => void;
+
+  /** The last available-update sweep (plan step 5). */
+  packageUpdates: PackageUpdateSummary[];
+  packageUpdatesCheckedAt: number | null;
+  packageUpdatesBusy: boolean;
+  /** Why the last sweep failed; the previous list is deliberately kept. */
+  packageUpdatesError: string | null;
+  packageUpdatesOffline: boolean;
+  /** True when this host has no package manager, so checks cannot run at all. */
+  packageUpdatesUnavailable: boolean;
+  packageUpdatesCwd: string | null;
+  /** When a package mutation last succeeded, so the UI can offer a reload. */
+  packagesMutatedAt: number | null;
+  /** Sweeps the configured packages; `force` skips the host's 60 s cache. */
+  checkPackageUpdates: (options?: { force?: boolean; automatic?: boolean }) => Promise<void>;
+  setPackageCheckPrefs: (patch: Partial<PackageCheckPrefs>) => void;
+  dismissPackageReloadHint: () => void;
 
   /** Themes (plan step 15): the catalogue with the active theme marked. */
   themes: ThemesSnapshot;
@@ -1391,10 +1630,21 @@ export interface AppStateShape {
   extensionUi: Record<string, ExtensionUiSnapshot>;
   /** Dialogs waiting for an answer, oldest first. */
   extensionDialogs: ExtensionDialogRequest[];
-  /** Notification history (the toast centre's backing list). */
-  extensionNotifications: ExtensionNotification[];
+  /**
+   * Tabs whose extension asked for input while the user was elsewhere. The tab
+   * chip shows a dot until the tab is activated (2026-11-06 tab-switch plan).
+   */
+  dialogAttention: Record<string, boolean>;
+  markDialogAttention: (tabId: string) => void;
+  clearDialogAttention: (tabId: string) => void;
+  /**
+   * The unified notification archive: extension `oi.notify` arrivals plus the
+   * app's own update offer. Suppressed classes/rules stay here so `Show hidden`
+   * can recover them.
+   */
+  notifications: AppNotification[];
   /** The notification the Mute dialog is configuring, or null. */
-  muteTarget: ExtensionNotification | null;
+  muteTarget: AppNotification | null;
   /**
    * Last time an identical notification was seen per tab, keyed by
    * `tabId\u0000type\u0000normalizedMessage`. Ephemeral: it only decides whether a
@@ -1410,14 +1660,27 @@ export interface AppStateShape {
     dialog: ExtensionDialogRequest,
     answer: { value?: string; confirmed?: boolean; cancelled?: boolean },
   ) => Promise<void>;
-  clearExtensionNotifications: () => void;
+  /**
+   * Empties the archive and the repeat cooldowns, and persists a dismissal for
+   * every live offer (the popover's Clear).
+   */
+  clearNotifications: () => void;
+  /**
+   * Removes one row (the popover's per-row ×). An offer id writes its dismissal
+   * marker; an archived extension row is filtered out of the archive.
+   */
+  dismissNotification: (id: string) => void;
+  /** Turns one notification class on or off. */
+  setNotificationClass: (klass: NotificationClass, enabled: boolean) => void;
+  /** Opens Settings focused on the Notifications card. */
+  openNotificationSettings: () => void;
   /** Opens/closes the Mute dialog for one notification. */
-  openMuteDialog: (notification: ExtensionNotification) => void;
+  openMuteDialog: (notification: AppNotification) => void;
   closeMuteDialog: () => void;
   /** Saves an exact/template/type mute rule and closes the dialog. */
-  muteNotification: (notification: ExtensionNotification, scope: NotificationMuteScope) => void;
+  muteNotification: (notification: AppNotification, scope: NotificationMuteScope) => void;
   /** Removes every rule that silences this notification (history Unmute). */
-  unmuteNotification: (notification: ExtensionNotification) => void;
+  unmuteNotification: (notification: AppNotification) => void;
   /** Removes one persisted rule by id (Settings card). */
   unmuteNotificationRule: (ruleId: string) => void;
   /** Removes every muted notification rule (Settings card). */
@@ -1445,8 +1708,21 @@ export interface AppStateShape {
   loadTuiSurface: (tabId: string) => Promise<void>;
   /** Reports the renderer's measured grid so overlays re-resolve. */
   resizeTuiSurface: (tabId: string, rows: number, cols: number) => void;
-  /** Sends raw terminal bytes to the tab's focused component. */
-  sendTuiInput: (tabId: string, data: string) => void;
+  /**
+   * Sends raw terminal bytes to the tab's focused component and resolves with
+   * whether the host reports them **consumed** (plan step 22). Escape's fallback
+   * depends on this: a consumed key must not also stop the run.
+   */
+  sendTuiInput: (tabId: string, data: string) => Promise<boolean>;
+  /**
+   * The Escape/interrupt path (plan steps 22-24): forwards the key to the host's
+   * extension input handlers first and stops the run only when nothing consumed
+   * it. Non-session, non-running tabs are untouched; a repeated press within the
+   * dedupe window is ignored. `key` lets a remapped `app.interrupt` chord be
+   * forwarded; a chord with no terminal encoding is not forwarded at all (it
+   * falls straight through to `stopRun` — Escape is the parity case).
+   */
+  interruptRun: (tabId: string, key?: TerminalKeyInput) => Promise<void>;
 
   /**
    * Extension-owned renderers (plan step 18). `extensionRender` runs a
@@ -1469,7 +1745,7 @@ export interface AppStateShape {
   /** Flips expand-all for a tab and mirrors it to `ctx.ui.getToolsExpanded()`. */
   toggleToolsExpanded: (tabId: string) => void;
 
-  createSessionTab: (kind?: TabKind) => Promise<void>;
+  createSessionTab: (kind?: TabKind, options?: { profileId?: string }) => Promise<void>;
   activateTab: (tabId: string) => Promise<void>;
 
   /** The session view grid (2026-11-03 plan): preset, panes, focus and solo. */
@@ -1528,7 +1804,10 @@ export interface AppStateShape {
   openSessionBrowser: () => Promise<void>;
   closeSessionBrowser: () => void;
   setSessionBrowserQuery: (query: string) => void;
-  loadProjectSessions: (options?: { refresh?: boolean }) => Promise<SessionSummary[]>;
+  setSessionBrowserScope: (scope: SessionScope) => void;
+  setSessionBrowserSort: (sort: SessionSort) => void;
+  setSessionBrowserNamedOnly: (namedOnly: boolean) => void;
+  loadProjectSessions: (options?: SessionListQuery) => Promise<SessionSummary[]>;
   /** Resume a listed session in a new tab and focus it. */
   resumeSession: (session: SessionSummary) => Promise<void>;
   /** Continue the newest session of a project. */
@@ -1675,6 +1954,9 @@ export interface CommandOutcome {
   sent: boolean;
 }
 
+/** One direct `commands.run` attempt. */
+export type ExtensionCommandOutcome = "ran" | "missing" | "unavailable";
+
 /** Which model/thinking dialog is open (plan step 8). */
 export type PickerKind = "model" | "thinking";
 
@@ -1716,11 +1998,125 @@ export interface PackageConsentRequest {
 }
 
 function bridge(): Window["pi"] | undefined {
-  return typeof window === "undefined" ? undefined : window.pi;
+  if (typeof window === "undefined" || !window.pi) return undefined;
+  // One wrapper per preload bridge: every host response resolves its BlobRef.
+  return wrapBridgeWithBlobResolution(window.pi);
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The host's typed error code, when it carried one. */
+function errorCode(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && code.length > 0 ? code : null;
+}
+
+/**
+ * Drops the update entries a successful mutation just made obsolete.
+ *
+ * `null` means "every package" (update-all, or a removal whose source we no
+ * longer have); otherwise the entry whose identity matches — the identity
+ * ignores the version, so pinning `npm:foo` also clears `npm:foo@1.2.3`.
+ */
+function dropPackageUpdates(
+  updates: PackageUpdateSummary[],
+  source: string | null,
+): PackageUpdateSummary[] {
+  if (source === null) return [];
+  const identity = packageUpdateIdentity({ source });
+  return updates.filter((entry) => packageUpdateIdentity(entry) !== identity);
+}
+
+/**
+ * The app-owned offers that describe the current state. There is deliberately no
+ * stored copy: every surface renders this derivation, so an offer row cannot
+ * outlive the condition it reports (see `offerNotifications`).
+ */
+function currentOffers(state: {
+  prefsLoaded: boolean;
+  prefs: UiPrefs;
+  update: UpdateState | null;
+  packageUpdates: PackageUpdateSummary[];
+  packageUpdatesCheckedAt: number | null;
+}): AppNotification[] {
+  return offerNotifications({
+    prefsLoaded: state.prefsLoaded,
+    prefs: state.prefs.notifications,
+    update: state.update,
+    packageUpdates: state.packageUpdates,
+    packageUpdatesCheckedAt: state.packageUpdatesCheckedAt,
+    dismissedVersion: state.prefs.updates.dismissedVersion,
+    dismissedSignature: state.prefs.packages.dismissedSignature,
+  });
+}
+
+/** True for the main process's "this tab is asleep" refusal. */
+function isSessionAsleepError(error: unknown): boolean {
+  return errorMessage(error).includes(SESSION_ASLEEP_MESSAGE);
+}
+
+const STALE_EXTENSION_CONTEXT = "This extension ctx is stale after session replacement or reload.";
+
+/** Repeat presses inside this window are one interrupt, not two (plan step 22). */
+export const INTERRUPT_DEDUPE_MS = 400;
+/** How long the renderer waits for `tui.input` before treating it as unconsumed. */
+export const INTERRUPT_TIMEOUT_MS = 400;
+/** Last accepted interrupt per tab, for the dedupe window. */
+const lastInterruptAt = new Map<string, number>();
+
+/**
+ * Resolves with `promise`, or with `fallback` once `ms` elapses. The Escape
+ * path must never hang: an unanswered host falls through to the normal stop.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(fallback);
+    }, ms);
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(fallback);
+      },
+    );
+  });
+}
+
+/** The SDK's expected invalidation error, not a new extension bug. */
+function isStaleExtensionContextError(entry: SessionEventEntry): boolean {
+  if (entry.event !== "extension_error") return false;
+  const payload = entry.payload as { error?: unknown } | undefined;
+  return typeof payload?.error === "string" && payload.error.includes(STALE_EXTENSION_CONTEXT);
+}
+
+/** Drops every extension-owned fact for a tab before its replacement attaches. */
+function clearTabSessionUi(state: AppStateShape, tabId: string): Partial<AppStateShape> {
+  const drop = <T>(record: Record<string, T>): Record<string, T> => {
+    const next = { ...record };
+    delete next[tabId];
+    return next;
+  };
+  return {
+    extensionUi: drop(state.extensionUi),
+    tuiSurfaces: drop(state.tuiSurfaces),
+    toolsExpanded: drop(state.toolsExpanded),
+    staleHosts: drop(state.staleHosts),
+    dialogAttention: drop(state.dialogAttention),
+    extensionDialogs: state.extensionDialogs.filter((dialog) => dialog.tabId !== tabId),
+  };
 }
 
 /** Electron wraps a rejected `ipcRenderer.invoke` in this prefix. */
@@ -1800,21 +2196,112 @@ const EXTENSION_UI_EVENTS = new Set<string>([
 ]);
 
 /** The per-tab identity used to suppress a repeated toast. */
-function notificationCooldownKey(tabId: string, notification: ExtensionNotification): string {
-  return `${tabId}\u0000${notification.type}\u0000${normalizeNotificationText(notification.message)}`;
+function notificationCooldownKey(notification: AppNotification): string {
+  return `${notification.tabId ?? "app"}\u0000${notification.type}\u0000${normalizeNotificationText(
+    notification.message,
+  )}`;
 }
 
-/** Records one executed send in the draft history, exactly once. */
+/**
+ * The draft that belongs to the user for a tab. While a history preview is on
+ * screen the stashed draft wins: a recall is a view, never the user's unfinished
+ * prompt (2026-11-07 prompt-history plan, D7).
+ */
+function liveDraftOf(state: AppStateShape, tabId: string): string {
+  return state.historyBrowse[tabId]?.draftText ?? state.prefs.drafts[tabId] ?? "";
+}
+
+/** The whole draft map with every browsing tab's stashed draft substituted. */
+function draftsForPersist(state: AppStateShape): Record<string, string> {
+  const drafts = { ...state.prefs.drafts };
+  for (const [tabId, browse] of Object.entries(state.historyBrowse)) {
+    drafts[tabId] = browse.draftText;
+  }
+  return drafts;
+}
+
+/**
+ * Writes the composer's visible text: state, the debounced prefs persist and
+ * the host mirror. It never touches prompt-history state. The public `setDraft`
+ * exits a history browse first (pi-tui's `setText`), while `historyStep` writes
+ * a preview through here (pi-tui's `setTextInternal`).
+ */
+function writeComposerDraft(tabId: string, text: string): void {
+  const current = useAppStore.getState();
+  const drafts = { ...current.prefs.drafts, [tabId]: text };
+  useAppStore.setState({ prefs: { ...current.prefs, drafts } });
+  if (draftPersistTimer) clearTimeout(draftPersistTimer);
+  draftPersistTimer = setTimeout(() => {
+    draftPersistTimer = null;
+    // A preview is on screen during a history walk; persist the stashed draft,
+    // not the recalled prompt the user is only looking at.
+    void bridge()?.prefs.set({ drafts: draftsForPersist(useAppStore.getState()) });
+  }, DRAFT_PERSIST_DELAY_MS);
+  // Mirror the composer back to the host so `ctx.ui.getEditorText()` is
+  // truthful (plan step 16). Debounced per tab, never per keystroke.
+  const pending = editorTextTimers.get(tabId);
+  if (pending) clearTimeout(pending);
+  editorTextTimers.set(
+    tabId,
+    setTimeout(() => {
+      editorTextTimers.delete(tabId);
+      // The host's `getEditorText()` must see the body, not the marker
+      // (plan step 20, D15: the textarea is the display) and, while browsing, it
+      // must see the stashed draft rather than the preview.
+      const state = useAppStore.getState();
+      state.reportEditorText(tabId, state.expandPastes(tabId, liveDraftOf(state, tabId)));
+    }, EDITOR_TEXT_DELAY_MS),
+  );
+}
+
+/**
+ * Leaves history mode without writing the draft (pi-tui's
+ * `exitHistoryBrowsing`). A real write calls this first; a history step must
+ * not, or it would drop the browse record it just set.
+ */
+function exitHistoryBrowsing(tabId: string): void {
+  const browse = useAppStore.getState().historyBrowse;
+  if (!browse[tabId]) return;
+  useAppStore.setState({ historyBrowse: omitKey(browse, tabId) });
+}
+
+/**
+ * Records one executed send in the tab's prompt history, matching pi-tui's
+ * `addToHistory` (`editor.js:308-319`): empty text is ignored, a prompt
+ * identical to the newest entry is not duplicated, and the list is capped.
+ * Submitting always ends a history browse (pi-tui's `submitValue` calls
+ * `exitHistoryBrowsing` before clearing the editor).
+ */
 function rememberDraft(tabId: string, text: string): void {
   const trimmed = text.trim();
-  const history = useAppStore.getState().draftHistory[tabId] ?? [];
+  const state = useAppStore.getState();
+  const historyBrowse = state.historyBrowse[tabId]
+    ? omitKey(state.historyBrowse, tabId)
+    : state.historyBrowse;
+  if (trimmed.length === 0) {
+    if (historyBrowse !== state.historyBrowse) useAppStore.setState({ historyBrowse });
+    return;
+  }
+  const history = state.draftHistory[tabId] ?? [];
+  const next =
+    history[0] === trimmed ? history : [trimmed, ...history].slice(0, MAX_PROMPT_HISTORY);
   useAppStore.setState({
-    draftHistory: {
-      ...useAppStore.getState().draftHistory,
-      [tabId]: [trimmed, ...history].slice(0, 50),
-    },
-    historyIndex: { ...useAppStore.getState().historyIndex, [tabId]: -1 },
+    draftHistory: { ...state.draftHistory, [tabId]: next },
+    historyBrowse,
   });
+}
+
+/**
+ * The session-derived prompt history for a tab, newest first. Terminal Pi
+ * rebuilds its editor history from the rendered user messages on every resume
+ * (`interactive-mode.js:3264-3266`); this is the same read over the desktop's
+ * hydrated transcript. `historyStep` merges it below the live prompts.
+ */
+function promptHistorySeed(transcript: TranscriptState | undefined): string[] {
+  if (!transcript?.hydrated) return [];
+  return promptHistoryFromTranscript(
+    transcript.items.flatMap((item) => (item.kind === "message" ? [item.message] : [])),
+  );
 }
 
 /**
@@ -1882,6 +2369,30 @@ function packageCwd(state: AppStateShape): string | null {
   return state.project?.path ?? active?.cwd ?? null;
 }
 
+/** One `session.list` round trip; callers decide whether it updates the dialog. */
+async function requestSessionPage(
+  api: NonNullable<Window["pi"]>,
+  query: SessionListQuery,
+  options: { refresh?: boolean } = {},
+): Promise<SessionListPage> {
+  const normalized = normalizeSessionListQuery(query);
+  const params: Record<string, unknown> = {
+    query: normalized.query,
+    scope: normalized.scope,
+    sort: normalized.sort,
+    namedOnly: normalized.namedOnly,
+  };
+  if (normalized.cwd !== null) params.cwd = normalized.cwd;
+  if (normalized.limit !== undefined) params.limit = normalized.limit;
+  if (options.refresh === true) params.refresh = true;
+  const response = await api.sessions.request({
+    tabId: CONTROL_TAB_ID,
+    method: "session.list",
+    params,
+  });
+  return parseSessionListPage(response);
+}
+
 export const useAppStore = create<AppStateShape>()((set, get) => ({
   view: "welcome",
   project: null,
@@ -1905,15 +2416,26 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   offlineNotice: null,
   staleHosts: {},
   tabs: [],
+  tabsLoaded: false,
   activeTabId: null,
   panePickerTarget: null,
   transcripts: {},
   sessionStates: {},
+  sessionEpochs: {},
   sessionBrowserOpen: false,
   sessionBrowserQuery: "",
+  sessionBrowserScope: "all",
+  sessionBrowserSort: "recent",
+  sessionBrowserNamedOnly: false,
+  projectSessionsQuery: null,
   projectSessions: [],
   projectSessionsLoaded: false,
   projectSessionsError: null,
+  projectSessionsErrorKind: null,
+  projectSessionsSearching: false,
+  projectSessionsTotal: 0,
+  projectSessionsMatched: 0,
+  projectSessionsTruncated: false,
   sessionTreeOpen: false,
   sessionTreeTabId: null,
   sessionTree: null,
@@ -1945,7 +2467,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   sessionInfoData: null,
   sessionInfoError: null,
   draftHistory: {},
-  historyIndex: {},
+  historySeed: {},
+  historyBrowse: {},
   completionCommands: {},
   completionFiles: {},
   modelCatalog: {},
@@ -1953,6 +2476,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   thinkingLevels: {},
   modelScope: {},
   modelScopePatterns: {},
+  modelScopeDiagnostics: {},
+  defaultModelProblem: null,
   modelScopeTarget: {},
   modelScopeBusy: {},
   picker: null,
@@ -1991,6 +2516,14 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   packagesCwd: null,
   packageProgress: null,
   packageConsent: null,
+  packageUpdates: [],
+  packageUpdatesCheckedAt: null,
+  packageUpdatesBusy: false,
+  packageUpdatesError: null,
+  packageUpdatesOffline: false,
+  packageUpdatesUnavailable: false,
+  packageUpdatesCwd: null,
+  packagesMutatedAt: null,
   integrations: emptyIntegrationsState(),
   integrationsLoaded: false,
   officeDocuments: null,
@@ -2031,7 +2564,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   shortcutsHelpOpen: false,
   extensionUi: {},
   extensionDialogs: [],
-  extensionNotifications: [],
+  dialogAttention: {},
+  notifications: [],
   muteTarget: null,
   notificationCooldowns: {},
   tuiSurfaces: {},
@@ -2047,11 +2581,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       ...(view === "settings" ? {} : { settingsFocus: null }),
     }),
   focusIntegrations: () => set({ view: "extensions", extensionsFocus: "integrations", hint: null }),
+  openExtensionsView: () => set({ view: "extensions", extensionsFocus: "packages", hint: null }),
   clearExtensionsFocus: () => set({ extensionsFocus: null }),
-  openUpdateSettings: (options) => {
-    set({ view: "settings", settingsFocus: "updates", hint: null });
+  openUpdatesView: (options) => {
+    set({ view: "updates", hint: null });
     if (options?.check) void get().checkForUpdates();
   },
+  openTerminalSettings: () => set({ view: "settings", settingsFocus: "terminal", hint: null }),
   clearSettingsFocus: () => set({ settingsFocus: null }),
   openPalette: () => set({ paletteOpen: true }),
   closePalette: () => set({ paletteOpen: false }),
@@ -2061,6 +2597,21 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const prefs = { ...get().prefs, ...patch };
     set({ prefs });
     void bridge()?.prefs.set(patch);
+  },
+
+  setTerminalPrefs: async (patch) => {
+    const terminal = mergeTerminalPrefs(get().prefs.terminal, patch);
+    set({ prefs: { ...get().prefs, terminal } });
+    const api = bridge();
+    if (!api?.prefs) return terminal;
+    try {
+      const saved = await api.prefs.set({ terminal });
+      set({ prefs: saved });
+      return saved.terminal;
+    } catch (error) {
+      get().noteFailure(error);
+      return get().prefs.terminal;
+    }
   },
 
   setZoomFactor: (factor) => get().setPrefs({ zoomFactor: clampZoomFactor(factor) }),
@@ -2174,7 +2725,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     set({ activeTabId: null });
     if (!api?.sessions || activeId === null) return;
     try {
-      get().applyTabs(await api.sessions.deactivate());
+      get().applyTabs(await api.sessions.deactivate(), { adoptSelection: true });
     } catch (error) {
       // Losing a cleared selection is harmless; the tabs themselves are intact.
       get().noteFailure(error);
@@ -2188,7 +2739,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // Close first so the tab table and the project list never disagree. Main
       // also closes on removal as defense in depth, so this second close is a
       // no-op for a caller that already did it.
-      get().applyTabs(await api.sessions.closeProject(path));
+      get().applyTabs(await api.sessions.closeProject(path), { adoptSelection: true });
     } catch (error) {
       get().noteFailure(error);
       return false;
@@ -2481,6 +3032,23 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   clearOffline: () => set({ offlineNotice: null }),
 
+  noteDefaultModelProblem: (problem) => {
+    set({ defaultModelProblem: problem });
+    if (!problem) return;
+    const key = `${problem.provider}\u0000${problem.id}`;
+    if (reportedDefaultModelProblem === key) return;
+    reportedDefaultModelProblem = key;
+    // One line in Diagnostics: the next session is going to start somewhere the
+    // user did not choose, and the fix is a pick, not a log hunt.
+    void bridge()
+      ?.diagnostics?.record({
+        kind: "bad_request",
+        message: problem.message,
+        detail: `defaultModel: ${problem.provider}/${problem.id}`,
+      })
+      .catch(() => undefined);
+  },
+
   noteStaleHost: (tabId) => {
     if (get().staleHosts[tabId]) return;
     set({ staleHosts: { ...get().staleHosts, [tabId]: HOST_STALE_MESSAGE } });
@@ -2505,6 +3073,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api) {
       set({ prefsLoaded: true });
+      get().announceNotificationOffers();
       return;
     }
     try {
@@ -2514,32 +3083,60 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // history load independently). Re-annotate it, so a reopened command
       // prompt is collapsed without fetching history again.
       if (Object.keys(prefs.promptOrigins).length > 0) {
-        set((state) => ({
-          transcripts: Object.fromEntries(
+        set((state) => {
+          const transcripts = Object.fromEntries(
             Object.entries(state.transcripts).map(([tabId, transcript]) => [
               tabId,
               applyPromptOrigins(transcript, prefs.promptOrigins),
             ]),
-          ),
-        }));
+          );
+          // A command prompt seeded before prefs arrived holds its expanded
+          // body; rebuild from the annotated transcript so Up shows the command.
+          const historySeed = { ...state.historySeed };
+          for (const [tabId, transcript] of Object.entries(transcripts)) {
+            if (transcript.hydrated) historySeed[tabId] = promptHistorySeed(transcript);
+          }
+          return { transcripts, historySeed };
+        });
       }
     } catch {
       set({ prefsLoaded: true });
     }
+    // The updater state can arrive before the stored prefs (and the class
+    // defaults); now that the loaded prefs are in place, announce the offers once.
+    get().announceNotificationOffers();
   },
 
-  loadTabs: async () => {
-    const api = bridge();
-    if (!api?.sessions) return;
-    try {
-      get().applyTabs(await api.sessions.list());
-    } catch {
-      // Reading the tab table must never break the shell.
-    }
-  },
+  loadTabs: () =>
+    singleFlight("tabs", async () => {
+      const api = bridge();
+      if (!api?.sessions) return;
+      try {
+        get().applyTabs(await api.sessions.list(), { adoptSelection: true });
+      } catch {
+        // Reading the tab table must never break the shell.
+      } finally {
+        // The read happened even when the table was unchanged (the early return
+        // in `applyTabs`) or failed; the loaders gate on this, so it must settle
+        // after one attempt rather than making every loader re-issue `list`.
+        if (!get().tabsLoaded) set({ tabsLoaded: true });
+      }
+    }),
 
-  applyTabs: (envelope) => {
+  applyTabs: (envelope, options) => {
     const state = get();
+    // Ignore a push that predates the newest table we have already applied.
+    const revision = typeof envelope.revision === "number" ? envelope.revision : null;
+    if (revision !== null && revision < appliedTabsRevision) return;
+    if (revision !== null) appliedTabsRevision = revision;
+    // Only the answer to an explicit selection call may move the window. A
+    // background push (a state frame, a resync, a wake) updates facts and never
+    // focus, which is what makes "the app jumped by itself" structurally
+    // impossible rather than a race to get right (2026-11-06 tab-switch plan).
+    const selectionSeq = typeof envelope.selectionSeq === "number" ? envelope.selectionSeq : null;
+    const adoptSelection =
+      options?.adoptSelection !== false &&
+      (selectionSeq === null || selectionSeq >= localSelectionSeq);
     // Main sends a deep copy of the whole table on every publish (including
     // every session state frame). Reusing a record whose fields did not change
     // keeps the editor's mount effect from re-reading the file just because a
@@ -2551,6 +3148,14 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return before && sameTabRecord(before, next) ? before : next;
     });
     const ids = new Set(tabs.map((tab) => tab.id));
+    // A background push must not move the window, but it must not leave the
+    // renderer on a tab that no longer exists either: staying on the dead id
+    // renders Welcome even though main has already chosen the next tab. Adopt
+    // main's id only in that case; a still-present user selection and a
+    // deliberately cleared one (null) stay untouched.
+    const currentGone = state.activeTabId !== null && !ids.has(state.activeTabId);
+    const effectiveActiveTabId =
+      adoptSelection || currentGone ? envelope.activeTabId : state.activeTabId;
     const closedIds: string[] = [];
     for (const tab of state.tabs) {
       if (ids.has(tab.id)) continue;
@@ -2559,6 +3164,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       sessionEnsuredAt.delete(tab.id);
       sessionEnsuring.delete(tab.id);
       transcriptHydrating.delete(tab.id);
+      transcriptHydrateNoted.delete(tab.id);
     }
     for (const id of ids) closedTabIds.delete(id);
     while (closedTabIds.size > MAX_CLOSED_TAB_IDS) {
@@ -2588,13 +3194,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const visibleIds = visibleGridTabIds({
       layout: nextGrid.layout,
       panes: nextGrid.panes,
-      activeTabId: envelope.activeTabId,
+      activeTabId: effectiveActiveTabId,
     });
     const pruned = pruneClosedTabRecords(state, ids);
     const bounded = boundTranscripts(
       pruned?.transcripts ?? state.transcripts,
       tabs,
-      envelope.activeTabId,
+      effectiveActiveTabId,
       visibleIds,
     );
     const hasCachePatch = pruned !== null || bounded !== null || gridChanged;
@@ -2606,7 +3212,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (removed) purgeClosedTabDialogs(ids);
     const prompt = state.webNavigationPrompt;
     const unchanged =
-      envelope.activeTabId === state.activeTabId &&
+      effectiveActiveTabId === state.activeTabId &&
       tabs.length === state.tabs.length &&
       tabs.every((tab, index) => tab === state.tabs[index]) &&
       // A prompt for a tab that no longer exists must still be cleared even when
@@ -2629,11 +3235,24 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     );
     set({
       tabs,
-      activeTabId: envelope.activeTabId,
+      tabsLoaded: true,
+      activeTabId: effectiveActiveTabId,
       webTabStates,
       ...cachePatch,
       ...(prompt && !ids.has(prompt.tabId) ? { webNavigationPrompt: null } : {}),
     });
+  },
+
+  markDialogAttention: (tabId) => {
+    if (get().dialogAttention[tabId] === true) return;
+    set({ dialogAttention: { ...get().dialogAttention, [tabId]: true } });
+  },
+
+  clearDialogAttention: (tabId) => {
+    if (get().dialogAttention[tabId] !== true) return;
+    const next = { ...get().dialogAttention };
+    delete next[tabId];
+    set({ dialogAttention: next });
   },
 
   applySessionEvents: (envelope) => {
@@ -2643,6 +3262,22 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       for (const entry of envelope.events) get().applyControlEvent(entry);
       return;
     }
+    // A batch from an older attachment (the runner a replacement invalidated)
+    // must not append to the new session, even when the session id is unchanged
+    // after a reload. Use the highest identity in the batch so a replacement
+    // frame and its new rows still apply.
+    const batchEpoch = Math.max(
+      typeof envelope.sessionEpoch === "number" ? envelope.sessionEpoch : 0,
+      ...envelope.events.map((entry) =>
+        typeof entry.sessionEpoch === "number" ? entry.sessionEpoch : 0,
+      ),
+    );
+    const currentEpoch = get().sessionEpochs[envelope.tabId] ?? 0;
+    if (batchEpoch > 0 && batchEpoch < currentEpoch) return;
+    const identityChanged = batchEpoch > currentEpoch;
+    if (identityChanged) {
+      set({ sessionEpochs: { ...get().sessionEpochs, [envelope.tabId]: batchEpoch } });
+    }
     // A late batch for a just-closed tab must not recreate its caches. If the id
     // is open again (a test or a future re-import uses setState directly), the
     // current table wins over the closed-tab marker.
@@ -2650,6 +3285,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return;
     }
     if (envelope.events.some((entry) => entry.event === "session.recovered")) {
+      set(clearTabSessionUi(get(), envelope.tabId));
       get().clearStaleHost(envelope.tabId);
       get().invalidateCommands(envelope.tabId);
     }
@@ -2668,11 +3304,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       const previousId = typeof previous === "string" ? previous : null;
       if (nextId !== null && nextId !== previousId) {
         get().resetTranscript(envelope.tabId);
+        set(clearTabSessionUi(get(), envelope.tabId));
         get().invalidateCommands(envelope.tabId);
         void get().hydrateTranscript(envelope.tabId);
         replacedReset = true;
       }
     }
+    // A reload keeps the session id but replaces the extension runner. Its
+    // statuses/widgets/dialogs belong to the outgoing runner too.
+    if (identityChanged && !replacedReset) set(clearTabSessionUi(get(), envelope.tabId));
+    const suppressStaleExtensionError = replacedReset || identityChanged;
     // A trust refusal is a project-level question, not transcript content: raise
     // the prompt and keep it out of the message list (plan step 10).
     const trustEntry = envelope.events.find((entry) => entry.event === "project_trust");
@@ -2717,6 +3358,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         // hydration and read as if something went wrong; the rows themselves
         // are the announcement (plan step 13).
         !(replacedReset && entry.event === "session_replaced") &&
+        !(suppressStaleExtensionError && isStaleExtensionContextError(entry)) &&
         !EXTENSION_UI_EVENTS.has(entry.event),
     );
     if (rest.length === 0) return;
@@ -2756,6 +3398,17 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   applySessionState: (envelope) => {
+    if (
+      typeof envelope.sessionEpoch === "number" &&
+      envelope.sessionEpoch < (get().sessionEpochs[envelope.tabId] ?? 0)
+    ) {
+      return;
+    }
+    if (typeof envelope.sessionEpoch === "number") {
+      set({
+        sessionEpochs: { ...get().sessionEpochs, [envelope.tabId]: envelope.sessionEpoch },
+      });
+    }
     // A model switch can change the thinking levels a session accepts. The host
     // sends them in every snapshot, but `ThinkingPicker` prefers this cache, so
     // refresh it here — and only when the list actually changed, because this
@@ -2787,19 +3440,27 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         };
         // The tab may have been closed while the read was in flight.
         if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
+        transcriptHydrateNoted.delete(tabId);
         const base = get().transcripts[tabId] ?? createTranscriptState();
+        const hydrated = hydrateMessages(base, result.messages ?? [], get().prefs.promptOrigins);
         set({
-          transcripts: {
-            ...get().transcripts,
-            [tabId]: hydrateMessages(base, result.messages ?? [], get().prefs.promptOrigins),
-          },
+          transcripts: { ...get().transcripts, [tabId]: hydrated },
+          // A resumed session rebuilds history from its user messages, exactly
+          // like terminal Pi's `renderInitialMessages` + `populateHistory`.
+          historySeed: { ...get().historySeed, [tabId]: promptHistorySeed(hydrated) },
         });
-      } catch {
-        // A session that cannot report history still streams, so this is best
-        // effort — but a failed read must not be cached as "no history": after a
-        // relaunch the host may still be starting, and the view retries hydration
-        // when the tab status changes (plan step 25).
+      } catch (error) {
+        // A failed read must not be cached as "no history": after a relaunch the
+        // host may still be starting, and the view retries hydration when the tab
+        // status changes (plan step 25). It must also not look like an empty
+        // session: report the first failure for this tab, then stay quiet.
         if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
+        // A sleeping tab is normal after a recycle. Do not report it and do not
+        // latch an error: the explicit activation/ensure passes this again.
+        if (!isSessionAsleepError(error) && !transcriptHydrateNoted.has(tabId)) {
+          transcriptHydrateNoted.add(tabId);
+          get().noteFailure(error);
+        }
         const base = get().transcripts[tabId] ?? createTranscriptState();
         set({
           transcripts: { ...get().transcripts, [tabId]: { ...base, hydrated: false } },
@@ -2824,6 +3485,19 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
+  cancelSession: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      get().applyTabs(await api.sessions.stop(tabId), { adoptSelection: false });
+      // The next interaction must re-check readiness rather than trusting a
+      // timestamp from the attempt that was just cancelled.
+      sessionEnsuredAt.delete(tabId);
+    } catch (error) {
+      get().noteFailure(error);
+    }
+  },
+
   restartTab: async (tabId) => {
     const api = bridge();
     if (!api?.sessions) return;
@@ -2843,6 +3517,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // A restarted host rebinds its extensions, so any shortcut registered by
       // the fresh session must be re-listed (the previous list may be stale).
       if (get().activeTabId === tabId) void get().loadShortcuts({ refresh: true });
+      set(clearTabSessionUi(get(), tabId));
+      void get().loadExtensionUi(tabId);
       get().invalidateCommands(tabId);
       // A restart is also the documented fix for a bridge that never bound the
       // port (2026-10-30 rail-headers plan), so read the registry now instead of
@@ -2910,30 +3586,46 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         }, dialog.timeout);
         extensionDialogTimers.set(dialog.id, timer);
       }
-      // A dialog belongs to its tab, so bring that tab forward rather than
-      // letting the extension block behind a background tab (plan risk R5).
-      if (get().activeTabId !== tabId) void get().activateTab(tabId);
+      // A dialog belongs to its tab, but taking the window is a *decision*: a
+      // background question must not yank the user out of another project's
+      // session while they type or watch a run (2026-11-06 tab-switch plan).
+      if (get().activeTabId !== tabId) {
+        const active = get().activeTabId;
+        const activeState = active ? get().sessionStates[active] : undefined;
+        const focus = shouldFocusDialog({
+          policy: get().prefs.dialogs.autoFocus,
+          blocking: dialog.timeout === null,
+          // `hasFocus()` is unreliable across jsdom/OS states, but visibility is
+          // the fact that matters: a hidden window must only badge.
+          windowFocused: typeof document === "undefined" || document.visibilityState !== "hidden",
+          composerFocused: composerHasFocus(),
+          streaming: (activeState as { streaming?: unknown } | undefined)?.streaming === true,
+        });
+        if (focus) void get().activateTab(tabId);
+        else get().markDialogAttention(tabId);
+      }
       return;
     }
     if (entry.event === EXTENSION_UI_NOTIFY_EVENT) {
-      const notification = parseExtensionNotification(entry.payload, tabId);
-      if (!notification) return;
-      const key = notificationCooldownKey(tabId, notification);
+      const parsed = parseExtensionNotification(entry.payload, tabId);
+      if (!parsed) return;
+      const notification = appNotificationFromExtension(parsed);
+      const key = notificationCooldownKey(notification);
       const now = Date.now();
-      const muted = isNotificationMuted(notification, get().prefs.notifications);
+      const suppressed = isNotificationSuppressed(notification, get().prefs.notifications);
       const collapsed = shouldCollapseNotification(get().notificationCooldowns[key], now);
       set({
-        extensionNotifications: [notification, ...get().extensionNotifications].slice(0, 100),
+        notifications: [notification, ...get().notifications].slice(0, 100),
         notificationCooldowns: { ...get().notificationCooldowns, [key]: now },
       });
-      if (!muted && !collapsed) {
-        notifyToast(notification, () => get().openMuteDialog(notification));
+      if (!suppressed && !collapsed) {
+        notifyToast(notification, { onMute: () => get().openMuteDialog(notification) });
       }
       // Plannotator notifies its review URL, so the URL arriving in a
       // notification is the signal to open it in an in-app tab (plan step 21)
       // instead of handing it to the system browser.
       const loopback = firstLoopbackUrl(notification.message);
-      if (loopback) get().openLoopbackUrl(loopback, tabId);
+      if (loopback) get().openLoopbackUrl(loopback, tabId, { focus: true });
       return;
     }
     if (entry.event === EXTENSION_UI_THEME_EVENT) {
@@ -2964,7 +3656,60 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  clearExtensionNotifications: () => set({ extensionNotifications: [] }),
+  clearNotifications: () => {
+    const state = get();
+    const offers = currentOffers(state);
+    const updateVersion = state.update?.version ?? null;
+    const signature = packageUpdateSignature(state.packageUpdates);
+    const dismissUpdate = offers.some((entry) => entry.action?.kind === "open-updates");
+    const dismissExtensions = offers.some((entry) => entry.action?.kind === "open-extensions");
+    set({ notifications: [], notificationCooldowns: {} });
+    if (!dismissUpdate && !dismissExtensions) return;
+    // Clear means "not now" for the live offers too: without these markers the
+    // derived rows would return on the next render.
+    get().setPrefs({
+      updates:
+        dismissUpdate && updateVersion
+          ? { ...state.prefs.updates, dismissedVersion: updateVersion }
+          : state.prefs.updates,
+      packages:
+        dismissExtensions && signature.length > 0
+          ? { ...state.prefs.packages, dismissedSignature: signature }
+          : state.prefs.packages,
+    });
+  },
+
+  dismissNotification: (id) => {
+    const state = get();
+    const offer = currentOffers(state).find((entry) => entry.id === id);
+    if (offer?.action?.kind === "open-updates") {
+      const version = state.update?.version;
+      if (version) get().setUpdatePrefs({ dismissedVersion: version });
+      return;
+    }
+    if (offer?.action?.kind === "open-extensions") {
+      const signature = packageUpdateSignature(state.packageUpdates);
+      if (signature.length > 0) get().setPackageCheckPrefs({ dismissedSignature: signature });
+      return;
+    }
+    set({ notifications: state.notifications.filter((entry) => entry.id !== id) });
+  },
+
+  setNotificationClass: (klass, enabled) => {
+    const prefs = get().prefs.notifications;
+    get().setPrefs({
+      notifications: { ...prefs, classes: { ...prefs.classes, [klass]: enabled } },
+    });
+    // Enabling an offer class makes its derived row visible; announce it (once) so
+    // the user who just turned the class on also sees why the bell lit up. Other
+    // classes are archive filters and need no announcement.
+    if (enabled && (klass === "update" || klass === "extension")) {
+      get().announceNotificationOffers();
+    }
+  },
+
+  openNotificationSettings: () =>
+    set({ view: "settings", settingsFocus: "notifications", hint: null }),
 
   openMuteDialog: (notification) => set({ muteTarget: notification }),
   closeMuteDialog: () => set({ muteTarget: null }),
@@ -2992,7 +3737,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   unmuteAllNotifications: () => {
     if (get().prefs.notifications.muted.length === 0) return;
-    get().setPrefs({ notifications: { muted: [] } });
+    get().setPrefs({
+      notifications: { ...get().prefs.notifications, muted: [] },
+    });
   },
 
   reportEditorText: (tabId, text) => {
@@ -3061,6 +3808,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   resizeTuiSurface: (tabId, rows, cols) => {
+    // A status change re-runs the viewport effect. A stopped/crashed tab must
+    // not turn that into a spawn request; activation/ensure owns waking it.
+    const status = get().tabs.find((tab) => tab.id === tabId)?.status;
+    if (!status || status === "stopped" || status === "crashed" || status === "failed") return;
     // Fire-and-forget: a resize must never block a keystroke.
     const request = bridge()?.sessions?.request({
       tabId,
@@ -3070,14 +3821,56 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (request) void request.then(undefined, () => undefined);
   },
 
-  sendTuiInput: (tabId, data) => {
-    if (data.length === 0) return;
+  sendTuiInput: async (tabId, data) => {
+    if (data.length === 0) return false;
     const request = bridge()?.sessions?.request({
       tabId,
       method: "tui.input",
       params: { data },
     });
-    if (request) void request.then(undefined, () => undefined);
+    if (!request) return false;
+    try {
+      const result = (await request) as { consumed?: unknown } | undefined;
+      return result?.consumed === true;
+    } catch {
+      // A host that cannot answer (asleep, crashed mid-call) consumed nothing.
+      return false;
+    }
+  },
+
+  interruptRun: async (tabId, key = { key: "Escape" }) => {
+    const extensionBusy = (id: string): boolean => {
+      const working = get().extensionUi[id]?.working;
+      return working?.message != null && working.visible !== false;
+    };
+    const tab = get().tabs.find((entry) => entry.id === tabId);
+    if (!tab || tab.kind !== "session" || (tab.status !== "running" && !extensionBusy(tabId)))
+      return;
+    const now = Date.now();
+    if (now - (lastInterruptAt.get(tabId) ?? 0) < INTERRUPT_DEDUPE_MS) return;
+    lastInterruptAt.set(tabId, now);
+    const data = domKeyToTerminalData(key);
+    if (!data) {
+      // A remapped chord with no terminal bytes cannot reach the extension's
+      // `onTerminalInput`; it is not forwarded, and a running turn stops as
+      // before (the documented limitation — Escape is the case that matters
+      // and always encodes to ``).
+      if (tab.status === "running") await get().stopRun(tabId);
+      return;
+    }
+    const consumed = await withTimeout(
+      get().sendTuiInput(tabId, data),
+      INTERRUPT_TIMEOUT_MS,
+      false,
+    );
+    // A cancelled/settled run may have changed the tab while the host answered.
+    const live = get().tabs.find((entry) => entry.id === tabId);
+    if (!live) return;
+    const liveRunning = live.status === "running";
+    if (!liveRunning && !extensionBusy(tabId)) return;
+    // An idle extension-owned round is paused by its handler; an unconsumed
+    // key must not stop a run that does not exist.
+    if (liveRunning && !consumed) await get().stopRun(tabId);
   },
 
   extensionRender: async (tabId, request) => {
@@ -3125,28 +3918,15 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (request) void request.then(undefined, () => undefined);
   },
 
+  /**
+   * The public draft writer (typing, mentions, queue restore, sends). Any real
+   * write ends history mode first, exactly like pi-tui's `setText` calling
+   * `exitHistoryBrowsing`: the stashed draft is dropped and this text becomes
+   * the draft (2026-11-07 prompt-history plan, D6).
+   */
   setDraft: (tabId, text) => {
-    const drafts = { ...get().prefs.drafts, [tabId]: text };
-    set({ prefs: { ...get().prefs, drafts } });
-    if (draftPersistTimer) clearTimeout(draftPersistTimer);
-    draftPersistTimer = setTimeout(() => {
-      draftPersistTimer = null;
-      void bridge()?.prefs.set({ drafts: useAppStore.getState().prefs.drafts });
-    }, DRAFT_PERSIST_DELAY_MS);
-    // Mirror the composer back to the host so `ctx.ui.getEditorText()` is
-    // truthful (plan step 16). Debounced per tab, never per keystroke.
-    const pending = editorTextTimers.get(tabId);
-    if (pending) clearTimeout(pending);
-    editorTextTimers.set(
-      tabId,
-      setTimeout(() => {
-        editorTextTimers.delete(tabId);
-        // The host's `getEditorText()` must see the body, not the marker
-        // (plan step 20, D15: the textarea is the display).
-        const draft = useAppStore.getState().prefs.drafts[tabId] ?? "";
-        get().reportEditorText(tabId, get().expandPastes(tabId, draft));
-      }, EDITOR_TEXT_DELAY_MS),
-    );
+    exitHistoryBrowsing(tabId);
+    writeComposerDraft(tabId, text);
   },
 
   openPicker: (picker, options = {}) =>
@@ -3167,14 +3947,36 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const patterns = Array.isArray(payload.enabledModels)
       ? normalizeScopePatterns(payload.enabledModels)
       : scopeKeys(scoped);
+    const diagnostics = Array.isArray(payload.diagnostics)
+      ? (payload.diagnostics as ScopeDiagnosticInfo[])
+      : [];
     set({
       modelScope: { ...get().modelScope, [tabId]: scopeStarKeys(patterns, scoped) },
       modelScopePatterns: { ...get().modelScopePatterns, [tabId]: patterns },
+      modelScopeDiagnostics: { ...get().modelScopeDiagnostics, [tabId]: diagnostics },
       modelScopeTarget: {
         ...get().modelScopeTarget,
         [tabId]: settingsTargetForTab(get(), tabId),
       },
     });
+    // One Diagnostics incident per distinct pattern per run: the same broken
+    // entry is re-reported on every reconcile, and a log full of duplicates is
+    // not more actionable than one line.
+    for (const diagnostic of diagnostics) {
+      const key = `${tabId}\u0000${diagnostic.code ?? ""}\u0000${
+        diagnostic.pattern ?? diagnostic.message
+      }`;
+      if (reportedScopeDiagnostics.has(key)) continue;
+      reportedScopeDiagnostics.add(key);
+      void bridge()
+        ?.diagnostics?.record({
+          kind: "bad_request",
+          message: diagnostic.message,
+          ...(diagnostic.pattern ? { detail: `pattern: ${diagnostic.pattern}` } : {}),
+          tabId,
+        })
+        .catch(() => undefined);
+    }
   },
 
   loadModels: async (tabId) => {
@@ -3206,6 +4008,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         },
       });
       get().setModelScopeSnapshot(tabId, response ?? {});
+      // Pi silently falls back to another model when the saved default is not in
+      // the catalogue; say so instead of letting the next session surprise the
+      // user (2026-11-06 plan, step 12).
+      get().noteDefaultModelProblem(
+        defaultModelProblemOf(get().settings, get().modelCatalog[tabId] ?? []),
+      );
     } catch (error) {
       get().noteFailure(error);
     }
@@ -3450,6 +4258,18 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const trimmed = text.trim();
     const tab = get().tabs.find((entry) => entry.id === tabId);
     if (!api?.sessions || !tab || trimmed.length === 0) return false;
+    // Review owns the turn: prose and ! shell commands are refused. Slash
+    // commands stay available (the extension decides which ones it allows).
+    if (
+      parseWorkflowStatus(get().extensionUi[tabId]?.statuses?.workflow ?? null)?.mode ===
+        "review" &&
+      !trimmed.startsWith("/")
+    ) {
+      set({
+        hint: "Review in progress — pause, resume, abort, or change model/profile.",
+      });
+      return false;
+    }
     // Terminal Pi's editor clears in `submitValue` before dispatching. Do the
     // same before any await: a slow wake or a long run must never leave the text
     // in the composer. A refusal restores it above anything typed since.
@@ -3498,8 +4318,19 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
    */
   sendPrompt: async (tabId, text, options = {}) => {
     const trimmedInput = text.trim();
-    if (trimmedInput.startsWith("!")) {
-      const excludeFromContext = trimmedInput.startsWith("!!");
+    // Immediate UI refusal; `sendPromptNow` repeats it as the final backstop.
+    if (
+      parseWorkflowStatus(get().extensionUi[tabId]?.statuses?.workflow ?? null)?.mode ===
+        "review" &&
+      !trimmedInput.startsWith("/")
+    ) {
+      set({
+        hint: "Review in progress — pause, resume, abort, or change model/profile.",
+      });
+      return false;
+    }
+    if (isShellCommand(trimmedInput)) {
+      const excludeFromContext = isExcludedShellCommand(trimmedInput);
       const command = trimmedInput.slice(excludeFromContext ? 2 : 1).trim();
       if (command.length === 0) return false;
       const api = bridge();
@@ -3668,63 +4499,34 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         return { handled: true, sent };
       }
 
-      const api = bridge();
-      if (!api?.sessions) {
-        set({ hint: "The preload bridge is unavailable." });
-        return { handled: true, sent: false };
-      }
-
-      let state: "ran" | "missing" | "unavailable";
-      try {
-        const response = await api.sessions.request({
-          tabId,
-          method: "commands.run",
-          params: { name, args: argument, ack: "started" },
-        });
-        state = parseCommandRunResult(response).ran ? "ran" : "missing";
-      } catch {
-        // An older host answers `not_implemented`; fall through to `prompt` so
-        // idle use still works after a downgrade.
-        state = "unavailable";
-      }
-
-      if (state === "ran") {
+      const outcome = await get().runExtensionCommand(tabId, name, argument);
+      if (outcome === "ran") {
         get().setDraft(tabId, "");
         rememberDraft(tabId, text);
         return { handled: true, sent: true };
       }
 
-      if (state === "missing") {
+      if (outcome === "missing") {
         const fresh = await get().loadCommands(tabId, { refresh: true });
         const retry = context(fresh);
         if (retry.kind === "host" && retry.command.source === "extension") {
-          try {
-            const response = await api.sessions.request({
-              tabId,
-              method: "commands.run",
-              params: { name: retry.name, args: retry.argument, ack: "started" },
-            });
-            if (parseCommandRunResult(response).ran) {
-              get().setDraft(tabId, "");
-              rememberDraft(tabId, text);
-              return { handled: true, sent: true };
-            }
-          } catch {
-            state = "unavailable";
+          const retried = await get().runExtensionCommand(tabId, retry.name, retry.argument);
+          if (retried === "ran") {
+            get().setDraft(tabId, "");
+            rememberDraft(tabId, text);
+            return { handled: true, sent: true };
           }
-        }
-        if (state === "missing") {
-          if (retry.kind === "unknown") {
+          if (retried === "missing") {
             set({ hint: `/${name} is no longer available — run /reload and try again.` });
             return { handled: true, sent: false };
           }
-          // The command changed kind (e.g. became a prompt template): dispatch
-          // again against the freshly cached list.
-          if (retry.kind !== "host" || retry.command.source !== "extension") {
-            return get().runCommandInput(tabId, text, options);
-          }
+        } else if (retry.kind === "unknown") {
           set({ hint: `/${name} is no longer available — run /reload and try again.` });
           return { handled: true, sent: false };
+        } else {
+          // The command changed kind (e.g. became a prompt template): dispatch
+          // again against the freshly cached list.
+          return get().runCommandInput(tabId, text, options);
         }
       }
 
@@ -3934,6 +4736,45 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
+  runExtensionCommand: async (tabId, name, args) => {
+    const api = bridge();
+    if (!api?.sessions) return "unavailable";
+    try {
+      const response = await api.sessions.request({
+        tabId,
+        method: "commands.run",
+        params: { name, args, ack: "started" },
+      });
+      return parseCommandRunResult(response).ran ? "ran" : "missing";
+    } catch {
+      // An older host answers `not_implemented`; callers decide whether to fall
+      // back to a prompt (the composer) or explain the requirement (the bars).
+      return "unavailable";
+    }
+  },
+
+  runTodoPanelAction: async (tabId, action) => {
+    const outcome = await get().runExtensionCommand(tabId, "todos", action);
+    if (outcome === "missing") {
+      set({
+        hint: "The todo panel command is unavailable — update @dieulc/workflow in Extensions…",
+      });
+      return false;
+    }
+    if (outcome === "unavailable") {
+      set({ hint: "This host cannot run extension commands; restart the session and try again." });
+      return false;
+    }
+    return true;
+  },
+
+  runReviewCommand: async (tabId, name) => {
+    const outcome = await get().runExtensionCommand(tabId, name, "");
+    if (outcome === "ran") return true;
+    set({ hint: `/${name} is not available in this session.` });
+    return false;
+  },
+
   stopRun: async (tabId) => {
     const api = bridge();
     if (!api?.sessions) return;
@@ -4001,35 +4842,46 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  historyStep: (tabId, direction) => {
-    const history = get().draftHistory[tabId] ?? [];
-    if (history.length === 0) return null;
-    const current = get().historyIndex[tabId] ?? -1;
-    // -1 means "the live draft"; older entries walk forward through the list.
-    const next =
-      direction === -1 ? Math.min(current + 1, history.length - 1) : Math.max(current - 1, -1);
-    set({ historyIndex: { ...get().historyIndex, [tabId]: next } });
-    return next === -1 ? null : (history[next] ?? null);
+  historyStep: (tabId, direction, caret = 0) => {
+    const state = get();
+    const step = stepPromptHistory({
+      direction,
+      entries: mergePromptHistory(state.draftHistory[tabId] ?? [], state.historySeed[tabId] ?? []),
+      browse: state.historyBrowse[tabId],
+      draft: state.prefs.drafts[tabId] ?? "",
+      caret,
+    });
+    if (step.kind === "none") return step;
+    set({
+      historyBrowse: step.browse
+        ? { ...state.historyBrowse, [tabId]: step.browse }
+        : omitKey(state.historyBrowse, tabId),
+    });
+    // pi-tui's `navigateHistory` writes through `setTextInternal`, which must not
+    // exit the browsing state it just set; do not route this through `setDraft`.
+    writeComposerDraft(tabId, step.text);
+    return step;
   },
 
   // ---- Connections: providers, credentials and sign-in (plan step 9) ----
 
-  loadProviders: async () => {
-    const api = bridge();
-    if (!api?.sessions) return;
-    try {
-      const result = (await api.sessions.request({
-        tabId: CONTROL_TAB_ID,
-        method: "providers.list",
-      })) as { providers?: ProviderSummary[] };
-      set({ providers: result.providers ?? [], providersLoaded: true, providersError: null });
-    } catch (error) {
-      set({
-        providersLoaded: true,
-        providersError: error instanceof Error ? error.message : String(error),
-      });
-    }
-  },
+  loadProviders: () =>
+    singleFlight("providers", async () => {
+      const api = bridge();
+      if (!api?.sessions) return;
+      try {
+        const result = (await api.sessions.request({
+          tabId: CONTROL_TAB_ID,
+          method: "providers.list",
+        })) as { providers?: ProviderSummary[] };
+        set({ providers: result.providers ?? [], providersLoaded: true, providersError: null });
+      } catch (error) {
+        set({
+          providersLoaded: true,
+          providersError: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }),
 
   setProviderKey: async (providerId, apiKey) => {
     const api = bridge();
@@ -4134,7 +4986,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
 
     if (entry.event === PACKAGES_CHANGED_EVENT) {
-      // Another window (or the host itself) changed the package list.
+      // Another window (or the host itself) changed the package list. The payload
+      // names the mutation's source, so the update entries it invalidated vanish
+      // immediately instead of waiting for the next sweep.
+      const payload = entry.payload as { source?: unknown } | undefined;
+      const source = typeof payload?.source === "string" ? payload.source : null;
+      if (source !== null) {
+        set({
+          packageUpdates: dropPackageUpdates(get().packageUpdates, source === "*" ? null : source),
+        });
+      }
       void get().loadPackages({ refresh: true });
       return;
     }
@@ -4264,23 +5125,29 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   // ---- Pi settings (plan step 12) ----
 
-  loadSettings: async (options) => {
-    const api = bridge();
-    if (!api?.sessions) return;
+  loadSettings: (options) => {
     const cwd = get().project?.path ?? null;
-    const current = get();
-    if (!options?.refresh && current.settingsLoaded && current.settingsCwd === cwd) return;
-    set({ settingsBusy: true, settingsError: null });
-    try {
-      const snapshot = (await api.sessions.request({
-        tabId: CONTROL_TAB_ID,
-        method: "settings.get",
-        params: { cwd },
-      })) as SettingsSnapshot;
-      set(settingsStateFrom(snapshot, cwd));
-    } catch (error) {
-      set({ settingsBusy: false, settingsLoaded: true, settingsError: errorMessage(error) });
-    }
+    return singleFlight(`settings:${cwd ?? ""}`, async () => {
+      const api = bridge();
+      if (!api?.sessions) return;
+      const current = get();
+      if (!options?.refresh && current.settingsLoaded && current.settingsCwd === cwd) return;
+      set({ settingsBusy: true, settingsError: null });
+      try {
+        const snapshot = (await api.sessions.request({
+          tabId: CONTROL_TAB_ID,
+          method: "settings.get",
+          params: { cwd },
+        })) as SettingsSnapshot;
+        set(settingsStateFrom(snapshot, cwd));
+        const active = get().activeTabId;
+        get().noteDefaultModelProblem(
+          defaultModelProblemOf(get().settings, active ? (get().modelCatalog[active] ?? []) : []),
+        );
+      } catch (error) {
+        set({ settingsBusy: false, settingsLoaded: true, settingsError: errorMessage(error) });
+      }
+    });
   },
 
   setSetting: async (key, value, scope) => {
@@ -4400,43 +5267,54 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   // ---- Extensions hub (plan step 13) ----
 
-  loadResources: async (options) => {
-    const api = bridge();
-    if (!api?.sessions) return;
-    const target = resourcesTarget(get());
-    const cwd = resourcesCwd(get(), target);
-    const current = get();
-    if (
-      options?.refresh !== true &&
-      current.resourcesLoaded &&
-      current.resourcesTabId === target &&
-      current.resourcesCwd === cwd
-    ) {
-      return;
-    }
-    set({ resourcesBusy: true, resourcesError: null });
-    try {
-      const raw = await api.sessions.request({
-        tabId: target,
-        method: "resources.list",
-        params: { cwd, refresh: options?.refresh === true },
-      });
-      set({
-        resources: sanitizeResourcesSnapshot(raw),
-        resourcesLoaded: true,
-        resourcesBusy: false,
-        resourcesError: null,
-        resourcesTabId: target,
-        resourcesCwd: cwd,
-      });
-    } catch (error) {
-      set({
-        resourcesBusy: false,
-        resourcesLoaded: true,
-        resourcesError: errorMessage(error),
-      });
-    }
-  },
+  loadResources: (options) =>
+    singleFlight("resources", async () => {
+      const api = bridge();
+      if (!api?.sessions) return;
+      // The target is the active session tab when one is restored; before the
+      // tab table lands `resourcesTarget` can only answer CONTROL, and the
+      // catalogue then lands against the wrong host (2026-11-07 plan).
+      // An empty table may still be *arriving*; a table that already has rows
+      // (a push landed first) is authoritative and must not be re-read.
+      if (!get().tabsLoaded && get().tabs.length === 0) {
+        await get()
+          .loadTabs()
+          .catch(() => undefined);
+      }
+      const target = resourcesTarget(get());
+      const cwd = resourcesCwd(get(), target);
+      const current = get();
+      if (
+        options?.refresh !== true &&
+        current.resourcesLoaded &&
+        current.resourcesTabId === target &&
+        current.resourcesCwd === cwd
+      ) {
+        return;
+      }
+      set({ resourcesBusy: true, resourcesError: null });
+      try {
+        const raw = await api.sessions.request({
+          tabId: target,
+          method: "resources.list",
+          params: { cwd, refresh: options?.refresh === true },
+        });
+        set({
+          resources: sanitizeResourcesSnapshot(raw),
+          resourcesLoaded: true,
+          resourcesBusy: false,
+          resourcesError: null,
+          resourcesTabId: target,
+          resourcesCwd: cwd,
+        });
+      } catch (error) {
+        set({
+          resourcesBusy: false,
+          resourcesLoaded: true,
+          resourcesError: errorMessage(error),
+        });
+      }
+    }),
 
   toggleResource: async (resource, enabled) => {
     const api = bridge();
@@ -4497,43 +5375,54 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   // ---- Skills, themes and keybindings (plan step 15) ----
 
-  loadThemes: async () => {
-    const api = bridge();
-    if (!api?.sessions) return;
-    const current = get();
-    if (current.themesLoaded && !current.themesError) return;
-    set({ themesBusy: true, themesError: null });
-    try {
-      const target = resourcesTarget(get());
-      const cwd = resourcesCwd(get(), target);
-      const raw = await api.sessions.request({
-        tabId: target,
-        method: "themes.list",
-        params: { cwd },
-      });
-      const themes = sanitizeThemesSnapshot(raw);
-      set({ themes, themesLoaded: true, themesBusy: false, themesError: null });
-      // Follow-system wins over the stored theme: switch the built-in theme to
-      // match the OS, then let the normal path cache and paint it.
-      if (get().prefs.followSystemTheme) {
-        const desired = systemThemeName();
-        if (themes.active !== desired) {
-          const ok = await get().setActiveTheme(desired, { keepFollowSystem: true });
-          if (!ok) get().applyChromeTheme();
-          return;
+  loadThemes: () =>
+    singleFlight("themes", async () => {
+      const api = bridge();
+      if (!api?.sessions) return;
+      const current = get();
+      if (current.themesLoaded && !current.themesError) return;
+      // `loadShortcuts` already waits for the tab table for exactly this reason;
+      // a theme read that races it asks the control host instead of the restored
+      // session (2026-11-07 plan). A failed table read still applies a theme.
+      // An empty table may still be *arriving*; a table that already has rows
+      // (a push landed first) is authoritative and must not be re-read.
+      if (!get().tabsLoaded && get().tabs.length === 0) {
+        await get()
+          .loadTabs()
+          .catch(() => undefined);
+      }
+      set({ themesBusy: true, themesError: null });
+      try {
+        const target = resourcesTarget(get());
+        const cwd = resourcesCwd(get(), target);
+        const raw = await api.sessions.request({
+          tabId: target,
+          method: "themes.list",
+          params: { cwd },
+        });
+        const themes = sanitizeThemesSnapshot(raw);
+        set({ themes, themesLoaded: true, themesBusy: false, themesError: null });
+        // Follow-system wins over the stored theme: switch the built-in theme to
+        // match the OS, then let the normal path cache and paint it.
+        if (get().prefs.followSystemTheme) {
+          const desired = systemThemeName();
+          if (themes.active !== desired) {
+            const ok = await get().setActiveTheme(desired, { keepFollowSystem: true });
+            if (!ok) get().applyChromeTheme();
+            return;
+          }
         }
+        // Keep the first-paint cache in step with the theme Pi actually loaded.
+        // Only write when it differs: this runs on every launch and on retry.
+        const active = activeThemeSwatches(themes);
+        if (active && get().prefs.theme !== active.variant) {
+          get().setPrefs({ theme: active.variant });
+        }
+        get().applyChromeTheme();
+      } catch (error) {
+        set({ themesBusy: false, themesLoaded: true, themesError: errorMessage(error) });
       }
-      // Keep the first-paint cache in step with the theme Pi actually loaded.
-      // Only write when it differs: this runs on every launch and on retry.
-      const active = activeThemeSwatches(themes);
-      if (active && get().prefs.theme !== active.variant) {
-        get().setPrefs({ theme: active.variant });
-      }
-      get().applyChromeTheme();
-    } catch (error) {
-      set({ themesBusy: false, themesLoaded: true, themesError: errorMessage(error) });
-    }
-  },
+    }),
 
   setActiveTheme: async (name, options) => {
     const scope = settingsTargetForProject(get(), get().project?.path ?? null);
@@ -4728,6 +5617,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         shortcutsTabId: target,
       });
     } catch (error) {
+      if (isSessionAsleepError(error)) {
+        // This was a passive status-change retry against a recycled host. Leave
+        // the list unlatched so activation/ensure retries it once the host is
+        // awake; do not show an error or wipe a list the previous session had.
+        set({ shortcutsBusy: false, shortcutsLoaded: false, shortcutsError: null });
+        return;
+      }
       set({
         shortcutsBusy: false,
         shortcutsLoaded: true,
@@ -4931,7 +5827,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     set({ promotingOfficeHost: true });
     try {
       const envelope = await api.sessions.promoteOfficeHost(tabId);
-      get().applyTabs(envelope);
+      get().applyTabs(envelope, { adoptSelection: true });
       // The IPC returns when the host is spawned, not when `/health` answers: the
       // bridge still has to load and bind 38617. Saying the bridge *is* ready was
       // the promise behind "the Documents menu disappeared" (2026-10-30
@@ -4978,33 +5874,39 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.updates) return;
     try {
-      set({ update: sanitizeUpdateState(await api.updates.get()) });
+      get().applyUpdateState(await api.updates.get());
     } catch {
       // An updater that cannot be reached is not a user-visible failure: the
-      // status chip simply stays absent and Settings explains the state.
+      // bell simply stays quiet and Settings explains the state.
     }
   },
 
-  applyUpdateState: (state) => set({ update: sanitizeUpdateState(state) }),
+  applyUpdateState: (state) => {
+    set({ update: sanitizeUpdateState(state) });
+    // Progress pushes arrive often; the persisted toast marker makes the repeat a
+    // no-op, while a phase/version change is announced exactly once.
+    get().announceNotificationOffers();
+  },
 
   checkForUpdates: async () => {
     const api = bridge();
     if (!api?.updates) return;
     try {
       const next = sanitizeUpdateState(await api.updates.check());
+      get().applyUpdateState(next);
       // A finished check is feedback even when there is nothing to install. The
-      // status chip carries available/downloaded; everything else is a short
+      // bell carries available/downloaded; everything else is a short
       // dismissible status-bar hint.
       if (next.phase === "up-to-date") {
-        set({ update: next, hint: "Pi Desktop is up to date." });
+        set({ hint: "Pi Desktop is up to date." });
       } else if (
         next.phase === "unsupported" ||
         next.phase === "no-feed" ||
         next.phase === "error"
       ) {
-        set({ update: next, hint: describeUpdate(next) });
+        set({ hint: describeUpdate(next) });
       } else {
-        set({ update: next, hint: null });
+        set({ hint: null });
       }
     } catch (error) {
       get().noteFailure(error);
@@ -5015,7 +5917,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.updates) return;
     try {
-      set({ update: sanitizeUpdateState(await api.updates.download()) });
+      get().applyUpdateState(await api.updates.download());
     } catch (error) {
       get().noteFailure(error);
     }
@@ -5037,18 +5939,58 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.updates) return;
     try {
-      set({ update: sanitizeUpdateState(await api.updates.clearProblem()), hint: null });
+      get().applyUpdateState(await api.updates.clearProblem());
+      set({ hint: null });
     } catch (error) {
       get().noteFailure(error);
     }
   },
 
-  dismissUpdateNotification: () => {
-    const { update, prefs } = get();
-    const version = update?.version;
-    if (!version || (update.phase !== "available" && update.phase !== "downloaded")) return;
-    get().setPrefs({ updates: { ...prefs.updates, dismissedVersion: version } });
-    set({ hint: null });
+  setUpdatePrefs: (patch) => get().setPrefs({ updates: { ...get().prefs.updates, ...patch } }),
+
+  /**
+   * Toasts each derived offer once per profile and writes the notified marker.
+   * Offers are state, so this never adds a row; `currentOffers` supplies them.
+   */
+  announceNotificationOffers: () => {
+    const state = get();
+    if (!state.prefsLoaded) return;
+    const offers = currentOffers(state);
+    if (offers.length === 0) return;
+    let updates = state.prefs.updates;
+    let packages = state.prefs.packages;
+    for (const offer of offers) {
+      if (offer.action?.kind === "open-updates") {
+        const version = state.update?.version;
+        if (!version || updates.notifiedVersion === version) continue;
+        updates = { ...updates, notifiedVersion: version };
+        notifyToast(offer, { onOpen: () => get().openUpdatesView() });
+        continue;
+      }
+      if (offer.action?.kind === "open-extensions") {
+        const signature = packageUpdateSignature(state.packageUpdates);
+        if (signature.length === 0 || packages.notifiedSignature === signature) continue;
+        packages = { ...packages, notifiedSignature: signature };
+        notifyToast(offer, { onOpen: () => get().setView("extensions") });
+      }
+    }
+    if (updates === state.prefs.updates && packages === state.prefs.packages) return;
+    // One write for both markers: a partial write cannot announce a toast whose
+    // marker never landed.
+    get().setPrefs({ updates, packages });
+  },
+
+  restoreUpdateNotification: () => {
+    const { update } = get();
+    if (!update?.version) return;
+    get().setUpdatePrefs({ notifiedVersion: null, dismissedVersion: null });
+    get().announceNotificationOffers();
+  },
+
+  restorePackageUpdateOffer: () => {
+    if (get().packageUpdates.length === 0) return;
+    get().setPackageCheckPrefs({ notifiedSignature: null, dismissedSignature: null });
+    get().announceNotificationOffers();
   },
 
   // ---- Onboarding (plan step 26) ----
@@ -5135,21 +6077,14 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return;
     }
     try {
-      const result = (await api.sessions.request({
-        tabId,
-        method: "host.blobs.read",
-        params: { path },
-      })) as { contents?: unknown } | null;
+      // Chunked, so even a result larger than one frame can be read back.
+      const contents = await readBlobText(api, tabId, ref);
       // A closed tab's loading entry was already pruned; do not resurrect it.
       if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
-      const contents = typeof result?.contents === "string" ? result.contents : null;
       set((state) => ({
         blobs: boundBlobs({
           ...state.blobs,
-          [path]:
-            contents === null
-              ? { status: "error", error: "The spilled result is no longer on disk.", tabId }
-              : { status: "ready", contents, tabId, bytes: contents.length },
+          [path]: { status: "ready", contents, tabId, bytes: contents.length },
         }),
       }));
     } catch (error) {
@@ -5409,7 +6344,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       const diff = await api.diff(projectPath, request);
       set({ gitDiff: { projectPath, request, diff }, gitDiffLoading: false });
     } catch (error) {
-      set({ gitDiffLoading: false });
+      // Clearing the diff also closes the dialog: leaving the previous file's
+      // diff up would show content the click did not ask for. The failure is
+      // visible in the rail's error line instead.
+      set({ gitDiff: null, gitDiffLoading: false });
       get().noteFailure(error);
     }
   },
@@ -5510,10 +6448,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   applyCheckpointState: (state) => {
     const parsed = sanitizeCheckpointState(state);
     if (parsed.projectPath.length === 0) return;
-    const next: Record<string, CheckpointState> = {
+    const next = {
       ...get().checkpoints,
       [parsed.projectPath]: parsed,
-    };
+    } satisfies Record<string, CheckpointState>;
     for (const stale of Object.keys(next).slice(
       0,
       Math.max(0, Object.keys(next).length - MAX_GIT_SNAPSHOTS),
@@ -5629,15 +6567,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       set({ hint: "The preload bridge is unavailable." });
       return false;
     }
-    // Opening the same page twice focuses the tab that already shows it, so a
-    // repeated notification cannot spawn a second review view.
-    const existing = get().tabs.find((tab) => tab.kind === "web" && tab.url === input.url);
-    if (existing) {
-      await get().activateTab(existing.id);
-      return true;
-    }
+    // Main owns same-URL dedupe, activation and reload: a local short-circuit
+    // here would bypass the parked-view reload fix (round 2+).
     try {
-      get().applyTabs(await api.web.open(input));
+      get().applyTabs(await api.web.open(input), { adoptSelection: true });
       set({ view: "session", hint: null });
       return true;
     } catch (error) {
@@ -5646,14 +6579,18 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
-  openLoopbackUrl: (url, sessionTabId) => {
+  openLoopbackUrl: (url, sessionTabId, options = {}) => {
     const parsed = sanitizeWebUrl(url);
     if (!parsed) return;
-    // Already open: leave the user where they are instead of re-focusing the tab
-    // on every repeated mention.
-    const existing = get().tabs.find((tab) => tab.kind === "web" && tab.url === parsed);
-    if (existing) return;
-    void get().openWebTab({ url: parsed, ...(sessionTabId ? { sessionTabId } : {}) });
+    const focus = options.focus === true;
+    void get().openWebTab({
+      url: parsed,
+      activate: focus,
+      // A focused notification is a review handoff: the fixed-port server may
+      // reuse the URL, so main reloads the existing view before focusing it.
+      ...(focus ? { reload: true } : {}),
+      ...(sessionTabId ? { sessionTabId } : {}),
+    });
   },
 
   webCommand: (tabId, command) => {
@@ -5721,31 +6658,33 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     return tabId;
   },
 
-  loadPackages: async (options) => {
-    const api = bridge();
-    if (!api?.sessions) return;
-    const cwd = packageCwd(get());
-    const current = get();
-    if (options?.refresh !== true && current.packagesLoaded && current.packagesCwd === cwd) return;
-    set({ packagesBusy: true, packagesError: null });
-    try {
-      const raw = await api.sessions.request({
-        tabId: CONTROL_TAB_ID,
-        method: "packages.list",
-        params: { cwd },
-      });
-      const snapshot = sanitizePackagesSnapshot(raw);
-      set({
-        packages: snapshot.packages,
-        packagesLoaded: true,
-        packagesBusy: false,
-        packagesError: null,
-        packagesCwd: cwd,
-      });
-    } catch (error) {
-      set({ packagesBusy: false, packagesLoaded: true, packagesError: errorMessage(error) });
-    }
-  },
+  loadPackages: (options) =>
+    singleFlight("packages", async () => {
+      const api = bridge();
+      if (!api?.sessions) return;
+      const cwd = packageCwd(get());
+      const current = get();
+      if (options?.refresh !== true && current.packagesLoaded && current.packagesCwd === cwd)
+        return;
+      set({ packagesBusy: true, packagesError: null });
+      try {
+        const raw = await api.sessions.request({
+          tabId: CONTROL_TAB_ID,
+          method: "packages.list",
+          params: { cwd },
+        });
+        const snapshot = sanitizePackagesSnapshot(raw);
+        set({
+          packages: snapshot.packages,
+          packagesLoaded: true,
+          packagesBusy: false,
+          packagesError: null,
+          packagesCwd: cwd,
+        });
+      } catch (error) {
+        set({ packagesBusy: false, packagesLoaded: true, packagesError: errorMessage(error) });
+      }
+    }),
 
   requestPackageInstall: (source, scope, cwd, options) => {
     if (
@@ -5832,7 +6771,15 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       if (consent.kind === "install" && consent.integration === "office") {
         await get().recordOfficeIntegration({ bridgeInstalledAt: new Date().toISOString() });
       }
-      set({ packagesBusy: false, packageProgress: null });
+      set({
+        packagesBusy: false,
+        packageProgress: null,
+        packageUpdates: dropPackageUpdates(
+          get().packageUpdates,
+          consent.source === "*" ? null : consent.source,
+        ),
+        packagesMutatedAt: Date.now(),
+      });
       return true;
     } catch (error) {
       set({ packagesBusy: false, packageProgress: null, packagesError: errorMessage(error) });
@@ -5857,7 +6804,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       });
       await get().loadPackages({ refresh: true });
       await get().loadResources({ refresh: true });
-      set({ packagesBusy: false, packageProgress: null });
+      set({
+        packagesBusy: false,
+        packageProgress: null,
+        packageUpdates: dropPackageUpdates(get().packageUpdates, summary.source),
+        packagesMutatedAt: Date.now(),
+      });
       return true;
     } catch (error) {
       set({ packagesBusy: false, packageProgress: null, packagesError: errorMessage(error) });
@@ -5875,7 +6827,50 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (source) get().requestPackageInstall(source, summary.scope, cwd);
   },
 
-  createSessionTab: async (kind) => {
+  checkPackageUpdates: (options) =>
+    singleFlight("package-checks", async () => {
+      const api = bridge();
+      if (!api?.sessions) return;
+      const cwd = packageCwd(get());
+      set({ packageUpdatesBusy: true, packageUpdatesError: null });
+      try {
+        const raw = await api.sessions.request({
+          tabId: CONTROL_TAB_ID,
+          method: "packages.checkUpdates",
+          params: options?.force === true ? { cwd, force: true } : { cwd },
+        });
+        const snapshot = sanitizePackageUpdatesSnapshot(raw);
+        set({
+          packageUpdates: snapshot.updates,
+          packageUpdatesCheckedAt: snapshot.checkedAt,
+          packageUpdatesOffline: snapshot.offline,
+          packageUpdatesBusy: false,
+          packageUpdatesError: null,
+          packageUpdatesUnavailable: false,
+          packageUpdatesCwd: cwd,
+        });
+        get().announceNotificationOffers();
+      } catch (error) {
+        // A failed sweep is not proof that nothing is outdated, so the previous
+        // list stays. The page shows the reason inline (D8); a manual check also
+        // gets a status hint, a background one stays silent.
+        set({
+          packageUpdatesBusy: false,
+          packageUpdatesError: errorMessage(error),
+          packageUpdatesUnavailable: errorCode(error) === "not_implemented",
+        });
+        if (options?.automatic !== true) {
+          get().setHint(`Could not check for extension updates: ${errorMessage(error)}`);
+        }
+      }
+    }),
+
+  setPackageCheckPrefs: (patch) =>
+    get().setPrefs({ packages: { ...get().prefs.packages, ...patch } }),
+
+  dismissPackageReloadHint: () => set({ packagesMutatedAt: null }),
+
+  createSessionTab: async (kind, options) => {
     const { project, setHint } = get();
     const api = bridge();
     if (!project) {
@@ -5888,13 +6883,14 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
     const input: CreateTabInput = { cwd: project.path };
     if (kind && kind !== "session") input.kind = kind;
+    if (kind === "terminal" && options?.profileId) input.profileId = options.profileId;
     // Project defaults now live in the project's `.pi/settings.json` when its
     // settings toggle is on; the session manager reads them at creation.
     // A project answered “Trust once” this run is passed the session-only grant so
     // a second tab never re-prompts.
     if (get().sessionTrust.includes(project.path)) input.trust = "session";
     try {
-      get().applyTabs(await api.sessions.create(input));
+      get().applyTabs(await api.sessions.create(input), { adoptSelection: true });
       set({ view: "session", hint: null });
     } catch (error) {
       const message = userFacingError(error);
@@ -6029,22 +7025,35 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   activateTab: async (tabId) => {
     const api = bridge();
     if (!api?.sessions) return;
+    // This is the gesture: it owns the selection, and every later push with an
+    // older sequence is ignored (see `applyTabs`).
+    localSelectionSeq += 1;
     set({ activeTabId: tabId, view: "session" });
+    get().clearDialogAttention(tabId);
     const tab = get().tabs.find((entry) => entry.id === tabId);
-    if (!tab || tab.kind === "web") return;
+    if (!tab) return;
     // The rail and the sidebar follow the session that is on screen (2026-10-30
     // project-scoped rail plan): clicking a session in another project also
     // selects that project. Fire-and-forget so waking the host is not delayed.
     void get().selectProjectForCwd(tab.cwd);
-    // An editor tab has no host. It still tells main which tab is active (so the
-    // selection survives a push/relaunch), but skips the host-only refreshes.
+    // An editor or web tab has no host. It still tells main which tab is active,
+    // so the durable selection cannot disagree with this window and a later push
+    // cannot snap the view back to the previous tab (2026-11-06 tab-switch plan).
     if (!isHostBackedTab(tab.kind)) {
       try {
-        get().applyTabs(await api.sessions.activate(tabId));
+        get().applyTabs(await api.sessions.activate(tabId), { adoptSelection: true });
       } catch (error) {
         get().noteFailure(error);
       }
       return;
+    }
+    // The gesture owns the selection: `activate` is the only call that moves
+    // the app. Waking the host is a separate `ensure`, so a background pane or
+    // a resync can never reassign the active tab (2026-11-06 tab-switch plan).
+    try {
+      get().applyTabs(await api.sessions.activate(tabId), { adoptSelection: true });
+    } catch {
+      // `ensureSession` below is the retry path and reports the failure once.
     }
     // Switching tabs always re-checks; the ensure refreshes extension UI, the
     // TUI surface, shortcuts and the command cache after the host is awake.
@@ -6070,7 +7079,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
     const run = (async () => {
       try {
-        get().applyTabs(await api.sessions.activate(tabId));
+        get().applyTabs(await api.sessions.ensure(tabId), { adoptSelection: false });
         await Promise.all([
           get().loadShortcuts({ refresh: true }),
           get().loadExtensionUi(tabId),
@@ -6101,7 +7110,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (now - lastSessionResyncAt < SESSION_RESYNC_THROTTLE_MS) return;
     lastSessionResyncAt = now;
     try {
-      get().applyTabs(await api.sessions.reconcile());
+      get().applyTabs(await api.sessions.reconcile(), { adoptSelection: false });
     } catch {
       // A failed reconcile must not break the shell; fall back to the plain list.
       await get().loadTabs();
@@ -6117,7 +7126,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.sessions) return;
     try {
-      get().applyTabs(await api.sessions.close(tabId));
+      get().applyTabs(await api.sessions.close(tabId), { adoptSelection: true });
     } catch (error) {
       get().noteFailure(error);
     }
@@ -6144,7 +7153,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.sessions) return;
     try {
-      get().applyTabs(await api.sessions.closeOthers(tabId));
+      get().applyTabs(await api.sessions.closeOthers(tabId), { adoptSelection: true });
     } catch (error) {
       get().noteFailure(error);
     }
@@ -6155,7 +7164,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.sessions) return;
     try {
-      get().applyTabs(await api.sessions.closeAll(kind));
+      get().applyTabs(await api.sessions.closeAll(kind), { adoptSelection: true });
     } catch (error) {
       get().noteFailure(error);
     }
@@ -6177,7 +7186,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (!api?.sessions) return null;
     try {
       const envelope = await api.sessions.retargetEditorTabs(input);
-      get().applyTabs(envelope);
+      get().applyTabs(envelope, { adoptSelection: false });
       return envelope;
     } catch (error) {
       get().noteFailure(error);
@@ -6213,7 +7222,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const input: CreateTabInput = { cwd: tab.cwd };
     if (get().sessionTrust.includes(tab.cwd)) input.trust = "session";
     try {
-      get().applyTabs(await api.sessions.create(input));
+      get().applyTabs(await api.sessions.create(input), { adoptSelection: true });
       set({ view: "session", hint: null });
     } catch (error) {
       get().noteFailure(error);
@@ -6248,32 +7257,83 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   // ---- Session browser (plan step 11) ----
 
   openSessionBrowser: async () => {
-    set({ sessionBrowserOpen: true, view: "session", hint: null });
-    await get().loadProjectSessions();
+    const project = get().project;
+    const scope: SessionScope = project ? "current" : "all";
+    set({
+      sessionBrowserOpen: true,
+      view: "session",
+      hint: null,
+      sessionBrowserScope: scope,
+    });
+    await get().loadProjectSessions({
+      query: get().sessionBrowserQuery,
+      scope,
+      cwd: project?.path ?? null,
+      sort: get().sessionBrowserSort,
+      namedOnly: get().sessionBrowserNamedOnly,
+    });
   },
 
   closeSessionBrowser: () => set({ sessionBrowserOpen: false, panePickerTarget: null }),
 
   setSessionBrowserQuery: (query) => set({ sessionBrowserQuery: query }),
 
+  setSessionBrowserScope: (scope) => set({ sessionBrowserScope: scope }),
+
+  setSessionBrowserSort: (sort) => set({ sessionBrowserSort: sort }),
+
+  setSessionBrowserNamedOnly: (namedOnly) => set({ sessionBrowserNamedOnly: namedOnly }),
+
   loadProjectSessions: async (options = {}) => {
     const api = bridge();
     if (!api?.sessions) return get().projectSessions;
+
+    const query = normalizeSessionListQuery(options);
+    const requestId = ++sessionBrowserRequestId;
+    // Record the query at request start: the dialog compares against it, so it
+    // must not fire a duplicate load while this one is in flight.
+    set({ projectSessionsSearching: true, projectSessionsQuery: query });
     try {
-      const response = (await api.sessions.request({
-        tabId: CONTROL_TAB_ID,
-        method: "session.list",
-      })) as { sessions?: unknown } | undefined;
-      const sessions = sanitizeSessionList(response?.sessions);
+      const page = await requestSessionPage(api, query, { refresh: options.refresh === true });
+      // A newer keystroke already asked for a different page.
+      if (requestId !== sessionBrowserRequestId) return get().projectSessions;
+
+      if (page.error) {
+        set({
+          projectSessions: [],
+          projectSessionsLoaded: true,
+          projectSessionsError: page.error,
+          projectSessionsErrorKind: "query",
+          projectSessionsSearching: false,
+          projectSessionsTotal: page.total,
+          projectSessionsMatched: page.matched,
+          projectSessionsTruncated: page.truncated,
+        });
+        return [];
+      }
+
       set({
-        projectSessions: sessions,
+        projectSessions: page.sessions,
         projectSessionsLoaded: true,
         projectSessionsError: null,
+        projectSessionsErrorKind: null,
+        projectSessionsSearching: false,
+        projectSessionsTotal: page.total,
+        projectSessionsMatched: page.matched,
+        projectSessionsTruncated: page.truncated,
       });
-      return sessions;
+      return page.sessions;
     } catch (error) {
+      if (requestId !== sessionBrowserRequestId) return get().projectSessions;
       const message = error instanceof Error ? error.message : String(error);
-      set({ projectSessionsLoaded: true, projectSessionsError: message });
+      // Keep any rows already on screen: a transient host failure should not
+      // pretend the profile is empty (the original bug's most confusing part).
+      set({
+        projectSessionsLoaded: true,
+        projectSessionsError: message,
+        projectSessionsErrorKind: "host",
+        projectSessionsSearching: false,
+      });
       if (options.refresh) set({ hint: message });
       return get().projectSessions;
     }
@@ -6289,30 +7349,87 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       });
       return;
     }
+    if (resumingSessionFiles.has(session.path)) return;
+    resumingSessionFiles.add(session.path);
+    // Dismiss on the gesture, not on host readiness: `sessions.create` only
+    // resolves once the host has spawned, loaded the extension stack and read
+    // the JSONL (24-28 s measured), and a resume that times out at 30 s must
+    // not leave the browser on screen. Main publishes the tab table before it
+    // awaits the host, so the strip shows the new tab immediately.
+    // “Browse saved sessions…” from a pane: the resumed tab belongs there, not
+    // in a new tab the user then has to place by hand.
+    const targetPane = get().panePickerTarget;
+    set({ sessionBrowserOpen: false, panePickerTarget: null, view: "session", hint: null });
+    /** Return to a tab the user picked (the pane they asked for, or the window). */
+    const returnTo = async (tabId: string): Promise<void> => {
+      if (targetPane !== null) await get().assignPaneTab(targetPane, tabId);
+      else await get().activateTab(tabId);
+    };
     try {
+      // One JSONL is one conversation and one live manager: the SDK takes no
+      // lock and every host appends from its own in-memory leaf, so opening an
+      // already-open file would branch the transcript. Return to its tab.
+      const open = findTabBySessionFile(get().tabs, session.path);
+      if (open) {
+        await returnTo(open.id);
+        return;
+      }
       const envelope = await api.sessions.create({ cwd, sessionFile: session.path });
-      get().applyTabs(envelope);
-      set({ sessionBrowserOpen: false, view: "session", hint: null });
-      // “Browse saved sessions…” from a pane: the resumed tab belongs there, not
-      // in a new tab the user then has to place by hand.
-      const targetPane = get().panePickerTarget;
-      set({ panePickerTarget: null });
+      // Main found the file already open between our check and the request (a
+      // stale table or another caller): return to that tab, never a second one.
+      if (envelope.reusedTabId) {
+        get().applyTabs(envelope, { adoptSelection: false });
+        await returnTo(envelope.reusedTabId);
+        return;
+      }
+      get().applyTabs(envelope, { adoptSelection: true });
       if (targetPane !== null && envelope.activeTabId) {
         await get().assignPaneTab(targetPane, envelope.activeTabId);
       }
     } catch (error) {
+      // The browser stays closed: the status-bar hint and the failed tab are
+      // the feedback, and reopening would make the dialog appear by itself.
       get().noteFailure(error);
+    } finally {
+      resumingSessionFiles.delete(session.path);
     }
   },
 
   continueMostRecent: async (cwd) => {
-    const sessions = await get().loadProjectSessions();
-    const latest = mostRecentSessionForProject(sessions, cwd);
-    if (!latest) {
-      set({ hint: "No saved session in this project yet — start a new one (Ctrl+N)." });
-      return;
+    const api = bridge();
+    if (!api?.sessions) return;
+    // Continue is the one browser action whose dialog stays up while main works
+    // (the newest-row lookup), so a second click must not start a second race.
+    if (continuingCwds.has(cwd)) return;
+    continuingCwds.add(cwd);
+    try {
+      // Ask for exactly one row instead of scanning a possibly truncated page.
+      // This is a read-only lookup: it must not overwrite the dialog's rows.
+      const page = await requestSessionPage(api, {
+        scope: "current",
+        cwd,
+        sort: "recent",
+        limit: 1,
+      });
+      // The host rejected the query: saying "no saved session" would send the
+      // user looking for a session that may well exist.
+      if (page.error) {
+        set({ hint: page.error });
+        return;
+      }
+      const latest = page.sessions[0] ?? null;
+      if (!latest) {
+        set({ hint: "No saved session in this project yet — start a new one (Ctrl+N)." });
+        return;
+      }
+      // `resumeSession` dismisses the browser before it awaits the host open,
+      // so Continue closes as soon as the newest row is known.
+      await get().resumeSession(latest);
+    } catch (error) {
+      get().noteFailure(error);
+    } finally {
+      continuingCwds.delete(cwd);
     }
-    await get().resumeSession(latest);
   },
 
   deleteSession: async (session) => {
@@ -6323,13 +7440,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       if (!result.ok) {
         set({ hint: result.error ?? "The session could not be deleted." });
         // A stale row is the usual cause: refresh so the list tells the truth.
-        await get().loadProjectSessions({ refresh: true });
+        await get().loadProjectSessions({ ...(get().projectSessionsQuery ?? {}), refresh: true });
         return false;
       }
       // No tab should keep pointing at a file that is now in the trash.
       const open = get().tabs.filter((tab) => tab.sessionFile === session.path);
       for (const tab of open) await get().closeTab(tab.id);
-      await get().loadProjectSessions({ refresh: true });
+      await get().loadProjectSessions({ ...(get().projectSessionsQuery ?? {}), refresh: true });
       set({ hint: "Session moved to the trash." });
       return true;
     } catch (error) {
@@ -6360,7 +7477,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
           params: { sessionFile: session.path, name: trimmed },
         });
       }
-      await get().loadProjectSessions({ refresh: true });
+      await get().loadProjectSessions({ ...(get().projectSessionsQuery ?? {}), refresh: true });
       set({ hint: null });
     } catch (error) {
       get().noteFailure(error);
@@ -6827,8 +7944,15 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   closeChangelog: () => set({ changelogOpen: false }),
 
   resetTranscript: (tabId) => {
+    transcriptHydrateNoted.delete(tabId);
+    // An in-flight `messages.get` for the outgoing session must not resolve into
+    // the fresh transcript; the next hydration owns the new session.
+    transcriptHydrating.delete(tabId);
     set({
       transcripts: { ...get().transcripts, [tabId]: createTranscriptState() },
+      // The outgoing branch's seed must not leak into the next hydrate; live
+      // prompts (`draftHistory`) and the stashed draft survive, as in Pi.
+      historySeed: omitKey(get().historySeed, tabId),
     });
   },
 }));

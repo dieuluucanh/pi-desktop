@@ -23,6 +23,8 @@ export interface FakeApp extends LaunchedApp {
   relaunch(): Promise<void>;
   /** Clicks an Electron menu item by its command id (e.g. `open-web-url`). */
   menuCommand(id: string): Promise<void>;
+  /** The live window's display-zoom factor as a whole percentage (e.g. `110`). */
+  zoomPercent(): Promise<number>;
 }
 
 export interface FakeAppOptions {
@@ -132,6 +134,13 @@ export async function launchFakeApp(options: FakeAppOptions = {}): Promise<FakeA
       await current.app.evaluate(({ Menu }, commandId) => {
         Menu.getApplicationMenu()?.getMenuItemById(commandId)?.click();
       }, id);
+    },
+    async zoomPercent() {
+      // `current` is the live launch: `relaunch()` swaps it under this closure.
+      return current.app.evaluate(({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows()[0];
+        return Math.round((window?.webContents.getZoomFactor() ?? 1) * 100);
+      });
     },
   };
   return result;

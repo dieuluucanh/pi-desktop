@@ -16,6 +16,7 @@ import type {
 } from "./git";
 import type { CheckpointAction, CheckpointActionResult, CheckpointState } from "./checkpoints";
 import type { HostMethod } from "./host-protocol";
+import type { TerminalBridge } from "./terminal-ipc";
 import type { UpdateState } from "./updates";
 import type { BuildChannel } from "./build-info";
 import type {
@@ -141,6 +142,10 @@ export const IPC = {
   sessionReconcile: "session:reconcile",
   /** Stops and re-spawns a tab's host, resuming its session (plan step 22). */
   sessionRestart: "session:restart",
+  /** Stops a tab's host and leaves the tab `stopped` (Cancel an open). */
+  sessionStop: "session:stop",
+  /** Wakes a tab's host and session without changing the active tab. */
+  sessionEnsure: "session:ensure",
   sessionRequest: "session:request",
   /** Deletes a session to the OS trash (plan step 11; validated in main). */
   sessionDelete: "session:delete",
@@ -150,6 +155,27 @@ export const IPC = {
   sessionState: "session:state",
   /** Main → renderer: the tab table changed (created, closed, status). */
   sessionTabsChanged: "session:tabs-changed",
+
+  /** Native terminal (2026-11-05 terminal plan): a PTY-backed tab. */
+  terminalCreate: "terminal:create",
+  terminalAttach: "terminal:attach",
+  terminalWrite: "terminal:write",
+  terminalResize: "terminal:resize",
+  terminalClose: "terminal:close",
+  /** Fire-and-forget output credit (renderer → main). */
+  terminalAck: "terminal:ack",
+  terminalList: "terminal:list",
+  terminalProfiles: "terminal:profiles",
+  /** Renderer → main: whether a terminal has keyboard focus. */
+  terminalFocus: "terminal:focus",
+  /** Main → renderer: a `terminal.data` / `terminal.exit` / `terminal.error`. */
+  terminalEvent: "terminal:event",
+
+  /** Extension TUI surface focus and paste routing (2026-11-18 paste plan). */
+  /** Renderer → main: which extension TUI tab owns the window's keyboard. */
+  tuiFocus: "tui:focus",
+  /** Main → renderer: a menu/context-menu Paste for that frame. */
+  tuiPaste: "tui:paste",
 
   /** Projects and workspace management (plan step 10). */
   projectsGet: "projects:get",
@@ -291,6 +317,8 @@ export type IpcChannel = (typeof IPC)[keyof typeof IPC];
 /** Commands the application menu can send to the renderer. */
 export const MENU_COMMANDS = [
   "new-session",
+  "new-terminal",
+  "toggle-terminal",
   "open-project",
   "open-file",
   // Editor surface (2026-11-02 plan). Menu items only: Save/Format are
@@ -301,6 +329,14 @@ export const MENU_COMMANDS = [
   "open-web-url",
   "close-session",
   "view-sessions",
+  // Todo panel display control (2026-11-18 todo-panel-all-states plan).
+  // Explicit verbs plus a toggle; the toggle owns CmdOrCtrl+Alt+L because
+  // Ctrl+Alt+O is already Sessions. The renderer dispatches /todos <verb>.
+  "todos-auto",
+  "todos-expand",
+  "todos-collapse",
+  "todos-hide",
+  "todos-toggle",
   "next-tab",
   "previous-tab",
   "command-palette",
@@ -310,11 +346,12 @@ export const MENU_COMMANDS = [
   "view-connections",
   "view-skills",
   "view-diagnostics",
+  "view-updates",
   "view-office",
   "shortcuts",
   // Updates (plan step 26).
   "check-updates",
-  /** Opens the Settings About & updates card (non-macOS About item). */
+  /** Opens the About & updates view (non-macOS About item). */
   "view-about",
   // Session history (plan step 11).
   "session-tree",
@@ -374,6 +411,12 @@ export interface AppInfo {
   buildCommit: string | null;
   /** ISO timestamp of the packaging run. */
   builtAt: string | null;
+  /**
+   * The bundled `@earendil-works/pi-coding-agent` version. Users cannot update
+   * the agent independently of the app, so this is the honest answer to "which
+   * Pi agent am I running?".
+   */
+  piVersion: string | null;
   safeMode: boolean;
   /** True when `PI_OFFLINE` disables Pi's startup network calls (plan step 22). */
   piOffline: boolean;
@@ -432,6 +475,12 @@ export interface SessionsBridge {
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
   activate(tabId: string): Promise<SessionTabsEnvelope>;
   /**
+   * Wakes a tab's host and session without changing the selection. This is the
+   * call a background pane/reconcile makes; `activate` stays the gesture that
+   * moves the app (2026-11-06 tab-switch plan).
+   */
+  ensure(tabId: string): Promise<SessionTabsEnvelope>;
+  /**
    * Declares the tabs the renderer currently shows. Advisory: unknown ids are
    * ignored, nothing is parked or spawned, and no tab table is published.
    */
@@ -443,6 +492,8 @@ export interface SessionsBridge {
   restore(): Promise<SessionTabsEnvelope>;
   /** Recovers a crashed/wedged host by re-spawning it (plan step 22). */
   restart(tabId: string): Promise<SessionTabsEnvelope>;
+  /** Stops a host and leaves the tab `stopped`; the next activation resumes. */
+  stop(tabId: string): Promise<SessionTabsEnvelope>;
   /** Runs any host protocol method against a tab's host. */
   request(input: SessionRequestInput): Promise<unknown>;
   /**
@@ -550,6 +601,18 @@ export interface WebTabOpenInput {
   cwd?: string;
   /** The session tab this web tab links back to (Plannotator). */
   sessionTabId?: string | null;
+  /**
+   * Whether opening the tab also selects it. Default true for a user gesture;
+   * false for a URL discovered in a tool result/notification, so a background
+   * review cannot steal the session the user is reading (2026-11-06 Strata loop).
+   */
+  activate?: boolean;
+  /**
+   * Reload an already-open tab for this URL before focusing it (review round 2+
+   * on a fixed Plannotator port). Main owns this so a parked/not-yet-created
+   * view is synced before the reload command runs.
+   */
+  reload?: boolean;
 }
 
 export interface WebBridge {
@@ -729,6 +792,20 @@ export interface WorkspaceBridge {
 }
 
 /** The complete API exposed to the renderer as `window.pi`. */
+/**
+ * The extension TUI surface bridge (2026-11-18 questionnaire paste plan).
+ *
+ * The surface is a non-editable frame, so Electron's native paste command never
+ * reaches it. The renderer reports keyboard ownership and performs the paste
+ * itself when main asks, which keeps one writer for every gesture.
+ */
+export interface TuiBridge {
+  /** Fire-and-forget: reports which extension frame owns the keyboard. */
+  setFocus(tabId: string, focused: boolean): void;
+  /** Main → renderer: the focused frame should paste the clipboard now. */
+  onPasteRequest(listener: (tabId: string) => void): () => void;
+}
+
 export interface PiDesktopBridge {
   getAppInfo(): Promise<AppInfo>;
   openExternal(url: string): Promise<boolean>;
@@ -744,6 +821,8 @@ export interface PiDesktopBridge {
   onMenuCommand(listener: (command: MenuCommand) => void): () => void;
   prefs: PrefsBridge;
   sessions: SessionsBridge;
+  terminal: TerminalBridge;
+  tui: TuiBridge;
   share: ShareBridge;
   projects: ProjectsBridge;
   office: OfficeBridge;

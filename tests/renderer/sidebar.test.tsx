@@ -1,10 +1,11 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { Sidebar } from "../../src/renderer/src/layout/Sidebar";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH } from "../../src/shared/prefs";
+import { initialUpdateState } from "../../src/shared/updates";
 import { installBridge } from "./fixtures";
 
 function reset(collapsed = false): void {
@@ -16,6 +17,8 @@ function reset(collapsed = false): void {
     project: null,
     tabs: [],
     activeTabId: null,
+    update: null,
+    packageUpdates: [],
     prefs: { ...DEFAULT_PREFS, sidebarCollapsed: collapsed, sidebarWidth: 268 },
   });
 }
@@ -26,6 +29,90 @@ function stubCapture(handle: HTMLElement): void {
 }
 
 beforeEach(() => reset());
+
+describe("Sidebar update sign", () => {
+  it("marks About & updates while a version is offered", () => {
+    useAppStore.setState({
+      update: { ...initialUpdateState(true), phase: "available", version: "0.4.0" },
+    });
+    render(<Sidebar />);
+
+    expect(screen.getByRole("button", { name: /about & updates/i })).toBeInTheDocument();
+    expect(screen.getByTestId("nav-update-badge")).toBeInTheDocument();
+    expect(screen.getByTitle(/0.4.0 is available/)).toBeInTheDocument();
+  });
+
+  it("uses the ready sign for a downloaded build and no sign when settled", () => {
+    useAppStore.setState({
+      update: { ...initialUpdateState(true), phase: "downloaded", version: "0.4.0" },
+    });
+    const { rerender } = render(<Sidebar />);
+    expect(screen.getByTitle(/0.4.0 is ready to install/)).toBeInTheDocument();
+
+    useAppStore.setState({ update: { ...initialUpdateState(true), phase: "up-to-date" } });
+    rerender(<Sidebar />);
+    expect(screen.queryByTestId("nav-update-badge")).toBeNull();
+  });
+
+  it("keeps the sign through the download and drops it while checking", () => {
+    useAppStore.setState({
+      update: { ...initialUpdateState(true), phase: "downloading", version: "0.4.0" },
+    });
+    const { rerender } = render(<Sidebar />);
+    expect(screen.getByTestId("nav-update-badge")).toBeInTheDocument();
+    expect(screen.getByTitle(/downloading/i)).toBeInTheDocument();
+
+    useAppStore.setState({ update: { ...initialUpdateState(true), phase: "checking" } });
+    rerender(<Sidebar />);
+    expect(screen.queryByTestId("nav-update-badge")).toBeNull();
+  });
+});
+
+describe("Sidebar package-update sign", () => {
+  it("marks Extensions while an update is waiting", () => {
+    useAppStore.setState({
+      packageUpdates: [
+        {
+          source: "npm:alpha",
+          name: "alpha",
+          kind: "npm",
+          scope: "user",
+          latestVersion: "2.0.0",
+        },
+      ],
+    });
+    render(<Sidebar />);
+
+    expect(screen.getByTestId("nav-package-update-badge")).toBeInTheDocument();
+    expect(screen.getByTitle("1 extension update available")).toBeInTheDocument();
+  });
+
+  it("shows no sign when nothing is outdated", () => {
+    render(<Sidebar />);
+    expect(screen.queryByTestId("nav-package-update-badge")).toBeNull();
+  });
+});
+
+describe("Sidebar pinned Projects header", () => {
+  it("renders the header outside the scroller and before it", () => {
+    render(<Sidebar />);
+
+    const sidebar = screen.getByTestId("sidebar");
+    const header = screen.getByTestId("projects-header");
+    const scroll = screen.getByTestId("sidebar-scroll");
+
+    // The pin (2026-11-19): the header is sidebar chrome, not scroll content.
+    // jsdom has no layout, so this asserts the structure that makes it pinned —
+    // a sticky header inside the scroller would be a descendant and fail here.
+    expect(sidebar).toContainElement(header);
+    expect(within(scroll).queryByTestId("projects-header")).toBeNull();
+    expect(header.compareDocumentPosition(scroll) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+    for (const name of ["New project", "Open project folder", "Hide sidebar"]) {
+      expect(within(sidebar).getByRole("button", { name })).toBeInTheDocument();
+    }
+  });
+});
 
 describe("Sidebar resize", () => {
   it("follows the pointer and writes once on release", () => {

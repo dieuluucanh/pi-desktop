@@ -1,7 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChangesSection } from "../../src/renderer/src/rail/ChangesSection";
+import { useEditorStore } from "../../src/renderer/src/editor/editor-store";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { emptyGitSnapshot, type GitFileEntry, type GitSnapshot } from "../../src/shared/git";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
@@ -193,7 +194,7 @@ describe("per-file actions", () => {
     expect(handles.gitCalls.at(-1)).toEqual({
       kind: "diff",
       projectPath: PROJECT,
-      payload: { path: "src/a.ts", staged: false },
+      payload: { path: "src/a.ts" },
     });
   });
 
@@ -209,10 +210,70 @@ describe("per-file actions", () => {
     });
   });
 
-  it("does not offer a diff for an untracked file", () => {
+  it("opens the full-file diff for an untracked file", async () => {
     seed(snapshot({ changed: [file("new.ts", { status: "untracked" })] }));
     render(<ChangesSection projectPath={PROJECT} />);
-    expect(screen.queryByRole("button", { name: "Show diff for new.ts" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Show diff for new.ts" }));
+
+    expect(handles.gitCalls.at(-1)).toEqual({
+      kind: "diff",
+      projectPath: PROJECT,
+      payload: { path: "new.ts", untracked: true },
+    });
+  });
+
+  it("opens the diff from the clickable path", async () => {
+    seed(snapshot({ changed: [file("src/a.ts")] }));
+    render(<ChangesSection projectPath={PROJECT} />);
+
+    await userEvent.click(screen.getByTestId("change-path-src/a.ts"));
+
+    expect(handles.gitCalls.at(-1)?.payload).toEqual({ path: "src/a.ts" });
+  });
+
+  it("opens the staged diff from a staged row's path", async () => {
+    seed(snapshot({ staged: [file("src/a.ts", { staged: true, unstaged: false })] }));
+    render(<ChangesSection projectPath={PROJECT} />);
+
+    await userEvent.click(screen.getByTestId("change-path-src/a.ts"));
+
+    expect(handles.gitCalls.at(-1)?.payload).toEqual({ path: "src/a.ts", staged: true });
+  });
+
+  it("opens the work-tree file in an editor tab", async () => {
+    const spy = vi.spyOn(useEditorStore.getState(), "openFileTab").mockResolvedValue(true);
+    try {
+      seed(snapshot({ changed: [file("src/a.ts")] }));
+      render(<ChangesSection projectPath={PROJECT} />);
+
+      await userEvent.click(screen.getByRole("button", { name: "Open src/a.ts" }));
+
+      expect(spy).toHaveBeenCalledWith(PROJECT, "src/a.ts");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("does not offer Open file for a deleted path", () => {
+    seed(snapshot({ changed: [file("gone.ts", { status: "deleted" })] }));
+    render(<ChangesSection projectPath={PROJECT} />);
+    expect(screen.queryByRole("button", { name: "Open gone.ts" })).not.toBeInTheDocument();
+  });
+
+  it("orders the changed rows by path", () => {
+    seed(snapshot({ changed: [file("b.ts"), file("a.ts"), file("f10.ts"), file("f2.ts")] }));
+    render(<ChangesSection projectPath={PROJECT} />);
+
+    const rows = screen
+      .getAllByTestId(/^change-row-/)
+      .map((row) => row.getAttribute("data-testid"));
+    expect(rows).toEqual([
+      "change-row-a.ts",
+      "change-row-b.ts",
+      "change-row-f2.ts",
+      "change-row-f10.ts",
+    ]);
   });
 
   it("does not offer a discard on a staged-only row", () => {
@@ -358,6 +419,17 @@ describe("empty states", () => {
     render(<ChangesSection projectPath={PROJECT} />);
     expect(screen.getByTestId("changes-empty")).toHaveTextContent("Git is busy");
     expect(screen.getByTestId("changes-empty")).toHaveTextContent(/rebase/);
+  });
+
+  it("explains a git timeout without offering init", () => {
+    seed({
+      ...emptyGitSnapshot(PROJECT, "timeout"),
+      message: "git did not answer within 10 s.",
+    });
+    render(<ChangesSection projectPath={PROJECT} />);
+    expect(screen.getByTestId("changes-empty")).toHaveTextContent("Git did not answer");
+    expect(screen.getByTestId("changes-empty")).toHaveTextContent(/did not answer within 10 s/);
+    expect(screen.queryByRole("button", { name: "Initialize repository" })).not.toBeInTheDocument();
   });
 
   it("explains a missing folder", () => {

@@ -14,6 +14,14 @@
  *    NUL-terminated field for a rename, so a path containing a newline, a quote
  *    or CJK text needs no unescaping.
  *
+ * `--untracked-files=all` is not optional. Git's default `-unormal` collapses
+ * every untracked directory into one `? <dir>/` record, and a trailing-slash
+ * path is refused by `isSafeRepoPath` (an empty final segment), so a file the
+ * agent just created in a new folder would silently disappear before the rail
+ * saw it. `-uall` lists each file individually, which is what VS Code asks for
+ * too. The only trailing-slash record left is a nested repository (git refuses
+ * to descend into another repository); that is skipped deliberately.
+ *
  * The parser is pure: `parseStatus` takes the raw stdout and returns the
  * snapshot fields. Only {@link readStatus} runs a command.
  */
@@ -25,7 +33,7 @@ import {
   type GitStashEntry,
 } from "../shared/git";
 import type { GitRunner } from "./runner";
-import { GIT_STATUS_TIMEOUT_MS } from "./runner";
+import { GIT_STATUS_READ_TIMEOUT_MS, GIT_STATUS_TIMEOUT_MS } from "./runner";
 
 /** The branch facts `--porcelain=v2 --branch` reports inline. */
 export interface StatusBranchFacts {
@@ -157,6 +165,12 @@ export function parseStatus(stdout: string): ParsedStatus {
       // `? <path>` — untracked. It is work-tree-only.
       const path = record.slice(2);
       if (path.length === 0) continue;
+      // `-uall` lists files individually, but a nested repository is still one
+      // `? name/` record: git will not descend into another repository. It is
+      // not a file this panel can stage or diff, and a trailing-slash path is
+      // refused by `isSafeRepoPath`, so skip it deliberately (VS Code's status
+      // parser does the same).
+      if (path.endsWith("/")) continue;
       push({ path, origPath: null, status: "untracked", staged: false, unstaged: true });
       continue;
     }
@@ -246,8 +260,15 @@ export async function readStatus(
 > {
   const result = await runner.run(
     root,
-    ["status", "--porcelain=v2", "--branch", "-z", "--ignore-submodules=dirty"],
-    { timeoutMs: options.timeoutMs ?? GIT_STATUS_TIMEOUT_MS },
+    [
+      "status",
+      "--porcelain=v2",
+      "--branch",
+      "-z",
+      "--untracked-files=all",
+      "--ignore-submodules=dirty",
+    ],
+    { timeoutMs: options.timeoutMs ?? GIT_STATUS_READ_TIMEOUT_MS },
   );
   if (result.missing || result.code !== 0) {
     return {

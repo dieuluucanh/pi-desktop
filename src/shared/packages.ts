@@ -264,6 +264,134 @@ export function sanitizePackagesSnapshot(value: unknown): PackagesSnapshot {
   };
 }
 
+/** The two source kinds the update check can answer for; a path is never checked. */
+export type PackageUpdateKind = "npm" | "git";
+
+const PACKAGE_UPDATE_KINDS: readonly PackageUpdateKind[] = ["npm", "git"];
+
+export function isPackageUpdateKind(value: unknown): value is PackageUpdateKind {
+  return typeof value === "string" && (PACKAGE_UPDATE_KINDS as readonly string[]).includes(value);
+}
+
+/**
+ * One configured package for which the check found a newer version.
+ *
+ * `latestVersion` is deliberately nullable: the SDK reports only *that* an
+ * update exists, and a version is filled in only when it is what the package
+ * manager would actually install (a floating npm source). A ranged or Git
+ * source shows "update available" with no number rather than a lie.
+ */
+export interface PackageUpdateSummary {
+  /** The verbatim settings entry the check reported (normalised on the way in). */
+  source: string;
+  name: string;
+  kind: PackageUpdateKind;
+  scope: PackageScope;
+  latestVersion: string | null;
+}
+
+export interface PackageUpdatesSnapshot {
+  updates: PackageUpdateSummary[];
+  checkedAt: number;
+  /** True when the profile is offline, so the check was skipped by design. */
+  offline: boolean;
+}
+
+/**
+ * How long after launch the first background check runs. Deliberately late: the
+ * window is interactive and the host has settled before anything touches npm.
+ */
+export const PACKAGE_CHECK_STARTUP_DELAY_MS = 20_000;
+/** How often the background check repeats while the app runs. */
+export const PACKAGE_CHECK_INTERVAL_MS = 6 * 60 * 60_000;
+/** A snapshot older than this is stale when the Extensions page opens. */
+export const PACKAGE_CHECK_STALE_MS = PACKAGE_CHECK_INTERVAL_MS;
+/** The host serves a snapshot from this window instead of re-running the sweep. */
+export const PACKAGE_CHECK_CACHE_MS = 60_000;
+/** Longest fingerprint kept in prefs / used to derive a notification id. */
+export const MAX_PACKAGE_UPDATE_SIGNATURE = 1_000;
+
+/** Coerces one untrusted update entry into a `PackageUpdateSummary`. */
+export function sanitizePackageUpdateSummary(value: unknown): PackageUpdateSummary | null {
+  const source = record(value);
+  const raw = stringOrNull(source.source);
+  if (!raw) return null;
+  const parsed = tryParsePackageSource(raw);
+  // A local path has no registry to ask, so it can never be an update entry.
+  if (!parsed || parsed.kind === "path") return null;
+  return {
+    source: parsed.source,
+    name: stringOrNull(source.name) ?? parsed.name,
+    // The parser is the authority on the kind: the same string the reader and
+    // the package manager both parse decides npm vs git.
+    kind: parsed.kind === "git" ? "git" : "npm",
+    scope: isPackageScope(source.scope) ? source.scope : "user",
+    latestVersion: stringOrNull(source.latestVersion),
+  };
+}
+
+export function sanitizePackageUpdates(value: unknown): PackageUpdateSummary[] {
+  if (!Array.isArray(value)) return [];
+  const updates: PackageUpdateSummary[] = [];
+  for (const entry of value) {
+    const update = sanitizePackageUpdateSummary(entry);
+    if (update) updates.push(update);
+  }
+  return updates;
+}
+
+export function sanitizePackageUpdatesSnapshot(value: unknown): PackageUpdatesSnapshot {
+  const source = record(value);
+  const checkedAt = source.checkedAt;
+  return {
+    updates: sanitizePackageUpdates(source.updates),
+    checkedAt:
+      typeof checkedAt === "number" && Number.isFinite(checkedAt) && checkedAt >= 0 ? checkedAt : 0,
+    offline: source.offline === true,
+  };
+}
+
+/**
+ * The dedupe key of an update entry, ignoring its version: `npm:<name>`,
+ * `git:<host>/<path>` or the raw source when it cannot be parsed.
+ */
+export function packageUpdateIdentity(update: Pick<PackageUpdateSummary, "source">): string {
+  return tryParsePackageSource(update.source)?.identity ?? update.source;
+}
+
+/**
+ * The fingerprint of an update *set*, used to announce it once (D7).
+ *
+ * Sorted so the order the host happened to report cannot re-raise the same set;
+ * a newer target version or a new package changes it. Bounded because it is
+ * persisted in preferences.
+ */
+export function packageUpdateSignature(
+  updates: readonly PackageUpdateSummary[],
+  maxLength = MAX_PACKAGE_UPDATE_SIGNATURE,
+): string {
+  const parts = updates
+    .map((update) => `${packageUpdateIdentity(update)}@${update.latestVersion ?? ""}`)
+    .sort();
+  return parts.join("|").slice(0, Math.max(0, maxLength));
+}
+
+/**
+ * True when the Extensions page should run a check on open: never checked, past
+ * the stale window, or the system clock moved backwards (which must not wedge
+ * checks forever).
+ */
+export function packageCheckDue(input: {
+  checkedAt: number | null;
+  now: number;
+  staleMs?: number;
+}): boolean {
+  const { checkedAt, now, staleMs = PACKAGE_CHECK_STALE_MS } = input;
+  if (typeof checkedAt !== "number" || !Number.isFinite(checkedAt) || checkedAt <= 0) return true;
+  if (now < checkedAt) return true;
+  return now - checkedAt >= staleMs;
+}
+
 /** Progress frames are pushed as `packages.progress` (plan step 14). */
 export const PACKAGE_PROGRESS_EVENT = "packages.progress";
 /** Pushed after a successful mutation so every open hub can re-read (plan step 14). */

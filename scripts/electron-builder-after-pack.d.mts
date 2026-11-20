@@ -50,7 +50,12 @@ export interface BuildInfoDocument {
   commit: string | null;
   builtAt: string | null;
   macSigning: MacSigning;
+  /** The bundled `@earendil-works/pi-coding-agent` version. */
+  piVersion: string | null;
 }
+
+/** The bundled Pi agent version from `node_modules`, or null. */
+export function readPiAgentVersion(projectDir: string): string | null;
 
 /** The JSON document written into `resources/build-info.json`. */
 export function buildInfoDocument(input: {
@@ -61,6 +66,8 @@ export function buildInfoDocument(input: {
   /** `context.electronPlatformName`; signing is only recorded for `darwin`. */
   platform?: string;
   macSigning?: unknown;
+  /** Read by `readPiAgentVersion(packager.projectDir)` at pack time. */
+  piVersion?: unknown;
 }): BuildInfoDocument;
 
 /** Writes the provenance file and returns its path. */
@@ -71,3 +78,24 @@ export function writeBuildInfo(
 
 /** Prunes foreign runtimes, stamps build provenance, then rewrites the shims. */
 export default function afterPack(context: AfterPackContext): Promise<void>;
+
+/** Throws when the asar-unpacked terminal host bundle is missing. */
+export function assertTerminalBundle(resourcesDir: string): string;
+
+/** Runs the ELF floor check; throws when the binary needs a newer runtime. */
+export function verifyNativeFloor(binary: string): {
+  binary: string;
+  glibc: string | null;
+  glibcxx: string | null;
+};
+
+/**
+ * Makes the packaged node-pty's `spawn-helper` path rewrite idempotent (the
+ * upstream 1.1.0 bug appends `.unpacked` twice on macOS). Throws when the
+ * expected upstream source is gone, so an upgrade cannot silently ship it.
+ */
+export function patchNodePtyHelperPath(moduleDir: string): {
+  patched: boolean;
+  file: string;
+  reason: "patched" | "already-patched";
+};

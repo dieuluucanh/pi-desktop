@@ -68,6 +68,7 @@ function TabMenuIcon({ id }: { id: TabMenuActionId }) {
       return <Save className="size-3.5" aria-hidden />;
     case "copy-absolute-path":
     case "copy-relative-path":
+    case "copy-session-path":
       return <Copy className="size-3.5" aria-hidden />;
     case "pin":
       return <Pin className="size-3.5" aria-hidden />;
@@ -131,6 +132,9 @@ function runTabMenuAction(id: TabMenuActionId, tab: TabRecord, onRename: () => v
         void copyAndReport(workspaceDisplayRelativePath(tab.cwd, tab.filePath), "Relative path");
       }
       return;
+    case "copy-session-path":
+      if (tab.sessionFile) void copyAndReport(tab.sessionFile, "Session path");
+      return;
     case "pin":
       void setTabPinnedAction(tab.id, true);
       return;
@@ -190,18 +194,21 @@ export function TabMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent align={align}>
         <DropdownMenuLabel>{tab.title}</DropdownMenuLabel>
-        {tabMenuItems(tab.kind, tab.pinned === true).map((item) => (
-          <span key={item.id}>
-            {item.separated ? <DropdownMenuSeparator /> : null}
-            <DropdownMenuItem
-              {...(item.destructive ? { destructive: true } : {})}
-              onSelect={() => runTabMenuAction(item.id, tab, onRename)}
-            >
-              <TabMenuIcon id={item.id} />
-              {item.label}
-            </DropdownMenuItem>
-          </span>
-        ))}
+        {tabMenuItems(tab.kind, tab.pinned === true, { sessionFile: tab.sessionFile }).map(
+          (item) => (
+            <span key={item.id}>
+              {item.separated ? <DropdownMenuSeparator /> : null}
+              <DropdownMenuItem
+                {...(item.destructive ? { destructive: true } : {})}
+                disabled={item.disabled === true}
+                onSelect={() => runTabMenuAction(item.id, tab, onRename)}
+              >
+                <TabMenuIcon id={item.id} />
+                {item.label}
+              </DropdownMenuItem>
+            </span>
+          ),
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -222,18 +229,21 @@ export function TabContextMenu({
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent data-testid="tab-context-menu">
         <ContextMenuLabel>{tab.title}</ContextMenuLabel>
-        {tabMenuItems(tab.kind, tab.pinned === true).map((item) => (
-          <span key={item.id}>
-            {item.separated ? <ContextMenuSeparator /> : null}
-            <ContextMenuItem
-              {...(item.destructive ? { destructive: true } : {})}
-              onSelect={() => runTabMenuAction(item.id, tab, onRename)}
-            >
-              <TabMenuIcon id={item.id} />
-              {item.label}
-            </ContextMenuItem>
-          </span>
-        ))}
+        {tabMenuItems(tab.kind, tab.pinned === true, { sessionFile: tab.sessionFile }).map(
+          (item) => (
+            <span key={item.id}>
+              {item.separated ? <ContextMenuSeparator /> : null}
+              <ContextMenuItem
+                {...(item.destructive ? { destructive: true } : {})}
+                disabled={item.disabled === true}
+                onSelect={() => runTabMenuAction(item.id, tab, onRename)}
+              >
+                <TabMenuIcon id={item.id} />
+                {item.label}
+              </ContextMenuItem>
+            </span>
+          ),
+        )}
       </ContextMenuContent>
     </ContextMenu>
   );

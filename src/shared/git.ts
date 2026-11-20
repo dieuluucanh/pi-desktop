@@ -44,6 +44,8 @@ export type GitUnavailableReason =
   | "git_missing"
   /** The folder exists but is not inside a work tree. */
   | "not_a_repo"
+  /** git did not answer within its budget (a very large tree, a lock, a stalled process). */
+  | "timeout"
   /** The folder (or an ancestor) is a bare repository. */
   | "bare_repo"
   /** The folder does not exist or cannot be read. */
@@ -233,6 +235,11 @@ export interface GitDiffRequest {
   staged?: boolean;
   /** Read a commit (against its first parent) instead of a working-tree diff. */
   commit?: string;
+  /**
+   * Read a work-tree file that is not in the index. Requires `path`, and is
+   * incompatible with `staged`/`commit`: there is no index side to compare.
+   */
+  untracked?: boolean;
 }
 
 /** One page of the commit log, as the rail asks for it. */
@@ -548,6 +555,8 @@ export function gitUnavailableMessage(reason: GitUnavailableReason): string {
       return "Git is not installed, or it is not on this app's PATH.";
     case "not_a_repo":
       return "This folder is not a git repository.";
+    case "timeout":
+      return "Git did not answer in time. The repository may be very large; try again, or use a terminal.";
     case "bare_repo":
       return "This folder is a bare repository, so it has no working tree to show.";
     case "no_folder":
@@ -803,6 +812,18 @@ export function parseGitDiffRequest(value: unknown): GitDiffRequest {
     if (!isFullSha(record.commit)) throw new Error("git: commit must be a full sha");
     request.commit = record.commit;
   }
+  if (record.untracked !== undefined) {
+    if (typeof record.untracked !== "boolean") {
+      throw new Error("git: untracked must be a boolean");
+    }
+    if (record.untracked) {
+      if (request.path === undefined) throw new Error("git: an untracked diff needs a path");
+      if (request.staged === true || request.commit !== undefined) {
+        throw new Error("git: an untracked diff is a working-tree read");
+      }
+    }
+    request.untracked = record.untracked;
+  }
   return request;
 }
 
@@ -950,6 +971,7 @@ const UNAVAILABLE_REASONS: readonly GitUnavailableReason[] = [
   "bare_repo",
   "no_folder",
   "operation_in_progress",
+  "timeout",
 ];
 
 /** Coerces an untrusted snapshot (a pushed IPC payload or a test fixture). */

@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Shared facts and pure helpers for the publishable checkpoint package.
  *
@@ -8,6 +7,9 @@
  * published against a second, guessed identity.
  *
  * Nothing here spawns a process or touches the network.
+ *
+ * Invoked as `node scripts/…`; no shebang so the Vitest module runner can
+ * import it on a CRLF checkout.
  */
 
 import { readFileSync } from "node:fs";

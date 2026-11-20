@@ -8,9 +8,10 @@
  *
  * The visible set exists because of the session view grid (2026-11-03 plan): the
  * user can watch four sessions at once, and parking one of them would make a
- * pane go blank under them. It is a **parking** protection only — the per-host
- * RSS watchdog still stops a visible host that grows past its threshold, so the
- * memory bound added by the OOM plan is not weakened.
+ * pane go blank under them. It protects the host from **both** parking and the
+ * RSS watchdog: an active/visible host over budget is warned about and restarted
+ * only by the user, so a large session cannot enter a stop → passive-wake →
+ * stop loop (2026-11-06 Strata loop).
  */
 import { CONTROL_TAB_ID } from "../shared/session-ipc";
 
@@ -25,6 +26,12 @@ export interface HostProtectionState {
   visibleSessionIds?: ReadonlySet<string> | readonly string[];
   /** The session hosting the `/health` bridge, if any. */
   bridgeOwnerSessionId: string | null;
+  /**
+   * Sessions whose review/web tab is active or visible. A Plannotator tab is a
+   * view of the session that opened it, so the owning host must stay warm just
+   * like the session tab itself (2026-11-06 Strata loop).
+   */
+  linkedSessionIds?: ReadonlySet<string>;
 }
 
 function isVisible(sessionId: string, state: HostProtectionState): boolean {
@@ -42,6 +49,7 @@ export function keepHostAlive(sessionId: string, state: HostProtectionState): bo
     sessionId === CONTROL_TAB_ID ||
     sessionId === state.activeSessionId ||
     sessionId === state.bridgeOwnerSessionId ||
-    isVisible(sessionId, state)
+    isVisible(sessionId, state) ||
+    state.linkedSessionIds?.has(sessionId) === true
   );
 }
