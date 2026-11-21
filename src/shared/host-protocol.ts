@@ -197,6 +197,11 @@ export const HOST_METHODS = [
   // boundary, so the host runs it and returns plain items).
   "commands.run",
   "commands.complete",
+  // Generic extension contributions (orchestrator plan steps 7-8). The host
+  // applies validated envelopes from the extension bus and exposes one
+  // extension-agnostic snapshot plus a command-validated action runner.
+  "contributions.state",
+  "contributions.run",
   "tools.list",
   "tools.setActive",
   "model.list",

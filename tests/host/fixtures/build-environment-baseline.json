@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "capturedAt": "2026-11-21",
+  "note": "Baseline for the resources and host surface that make up an ordinary Desktop Build session. Steps 7-13 replace Workflow-specific adapters; these values must not drift silently.",
+  "sdk": {
+    "package": "@earendil-works/pi-coding-agent",
+    "version": "1.5.0"
+  },
+  "safeModeLoaderOptions": {
+    "noExtensions": true,
+    "noSkills": true,
+    "noPromptTemplates": true,
+    "noThemes": true,
+    "noContextFiles": true
+  },
+  "checkpointLoader": {
+    "safeModeOn": {
+      "noExtensions": true,
+      "noSkills": true,
+      "noPromptTemplates": true,
+      "noThemes": true,
+      "noContextFiles": true
+    },
+    "safeModeOffWithPath": {
+      "additionalExtensionPaths": ["<checkpoint-extension>"]
+    },
+    "safeModeOffWithoutPath": {}
+  },
+  "extensionUiSnapshotKeys": [
+    "autocompleteProviders",
+    "editor",
+    "hiddenThinkingLabel",
+    "statuses",
+    "title",
+    "toolsExpanded",
+    "widgets",
+    "working"
+  ],
+  "requiredHostMethods": [
+    "commands.complete",
+    "commands.list",
+    "commands.run",
+    "oi.respond",
+    "oi.state",
+    "session.create",
+    "session.fork",
+    "session.open",
+    "session.resume",
+    "session.switch",
+    "shortcuts.invoke",
+    "shortcuts.list"
+  ]
+}
