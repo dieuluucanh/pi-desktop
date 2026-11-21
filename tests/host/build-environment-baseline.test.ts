@@ -2,10 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import {
-  EMPTY_EXTENSION_UI,
-  type ExtensionUiSnapshot,
-} from "../../src/shared/extension-ui";
+import { EMPTY_EXTENSION_UI, type ExtensionUiSnapshot } from "../../src/shared/extension-ui";
 import { HOST_METHODS } from "../../src/shared/host-protocol";
 import {
   checkpointExtensionLoaderOptions,

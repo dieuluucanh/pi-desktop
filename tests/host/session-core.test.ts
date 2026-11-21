@@ -6,6 +6,7 @@ import {
   type SessionCoreDeps,
   type SessionRuntimeRequest,
 } from "../../src/host/session-core";
+import { createSdkContributionBridge } from "../../src/host/sdk/contributions";
 import type { HostMethod } from "../../src/shared/host-protocol";
 import type { HostRequestContext } from "../../src/host/service";
 
@@ -708,5 +709,270 @@ describe("the open path reads settings once (2026-11-07 plan)", () => {
     await call("session.create");
 
     expect(reloads).toEqual([]);
+  });
+});
+
+describe("generic extension contributions (orchestrator step 8)", () => {
+  /** A validated v1 envelope from an arbitrary extension. */
+  const envelope = (revision = 1) => ({
+    version: 1,
+    owner: { id: "fixture.ext" },
+    sessionId: "session-1",
+    epoch: 0,
+    revision,
+    removed: [],
+    contributions: [
+      {
+        id: "mode",
+        kind: "mode",
+        slot: "mode",
+        label: "Analyze",
+        tone: "accent",
+        order: 0,
+        actions: [],
+      },
+    ],
+  });
+
+  function inMemoryBus() {
+    const listeners = new Map<string, Array<(payload: unknown) => unknown>>();
+    const sent: Array<{ channel: string; payload: unknown }> = [];
+    return {
+      sent,
+      on(channel: string, handler: (payload: unknown) => unknown) {
+        const list = listeners.get(channel) ?? [];
+        list.push(handler);
+        listeners.set(channel, list);
+        return () => {
+          const index = list.indexOf(handler);
+          if (index >= 0) list.splice(index, 1);
+        };
+      },
+      emit(channel: string, payload?: unknown) {
+        sent.push({ channel, payload });
+        for (const handler of [...(listeners.get(channel) ?? [])]) handler(payload);
+      },
+    };
+  }
+
+  it("gives the runtime the shared bus and answers contributions.state", async () => {
+    const bus = inMemoryBus();
+    const requests: SessionRuntimeRequest[] = [];
+    const base = harness();
+    const { core, call, emitted } = harness({
+      contributionBus: bus,
+      createContributionBridge: (host) => createSdkContributionBridge({ host, bus }),
+      createRuntime: async (request) => {
+        requests.push(request);
+        return { runtime: base.runtime, session: base.runtime.session };
+      },
+    });
+
+    await call("session.create");
+    // The loader gets the same instance the bridge listens on; otherwise an
+    // extension's `pi.events` publication would land on a private bus.
+    expect(requests[0]?.eventBus).toBe(bus);
+    // Bind announces support, which is what makes an extension publish.
+    expect(bus.sent.some((entry) => entry.channel === "host-contributions:hello")).toBe(true);
+
+    bus.emit("host-contributions:update", envelope());
+    const snapshot = (await call("contributions.state")) as {
+      supported: boolean;
+      contributions: Array<{ ownerId: string; text: string }>;
+    };
+    expect(snapshot.supported).toBe(true);
+    expect(snapshot.contributions).toEqual([
+      expect.objectContaining({ ownerId: "fixture.ext", text: "Analyze" }),
+    ]);
+    // The renderer is pushed the same snapshot instead of polling on a render.
+    const pushed = emitted.filter((entry) => entry.event === "contributions.state").at(-1);
+    expect(pushed?.payload).toMatchObject({ supported: true });
+    expect(pushed?.sessionId).toBe("session-1");
+
+    await core.dispose();
+  });
+
+  it("resets registrations on rebind, so a stale action never survives", async () => {
+    const bus = inMemoryBus();
+    const { call, forks } = harness({
+      contributionBus: bus,
+      createContributionBridge: (host) => createSdkContributionBridge({ host, bus }),
+    });
+
+    await call("session.create");
+    bus.emit("host-contributions:update", envelope());
+    expect(
+      ((await call("contributions.state")) as { contributions: unknown[] }).contributions,
+    ).toHaveLength(1);
+
+    await call("session.fork", { entryId: "entry-1" });
+    expect(forks).toEqual(["entry-1"]);
+    // Reset publishes an empty snapshot; the bridge re-announces for the new
+    // generation, so a reload leaves no actionable stale button behind.
+    expect(
+      ((await call("contributions.state")) as { contributions: unknown[] }).contributions,
+    ).toHaveLength(0);
+    expect(bus.sent.filter((entry) => entry.channel === "host-contributions:hello")).toHaveLength(
+      2,
+    );
+  });
+
+  it("runs an action through the live command runner with the published args", async () => {
+    const bus = inMemoryBus();
+    const ran: Array<{ name: string; args: string }> = [];
+    const context = {};
+    const { call, primary } = harness({
+      contributionBus: bus,
+      createContributionBridge: (host) => createSdkContributionBridge({ host, bus }),
+      wrapCommandRunner: () =>
+        ({
+          getCommand: (name: string) =>
+            name === "analyze"
+              ? {
+                  handler: (args: string) => {
+                    ran.push({ name, args });
+                  },
+                }
+              : undefined,
+          createCommandContext: () => context,
+        }) as never,
+    });
+    // A live runner is only present on a real session object.
+    (primary.session as unknown as { extensionRunner: unknown }).extensionRunner = {};
+
+    await call("session.create");
+    bus.emit("host-contributions:update", {
+      ...envelope(),
+      contributions: [
+        {
+          id: "go",
+          kind: "action",
+          slot: "action",
+          label: "Start",
+          tone: "info",
+          order: 0,
+          command: { name: "analyze", args: "--now" },
+          enabled: true,
+        },
+      ],
+    });
+
+    const result = (await call("contributions.run", {
+      ownerId: "fixture.ext",
+      id: "go",
+    })) as { ran: boolean };
+    expect(result.ran).toBe(true);
+    expect(ran).toEqual([{ name: "analyze", args: "--now" }]);
+  });
+});
+
+describe("related sessions (orchestrator step 12)", () => {
+  function inMemoryBus() {
+    const listeners = new Map<string, Array<(payload: unknown) => unknown>>();
+    const sent: Array<{ channel: string; payload: unknown }> = [];
+    return {
+      sent,
+      on(channel: string, handler: (payload: unknown) => unknown) {
+        const list = listeners.get(channel) ?? [];
+        list.push(handler);
+        listeners.set(channel, list);
+        return () => {
+          const index = list.indexOf(handler);
+          if (index >= 0) list.splice(index, 1);
+        };
+      },
+      emit(channel: string, payload?: unknown) {
+        sent.push({ channel, payload });
+        for (const handler of [...(listeners.get(channel) ?? [])]) handler(payload);
+      },
+    };
+  }
+
+  const request = (over: Record<string, unknown> = {}) => ({
+    requestId: "req-1",
+    operation: "create",
+    ownerCommand: "workflow",
+    spec: {
+      requestId: "req-1",
+      parentSessionRef: "session-1",
+      relation: "child",
+      title: "Task 2",
+      cwd: "C:/work/app",
+      dedupeKey: "task-2",
+      bootstrap: [{ customType: "workflow-managed-session", content: "{}", display: false }],
+    },
+    ...over,
+  });
+
+  it("writes the bounded bootstrap before the runtime is created", async () => {
+    const order: string[] = [];
+    const manager = {
+      appendMessage: (message: unknown) => {
+        const record = message as { role?: string; customType?: string };
+        order.push(`append:${record.role}:${record.customType}`);
+        return "entry";
+      },
+    };
+    const base = harness();
+    const { call } = harness({
+      newSessionManager: () => manager,
+      createRuntime: async () => {
+        order.push("runtime");
+        return { runtime: base.runtime, session: base.runtime.session };
+      },
+    });
+
+    await call("session.create", {
+      bootstrap: [{ customType: "workflow-managed-session", content: "{}", display: false }],
+    });
+
+    expect(order).toEqual(["append:custom:workflow-managed-session", "runtime"]);
+  });
+
+  it("rejects an unbounded bootstrap at session.create", async () => {
+    const { call } = harness();
+    await expect(
+      call("session.create", {
+        bootstrap: [{ customType: "not-a-bootstrap", content: "x", display: false }],
+      }),
+    ).rejects.toThrow(/unsupported bootstrap/);
+  });
+
+  it("forwards a source-bound request and settles it with main's answer", async () => {
+    const bus = inMemoryBus();
+    const { call, emitted, runtime } = harness({
+      contributionBus: bus,
+      createContributionBridge: (host) => createSdkContributionBridge({ host, bus }),
+    });
+
+    await call("session.create");
+    (runtime.session as unknown as { extensionRunner: unknown }).extensionRunner = {
+      getRegisteredCommands: () => [
+        {
+          name: "workflow",
+          sourceInfo: { path: "C:/ext/workflow/index.ts", source: "@dieulc/workflow" },
+        },
+      ],
+    };
+
+    bus.emit("session-host:request", request());
+    const forwarded = emitted.find((entry) => entry.event === "host:relatedSession.request");
+    expect(forwarded?.payload).toMatchObject({
+      requestId: "req-1",
+      ownerKey: "C:/ext/workflow/index.ts",
+      ownerLabel: "@dieulc/workflow",
+    });
+
+    await call("sessionHost.result", {
+      requestId: "req-1",
+      result: { ok: true, sessionRef: "tab-child", focused: true, reused: false },
+    });
+    expect(bus.sent.at(-1)).toEqual({
+      channel: "session-host:result",
+      payload: {
+        requestId: "req-1",
+        result: { ok: true, sessionRef: "tab-child", focused: true, reused: false },
+      },
+    });
   });
 });

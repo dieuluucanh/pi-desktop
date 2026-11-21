@@ -38,6 +38,7 @@ import { SAFE_MODE_PACKAGE_REFUSAL } from "./safe-mode";
 import type { CustomProviderStore } from "./custom-providers";
 import type { ProviderPort } from "./providers";
 import { createSessionCore, type SessionCore } from "./session-core";
+import { createSdkContributionBridge, createSdkEventBus } from "./sdk/contributions";
 import { createSessionCatalog } from "./session-catalog";
 import { createHostService, type HostHandler, type HostService } from "./service";
 import {
@@ -158,6 +159,9 @@ function createCore(options: {
   const settingsIo = createNodeSettingsFileIo();
   const modelsIo = createNodeModelsFileIo();
   const fileListingIo = createNodeFileListingIo();
+  // One shared bus per host process: the runtime loader receives this instance,
+  // so an extension's `pi.events` and the contribution bridge are the same bus.
+  const contributionBus = createSdkEventBus();
   // Profile keybindings (plan step 15): one port for the whole host process.
   const keybindingPort = createSdkKeybindingPort({ agentDir: options.agentDir, io: modelsIo });
 
@@ -172,6 +176,13 @@ function createCore(options: {
     ...(options.bindSession ? { bindSession: options.bindSession as never } : {}),
     emit: options.emit,
     trustStore,
+    contributionBus,
+    createContributionBridge: (host) =>
+      createSdkContributionBridge({
+        host,
+        bus: contributionBus,
+        onError: (error) => console.error("[contributions]", error),
+      }),
     requiresTrust: (cwd) => hasTrustRequiringProjectResources(cwd),
     // Settings writes use the session's own manager for the session cwd, so a
     // change is visible to this session without a second manager (plan step 12).
@@ -234,6 +245,7 @@ function createCore(options: {
         cwd: request.cwd,
         agentDir: request.agentDir,
         sessionManager: request.sessionManager as never,
+        eventBus: contributionBus,
         ...(request.npmCommand ? { npmCommand: request.npmCommand } : {}),
         ...(request.projectTrusted === undefined ? {} : { projectTrusted: request.projectTrusted }),
         // Phase timings for the last open (2026-11-07 plan): the adapter owns

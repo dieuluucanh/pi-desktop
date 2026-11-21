@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  CONTRIBUTION_EVENTS,
-  createContributionHost,
-} from "../../src/host/contributions";
+import { CONTRIBUTION_EVENTS, createContributionHost } from "../../src/host/contributions";
 import { createSdkContributionBridge } from "../../src/host/sdk/contributions";
 import type { ContributionEnvelope } from "../../src/shared/extension-contributions";
 
@@ -58,7 +55,9 @@ describe("contribution host registry", () => {
   it("rejects malformed payloads without touching the registry", () => {
     const h = harness();
     expect(h.host.receive({ version: 99 }).accepted).toBe(false);
-    expect(h.host.receive({ version: 1, owner: {}, sessionId: "s", epoch: 0, revision: 1 }).accepted).toBe(false);
+    expect(
+      h.host.receive({ version: 1, owner: {}, sessionId: "s", epoch: 0, revision: 1 }).accepted,
+    ).toBe(false);
     expect(h.host.snapshot().contributions).toEqual([]);
   });
 
@@ -79,7 +78,15 @@ describe("contribution host registry", () => {
       envelope({
         owner: { id: "a.ext" },
         contributions: [
-          { id: "mode", kind: "mode", slot: "mode", label: "Plan", tone: "accent", order: -5, actions: [] },
+          {
+            id: "mode",
+            kind: "mode",
+            slot: "mode",
+            label: "Plan",
+            tone: "accent",
+            order: -5,
+            actions: [],
+          },
         ],
       }),
     );
@@ -97,7 +104,14 @@ describe("contribution host registry", () => {
         epoch: 1,
         revision: 1,
         contributions: [
-          { id: "fresh", kind: "status", slot: "status", text: "new epoch", tone: "neutral", order: 0 },
+          {
+            id: "fresh",
+            kind: "status",
+            slot: "status",
+            text: "new epoch",
+            tone: "neutral",
+            order: 0,
+          },
         ],
       }),
     );
@@ -161,7 +175,15 @@ describe("contribution host registry", () => {
             enabled: false,
             disabledReason: "already building",
           },
-          { id: "mode", kind: "mode", slot: "mode", label: "Plan", tone: "accent", order: 0, actions: [] },
+          {
+            id: "mode",
+            kind: "mode",
+            slot: "mode",
+            label: "Plan",
+            tone: "accent",
+            order: 0,
+            actions: [],
+          },
         ],
       }),
     );
@@ -247,7 +269,11 @@ describe("contribution bus bridge", () => {
         throw new Error("bus exploded");
       },
     };
-    const bridge = createSdkContributionBridge({ host: h.host, bus, onError: (error) => errors.push(error) });
+    const bridge = createSdkContributionBridge({
+      host: h.host,
+      bus,
+      onError: (error) => errors.push(error),
+    });
     expect(errors).toHaveLength(1);
     // A bridge without a bus degrades to "no contributions", never a crash.
     bridge.announce();

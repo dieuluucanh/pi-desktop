@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Cpu } from "lucide-react";
 import { Composer } from "../session/Composer";
-import { ReviewBar } from "../session/ReviewBar";
-import { TodoPanelBar } from "../session/TodoPanelBar";
+import { ContributionsBar } from "../session/ContributionsBar";
+import { RelatedSessionsBar } from "../session/RelatedSessionsBar";
 import { StartingBanner } from "../session/StartingBanner";
 import { SessionFooter } from "../session/SessionFooter";
 import { Transcript } from "../session/Transcript";
@@ -37,15 +37,10 @@ import { sameFolder } from "../../../shared/rail-scope";
 import type { WorkspaceEntryKind } from "../../../shared/workspace";
 import { isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
 import {
-  parseWorkflowStatus,
-  reviewLineText,
-  WORKFLOW_REVIEW_STATUS_KEY,
-} from "../../../shared/workflow-mode";
-import {
-  resolveTodoPanel,
-  TODO_STATUS_KEY,
-  type TodoPanelActionId,
-} from "../../../shared/workflow-todos";
+  buildContributionBar,
+  contributionInputLocked,
+  EMPTY_CONTRIBUTION_SNAPSHOT,
+} from "../../../shared/extension-contributions-view";
 import { isLoopbackUrl } from "../../../shared/web-tabs";
 
 /**
@@ -61,12 +56,6 @@ import { isLoopbackUrl } from "../../../shared/web-tabs";
 /** Stable empty scope for a tab whose scope has not loaded yet. */
 const EMPTY_SCOPE: readonly string[] = [];
 const EMPTY_DIAGNOSTICS: readonly ScopeDiagnosticInfo[] = [];
-
-/**
- * The review row promotes the extension's live review status; the footer must
- * not repeat the same line below the composer while that row is visible.
- */
-const REVIEW_HIDDEN_STATUS_KEYS = [WORKFLOW_REVIEW_STATUS_KEY] as const;
 
 /**
  * The `#` completion source.
@@ -113,9 +102,19 @@ export function SessionView({ tabId }: { tabId: string }) {
   const sendPrompt = useAppStore((state) => state.sendPrompt);
   const stopRun = useAppStore((state) => state.stopRun);
   const interruptRun = useAppStore((state) => state.interruptRun);
-  // Review is an isolated turn: the bar's controls run the same extension
-  // commands a typed `/review-*` would, without touching the draft.
-  const runReviewCommand = useAppStore((state) => state.runReviewCommand);
+  const contributionSnapshots = useAppStore((state) => state.contributions);
+  const runContributionAction = useAppStore((state) => state.runContributionAction);
+  const relatedArchive = useAppStore((state) => state.relatedArchive);
+  const openArchivedRelatedSession = useAppStore((state) => state.openArchivedRelatedSession);
+  const contributionSnapshot = contributionSnapshots[tabId];
+  // One generic badge (mode, else progress, else status) and one generic input
+  // state. Neither depends on an extension name, glyph or status text.
+  const contributionBar = useMemo(
+    () => buildContributionBar(contributionSnapshot ?? EMPTY_CONTRIBUTION_SNAPSHOT),
+    [contributionSnapshot],
+  );
+  const contributionBadge = contributionBar.badge;
+  const inputLocked = contributionInputLocked(contributionSnapshot);
   const activateTab = useAppStore((state) => state.activateTab);
   const clearQueue = useAppStore((state) => state.clearQueue);
   const restoreQueue = useAppStore((state) => state.restoreQueue);
@@ -152,30 +151,11 @@ export function SessionView({ tabId }: { tabId: string }) {
   );
   const defaultModelIssue = useAppStore(selectDefaultModelProblem);
   const extensionUi = useAppStore((state) => state.extensionUi[tabId]);
-  // An extension can own long-running work while the parent tab is idle
-  // (a manual Review round). That is still "busy" for Escape, even though
-  // `tab.status` stays idle; the review row replaces the generic working row
-  // while the extension reports a Review phase.
+  // An extension can own long-running work while the parent tab is idle. That
+  // is still "busy" for Escape, even though `tab.status` stays idle; the
+  // generic contribution bar owns the controls in that state.
   const extensionWorking = extensionUi?.working;
   const extensionBusy = extensionWorking?.message != null && extensionWorking.visible !== false;
-  const workflowStatus = extensionUi?.statuses?.workflow ?? null;
-  // Review is a first-class mode since @dieulc/workflow 0.11.0: the status is
-  // the authority (and carries the phase), not the working message any more.
-  // A running review's message can differ from the mode status, and the handoff
-  // phase has no working message at all.
-  const workflowMode = parseWorkflowStatus(workflowStatus);
-  const reviewMode = workflowMode?.mode === "review";
-  const reviewPhase = reviewMode ? (workflowMode?.reviewPhase ?? "running") : null;
-  // The desktop row is the extension's own line (the same `workflow-review`
-  // status terminal Pi paints); the fallback keeps the hints on an older
-  // extension. `WorkingRow` is suppressed while this line owns the turn.
-  const reviewLine = reviewPhase
-    ? reviewLineText({
-        phase: reviewPhase,
-        status: extensionUi?.statuses?.[WORKFLOW_REVIEW_STATUS_KEY],
-        workingMessage: extensionWorking?.message,
-      })
-    : null;
   const extensionDialogs = useAppStore((state) => state.extensionDialogs);
   const toolsExpandedState = useAppStore((state) => state.toolsExpanded[tabId]);
   const toggleToolsExpanded = useAppStore((state) => state.toggleToolsExpanded);
@@ -193,22 +173,6 @@ export function SessionView({ tabId }: { tabId: string }) {
   const loadShortcuts = useAppStore((state) => state.loadShortcuts);
   const invokeShortcut = useAppStore((state) => state.invokeShortcut);
   const tuiSurface = useAppStore((state) => state.tuiSurfaces[tabId]);
-  const runTodoPanelAction = useAppStore((state) => state.runTodoPanelAction);
-  // The native todo bar's view model. The panel stays extension-owned; this
-  // adapter only reads the widget frame and the compact status (step 2).
-  const todoPanel = resolveTodoPanel({
-    frames: tuiSurface?.widgetsAbove ?? [],
-    widgets: extensionUi?.widgets ?? [],
-    statuses: extensionUi?.statuses ?? {},
-  });
-  // The bar promotes the compact todo status; the footer must not repeat it.
-  const hiddenSessionStatusKeys = useMemo(() => {
-    const keys = [
-      ...(reviewPhase ? REVIEW_HIDDEN_STATUS_KEYS : []),
-      ...(todoPanel.present ? [TODO_STATUS_KEY] : []),
-    ];
-    return keys.length > 0 ? keys : undefined;
-  }, [reviewPhase, todoPanel.present]);
   // Only the count drove a section header; the strip's badges now come from the
   // snapshot and the checkpoint store directly.
   const [composerFocusToken, setComposerFocusToken] = useState(0);
@@ -278,15 +242,14 @@ export function SessionView({ tabId }: { tabId: string }) {
 
   const active = tabs.find((tab) => tab.id === tabId) ?? null;
   const activeId = active?.id ?? null;
-  // The review page is a loopback web tab linked to this session. The bar can
-  // focus it; without one it stays command-only (the page may have been closed).
-  const reviewTabId =
-    reviewMode && active
-      ? (tabs.find(
-          (tab) =>
-            tab.kind === "web" && tab.sessionTabId === active.id && isLoopbackUrl(tab.url ?? null),
-        )?.id ?? null)
-      : null;
+  // A loopback web tab can be linked to this session (a review page, a local
+  // UI). Generic: the bar offers one button when the input is owned elsewhere.
+  const linkedWebTabId = active
+    ? (tabs.find(
+        (tab) =>
+          tab.kind === "web" && tab.sessionTabId === active.id && isLoopbackUrl(tab.url ?? null),
+      )?.id ?? null)
+    : null;
   const [mentionRequest, setMentionRequest] = useState<{
     id: number;
     tabId: string;
@@ -386,18 +349,6 @@ export function SessionView({ tabId }: { tabId: string }) {
   // composer — otherwise Tab/arrow keys silently stop reaching the extension.
   const surfaceOwnsKeyboard = tuiOwnsComposer || floatingOverlay || dialog !== null;
   const composerUnavailable = surfaceOwnsKeyboard;
-
-  const restoreComposerFocus = (): void => {
-    // A dialog owns the keys while it is open; never pull them away from it.
-    if (dialog !== null) return;
-    if (tuiOwnsComposer || floatingOverlay) setSurfaceFocusToken((token) => token + 1);
-    else setComposerFocusToken((token) => token + 1);
-  };
-
-  const handleTodoAction = async (action: TodoPanelActionId): Promise<void> => {
-    await runTodoPanelAction(active.id, action);
-    restoreComposerFocus();
-  };
 
   const resetDrop = (): void => {
     dropDepth.current = 0;
@@ -580,7 +531,7 @@ export function SessionView({ tabId }: { tabId: string }) {
               }}
             />
           ) : null}
-          {(active.status === "running" || extensionBusy) && reviewPhase === null ? (
+          {(active.status === "running" || extensionBusy) && !inputLocked ? (
             <WorkingRow
               working={
                 extensionUi?.working ?? {
@@ -600,24 +551,28 @@ export function SessionView({ tabId }: { tabId: string }) {
               className="shrink-0 border-t border-line py-1"
             />
           ) : null}
-          {todoPanel.present ? (
-            <TodoPanelBar panel={todoPanel} onAction={handleTodoAction} />
-          ) : null}
           <WidgetStrip tabId={active.id} placement="aboveEditor" />
           <TuiWidgetStrip frames={tuiSurface?.widgetsAbove ?? []} placement="aboveEditor" />
-          {reviewPhase ? (
-            <ReviewBar
-              phase={reviewPhase}
-              text={reviewLine ?? ""}
-              canOpenReview={reviewTabId !== null}
-              onPause={() => void runReviewCommand(active.id, "review-pause")}
-              onResume={() => void runReviewCommand(active.id, "review-resume")}
-              onAbort={() => void runReviewCommand(active.id, "review-abort")}
-              onOpenReview={() => {
-                if (reviewTabId) void activateTab(reviewTabId);
-              }}
-            />
-          ) : null}
+          <RelatedSessionsBar
+            active={active}
+            tabs={tabs}
+            archive={relatedArchive}
+            onActivate={(id) => void activateTab(id)}
+            onOpenArchived={(entry) => void openArchivedRelatedSession(entry)}
+          />
+          <ContributionsBar
+            snapshot={contributionSnapshot}
+            showBadge={false}
+            linkedTab={
+              inputLocked && linkedWebTabId
+                ? {
+                    label: "Open linked tab",
+                    onOpen: () => void activateTab(linkedWebTabId),
+                  }
+                : null
+            }
+            onRunAction={(ownerId, id) => void runContributionAction(tabId, ownerId, id)}
+          />
           {dialog ? (
             <ExtensionDialogDock
               dialog={dialog}
@@ -684,7 +639,8 @@ export function SessionView({ tabId }: { tabId: string }) {
                 onMentionHandled={(id) =>
                   setMentionRequest((current) => (current?.id === id ? null : current))
                 }
-                workflowStatus={workflowStatus}
+                contributionBadge={contributionBadge}
+                inputLocked={inputLocked}
                 extensionShortcuts={shortcuts.shortcuts}
                 onInvokeShortcut={(key) => void invokeShortcut(key)}
                 onRequestShortcuts={() => void loadShortcuts()}
@@ -713,8 +669,7 @@ export function SessionView({ tabId }: { tabId: string }) {
                 // running review pauses instead of aborting. A manual review
                 // runs on an idle tab, so `escapeActive` forwards too.
                 onEscape={() => void interruptRun(active.id)}
-                escapeActive={extensionBusy || reviewMode}
-                reviewMode={reviewMode}
+                escapeActive={extensionBusy || inputLocked}
                 onClearQueue={() => void clearQueue(active.id)}
                 onRestoreQueue={() => void restoreQueue(active.id)}
                 onHistoryStep={(direction, caret) => historyStep(active.id, direction, caret)}
@@ -736,7 +691,6 @@ export function SessionView({ tabId }: { tabId: string }) {
             <SessionFooter
               className="shrink-0 px-3 pb-1"
               homeDir={homeDir}
-              hiddenStatusKeys={hiddenSessionStatusKeys}
               widgets={
                 belowSplit.inline.length > 0 ? <TuiWidgetInline frames={belowSplit.inline} /> : null
               }

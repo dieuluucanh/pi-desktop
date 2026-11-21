@@ -179,11 +179,11 @@ describe("streaming delivery", () => {
     screen.getByRole("button", { name: /stop/i }).remove();
   });
 
-  it("hides Stop and names the locked turn while Review owns it", () => {
-    renderComposer({ running: true, reviewMode: true });
+  it("hides Stop and names the locked turn while another surface owns it", () => {
+    renderComposer({ running: true, inputLocked: true });
 
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
-    expect(screen.getByText(/Review in progress/)).toBeInTheDocument();
+    expect(screen.getByText(/An extension owns this turn/)).toBeInTheDocument();
   });
 });
 
@@ -449,84 +449,75 @@ describe("hint row", () => {
   });
 });
 
-describe("workflow mode border", () => {
+describe("contribution badge border", () => {
+  const badge = (
+    over: Partial<Parameters<typeof Composer>[0]["contributionBadge"] & object> = {},
+  ) => ({
+    ownerId: "fixture.ext",
+    id: "mode",
+    kind: "mode" as const,
+    slot: "mode" as const,
+    tone: "accent" as const,
+    order: 0,
+    text: "Analyze",
+    detail: "fixture detail",
+    enabled: true,
+    ...over,
+  });
+
   function promptBox(): HTMLElement {
     return screen.getByLabelText("Prompt");
   }
 
-  it("colours the border and shows a badge in Plan and Build modes", () => {
-    // The extension's own status colours (`index.ts:919/928`): plan → warning,
-    // build → accent. The border is what tells the user Tab did something —
-    // without it the mode changes with no visible feedback in the composer.
-    const plan = renderComposer({ workflowStatus: "\u23f8 plan" });
+  it("colours the border from the badge tone and shows its label", () => {
+    // No mode names or glyphs: an arbitrary publisher's tone and label are the
+    // only inputs, so a third-party extension looks native with no app change.
+    const plan = renderComposer({
+      contributionBadge: badge({ tone: "warning", text: "Plan" }),
+    });
     expect(promptBox()).toHaveClass("border-warn");
     expect(promptBox()).toHaveClass("pr-14");
-    expect(screen.getByTestId("workflow-mode-badge")).toHaveTextContent("Plan");
-    expect(screen.getByTestId("workflow-mode-badge").firstElementChild).toHaveClass("text-warn");
+    expect(screen.getByTestId("composer-contribution-badge")).toHaveTextContent("Plan");
+    expect(screen.getByTestId("composer-contribution-badge")).toHaveAttribute(
+      "data-tone",
+      "warning",
+    );
+    expect(within(screen.getByTestId("composer-contribution-badge")).getByText("Plan")).toHaveClass(
+      "text-warn",
+    );
     plan.unmount();
 
-    renderComposer({ workflowStatus: "\u25b6 build 3/8" });
+    renderComposer({ contributionBadge: badge({ tone: "accent", text: "Build 3/8" }) });
     expect(promptBox()).toHaveClass("border-accent");
-    expect(screen.getByTestId("workflow-mode-badge")).toHaveTextContent("Build");
-    expect(screen.getByTestId("workflow-mode-badge").firstElementChild).toHaveClass("text-accent");
-  });
-
-  it("decodes an ANSI-coloured status exactly like a plain one", () => {
-    renderComposer({ workflowStatus: "\x1b[33m\u23f8 plan\x1b[0m" });
-    expect(promptBox()).toHaveClass("border-warn");
-  });
-
-  it("labels the plannotator browser-review phase as Plan, not Review", () => {
-    // The "reviewing in browser" phrase is a Plan sub-state (Plannotator's
-    // phase label), never a mode: the badge always reads Plan (2026-10-20
-    // startup-tab-cycle plan). The raw phrase stays visible in the badge's
-    // tooltip and the footer's extension-status row.
-    renderComposer({ workflowStatus: "\u23f8 plan — reviewing in browser" });
-    expect(promptBox()).toHaveClass("border-warn");
-    expect(screen.getByTestId("workflow-mode-badge")).toHaveTextContent("Plan");
-  });
-
-  it("names the default mode instead of showing nothing", () => {
-    // 2026-10-19: the badge was silent in Default, so the only mode with no
-    // workflow had no textual indicator at all. Every recognised mode is named.
-    renderComposer({ workflowStatus: "\u25e6 commits:never" });
-    expect(promptBox()).toHaveClass("border-line");
-    expect(promptBox()).toHaveClass("pr-14");
-    expect(screen.getByTestId("workflow-mode-badge")).toHaveTextContent("Default");
-    expect(screen.getByTestId("workflow-mode-badge").firstElementChild).toHaveClass(
-      "text-ink-faint",
-    );
+    expect(screen.getByTestId("composer-contribution-badge")).toHaveTextContent("Build 3/8");
+    expect(
+      within(screen.getByTestId("composer-contribution-badge")).getByText("Build 3/8"),
+    ).toHaveClass("text-accent");
   });
 
   it("renders the badge inside the input's top-right corner", () => {
-    renderComposer({ workflowStatus: "\u23f8 plan" });
+    renderComposer({ contributionBadge: badge() });
     const input = screen.getByTestId("composer-input");
-    const badge = within(input).getByTestId("workflow-mode-badge");
-    // It is part of the composer box, not a floating sibling above it.
-    expect(input.contains(badge)).toBe(true);
-    expect(badge.className).toContain("absolute");
-    expect(badge.className).toContain("top-1");
-    expect(badge.className).not.toContain("bottom-1");
+    const element = within(input).getByTestId("composer-contribution-badge");
+    expect(input.contains(element)).toBe(true);
+    expect(element.className).toContain("absolute");
+    expect(element.className).toContain("top-1");
+    expect(element.className).not.toContain("bottom-1");
   });
 
   it("keeps the badge readable at every width and to assistive tech", () => {
-    renderComposer({ workflowStatus: "\u23f8 plan" });
-    const badge = screen.getByTestId("workflow-mode-badge");
-    // No breakpoint hiding: the old badge vanished below `sm`.
-    expect(badge.className).not.toMatch(/\bhidden\b/);
-    expect(badge.className).not.toMatch(/sm:inline-block/);
-    // Announced, not `aria-hidden`.
-    expect(badge).not.toHaveAttribute("aria-hidden");
-    expect(badge).toHaveAttribute("role", "status");
-    // The full status stays reachable on hover (profile/role/commit policy).
-    expect(badge.getAttribute("title")?.startsWith("\u23f8 plan")).toBe(true);
+    renderComposer({ contributionBadge: badge() });
+    const element = screen.getByTestId("composer-contribution-badge");
+    expect(element.className).not.toMatch(/\bhidden\b/);
+    expect(element.className).not.toMatch(/sm:inline-block/);
+    expect(element).not.toHaveAttribute("aria-hidden");
+    expect(element).toHaveAttribute("role", "status");
+    // The publisher's detail stays reachable on hover.
+    expect(element).toHaveAttribute("title", "fixture detail");
   });
 
-  it("survives focus without a ring that hides the mode colour", () => {
-    // The global `:focus-visible` used to paint a blue outline over the border.
-    // Focus is now an outer ring, so `border-*` stays legible; the textarea must
-    // never carry a `focus:border-*` that would clobber the mode colour.
-    renderComposer({ workflowStatus: "\u25b6 build" });
+  it("survives focus without a ring that hides the tone colour", () => {
+    renderComposer({ contributionBadge: badge({ tone: "accent", text: "Build" }) });
     const box = promptBox();
     expect(box).toHaveClass("outline-none");
     expect(box.className).toMatch(/focus-visible:ring-2/);
@@ -535,13 +526,11 @@ describe("workflow mode border", () => {
     expect(box).toHaveClass("border-accent");
   });
 
-  it("stays neutral for a missing, empty or unknown status", () => {
-    // A wrong colour is worse than no colour: another extension's status must
-    // never be misread as a workflow mode.
-    for (const value of [undefined, null, "", "office: Excel attached (bridge :38617)"]) {
-      const view = renderComposer({ workflowStatus: value });
+  it("stays neutral when no badge is published", () => {
+    for (const value of [undefined, null]) {
+      const view = renderComposer({ contributionBadge: value });
       expect(promptBox()).toHaveClass("border-line");
-      expect(screen.queryByTestId("workflow-mode-badge")).toBeNull();
+      expect(screen.queryByTestId("composer-contribution-badge")).toBeNull();
       view.unmount();
     }
   });

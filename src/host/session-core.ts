@@ -28,7 +28,24 @@ import {
   type TrustAnswer,
   type TrustStoreLike,
 } from "./project-trust";
-import { createCommandHandlers, type CommandRunner } from "./commands";
+import { createCommandHandlers, runCommand, type CommandRunner } from "./commands";
+import {
+  createContributionHost,
+  type ContributionBridge,
+  type ContributionBus,
+  type ContributionHost,
+} from "./contributions";
+import {
+  createSessionHostBridge,
+  type RelatedSessionOwner,
+  type SessionHostBridge,
+} from "./related-sessions";
+import {
+  RELATED_SESSION_VERSION,
+  validateBootstrapEntries,
+  type RelatedSessionCapabilities,
+  type SessionBootstrapEntry,
+} from "../shared/related-sessions";
 import { isTrustAnswer } from "../shared/projects";
 import { createPromptOriginTracker } from "./prompt-origin";
 import { createSettingsHandlers, SettingsError, type SettingsPort } from "./settings";
@@ -189,6 +206,12 @@ export interface SessionManagerLike {
 export interface SessionManagerHandle {
   /** Persists the session (the SDK writes the v3 JSONL header) and names it. */
   appendSessionInfo?(name: string): string;
+  /**
+   * Writes one entry to the JSONL before the runtime is created. Used for the
+   * bounded related-session bootstrap, which must be visible to extensions on
+   * their `session_start` (never as a turn trigger).
+   */
+  appendMessage?(message: unknown): string;
   getSessionFile?(): string | undefined;
   /** Session tree access for `entries.get` / `tree.get` / `session.forkMessages`. */
   getEntries?(): readonly unknown[];
@@ -293,6 +316,12 @@ export interface SessionRuntimeRequest {
   agentDir: string;
   sessionManager: SessionManagerHandle;
   npmCommand?: readonly string[] | null;
+  /**
+   * The shared extension event bus (`pi.events`), supplied by the composition
+   * root from `src/host/sdk`. Passing it into the runtime loader is what makes
+   * an extension's `pi.events` the same instance the contribution bridge uses.
+   */
+  eventBus?: ContributionBus | null;
   /** Safe mode (plan step 22): load no third-party extensions/skills/prompts/themes. */
   safeMode?: boolean;
   /** Whether the project is trusted, so its `.pi/settings.json` may be read. */
@@ -360,6 +389,19 @@ export interface SessionCoreDeps {
    * not live on the session itself.
    */
   bindSession?(session: HostSession, runtime: RuntimeLike): Promise<void>;
+  /**
+   * The shared extension event bus (`pi.events`) for this host process. The
+   * composition root supplies the same instance it hands the runtime loader, so
+   * extension publications and the contribution bridge meet on one bus.
+   */
+  contributionBus?: ContributionBus | null;
+  /**
+   * Wires the generic contribution registry to the extension event bus
+   * (orchestrator plan step 8). Null/absent means no native contributions: the
+   * registry still answers `contributions.state` with an empty, supported
+   * snapshot, so a renderer never falls back to parsing extension status text.
+   */
+  createContributionBridge?(host: ContributionHost): ContributionBridge | null;
   /**
    * Observes extension-driven model/thinking selections (workflow `/profile`,
    * role switches). Pi announces `model_select` only on the extension runner,
@@ -481,6 +523,132 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   // Pairs each accepted prompt/command with the user message it produces, so
   // the renderer can name the command instead of showing its expanded body.
   const promptOrigins = createPromptOriginTracker();
+
+  /**
+   * Generic extension contributions (orchestrator plan step 8). One registry
+   * per host process: it accepts validated envelopes from any extension, and
+   * `contributions.run` executes an action through the live command runner so
+   * the host validates provenance, availability and the command itself.
+   */
+  const contributionHost = createContributionHost({
+    emit: (event, payload) => deps.emit(event, payload, session?.sessionId ?? undefined),
+    runCommand: async (name, args) => {
+      const runner = liveCommandRunner();
+      if (!runner) return { ran: false, error: "no live extension command runner" };
+      const result = await runCommand(runner, name, args, (report) =>
+        deps.emit("extension_error", report, session?.sessionId ?? undefined),
+      );
+      return {
+        ran: result.ran,
+        ...(result.error === undefined ? {} : { error: result.error }),
+      };
+    },
+  });
+  let contributionBridge: ContributionBridge | null = null;
+  /**
+   * Related-session bridge (orchestrator step 12). Ownership is derived from a
+   * registered command's SDK source info, so `sourceBound` is honest: without a
+   * command runner this capability is false and every request fails closed.
+   */
+  let relatedBridge: SessionHostBridge | null = null;
+
+  const relatedCapabilities = (): RelatedSessionCapabilities => {
+    const commands = session?.extensionRunner?.getRegisteredCommands;
+    const sourceBound = typeof commands === "function";
+    return {
+      version: RELATED_SESSION_VERSION,
+      create: true,
+      open: true,
+      focus: true,
+      inspect: true,
+      interrupt: true,
+      close: true,
+      separateWindow: true,
+      bootstrapBeforeStart: true,
+      sourceBound,
+      label: "Pi Desktop",
+      ...(sourceBound
+        ? {}
+        : { reason: "the live session exposes no registered-command source info" }),
+    };
+  };
+
+  const resolveRelatedOwner = (ownerCommand: string): RelatedSessionOwner | null => {
+    const list = session?.extensionRunner?.getRegisteredCommands?.() ?? [];
+    for (const raw of list) {
+      const command = asRecord(raw);
+      if (command.name !== ownerCommand) continue;
+      const info = asRecord(command.sourceInfo);
+      const path = typeof info.path === "string" ? info.path : "";
+      const source = typeof info.source === "string" ? info.source : "";
+      const key = path.length > 0 ? path : source.length > 0 ? `package:${source}` : "";
+      if (key.length === 0) return null;
+      return { key, ...(source.length > 0 ? { label: source } : {}) };
+    }
+    return null;
+  };
+
+  const bindRelatedSessions = (): void => {
+    relatedBridge?.dispose();
+    relatedBridge = null;
+    if (!deps.contributionBus) return;
+    relatedBridge = createSessionHostBridge({
+      bus: deps.contributionBus,
+      capabilities: relatedCapabilities,
+      clock: {
+        now: clock,
+        setTimeout: (callback, ms) => setTimeout(callback, ms),
+        clearTimeout: (handle) => clearTimeout(handle as Parameters<typeof clearTimeout>[0]),
+      },
+      resolveOwner: resolveRelatedOwner,
+      forward: (request, owner) => {
+        deps.emit(
+          "host:relatedSession.request",
+          {
+            ...request,
+            ownerKey: owner.key,
+            ...(owner.label === undefined ? {} : { ownerLabel: owner.label }),
+          },
+          session?.sessionId ?? undefined,
+        );
+      },
+      onError: (error) => recordRuntimeError(error),
+    });
+    relatedBridge.announce();
+  };
+
+  const liveCommandRunner = (): CommandRunner | null => {
+    const runner = session?.extensionRunner;
+    if (!runner) return null;
+    return deps.wrapCommandRunner?.(runner) ?? null;
+  };
+
+  /**
+   * Rebind the contribution bridge for the session that is now live. A previous
+   * generation is reset first, so a reload can never leave an actionable stale
+   * button; `announce()` is what makes extensions publish at all.
+   */
+  const bindContributions = (): void => {
+    try {
+      contributionBridge?.dispose();
+    } catch {
+      /* teardown is best-effort */
+    }
+    contributionBridge = null;
+    try {
+      contributionHost.reset();
+    } catch {
+      /* a gone renderer must not break a bind */
+    }
+    if (!deps.createContributionBridge) return;
+    try {
+      contributionBridge = deps.createContributionBridge(contributionHost);
+      contributionBridge?.announce();
+    } catch (error) {
+      recordRuntimeError(error);
+      contributionBridge = null;
+    }
+  };
 
   /**
    * Bounded `extension_error` history for the Extensions hub (plan step 13). Pi
@@ -835,6 +1003,8 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     const bindStartedAt = clock();
     await deps.bindSession?.(runtime.session, runtime);
     if (activeOpen) activeOpen.bindMs = clock() - bindStartedAt;
+    bindContributions();
+    bindRelatedSessions();
     scopeFingerprint = null;
     const reconcileStartedAt = clock();
     await reconcileModelScope({ reload: true });
@@ -915,6 +1085,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     model?: string;
     /** Per-project default thinking level for a brand-new session. */
     thinking?: string;
+    /**
+     * Bounded entries written before `session_start` (orchestrator step 12).
+     * They are data only: opening the session must never run a turn.
+     */
+    bootstrap?: SessionBootstrapEntry[];
   }): Promise<SessionSnapshot> => {
     beginOpen();
     const trustStartedAt = clock();
@@ -931,12 +1106,26 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     cwd = options.cwd;
     manager = options.sessionManager;
+    if (options.bootstrap && options.bootstrap.length > 0) {
+      if (typeof options.sessionManager.appendMessage === "function") {
+        for (const entry of options.bootstrap) {
+          options.sessionManager.appendMessage({
+            role: "custom",
+            customType: entry.customType,
+            content: entry.content,
+            display: entry.display === true,
+            timestamp: clock(),
+          });
+        }
+      }
+    }
     const created = await deps.createRuntime({
       cwd,
       agentDir: deps.agentDir,
       sessionManager: options.sessionManager,
       npmCommand: deps.npmCommand,
       projectTrusted: status.trusted,
+      ...(deps.contributionBus ? { eventBus: deps.contributionBus } : {}),
       ...(deps.safeMode ? { safeMode: true } : {}),
       ...(deps.checkpointsExtensionPath
         ? { checkpointsExtensionPath: deps.checkpointsExtensionPath }
@@ -956,6 +1145,8 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     const bindStartedAt = clock();
     await deps.bindSession?.(created.session, created.runtime);
     if (activeOpen) activeOpen.bindMs = clock() - bindStartedAt;
+    bindContributions();
+    bindRelatedSessions();
     scopeFingerprint = null;
     const reconcileStartedAt = clock();
     // The runtime factory has just built `SettingsManager` from disk and
@@ -993,6 +1184,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         typeof input.thinking === "string" && input.thinking.length > 0
           ? input.thinking
           : undefined;
+      const bootstrap =
+        input.bootstrap === undefined ? undefined : validateBootstrapEntries(input.bootstrap);
+      if (bootstrap && !bootstrap.ok) {
+        throw new SessionCoreError(bootstrap.error, "bad_request");
+      }
       const sessionManager = deps.newSessionManager
         ? deps.newSessionManager(targetCwd, deps.sessionDir)
         : {};
@@ -1003,6 +1199,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         ...(trustAnswer ? { trustAnswer } : {}),
         ...(model ? { model } : {}),
         ...(thinking ? { thinking } : {}),
+        ...(bootstrap?.ok && bootstrap.value.length > 0 ? { bootstrap: bootstrap.value } : {}),
       });
     },
 
@@ -1254,6 +1451,17 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     }),
 
     "commands.list": () => ({ commands: collectCommands(ensure()) }),
+
+    // Generic extension contributions (orchestrator plan step 8): a renderer
+    // reads one snapshot and runs an action by (owner, contribution id).
+    ...contributionHost.handlers(),
+    // Main settles a host-forwarded related-session operation here. The bridge
+    // is per bind; before the first bind there is nothing to settle.
+    "sessionHost.result": (params) =>
+      relatedBridge?.settle(params) ?? {
+        accepted: false,
+        reason: "no related-session bridge is bound",
+      },
 
     // The Extensions hub (plan step 13): what this session actually loaded, with
     // provenance, contributions and errors. A session host answers from its live
@@ -2037,6 +2245,19 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     cwd: () => cwd,
     dispose: async () => {
       promptOrigins.reset();
+      try {
+        contributionBridge?.dispose();
+      } catch {
+        /* teardown is best-effort */
+      }
+      contributionBridge = null;
+      relatedBridge?.dispose();
+      relatedBridge = null;
+      try {
+        contributionHost.reset();
+      } catch {
+        /* a gone renderer must not break dispose */
+      }
       unsubscribe?.();
       unsubscribe = null;
       unsubscribeErrors?.();

@@ -120,7 +120,9 @@ describe("SessionFooter", () => {
     expect(workflow).toHaveAttribute("title", "Extension status: workflow\n⏸ plan");
   });
 
-  it("omits promoted status keys and keeps the rest of the rail", () => {
+  it("shows every extension status; no key is special-cased away", () => {
+    // Orchestrator step 11 removed the Workflow-specific suppression list: a
+    // non-publishing extension keeps its ordinary statuses here.
     render(
       <SessionFooter
         facts={{}}
@@ -128,23 +130,17 @@ describe("SessionFooter", () => {
           workflow: "🔍 review",
           "workflow-review": "🔍 Reviewing plan… · /review-pause",
         }}
-        hiddenStatusKeys={["workflow-review"]}
       />,
     );
 
     expect(screen.getByTestId("extension-status-workflow")).toHaveTextContent("🔍 review");
-    expect(screen.queryByTestId("extension-status-workflow-review")).toBeNull();
+    expect(screen.getByTestId("extension-status-workflow-review")).toHaveTextContent(
+      "🔍 Reviewing plan…",
+    );
   });
 
-  it("does not keep an otherwise empty rail alive for a hidden status", () => {
-    const { container } = render(
-      <SessionFooter
-        facts={{}}
-        statuses={{ "workflow-review": "🔍 Reviewing plan…" }}
-        hiddenStatusKeys={["workflow-review"]}
-      />,
-    );
-
+  it("does not keep an otherwise empty rail alive", () => {
+    const { container } = render(<SessionFooter facts={{}} statuses={{}} />);
     expect(container).toBeEmptyDOMElement();
   });
 

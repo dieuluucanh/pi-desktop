@@ -111,9 +111,7 @@ describe("extension contributions: conformance with the publisher", () => {
       );
       expect(result.ok, entry.name).toBe(entry.expect === "ok");
       if (result.ok && entry.resultIds) {
-        expect([...result.value.contributions.keys()].sort()).toEqual(
-          [...entry.resultIds].sort(),
-        );
+        expect([...result.value.contributions.keys()].sort()).toEqual([...entry.resultIds].sort());
       }
     }
   });
@@ -197,10 +195,7 @@ describe("extension contributions: Desktop-side limits and safety", () => {
       epoch: 1,
       revision: 9,
       contributions: new Map<string, Contribution>([
-        [
-          "a",
-          { id: "a", kind: "status", slot: "status", text: "old", tone: "neutral", order: 0 },
-        ],
+        ["a", { id: "a", kind: "status", slot: "status", text: "old", tone: "neutral", order: 0 }],
       ]),
     };
     const result = applyEnvelope(current, statusEnvelope(["b"], 2, 1));

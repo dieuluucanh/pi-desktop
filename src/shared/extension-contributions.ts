@@ -182,6 +182,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+// Control characters are rejected, not sanitized: a payload must not smuggle
+// terminal escapes into a status line.
+// eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/;
 const COMMAND_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
@@ -224,7 +227,11 @@ function parseAction(raw: unknown): ContributionResult<ContributionAction> {
     return fail(`action ${actionId} args are invalid`);
   }
   const enabled = raw.enabled !== false;
-  const disabledReason = plainText(raw.disabledReason, HOST_CONTRIBUTION_LIMITS.maxTextChars, false);
+  const disabledReason = plainText(
+    raw.disabledReason,
+    HOST_CONTRIBUTION_LIMITS.maxTextChars,
+    false,
+  );
   const command = isRecord(raw.command) ? raw.command : undefined;
   if (command) {
     if (typeof command.name !== "string" || !COMMAND_NAME.test(command.name)) {
@@ -355,7 +362,11 @@ function parseContribution(raw: unknown): ContributionResult<Contribution | unde
         return fail(`action ${contributionId} command args are invalid`);
       }
       const enabled = raw.enabled !== false;
-      const disabledReason = plainText(raw.disabledReason, HOST_CONTRIBUTION_LIMITS.maxTextChars, false);
+      const disabledReason = plainText(
+        raw.disabledReason,
+        HOST_CONTRIBUTION_LIMITS.maxTextChars,
+        false,
+      );
       return {
         ok: true,
         value: {
@@ -452,7 +463,8 @@ export function parseContributionEnvelope(raw: unknown): ContributionResult<Pars
     return fail("revision must be a positive integer");
   }
 
-  if (raw.removed !== undefined && !Array.isArray(raw.removed)) return fail("removed must be an array");
+  if (raw.removed !== undefined && !Array.isArray(raw.removed))
+    return fail("removed must be an array");
   const removedRaw = (raw.removed as unknown[] | undefined) ?? [];
   if (removedRaw.length > HOST_CONTRIBUTION_LIMITS.maxRemoved) return fail("too many removed ids");
   const removed: string[] = [];
@@ -520,8 +532,7 @@ export function sortContributions(
 
 export function applyEnvelope(
   current:
-    | { epoch: number; revision: number; contributions: Map<string, Contribution> }
-    | undefined,
+    { epoch: number; revision: number; contributions: Map<string, Contribution> } | undefined,
   envelope: ContributionEnvelope,
 ): ContributionResult<{
   epoch: number;

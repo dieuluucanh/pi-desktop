@@ -202,6 +202,10 @@ export const HOST_METHODS = [
   // extension-agnostic snapshot plus a command-validated action runner.
   "contributions.state",
   "contributions.run",
+  // Related-session host contract (orchestrator plan step 12): a host forwards
+  // an extension's create/open/focus/... request to main as an event, and main
+  // settles the pending idempotent operation with this request.
+  "sessionHost.result",
   "tools.list",
   "tools.setActive",
   "model.list",

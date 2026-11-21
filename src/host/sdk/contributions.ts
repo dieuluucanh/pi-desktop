@@ -11,21 +11,16 @@
  * without it they deliberately fall back to statuses/widgets.
  */
 
-import type { ContributionHost } from "../contributions";
+import { createEventBus } from "@earendil-works/pi-coding-agent";
+import type { ContributionBridge, ContributionBus, ContributionHost } from "../contributions";
 import { CONTRIBUTION_EVENTS } from "../contributions";
 
-/** Structural `EventBus` (Pi's `createEventBus()` result). */
-export interface ContributionBus {
-  on(channel: string, handler: (payload: unknown) => unknown): () => void;
-  emit(channel: string, payload?: unknown): void;
+/** One shared bus per host process; the loader must receive this same instance. */
+export function createSdkEventBus(): ContributionBus {
+  return createEventBus();
 }
 
-export interface ContributionBridge {
-  /** Broadcast host support; extensions answer by publishing their set. */
-  announce(): void;
-  /** Stop listening (session teardown / rebind). */
-  dispose(): void;
-}
+export type { ContributionBridge, ContributionBus } from "../contributions";
 
 export interface ContributionBridgeOptions {
   host: ContributionHost;
@@ -34,7 +29,9 @@ export interface ContributionBridgeOptions {
   onError?: (error: unknown) => void;
 }
 
-export function createSdkContributionBridge(options: ContributionBridgeOptions): ContributionBridge {
+export function createSdkContributionBridge(
+  options: ContributionBridgeOptions,
+): ContributionBridge {
   const offs: Array<() => void> = [];
   const report = (error: unknown): void => {
     try {

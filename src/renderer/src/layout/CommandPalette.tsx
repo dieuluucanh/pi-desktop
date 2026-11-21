@@ -1,13 +1,7 @@
 import { Command } from "cmdk";
 import { useAppStore, type AppView } from "../state/app-store";
 import { useEditorStore } from "../editor/editor-store";
-import {
-  newSessionAction,
-  openProjectAction,
-  runTodoPanelActionForActiveTab,
-  toggleTodoPanelForActiveTab,
-} from "../menu-actions";
-import { todoPanelPaletteActions } from "../../../shared/workflow-todos";
+import { newSessionAction, openProjectAction } from "../menu-actions";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { Kbd } from "../ui/kbd";
 
@@ -196,22 +190,6 @@ export function CommandPalette() {
                 shortcut="Ctrl+/"
                 onSelect={() => run(() => useAppStore.getState().setShortcutsHelpOpen(true))}
               />
-            </Command.Group>
-
-            <Command.Group heading="Todo panel">
-              {todoPanelPaletteActions().map((action) => (
-                <PaletteItem
-                  key={action.id}
-                  label={action.label}
-                  {...(action.id === "toggle" ? { shortcut: "Ctrl+Alt+L" } : {})}
-                  onSelect={() =>
-                    run(() => {
-                      if (action.id === "toggle") toggleTodoPanelForActiveTab();
-                      else if (action.args) runTodoPanelActionForActiveTab(action.args);
-                    })
-                  }
-                />
-              ))}
             </Command.Group>
 
             <Command.Group heading="Go to">

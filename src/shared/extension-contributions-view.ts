@@ -168,7 +168,9 @@ export function buildContributionSnapshot(
   return {
     version: CONTRIBUTION_SNAPSHOT_VERSION,
     supported: options.supported,
-    ...(options.supported ? {} : { reason: options.reason ?? "host does not support contributions" }),
+    ...(options.supported
+      ? {}
+      : { reason: options.reason ?? "host does not support contributions" }),
     owners: [...entries]
       .filter((entry) => entry.contributions.length > 0)
       .sort((a, b) => a.ownerId.localeCompare(b.ownerId))
@@ -277,3 +279,82 @@ export function contributionViewsBySlot(
 }
 
 export type { ContributionEnvelope };
+
+/**
+ * One generic bar row the renderer can draw without knowing the extension.
+ *
+ * The badge is a single line (mode, else progress, else status); the remaining
+ * contributions are rows/actions. Nothing here is extension-specific, so an
+ * arbitrary publisher gets the same UI.
+ */
+export interface ContributionBarModel {
+  badge: ContributionView | null;
+  rows: ContributionView[];
+  actions: ContributionView[];
+  inputs: ContributionView[];
+  sessions: ContributionView[];
+}
+
+const SLOT_RANK: Record<ContributionSlot, number> = {
+  mode: 0,
+  progress: 1,
+  status: 2,
+  action: 3,
+  input: 4,
+  sessions: 5,
+};
+
+export function buildContributionBar(snapshot: ContributionSnapshot): ContributionBarModel {
+  const ordered = [...snapshot.contributions].sort(
+    (a, b) => SLOT_RANK[a.slot] - SLOT_RANK[b.slot] || a.order - b.order,
+  );
+  const modes = ordered.filter((entry) => entry.slot === "mode");
+  const progress = ordered.filter((entry) => entry.slot === "progress");
+  const statuses = ordered.filter((entry) => entry.slot === "status");
+  // Exactly one badge, chosen by priority; everything else stays visible.
+  const badge = modes[0] ?? progress[0] ?? statuses[0] ?? null;
+  const rows = ordered.filter(
+    (entry) =>
+      entry !== badge &&
+      (entry.slot === "mode" || entry.slot === "progress" || entry.slot === "status"),
+  );
+  return {
+    badge,
+    rows,
+    actions: ordered.filter((entry) => entry.slot === "action"),
+    inputs: ordered.filter((entry) => entry.slot === "input"),
+    sessions: ordered.filter((entry) => entry.slot === "sessions"),
+  };
+}
+
+/** Stable DOM key for a contribution row (owner-namespaced). */
+export function contributionKey(entry: ContributionView): string {
+  return `${entry.ownerId}:${entry.id}`;
+}
+
+/**
+ * The strongest input state any publisher declared, if one did.
+ *
+ * `locked` wins over `restricted`, which wins over `available`. A host uses this
+ * instead of parsing a status line: the extension itself says whether a surface
+ * owns the turn.
+ */
+export function contributionInputAvailability(
+  snapshot: ContributionSnapshot | undefined,
+): InputAvailability | null {
+  if (!snapshot) return null;
+  let seen: InputAvailability | null = null;
+  for (const entry of snapshot.contributions) {
+    if (entry.kind !== "input") continue;
+    const availability = entry.availability;
+    if (availability === "locked") return "locked";
+    if (availability === "restricted") seen = "restricted";
+    else if (seen === null) seen = "available";
+  }
+  return seen;
+}
+
+/** True when a published input contribution refuses ordinary prose. */
+export function contributionInputLocked(snapshot: ContributionSnapshot | undefined): boolean {
+  return contributionInputAvailability(snapshot) === "locked";
+}

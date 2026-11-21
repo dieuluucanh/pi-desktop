@@ -44,6 +44,23 @@ export const CONTRIBUTION_METHODS = [
   "contributions.run",
 ] as const satisfies readonly HostMethod[];
 
+/**
+ * Structural `pi.events` bus (Pi's `createEventBus()` result). The composition
+ * root supplies the same instance to the resource loader, so an extension's
+ * `pi.events.emit` lands here. SDK-free: the adapter lives in `src/host/sdk`.
+ */
+export interface ContributionBus {
+  on(channel: string, handler: (payload: unknown) => unknown): () => void;
+  emit(channel: string, payload?: unknown): void;
+}
+
+export interface ContributionBridge {
+  /** Broadcast host support; extensions answer by publishing their set. */
+  announce(): void;
+  /** Stop listening (session teardown / rebind). */
+  dispose(): void;
+}
+
 interface RegistryEntry {
   ownerId: string;
   epoch: number;
@@ -141,7 +158,11 @@ export function createContributionHost(options: ContributionHostOptions): Contri
       const current = registry.get(envelope.owner.id);
       const applied = applyEnvelope(
         current
-          ? { epoch: current.epoch, revision: current.revision, contributions: current.contributions }
+          ? {
+              epoch: current.epoch,
+              revision: current.revision,
+              contributions: current.contributions,
+            }
           : undefined,
         envelope,
       );
@@ -183,8 +204,7 @@ export function createContributionHost(options: ContributionHostOptions): Contri
       if (contribution.kind === "mode" || contribution.kind === "progress") {
         return {
           ran: false,
-          error:
-            'nested display actions are not executable; publish a kind:"action" contribution',
+          error: 'nested display actions are not executable; publish a kind:"action" contribution',
         };
       }
       return { ran: false, error: "contribution is not actionable" };

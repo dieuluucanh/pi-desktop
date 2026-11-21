@@ -139,6 +139,26 @@ export function extractAnsiCode(
 }
 
 /** Removes every escape sequence, preserving visible text. */
+/** Longest status string kept for a `title`/copy path. */
+const MAX_STATUS_CHARS = 160;
+
+/**
+ * Plain-text form of a status line, for `title` attributes and copy paths: no
+ * escape sequences, no line breaks, single-spaced, trimmed and length-capped.
+ *
+ * Extension statuses are arbitrary strings and can carry newlines (Pi's own
+ * footer sanitises them the same way), so a raw value must never reach a
+ * single-line attribute.
+ */
+export function statusLineText(text: string | null | undefined): string {
+  if (typeof text !== "string") return "";
+  const plain = stripAnsi(text)
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/ +/g, " ")
+    .trim();
+  return plain.length > MAX_STATUS_CHARS ? `${plain.slice(0, MAX_STATUS_CHARS - 1)}…` : plain;
+}
+
 export function stripAnsi(text: string): string {
   if (!text.includes("\x1b")) return text;
   let out = "";

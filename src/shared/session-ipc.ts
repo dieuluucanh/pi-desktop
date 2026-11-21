@@ -9,6 +9,8 @@
  */
 
 import type { TrustAnswer } from "./projects";
+import type { SessionBootstrapEntry } from "./related-sessions";
+import type { ArchivedRelatedSession } from "./related-session-archive";
 import { sanitizeWebUrl, webTabTitle } from "./web-tabs";
 import { isWorkspaceRelativePath, workspaceBasename, type WorkspaceEntryKind } from "./workspace";
 
@@ -103,6 +105,11 @@ export interface TabRecord {
    * transcript uses it to link a review back to the session that started it.
    */
   sessionTabId?: string | null;
+  /**
+   * The session that opened this related session (orchestrator step 12). A
+   * child tab is a normal tab; this link only drives navigation and ownership.
+   */
+  relatedParentTabId?: string | null;
   /** Last failure, surfaced inline in the tab instead of only in a log. */
   error?: string;
   /** Why the host was stopped; set only while `status` is `stopped`/`crashed`. */
@@ -179,6 +186,11 @@ export type SessionTabsEnvelope = {
   revision?: number;
   selectionSeq?: number;
   reusedTabId?: string;
+  /**
+   * Bounded archive of related sessions whose tab is closed (orchestrator step
+   * 13). Navigation metadata only; the transcript stays in the session JSONL.
+   */
+  relatedArchive?: ArchivedRelatedSession[];
 };
 
 /**
@@ -239,8 +251,25 @@ export interface CreateTabInput {
   sessionTabId?: string;
   /** The shell profile to open when `kind` is `terminal`. */
   profileId?: string;
+  /**
+   * Internal only (orchestrator step 12): a tab opened on behalf of another
+   * session. `parseCreateTab` strips it from IPC input, so the renderer cannot
+   * forge a parent; the main-process related-session service sets it.
+   */
+  related?: {
+    parentTabId: string;
+    relation: "child" | "sibling";
+    dedupeKey: string;
+  };
+  /**
+   * Internal only: bounded entries written by the child host before its
+   * `session_start`. Never accepted from the renderer.
+   */
+  bootstrap?: SessionBootstrapEntry[];
   /** Select the new tab (default true). False opens a background web tab. */
   activate?: boolean;
+  /** Internal only: a related session's own title (orchestrator step 12). */
+  title?: string;
   model?: string;
   thinking?: string;
   /**
@@ -342,6 +371,9 @@ export function sanitizeTabRecord(value: unknown): TabRecord | null {
     lastActiveAt: numberOr(source.lastActiveAt, 0),
     model: stringOrNull(source.model),
     ...(kind === "web" ? { url, sessionTabId: stringOrNull(source.sessionTabId) } : {}),
+    ...(stringOrNull(source.relatedParentTabId)
+      ? { relatedParentTabId: stringOrNull(source.relatedParentTabId) }
+      : {}),
     ...(kind === "editor" ? { filePath } : {}),
     ...(kind === "terminal"
       ? {

@@ -183,80 +183,61 @@ describe("sendPrompt", () => {
   });
 });
 
-describe("runReviewCommand", () => {
-  it("runs the command and never clears the draft", async () => {
+describe("runContributionAction", () => {
+  it("runs a published action and never clears the draft", async () => {
     const request = stubRequest(async () => ({ ran: true }));
     useAppStore.getState().setDraft("tab-1", "keep this for after the review");
 
-    await expect(useAppStore.getState().runReviewCommand("tab-1", "review-pause")).resolves.toBe(
-      true,
-    );
+    await expect(
+      useAppStore.getState().runContributionAction("tab-1", "fixture.ext", "pause"),
+    ).resolves.toBe(true);
 
     expect(request).toHaveBeenCalledWith({
       tabId: "tab-1",
-      method: "commands.run",
-      params: { name: "review-pause", args: "", ack: "started" },
+      method: "contributions.run",
+      params: { ownerId: "fixture.ext", id: "pause" },
     });
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("keep this for after the review");
   });
 
-  it("explains a command the host does not know", async () => {
-    stubRequest(async () => ({ ran: false }));
+  it("reports a failed request through the normal failure path", async () => {
+    stubRequest(async () => {
+      throw new Error("not implemented");
+    });
 
-    await expect(useAppStore.getState().runReviewCommand("tab-1", "review-abort")).resolves.toBe(
-      false,
-    );
-    expect(useAppStore.getState().hint).toContain("/review-abort is not available");
+    await expect(
+      useAppStore.getState().runContributionAction("tab-1", "fixture.ext", "gone"),
+    ).resolves.toBe(false);
   });
 });
 
-describe("runExtensionCommand and the todo bar action", () => {
+describe("runExtensionCommand", () => {
   it("returns ran/missing/unavailable without touching the draft", async () => {
     useAppStore.getState().setDraft("tab-1", "keep this");
     const request = stubRequest(async () => ({ ran: false }));
 
     await expect(
-      useAppStore.getState().runExtensionCommand("tab-1", "todos", "collapse"),
+      useAppStore.getState().runExtensionCommand("tab-1", "analyze", "deep"),
     ).resolves.toBe("missing");
     expect(request).toHaveBeenCalledWith({
       tabId: "tab-1",
       method: "commands.run",
-      params: { name: "todos", args: "collapse", ack: "started" },
+      params: { name: "analyze", args: "deep", ack: "started" },
     });
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("keep this");
 
     stubRequest(async () => ({ ran: true }));
     await expect(
-      useAppStore.getState().runExtensionCommand("tab-1", "todos", "expand"),
+      useAppStore.getState().runExtensionCommand("tab-1", "analyze", "quick"),
     ).resolves.toBe("ran");
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("keep this");
 
     stubRequest(async () => {
       throw new Error("not implemented");
     });
-    await expect(
-      useAppStore.getState().runExtensionCommand("tab-1", "todos", "hide"),
-    ).resolves.toBe("unavailable");
-  });
-
-  it("hints when the todo command is missing or the host cannot run it", async () => {
-    stubRequest(async () => ({ ran: false }));
-    await expect(useAppStore.getState().runTodoPanelAction("tab-1", "auto")).resolves.toBe(false);
-    expect(useAppStore.getState().hint).toContain("update @dieulc/workflow");
-
-    stubRequest(async () => {
-      throw new Error("not implemented");
-    });
-    await expect(useAppStore.getState().runTodoPanelAction("tab-1", "hide")).resolves.toBe(false);
-    expect(useAppStore.getState().hint).toContain("cannot run extension commands");
-  });
-
-  it("reports success from the todo bar action", async () => {
-    stubRequest(async () => ({ ran: true }));
-    await expect(useAppStore.getState().runTodoPanelAction("tab-1", "collapse")).resolves.toBe(
-      true,
+    await expect(useAppStore.getState().runExtensionCommand("tab-1", "analyze", "")).resolves.toBe(
+      "unavailable",
     );
-    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBeUndefined();
   });
 });
 
@@ -782,27 +763,55 @@ describe("prompt origin persistence", () => {
   });
 });
 
-describe("Review mode prompt guard", () => {
-  it("refuses prose and ! shell commands while Review owns the turn", async () => {
+describe("input-ownership prompt guard", () => {
+  const locked = {
+    version: 1 as const,
+    supported: true,
+    owners: [{ ownerId: "fixture.ext", revision: 1, epoch: 0 }],
+    contributions: [
+      {
+        ownerId: "fixture.ext",
+        id: "input",
+        kind: "input" as const,
+        slot: "input" as const,
+        tone: "warning" as const,
+        order: 0,
+        text: "locked",
+        availability: "locked" as const,
+        enabled: true,
+      },
+    ],
+    updatedAt: 1,
+  };
+
+  it("refuses prose and ! shell commands while a contribution locks input", async () => {
     const request = stubRequest(async () => ({}));
-    useAppStore.setState({
-      extensionUi: {
-        "tab-1": {
-          statuses: { workflow: "🔍 review" },
-          working: null,
-        },
-      } as never,
-      hint: null,
-    });
+    useAppStore.setState({ contributions: { "tab-1": locked }, hint: null });
     useAppStore.getState().setDraft("tab-1", "please fix it");
 
     await expect(useAppStore.getState().sendPrompt("tab-1", "please fix it")).resolves.toBe(false);
     expect(request).not.toHaveBeenCalled();
-    // The draft is preserved so the user can run /review-pause or edit it.
+    // The draft is preserved so the user can use the published controls.
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("please fix it");
-    expect(useAppStore.getState().hint).toMatch(/Review in progress/);
+    expect(useAppStore.getState().hint).toMatch(/An extension owns this turn/);
 
     await expect(useAppStore.getState().sendPrompt("tab-1", "!git status")).resolves.toBe(false);
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("does not infer a lock from status text alone", async () => {
+    const request = stubRequest(async () => ({}));
+    useAppStore.setState({
+      contributions: {},
+      extensionUi: {
+        "tab-1": { statuses: { workflow: "🔍 review" }, working: null },
+      } as never,
+      hint: null,
+    });
+
+    // A non-publishing extension keeps working through ordinary prose: the app
+    // no longer parses its status as authority.
+    await expect(useAppStore.getState().sendPrompt("tab-1", "plain text")).resolves.not.toBe(false);
+    expect(request).toHaveBeenCalled();
   });
 });

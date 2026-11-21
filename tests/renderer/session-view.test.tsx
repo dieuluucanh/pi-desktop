@@ -8,12 +8,8 @@ import { ShortcutDispatcher } from "../../src/renderer/src/shortcuts/ShortcutDis
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { EMPTY_EXTENSION_UI } from "../../src/shared/extension-ui";
 import { EMPTY_TUI_SURFACE } from "../../src/shared/tui-surface";
-import {
-  REVIEW_HANDOFF_LINE,
-  REVIEW_PAUSED_LINE,
-  REVIEW_RUNNING_HINT,
-  REVIEW_RUNNING_LINE,
-} from "../../src/shared/workflow-mode";
+import type { Contribution } from "../../src/shared/extension-contributions";
+import { buildContributionSnapshot } from "../../src/shared/extension-contributions-view";
 import { documentsViewFixture, installBridge } from "./fixtures";
 import {
   WORKSPACE_PATH_DRAG_MIME,
@@ -718,100 +714,131 @@ describe("Escape parity (plan step 24)", () => {
   });
 });
 
-describe("extension-owned review status (2026-11-10; one row 2026-11-18)", () => {
-  const reviewing = {
-    message: REVIEW_RUNNING_LINE,
-    visible: null,
-    frames: null,
-    intervalMs: null,
-  };
-  const REVIEW_LINE = `${REVIEW_RUNNING_LINE} · pass 2/2 · 1 finding · ● verifying`;
-  const reviewStatus = (workflow: string, line: string | null = REVIEW_LINE) => ({
-    ...EMPTY_EXTENSION_UI,
-    statuses: {
-      workflow,
-      ...(line === null ? {} : { "workflow-review": line }),
-    },
-    working: reviewing,
-  });
-
-  it("shows one review row for a manual review while the tab is idle", () => {
-    useAppStore.setState({ extensionUi: { [TAB]: reviewStatus("🔍 review") } });
-
-    render(<SessionView tabId={TAB} />);
-
-    expect(screen.queryByTestId("extension-working-row")).toBeNull();
-    expect(screen.getByTestId("review-bar")).toHaveAttribute("data-phase", "running");
-    expect(screen.getByTestId("review-bar")).toHaveTextContent(REVIEW_LINE);
-    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Abort" })).toBeInTheDocument();
-    // The review row promotes `workflow-review`; the footer keeps only the mode.
-    expect(screen.getByTestId("extension-status-workflow")).toHaveTextContent("🔍 review");
-    expect(screen.queryByTestId("extension-status-workflow-review")).toBeNull();
-    expect(useAppStore.getState().tabs[0]?.status).toBe("idle");
-  });
-
-  it("shows the full paused line and a Resume button while a review is paused", () => {
-    useAppStore.setState({
-      extensionUi: { [TAB]: reviewStatus("🔍 review — paused", REVIEW_PAUSED_LINE) },
+describe("generic extension contributions (orchestrator step 11)", () => {
+  const snapshotOf = (contributions: Contribution[]) =>
+    buildContributionSnapshot([{ ownerId: "fixture.ext", epoch: 0, revision: 1, contributions }], {
+      supported: true,
+      updatedAt: 1,
     });
 
-    render(<SessionView tabId={TAB} />);
-
-    expect(screen.queryByTestId("extension-working-row")).toBeNull();
-    expect(screen.getByTestId("review-bar")).toHaveTextContent(REVIEW_PAUSED_LINE);
-    expect(screen.getByTestId("review-bar")).toHaveAttribute("data-phase", "paused");
-    expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+  const mode = (label: string, tone: Contribution["tone"] = "accent"): Contribution => ({
+    id: "mode",
+    kind: "mode",
+    slot: "mode",
+    label,
+    tone,
+    order: 0,
+    actions: [],
   });
 
-  it("keeps the handoff row alive after the reviewer finishes", () => {
+  const locked = (reason = "A reviewer owns this turn"): Contribution => ({
+    id: "input",
+    kind: "input",
+    slot: "input",
+    availability: "locked",
+    tone: "warning",
+    order: 5,
+    reason,
+  });
+
+  const action = (id: string, label: string): Contribution => ({
+    id,
+    kind: "action",
+    slot: "action",
+    label,
+    tone: "info",
+    order: 10,
+    command: { name: "analyze" },
+    enabled: true,
+  });
+
+  it("renders the generic bar and runs a published action", async () => {
+    const request = vi.fn(async (input: { method: string }) =>
+      input.method === "contributions.run" ? { ran: true } : {},
+    );
+    (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = request;
     useAppStore.setState({
-      extensionUi: {
-        [TAB]: {
-          ...EMPTY_EXTENSION_UI,
-          statuses: {
-            workflow: "🔍 review — awaiting decision",
-            "workflow-review": REVIEW_HANDOFF_LINE,
+      contributions: {
+        [TAB]: snapshotOf([
+          mode("Analyze", "warning"),
+          {
+            id: "progress",
+            kind: "progress",
+            slot: "progress",
+            label: "Files",
+            tone: "neutral",
+            order: 5,
+            done: 2,
+            total: 5,
+            actions: [],
           },
-        },
+          action("go", "Start"),
+        ]),
       },
     });
 
     render(<SessionView tabId={TAB} />);
 
-    expect(screen.getByTestId("review-bar")).toHaveAttribute("data-phase", "handoff");
-    expect(screen.getByTestId("review-bar")).toHaveTextContent(REVIEW_HANDOFF_LINE);
-    expect(screen.queryByTestId("extension-working-row")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Abort" })).toBeNull();
-  });
-
-  it("runs the review command without clearing the draft", async () => {
-    const request = vi.fn(async (input: { method: string }) =>
-      input.method === "commands.run" ? { ran: true } : {},
-    );
-    (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = request;
-    useAppStore.setState({ extensionUi: { [TAB]: reviewStatus("🔍 review") } });
-
-    render(<SessionView tabId={TAB} />);
-    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    expect(screen.getByTestId("contributions-bar")).toBeInTheDocument();
+    expect(screen.getByTestId("contribution-row")).toHaveTextContent("Files");
+    expect(screen.queryByTestId("contributions-bar")).not.toHaveTextContent("workflow");
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
 
     await waitFor(() =>
       expect(request).toHaveBeenCalledWith({
         tabId: TAB,
-        method: "commands.run",
-        params: { name: "review-pause", args: "", ack: "started" },
+        method: "contributions.run",
+        params: { ownerId: "fixture.ext", id: "go" },
       }),
     );
+    // The generic action never clears the draft.
+    expect(useAppStore.getState().prefs.drafts[TAB] ?? "").toBe("");
   });
 
-  it("focuses the linked loopback review tab from the handoff bar", async () => {
+  it("drives the composer badge and border from the same generic badge", () => {
     useAppStore.setState({
+      contributions: { [TAB]: snapshotOf([mode("Analyze", "warning")]) },
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    expect(screen.getByTestId("composer-contribution-badge")).toHaveTextContent("Analyze");
+    expect(screen.getByLabelText("Prompt")).toHaveClass("border-warn");
+    // The bar does not repeat the badge the composer already names.
+    expect(screen.queryByTestId("contribution-badge")).toBeNull();
+  });
+
+  it("suppresses the working row and Stop while input is locked", () => {
+    useAppStore.setState({
+      contributions: { [TAB]: snapshotOf([mode("Review", "accent"), locked()]) },
       extensionUi: {
         [TAB]: {
           ...EMPTY_EXTENSION_UI,
-          statuses: { workflow: "🔍 review — awaiting decision" },
+          working: {
+            message: "Reviewing plan…",
+            visible: null,
+            frames: null,
+            intervalMs: null,
+          },
         },
       },
+      tabs: [{ ...useAppStore.getState().tabs[0]!, status: "running" }],
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    expect(screen.queryByTestId("extension-working-row")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    expect(screen.getByTestId("contribution-input")).toHaveTextContent("input locked");
+    expect(screen.getByTestId("contribution-input")).toHaveAttribute(
+      "title",
+      "A reviewer owns this turn",
+    );
+  });
+
+  it("opens a linked loopback tab from the generic bar", async () => {
+    useAppStore.setState({
+      contributions: { [TAB]: snapshotOf([mode("Review"), locked()]) },
       tabs: [
         ...useAppStore.getState().tabs,
         {
@@ -831,31 +858,14 @@ describe("extension-owned review status (2026-11-10; one row 2026-11-18)", () =>
     });
 
     render(<SessionView tabId={TAB} />);
-    fireEvent.click(screen.getByRole("button", { name: "Open review tab" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open linked tab" }));
 
     await waitFor(() => expect(useAppStore.getState().activeTabId).toBe("web-review"));
   });
 
-  it("falls back to the canonical line when the extension sends no workflow-review", () => {
+  it("renders the bar below the above-editor widgets and above the composer", () => {
     useAppStore.setState({
-      extensionUi: {
-        [TAB]: {
-          ...EMPTY_EXTENSION_UI,
-          statuses: { workflow: "🔍 review" },
-          working: { ...reviewing, message: "🔍 Reviewing plan…" },
-        },
-      },
-    });
-
-    render(<SessionView tabId={TAB} />);
-
-    expect(screen.getByTestId("review-bar")).toHaveTextContent(REVIEW_RUNNING_LINE);
-    expect(screen.getByTestId("review-bar")).toHaveTextContent(REVIEW_RUNNING_HINT);
-  });
-
-  it("places the review row below the above-editor widgets and above the composer", () => {
-    useAppStore.setState({
-      extensionUi: { [TAB]: reviewStatus("🔍 review") },
+      contributions: { [TAB]: snapshotOf([mode("Analyze")]) },
       tuiSurfaces: {
         [TAB]: {
           ...EMPTY_TUI_SURFACE,
@@ -867,151 +877,39 @@ describe("extension-owned review status (2026-11-10; one row 2026-11-18)", () =>
 
     render(<SessionView tabId={TAB} />);
 
-    const todo = screen.getByText("TODO PANEL");
-    const bar = screen.getByTestId("review-bar");
+    const widget = screen.getByText("TODO PANEL");
+    const bar = screen.getByTestId("contributions-bar");
     const composer = screen.getByTestId("composer-drop");
-    expect(todo.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(widget.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(bar.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("mounts the todo bar above the panel and the review row", () => {
+  it("falls back to generic statuses and widgets for a non-publishing extension", () => {
     useAppStore.setState({
+      contributions: {},
       extensionUi: {
         [TAB]: {
           ...EMPTY_EXTENSION_UI,
-          statuses: {
-            workflow: "🔍 review",
-            "workflow-todos": "☐ Todos 3/12 · expanded",
-          },
-        },
-      },
-      tuiSurfaces: {
-        [TAB]: {
-          ...EMPTY_TUI_SURFACE,
-          active: true,
-          widgetsAbove: [
-            {
-              seq: 1,
-              key: "workflow-todos",
-              width: 40,
-              height: 2,
-              lines: ["▶ 3. Build", "☐ 4. Test"],
-              cursor: null,
-            },
-          ],
+          statuses: { "legacy-ext": "handoff pending — browser" },
         },
       },
     });
 
     render(<SessionView tabId={TAB} />);
 
-    const todoBar = screen.getByTestId("todo-panel-bar");
-    const widget = screen.getByText("▶ 3. Build");
-    const review = screen.getByTestId("review-bar");
-    const composer = screen.getByTestId("composer-drop");
-    expect(todoBar).toHaveTextContent("3/12");
-    expect(todoBar.compareDocumentPosition(widget) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(widget.compareDocumentPosition(review) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(
-      review.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    // The bar promotes the compact status; the footer omits its copy.
-    expect(screen.queryByTestId("extension-status-workflow-todos")).toBeNull();
-  });
-
-  it("keeps the bar when the list is hidden and dispatches the toggle", async () => {
-    const runTodoPanelAction = vi.fn(async (_tabId: string, _action: string) => true);
-    const spy = vi
-      .spyOn(
-        useAppStore.getState() as unknown as {
-          runTodoPanelAction: typeof runTodoPanelAction;
-        },
-        "runTodoPanelAction",
-      )
-      .mockImplementation(runTodoPanelAction);
-    useAppStore.setState({
-      extensionUi: {
-        [TAB]: {
-          ...EMPTY_EXTENSION_UI,
-          statuses: {
-            workflow: "▶ build 3/12",
-            "workflow-todos": "☐ Todos 3/12 · hidden",
-          },
-        },
-      },
-    });
-
-    try {
-      render(<SessionView tabId={TAB} />);
-      expect(screen.getByTestId("todo-panel-bar")).toHaveAttribute("data-state", "hidden");
-      expect(screen.getByTestId("todo-panel-bar")).toHaveTextContent("Hidden");
-      fireEvent.click(screen.getByTestId("todo-panel-bar-toggle"));
-      await waitFor(() => expect(runTodoPanelAction).toHaveBeenCalledWith(TAB, "expand"));
-    } finally {
-      spy.mockRestore();
-    }
-  });
-
-  it("degrades to no bar on an old extension's hidden Review panel", () => {
-    useAppStore.setState({
-      extensionUi: {
-        [TAB]: {
-          ...EMPTY_EXTENSION_UI,
-          statuses: { workflow: "🔍 review" },
-        },
-      },
-      tuiSurfaces: { [TAB]: { ...EMPTY_TUI_SURFACE, active: false } },
-    });
-
-    render(<SessionView tabId={TAB} />);
-
-    // 0.12.1 carries no `workflow-todos` status and the hidden panel has no
-    // frame; the menu/palette still dispatch /todos, but there is nothing to
-    // anchor a native bar to. The documented degradation must not crash.
-    expect(screen.queryByTestId("todo-panel-bar")).toBeNull();
-    expect(screen.getByTestId("review-bar")).toBeInTheDocument();
-  });
-
-  it("keeps a residual workflow-review in the footer when no review row is visible", () => {
-    useAppStore.setState({
-      extensionUi: {
-        [TAB]: {
-          ...EMPTY_EXTENSION_UI,
-          statuses: {
-            workflow: "⏸ plan",
-            "workflow-review": "handoff pending — browser",
-          },
-        },
-      },
-    });
-
-    render(<SessionView tabId={TAB} />);
-
-    expect(screen.queryByTestId("review-bar")).toBeNull();
-    expect(screen.getByTestId("extension-status-workflow-review")).toHaveTextContent(
+    // No parser, no phantom native controls: the ordinary status stays visible.
+    expect(screen.queryByTestId("contributions-bar")).toBeNull();
+    expect(screen.queryByTestId("composer-contribution-badge")).toBeNull();
+    expect(screen.getByTestId("extension-status-legacy-ext")).toHaveTextContent(
       "handoff pending — browser",
     );
-  });
-
-  it("hides the row when the extension hides its indicator", () => {
-    useAppStore.setState({
-      extensionUi: {
-        [TAB]: {
-          ...EMPTY_EXTENSION_UI,
-          working: { ...reviewing, visible: false },
-        },
-      },
-    });
-
-    render(<SessionView tabId={TAB} />);
-
-    expect(screen.queryByTestId("extension-working-row")).toBeNull();
   });
 
   it("keeps a genuinely idle tab empty", () => {
     render(<SessionView tabId={TAB} />);
 
     expect(screen.queryByTestId("extension-working-row")).toBeNull();
-    expect(screen.queryByTestId("review-bar")).toBeNull();
+    expect(screen.queryByTestId("contributions-bar")).toBeNull();
+    expect(screen.queryByTestId("composer-contribution-badge")).toBeNull();
   });
 });

@@ -16,6 +16,13 @@ import {
   type IncidentKind,
 } from "../shared/diagnostics";
 import type { TrustAnswer } from "../shared/projects";
+import type { SessionBootstrapEntry } from "../shared/related-sessions";
+import {
+  addArchivedRelatedSession,
+  forgetArchivedRelatedSession,
+  sanitizeRelatedArchive,
+  type ArchivedRelatedSession,
+} from "../shared/related-session-archive";
 import {
   COALESCE_BYTES,
   COALESCE_MS,
@@ -33,6 +40,7 @@ import { sameFolder } from "../shared/rail-scope";
 import { MAX_GRID_PANES } from "../shared/session-grid";
 import { moveTabWithinPinGroup, partitionPinnedTabs } from "../shared/tab-order";
 import { nextActiveTabAfterClose } from "./tab-selection";
+import { createRelatedSessionService } from "./related-sessions";
 import { PI_OFFICE_BRIDGE } from "../shared/office";
 import {
   CONTROL_TAB_ID,
@@ -197,8 +205,12 @@ export interface SupervisorLike {
 }
 
 export interface SessionStoreLike {
-  read(): Promise<{ tabs: unknown; activeTabId?: unknown }>;
-  update(patch: { tabs?: unknown; activeTabId?: unknown }): Promise<unknown>;
+  read(): Promise<{ tabs: unknown; activeTabId?: unknown; relatedSessions?: unknown }>;
+  update(patch: {
+    tabs?: unknown;
+    activeTabId?: unknown;
+    relatedSessions?: unknown;
+  }): Promise<unknown>;
 }
 
 export type SessionEmitChannel = "event" | "state" | "tabs";
@@ -646,6 +658,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     activeTabId: activeId,
     revision,
     selectionSeq,
+    relatedArchive: relatedArchive.map((entry) => ({ ...entry })),
   });
 
   /** The one writer of the selection, so every change carries a fresh sequence. */
@@ -681,8 +694,18 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     deps.emit("tabs", next);
   };
 
+  /**
+   * Bounded archive of related sessions whose tab is closed (orchestrator step
+   * 13). It keeps the parent link and the JSONL handle, never the transcript.
+   */
+  let relatedArchive: ArchivedRelatedSession[] = [];
+
   const persist = async (): Promise<void> => {
-    await deps.store.update({ tabs: [...tabs.values()], activeTabId: activeId });
+    await deps.store.update({
+      tabs: [...tabs.values()],
+      activeTabId: activeId,
+      relatedSessions: relatedArchive,
+    });
   };
 
   const requireTab = (tabId: string): TabRecord => {
@@ -882,6 +905,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
   /** Forgets a tab's handle/subscriptions without stopping the supervisor process. */
   const forgetHost = (tabId: string): void => {
+    related.forget(tabId);
+    bootstrapForTab.delete(tabId);
     flushPending(tabId);
     timers.delete(tabId);
     pending.delete(tabId);
@@ -1032,6 +1057,23 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       host.on("event", (payload) => {
         const entry = toEntry(payload);
         if (!entry) return;
+        // Host → main related-session request (orchestrator step 12). It is not
+        // a transcript event, so it is handled here and never forwarded.
+        // The parent is this subscription's tab, never a payload value.
+        if (entry.event === "host:relatedSession.request") {
+          const requestId =
+            entry.payload && typeof entry.payload === "object"
+              ? (entry.payload as { requestId?: unknown }).requestId
+              : undefined;
+          void related.handle(entry.payload, tab.id).then(
+            (result) => {
+              if (typeof requestId !== "string" || requestId.length === 0) return;
+              void host.request("sessionHost.result", { requestId, result }).catch(() => undefined);
+            },
+            () => undefined,
+          );
+          return;
+        }
         const current = sessionIdentities.get(tab.id);
         const incomingId = entry.sessionId ?? null;
         const incomingEpoch = entry.sessionEpoch;
@@ -1162,6 +1204,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         recordIncident("host_timeout", `host did not answer "${method}"`, { tabId: tab.id });
         pushEntries(tab.id, [{ event: "session.timeout", payload }]);
       }),
+      // Host → main related-session request (orchestrator step 12). The parent
+      // is this subscription's tab, never a value from the payload; the answer
+      // settles the host's pending idempotent operation.
     ];
     unsubscribes.set(tab.id, off);
   };
@@ -1270,11 +1315,13 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
             ...(extra?.model ? { model: extra.model } : {}),
             ...(extra?.thinking ? { thinking: extra.thinking } : {}),
             ...(extra?.trust ? { trust: extra.trust } : {}),
+            ...(bootstrapForTab.has(tab.id) ? { bootstrap: bootstrapForTab.get(tab.id) } : {}),
           });
       if (disposed || !tabs.has(tab.id) || (generations.get(tab.id) ?? 0) !== generation) {
         await deps.supervisor.stop(tab.id).catch(() => undefined);
         throw new SessionServiceError("tab closed while its session was opening", "tab_closed");
       }
+      bootstrapForTab.delete(tab.id);
       applySnapshot(tab, snapshot);
       sessionReady.add(tab.id);
       const wasRecovering = recovering.delete(tab.id);
@@ -1532,6 +1579,168 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     };
   };
 
+  /**
+   * Bounded bootstrap entries for a tab that is about to start (orchestrator
+   * step 12). Set before `activateTab` starts the host, cleared after the open
+   * so a resume never re-applies it.
+   */
+  const bootstrapForTab = new Map<string, SessionBootstrapEntry[]>();
+
+  /**
+   * Creates one tab record and starts it. Extracted from `createTab` so the
+   * related-session service can obtain the created tab id without guessing
+   * which tab the envelope selected (orchestrator step 12).
+   */
+  const addTab = async (
+    input: CreateTabInput,
+  ): Promise<{ tab: TabRecord; envelope: SessionTabsEnvelope }> => {
+    if (disposed) throw new SessionServiceError("session service is disposed", "disposed");
+    const kind = input.kind ?? "session";
+    const isEditor = kind === "editor";
+    // A web tab carries a URL and needs no project folder; every other kind
+    // needs a cwd. An editor tab additionally needs a contained file path.
+    const webUrl = kind === "web" ? sanitizeWebUrl(input.url) : null;
+    if (kind === "web") {
+      if (!webUrl) throw new SessionServiceError("createTab requires a web URL", "bad_request");
+    } else if (typeof input.cwd !== "string" || input.cwd.length === 0) {
+      throw new SessionServiceError("createTab requires a project folder", "bad_request");
+    }
+    const filePath = isEditor ? input.filePath : undefined;
+    if (isEditor && (!filePath || !isWorkspaceRelativePath(filePath))) {
+      throw new SessionServiceError("createTab requires a project-relative file", "bad_request");
+    }
+    const requestedFile =
+      typeof input.sessionFile === "string" && input.sessionFile.length > 0
+        ? input.sessionFile
+        : null;
+    // Reopening an archived related session restores its parent link. The
+    // relation is navigation metadata, not authority: ownership checks still
+    // use the parent that created the tab in this run.
+    const archivedRelated = requestedFile
+      ? relatedArchive.find((entry) => entry.sessionFile === requestedFile)
+      : undefined;
+    const relatedLink =
+      input.related ??
+      (archivedRelated
+        ? {
+            parentTabId: archivedRelated.parentTabId,
+            relation: archivedRelated.relation,
+            dedupeKey: archivedRelated.sessionRef,
+          }
+        : undefined);
+    if (archivedRelated) {
+      relatedArchive = forgetArchivedRelatedSession(relatedArchive, {
+        sessionFile: requestedFile,
+      });
+    }
+    // A session file is one conversation with one live manager: the SDK takes
+    // no lock and every host appends from its own in-memory leaf, so a second
+    // tab on one JSONL branches the transcript. The renderer checks first;
+    // this is the invariant behind every caller. Reuse is reported so the UI
+    // can take the "return to that tab" path instead of a new-tab path.
+    if (isHostBackedTab(kind) && requestedFile !== null) {
+      const existing = findTabBySessionFile(tabs.values(), requestedFile);
+      if (existing) {
+        if (input.activate !== false) await service.activateTab(existing.id);
+        return { tab: existing, envelope: { ...envelope(), reusedTabId: existing.id } };
+      }
+    }
+    const id = newId();
+    const timestamp = now();
+    const cwd = typeof input.cwd === "string" ? input.cwd : "";
+    const tab: TabRecord = {
+      id,
+      kind,
+      cwd,
+      title: isEditor
+        ? workspaceBasename(filePath!)
+        : kind === "web"
+          ? webTabTitle(webUrl)
+          : (input.title ?? sessionTitle(cwd)),
+      sessionFile: requestedFile,
+      status: isHostBackedTab(kind) ? "starting" : "idle",
+      createdAt: timestamp,
+      lastActiveAt: timestamp,
+      model: null,
+      ...(kind === "web" ? { url: webUrl, sessionTabId: input.sessionTabId ?? null } : {}),
+      ...(isEditor ? { filePath } : {}),
+      ...(relatedLink ? { relatedParentTabId: relatedLink.parentTabId } : {}),
+      ...(kind === "terminal" && input.profileId ? { profileId: input.profileId } : {}),
+    };
+    tabs.set(id, tab);
+    if (input.bootstrap && input.bootstrap.length > 0) {
+      bootstrapForTab.set(id, input.bootstrap);
+    }
+    const activate = input.activate !== false;
+    if (activate) selectTab(id);
+    if (isHostBackedTab(kind) && (input.model || input.thinking || input.trust)) {
+      createParams.set(id, {
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.thinking ? { thinking: input.thinking } : {}),
+        ...(input.trust ? { trust: input.trust } : {}),
+      });
+    }
+    publishTabs();
+    await persist();
+    // A background web tab (a review URL discovered in a tool result) must not
+    // select itself or spawn anything. Only a user gesture activates.
+    if (activate) await service.activateTab(id);
+    return { tab, envelope: envelope() };
+  };
+
+  /**
+   * Generic related-session service. The parent is always the tab whose host
+   * forwarded the request; nothing in the payload can claim another parent.
+   */
+  const related = createRelatedSessionService({
+    port: {
+      parent: (parentTabId) => {
+        const tab = tabs.get(parentTabId);
+        return tab && isHostBackedTab(tab.kind) ? { cwd: tab.cwd } : null;
+      },
+      create: async (input) => {
+        const created = await addTab({
+          cwd: input.cwd,
+          title: input.title,
+          related: {
+            parentTabId: input.parentTabId,
+            relation: input.relation,
+            dedupeKey: input.dedupeKey,
+          },
+          bootstrap: input.bootstrap,
+          activate: true,
+        } as CreateTabInput);
+        return { sessionRef: created.tab.id };
+      },
+      focus: async (sessionRef) => {
+        if (!tabs.has(sessionRef)) return false;
+        await service.activateTab(sessionRef);
+        return true;
+      },
+      inspect: async (sessionRef) => {
+        const tab = tabs.get(sessionRef);
+        if (!tab) return null;
+        return { title: tab.title, running: tab.status === "running" };
+      },
+      interrupt: async (sessionRef) => {
+        const host = hosts.get(sessionRef);
+        if (!host || !sessionReady.has(sessionRef)) return false;
+        try {
+          await host.request("abort");
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      close: async (sessionRef) => {
+        if (!tabs.has(sessionRef)) return false;
+        await service.closeTab(sessionRef);
+        return true;
+      },
+      ownerOf: (sessionRef) => tabs.get(sessionRef)?.relatedParentTabId ?? null,
+    },
+  });
+
   const service: SessionService = {
     controlHost() {
       return startControlHost();
@@ -1646,6 +1855,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // most recently active record (with any pin) and drop the rest: the
       // restored table must satisfy the one-manager-per-file invariant too.
       const collapsed = collapseDuplicateSessionTabs(sanitizeTabs(state.tabs));
+      relatedArchive = sanitizeRelatedArchive(state.relatedSessions);
       tabs.clear();
       hosts.clear();
       starting.clear();
@@ -1699,74 +1909,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     },
 
     async createTab(input) {
-      if (disposed) throw new SessionServiceError("session service is disposed", "disposed");
-      const kind = input.kind ?? "session";
-      const isEditor = kind === "editor";
-      // A web tab carries a URL and needs no project folder; every other kind
-      // needs a cwd. An editor tab additionally needs a contained file path.
-      const webUrl = kind === "web" ? sanitizeWebUrl(input.url) : null;
-      if (kind === "web") {
-        if (!webUrl) throw new SessionServiceError("createTab requires a web URL", "bad_request");
-      } else if (typeof input.cwd !== "string" || input.cwd.length === 0) {
-        throw new SessionServiceError("createTab requires a project folder", "bad_request");
-      }
-      const filePath = isEditor ? input.filePath : undefined;
-      if (isEditor && (!filePath || !isWorkspaceRelativePath(filePath))) {
-        throw new SessionServiceError("createTab requires a project-relative file", "bad_request");
-      }
-      const requestedFile =
-        typeof input.sessionFile === "string" && input.sessionFile.length > 0
-          ? input.sessionFile
-          : null;
-      // A session file is one conversation with one live manager: the SDK takes
-      // no lock and every host appends from its own in-memory leaf, so a second
-      // tab on one JSONL branches the transcript. The renderer checks first;
-      // this is the invariant behind every caller. Reuse is reported so the UI
-      // can take the "return to that tab" path instead of a new-tab path.
-      if (isHostBackedTab(kind) && requestedFile !== null) {
-        const existing = findTabBySessionFile(tabs.values(), requestedFile);
-        if (existing) {
-          if (input.activate !== false) await service.activateTab(existing.id);
-          return { ...envelope(), reusedTabId: existing.id };
-        }
-      }
-      const id = newId();
-      const timestamp = now();
-      const cwd = typeof input.cwd === "string" ? input.cwd : "";
-      const tab: TabRecord = {
-        id,
-        kind,
-        cwd,
-        title: isEditor
-          ? workspaceBasename(filePath!)
-          : kind === "web"
-            ? webTabTitle(webUrl)
-            : sessionTitle(cwd),
-        sessionFile: requestedFile,
-        status: isHostBackedTab(kind) ? "starting" : "idle",
-        createdAt: timestamp,
-        lastActiveAt: timestamp,
-        model: null,
-        ...(kind === "web" ? { url: webUrl, sessionTabId: input.sessionTabId ?? null } : {}),
-        ...(isEditor ? { filePath } : {}),
-        ...(kind === "terminal" && input.profileId ? { profileId: input.profileId } : {}),
-      };
-      tabs.set(id, tab);
-      const activate = input.activate !== false;
-      if (activate) selectTab(id);
-      if (isHostBackedTab(kind) && (input.model || input.thinking || input.trust)) {
-        createParams.set(id, {
-          ...(input.model ? { model: input.model } : {}),
-          ...(input.thinking ? { thinking: input.thinking } : {}),
-          ...(input.trust ? { trust: input.trust } : {}),
-        });
-      }
-      publishTabs();
-      await persist();
-      // A background web tab (a review URL discovered in a tool result) must not
-      // select itself or spawn anything. Only a user gesture activates.
-      if (activate) await service.activateTab(id);
-      return envelope();
+      return (await addTab(input)).envelope;
     },
 
     async ensureTab(tabId) {
@@ -1861,6 +2004,17 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
             );
       const doomedIds = new Set([tabId, ...linkedWebTabs.map((entry) => entry.id)]);
       const selectionLost = activeRecord !== undefined && doomedIds.has(activeRecord.id);
+      if (tab.relatedParentTabId && isHostBackedTab(tab.kind)) {
+        relatedArchive = addArchivedRelatedSession(relatedArchive, {
+          parentTabId: tab.relatedParentTabId,
+          sessionRef: tab.id,
+          sessionFile: tab.sessionFile,
+          cwd: tab.cwd,
+          title: tab.title,
+          relation: "child",
+          closedAt: now(),
+        });
+      }
       for (const entry of linkedWebTabs) forgetTab(entry.id);
       forgetTab(tabId);
       try {

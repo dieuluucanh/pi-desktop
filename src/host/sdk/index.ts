@@ -26,6 +26,7 @@ import type {
   AgentSessionEvent,
   AgentSessionServices,
   CreateAgentSessionRuntimeFactory,
+  EventBus,
 } from "@earendil-works/pi-coding-agent";
 
 export {
@@ -58,6 +59,12 @@ export type SessionRuntimeFactory = (options: {
   npmCommand?: readonly string[] | null;
   /** Safe mode (plan step 22): disable every resource-loader collection. */
   safeMode?: boolean;
+  /**
+   * The host's shared extension event bus. Supplying it is what makes `pi.events`
+   * a known instance the contribution bridge can listen on; without it the
+   * loader creates a private bus and no host bridge can see publications.
+   */
+  eventBus?: EventBus | null;
   /** Whether the project is trusted, so its `.pi/settings.json` may be read. */
   projectTrusted?: boolean;
   /**
@@ -107,10 +114,13 @@ export const createSdkSessionRuntime: SessionRuntimeFactory = async (options) =>
       // Safe mode (plan step 22) and the app's own checkpoint extension (step 24)
       // share one decision: in safe mode the options disable every collection
       // *and* drop the extra path, because `noExtensions` alone does not.
-      resourceLoaderOptions: checkpointExtensionLoaderOptions({
-        safeMode: options.safeMode,
-        extensionPath: options.checkpointsExtensionPath,
-      }),
+      resourceLoaderOptions: {
+        ...checkpointExtensionLoaderOptions({
+          safeMode: options.safeMode,
+          extensionPath: options.checkpointsExtensionPath,
+        }),
+        ...(options.eventBus ? { eventBus: options.eventBus } : {}),
+      },
     });
     options.onPhase?.("services", Date.now() - servicesStartedAt);
     // Resolve `enabledModels` exactly as terminal Pi does at startup. The scope

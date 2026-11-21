@@ -6,6 +6,8 @@ import {
   buildContributionSnapshot,
   contributionViewsBySlot,
   sanitizeContributionSnapshot,
+  buildContributionBar,
+  contributionKey,
 } from "../../src/shared/extension-contributions-view";
 import type { Contribution } from "../../src/shared/extension-contributions";
 
@@ -49,7 +51,12 @@ describe("contribution view", () => {
     const snapshot = buildContributionSnapshot(
       [
         { ownerId: "b.ext", epoch: 0, revision: 2, contributions: [status("s", 0)] },
-        { ownerId: "a.ext", epoch: 0, revision: 3, contributions: [mode("m", 10), status("t", -1)] },
+        {
+          ownerId: "a.ext",
+          epoch: 0,
+          revision: 3,
+          contributions: [mode("m", 10), status("t", -1)],
+        },
       ],
       { supported: true, updatedAt: 5 },
     );
@@ -72,11 +79,14 @@ describe("contribution view", () => {
   });
 
   it("omits owners with no contributions and reports unsupported", () => {
-    const empty = buildContributionSnapshot([{ ownerId: "a.ext", epoch: 0, revision: 1, contributions: [] }], {
-      supported: false,
-      reason: "old host",
-      updatedAt: 1,
-    });
+    const empty = buildContributionSnapshot(
+      [{ ownerId: "a.ext", epoch: 0, revision: 1, contributions: [] }],
+      {
+        supported: false,
+        reason: "old host",
+        updatedAt: 1,
+      },
+    );
     expect(empty.owners).toEqual([]);
     expect(empty.contributions).toEqual([]);
     expect(empty.supported).toBe(false);
@@ -121,5 +131,38 @@ describe("contribution view", () => {
     );
     expect(contributionViewsBySlot(snapshot, "mode").map((entry) => entry.id)).toEqual(["m"]);
     expect(contributionViewsBySlot(snapshot, "status").map((entry) => entry.id)).toEqual(["s"]);
+  });
+});
+
+describe("contribution bar model", () => {
+  it("chooses exactly one badge and keeps the rest as rows", () => {
+    const snapshot = buildContributionSnapshot(
+      [
+        {
+          ownerId: "a.ext",
+          epoch: 0,
+          revision: 1,
+          contributions: [mode("m", 0), status("s", 0), action("go")],
+        },
+      ],
+      { supported: true, updatedAt: 1 },
+    );
+    const bar = buildContributionBar(snapshot);
+    expect(bar.badge?.id).toBe("m");
+    expect(bar.rows.map((entry) => entry.id)).toEqual(["s"]);
+    expect(bar.actions.map((entry) => entry.id)).toEqual(["go"]);
+    expect(bar.inputs).toEqual([]);
+    expect(bar.sessions).toEqual([]);
+    expect(contributionKey(bar.badge!)).toBe("a.ext:m");
+  });
+
+  it("falls back to progress, then status, and stays generic", () => {
+    const onlyStatus = buildContributionSnapshot(
+      [{ ownerId: "x.ext", epoch: 0, revision: 1, contributions: [status("s")] }],
+      { supported: true, updatedAt: 1 },
+    );
+    expect(buildContributionBar(onlyStatus).badge?.id).toBe("s");
+    expect(buildContributionBar(onlyStatus).rows).toEqual([]);
+    expect(buildContributionBar(EMPTY_CONTRIBUTION_SNAPSHOT).badge).toBeNull();
   });
 });

@@ -3036,3 +3036,108 @@ describe("tab table publishing", () => {
     expect(envelope.tabs.map((tab) => tab.id)).toEqual([id]);
   });
 });
+
+describe("related-session host events (orchestrator step 12)", () => {
+  function request(over: Record<string, unknown> = {}) {
+    return {
+      requestId: "req-1",
+      operation: "create",
+      ownerCommand: "fixture",
+      ownerKey: "C:/ext/fixture.ts",
+      spec: {
+        requestId: "req-1",
+        parentSessionRef: "session-1",
+        relation: "child",
+        title: "Task 2",
+        cwd: "C:/work/app",
+        dedupeKey: "task-2",
+        bootstrap: [{ customType: "workflow-managed-session", content: "{}", display: false }],
+      },
+      ...over,
+    };
+  }
+
+  it("opens a normal tab for the requesting parent and settles the host", async () => {
+    const { service, hosts } = createHarness();
+    await service.createTab({ cwd: "C:/work/app", activate: true });
+    const parent = service.tabs()[0]!;
+    const parentHost = hosts.get(parent.id)!;
+
+    parentHost.emit("host:relatedSession.request", request());
+
+    await vi.waitFor(() => expect(service.tabs()).toHaveLength(2));
+    const child = service.tabs().find((tab) => tab.relatedParentTabId === parent.id);
+    expect(child).toBeTruthy();
+    expect(child?.cwd).toBe("C:/work/app");
+    expect(child?.title).toBe("Task 2");
+
+    await vi.waitFor(() => expect(hosts.get(child!.id)).toBeTruthy());
+    const childHost = hosts.get(child!.id)!;
+    const create = childHost.requests.find((entry) => entry.method === "session.create");
+    expect(create?.params).toMatchObject({
+      cwd: "C:/work/app",
+      bootstrap: [{ customType: "workflow-managed-session", content: "{}", display: false }],
+    });
+
+    await vi.waitFor(() =>
+      expect(parentHost.requests.some((entry) => entry.method === "sessionHost.result")).toBe(true),
+    );
+    const settled = parentHost.requests.find((entry) => entry.method === "sessionHost.result");
+    expect(settled?.params).toMatchObject({
+      requestId: "req-1",
+      result: { ok: true, sessionRef: child!.id, reused: false },
+    });
+  });
+
+  it("archives a closed related child and restores its link on reopen", async () => {
+    const { service, hosts } = createHarness();
+    await service.createTab({ cwd: "C:/work/app", activate: true });
+    const parent = service.tabs()[0]!;
+    hosts.get(parent.id)!.emit("host:relatedSession.request", request());
+    await vi.waitFor(() => expect(service.tabs()).toHaveLength(2));
+    const child = service.tabs().find((tab) => tab.relatedParentTabId === parent.id)!;
+    child.sessionFile = "C:/sessions/child.jsonl";
+
+    const closed = await service.closeTab(child.id);
+    expect(closed.relatedArchive).toEqual([
+      expect.objectContaining({
+        parentTabId: parent.id,
+        sessionFile: "C:/sessions/child.jsonl",
+        cwd: "C:/work/app",
+        title: "Task 2",
+      }),
+    ]);
+    expect(service.tabs().some((tab) => tab.id === child.id)).toBe(false);
+
+    // Reopening the archived JSONL restores the parent link and clears the row;
+    // the normal tab path still guarantees one live writer for the file.
+    const reopened = await service.createTab({
+      cwd: "C:/work/app",
+      sessionFile: "C:/sessions/child.jsonl",
+    });
+    // The fake host reports its own resume file, so identify the restored tab
+    // by its relation rather than the requested path.
+    const restored = reopened.tabs.find(
+      (tab) => tab.relatedParentTabId === parent.id && tab.id !== child.id,
+    )!;
+    expect(restored.relatedParentTabId).toBe(parent.id);
+    expect(reopened.relatedArchive).toEqual([]);
+  });
+
+  it("does not create a second tab for a duplicate request id", async () => {
+    const { service, hosts } = createHarness();
+    await service.createTab({ cwd: "C:/work/app", activate: true });
+    const parentHost = hosts.get(service.tabs()[0]!.id)!;
+
+    parentHost.emit("host:relatedSession.request", request());
+    await vi.waitFor(() => expect(service.tabs()).toHaveLength(2));
+    parentHost.emit("host:relatedSession.request", request());
+
+    await vi.waitFor(() =>
+      expect(
+        parentHost.requests.filter((entry) => entry.method === "sessionHost.result"),
+      ).toHaveLength(2),
+    );
+    expect(service.tabs()).toHaveLength(2);
+  });
+});

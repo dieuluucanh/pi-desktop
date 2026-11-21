@@ -11,9 +11,7 @@
         "sessionId": "session-a",
         "epoch": 0,
         "revision": 1,
-        "contributions": [
-          { "kind": "status", "id": "build-status", "text": "Building 3/8" }
-        ]
+        "contributions": [{ "kind": "status", "id": "build-status", "text": "Building 3/8" }]
       }
     },
     {
@@ -35,7 +33,12 @@
             "detail": "read-only",
             "actions": [
               { "id": "mode-build", "label": "Build", "command": { "name": "build" } },
-              { "id": "mode-plan", "label": "Plan", "enabled": false, "disabledReason": "already in plan" }
+              {
+                "id": "mode-plan",
+                "label": "Plan",
+                "enabled": false,
+                "disabledReason": "already in plan"
+              }
             ]
           }
         ]
@@ -52,7 +55,14 @@
         "revision": 2,
         "removed": ["stale-status"],
         "contributions": [
-          { "kind": "progress", "id": "todos", "label": "Todos", "done": 3, "total": 12, "stale": true },
+          {
+            "kind": "progress",
+            "id": "todos",
+            "label": "Todos",
+            "done": 3,
+            "total": 12,
+            "stale": true
+          },
           {
             "kind": "related-session",
             "id": "child-1",
@@ -61,7 +71,12 @@
             "title": "Task 1",
             "focusable": true
           },
-          { "kind": "input", "id": "input", "availability": "restricted", "reason": "Orchestrator verifies before new work" }
+          {
+            "kind": "input",
+            "id": "input",
+            "availability": "restricted",
+            "reason": "Orchestrator verifies before new work"
+          }
         ]
       }
     },

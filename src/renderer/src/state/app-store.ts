@@ -4,8 +4,11 @@ import type { AppInfo, WebTabOpenInput } from "../../../shared/ipc";
 import type { BlobRef, HostMethod } from "../../../shared/host-protocol";
 import { DEFAULT_PREFS, type PackageCheckPrefs, type UiPrefs } from "../../../shared/prefs";
 import { mergeTerminalPrefs, type TerminalPrefs } from "../../../shared/terminal-prefs";
-import { parseWorkflowStatus } from "../../../shared/workflow-mode";
-import type { TodoPanelActionId } from "../../../shared/workflow-todos";
+import { contributionInputLocked } from "../../../shared/extension-contributions-view";
+import {
+  sanitizeRelatedArchive,
+  type ArchivedRelatedSession,
+} from "../../../shared/related-session-archive";
 import {
   findProject,
   projectNameOf,
@@ -145,6 +148,11 @@ import {
   type ExtensionDialogRequest,
   type ExtensionUiSnapshot,
 } from "../../../shared/extension-ui";
+import {
+  EMPTY_CONTRIBUTION_SNAPSHOT,
+  sanitizeContributionSnapshot,
+  type ContributionSnapshot,
+} from "../../../shared/extension-contributions-view";
 import {
   normalizeSessionListQuery,
   parseSessionListPage,
@@ -756,6 +764,11 @@ export interface AppStateShape {
    * is not mistaken for "there is no session" (2026-11-07 plan).
    */
   tabsLoaded: boolean;
+  /**
+   * Bounded archive of related sessions whose tab is closed (orchestrator step
+   * 13). It keeps the parent link; the transcript stays in the session JSONL.
+   */
+  relatedArchive: ArchivedRelatedSession[];
   /** Host inspection per project path (git branch, `.pi/`, trust, session dir). */
   projectInspections: Record<string, ProjectInspection>;
   projectInspectionErrors: Record<string, string>;
@@ -1097,15 +1110,13 @@ export interface AppStateShape {
     options?: { preferredSource?: CompletionSource; mode?: SendMode; images?: PromptImage[] },
   ) => Promise<CommandOutcome>;
   /**
-   * Runs one Review command (`/review-pause`, `/review-resume`,
-   * `/review-abort`) from the Review bar. It never calls `setDraft`: unlike a
-   * typed command, a button press must not clear the draft the user is
-   * keeping for after the review (2026-11-14 review-mode-isolation step 13).
+   * Runs one published contribution action through the host registry. The host
+   * re-validates ownership, availability and the command; a button press never
+   * clears or injects a draft.
    */
-  runReviewCommand: (tabId: string, name: string) => Promise<boolean>;
+  runContributionAction: (tabId: string, ownerId: string, id: string) => Promise<boolean>;
   /**
-   * Runs one extension command directly in the host. Used by the Review bar and
-   * the todo bar; it never clears or injects a draft. `missing` means the host
+   * Runs one extension command directly in the host. `missing` means the host
    * answered but has no such command; `unavailable` means the request itself
    * failed (an older host).
    */
@@ -1114,8 +1125,6 @@ export interface AppStateShape {
     name: string,
     args: string,
   ) => Promise<ExtensionCommandOutcome>;
-  /** Runs `/todos <action>` and turns a failure into a precise hint. */
-  runTodoPanelAction: (tabId: string, action: TodoPanelActionId) => Promise<boolean>;
 
   /** Model, thinking and usage UX (plan step 8). */
   modelCatalog: Record<string, ModelCatalogEntry[]>;
@@ -1628,6 +1637,8 @@ export interface AppStateShape {
 
   /** Extension UI (plan step 16): per-tab state pushed by each session host. */
   extensionUi: Record<string, ExtensionUiSnapshot>;
+  /** Generic extension contributions per tab (orchestrator plan step 9). */
+  contributions: Record<string, ContributionSnapshot>;
   /** Dialogs waiting for an answer, oldest first. */
   extensionDialogs: ExtensionDialogRequest[];
   /**
@@ -1810,6 +1821,11 @@ export interface AppStateShape {
   loadProjectSessions: (options?: SessionListQuery) => Promise<SessionSummary[]>;
   /** Resume a listed session in a new tab and focus it. */
   resumeSession: (session: SessionSummary) => Promise<void>;
+  /**
+   * Reopen an archived related session (orchestrator step 13). A live tab for
+   * the same JSONL is focused instead, so a second writer is never created.
+   */
+  openArchivedRelatedSession: (entry: ArchivedRelatedSession) => Promise<void>;
   /** Continue the newest session of a project. */
   continueMostRecent: (cwd: string) => Promise<void>;
   /** Trash a session file (validated by the host, trashed by main). */
@@ -2111,6 +2127,7 @@ function clearTabSessionUi(state: AppStateShape, tabId: string): Partial<AppStat
   };
   return {
     extensionUi: drop(state.extensionUi),
+    contributions: drop(state.contributions),
     tuiSurfaces: drop(state.tuiSurfaces),
     toolsExpanded: drop(state.toolsExpanded),
     staleHosts: drop(state.staleHosts),
@@ -2418,6 +2435,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   tabs: [],
   tabsLoaded: false,
   activeTabId: null,
+  relatedArchive: [],
   panePickerTarget: null,
   transcripts: {},
   sessionStates: {},
@@ -2563,6 +2581,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   shortcutsTabId: null,
   shortcutsHelpOpen: false,
   extensionUi: {},
+  contributions: {},
   extensionDialogs: [],
   dialogAttention: {},
   notifications: [],
@@ -3227,7 +3246,27 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         sessionEnsuredAt.delete(tab.id);
       }
     }
-    if (unchanged && !hasCachePatch) return;
+    const nextArchive =
+      envelope.relatedArchive === undefined
+        ? state.relatedArchive
+        : sanitizeRelatedArchive(envelope.relatedArchive);
+    const archiveChanged =
+      nextArchive !== state.relatedArchive &&
+      (nextArchive.length !== state.relatedArchive.length ||
+        nextArchive.some((entry, index) => {
+          const before = state.relatedArchive[index];
+          return (
+            !before ||
+            before.parentTabId !== entry.parentTabId ||
+            before.sessionRef !== entry.sessionRef ||
+            before.sessionFile !== entry.sessionFile ||
+            before.cwd !== entry.cwd ||
+            before.title !== entry.title ||
+            before.relation !== entry.relation ||
+            before.closedAt !== entry.closedAt
+          );
+        }));
+    if (unchanged && !hasCachePatch && !archiveChanged) return;
     // Web-tab state and any pending navigation belong to a tab that still
     // exists; a closed tab must not leave a stale native view or dialog behind.
     const webTabStates = Object.fromEntries(
@@ -3238,6 +3277,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       tabsLoaded: true,
       activeTabId: effectiveActiveTabId,
       webTabStates,
+      ...(archiveChanged ? { relatedArchive: nextArchive } : {}),
       ...cachePatch,
       ...(prompt && !ids.has(prompt.tabId) ? { webNavigationPrompt: null } : {}),
     });
@@ -3541,6 +3581,18 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // A host without the extension UI port still streams; keep the empty state.
       set({ extensionUi: { ...get().extensionUi, [tabId]: { ...EMPTY_EXTENSION_UI } } });
     }
+    // The generic contribution registry is a separate method; an older host
+    // rejects it and the bar simply never appears.
+    try {
+      const result = await api.sessions.request({ tabId, method: "contributions.state" });
+      set({
+        contributions: { ...get().contributions, [tabId]: sanitizeContributionSnapshot(result) },
+      });
+    } catch {
+      set({
+        contributions: { ...get().contributions, [tabId]: { ...EMPTY_CONTRIBUTION_SNAPSHOT } },
+      });
+    }
   },
 
   handleExtensionUiEvent: (tabId, entry) => {
@@ -3548,6 +3600,15 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // The whole surface is pushed after every change, so no reconciliation.
       set({
         tuiSurfaces: { ...get().tuiSurfaces, [tabId]: sanitizeTuiSurfaceSnapshot(entry.payload) },
+      });
+      return;
+    }
+    if (entry.event === "contributions.state") {
+      set({
+        contributions: {
+          ...get().contributions,
+          [tabId]: sanitizeContributionSnapshot(entry.payload),
+        },
       });
       return;
     }
@@ -4258,15 +4319,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const trimmed = text.trim();
     const tab = get().tabs.find((entry) => entry.id === tabId);
     if (!api?.sessions || !tab || trimmed.length === 0) return false;
-    // Review owns the turn: prose and ! shell commands are refused. Slash
-    // commands stay available (the extension decides which ones it allows).
-    if (
-      parseWorkflowStatus(get().extensionUi[tabId]?.statuses?.workflow ?? null)?.mode ===
-        "review" &&
-      !trimmed.startsWith("/")
-    ) {
+    // A published input contribution owns the turn: prose and ! shell commands
+    // are refused. Slash commands stay available (the extension decides which
+    // ones it allows). No status text is parsed: the extension says it directly.
+    if (contributionInputLocked(get().contributions[tabId]) && !trimmed.startsWith("/")) {
       set({
-        hint: "Review in progress — pause, resume, abort, or change model/profile.",
+        hint: "An extension owns this turn — use its controls to pause, resume or stop it.",
       });
       return false;
     }
@@ -4319,13 +4377,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   sendPrompt: async (tabId, text, options = {}) => {
     const trimmedInput = text.trim();
     // Immediate UI refusal; `sendPromptNow` repeats it as the final backstop.
-    if (
-      parseWorkflowStatus(get().extensionUi[tabId]?.statuses?.workflow ?? null)?.mode ===
-        "review" &&
-      !trimmedInput.startsWith("/")
-    ) {
+    if (contributionInputLocked(get().contributions[tabId]) && !trimmedInput.startsWith("/")) {
       set({
-        hint: "Review in progress — pause, resume, abort, or change model/profile.",
+        hint: "An extension owns this turn — use its controls to pause, resume or stop it.",
       });
       return false;
     }
@@ -4736,6 +4790,22 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
   },
 
+  runContributionAction: async (tabId, ownerId, id) => {
+    const api = bridge();
+    if (!api?.sessions) return false;
+    try {
+      await api.sessions.request({
+        tabId,
+        method: "contributions.run",
+        params: { ownerId, id },
+      });
+      return true;
+    } catch (error) {
+      get().noteFailure(error);
+      return false;
+    }
+  },
+
   runExtensionCommand: async (tabId, name, args) => {
     const api = bridge();
     if (!api?.sessions) return "unavailable";
@@ -4751,28 +4821,6 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // back to a prompt (the composer) or explain the requirement (the bars).
       return "unavailable";
     }
-  },
-
-  runTodoPanelAction: async (tabId, action) => {
-    const outcome = await get().runExtensionCommand(tabId, "todos", action);
-    if (outcome === "missing") {
-      set({
-        hint: "The todo panel command is unavailable — update @dieulc/workflow in Extensions…",
-      });
-      return false;
-    }
-    if (outcome === "unavailable") {
-      set({ hint: "This host cannot run extension commands; restart the session and try again." });
-      return false;
-    }
-    return true;
-  },
-
-  runReviewCommand: async (tabId, name) => {
-    const outcome = await get().runExtensionCommand(tabId, name, "");
-    if (outcome === "ran") return true;
-    set({ hint: `/${name} is not available in this session.` });
-    return false;
   },
 
   stopRun: async (tabId) => {
@@ -7336,6 +7384,31 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       });
       if (options.refresh) set({ hint: message });
       return get().projectSessions;
+    }
+  },
+
+  openArchivedRelatedSession: async (entry) => {
+    const api = bridge();
+    if (!api?.sessions || !entry.sessionFile) return;
+    // One JSONL, one live manager: focus the tab that already owns the file.
+    const open = get().tabs.find((tab) => tab.sessionFile === entry.sessionFile);
+    if (open) {
+      await get().activateTab(open.id);
+      return;
+    }
+    try {
+      const envelope = await api.sessions.create({
+        cwd: entry.cwd,
+        sessionFile: entry.sessionFile,
+      });
+      if (envelope.reusedTabId) {
+        get().applyTabs(envelope, { adoptSelection: false });
+        await get().activateTab(envelope.reusedTabId);
+        return;
+      }
+      get().applyTabs(envelope, { adoptSelection: true });
+    } catch (error) {
+      get().noteFailure(error);
     }
   },
 

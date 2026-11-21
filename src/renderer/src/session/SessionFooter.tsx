@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 
 import { AnsiLine } from "../tui/AnsiBlock";
 import { visibleWidth } from "../../../shared/ansi";
-import { statusLineText } from "../../../shared/workflow-mode";
+import { statusLineText } from "../../../shared/ansi";
 import { cn } from "../ui/cn";
 import {
   contextTone,
@@ -44,8 +44,6 @@ export interface SessionFooterProps {
   homeDir?: string | null;
   /** Single-line below-editor widgets; multi-line widgets stay in their strip. */
   widgets?: ReactNode;
-  /** Status keys promoted elsewhere (the review row) and omitted from this rail. */
-  hiddenStatusKeys?: readonly string[];
   className?: string;
 }
 
@@ -54,7 +52,6 @@ export function SessionFooter({
   statuses,
   homeDir,
   widgets,
-  hiddenStatusKeys,
   className,
 }: SessionFooterProps) {
   const pwd = pwdLineText(facts, homeDir);
@@ -63,10 +60,7 @@ export function SessionFooter({
   const tone = contextTone(facts.context ?? null);
   const model = modelLineText(facts.modelId ?? null, facts.thinking ?? null);
   const detail = footerDetailText(facts);
-  const hidden = new Set(hiddenStatusKeys ?? []);
-  const entries = Object.entries(statuses ?? {})
-    .filter(([key]) => !hidden.has(key))
-    .sort(([a], [b]) => a.localeCompare(b));
+  const entries = Object.entries(statuses ?? {}).sort(([a], [b]) => a.localeCompare(b));
   if (!pwd && !stats && !context && !model && entries.length === 0 && !widgets) return null;
 
   return (

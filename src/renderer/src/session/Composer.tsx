@@ -14,14 +14,8 @@ import { insertWorkspaceMention, workspaceMention } from "../../../shared/worksp
 import { isExcludedShellCommand, isShellCommand } from "../../../shared/shell-command";
 import { isExternalFileDrag, isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
 import { isTabDrag } from "../layout/tab-drag";
-import {
-  parseWorkflowStatus,
-  statusLineText,
-  workflowBadgeClass,
-  workflowBorderClass,
-  workflowModeLabel,
-  type WorkflowModeView,
-} from "../../../shared/workflow-mode";
+import type { ContributionView } from "../../../shared/extension-contributions-view";
+import { contributionBorderClass, contributionTextClass } from "./contribution-tone";
 import type { TranscriptQueue } from "./session-events";
 import { CompletionOverlay } from "../completion/CompletionOverlay";
 import { matchShortcut } from "../shortcuts/dom-keys";
@@ -104,14 +98,18 @@ export interface ComposerProps {
   } | null;
   /** Called after a mention request has been inserted (or refused). */
   onMentionHandled?: (id: number) => void;
-  /** The `workflow` extension status, decoded into a composer border colour. */
-  workflowStatus?: string | null;
   /**
-   * True while Review owns the turn (2026-11-14 review-mode-isolation plan).
-   * The store refuses prose and the Review bar owns Pause/Resume/Abort, so the
-   * composer must not offer Stop: it would abort the parent run, not the review.
+   * The generic mode/status badge the host selected for this session, if any.
+   * Its semantic tone drives the composer border; the composer never parses a
+   * status line or learns an extension name.
    */
-  reviewMode?: boolean;
+  contributionBadge?: ContributionView | null;
+  /**
+   * True when a published input contribution says another surface owns the
+   * turn. The store refuses prose in that state, so the composer must not offer
+   * Stop (it would abort the parent run, not the owning surface) and says why.
+   */
+  inputLocked?: boolean;
   /**
    * The session's registered extension shortcuts, used to give Tab to the mode
    * cycle (the workflow extension registers `tab`). Empty until the store loads
@@ -268,8 +266,8 @@ export function Composer({
   focusToken = 0,
   draft,
   queue,
-  workflowStatus,
-  reviewMode = false,
+  contributionBadge = null,
+  inputLocked = false,
   extensionShortcuts,
   onInvokeShortcut,
   onRequestShortcuts,
@@ -326,11 +324,9 @@ export function Composer({
     new Set(Object.keys(pasteBodies ?? {}).map((key) => Number(key))),
   );
 
-  // The workflow extension reports its mode only through `ctx.ui.setStatus`, so
-  // the composer decodes that text into a border colour and a badge label.
-  // An unknown value degrades to the neutral border and no badge.
-  const workflowMode: WorkflowModeView | null = parseWorkflowStatus(workflowStatus);
-  const workflowLabel = workflowModeLabel(workflowMode);
+  // The host already chose one generic badge (mode, else progress, else
+  // status). An absent badge degrades to the neutral border and no label.
+  const badgeLabel = contributionBadge?.text ?? null;
   // Empty until the store loads the session's shortcuts (the composer asks via
   // `onRequestShortcuts` on the first Tab); an unknown list means Tab keeps its
   // completion behaviour rather than swallowing the key.
@@ -644,9 +640,9 @@ export function Composer({
             }
             disabled={!enabled}
             className={cn(
-              // The border tracks the workflow mode, mirroring Pi's editor border
-              // (which tracks the thinking level). `border-line` is the neutral
-              // default and the only class the placeholder set assumes.
+              // The border tracks the published badge's semantic tone.
+              // `border-line` is the neutral default and the only class the
+              // placeholder set assumes.
               //
               // Focus is an *outer* ring (a box-shadow), never an outline: the
               // ring is painted outside the border, so the mode colour stays
@@ -657,8 +653,8 @@ export function Composer({
               // tinted with it, so the cursor is never lost in a dark buffer
               // (plan step 1).
               "caret-accent selection:bg-accent/25",
-              bashMode ? "border-warn" : workflowBorderClass(workflowMode),
-              workflowLabel ? "pr-14" : null,
+              bashMode ? "border-warn" : contributionBorderClass(contributionBadge?.tone),
+              badgeLabel ? "pr-14" : null,
             )}
             onChange={(event) => {
               syncCaret(event.target);
@@ -906,17 +902,22 @@ export function Composer({
             }}
           />
 
-          {workflowLabel ? (
+          {badgeLabel ? (
             <span
-              data-testid="workflow-mode-badge"
+              data-testid="composer-contribution-badge"
               role="status"
               aria-live="polite"
-              title={statusLineText(workflowStatus)}
+              title={contributionBadge?.detail ?? badgeLabel}
               className="pointer-events-none absolute right-1.5 top-1 z-10 select-none rounded-xs bg-sunken/90 px-1 text-[10px] font-medium"
-              data-mode={workflowMode?.mode ?? "none"}
+              data-tone={contributionBadge?.tone ?? "neutral"}
+              data-owner={contributionBadge?.ownerId}
             >
-              <span className={cn(bashMode ? "text-warn" : workflowBadgeClass(workflowMode))}>
-                {workflowLabel}
+              <span
+                className={cn(
+                  bashMode ? "text-warn" : contributionTextClass(contributionBadge?.tone),
+                )}
+              >
+                {badgeLabel}
               </span>
             </span>
           ) : null}
@@ -939,7 +940,7 @@ export function Composer({
             >
               <Send className="size-4" aria-hidden />
             </Button>
-            {running && !reviewMode ? (
+            {running && !inputLocked ? (
               <Button
                 size="icon-md"
                 variant="danger"
@@ -994,8 +995,8 @@ export function Composer({
           </span>
           <span className="shrink-0">
             Enter sends · Shift+Enter newline
-            {reviewMode
-              ? " · Review in progress — pause, resume, abort, or change model/profile"
+            {inputLocked
+              ? " · An extension owns this turn — use its controls to continue"
               : running
                 ? " · Alt+Enter queues a follow-up · Esc pauses a review or stops the run"
                 : ""}
