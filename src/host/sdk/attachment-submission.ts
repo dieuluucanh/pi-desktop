@@ -12,6 +12,7 @@ import {
   type AttachmentSubmissionImageDigest,
   type AttachmentSubmissionMetadata,
   type AttachmentSubmissionRepresentation,
+  type AttachmentSubmissionDisplay,
   type AuthorizedAttachmentAsset,
 } from "../../shared/attachments";
 
@@ -210,8 +211,14 @@ export function appendAttachmentSubmissionAssociation(
   const representations: AttachmentSubmissionRepresentation[] = [];
   for (const asset of input.assets) {
     const modality = asset.representation.modality;
-    if ((modality !== "text" && modality !== "image") || asset.original.kind !== modality)
-      return null;
+    const converted = asset.representation.origin === "converted";
+    const kindValid =
+      modality === "image"
+        ? asset.original.kind === "image"
+        : converted
+          ? ["pdf", "word", "spreadsheet", "presentation"].includes(asset.original.kind)
+          : asset.original.kind === "text";
+    if ((modality !== "text" && modality !== "image") || !kindValid) return null;
     representations.push({
       representationId: asset.representation.id,
       representationSha256: asset.representation.representationSha256,
@@ -220,7 +227,7 @@ export function appendAttachmentSubmissionAssociation(
       modality,
       display: {
         name: asset.original.name,
-        originalKind: modality,
+        originalKind: asset.original.kind as AttachmentSubmissionDisplay["originalKind"],
         originalBytes: asset.original.bytes,
         representationBytes: asset.representation.bytes,
         origin: asset.representation.origin,

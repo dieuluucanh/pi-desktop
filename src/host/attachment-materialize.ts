@@ -122,9 +122,13 @@ function validate(
       rep.originalSha256 !== original.sha256 ||
       !count(original.bytes) ||
       !count(rep.bytes) ||
-      rep.origin !== "direct" ||
+      (rep.origin !== "direct" && rep.origin !== "converted") ||
       rep.approved !== true ||
-      asset.approvalDigest !== null ||
+      (rep.origin === "direct" && asset.approvalDigest !== null) ||
+      (rep.origin === "converted" &&
+        (rep.modality !== "text" ||
+          asset.approvalDigest === null ||
+          !SHA256.test(asset.approvalDigest))) ||
       typeof rep.preparationVersion !== "string" ||
       rep.preparationVersion.length === 0 ||
       rep.preparationVersion.length > 128 ||
@@ -138,7 +142,9 @@ function validate(
     originalBytes += original.bytes;
     if (rep.modality === "text") {
       if (
-        original.kind !== "text" ||
+        (rep.origin === "converted"
+          ? !["pdf", "word", "spreadsheet", "presentation"].includes(original.kind)
+          : original.kind !== "text") ||
         asset.image !== null ||
         original.bytes > ATTACHMENT_LIMITS.textOriginalBytes ||
         rep.bytes > ATTACHMENT_LIMITS.promptTextBytesPerFile

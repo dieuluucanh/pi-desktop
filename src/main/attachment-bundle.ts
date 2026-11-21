@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
-import type { AssetKind, AssetOwner, AssetRecord, AttachmentStore } from "../attachments/store";
+import type {
+  AssetKind,
+  AssetOwner,
+  AssetRecord,
+  AttachmentStore,
+  ConvertedPreparationMetadata,
+} from "../attachments/store";
+import { validateExtractionCoverage, type ExtractionFormat } from "../shared/extraction";
 
 /**
  * Local, portable attachment bundles (plan step 15).
@@ -31,6 +38,11 @@ export interface BundleAsset {
   readonly originalId: string | null;
   readonly originalSha256: string | null;
   readonly coverage: { readonly kind: "entire-file" };
+  /**
+   * Converted-text provenance. Never an approval: importing cannot restore one,
+   * so imported converted text stays undeliverable until it is approved again.
+   */
+  readonly conversion?: ConvertedPreparationMetadata;
 }
 
 export interface BundleManifest {
@@ -106,12 +118,102 @@ function toBundleAsset(asset: AssetRecord): BundleAsset {
     originalId: asset.originalId,
     originalSha256: asset.originalSha256,
     coverage: { kind: "entire-file" },
+    ...(asset.conversion
+      ? {
+          conversion: {
+            version: 1 as const,
+            modality: "text" as const,
+            preparationVersion: asset.conversion.preparationVersion,
+            warnings: [...asset.conversion.warnings],
+            conversion: {
+              ...asset.conversion.conversion,
+              converter: { ...asset.conversion.conversion.converter },
+              coverage: {
+                ...asset.conversion.conversion.coverage,
+                omitted: asset.conversion.conversion.coverage.omitted.map((item) => ({
+                  ...item,
+                })),
+              },
+            },
+          },
+        }
+      : {}),
   };
 }
 
-function validAsset(value: unknown, index: number, seen: Set<string>): BundleAsset | null {
+const EXTRACTION_FORMATS: readonly ExtractionFormat[] = [
+  "pdf",
+  "docx",
+  "odt",
+  "xlsx",
+  "ods",
+  "pptx",
+  "odp",
+];
+
+function validConversion(value: unknown): ConvertedPreparationMetadata | null {
   if (
     !isRecord(value) ||
+    !exactKeys(value, ["version", "modality", "preparationVersion", "warnings", "conversion"])
+  ) {
+    return null;
+  }
+  const conversion = isRecord(value.conversion) ? value.conversion : null;
+  const converter = conversion && isRecord(conversion.converter) ? conversion.converter : null;
+  if (
+    value.version !== 1 ||
+    value.modality !== "text" ||
+    !safeLabel(value.preparationVersion, 128) ||
+    !Array.isArray(value.warnings) ||
+    value.warnings.length > 64 ||
+    value.warnings.some((warning) => !safeLabel(warning)) ||
+    !conversion ||
+    !exactKeys(conversion, [
+      "contractVersion",
+      "format",
+      "converter",
+      "selectionDigest",
+      "proposalDigest",
+      "coverage",
+      "createdAt",
+    ]) ||
+    conversion.contractVersion !== 1 ||
+    !EXTRACTION_FORMATS.includes(conversion.format as ExtractionFormat) ||
+    !converter ||
+    !exactKeys(converter, ["name", "version"]) ||
+    !safeLabel(converter.name, 64) ||
+    !safeLabel(converter.version, 64) ||
+    typeof conversion.selectionDigest !== "string" ||
+    !DIGEST.test(conversion.selectionDigest) ||
+    typeof conversion.proposalDigest !== "string" ||
+    !DIGEST.test(conversion.proposalDigest) ||
+    !safeCount(conversion.createdAt)
+  ) {
+    return null;
+  }
+  const coverage = validateExtractionCoverage(conversion.coverage);
+  if (!coverage) return null;
+  return {
+    version: 1,
+    modality: "text",
+    preparationVersion: value.preparationVersion,
+    warnings: [...value.warnings] as string[],
+    conversion: {
+      contractVersion: 1,
+      format: conversion.format as ExtractionFormat,
+      converter: { name: converter.name, version: converter.version },
+      selectionDigest: conversion.selectionDigest,
+      proposalDigest: conversion.proposalDigest,
+      coverage,
+      createdAt: conversion.createdAt,
+    },
+  };
+}
+
+function validAsset(value: unknown, seen: Set<string>): BundleAsset | null {
+  if (!isRecord(value)) return null;
+  const hasConversion = Object.prototype.hasOwnProperty.call(value, "conversion");
+  if (
     !exactKeys(value, [
       "id",
       "kind",
@@ -122,6 +224,7 @@ function validAsset(value: unknown, index: number, seen: Set<string>): BundleAss
       "originalId",
       "originalSha256",
       "coverage",
+      ...(hasConversion ? ["conversion"] : []),
     ])
   ) {
     return null;
@@ -147,7 +250,11 @@ function validAsset(value: unknown, index: number, seen: Set<string>): BundleAss
       (typeof value.originalSha256 !== "string" || !DIGEST.test(value.originalSha256))) ||
     !coverage ||
     !exactKeys(coverage, ["kind"]) ||
-    coverage.kind !== "entire-file"
+    coverage.kind !== "entire-file" ||
+    (hasConversion &&
+      (value.kind !== "representation" ||
+        value.mimeType !== "text/plain" ||
+        !validConversion(value.conversion)))
   ) {
     return null;
   }
@@ -162,6 +269,7 @@ function validAsset(value: unknown, index: number, seen: Set<string>): BundleAss
     originalId: value.originalId,
     originalSha256: value.originalSha256,
     coverage: { kind: "entire-file" },
+    ...(hasConversion ? { conversion: validConversion(value.conversion)! } : {}),
   };
 }
 
@@ -180,8 +288,8 @@ function parseManifest(value: unknown): BundleManifest | null {
   }
   const seen = new Set<string>();
   const assets: BundleAsset[] = [];
-  for (const [index, item] of value.assets.entries()) {
-    const asset = validAsset(item, index, seen);
+  for (const item of value.assets) {
+    const asset = validAsset(item, seen);
     if (!asset) return null;
     assets.push(asset);
   }
@@ -411,7 +519,9 @@ export async function importAttachmentBundle(
   store: Pick<
     AttachmentStore,
     "beginOriginal" | "beginRepresentation" | "append" | "commit" | "cancel" | "releaseOwner"
-  >,
+  > & {
+    readonly recordConvertedPreparation?: AttachmentStore["recordConvertedPreparation"];
+  },
   owner: AssetOwner,
   inspection: InspectedBundle,
 ): Promise<AttachmentBundleImportResult> {
@@ -466,6 +576,10 @@ export async function importAttachmentBundle(
       await write(bytes, id);
       const committed = await store.commit(id, owner, asset.sha256);
       staged.pop();
+      if (asset.conversion) {
+        if (!store.recordConvertedPreparation) throw new Error("attachment bundle: unavailable");
+        await store.recordConvertedPreparation(committed.id, owner, asset.conversion);
+      }
       imported.push({ id: committed.id, kind: "representation" });
     }
   } catch (error) {

@@ -43,11 +43,28 @@ function record(
   };
 }
 
-function fixture() {
+const conversion = {
+  version: 1 as const,
+  modality: "text" as const,
+  preparationVersion: "fake@1.0.0",
+  warnings: ["scanned_page_no_text"],
+  conversion: {
+    contractVersion: 1 as const,
+    format: "pdf" as const,
+    converter: { name: "fake", version: "1.0.0" },
+    selectionDigest: "c".repeat(64),
+    proposalDigest: "d".repeat(64),
+    coverage: { kind: "complete" as const, selectedUnits: 1, totalUnits: 1, omitted: [] },
+    createdAt: 1,
+  },
+};
+
+function fixture(withConversion = false) {
   const original = record(opaque(1), "original", "original body");
   const representation = record(opaque(2), "representation", "prepared body", {
     originalId: original.record.id,
     originalSha256: original.record.sha256,
+    ...(withConversion ? { conversion } : {}),
   });
   const contents = new Map<string, Uint8Array>([
     [original.record.id, original.content],
@@ -227,6 +244,74 @@ describe("portable attachment bundles", () => {
     expect(store.released).toEqual([]);
   });
 
+  it("carries converted provenance but never an approval across a bundle", async () => {
+    const h = fixture(true);
+    const bundle = await createAttachmentBundle({
+      assets: h.assets,
+      read: async (asset) => h.contents.get(asset.id)!,
+      includeObjects: true,
+      now: 1,
+    });
+    const entries = unzipSync(bundle.zip);
+    const manifest = JSON.parse(strFromU8(entries["bundle.json"]!)) as {
+      assets: Array<{ conversion?: unknown }>;
+    };
+    expect(manifest.assets[1]?.conversion).toMatchObject({
+      preparationVersion: "fake@1.0.0",
+      conversion: { format: "pdf", proposalDigest: "d".repeat(64) },
+    });
+    expect(JSON.stringify(manifest)).not.toContain("approval");
+    const inspected = inspectAttachmentBundle(bundle.zip);
+    if (!inspected.ok) throw new Error(inspected.error);
+    expect(inspected.bundle.manifest.assets[1]?.conversion).toEqual(conversion);
+    const store = fakeStore();
+    await importAttachmentBundle(store, sessionOwnerB, inspected.bundle);
+    expect(store.conversions).toEqual([
+      expect.objectContaining({ id: store.assets[1]!.id, metadata: conversion }),
+    ]);
+  });
+
+  it("refuses a bundle whose converted provenance is malformed", () => {
+    const h = fixture(true);
+    const baseAsset = {
+      id: opaque(1),
+      kind: "original",
+      name: "notes.txt",
+      mimeType: "text/plain",
+      size: 4,
+      sha256: "a".repeat(64),
+      originalId: null,
+      originalSha256: null,
+      coverage: { kind: "entire-file" },
+    };
+    const asset = {
+      ...baseAsset,
+      id: opaque(2),
+      kind: "representation",
+      originalId: opaque(1),
+      originalSha256: "a".repeat(64),
+      conversion: {
+        ...conversion,
+        conversion: { ...conversion.conversion, proposalDigest: "not-a-digest" },
+      },
+    };
+    const zip = zipSync({
+      "bundle.json": strToU8(
+        JSON.stringify({
+          version: 1,
+          createdAt: 1,
+          includesObjects: false,
+          assets: [baseAsset, asset],
+        }),
+      ),
+    });
+    expect(inspectAttachmentBundle(zip)).toMatchObject({
+      ok: false,
+      error: "invalid_manifest",
+    });
+    void h;
+  });
+
   it("releases every committed asset when an import is interrupted", async () => {
     const h = fixture();
     const bundle = await createAttachmentBundle({
@@ -273,6 +358,10 @@ function fakeStore(options: { failCommitAt?: number } = {}) {
   const contents = new Map<string, Uint8Array>();
   const released: string[] = [];
   const cancelled: string[] = [];
+  const conversions: Array<{
+    id: string;
+    metadata: unknown;
+  }> = [];
   let next = 1000;
   let commits = 0;
   const store = {
@@ -280,6 +369,7 @@ function fakeStore(options: { failCommitAt?: number } = {}) {
     contents,
     released,
     cancelled,
+    conversions,
     async beginOriginal(input: {
       owner: AssetOwner;
       name: string;
@@ -356,6 +446,10 @@ function fakeStore(options: { failCommitAt?: number } = {}) {
     async cancel(id: string) {
       cancelled.push(id);
       staging.delete(id);
+    },
+    async recordConvertedPreparation(id: string, _owner: AssetOwner, metadata: unknown) {
+      conversions.push({ id, metadata });
+      return assets.find((asset) => asset.id === id) as never;
     },
     async releaseOwner(id: string) {
       released.push(id);

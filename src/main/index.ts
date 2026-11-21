@@ -64,6 +64,11 @@ import {
 } from "./attachment-delivery-submission";
 import { createNodeAttachmentStoreIo } from "./attachment-store-io";
 import { createAttachmentOwnershipReconciler } from "./attachment-ownership";
+import {
+  createAttachmentConversionStore,
+  createNodeConversionStoreIo,
+} from "./attachment-conversion-store";
+import type { AttachmentConversionStore } from "./attachment-conversion-store";
 import { createAttachmentRetention, type AttachmentRetention } from "./attachment-retention";
 import { createExtractionSupervisor, type ExtractionSupervisor } from "./extraction-supervisor";
 import { createNodeExtractionDeps } from "./extraction-node";
@@ -756,6 +761,8 @@ interface AttachmentServiceRuntime extends AttachmentService {
   deliver(senderId: number, input: AttachmentDeliveryRequest): Promise<AttachmentPromptResult>;
   status(senderId: number, input: AttachmentStatusRequest): Promise<AttachmentSubmissionStatus>;
   disposeDelivery(): void;
+  /** Main-owned conversion proposals/approvals (plan step 19). */
+  conversions: AttachmentConversionStore;
   /** Main-owned recovery/retention policy (plan step 13). */
   retention: AttachmentRetention;
   storage(): Promise<AttachmentStorageReport | null>;
@@ -834,6 +841,15 @@ function attachmentService(): Promise<AttachmentServiceRuntime> {
         io: createNodeAttachmentSubmissionJournalIo(),
         now: Date.now,
       });
+      const conversions = createAttachmentConversionStore({
+        root: paths.attachments,
+        profileKey: profile,
+        io: createNodeConversionStoreIo(),
+        now: Date.now,
+      });
+      // A restart never resumes an in-flight conversion: stale active jobs are
+      // failed and must be requested again explicitly (plan step 19).
+      void conversions.reconcile().catch(() => undefined);
       const ownership = createAttachmentOwnershipReconciler({
         store,
         journal,
@@ -938,6 +954,7 @@ function attachmentService(): Promise<AttachmentServiceRuntime> {
         drafts: service,
         sessions: { pinSessionHost: (tabId) => requireSessions().pinSessionHost(tabId) },
         store,
+        conversions,
         newAuthorityId: randomUUID,
         // Profile paths are fixed for this main-process lifetime.
         profileCurrent: () => true,
@@ -956,6 +973,7 @@ function attachmentService(): Promise<AttachmentServiceRuntime> {
         closeDraft: (senderId, draft) => service.closeDraft(senderId, draft),
       });
       return Object.assign(service, {
+        conversions,
         retention,
         storage: () => retention.report(),
         clearStorage: () => retention.clear(),

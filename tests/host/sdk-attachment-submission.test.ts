@@ -193,4 +193,66 @@ describe("SDK attachment submission associations", () => {
     expect(branch[0]?.association.metadata.scope.sessionId).toBe(scope.sessionId);
     expect(branch[0]?.association.metadata.userEntryId).toBe("user-entry-1");
   });
+
+  it("associates approved converted text with its document original kind", () => {
+    const text = "extracted text";
+    const message = { role: "user", content: [{ type: "text", text }] };
+    const entries: Array<Record<string, unknown>> = [
+      { type: "message", id: "user-entry-1", message },
+    ];
+    const sessionManager = {
+      getEntryCount: () => entries.length,
+      getEntries: () => [...entries],
+      getBranch: () => [...entries],
+      getSessionId: () => scope.sessionId,
+      isPersisted: () => true,
+      appendCustomEntry: (customType: string, data: unknown) => {
+        entries.push({ type: "custom", customType, data, id: "association-entry-1" });
+        return "association-entry-1";
+      },
+    };
+    const session = { sessionManager } as unknown as AttachmentSubmissionSession;
+    const bytes = new TextEncoder().encode(text);
+    const digest = sha256(bytes);
+    const original = {
+      id: opaque(30),
+      name: "report.pdf",
+      kind: "pdf" as const,
+      bytes: 100_000,
+      sha256: "a".repeat(64),
+    };
+    const asset: AuthorizedAttachmentAsset = {
+      original,
+      representation: {
+        id: opaque(31),
+        attachmentId: original.id,
+        modality: "text",
+        origin: "converted",
+        bytes: bytes.length,
+        originalSha256: original.sha256,
+        representationSha256: digest,
+        preparationVersion: "pdfjs@6.5.438",
+        approved: true,
+        warnings: [],
+      },
+      image: null,
+      approvalDigest: "b".repeat(64),
+    };
+    const association = appendAttachmentSubmissionAssociation(session, {
+      planId: opaque(32),
+      turnId: opaque(33),
+      attemptId: opaque(34),
+      sourceTextSha256: sha256(text),
+      scope,
+      text,
+      images: [],
+      assets: [asset],
+      userEntryId: "user-entry-1",
+      createdAt: 1_000,
+    });
+    expect(association?.metadata.representations[0]).toMatchObject({
+      modality: "text",
+      display: { originalKind: "pdf", origin: "converted" },
+    });
+  });
 });

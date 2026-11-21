@@ -7,7 +7,11 @@ import {
 } from "../shared/attachments";
 import type { AttachmentService, AttachmentDraftAuthority } from "./attachment-service";
 import type { SessionService, SessionHostPin } from "./session-service";
-import { openDirectDeliveryReader, type DirectDeliveryReader } from "./attachment-delivery-assets";
+import {
+  openDirectDeliveryReader,
+  type ConversionApprovalPort,
+  type DirectDeliveryReader,
+} from "./attachment-delivery-assets";
 
 export const DELIVERY_LEASE_LIMITS = {
   slots: ATTACHMENT_LIMITS.deliverySlots,
@@ -53,6 +57,8 @@ export interface DeliveryLeaseDeps {
   readonly drafts: Pick<AttachmentService, "authorizeDeliveryDraft">;
   readonly sessions: Pick<SessionService, "pinSessionHost">;
   readonly store: AttachmentStore;
+  /** Approved converted-text lookup; omitted means only direct assets work. */
+  readonly conversions?: ConversionApprovalPort;
   /** One cryptographic UUID per authority lifetime, not per request. */
   newAuthorityId(): string;
   profileCurrent(): boolean;
@@ -373,6 +379,7 @@ export function createAttachmentDeliveryLeases(deps: DeliveryLeaseDeps): Attachm
           async () => {
             const reader = await openDirectDeliveryReader({
               store: deps.store,
+              ...(deps.conversions ? { approvals: deps.conversions } : {}),
               owner: draft.owner,
               representationIds: ids,
               leaseCurrent: async () => authorized(entry),

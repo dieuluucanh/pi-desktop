@@ -623,6 +623,42 @@ export function validateExtractionInventory(value: unknown): ExtractionInventory
   };
 }
 
+/** Strict coverage projection shared by proposals, approvals and displays. */
+export function validateExtractionCoverage(value: unknown): ExtractionCoverage | null {
+  const coverage = record(value);
+  if (
+    !coverage ||
+    !exactKeys(coverage, ["kind", "selectedUnits", "totalUnits", "omitted"]) ||
+    (coverage.kind !== "complete" && coverage.kind !== "partial") ||
+    !count(coverage.selectedUnits) ||
+    !count(coverage.totalUnits) ||
+    coverage.selectedUnits > coverage.totalUnits ||
+    !Array.isArray(coverage.omitted) ||
+    coverage.omitted.length > 64
+  ) {
+    return null;
+  }
+  const omitted: Array<{ code: ExtractionWarningCode; count: number }> = [];
+  for (const item of coverage.omitted) {
+    const omission = record(item);
+    if (
+      !omission ||
+      !exactKeys(omission, ["code", "count"]) ||
+      !WARNING_CODES.includes(omission.code as ExtractionWarningCode) ||
+      !count(omission.count)
+    ) {
+      return null;
+    }
+    omitted.push({ code: omission.code as ExtractionWarningCode, count: omission.count });
+  }
+  return {
+    kind: coverage.kind,
+    selectedUnits: coverage.selectedUnits,
+    totalUnits: coverage.totalUnits,
+    omitted,
+  };
+}
+
 export function validateExtractionProposal(value: unknown): ExtractionProposal | null {
   const proposal = record(value);
   if (
@@ -673,32 +709,8 @@ export function validateExtractionProposal(value: unknown): ExtractionProposal |
     chunks.push({ index, text: chunk.text, byteLength: chunk.byteLength });
   }
   if (total !== proposal.outputBytes) return null;
-  const coverage = record(proposal.coverage);
-  if (
-    !coverage ||
-    !exactKeys(coverage, ["kind", "selectedUnits", "totalUnits", "omitted"]) ||
-    (coverage.kind !== "complete" && coverage.kind !== "partial") ||
-    !count(coverage.selectedUnits) ||
-    !count(coverage.totalUnits) ||
-    coverage.selectedUnits > coverage.totalUnits ||
-    !Array.isArray(coverage.omitted) ||
-    coverage.omitted.length > 64
-  ) {
-    return null;
-  }
-  const omitted: Array<{ code: ExtractionWarningCode; count: number }> = [];
-  for (const item of coverage.omitted) {
-    const omission = record(item);
-    if (
-      !omission ||
-      !exactKeys(omission, ["code", "count"]) ||
-      !WARNING_CODES.includes(omission.code as ExtractionWarningCode) ||
-      !count(omission.count)
-    ) {
-      return null;
-    }
-    omitted.push({ code: omission.code as ExtractionWarningCode, count: omission.count });
-  }
+  const coverage = validateExtractionCoverage(proposal.coverage);
+  if (!coverage) return null;
   const provenance = record(proposal.provenance);
   const converter = record(provenance?.converter);
   if (
@@ -729,12 +741,7 @@ export function validateExtractionProposal(value: unknown): ExtractionProposal |
     originalSha256: proposal.originalSha256,
     selectionDigest: proposal.selectionDigest,
     chunks,
-    coverage: {
-      kind: coverage.kind,
-      selectedUnits: coverage.selectedUnits,
-      totalUnits: coverage.totalUnits,
-      omitted,
-    },
+    coverage,
     warnings: proposal.warnings as ExtractionWarningCode[],
     provenance: {
       converter: { name: converter.name, version: converter.version },

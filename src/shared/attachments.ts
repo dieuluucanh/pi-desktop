@@ -280,7 +280,7 @@ export interface AttachmentPromptRequest {
 
 export interface AttachmentSubmissionDisplay {
   readonly name: string;
-  readonly originalKind: "text" | "image";
+  readonly originalKind: "text" | "image" | "pdf" | "word" | "spreadsheet" | "presentation";
   readonly originalBytes: number;
   readonly representationBytes: number;
   readonly origin: AttachmentRepresentationOrigin;
@@ -709,6 +709,7 @@ function validateSubmissionDisplay(value: unknown): AttachmentSubmissionDisplay 
   const display = record(value);
   const coverage = record(display?.coverage);
   const image = display?.image === null ? null : record(display?.image);
+  const originalKind = typeof display?.originalKind === "string" ? display.originalKind : "";
   if (
     !display ||
     Object.keys(display).length !== 9 ||
@@ -728,16 +729,18 @@ function validateSubmissionDisplay(value: unknown): AttachmentSubmissionDisplay 
     !boundedLabel(display.name, 255) ||
     display.name.includes("/") ||
     display.name.includes("\\") ||
-    (display.originalKind !== "text" && display.originalKind !== "image") ||
+    !["text", "image", "pdf", "word", "spreadsheet", "presentation"].includes(originalKind) ||
+    (["pdf", "word", "spreadsheet", "presentation"].includes(originalKind) &&
+      display.origin !== "converted") ||
     !Number.isSafeInteger(display.originalBytes) ||
     Number(display.originalBytes) < 0 ||
     Number(display.originalBytes) > ATTACHMENT_LIMITS.draftOriginalBytes ||
     !Number.isSafeInteger(display.representationBytes) ||
     Number(display.representationBytes) < 0 ||
     Number(display.representationBytes) >
-      (display.originalKind === "text"
-        ? ATTACHMENT_LIMITS.promptTextBytesPerFile
-        : ATTACHMENT_LIMITS.imageOriginalBytes) ||
+      (originalKind === "image"
+        ? ATTACHMENT_LIMITS.imageOriginalBytes
+        : ATTACHMENT_LIMITS.promptTextBytesPerFile) ||
     (display.origin !== "direct" && display.origin !== "converted") ||
     !boundedLabel(display.preparationVersion, 128) ||
     !Array.isArray(display.warnings) ||
@@ -746,8 +749,8 @@ function validateSubmissionDisplay(value: unknown): AttachmentSubmissionDisplay 
     !coverage ||
     Object.keys(coverage).length !== 1 ||
     coverage.kind !== "entire-file" ||
-    (display.originalKind === "text" && image !== null) ||
-    (display.originalKind === "image" &&
+    (originalKind !== "image" && image !== null) ||
+    (originalKind === "image" &&
       (!image ||
         Object.keys(image).length !== 3 ||
         !Object.keys(image).every((key) => ["mime", "width", "height"].includes(key)) ||
@@ -762,7 +765,7 @@ function validateSubmissionDisplay(value: unknown): AttachmentSubmissionDisplay 
     return null;
   return {
     name: display.name,
-    originalKind: display.originalKind,
+    originalKind: originalKind as AttachmentSubmissionDisplay["originalKind"],
     originalBytes: Number(display.originalBytes),
     representationBytes: Number(display.representationBytes),
     origin: display.origin,
@@ -835,7 +838,8 @@ export function validateAttachmentTranscriptCard(value: unknown): AttachmentTran
     if (file.display !== undefined && display === null) return null;
     if (
       display &&
-      ((file.modality === "text" && display.originalKind !== "text") ||
+      ((file.modality === "text" &&
+        !["text", "pdf", "word", "spreadsheet", "presentation"].includes(display.originalKind)) ||
         (file.modality === "image" && display.originalKind !== "image"))
     )
       return null;
@@ -983,8 +987,11 @@ export function validateAttachmentSubmissionMetadata(
     if (representation.display !== undefined && display === null) return null;
     if (
       display &&
-      ((representation.modality === "text" && display.originalKind !== "text") ||
-        (representation.modality === "image" && display.originalKind !== "image"))
+      ((representation.modality === "text" &&
+        !["text", "pdf", "word", "spreadsheet", "presentation"].includes(display.originalKind)) ||
+        (representation.modality === "image" && display.originalKind !== "image") ||
+        (["pdf", "word", "spreadsheet", "presentation"].includes(display.originalKind) &&
+          display.origin !== "converted"))
     )
       return null;
     const validated = {

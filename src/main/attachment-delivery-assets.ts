@@ -5,8 +5,10 @@ import type { AssetOwner, AssetRecord, AttachmentStore } from "../attachments/st
 import {
   ATTACHMENT_LIMITS,
   isAttachmentId,
+  type AttachmentOriginalKind,
   type AuthorizedAttachmentAsset,
 } from "../shared/attachments";
+import type { ConversionApprovalRecord } from "../shared/conversion";
 
 /**
  * Main-only asset resolution used by the attachment lease authority. An owner,
@@ -29,7 +31,80 @@ function unavailable(): never {
   throw new DeliveryAssetError();
 }
 
-function project(original: AssetRecord, asset: AssetRecord): AuthorizedAttachmentAsset {
+const ORIGINAL_KINDS: readonly string[] = [
+  "text",
+  "image",
+  "pdf",
+  "word",
+  "spreadsheet",
+  "presentation",
+  "audio",
+  "video",
+  "other",
+];
+
+function originalKindOf(original: AssetRecord): AttachmentOriginalKind {
+  const kind = original.classification?.kind;
+  return kind && ORIGINAL_KINDS.includes(kind) ? (kind as AttachmentOriginalKind) : "other";
+}
+
+export interface ConversionApprovalPort {
+  approvalFor(representationId: string): Promise<ConversionApprovalRecord | null>;
+}
+
+function project(
+  original: AssetRecord,
+  asset: AssetRecord,
+  owner: AssetOwner,
+  approval: ConversionApprovalRecord | null,
+): AuthorizedAttachmentAsset {
+  if (asset.conversion) {
+    const conversion = asset.conversion.conversion;
+    if (
+      !approval ||
+      asset.kind !== "representation" ||
+      original.kind !== "original" ||
+      asset.originalId !== original.id ||
+      asset.originalSha256 !== original.sha256 ||
+      asset.mimeType !== "text/plain" ||
+      asset.size > ATTACHMENT_LIMITS.promptTextBytesPerFile ||
+      conversion.contractVersion !== 1 ||
+      approval.owner.kind !== owner.kind ||
+      approval.owner.id !== owner.id ||
+      approval.originalId !== original.id ||
+      approval.originalSha256 !== original.sha256 ||
+      approval.representationId !== asset.id ||
+      approval.representationSha256 !== asset.sha256 ||
+      approval.proposalDigest !== conversion.proposalDigest ||
+      approval.selectionDigest !== conversion.selectionDigest ||
+      !isDeepStrictEqual(approval.converter, conversion.converter)
+    ) {
+      return unavailable();
+    }
+    return {
+      original: {
+        id: original.id,
+        name: original.name,
+        kind: originalKindOf(original),
+        bytes: original.size,
+        sha256: original.sha256,
+      },
+      representation: {
+        id: asset.id,
+        attachmentId: original.id,
+        modality: "text",
+        origin: "converted",
+        bytes: asset.size,
+        originalSha256: original.sha256,
+        representationSha256: asset.sha256,
+        preparationVersion: asset.conversion.preparationVersion,
+        approved: true,
+        warnings: [...asset.conversion.warnings],
+      },
+      image: null,
+      approvalDigest: approval.approvalDigest,
+    };
+  }
   const preparation = asset.preparation;
   if (
     original.kind !== "original" ||
@@ -99,6 +174,7 @@ export async function resolveDirectDeliveryAssets(
   store: AttachmentStore,
   owner: AssetOwner,
   representationIds: readonly string[],
+  approvals?: ConversionApprovalPort,
 ): Promise<readonly AuthorizedAttachmentAsset[]> {
   if (
     !Array.isArray(representationIds) ||
@@ -116,17 +192,19 @@ export async function resolveDirectDeliveryAssets(
   let originalBytes = 0;
   let textBytes = 0;
   let imageBytes = 0;
-  const result = ids.map((id) => {
+  const result: AuthorizedAttachmentAsset[] = [];
+  for (const id of ids) {
     const asset = byId.get(id);
     const original = asset?.originalId ? byId.get(asset.originalId) : undefined;
     if (!asset || !original || originals.has(original.id)) return unavailable();
     originals.add(original.id);
-    const item = project(original, asset);
+    const approval = asset.conversion && approvals ? await approvals.approvalFor(asset.id) : null;
+    const item = project(original, asset, owner, approval);
     originalBytes += item.original.bytes;
     if (item.representation.modality === "text") textBytes += item.representation.bytes;
     else imageBytes += Math.ceil(item.representation.bytes / 3) * 4;
-    return item;
-  });
+    result.push(item);
+  }
   if (
     originalBytes > ATTACHMENT_LIMITS.draftOriginalBytes ||
     textBytes > ATTACHMENT_LIMITS.promptTextBytesTotal ||
@@ -148,12 +226,13 @@ export async function readDirectDeliveryAsset(
   owner: AssetOwner,
   expected: AuthorizedAttachmentAsset,
   sha256: (bytes: Uint8Array) => Promise<string>,
+  approvals?: ConversionApprovalPort,
 ): Promise<Uint8Array> {
   const snapshot = structuredClone(expected);
   const id = snapshot?.representation?.id;
   if (!isAttachmentId(id) || typeof sha256 !== "function") return unavailable();
   const ownerSnapshot = { ...owner };
-  const before = await resolveDirectDeliveryAssets(store, ownerSnapshot, [id]);
+  const before = await resolveDirectDeliveryAssets(store, ownerSnapshot, [id], approvals);
   if (!isDeepStrictEqual(before[0], snapshot)) return unavailable();
   const result = await store.readForPreparation(id, ownerSnapshot, snapshot.representation.bytes);
   if (
@@ -166,7 +245,7 @@ export async function readDirectDeliveryAsset(
   const bytes = new Uint8Array(result.bytes);
   if ((await sha256(new Uint8Array(bytes))) !== snapshot.representation.representationSha256)
     return unavailable();
-  const after = await resolveDirectDeliveryAssets(store, ownerSnapshot, [id]);
+  const after = await resolveDirectDeliveryAssets(store, ownerSnapshot, [id], approvals);
   if (!isDeepStrictEqual(after[0], snapshot)) return unavailable();
   return bytes;
 }
@@ -195,6 +274,7 @@ export async function openDirectDeliveryReader(input: {
   readonly store: AttachmentStore;
   readonly owner: AssetOwner;
   readonly representationIds: readonly string[];
+  readonly approvals?: ConversionApprovalPort;
   leaseCurrent(): Promise<boolean>;
   sha256(bytes: Uint8Array): Promise<string>;
 }): Promise<DirectDeliveryReader> {
@@ -211,7 +291,7 @@ export async function openDirectDeliveryReader(input: {
     }
   };
   if (!(await leaseCurrent())) return unavailable();
-  const assets = await resolveDirectDeliveryAssets(store, owner, ids);
+  const assets = await resolveDirectDeliveryAssets(store, owner, ids, input.approvals);
   if (!(await leaseCurrent())) return unavailable();
   let closed = false;
   let busy = false;
@@ -229,7 +309,7 @@ export async function openDirectDeliveryReader(input: {
       return false;
     }
     try {
-      const current = await resolveDirectDeliveryAssets(store, owner, ids);
+      const current = await resolveDirectDeliveryAssets(store, owner, ids, input.approvals);
       if (closed || !isDeepStrictEqual(assets, current) || !(await leaseCurrent()) || closed) {
         close();
         return false;
@@ -270,7 +350,7 @@ export async function openDirectDeliveryReader(input: {
           return unavailable();
         }
         if (!cached) {
-          cached = await readDirectDeliveryAsset(store, owner, asset, hash);
+          cached = await readDirectDeliveryAsset(store, owner, asset, hash, input.approvals);
           if (!(await isCurrent())) return unavailable();
         }
         const result = cached.slice(offset, offset + length);

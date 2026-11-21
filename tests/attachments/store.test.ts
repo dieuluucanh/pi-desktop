@@ -804,4 +804,58 @@ describe("persisted attachment classification", () => {
     );
     await expect(h.store.inventory()).rejects.toMatchObject({ code: "corrupt_manifest" });
   });
+
+  it("records immutable converted-text provenance without a direct record", async () => {
+    const h = harness();
+    const original = await h.add("binary-document");
+    const text = bytes("converted text");
+    const repId = await h.store.beginRepresentation({
+      owner: DRAFT,
+      name: "converted.txt",
+      mimeType: "text/plain",
+      size: text.length,
+      originalId: original.id,
+      originalSha256: original.sha256,
+    });
+    await h.store.append(repId, DRAFT, 0, text);
+    const representation = await h.store.commit(repId, DRAFT, sha(text));
+    const metadata = {
+      version: 1 as const,
+      modality: "text" as const,
+      preparationVersion: "pdfjs-6.5.438",
+      warnings: [],
+      conversion: {
+        contractVersion: 1 as const,
+        format: "pdf" as const,
+        converter: { name: "pdfjs", version: "6.5.438" },
+        selectionDigest: sha(bytes("selection")),
+        proposalDigest: sha(bytes("proposal")),
+        coverage: { kind: "complete" as const, selectedUnits: 1, totalUnits: 1, omitted: [] },
+        createdAt: 1_234,
+      },
+    };
+    const recorded = await h.store.recordConvertedPreparation(representation.id, DRAFT, metadata);
+    expect(recorded.conversion).toEqual(metadata);
+    expect(await h.store.recordConvertedPreparation(representation.id, DRAFT, metadata)).toEqual(
+      recorded,
+    );
+    await expect(
+      h.store.recordConvertedPreparation(representation.id, DRAFT, {
+        ...metadata,
+        conversion: { ...metadata.conversion, proposalDigest: sha(bytes("other")) },
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await expect(
+      h.store.recordDirectPreparation(representation.id, DRAFT, {
+        version: 1,
+        modality: "text",
+        preparationVersion: "direct-v1",
+        warnings: [],
+        details: { kind: "text", empty: false, utf8Bom: false },
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await expect(
+      h.store.recordConvertedPreparation(original.id, DRAFT, metadata),
+    ).rejects.toMatchObject({ code: "bad_request" });
+  });
 });

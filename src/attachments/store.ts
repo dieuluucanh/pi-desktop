@@ -5,6 +5,11 @@ import {
   validateAttachmentClassification,
   type AttachmentClassification,
 } from "../shared/attachments";
+import {
+  validateExtractionCoverage,
+  type ExtractionCoverage,
+  type ExtractionFormat,
+} from "../shared/extraction";
 
 /**
  * Immutable attachment snapshots and their app-owned ownership manifest.
@@ -80,6 +85,23 @@ export interface AttachmentInventory {
   readonly freeBytes: number | null;
 }
 
+/** Immutable provenance for an approved converted-text representation. */
+export interface ConvertedPreparationMetadata {
+  readonly version: 1;
+  readonly modality: "text";
+  readonly preparationVersion: string;
+  readonly warnings: readonly string[];
+  readonly conversion: {
+    readonly contractVersion: 1;
+    readonly format: ExtractionFormat;
+    readonly converter: { readonly name: string; readonly version: string };
+    readonly selectionDigest: string;
+    readonly proposalDigest: string;
+    readonly coverage: ExtractionCoverage;
+    readonly createdAt: number;
+  };
+}
+
 export interface AssetRecord {
   readonly id: string;
   readonly kind: AssetKind;
@@ -95,6 +117,8 @@ export interface AssetRecord {
   readonly originalSha256: string | null;
   /** Absent on originals and legacy/unprepared representations. */
   readonly preparation?: DirectPreparationMetadata;
+  /** Present only on an approved converted-text representation. */
+  readonly conversion?: ConvertedPreparationMetadata;
   /** Present on originals once content classification has been persisted. */
   readonly classification?: AttachmentClassification;
 }
@@ -218,6 +242,12 @@ export interface AttachmentStore {
     id: string,
     owner: AssetOwner,
     metadata: DirectPreparationMetadata,
+  ): Promise<AssetRecord>;
+  /** Persist immutable approved converted-text provenance (plan step 19). */
+  recordConvertedPreparation(
+    id: string,
+    owner: AssetOwner,
+    metadata: ConvertedPreparationMetadata,
   ): Promise<AssetRecord>;
   /** Persist immutable content classification for one original snapshot. */
   recordClassification(
@@ -448,6 +478,67 @@ function validDimensions(width: unknown, height: unknown): boolean {
   );
 }
 
+function validConvertedPreparation(
+  value: unknown,
+  asset: unknown,
+): value is ConvertedPreparationMetadata {
+  if (
+    !isRecord(asset) ||
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["version", "modality", "preparationVersion", "warnings", "conversion"]) ||
+    value.version !== 1 ||
+    value.modality !== "text" ||
+    typeof value.preparationVersion !== "string" ||
+    !value.preparationVersion.length ||
+    value.preparationVersion.length > 128 ||
+    hasControl(value.preparationVersion) ||
+    !Array.isArray(value.warnings) ||
+    value.warnings.length > 64 ||
+    !value.warnings.every(
+      (warning: unknown) =>
+        typeof warning === "string" && warning.length <= 512 && !hasControl(warning),
+    ) ||
+    asset.kind !== "representation" ||
+    asset.mimeType !== "text/plain" ||
+    !isCount(asset.size) ||
+    asset.size > ATTACHMENT_LIMITS.promptTextBytesPerFile
+  ) {
+    return false;
+  }
+  const conversion = value.conversion;
+  if (
+    !isRecord(conversion) ||
+    !hasOnlyKeys(conversion, [
+      "contractVersion",
+      "format",
+      "converter",
+      "selectionDigest",
+      "proposalDigest",
+      "coverage",
+      "createdAt",
+    ]) ||
+    conversion.contractVersion !== 1 ||
+    !["pdf", "docx", "odt", "xlsx", "ods", "pptx", "odp"].includes(String(conversion.format)) ||
+    !isRecord(conversion.converter) ||
+    !hasOnlyKeys(conversion.converter, ["name", "version"]) ||
+    typeof conversion.converter.name !== "string" ||
+    !conversion.converter.name.length ||
+    conversion.converter.name.length > 64 ||
+    typeof conversion.converter.version !== "string" ||
+    !conversion.converter.version.length ||
+    conversion.converter.version.length > 64 ||
+    typeof conversion.selectionDigest !== "string" ||
+    !DIGEST.test(conversion.selectionDigest) ||
+    typeof conversion.proposalDigest !== "string" ||
+    !DIGEST.test(conversion.proposalDigest) ||
+    !validateExtractionCoverage(conversion.coverage) ||
+    !isCount(conversion.createdAt)
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function validAsset(value: unknown): value is AssetRecord {
   if (
     !isRecord(value) ||
@@ -457,6 +548,7 @@ function validAsset(value: unknown): value is AssetRecord {
       "owners",
       "unownedAt",
       ...(Object.hasOwn(value, "preparation") ? ["preparation"] : []),
+      ...(Object.hasOwn(value, "conversion") ? ["conversion"] : []),
       ...(Object.hasOwn(value, "classification") ? ["classification"] : []),
     ]) ||
     !validBase(value)
@@ -464,6 +556,9 @@ function validAsset(value: unknown): value is AssetRecord {
     return false;
   if (Object.hasOwn(value, "preparation") && !validDirectPreparation(value.preparation, value))
     return false;
+  if (Object.hasOwn(value, "conversion") && !validConvertedPreparation(value.conversion, value))
+    return false;
+  if (Object.hasOwn(value, "preparation") && Object.hasOwn(value, "conversion")) return false;
   if (
     Object.hasOwn(value, "classification") &&
     (value.kind !== "original" || !validateAttachmentClassification(value.classification))
@@ -581,8 +676,14 @@ function decodeManifest(raw: string | null): Manifest {
   ) {
     return fail("corrupt_manifest", "attachment tombstone is invalid");
   }
-  if (parsed.version === 1 && assets.some((asset) => asset.preparation !== undefined)) {
+  if (
+    parsed.version === 1 &&
+    assets.some((asset) => asset.preparation !== undefined || asset.conversion !== undefined)
+  ) {
     return fail("corrupt_manifest", "legacy attachment manifest has unexpected provenance");
+  }
+  if (parsed.version === 2 && assets.some((asset) => asset.conversion !== undefined)) {
+    return fail("corrupt_manifest", "legacy attachment manifest has unexpected conversion");
   }
   const ids = [...staging, ...assets].map((item) => item.id);
   if (new Set(ids).size !== ids.length) {
@@ -638,6 +739,7 @@ function cloneAsset(asset: AssetRecord): AssetRecord {
     ...asset,
     owners: asset.owners.map((owner) => ({ ...owner })),
     ...(asset.preparation ? { preparation: structuredClone(asset.preparation) } : {}),
+    ...(asset.conversion ? { conversion: structuredClone(asset.conversion) } : {}),
     ...(asset.classification ? { classification: structuredClone(asset.classification) } : {}),
   };
 }
@@ -892,6 +994,9 @@ export function createAttachmentStore(deps: AttachmentStoreDeps): AttachmentStor
         assertOwner(owner);
         const manifest = await load();
         const asset = requireAsset(manifest, id, owner);
+        if (asset.conversion) {
+          return fail("conflict", "attachment already has converted provenance");
+        }
         if (!validDirectPreparation(metadata, asset)) {
           return fail("bad_request", "invalid direct preparation provenance");
         }
@@ -902,6 +1007,31 @@ export function createAttachmentStore(deps: AttachmentStoreDeps): AttachmentStor
           return cloneAsset(asset);
         }
         const updated = { ...asset, preparation: structuredClone(metadata) };
+        await save({
+          ...manifest,
+          assets: manifest.assets.map((item) => (item.id === id ? updated : item)),
+        });
+        return cloneAsset(updated);
+      }),
+    recordConvertedPreparation: (id, owner, metadata) =>
+      io.exclusive(async () => {
+        assertId(id);
+        assertOwner(owner);
+        const manifest = await load();
+        const asset = requireAsset(manifest, id, owner);
+        if (asset.preparation) {
+          return fail("conflict", "attachment already has direct provenance");
+        }
+        if (!validConvertedPreparation(metadata, asset)) {
+          return fail("bad_request", "invalid converted preparation provenance");
+        }
+        if (asset.conversion) {
+          if (!isDeepStrictEqual(asset.conversion, metadata)) {
+            return fail("conflict", "conversion provenance is immutable");
+          }
+          return cloneAsset(asset);
+        }
+        const updated = { ...asset, conversion: structuredClone(metadata) };
         await save({
           ...manifest,
           assets: manifest.assets.map((item) => (item.id === id ? updated : item)),
