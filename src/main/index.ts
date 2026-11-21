@@ -65,6 +65,8 @@ import {
 import { createNodeAttachmentStoreIo } from "./attachment-store-io";
 import { createAttachmentOwnershipReconciler } from "./attachment-ownership";
 import { createAttachmentRetention, type AttachmentRetention } from "./attachment-retention";
+import { createExtractionSupervisor, type ExtractionSupervisor } from "./extraction-supervisor";
+import { createNodeExtractionDeps } from "./extraction-node";
 import type {
   AttachmentRetentionClearReport,
   AttachmentStorageReport,
@@ -777,6 +779,33 @@ const attachmentAvailability = resolveAttachmentAvailability({
   packaged: app.isPackaged,
   env: process.env,
 });
+
+/**
+ * Document extraction is a separate process and a separate release gate (plan
+ * step 18). It is created lazily: no worker spawns until a conversion service
+ * asks for one. Safe mode hard-disables it; packaged milestone-B builds stay
+ * off until their gate is enabled with the trusted environment override.
+ */
+let extractionSupervisorPromise: Promise<ExtractionSupervisor> | null = null;
+function documentExtractionSupervisor(): Promise<ExtractionSupervisor> {
+  if (!extractionSupervisorPromise) {
+    extractionSupervisorPromise = (async () => {
+      if (!runtime.ok || !runtime.nodePath) {
+        throw new Error("document extraction requires the bundled Node runtime");
+      }
+      return createExtractionSupervisor(
+        createNodeExtractionDeps({
+          nodePath: runtime.nodePath,
+          workerPath: runtime.extractionWorkerPath,
+          tempRoot: join(paths.userData, "extraction"),
+          enabled: !app.isPackaged || process.env.PI_DESKTOP_DOCUMENT_EXTRACTION === "1",
+          safeMode,
+        }),
+      );
+    })();
+  }
+  return extractionSupervisorPromise;
+}
 
 let attachmentServicePromise: Promise<AttachmentServiceRuntime> | null = null;
 /** Bounded, content-addressed prepared-image thumbnails (never raw originals). */
@@ -2671,6 +2700,12 @@ if (!app.requestSingleInstanceLock()) {
       webTabs.dispose();
       const attachmentRuntime = await attachmentServicePromise?.catch(() => null);
       attachmentRuntime?.disposeDelivery();
+      if (extractionSupervisorPromise) {
+        // Only dispose a supervisor that was actually created; this must not
+        // spawn a worker just to shut it down.
+        const extraction = await documentExtractionSupervisor().catch(() => null);
+        extraction?.dispose();
+      }
       // PTYs first: the terminal host owns shell processes, and a session host
       // shutdown must not race a shell that is still writing to its tab.
       await disposeTerminalServices();

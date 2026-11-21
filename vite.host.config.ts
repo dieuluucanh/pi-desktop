@@ -44,6 +44,9 @@ export default defineConfig({
         // The terminal host is its own entry on purpose: loading `index.ts`
         // would link the Pi SDK into a process that only owns PTYs.
         terminal: resolve("./src/host/terminal-main.ts"),
+        // The document extractor is a separate process/bundle: it must never
+        // link the Pi SDK or Electron, and ships beside the other host entries.
+        "extraction-worker": resolve("./src/extraction/worker.ts"),
       },
       external: isExternal,
       output: { format: "es", entryFileNames: "[name].mjs", chunkFileNames: "[name]-[hash].mjs" },

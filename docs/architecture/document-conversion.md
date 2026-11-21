@@ -1,10 +1,10 @@
 # Document conversion (milestone B) — contracts and dependency record
 
-**Status:** step 17 landed the versioned contracts, the fixture inventory and the
-dependency/security assessment. **No converter is shipped yet**, so PDF/Office/
-OpenDocument attachments remain visibly blocked (`conversion_required` /
-"local conversion is unavailable") until steps 18–24 and the milestone-B release
-gate are complete.
+**Status:** step 17 landed the contracts/fixture inventory/dependency record and
+step 18 landed the bounded worker + supervisor. **No format parser is shipped
+yet**, so PDF/Office/OpenDocument attachments remain visibly blocked
+(`conversion_required` / "local conversion is unavailable") until steps 20–24
+and the milestone-B release gate are complete.
 
 ## Contracts
 
@@ -33,6 +33,39 @@ files, macro-enabled packages, traversal/duplicate ZIP entries, expansion bombs,
 external entities/relationships, formula injection, cell/page limits and
 malformed containers. Binary fixtures are added by the owning steps; the
 inventory is validated now.
+
+## Worker and supervisor (step 18)
+
+`src/extraction/worker.ts` is a separate bundle (`out/host/extraction-worker.mjs`,
+built by `vite.host.config.ts`) that imports only Node built-ins and shared
+contracts. `src/main/extraction-supervisor.ts` owns it:
+
+- one worker process per job, **2 active globally**, bounded queue (8), 30 s
+  deadline, kill-tree cleanup and disposable per-job temp directories;
+- the worker receives a generated job id and ordered ≤256 KiB base64 chunks
+  (`begin`/`chunk`/`seal`); it verifies size and SHA-256 before any parser and
+  never receives a path, command, renderer object or environment handle;
+- frames are bounded at 1 MiB, stdout is capped, and the supervisor samples the
+  process RSS (separate from the `--max-old-space-size` heap flag) and kills on
+  overflow; a killed job rejects rather than returning partial content;
+- the child environment is minimal (`PI_DESKTOP_EXTRACTION`, per-job temp dir,
+  `NODE_OPTIONS` heap flag, `TZ`, Windows system variables only) — never the app
+  environment, credentials or workspace paths;
+- safe mode and the packaged milestone-B gate refuse before spawning; a missing
+  worker bundle or parser reports `unavailable`/`parser_unavailable`;
+- the worker advertises `{pdf:false, ooxml:false, odf:false}` honestly until the
+  format steps wire parsers.
+
+`tests/main/extraction-supervisor.test.ts` covers queueing, deadline/RSS kills,
+output/frame caps, malformed responses, exits, disabled/safe-mode and the
+minimal environment; `tests/main/extraction-worker.integration.test.ts` runs the
+real bundled worker (hello/staging/parser-unavailable/malformed frame/temp
+cleanup); `tests/packaging/extraction-worker.test.ts` guards the build entry,
+unpacked packaging and the no-SDK/no-Electron import boundary.
+
+Residual risk: a child process is a resource boundary, not an OS sandbox; the
+Node RSS sampler uses platform process tools; parser assets (PDF.js
+`standard_fonts`/`cmaps`) are not packaged until step 20.
 
 ## Dependency assessment (assessed 2026-11-21)
 
@@ -116,7 +149,7 @@ From `EXTRACTION_BUDGETS` (step 18 enforces them):
 
 ## Open items before milestone B
 
-- Step 18: worker/supervisor, packaging assets, measured RSS/heap/output limits.
-- Steps 20–23: real extractors and the binary fixtures from the inventory.
+- Steps 20–23: real extractors and the binary fixtures from the inventory;
+  package PDF.js assets and measure the worker against real fixtures.
 - Step 25: adversarial packaged-worker verification.
 - Step 26: cross-platform/provider release sign-off.
