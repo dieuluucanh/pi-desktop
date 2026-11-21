@@ -33,8 +33,8 @@ export function ShareDialog() {
         <DialogTitle>{mode === "share" ? "Share this session" : "Report a bug"}</DialogTitle>
         <DialogDescription>
           {mode === "share"
-            ? "A secret gist: unlisted, not private — anyone with the link can read it. Keys are redacted first."
-            : "A zip with versions, diagnostics and (optionally) the transcript. It never leaves this machine from here."}
+            ? "A secret gist: unlisted, not private — anyone with the link can read it. Attached files, images, names and keys are removed first."
+            : "A zip with versions, diagnostics and (optionally) the transcript. It never leaves this machine from here. Attachment copies, images and managed file text are excluded; answers or prose may still quote them."}
         </DialogDescription>
 
         <div className="space-y-2 px-4 pb-4 text-xs">
@@ -45,14 +45,16 @@ export function ShareDialog() {
                 checked={includeTranscript}
                 onChange={(event) => setIncludeTranscript(event.target.checked)}
               />
-              Include the session transcript (redacted)
+              Include the session transcript (attachments and images removed)
             </label>
           ) : null}
 
           {status === "running" ? (
             <p className="flex items-center gap-2 text-ink-muted" data-testid="share-running">
               <span className="animate-pulse text-accent">●</span>
-              {mode === "share" ? "Creating the secret gist…" : "Building the zip…"}
+              {mode === "share"
+                ? "Sanitizing and creating the secret gist…"
+                : "Sanitizing and building the zip…"}
             </p>
           ) : null}
 

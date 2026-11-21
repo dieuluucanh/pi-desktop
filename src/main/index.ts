@@ -100,6 +100,7 @@ import { installAppMenu } from "./menu";
 import { contextMenuTemplate } from "./context-menu";
 import { createCommandRunner } from "./office/exec";
 import { buildBugReport, messagesFromJsonl, shareSession, summarizeForBugReport } from "./share";
+import { sanitizeTranscriptJsonl } from "./share-sanitize";
 import { openInExternalEditor } from "./editor";
 import { createProjectOps } from "./project-ops";
 import { createProjectsService } from "./projects-service";
@@ -2157,12 +2158,23 @@ if (!app.requestSingleInstanceLock()) {
           diagnostics?: unknown;
         };
         const fs = createNodeFsPort();
-        const transcript =
+        const raw =
           request.includeTranscript === true &&
           typeof request.sessionFile === "string" &&
           request.sessionFile.length > 0
             ? await fs.readTextFile(request.sessionFile)
             : null;
+        let transcript: string | null = null;
+        if (raw !== null) {
+          try {
+            transcript = sanitizeTranscriptJsonl(raw).jsonl;
+          } catch {
+            return {
+              ok: false,
+              error: "The session transcript could not be sanitized safely.",
+            };
+          }
+        }
         return buildBugReport(
           {
             fs,
@@ -2174,7 +2186,10 @@ if (!app.requestSingleInstanceLock()) {
             versions: request.versions ?? {},
             diagnostics: request.diagnostics ?? null,
             transcript,
+            transcriptSanitized: true,
             hint: request.hint ?? null,
+            // The summary is derived from the same sanitized projection as the
+            // attached transcript, before any field reaches the zip.
             summary: summarizeForBugReport(messagesFromJsonl(transcript ?? "")),
           },
         );
