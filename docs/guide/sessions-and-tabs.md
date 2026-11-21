@@ -244,3 +244,28 @@ The composer is a plain text area with Pi’s autocomplete contract:
 
 - [Projects](projects.md) · [Models and thinking](models-and-thinking.md)
 - [Getting started](getting-started.md) · [FAQ](faq.md)
+
+## Extension-contributed related sessions
+
+An extension can ask the host to create or open a **normal** related session
+(a child or sibling tab) with bounded bootstrap entries. The host:
+
+- resolves the owning extension from the command that made the request, not from
+  an owner string in the payload;
+- checks the negotiated capability (`create`/`open`/`focus`/`inspect`/
+  `interrupt`/`close`) before any work starts, and answers `unsupported` when the
+  host cannot do it;
+- writes bootstrap entries before the session runtime is created — they are
+  data, never an automatic turn;
+- reuses the pending or settled answer for a duplicate request id, so a retry or
+  a lost bus message never opens a second child tab;
+- keeps the archive/transcript when a child is closed.
+
+A related tab is an ordinary session: its own extensions, tools, model and
+transcript. Closing the parent does not kill an unrelated tab, and inspecting a
+running child focuses its owner rather than opening a second writer. When the
+host cannot prove ownership, the request is rejected instead of guessed.
+
+The opt-in Workflow Orchestrator uses this path (`/orchestrator`); it remains
+experimental and live orchestration is not released yet. See the workflow
+repository's `docs/orchestrator-live-acceptance.md` for the unrun live checklist.

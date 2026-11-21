@@ -481,3 +481,39 @@ until dismissed or resolved. `prefs.updates.notifiedVersion` /
 `prefs.packages.notifiedSignature` remain the toast-dedupe markers (one toast per
 offer per profile). Navigation never dismisses: opening Extensions or About &
 updates is not the action the offer is asking for.
+
+## Generic extension contributions and related sessions (2026-11-21)
+
+The host no longer routes any extension by name. Plan/Build/Review/TODO
+presentation, input ownership and related-session links are generic, bounded
+contributions validated in `src/shared/extension-contributions.ts` and stored in
+one registry per session (`src/host/contributions.ts`).
+
+- **Arbitrary modes/actions.** A contribution carries its own kind, slot, tone,
+  label, bounded command name and presentation order. The host knows only the
+  contract; it does not parse Workflow status prose, glyphs or mode strings.
+  An action runs only a command resolved from the live host registry — a payload
+  cannot inject a shell fragment or an arbitrary command.
+- **Ownership is separate per publisher.** Envelopes are revision/epoch fenced.
+  One owner cannot remove or replace another owner's rows through `removed`; a
+  stale epoch is dropped and a newer epoch starts that owner clean. `reset()`
+  during runtime replacement leaves no actionable stale button.
+- **Input availability** is explicit (`available`/`restricted`/`locked`) with a
+  reason, so the native composer can explain why it is not taking text.
+- **Related sessions** use `src/shared/related-sessions.ts` and
+  `src/host/related-sessions.ts`. Ownership is derived from the registered
+  command's SDK `sourceInfo`; the payload's own owner key/label is never
+  authority. Capabilities are negotiated per session, unsupported operations
+  fail before work starts, bootstrap entries are written before the runtime is
+  created (never as a turn trigger), and duplicate request ids replay/join the
+  pending operation instead of creating a second child. Timeouts and teardown
+  settle without a hidden retry.
+- **Two unrelated fixtures** (`tests/host/extension-contract.e2e.test.ts` and
+  the shared `tests/fixtures/two-extension-contract.json`) exercise arbitrary
+  modes, cross-owner actions, stale epochs, reload, absent capabilities and
+  source-bound related-session ownership. No Workflow import or name is needed.
+
+The installed SDK's event bus is **not** publisher authentication. Source
+binding is established for related-session authority through registered command
+provenance; a contribution's declared owner is a namespace, not an auth token.
+Extensions remain trusted executable code — this is not a new sandbox.
