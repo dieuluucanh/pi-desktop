@@ -105,6 +105,8 @@ export const IPC = {
   shareSession: "share:session",
   /** Renderer → main: build a local bug-report zip (`/bug`). */
   shareBugReport: "share:bug-report",
+  /** Renderer → main: write the attachment-private transcript to a chosen path. */
+  shareExportSanitized: "share:export-sanitized",
   /** Renderer → main: open the draft in the configured OS editor and wait. */
   editorOpen: "editor:open",
   /** Renderer → main: reveal a path in the OS file manager. */
@@ -138,6 +140,8 @@ export const IPC = {
   attachmentsReadiness: "attachments:readiness",
   attachmentsStorage: "attachments:storage",
   attachmentsClearStorage: "attachments:clear-storage",
+  attachmentsExportBundle: "attachments:export-bundle",
+  attachmentsImportBundle: "attachments:import-bundle",
 
   /** Sessions (plan step 3): tabs are the renderer's handle on a Pi host. */
   sessionTabs: "session:tabs",
@@ -514,6 +518,18 @@ export interface AttachmentsBridge {
   storage(): Promise<AttachmentStorageReport | null>;
   /** Explicit, warned reclamation of unreferenced/unprotected copies. */
   clearStorage(): Promise<AttachmentRetentionClearReport>;
+  /** Optional local portable bundle (plan step 15); never uploaded. */
+  exportBundle(input: {
+    tabId: string;
+    includeObjects: boolean;
+  }): Promise<{ ok: boolean; path?: string; assets?: number; objects?: number; error?: string }>;
+  importBundle(input: { tabId: string }): Promise<{
+    ok: boolean;
+    path?: string;
+    originals?: number;
+    representations?: number;
+    error?: string;
+  }>;
 }
 
 /** Session tabs and host events (plan step 3). */
@@ -709,6 +725,14 @@ export interface ShareBridge {
     versions: Record<string, string | null | undefined>;
     diagnostics?: unknown;
   }): Promise<{ ok: boolean; path?: string; bytes?: number; error?: string }>;
+  /** A separately labeled, non-reimportable attachment-private transcript. */
+  exportSanitized(sessionFile: string): Promise<{
+    ok: boolean;
+    path?: string;
+    bytes?: number;
+    error?: string;
+    detail?: string;
+  }>;
   /**
    * Opens the draft in the configured OS editor and resolves when it exits.
    * `ok: false` with `error: "no_editor"` means "use the in-app editor".

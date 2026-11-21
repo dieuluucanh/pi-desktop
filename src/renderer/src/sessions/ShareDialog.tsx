@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useAppStore } from "../state/app-store";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { Button } from "../ui/button";
@@ -23,9 +24,26 @@ export function ShareDialog() {
   const setIncludeTranscript = useAppStore((state) => state.setShareIncludeTranscript);
   const runBugReport = useAppStore((state) => state.runBugReport);
   const close = useAppStore((state) => state.closeShare);
-  const exportHtml = useAppStore((state) => state.exportSessionHtml);
   const activeTabId = useAppStore((state) => state.activeTabId);
+  const requestExport = useAppStore((state) => state.requestExport);
+  const tabs = useAppStore((state) => state.tabs);
+  const [includeOriginals, setIncludeOriginals] = useState(false);
+  const [extraStatus, setExtraStatus] = useState<string | null>(null);
+  const [extraBusy, setExtraBusy] = useState(false);
+  const sessionFile = tabs.find((tab) => tab.id === activeTabId)?.sessionFile ?? null;
   const openExternal = (url: string) => void window.pi?.openExternal(url);
+
+  const runExtra = async (operation: () => Promise<string | null>) => {
+    setExtraBusy(true);
+    setExtraStatus(null);
+    try {
+      setExtraStatus(await operation());
+    } catch (error) {
+      setExtraStatus(error instanceof Error ? error.message : "The action failed.");
+    } finally {
+      setExtraBusy(false);
+    }
+  };
 
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? undefined : close())}>
@@ -104,6 +122,88 @@ export function ShareDialog() {
             </div>
           ) : null}
 
+          <div className="mt-3 space-y-2 rounded-sm border border-line bg-sunken/40 p-2">
+            <p className="text-[11px] text-ink-faint">
+              Sanitized transcript: user prose only, with attachment files, images, names and
+              descriptors removed. It is not a Pi session file and cannot be reimported.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={extraBusy || !sessionFile}
+                data-testid="share-export-sanitized"
+                onClick={() =>
+                  void runExtra(async () => {
+                    if (!sessionFile) return "No session file is available.";
+                    const result = await window.pi?.share?.exportSanitized(sessionFile);
+                    return result?.ok && result.path
+                      ? `Sanitized transcript written to ${result.path}`
+                      : (result?.detail ?? "The sanitized transcript could not be written.");
+                  })
+                }
+              >
+                Export sanitized transcript…
+              </Button>
+              <label className="flex items-center gap-1 text-[11px] text-ink-muted">
+                <input
+                  type="checkbox"
+                  checked={includeOriginals}
+                  onChange={(event) => setIncludeOriginals(event.target.checked)}
+                />
+                Include original file contents in a bundle
+              </label>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={extraBusy || !activeTabId}
+                data-testid="share-export-bundle"
+                onClick={() =>
+                  void runExtra(async () => {
+                    if (!activeTabId) return "No session is active.";
+                    const result = await window.pi?.attachments?.exportBundle({
+                      tabId: activeTabId,
+                      includeObjects: includeOriginals,
+                    });
+                    return result?.ok && result.path
+                      ? `Bundle written to ${result.path} (${result.assets ?? 0} assets)`
+                      : (result?.error ?? "The bundle could not be exported.");
+                  })
+                }
+              >
+                Export attachment bundle…
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={extraBusy || !activeTabId}
+                data-testid="share-import-bundle"
+                onClick={() =>
+                  void runExtra(async () => {
+                    if (!activeTabId) return "No session is active.";
+                    const result = await window.pi?.attachments?.importBundle({
+                      tabId: activeTabId,
+                    });
+                    return result?.ok
+                      ? `Imported ${result.originals ?? 0} originals and ${result.representations ?? 0} prepared files into this session.`
+                      : (result?.error ?? "The bundle could not be imported.");
+                  })
+                }
+              >
+                Import attachment bundle…
+              </Button>
+            </div>
+            {extraStatus ? (
+              <p
+                className="text-[11px] text-ink-muted"
+                role="status"
+                data-testid="share-extra-status"
+              >
+                {extraStatus}
+              </p>
+            ) : null}
+          </div>
+
           <div className="flex flex-wrap justify-end gap-2 pt-1">
             <Button size="sm" variant="ghost" onClick={close}>
               {status === "done" ? "Close" : "Cancel"}
@@ -132,7 +232,7 @@ export function ShareDialog() {
                 variant="secondary"
                 onClick={() => {
                   close();
-                  if (activeTabId) void exportHtml(activeTabId);
+                  if (activeTabId) requestExport(activeTabId, "html");
                 }}
               >
                 Export HTML instead

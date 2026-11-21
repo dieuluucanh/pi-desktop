@@ -227,6 +227,21 @@ export interface IpcAttachmentDeps {
   ): Promise<AttachmentReadiness>;
   storage(): Promise<AttachmentStorageReport | null>;
   clearStorage(): Promise<AttachmentRetentionClearReport>;
+  exportBundle(
+    senderId: number,
+    tabId: string,
+    includeObjects: boolean,
+  ): Promise<{ ok: boolean; path?: string; assets?: number; objects?: number; error?: string }>;
+  importBundle(
+    senderId: number,
+    tabId: string,
+  ): Promise<{
+    ok: boolean;
+    path?: string;
+    originals?: number;
+    representations?: number;
+    error?: string;
+  }>;
 }
 
 export interface IpcTuiDeps {
@@ -249,6 +264,14 @@ export interface IpcDependencies {
   shareSession: (sessionFile: unknown) => Promise<unknown>;
   /** `/bug`: build the local zip. */
   shareBugReport: (input: unknown) => Promise<unknown>;
+  /** Write the attachment-private transcript to a user-chosen path. */
+  exportSanitizedTranscript: (sessionFile: string) => Promise<{
+    ok: boolean;
+    path?: string;
+    bytes?: number;
+    error?: string;
+    detail?: string;
+  }>;
   /** Open the draft in the OS editor (plan step 21). */
   openEditor: (draft: unknown, setting: unknown) => Promise<unknown>;
   /** Reveals a path in the OS file manager; returns false for invalid input. */
@@ -913,6 +936,9 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     deps.shareSession(sessionFile),
   );
   ipcMain.handle(IPC.shareBugReport, (_event, input: unknown) => deps.shareBugReport(input));
+  ipcMain.handle(IPC.shareExportSanitized, (_event, sessionFile: unknown) =>
+    deps.exportSanitizedTranscript(typeof sessionFile === "string" ? sessionFile : ""),
+  );
   ipcMain.handle(IPC.editorOpen, (_event, draft: unknown, setting: unknown) =>
     deps.openEditor(draft, setting),
   );
@@ -1005,6 +1031,17 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.attachmentsClearStorage, (event) => {
     requireAttachmentSender(deps, event);
     return deps.attachments.clearStorage();
+  });
+  ipcMain.handle(IPC.attachmentsExportBundle, (event, input: unknown) => {
+    const senderId = requireAttachmentSender(deps, event);
+    const record = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+    const tabId = requireRealTabId(deps, record.tabId);
+    return deps.attachments.exportBundle(senderId, tabId, record.includeObjects === true);
+  });
+  ipcMain.handle(IPC.attachmentsImportBundle, (event, input: unknown) => {
+    const senderId = requireAttachmentSender(deps, event);
+    const record = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+    return deps.attachments.importBundle(senderId, requireRealTabId(deps, record.tabId));
   });
 
   ipcMain.handle(IPC.sessionTabs, () => deps.sessions.list());

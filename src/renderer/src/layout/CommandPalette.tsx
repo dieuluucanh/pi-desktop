@@ -161,7 +161,7 @@ export function CommandPalette() {
               <PaletteItem
                 label="Export session to HTML"
                 onSelect={() =>
-                  runSession((tabId) => void useAppStore.getState().exportSessionHtml(tabId))
+                  runSession((tabId) => useAppStore.getState().requestExport(tabId, "html"))
                 }
               />
               <PaletteItem

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { realpath, stat, writeFile } from "node:fs/promises";
+import { readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { freemem, totalmem } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -99,8 +99,20 @@ import {
 import { installAppMenu } from "./menu";
 import { contextMenuTemplate } from "./context-menu";
 import { createCommandRunner } from "./office/exec";
-import { buildBugReport, messagesFromJsonl, shareSession, summarizeForBugReport } from "./share";
+import {
+  buildBugReport,
+  messagesFromJsonl,
+  redactSecrets,
+  shareSession,
+  summarizeForBugReport,
+} from "./share";
 import { sanitizeTranscriptJsonl } from "./share-sanitize";
+import {
+  createAttachmentBundle,
+  importAttachmentBundle,
+  inspectAttachmentBundle,
+} from "./attachment-bundle";
+import { attachmentSessionOwner } from "./attachment-ownership";
 import { openInExternalEditor } from "./editor";
 import { createProjectOps } from "./project-ops";
 import { createProjectsService } from "./projects-service";
@@ -746,6 +758,14 @@ interface AttachmentServiceRuntime extends AttachmentService {
   retention: AttachmentRetention;
   storage(): Promise<AttachmentStorageReport | null>;
   clearStorage(): Promise<AttachmentRetentionClearReport>;
+  bundleExport(
+    tabId: string,
+    includeObjects: boolean,
+  ): Promise<Awaited<ReturnType<typeof createAttachmentBundle>>>;
+  bundleImport(
+    tabId: string,
+    zip: Uint8Array,
+  ): Promise<{ originals: number; representations: number }>;
 }
 
 /**
@@ -910,6 +930,36 @@ function attachmentService(): Promise<AttachmentServiceRuntime> {
         retention,
         storage: () => retention.report(),
         clearStorage: () => retention.clear(),
+        async bundleExport(tabId: string, includeObjects: boolean) {
+          const pin = requireSessions().pinSessionHost(tabId);
+          try {
+            const owner = attachmentSessionOwner(profile, pin.sessionId);
+            const assets = await store.list(owner);
+            if (assets.length === 0) throw new Error("attachments: no owned files to bundle");
+            return await createAttachmentBundle({
+              assets,
+              read: async (asset) =>
+                (await store.readForPreparation(asset.id, owner, asset.size)).bytes,
+              includeObjects,
+              now: Date.now(),
+            });
+          } finally {
+            pin.release();
+          }
+        },
+        async bundleImport(tabId: string, zip: Uint8Array) {
+          const inspection = inspectAttachmentBundle(zip);
+          if (!inspection.ok) {
+            throw new Error(`attachments: ${inspection.error}`);
+          }
+          const pin = requireSessions().pinSessionHost(tabId);
+          try {
+            const owner = attachmentSessionOwner(profile, pin.sessionId);
+            return await importAttachmentBundle(store, owner, inspection.bundle);
+          } finally {
+            pin.release();
+          }
+        },
         submitDelivery: (input: Parameters<AttachmentDeliverySubmissionService["submit"]>[0]) =>
           submission.submit(input),
         async deliver(
@@ -1157,6 +1207,42 @@ const attachmentsIpc: IpcAttachmentDeps = {
     (await attachmentService()).readiness(senderId, draft, attachmentIds, text),
   storage: async () => (await attachmentService()).storage(),
   clearStorage: async () => (await attachmentService()).clearStorage(),
+  exportBundle: async (_senderId, tabId, includeObjects) => {
+    try {
+      const bundle = await (await attachmentService()).bundleExport(tabId, includeObjects);
+      const { canceled, filePath } = await dialog.showSaveDialog({
+        title: "Export attachment bundle",
+        defaultPath: `pi-attachments-${new Date().toISOString().slice(0, 10)}.zip`,
+        filters: [{ name: "Attachment bundle", extensions: ["zip"] }],
+      });
+      if (canceled || !filePath) return { ok: false, error: "cancelled" };
+      await writeFile(filePath, bundle.zip);
+      return {
+        ok: true,
+        path: filePath,
+        assets: bundle.manifest.assets.length,
+        objects: bundle.objects,
+      };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  },
+  importBundle: async (_senderId, tabId) => {
+    try {
+      const picked = await dialog.showOpenDialog({
+        title: "Import attachment bundle",
+        properties: ["openFile"],
+        filters: [{ name: "Attachment bundle", extensions: ["zip"] }],
+      });
+      const path = picked.canceled ? undefined : picked.filePaths[0];
+      if (!path) return { ok: false, error: "cancelled" };
+      const zip = new Uint8Array(await readFile(path));
+      const result = await (await attachmentService()).bundleImport(tabId, zip);
+      return { ok: true, path, ...result };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  },
 };
 
 /** The validated session surface the IPC layer drives. */
@@ -2149,6 +2235,35 @@ if (!app.requestSingleInstanceLock()) {
         ),
       // `/bug`: a local zip; nothing is uploaded from the app (Radius upload is
       // documented as not wired in this build).
+      exportSanitizedTranscript: async (sessionFile: string) => {
+        if (typeof sessionFile !== "string" || sessionFile.length === 0) {
+          return { ok: false, error: "no_file" };
+        }
+        const raw = await createNodeFsPort().readTextFile(sessionFile);
+        if (raw === null || raw.length === 0) return { ok: false, error: "no_file" };
+        let sanitized: string;
+        try {
+          sanitized = redactSecrets(sanitizeTranscriptJsonl(raw).jsonl);
+        } catch {
+          return {
+            ok: false,
+            error: "sanitize_failed",
+            detail: "The session could not be sanitized safely.",
+          };
+        }
+        const { canceled, filePath } = await dialog.showSaveDialog({
+          title: "Export sanitized transcript",
+          defaultPath: `pi-session-${new Date().toISOString().slice(0, 10)}-sanitized.jsonl`,
+          filters: [{ name: "JSONL (sanitized, not reimportable)", extensions: ["jsonl"] }],
+        });
+        if (canceled || !filePath) return { ok: false };
+        try {
+          await writeFile(filePath, sanitized, "utf8");
+          return { ok: true, path: filePath, bytes: Buffer.byteLength(sanitized, "utf8") };
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      },
       shareBugReport: async (input: unknown) => {
         const request = (input ?? {}) as {
           sessionFile?: string | null;

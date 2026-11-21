@@ -110,7 +110,7 @@ function runTabMenuAction(id: TabMenuActionId, tab: TabRecord, onRename: () => v
       void store.cloneSession(tab.id);
       return;
     case "export":
-      void store.exportSessionHtml(tab.id);
+      store.requestExport(tab.id, "html");
       return;
     case "reveal":
       if (isEditorTab(tab) && tab.filePath) {

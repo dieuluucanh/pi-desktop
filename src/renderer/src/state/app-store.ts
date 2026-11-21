@@ -873,6 +873,8 @@ export interface AppStateShape {
   shareError: string | null;
   shareErrorCode: string | null;
   shareIncludeTranscript: boolean;
+  /** Native export awaiting the truthful-content confirmation (plan step 15). */
+  pendingExport: { tabId: string; format: "html" | "jsonl" } | null;
   shareHint: string | null;
   openShare: (tabId: string) => Promise<void>;
   openBugReport: (tabId: string, hint?: string) => Promise<void>;
@@ -1858,6 +1860,10 @@ export interface AppStateShape {
   exportSessionHtml: (tabId: string) => Promise<void>;
   /** JSONL export (`/export jsonl`, plan step 14). */
   exportSessionJsonl: (tabId: string) => Promise<void>;
+  /** Ask for the native-export content confirmation before writing. */
+  requestExport: (tabId: string, format: "html" | "jsonl") => void;
+  confirmExport: () => Promise<void>;
+  cancelExport: () => void;
   /** A pending `/import`: the path is confirmed before the session is replaced. */
   importPrompt: { tabId: string; path: string } | null;
   /** Picks a JSONL file (or uses `path`) and asks for confirmation. */
@@ -2471,6 +2477,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   shareError: null,
   shareErrorCode: null,
   shareIncludeTranscript: false,
+  pendingExport: null,
   shareHint: null,
   changelogOpen: false,
   changelogPath: null,
@@ -4773,9 +4780,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (action.kind === "export") {
       const format = argument.trim().toLowerCase();
       if (format.length === 0 || format === "html") {
-        await get().exportSessionHtml(tabId);
+        get().requestExport(tabId, "html");
       } else if (format === "jsonl") {
-        await get().exportSessionJsonl(tabId);
+        get().requestExport(tabId, "jsonl");
       } else {
         set({ hint: `Unknown export format "${format}". Use /export html or /export jsonl.` });
       }
@@ -7982,6 +7989,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   setShareIncludeTranscript: (include) => set({ shareIncludeTranscript: include }),
+  requestExport: (tabId: string, format: "html" | "jsonl") =>
+    set({ pendingExport: { tabId, format } }),
+  cancelExport: () => set({ pendingExport: null }),
+  confirmExport: async () => {
+    const pending = get().pendingExport;
+    if (!pending) return;
+    set({ pendingExport: null });
+    if (pending.format === "html") await get().exportSessionHtml(pending.tabId);
+    else await get().exportSessionJsonl(pending.tabId);
+  },
 
   runBugReport: async () => {
     const api = bridge();

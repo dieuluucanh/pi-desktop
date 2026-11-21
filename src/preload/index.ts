@@ -163,6 +163,22 @@ const attachments: AttachmentsBridge = {
     ipcRenderer.invoke(IPC.attachmentsStorage) as Promise<AttachmentStorageReport | null>,
   clearStorage: () =>
     ipcRenderer.invoke(IPC.attachmentsClearStorage) as Promise<AttachmentRetentionClearReport>,
+  exportBundle: (input) =>
+    ipcRenderer.invoke(IPC.attachmentsExportBundle, input) as Promise<{
+      ok: boolean;
+      path?: string;
+      assets?: number;
+      objects?: number;
+      error?: string;
+    }>,
+  importBundle: (input) =>
+    ipcRenderer.invoke(IPC.attachmentsImportBundle, input) as Promise<{
+      ok: boolean;
+      path?: string;
+      originals?: number;
+      representations?: number;
+      error?: string;
+    }>,
 };
 
 const sessions: SessionsBridge = {
@@ -460,6 +476,14 @@ const bridge: PiDesktopBridge = {
         path?: string;
         bytes?: number;
         error?: string;
+      }>,
+    exportSanitized: (sessionFile: string) =>
+      ipcRenderer.invoke(IPC.shareExportSanitized, sessionFile) as Promise<{
+        ok: boolean;
+        path?: string;
+        bytes?: number;
+        error?: string;
+        detail?: string;
       }>,
     editor: (draft: string, setting?: string | null) =>
       ipcRenderer.invoke(IPC.editorOpen, draft, setting) as Promise<{

@@ -90,6 +90,7 @@ async function register(recording: Recording): Promise<void> {
     pickDirectory: async () => null,
     pickFile: async () => null,
     shareSession: async () => ({}),
+    exportSanitizedTranscript: async () => ({ ok: false, error: "cancelled" }),
     shareBugReport: async () => ({}),
     openEditor: async () => ({}),
     revealPath: () => true,
@@ -237,6 +238,8 @@ async function register(recording: Recording): Promise<void> {
         bytesFreed: 0,
         errors: 0,
       }),
+      exportBundle: async () => ({ ok: false, error: "cancelled" }),
+      importBundle: async () => ({ ok: false, error: "cancelled" }),
     },
     projects: {
       get: async () => projects(),
