@@ -485,6 +485,14 @@ export function createNodeAttachmentStoreIo(
         await handle.close();
       }
     },
+    async removeObject(profile, digest) {
+      assertDigest(digest);
+      const { objects } = await layout(profile);
+      await deleteIfExists(join(objects, digest));
+    },
+    async freeBytes() {
+      return freeBytes(root);
+    },
     async removeStaging(profile, id) {
       const { stage, reservation } = await stagePaths(profile, id);
       // Never release the reservation before removing the corresponding bytes.

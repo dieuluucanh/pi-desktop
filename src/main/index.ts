@@ -64,6 +64,11 @@ import {
 } from "./attachment-delivery-submission";
 import { createNodeAttachmentStoreIo } from "./attachment-store-io";
 import { createAttachmentOwnershipReconciler } from "./attachment-ownership";
+import { createAttachmentRetention, type AttachmentRetention } from "./attachment-retention";
+import type {
+  AttachmentRetentionClearReport,
+  AttachmentStorageReport,
+} from "../shared/attachment-storage";
 import {
   createAttachmentSubmissionJournal,
   createNodeAttachmentSubmissionJournalIo,
@@ -736,6 +741,10 @@ interface AttachmentServiceRuntime extends AttachmentService {
   deliver(senderId: number, input: AttachmentDeliveryRequest): Promise<AttachmentPromptResult>;
   status(senderId: number, input: AttachmentStatusRequest): Promise<AttachmentSubmissionStatus>;
   disposeDelivery(): void;
+  /** Main-owned recovery/retention policy (plan step 13). */
+  retention: AttachmentRetention;
+  storage(): Promise<AttachmentStorageReport | null>;
+  clearStorage(): Promise<AttachmentRetentionClearReport>;
 }
 
 /**
@@ -779,11 +788,22 @@ function attachmentService(): Promise<AttachmentServiceRuntime> {
         store,
         journal,
         profileKey: profile,
+        isRetired: (owner) => store.isRetired(owner),
+        clearTombstone: (owner) => store.clearTombstone(owner),
+        markReconciled: (entry) => journal.markOwnershipReconciled(entry.turnId, entry.attemptId),
+        report: (incident) => console.warn(`[attachments] ${incident}`),
+      });
+      const retention = createAttachmentRetention({
+        profileKey: profile,
+        store,
+        journal,
+        ownership,
+        now: Date.now,
         report: (incident) => console.warn(`[attachments] ${incident}`),
       });
       // A crash between durable acceptance and promotion is repaired without a
-      // host, and never by resending the turn (plan step 12).
-      void ownership.reconcile().catch(() => undefined);
+      // host, and never by resending the turn (plan steps 12-13).
+      void retention.sweep().catch(() => undefined);
       const service = createAttachmentService({
         store,
         prepareDirect: async (owner, attachmentId, context) => {
@@ -886,6 +906,9 @@ function attachmentService(): Promise<AttachmentServiceRuntime> {
         closeDraft: (senderId, draft) => service.closeDraft(senderId, draft),
       });
       return Object.assign(service, {
+        retention,
+        storage: () => retention.report(),
+        clearStorage: () => retention.clear(),
         submitDelivery: (input: Parameters<AttachmentDeliverySubmissionService["submit"]>[0]) =>
           submission.submit(input),
         async deliver(
@@ -985,6 +1008,24 @@ function attachmentService(): Promise<AttachmentServiceRuntime> {
           const entries = await journal.list();
           let entry = entries.filter((candidate) => candidate.turnId === turnId).at(-1) ?? null;
           if (!entry) {
+            // A retired terminal attempt keeps its compact status: a missing
+            // full record must never look like a fresh draft or disable retry.
+            const retired = await journal.findRetired(turnId);
+            if (retired) {
+              return {
+                version: 1,
+                phase: retired.state,
+                turnId: retired.turnId,
+                attemptId: retired.attemptId,
+                result: retired.result,
+                retryOfAttemptId: retired.retryOfAttemptId,
+                textMatches: false,
+                filesMatch: false,
+                originalIds: [],
+                representationIds: [],
+                updatedAt: retired.retiredAt,
+              };
+            }
             return {
               version: 1,
               phase: "none",
@@ -1113,6 +1154,8 @@ const attachmentsIpc: IpcAttachmentDeps = {
   status: async (senderId, input) => (await attachmentService()).status(senderId, input),
   readiness: async (senderId, draft, attachmentIds, text) =>
     (await attachmentService()).readiness(senderId, draft, attachmentIds, text),
+  storage: async () => (await attachmentService()).storage(),
+  clearStorage: async () => (await attachmentService()).clearStorage(),
 };
 
 /** The validated session surface the IPC layer drives. */
@@ -1179,12 +1222,43 @@ async function deleteSessionFile(sessionFile: string): Promise<SessionDeleteResu
   try {
     const resolved = (await sessions.request(CONTROL_TAB_ID, "session.delete", {
       sessionFile,
-    })) as { path?: unknown } | undefined;
+    })) as { path?: unknown; id?: unknown } | undefined;
     const path = typeof resolved?.path === "string" ? resolved.path : sessionFile;
     if (!isDeletableSessionPath(path, paths.profileDir)) {
       return { ok: false, error: "The host resolved a path outside the Pi profile." };
     }
-    await shell.trashItem(path);
+    const sessionId =
+      typeof resolved?.id === "string" && resolved.id.length > 0 ? resolved.id : null;
+    let retention: AttachmentRetention | null = null;
+    if (sessionId) {
+      try {
+        retention = (await attachmentService()).retention;
+      } catch {
+        return {
+          ok: false,
+          error: "Attachment storage is unavailable, so the session was not deleted.",
+        };
+      }
+      try {
+        // Write the 30-day tombstone before the JSONL moves to the trash: a
+        // crash after this point leaves recoverable assets, never a missing
+        // association with live owners.
+        await retention.retireSession(sessionId);
+      } catch {
+        return {
+          ok: false,
+          error: "The session's attachment copies could not be secured, so it was not deleted.",
+        };
+      }
+    }
+    try {
+      await shell.trashItem(path);
+    } catch (error) {
+      if (retention && sessionId) {
+        await retention.restoreSession(sessionId).catch(() => undefined);
+      }
+      throw error;
+    }
     return { ok: true, path };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };

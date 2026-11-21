@@ -118,6 +118,12 @@ export interface AttachmentOwnershipDeps {
   readonly journal: Pick<AttachmentSubmissionJournal, "list">;
   /** Lowercase SHA-256 of the canonical profile identity. */
   readonly profileKey: string;
+  /** True while a durable owner is inside its recovery window (step 13). */
+  readonly isRetired?: (owner: AssetOwner) => Promise<boolean>;
+  /** Reattach a live session/branch owner after an explicit restore/adoption. */
+  readonly clearTombstone?: (owner: AssetOwner) => Promise<number>;
+  /** Persist that an accepted attempt's ownership decision is durable. */
+  readonly markReconciled?: (entry: AttachmentSubmissionJournalEntry) => Promise<void>;
   /** Bounded incident hook; never receives names, paths or content. */
   readonly report?: (incident: "promotion_incomplete" | "adoption_incomplete") => void;
 }
@@ -287,12 +293,31 @@ export function createAttachmentOwnershipReconciler(
     entry: AttachmentSubmissionJournalEntry,
   ): Promise<AttachmentPromotionResult> => {
     if (!promotable(entry, deps.profileKey)) return "skipped";
-    const result = await addOwners(
-      deps.store,
-      entry,
-      attachmentOwnersForScope(deps.profileKey, entry.scope),
-    );
-    if (result === "incomplete") report("promotion_incomplete");
+    const targets: AssetOwner[] = [];
+    let retiredTargets = 0;
+    for (const owner of attachmentOwnersForScope(deps.profileKey, entry.scope)) {
+      if (deps.isRetired && (await deps.isRetired(owner).catch(() => false))) {
+        retiredTargets++;
+        continue;
+      }
+      targets.push(owner);
+    }
+    const result = targets.length
+      ? await addOwners(deps.store, entry, targets)
+      : retiredTargets > 0
+        ? "skipped"
+        : "incomplete";
+    if (result === "incomplete") {
+      report("promotion_incomplete");
+      return result;
+    }
+    // The ownership decision is durable even when every target is tombstoned:
+    // the tombstone itself is what protects the assets now.
+    try {
+      await deps.markReconciled?.(entry);
+    } catch {
+      // A later sweep retries the marker; it is not a delivery outcome.
+    }
     return result;
   };
 
@@ -336,6 +361,15 @@ export function createAttachmentOwnershipReconciler(
       const targets: AssetOwner[] = [attachmentSessionOwner(deps.profileKey, input.sessionId)];
       if (input.branchId) {
         targets.push(attachmentBranchOwner(deps.profileKey, input.sessionId, input.branchId));
+      }
+      // A live session with exact accepted evidence is the restore signal: its
+      // recovery tombstone no longer applies.
+      for (const owner of targets) {
+        try {
+          await deps.clearTombstone?.(owner);
+        } catch {
+          // Adoption can still add ownership; the tombstone expires on schedule.
+        }
       }
       const matched = new Map<string, AttachmentSubmissionJournalEntry>();
       for (const value of input.associations) {

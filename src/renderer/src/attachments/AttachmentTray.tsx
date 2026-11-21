@@ -105,6 +105,8 @@ function deliveryReason(reason: string): string {
       return "The original file exceeds the supported size limit.";
     case "host_unsupported":
       return "This session's host does not support file sending. Restart the app or that session tab to update it.";
+    case "storage_full":
+      return "Desktop attachment storage is full of unresolved records. Open Settings → Attachments to review or clear it.";
     case "release_unavailable":
       return "File sending is not enabled in this build yet.";
     default:

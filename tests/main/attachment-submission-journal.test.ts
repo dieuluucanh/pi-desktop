@@ -104,6 +104,7 @@ function harness(
   initial?: { path: string; contents: string },
   now = 1_000,
   sharedDisk?: ReturnType<typeof memoryIo>,
+  limits?: { maxBytes?: number; maxEntries?: number; maxRetired?: number },
 ) {
   const disk = sharedDisk ?? memoryIo(initial);
   const journal = createAttachmentSubmissionJournal({
@@ -111,8 +112,77 @@ function harness(
     profileKey: PROFILE,
     io: disk.io,
     now: () => now,
+    ...(limits ? { limits } : {}),
   });
   return { ...disk, journal, path: join(ROOT, "submissions", `${PROFILE}.json`) };
+}
+
+function seedEntry(
+  n: number,
+  overrides: Record<string, unknown> = {},
+): {
+  version: 1;
+  planId: string;
+  turnId: string;
+  attemptId: string;
+  scope: AttachmentDeliveryScope;
+  sourceTextSha256: string;
+  images: never[];
+  representations: Array<{
+    representationId: string;
+    representationSha256: string;
+    originalId: string;
+    originalSha256: string;
+    modality: "text";
+  }>;
+  retryOfAttemptId: string | null;
+  state: string;
+  createdAt: number;
+  updatedAt: number;
+  result: unknown;
+  ownershipReconciledAt: number | null | undefined;
+} {
+  const turnId = id(200_000 + n);
+  const attemptId = id(300_000 + n);
+  const base = {
+    version: 1 as const,
+    planId: id(100_000 + n),
+    turnId,
+    attemptId,
+    scope: { ...scope, draftId: id(400_000 + n) },
+    sourceTextSha256: "e".repeat(64),
+    images: [],
+    representations: [
+      {
+        representationId: id(500_000 + n),
+        representationSha256: "f".repeat(64),
+        originalId: id(600_000 + n),
+        originalSha256: "0".repeat(64),
+        modality: "text" as const,
+      },
+    ],
+    retryOfAttemptId: null,
+    state: "handled",
+    createdAt: 1_000,
+    updatedAt: 1_000,
+    result: { outcome: "handled", turnId, attemptId },
+    ownershipReconciledAt: 1_000,
+  };
+  return { ...base, ...overrides } as ReturnType<typeof seedEntry>;
+}
+
+function uncertainResult(n: number) {
+  return { outcome: "uncertain", turnId: id(200_000 + n), attemptId: id(300_000 + n) };
+}
+
+function acceptedFor(n: number) {
+  return {
+    outcome: "accepted",
+    turnId: id(200_000 + n),
+    attemptId: id(300_000 + n),
+    userEntryId: `user-${n}`,
+    associationEntryId: `association-${n}`,
+  };
 }
 
 function associationFor(
@@ -456,5 +526,173 @@ describe("app-owned attachment submission journal", () => {
     await h.journal.reconcile(scope, [proof]);
     const retry = await h.journal.begin(request({ attemptId: id(23), explicitRetry: true }));
     expect(retry.kind).toBe("conflict");
+  });
+
+  it("retires terminal attempts for capacity while keeping their compact status", async () => {
+    const now = 1_000 + 2 * 24 * 60 * 60 * 1_000;
+    const entries = Array.from({ length: 2 }, (_, index) => seedEntry(index));
+    const h = harness(
+      {
+        path: join(ROOT, "submissions", `${PROFILE}.json`),
+        contents: JSON.stringify({ version: 2, entries, retired: [] }),
+      },
+      now,
+      undefined,
+      { maxEntries: 2 },
+    );
+    const turnId = id(9_000);
+    const attemptId = id(9_001);
+    const result = await h.journal.begin(
+      request({ turnId, attemptId, planId: id(9_002), scope: { ...scope, draftId: turnId } }),
+    );
+    expect(result.kind).toBe("dispatch");
+    const document = JSON.parse(h.files.get(h.path) ?? "") as {
+      version: number;
+      entries: unknown[];
+      retired: Array<{ turnId: string; state: string; result: unknown }>;
+    };
+    expect(document.version).toBe(2);
+    expect(document.entries.length).toBeLessThanOrEqual(2);
+    expect(document.retired.length).toBeGreaterThan(0);
+    const retired = await h.journal.findRetired(id(200_000));
+    expect(retired).toMatchObject({ state: "handled", result: { outcome: "handled" } });
+  });
+
+  it("reports capacity instead of dispatching when protected attempts cannot be retired", async () => {
+    const now = 1_000 + 2 * 24 * 60 * 60 * 1_000;
+    const entries = Array.from({ length: 2 }, (_, index) =>
+      seedEntry(index, { state: "uncertain", result: uncertainResult(index) }),
+    );
+    const h = harness(
+      {
+        path: join(ROOT, "submissions", `${PROFILE}.json`),
+        contents: JSON.stringify({ version: 2, entries, retired: [] }),
+      },
+      now,
+      undefined,
+      { maxEntries: 2 },
+    );
+    await expect(
+      h.journal.begin(
+        request({
+          turnId: id(9_100),
+          attemptId: id(9_101),
+          planId: id(9_102),
+          scope: { ...scope, draftId: id(9_100) },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "capacity" });
+    // Nothing was written and the protected document is untouched.
+    expect(h.writes).toHaveLength(0);
+    expect(JSON.parse(h.files.get(h.path) ?? "").entries).toHaveLength(2);
+  });
+
+  it("keeps an accepted attempt protected until ownership is marked reconciled", async () => {
+    const now = 1_000 + 2 * 24 * 60 * 60 * 1_000;
+    const acceptedEntries = Array.from({ length: 2 }, (_, index) =>
+      seedEntry(index, {
+        createdAt: 1,
+        updatedAt: 1,
+        state: "accepted",
+        result: acceptedFor(index),
+        ownershipReconciledAt: null,
+      }),
+    );
+    const h = harness(
+      {
+        path: join(ROOT, "submissions", `${PROFILE}.json`),
+        contents: JSON.stringify({ version: 2, entries: acceptedEntries, retired: [] }),
+      },
+      now,
+      undefined,
+      { maxEntries: 2 },
+    );
+    await expect(
+      h.journal.begin(
+        request({
+          turnId: id(9_200),
+          attemptId: id(9_201),
+          planId: id(9_202),
+          scope: { ...scope, draftId: id(9_200) },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "capacity" });
+
+    // Mark the oldest accepted attempt reconciled: it becomes retirable.
+    const oldest = acceptedEntries[0]!;
+    await h.journal.markOwnershipReconciled(oldest.turnId, oldest.attemptId);
+    const entry = await h.journal.get(oldest.turnId, oldest.attemptId);
+    expect(entry?.ownershipReconciledAt).toBe(now);
+    await expect(
+      h.journal.begin(
+        request({
+          turnId: id(9_203),
+          attemptId: id(9_204),
+          planId: id(9_205),
+          scope: { ...scope, draftId: id(9_203) },
+        }),
+      ),
+    ).resolves.toMatchObject({ kind: "dispatch" });
+  });
+
+  it("reads a v1 document without ownership markers and writes v2 on the next change", async () => {
+    const now = 1_000;
+    const legacyEntry = seedEntry(0, { ownershipReconciledAt: undefined });
+    const h = harness(
+      {
+        path: join(ROOT, "submissions", `${PROFILE}.json`),
+        contents: JSON.stringify({ version: 1, entries: [legacyEntry] }),
+      },
+      now,
+    );
+    expect(await h.journal.list()).toHaveLength(1);
+    expect(h.writes).toHaveLength(0);
+    await h.journal.begin(
+      request({
+        turnId: id(9_300),
+        attemptId: id(9_301),
+        planId: id(9_302),
+        scope: { ...scope, draftId: id(9_300) },
+      }),
+    );
+    const document = JSON.parse(h.files.get(h.path) ?? "") as { version: number };
+    expect(document.version).toBe(2);
+  });
+
+  it("accepts a retry chain whose predecessor was retired", async () => {
+    const now = 1_000;
+    const turnId = id(9_400);
+    const retiredAttempt = id(9_401);
+    const current = seedEntry(0, {
+      turnId,
+      attemptId: id(9_402),
+      retryOfAttemptId: retiredAttempt,
+      state: "handled",
+      result: { outcome: "handled", turnId, attemptId: id(9_402) },
+    });
+    const h = harness(
+      {
+        path: join(ROOT, "submissions", `${PROFILE}.json`),
+        contents: JSON.stringify({
+          version: 2,
+          entries: [current],
+          retired: [
+            {
+              version: 1,
+              turnId,
+              attemptId: retiredAttempt,
+              draftId: id(9_400),
+              state: "blocked",
+              retryOfAttemptId: null,
+              result: { outcome: "blocked", turnId, attemptId: retiredAttempt, reasons: ["busy"] },
+              retiredAt: 1,
+            },
+          ],
+        }),
+      },
+      now,
+    );
+    await expect(h.journal.list()).resolves.toHaveLength(1);
+    expect(await h.journal.findRetired(turnId)).toMatchObject({ state: "blocked" });
   });
 });

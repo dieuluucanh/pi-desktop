@@ -14,6 +14,7 @@ import type {
   AttachmentStatusRequest,
   AttachmentSubmissionStatus,
 } from "./attachments";
+import type { AttachmentRetentionClearReport, AttachmentStorageReport } from "./attachment-storage";
 import type { OfficeBridgeControlResult, OfficeStopResult } from "./office-bridge";
 import type { OfficeDocumentsView } from "./office-documents";
 import type { DiagnosticsExport, DiagnosticsSnapshot } from "./diagnostics";
@@ -135,6 +136,8 @@ export const IPC = {
   attachmentsSubmit: "attachments:submit",
   attachmentsStatus: "attachments:status",
   attachmentsReadiness: "attachments:readiness",
+  attachmentsStorage: "attachments:storage",
+  attachmentsClearStorage: "attachments:clear-storage",
 
   /** Sessions (plan step 3): tabs are the renderer's handle on a Pi host. */
   sessionTabs: "session:tabs",
@@ -507,6 +510,10 @@ export interface AttachmentsBridge {
   status(input: AttachmentStatusRequest): Promise<AttachmentSubmissionStatus>;
   /** Non-submitting per-file + aggregate readiness against the live host. */
   readiness(input: AttachmentReadinessRequest): Promise<AttachmentReadiness>;
+  /** Bounded storage/quota report; null means the manifest is unreadable. */
+  storage(): Promise<AttachmentStorageReport | null>;
+  /** Explicit, warned reclamation of unreferenced/unprotected copies. */
+  clearStorage(): Promise<AttachmentRetentionClearReport>;
 }
 
 /** Session tabs and host events (plan step 3). */

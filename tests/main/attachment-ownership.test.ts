@@ -65,6 +65,7 @@ function entry(
     state: "accepted",
     createdAt: 1_000,
     updatedAt: 1_000,
+    ownershipReconciledAt: 1_000,
     result: {
       outcome: "accepted",
       turnId: opaque(21),
@@ -426,6 +427,47 @@ describe("accepted attachment ownership", () => {
       }),
     ).resolves.toBe(0);
     expect(store.addOwner).not.toHaveBeenCalled();
+  });
+
+  it("skips a tombstoned target but records a durable ownership decision", async () => {
+    const store = seededStore();
+    const mark = vi.fn(async () => {});
+    const reconciler = createAttachmentOwnershipReconciler({
+      store,
+      journal: journalOf([entry()]),
+      profileKey,
+      isRetired: async (owner) =>
+        owner.kind === "session" &&
+        owner.id === attachmentSessionOwner(profileKey, scope.sessionId).id,
+      markReconciled: mark,
+    });
+    await expect(reconciler.promote(entry())).resolves.toBe("promoted");
+    // The session target is retired; the branch target is still promoted.
+    expect(store.assets.get(originalId)).toEqual([
+      draftOwner,
+      attachmentBranchOwner(profileKey, scope.sessionId, "branch-1"),
+    ]);
+    expect(mark).toHaveBeenCalledOnce();
+  });
+
+  it("clears the live session's tombstone when adopting exact evidence", async () => {
+    const source = entry();
+    const store = seededStore();
+    const clear = vi.fn(async () => 1);
+    const reconciler = createAttachmentOwnershipReconciler({
+      store,
+      journal: journalOf([source]),
+      profileKey,
+      clearTombstone: clear,
+    });
+    await expect(
+      reconciler.adopt({
+        sessionId: "restored-session",
+        branchId: "restored-branch",
+        associations: [associationFor(source)],
+      }),
+    ).resolves.toBeGreaterThan(0);
+    expect(clear).toHaveBeenCalledTimes(2);
   });
 });
 

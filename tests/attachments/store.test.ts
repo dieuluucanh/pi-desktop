@@ -105,6 +105,13 @@ function memoryIo() {
       if (value.length > maxBytes) throw new Error("object exceeds limit");
       return value.slice();
     },
+    async removeObject(profile, digest) {
+      if (failRemove) throw new Error("cleanup failed");
+      objects.delete(key(profile, digest));
+    },
+    async freeBytes() {
+      return free;
+    },
     async removeStaging(profile, id) {
       if (failRemove) throw new Error("cleanup failed");
       stages.delete(key(profile, id));
@@ -322,14 +329,14 @@ describe("attachment snapshot store", () => {
     });
   });
 
-  it("reads version-one manifests without rewriting them and upgrades only on a successful write", async () => {
+  it("reads version-one/two manifests without rewriting them and upgrades only on a successful write", async () => {
     const h = harness();
     const legacy = JSON.stringify({ version: 1, staging: [], assets: [] });
     h.io.manifests.set(PROFILE, legacy);
     expect(await h.store.list(DRAFT)).toEqual([]);
     expect(h.io.manifests.get(PROFILE)).toBe(legacy);
     await h.store.beginOriginal({ owner: DRAFT, name: "a.txt", mimeType: "text/plain", size: 0 });
-    expect(JSON.parse(h.io.manifests.get(PROFILE) ?? "").version).toBe(2);
+    expect(JSON.parse(h.io.manifests.get(PROFILE) ?? "").version).toBe(3);
   });
 
   it("records immutable owner-scoped direct provenance without trusting unknown assets", async () => {
@@ -638,5 +645,163 @@ describe("persisted attachment classification", () => {
       "text",
       undefined,
     ]);
+  });
+
+  it("tombstones a retired durable owner and releases only its assets", async () => {
+    const h = harness();
+    const original = await h.add("snapshot", "a.txt");
+    const repData = bytes("prepared");
+    const repId = await h.store.beginRepresentation({
+      owner: DRAFT,
+      name: "rep.txt",
+      mimeType: "text/plain",
+      size: repData.length,
+      originalId: original.id,
+      originalSha256: original.sha256,
+    });
+    await h.store.append(repId, DRAFT, 0, repData);
+    const representation = await h.store.commit(repId, DRAFT, sha(repData));
+    for (const id of [original.id, representation.id]) {
+      await h.store.addOwner(id, DRAFT, SESSION);
+    }
+    await h.store.releaseOwner(representation.id, DRAFT);
+    await h.store.releaseOwner(original.id, DRAFT);
+
+    await expect(
+      h.store.retireOwners([DRAFT as AssetOwner], 30 * 24 * 3_600_000),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    await expect(h.store.retireOwners([SESSION], 30 * 24 * 3_600_000)).resolves.toEqual({
+      assets: 2,
+      tombstones: 1,
+    });
+    expect(await h.store.owners(original.id)).toEqual([]);
+    expect(await h.store.owners(representation.id)).toEqual([]);
+    const inventory = await h.store.inventory();
+    expect(inventory.tombstones).toEqual([
+      {
+        owner: SESSION,
+        deletedAt: 1234,
+        expiresAt: 1234 + 30 * 24 * 3_600_000,
+        assetIds: [original.id, representation.id],
+      },
+    ]);
+    expect(inventory.assets.every((asset) => asset.unownedAt === 1234)).toBe(true);
+    expect(await h.store.isRetired(SESSION)).toBe(true);
+
+    await expect(h.store.clearTombstone(SESSION)).resolves.toBe(1);
+    expect(await h.store.isRetired(SESSION)).toBe(false);
+    expect((await h.store.inventory()).tombstones).toEqual([]);
+  });
+
+  it("keeps a shared asset owned and unowned by nobody else", async () => {
+    const h = harness();
+    const original = await h.add("shared", "shared.txt", SESSION);
+    await h.store.addOwner(original.id, SESSION, OTHER);
+
+    await h.store.retireOwners([SESSION], 1_000);
+    expect(await h.store.owners(original.id)).toEqual([OTHER]);
+    expect((await h.store.list(OTHER))[0]?.unownedAt).toBeNull();
+
+    await h.store.releaseOwner(original.id, OTHER);
+    expect(await h.store.owners(original.id)).toEqual([]);
+    expect((await h.store.inventory()).assets[0]?.unownedAt).toBe(1234);
+  });
+
+  it("removes only unowned, unreferenced assets and retries failed object cleanup", async () => {
+    const h = harness();
+    const original = await h.add("content", "a.txt");
+    const repData = bytes("prepared");
+    const repId = await h.store.beginRepresentation({
+      owner: DRAFT,
+      name: "rep.txt",
+      mimeType: "text/plain",
+      size: repData.length,
+      originalId: original.id,
+      originalSha256: original.sha256,
+    });
+    await h.store.append(repId, DRAFT, 0, repData);
+    const representation = await h.store.commit(repId, DRAFT, sha(repData));
+
+    await expect(h.store.removeAsset(original.id)).rejects.toMatchObject({ code: "conflict" });
+    expect(await h.store.owners(original.id)).toEqual([DRAFT]);
+    // No owner release means no deletion: the store never evicts referenced data.
+    expect(h.io.objects.size).toBe(2);
+
+    // A cleanup failure leaves the manifest record gone but the digest pending.
+    await h.store.releaseOwner(representation.id, DRAFT);
+    await h.store.releaseOwner(original.id, DRAFT);
+    h.io.failRemove(true);
+    await h.store.removeAsset(representation.id);
+    expect((await h.store.inventory()).pendingRemovals).toEqual([representation.sha256]);
+    expect(h.io.objects.size).toBe(2);
+
+    h.io.failRemove(false);
+    await expect(h.store.retryObjectRemovals()).resolves.toBe(1);
+    expect((await h.store.inventory()).pendingRemovals).toEqual([]);
+    expect(h.io.objects.size).toBe(1);
+    await h.store.removeAsset(original.id);
+    expect(h.io.objects.size).toBe(0);
+  });
+
+  it("never deletes an object whose digest is shared by another asset", async () => {
+    const h = harness();
+    const first = await h.add("same", "one.txt");
+    const second = await h.add("same", "two.txt");
+    expect(first.sha256).toBe(second.sha256);
+    expect(h.io.objects.size).toBe(1);
+    await h.store.releaseOwner(first.id, DRAFT);
+    await h.store.removeAsset(first.id);
+    expect(h.io.objects.size).toBe(1);
+    await h.store.releaseOwner(second.id, DRAFT);
+    await h.store.removeAsset(second.id);
+    expect(h.io.objects.size).toBe(0);
+  });
+
+  it("migrates a v2 manifest and exposes bounded inventory and free space", async () => {
+    const h = harness();
+    const original = await h.add("legacy");
+    const manifest = JSON.parse(h.io.manifests.get(PROFILE) ?? "") as {
+      tombstones?: unknown;
+      pendingRemovals?: unknown;
+    };
+    const legacy = { ...manifest, version: 2 };
+    delete legacy.tombstones;
+    delete legacy.pendingRemovals;
+    h.io.manifests.set(PROFILE, JSON.stringify(legacy));
+
+    const inventory = await h.store.inventory();
+    expect(inventory.tombstones).toEqual([]);
+    expect(inventory.pendingRemovals).toEqual([]);
+    expect(inventory.freeBytes).toBe(Number.MAX_SAFE_INTEGER);
+    expect(inventory.assets.map((asset) => asset.id)).toEqual([original.id]);
+    expect(inventory.staging).toEqual([]);
+
+    await h.store.addOwner(original.id, DRAFT, SESSION);
+    await h.store.retireOwners([SESSION], 1_000);
+    const saved = JSON.parse(h.io.manifests.get(PROFILE) ?? "") as { version: number };
+    expect(saved.version).toBe(3);
+  });
+
+  it("rejects a tombstone that points at an unknown asset", async () => {
+    const h = harness();
+    await h.add("data");
+    const manifest = JSON.parse(h.io.manifests.get(PROFILE) ?? "") as Record<string, unknown>;
+    h.io.manifests.set(
+      PROFILE,
+      JSON.stringify({
+        ...manifest,
+        version: 3,
+        tombstones: [
+          {
+            owner: { kind: "session", id: "session-x" },
+            deletedAt: 1,
+            expiresAt: 2,
+            assetIds: ["123e4567-e89b-42d3-a456-426614174999"],
+          },
+        ],
+        pendingRemovals: [],
+      }),
+    );
+    await expect(h.store.inventory()).rejects.toMatchObject({ code: "corrupt_manifest" });
   });
 });

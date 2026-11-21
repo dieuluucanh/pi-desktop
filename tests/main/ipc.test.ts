@@ -228,6 +228,15 @@ async function register(recording: Recording): Promise<void> {
           revision: "unavailable",
         };
       },
+      storage: async () => null,
+      clearStorage: async () => ({
+        clearedAt: 0,
+        paused: null,
+        assetsRemoved: 0,
+        staleStagingRemoved: 0,
+        bytesFreed: 0,
+        errors: 0,
+      }),
     },
     projects: {
       get: async () => projects(),

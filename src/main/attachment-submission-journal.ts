@@ -20,10 +20,13 @@ import {
   type AuthorizedAttachmentAsset,
 } from "../shared/attachments";
 
-const JOURNAL_VERSION = 1;
+const JOURNAL_VERSION = 2;
 const MAX_JOURNAL_BYTES = 2 * 1024 * 1024;
 const MAX_JOURNAL_ENTRIES = 2_000;
 const MAX_ASSOCIATIONS = MAX_JOURNAL_ENTRIES;
+const MAX_RETIRED_ATTEMPTS = 2_000;
+/** A terminal attempt is compacted only after this quiet period. */
+export const JOURNAL_RETIREMENT_GRACE_MS = 24 * 60 * 60 * 1_000;
 const ENTRY_STATES = ["dispatching", "accepted", "handled", "blocked", "uncertain"] as const;
 const ATTACHMENT_REASONS: readonly AttachmentReason[] = [
   "format_unsupported",
@@ -47,6 +50,7 @@ const ATTACHMENT_REASONS: readonly AttachmentReason[] = [
   "busy",
   "command_unsupported",
   "stale_plan",
+  "storage_full",
 ];
 
 export type AttachmentSubmissionJournalState = (typeof ENTRY_STATES)[number];
@@ -66,6 +70,35 @@ export interface AttachmentSubmissionJournalEntry {
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly result: AttachmentPromptResult | null;
+  /**
+   * Set once accepted originals/representations are durably promoted (step 12).
+   * A null value keeps the accepted attempt protected from compaction, so
+   * acceptance evidence survives a crash before ownership reconciliation.
+   */
+  readonly ownershipReconciledAt: number | null;
+}
+
+/**
+ * A compact terminal status kept after its full attempt is retired for capacity.
+ *
+ * It preserves the outcome and retry chain so an old turn never looks like a
+ * fresh attempt, without retaining scope/representation evidence that recovery
+ * no longer needs.
+ */
+export interface AttachmentSubmissionRetiredAttempt {
+  readonly version: 1;
+  readonly turnId: AttachmentTurnId;
+  readonly attemptId: AttachmentAttemptId;
+  readonly draftId: string;
+  readonly state: "accepted" | "handled" | "blocked";
+  readonly retryOfAttemptId: AttachmentAttemptId | null;
+  readonly result: AttachmentPromptResult;
+  readonly retiredAt: number;
+}
+
+interface JournalDocument {
+  readonly entries: readonly AttachmentSubmissionJournalEntry[];
+  readonly retired: readonly AttachmentSubmissionRetiredAttempt[];
 }
 
 export interface AttachmentSubmissionJournalIo {
@@ -111,11 +144,21 @@ export interface AttachmentSubmissionJournal {
     attemptId: AttachmentAttemptId,
   ): Promise<AttachmentSubmissionJournalEntry | null>;
   list(): Promise<readonly AttachmentSubmissionJournalEntry[]>;
+  /** Compact status for a terminal attempt that capacity maintenance retired. */
+  findRetired(turnId: AttachmentTurnId): Promise<AttachmentSubmissionRetiredAttempt | null>;
+  /** Mark durable ownership promotion for an accepted attempt (idempotent). */
+  markOwnershipReconciled(turnId: AttachmentTurnId, attemptId: AttachmentAttemptId): Promise<void>;
 }
 
+export type AttachmentSubmissionJournalErrorCode = "unavailable" | "capacity";
+
 export class AttachmentSubmissionJournalError extends Error {
-  constructor() {
-    super("attachment submission journal is unavailable or invalid");
+  constructor(readonly code: AttachmentSubmissionJournalErrorCode = "unavailable") {
+    super(
+      code === "capacity"
+        ? "attachment submission journal has no safe capacity left"
+        : "attachment submission journal is unavailable or invalid",
+    );
     this.name = "AttachmentSubmissionJournalError";
   }
 }
@@ -363,26 +406,33 @@ function parseResult(
   return null;
 }
 
+const JOURNAL_ENTRY_KEYS = [
+  "version",
+  "planId",
+  "turnId",
+  "attemptId",
+  "scope",
+  "sourceTextSha256",
+  "images",
+  "representations",
+  "retryOfAttemptId",
+  "state",
+  "createdAt",
+  "updatedAt",
+  "result",
+] as const;
+
 function parseEntry(value: unknown, profileKey: string): AttachmentSubmissionJournalEntry | null {
   const entry = record(value);
   if (
     !entry ||
-    !exactKeys(entry, [
-      "version",
-      "planId",
-      "turnId",
-      "attemptId",
-      "scope",
-      "sourceTextSha256",
-      "images",
-      "representations",
-      "retryOfAttemptId",
-      "state",
-      "createdAt",
-      "updatedAt",
-      "result",
-    ]) ||
-    entry.version !== JOURNAL_VERSION ||
+    !exactKeys(
+      entry,
+      Object.hasOwn(entry, "ownershipReconciledAt")
+        ? [...JOURNAL_ENTRY_KEYS, "ownershipReconciledAt"]
+        : JOURNAL_ENTRY_KEYS,
+    ) ||
+    entry.version !== 1 ||
     !isAttachmentId(entry.planId) ||
     !isAttachmentId(entry.turnId) ||
     !isAttachmentId(entry.attemptId) ||
@@ -395,7 +445,10 @@ function parseEntry(value: unknown, profileKey: string): AttachmentSubmissionJou
     !Number.isSafeInteger(entry.createdAt) ||
     Number(entry.createdAt) < 0 ||
     !Number.isSafeInteger(entry.updatedAt) ||
-    Number(entry.updatedAt) < Number(entry.createdAt)
+    Number(entry.updatedAt) < Number(entry.createdAt) ||
+    (entry.ownershipReconciledAt !== undefined &&
+      entry.ownershipReconciledAt !== null &&
+      !Number.isSafeInteger(entry.ownershipReconciledAt))
   )
     return null;
   const images = validImages(entry.images);
@@ -410,7 +463,7 @@ function parseEntry(value: unknown, profileKey: string): AttachmentSubmissionJou
   )
     return null;
   return {
-    version: JOURNAL_VERSION,
+    version: 1,
     planId: entry.planId,
     turnId: entry.turnId,
     attemptId: entry.attemptId,
@@ -423,14 +476,71 @@ function parseEntry(value: unknown, profileKey: string): AttachmentSubmissionJou
     createdAt: Number(entry.createdAt),
     updatedAt: Number(entry.updatedAt),
     result,
+    ownershipReconciledAt:
+      entry.ownershipReconciledAt === undefined
+        ? null
+        : (entry.ownershipReconciledAt as number | null),
   };
 }
 
-function validEntrySequence(entries: readonly AttachmentSubmissionJournalEntry[]): boolean {
+function parseRetiredAttempt(value: unknown): AttachmentSubmissionRetiredAttempt | null {
+  const retired = record(value);
+  if (
+    !retired ||
+    !exactKeys(retired, [
+      "version",
+      "turnId",
+      "attemptId",
+      "draftId",
+      "state",
+      "retryOfAttemptId",
+      "result",
+      "retiredAt",
+    ]) ||
+    retired.version !== 1 ||
+    !isAttachmentId(retired.turnId) ||
+    !isAttachmentId(retired.attemptId) ||
+    !isAttachmentId(retired.draftId) ||
+    (retired.retryOfAttemptId !== null && !isAttachmentId(retired.retryOfAttemptId)) ||
+    (retired.state !== "accepted" && retired.state !== "handled" && retired.state !== "blocked") ||
+    !Number.isSafeInteger(retired.retiredAt) ||
+    Number(retired.retiredAt) < 0
+  ) {
+    return null;
+  }
+  const result = parseResult(retired.result, retired.turnId, retired.attemptId);
+  if (!result || result.outcome !== retired.state) return null;
+  return {
+    version: 1,
+    turnId: retired.turnId,
+    attemptId: retired.attemptId,
+    draftId: retired.draftId,
+    state: retired.state,
+    retryOfAttemptId: retired.retryOfAttemptId as AttachmentAttemptId | null,
+    result,
+    retiredAt: Number(retired.retiredAt),
+  };
+}
+
+function validEntrySequence(
+  entries: readonly AttachmentSubmissionJournalEntry[],
+  retired: readonly AttachmentSubmissionRetiredAttempt[] = [],
+): boolean {
+  const retiredAttempts = new Set(retired.map((item) => `${item.turnId}:${item.attemptId}`));
   const latestByTurn = new Map<string, AttachmentSubmissionJournalEntry>();
   for (const entry of entries) {
     const previous = latestByTurn.get(entry.turnId);
-    if (entry.retryOfAttemptId !== (previous?.attemptId ?? null)) return false;
+    const expected = previous?.attemptId ?? null;
+    if (entry.retryOfAttemptId !== expected) {
+      // Capacity maintenance may have retired any predecessor; its compact
+      // record is the proof that this is still the same retry chain.
+      if (
+        entry.retryOfAttemptId === null ||
+        !retiredAttempts.has(`${entry.turnId}:${entry.retryOfAttemptId}`)
+      ) {
+        return false;
+      }
+    }
     latestByTurn.set(entry.turnId, entry);
   }
   return true;
@@ -583,10 +693,32 @@ export function createAttachmentSubmissionJournal(input: {
   readonly profileKey: string;
   readonly io: AttachmentSubmissionJournalIo;
   readonly now?: () => number;
+  /** Test-only tightening; production always uses the module ceilings. */
+  readonly limits?: {
+    readonly maxBytes?: number;
+    readonly maxEntries?: number;
+    readonly maxRetired?: number;
+  };
 }): AttachmentSubmissionJournal {
   if (!/^[0-9a-f]{64}$/.test(input.profileKey)) throw new AttachmentSubmissionJournalError();
   const path = join(input.root, "submissions", `${input.profileKey}.json`);
   const now = input.now ?? Date.now;
+  const maxBytes = input.limits?.maxBytes ?? MAX_JOURNAL_BYTES;
+  const maxEntries = input.limits?.maxEntries ?? MAX_JOURNAL_ENTRIES;
+  const maxRetired = input.limits?.maxRetired ?? MAX_RETIRED_ATTEMPTS;
+  if (
+    !Number.isSafeInteger(maxBytes) ||
+    maxBytes <= 0 ||
+    maxBytes > MAX_JOURNAL_BYTES ||
+    !Number.isSafeInteger(maxEntries) ||
+    maxEntries <= 0 ||
+    maxEntries > MAX_JOURNAL_ENTRIES ||
+    !Number.isSafeInteger(maxRetired) ||
+    maxRetired <= 0 ||
+    maxRetired > MAX_RETIRED_ATTEMPTS
+  ) {
+    throw new AttachmentSubmissionJournalError();
+  }
   let tail = Promise.resolve();
   const inFlight = new Set<string>();
 
@@ -599,15 +731,15 @@ export function createAttachmentSubmissionJournal(input: {
     return result;
   };
 
-  const readEntries = async (): Promise<AttachmentSubmissionJournalEntry[]> => {
+  const readDocument = async (): Promise<JournalDocument> => {
     let contents: string | null;
     try {
       contents = await input.io.readText(path);
     } catch {
       throw new AttachmentSubmissionJournalError();
     }
-    if (contents === null) return [];
-    if (Buffer.byteLength(contents, "utf8") > MAX_JOURNAL_BYTES) {
+    if (contents === null) return { entries: [], retired: [] };
+    if (Buffer.byteLength(contents, "utf8") > maxBytes) {
       throw new AttachmentSubmissionJournalError();
     }
     let parsed: unknown;
@@ -617,39 +749,123 @@ export function createAttachmentSubmissionJournal(input: {
       throw new AttachmentSubmissionJournalError();
     }
     const document = record(parsed);
+    const legacy = document?.version === 1;
     if (
       !document ||
-      !exactKeys(document, ["version", "entries"]) ||
-      document.version !== JOURNAL_VERSION ||
+      !exactKeys(document, legacy ? ["version", "entries"] : ["version", "entries", "retired"]) ||
+      (document.version !== 1 && document.version !== JOURNAL_VERSION) ||
       !Array.isArray(document.entries) ||
-      document.entries.length > MAX_JOURNAL_ENTRIES
+      document.entries.length > maxEntries ||
+      (!legacy && (!Array.isArray(document.retired) || document.retired.length > maxRetired))
     )
       throw new AttachmentSubmissionJournalError();
     const entries = document.entries.map((entry) => parseEntry(entry, input.profileKey));
     if (entries.some((entry) => entry === null)) throw new AttachmentSubmissionJournalError();
+    const retired = legacy
+      ? []
+      : (document.retired as unknown[]).map((entry) => parseRetiredAttempt(entry));
+    if (retired.some((entry) => entry === null)) throw new AttachmentSubmissionJournalError();
     const validEntries = entries as AttachmentSubmissionJournalEntry[];
+    const validRetired = retired as AttachmentSubmissionRetiredAttempt[];
     if (
       new Set(validEntries.map((entry) => entry.attemptId)).size !== validEntries.length ||
-      !validEntrySequence(validEntries)
+      new Set(validRetired.map((entry) => entry.attemptId)).size !== validRetired.length ||
+      validRetired.some((entry) =>
+        validEntries.some((candidate) => candidate.attemptId === entry.attemptId),
+      ) ||
+      !validEntrySequence(validEntries, validRetired)
     )
       throw new AttachmentSubmissionJournalError();
-    return validEntries;
+    return { entries: validEntries, retired: validRetired };
   };
 
-  const writeEntries = async (
-    entries: readonly AttachmentSubmissionJournalEntry[],
-  ): Promise<void> => {
-    const contents = JSON.stringify({ version: JOURNAL_VERSION, entries });
+  const encodeDocument = (document: JournalDocument): string =>
+    JSON.stringify({
+      version: JOURNAL_VERSION,
+      entries: document.entries,
+      retired: document.retired,
+    });
+
+  const documentBytes = (document: JournalDocument): number =>
+    Buffer.byteLength(encodeDocument(document), "utf8");
+
+  const trimRetired = (
+    retired: readonly AttachmentSubmissionRetiredAttempt[],
+  ): AttachmentSubmissionRetiredAttempt[] =>
+    retired.length <= maxRetired ? [...retired] : retired.slice(retired.length - maxRetired);
+
+  const retirable = (entry: AttachmentSubmissionJournalEntry, timestamp: number): boolean => {
+    if (entry.state === "dispatching" || entry.state === "uncertain") return false;
+    if (entry.result === null) return false;
+    // An accepted attempt is protected until its ownership is durably promoted.
+    if (entry.state === "accepted" && entry.ownershipReconciledAt === null) return false;
+    // The quiet period keeps a just-finished draft's status cheap to read.
+    return timestamp - entry.updatedAt >= JOURNAL_RETIREMENT_GRACE_MS;
+  };
+
+  const toRetired = (
+    entry: AttachmentSubmissionJournalEntry,
+    timestamp: number,
+  ): AttachmentSubmissionRetiredAttempt | null => {
     if (
-      entries.length > MAX_JOURNAL_ENTRIES ||
-      Buffer.byteLength(contents, "utf8") > MAX_JOURNAL_BYTES
-    )
-      throw new AttachmentSubmissionJournalError();
+      entry.result === null ||
+      (entry.state !== "accepted" && entry.state !== "handled" && entry.state !== "blocked")
+    ) {
+      return null;
+    }
+    return {
+      version: 1,
+      turnId: entry.turnId,
+      attemptId: entry.attemptId,
+      draftId: entry.scope.draftId,
+      state: entry.state,
+      retryOfAttemptId: entry.retryOfAttemptId,
+      result: entry.result,
+      retiredAt: timestamp,
+    };
+  };
+
+  const overCapacity = (document: JournalDocument): boolean =>
+    document.entries.length > maxEntries ||
+    document.retired.length > maxRetired ||
+    documentBytes(document) > maxBytes;
+
+  /**
+   * Move eligible terminal attempts into the compact retired list until the
+   * document fits. Returns null when protected entries alone exceed capacity:
+   * the caller must report a storage/reconciliation blocker, not dispatch.
+   */
+  const compact = (
+    entries: readonly AttachmentSubmissionJournalEntry[],
+    retired: readonly AttachmentSubmissionRetiredAttempt[],
+    timestamp: number,
+  ): JournalDocument | null => {
+    const kept = [...entries];
+    let compacted = trimRetired(retired);
+    while (overCapacity({ entries: kept, retired: compacted })) {
+      const index = kept.findIndex((entry) => retirable(entry, timestamp));
+      if (index < 0) return null;
+      const retiredEntry = toRetired(kept[index]!, timestamp);
+      if (!retiredEntry) return null;
+      kept.splice(index, 1);
+      compacted = trimRetired([...compacted, retiredEntry]);
+    }
+    return { entries: kept, retired: compacted };
+  };
+
+  const persist = async (
+    entries: readonly AttachmentSubmissionJournalEntry[],
+    retired: readonly AttachmentSubmissionRetiredAttempt[],
+    timestamp: number,
+  ): Promise<JournalDocument> => {
+    const fitted = compact(entries, retired, timestamp);
+    if (!fitted) throw new AttachmentSubmissionJournalError("capacity");
     try {
-      await input.io.writeAtomic(path, contents);
+      await input.io.writeAtomic(path, encodeDocument(fitted));
     } catch {
       throw new AttachmentSubmissionJournalError();
     }
+    return fitted;
   };
 
   return {
@@ -659,7 +875,8 @@ export function createAttachmentSubmissionJournal(input: {
         if (!projection || beginInput.scope.profileKey !== input.profileKey) {
           throw new AttachmentSubmissionJournalError();
         }
-        const entries = await readEntries();
+        const document = await readDocument();
+        const entries = document.entries;
         const existing = entries.find((entry) => entry.attemptId === beginInput.attemptId);
         if (existing) {
           return sameRequest(existing, beginInput, projection)
@@ -677,11 +894,7 @@ export function createAttachmentSubmissionJournal(input: {
             return { kind: "conflict" };
         }
         const currentTime = now();
-        if (
-          !Number.isSafeInteger(currentTime) ||
-          currentTime < 0 ||
-          entries.length >= MAX_JOURNAL_ENTRIES
-        ) {
+        if (!Number.isSafeInteger(currentTime) || currentTime < 0) {
           throw new AttachmentSubmissionJournalError();
         }
         const timestamp = Math.max(currentTime, previous?.updatedAt ?? 0);
@@ -699,8 +912,9 @@ export function createAttachmentSubmissionJournal(input: {
           createdAt: timestamp,
           updatedAt: timestamp,
           result: null,
+          ownershipReconciledAt: null,
         };
-        await writeEntries([...entries, entry]);
+        await persist([...entries, entry], document.retired, currentTime);
         inFlight.add(entry.attemptId);
         return { kind: "dispatch", entry: structuredClone(entry) };
       });
@@ -712,7 +926,8 @@ export function createAttachmentSubmissionJournal(input: {
         // when validation or persistence fails. A leftover marker would pin a
         // dispatching entry as live forever and block reconcile/retry.
         try {
-          const entries = await readEntries();
+          const document = await readDocument();
+          const entries = [...document.entries];
           const index = entries.findIndex(
             (entry) => entry.turnId === turnId && entry.attemptId === attemptId,
           );
@@ -745,7 +960,7 @@ export function createAttachmentSubmissionJournal(input: {
             result: parsedResult,
           };
           entries[index] = updated;
-          await writeEntries(entries);
+          await persist(entries, document.retired, timestamp);
           return structuredClone(updated);
         } finally {
           inFlight.delete(attemptId);
@@ -760,7 +975,8 @@ export function createAttachmentSubmissionJournal(input: {
         }
         const associations = parseAssociations(associationsValue);
         if (!associations) throw new AttachmentSubmissionJournalError();
-        const entries = await readEntries();
+        const document = await readDocument();
+        const entries = document.entries;
         let changed = false;
         const timestamp = now();
         if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
@@ -790,14 +1006,15 @@ export function createAttachmentSubmissionJournal(input: {
           }
           return entry;
         });
-        if (changed) await writeEntries(updated);
-        return structuredClone(updated);
+        if (!changed) return structuredClone(updated);
+        const fitted = await persist(updated, document.retired, timestamp);
+        return structuredClone(fitted.entries);
       });
     },
 
     get(turnId, attemptId) {
       return transact(async () => {
-        const entry = (await readEntries()).find(
+        const entry = (await readDocument()).entries.find(
           (candidate) => candidate.turnId === turnId && candidate.attemptId === attemptId,
         );
         return entry ? structuredClone(entry) : null;
@@ -806,7 +1023,8 @@ export function createAttachmentSubmissionJournal(input: {
 
     list() {
       return transact(async () => {
-        const entries = await readEntries();
+        const document = await readDocument();
+        const entries = document.entries;
         const timestamp = now();
         let changed = false;
         const normalized = entries.map((entry) => {
@@ -816,8 +1034,40 @@ export function createAttachmentSubmissionJournal(input: {
           }
           return entry;
         });
-        if (changed) await writeEntries(normalized);
+        if (changed) {
+          const fitted = await persist(normalized, document.retired, timestamp);
+          return structuredClone(fitted.entries);
+        }
         return structuredClone(normalized);
+      });
+    },
+    findRetired(turnId) {
+      return transact(async () => {
+        if (!isAttachmentId(turnId)) return null;
+        const document = await readDocument();
+        const found = document.retired.filter((entry) => entry.turnId === turnId).at(-1);
+        return found ? structuredClone(found) : null;
+      });
+    },
+    markOwnershipReconciled(turnId, attemptId) {
+      return transact(async () => {
+        if (!isAttachmentId(turnId) || !isAttachmentId(attemptId)) {
+          throw new AttachmentSubmissionJournalError();
+        }
+        const document = await readDocument();
+        const index = document.entries.findIndex(
+          (entry) => entry.turnId === turnId && entry.attemptId === attemptId,
+        );
+        if (index < 0) return;
+        const current = document.entries[index]!;
+        if (current.state !== "accepted" || current.ownershipReconciledAt !== null) return;
+        const timestamp = now();
+        if (!Number.isSafeInteger(timestamp) || timestamp < current.createdAt) {
+          throw new AttachmentSubmissionJournalError();
+        }
+        const entries = [...document.entries];
+        entries[index] = { ...current, ownershipReconciledAt: timestamp };
+        await persist(entries, document.retired, timestamp);
       });
     },
   };

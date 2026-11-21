@@ -117,7 +117,8 @@ export type AttachmentReason =
   | "format_mismatch"
   | "classification_failed"
   | "host_unsupported"
-  | "release_unavailable";
+  | "release_unavailable"
+  | "storage_full";
 
 /** Public metadata only. Source paths, original bytes, and base64 are absent. */
 export interface AttachmentDescriptor extends AttachmentSnapshot {

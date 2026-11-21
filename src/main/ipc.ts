@@ -21,6 +21,10 @@ import { isHostMethod, isPrivateHostMethod, type HostMethod } from "../shared/ho
 import { IPC, type AppInfo, type ProjectOpResponse, type SessionDeleteResult } from "../shared/ipc";
 import type { UiPrefs } from "../shared/prefs";
 import type {
+  AttachmentRetentionClearReport,
+  AttachmentStorageReport,
+} from "../shared/attachment-storage";
+import type {
   CloneProjectInput,
   CreateProjectInput,
   ProjectActionInput,
@@ -221,6 +225,8 @@ export interface IpcAttachmentDeps {
     attachmentIds: readonly string[],
     text: string,
   ): Promise<AttachmentReadiness>;
+  storage(): Promise<AttachmentStorageReport | null>;
+  clearStorage(): Promise<AttachmentRetentionClearReport>;
 }
 
 export interface IpcTuiDeps {
@@ -991,6 +997,14 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     const senderId = requireAttachmentSender(deps, event);
     const request = parseAttachmentReadiness(input);
     return deps.attachments.readiness(senderId, request.draft, request.attachmentIds, request.text);
+  });
+  ipcMain.handle(IPC.attachmentsStorage, (event) => {
+    requireAttachmentSender(deps, event);
+    return deps.attachments.storage();
+  });
+  ipcMain.handle(IPC.attachmentsClearStorage, (event) => {
+    requireAttachmentSender(deps, event);
+    return deps.attachments.clearStorage();
   });
 
   ipcMain.handle(IPC.sessionTabs, () => deps.sessions.list());

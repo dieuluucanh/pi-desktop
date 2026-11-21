@@ -20,6 +20,11 @@ describe("resolveListedSession", () => {
   it("accepts a session that Pi itself lists", () => {
     expect(resolveListedSession(SESSIONS, SESSIONS[1]!.path)).toEqual({
       path: "/home/u/.pi/agent/sessions/--b--/s2.jsonl",
+      id: "s2",
+    });
+    expect(resolveListedSession([{ path: "/tmp/legacy.jsonl" }], "/tmp/legacy.jsonl")).toEqual({
+      path: "/tmp/legacy.jsonl",
+      id: null,
     });
   });
 

@@ -39,6 +39,10 @@ import type {
   AttachmentStatusRequest,
   AttachmentSubmissionStatus,
 } from "../shared/attachments";
+import type {
+  AttachmentRetentionClearReport,
+  AttachmentStorageReport,
+} from "../shared/attachment-storage";
 import type { TerminalBridge, TerminalCreateInput } from "../shared/terminal-ipc";
 import type {
   TerminalAttachResult,
@@ -155,6 +159,10 @@ const attachments: AttachmentsBridge = {
     ipcRenderer.invoke(IPC.attachmentsStatus, input) as Promise<AttachmentSubmissionStatus>,
   readiness: (input: AttachmentReadinessRequest) =>
     ipcRenderer.invoke(IPC.attachmentsReadiness, input) as Promise<AttachmentReadiness>,
+  storage: () =>
+    ipcRenderer.invoke(IPC.attachmentsStorage) as Promise<AttachmentStorageReport | null>,
+  clearStorage: () =>
+    ipcRenderer.invoke(IPC.attachmentsClearStorage) as Promise<AttachmentRetentionClearReport>,
 };
 
 const sessions: SessionsBridge = {

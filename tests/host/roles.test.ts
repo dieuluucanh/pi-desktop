@@ -210,7 +210,7 @@ describe("control core", () => {
     const resolve = core.handlers()["session.delete"];
     await expect(
       resolve?.({ sessionFile: "/profile/sessions/--a--/s1.jsonl" }, {} as never),
-    ).resolves.toEqual({ path: "/profile/sessions/--a--/s1.jsonl" });
+    ).resolves.toEqual({ path: "/profile/sessions/--a--/s1.jsonl", id: null });
     // The host never deletes: it validates, and main trashes the returned path.
     await expect(resolve?.({ sessionFile: "/profile/auth.json" }, {} as never)).rejects.toThrow(
       /not part of this profile/,

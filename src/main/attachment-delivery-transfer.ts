@@ -15,7 +15,10 @@ import {
 } from "../shared/attachments";
 import { MAX_FRAME_BYTES, type AttachmentPrivateHostMethod } from "../shared/host-protocol";
 import type { AttachmentDeliveryLease } from "./attachment-delivery-leases";
-import type { AttachmentSubmissionJournal } from "./attachment-submission-journal";
+import {
+  AttachmentSubmissionJournalError,
+  type AttachmentSubmissionJournal,
+} from "./attachment-submission-journal";
 import type { AttachmentOwnershipReconciler } from "./attachment-ownership";
 import type { SessionHostPin } from "./session-service";
 
@@ -476,8 +479,14 @@ export async function stageAttachmentDelivery(input: {
         assets: lease.assets,
         ...(input.explicitRetry === true ? { explicitRetry: true } : {}),
       });
-    } catch {
-      return blocked("unavailable");
+    } catch (error) {
+      // A journal that cannot fit its protected state must not dispatch: the
+      // user gets an actionable storage blocker instead of a lost acceptance.
+      return blocked(
+        error instanceof AttachmentSubmissionJournalError && error.code === "capacity"
+          ? "storage_full"
+          : "unavailable",
+      );
     }
     if (begun.kind === "conflict") return blocked("stale_plan");
     if (begun.kind === "existing") return begun.entry.result ?? uncertain();

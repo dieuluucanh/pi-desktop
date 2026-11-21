@@ -12,7 +12,7 @@ import {
  * not an authorization boundary: callers must establish the active profile and
  * owner before invoking it, and the port must never resolve user-provided paths.
  */
-export const ATTACHMENT_MANIFEST_VERSION = 2 as const;
+export const ATTACHMENT_MANIFEST_VERSION = 3 as const;
 const MAX_MANIFEST_BYTES = 8 * 1024 * 1024;
 const DIGEST = /^[0-9a-f]{64}$/;
 
@@ -51,6 +51,35 @@ export interface DirectPreparationMetadata {
       };
 }
 
+/** A deleted durable owner whose assets stay recoverable for the policy window. */
+export interface AssetTombstone {
+  /** Always a durable (`session`) owner; draft owners never tombstone. */
+  readonly owner: AssetOwner;
+  readonly deletedAt: number;
+  readonly expiresAt: number;
+  /** Assets that existed under this owner when it was retired. */
+  readonly assetIds: readonly string[];
+}
+
+/** Main-only staging projection; never rendered and never contains bytes. */
+export interface StagingView {
+  readonly id: string;
+  readonly kind: AssetKind;
+  readonly size: number;
+  readonly createdAt: number;
+  readonly owner: AssetOwner;
+}
+
+export interface AttachmentInventory {
+  readonly assets: readonly AssetRecord[];
+  readonly staging: readonly StagingView[];
+  readonly tombstones: readonly AssetTombstone[];
+  /** Object digests whose manifest record is gone but whose file may remain. */
+  readonly pendingRemovals: readonly string[];
+  /** Free bytes on the attachment volume, or null when the port cannot report. */
+  readonly freeBytes: number | null;
+}
+
 export interface AssetRecord {
   readonly id: string;
   readonly kind: AssetKind;
@@ -86,6 +115,8 @@ interface Manifest {
   version: typeof ATTACHMENT_MANIFEST_VERSION;
   staging: StagingRecord[];
   assets: AssetRecord[];
+  tombstones: AssetTombstone[];
+  pendingRemovals: string[];
 }
 
 export type AttachmentStoreErrorCode =
@@ -136,6 +167,10 @@ export interface AttachmentStoreIo {
   ): Promise<{ bytes: Uint8Array; size: number }>;
   /** Read the complete immutable object within the caller's hard byte limit. */
   readObject(profile: string, digest: string, maxBytes: number): Promise<Uint8Array>;
+  /** Remove exactly one digest-named immutable object; missing is success. */
+  removeObject(profile: string, digest: string): Promise<void>;
+  /** Free bytes on the storage volume, when the platform can report it. */
+  freeBytes?(): Promise<number>;
   removeStaging(profile: string, id: string): Promise<void>;
 }
 
@@ -197,6 +232,24 @@ export interface AttachmentStore {
    * or renderer projection. Used by acceptance/retention reconciliation.
    */
   owners(id: string): Promise<readonly AssetOwner[]>;
+  /** Main-only bounded manifest projection for retention/storage reporting. */
+  inventory(): Promise<AttachmentInventory>;
+  /** Retire durable owners atomically: tombstone them and release their assets. */
+  retireOwners(
+    owners: readonly AssetOwner[],
+    retentionMs: number,
+  ): Promise<{ readonly assets: number; readonly tombstones: number }>;
+  /** Remove a recovery tombstone (the session/branch is live again). */
+  clearTombstone(owner: AssetOwner): Promise<number>;
+  /** True while a durable owner is inside its recovery window. */
+  isRetired(owner: AssetOwner): Promise<boolean>;
+  /**
+   * Remove one unowned asset from the manifest and its object when the digest
+   * is no longer shared. Referenced or owned assets are refused, never evicted.
+   */
+  removeAsset(id: string): Promise<void>;
+  /** Retry object removals whose manifest record is already gone. */
+  retryObjectRemovals(): Promise<number>;
 }
 
 function fail(code: AttachmentStoreErrorCode, message: string): never {
@@ -430,8 +483,49 @@ function validAsset(value: unknown): value is AssetRecord {
   return new Set(keys).size === keys.length;
 }
 
+const MAX_TOMBSTONES = 1_000;
+const MAX_PENDING_REMOVALS = 2_000;
+const MAX_TOMBSTONE_ASSETS = 10_000;
+
+function validTombstone(value: unknown): value is AssetTombstone {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["owner", "deletedAt", "expiresAt", "assetIds"]) &&
+    validOwner(value.owner) &&
+    value.owner.kind === "session" &&
+    isCount(value.deletedAt) &&
+    isCount(value.expiresAt) &&
+    value.expiresAt > value.deletedAt &&
+    Array.isArray(value.assetIds) &&
+    value.assetIds.length > 0 &&
+    value.assetIds.length <= MAX_TOMBSTONE_ASSETS &&
+    value.assetIds.every(isAttachmentId) &&
+    new Set(value.assetIds).size === value.assetIds.length
+  );
+}
+
+function sameDurableOwner(left: AssetOwner, right: AssetOwner): boolean {
+  return left.kind === right.kind && left.id === right.id;
+}
+
+function cloneTombstone(tombstone: AssetTombstone): AssetTombstone {
+  return {
+    owner: { ...tombstone.owner },
+    deletedAt: tombstone.deletedAt,
+    expiresAt: tombstone.expiresAt,
+    assetIds: [...tombstone.assetIds],
+  };
+}
+
 function decodeManifest(raw: string | null): Manifest {
-  if (raw === null) return { version: ATTACHMENT_MANIFEST_VERSION, staging: [], assets: [] };
+  if (raw === null)
+    return {
+      version: ATTACHMENT_MANIFEST_VERSION,
+      staging: [],
+      assets: [],
+      tombstones: [],
+      pendingRemovals: [],
+    };
   if (new TextEncoder().encode(raw).length > MAX_MANIFEST_BYTES) {
     return fail("corrupt_manifest", "attachment manifest exceeds the size limit");
   }
@@ -441,10 +535,18 @@ function decodeManifest(raw: string | null): Manifest {
   } catch {
     return fail("corrupt_manifest", "attachment manifest is malformed");
   }
+  const legacy = isRecord(parsed) && (parsed.version === 1 || parsed.version === 2);
   if (
     !isRecord(parsed) ||
-    !hasOnlyKeys(parsed, ["version", "staging", "assets"]) ||
-    (parsed.version !== 1 && parsed.version !== ATTACHMENT_MANIFEST_VERSION) ||
+    !hasOnlyKeys(
+      parsed,
+      legacy
+        ? ["version", "staging", "assets"]
+        : ["version", "staging", "assets", "tombstones", "pendingRemovals"],
+    ) ||
+    (parsed.version !== 1 &&
+      parsed.version !== 2 &&
+      parsed.version !== ATTACHMENT_MANIFEST_VERSION) ||
     !Array.isArray(parsed.staging) ||
     !parsed.staging.every(validStaging) ||
     !Array.isArray(parsed.assets) ||
@@ -454,6 +556,31 @@ function decodeManifest(raw: string | null): Manifest {
   }
   const staging = parsed.staging as StagingRecord[];
   const assets = parsed.assets as AssetRecord[];
+  const tombstones = legacy ? [] : (parsed.tombstones as unknown);
+  const pendingRemovals = legacy ? [] : (parsed.pendingRemovals as unknown);
+  if (
+    !Array.isArray(tombstones) ||
+    tombstones.length > MAX_TOMBSTONES ||
+    !tombstones.every(validTombstone) ||
+    !Array.isArray(pendingRemovals) ||
+    pendingRemovals.length > MAX_PENDING_REMOVALS ||
+    !pendingRemovals.every((digest) => typeof digest === "string" && DIGEST.test(digest)) ||
+    new Set(pendingRemovals).size !== pendingRemovals.length
+  ) {
+    return fail("corrupt_manifest", "attachment manifest has invalid retention state");
+  }
+  const knownAssets = new Set(assets.map((asset) => asset.id));
+  const tombstoneOwners = (tombstones as AssetTombstone[]).map((tombstone) =>
+    JSON.stringify([tombstone.owner.kind, tombstone.owner.id]),
+  );
+  if (
+    new Set(tombstoneOwners).size !== tombstoneOwners.length ||
+    (tombstones as AssetTombstone[]).some((tombstone) =>
+      tombstone.assetIds.some((id) => !knownAssets.has(id)),
+    )
+  ) {
+    return fail("corrupt_manifest", "attachment tombstone is invalid");
+  }
   if (parsed.version === 1 && assets.some((asset) => asset.preparation !== undefined)) {
     return fail("corrupt_manifest", "legacy attachment manifest has unexpected provenance");
   }
@@ -473,7 +600,13 @@ function decodeManifest(raw: string | null): Manifest {
       return fail("corrupt_manifest", "attachment representation owner lacks the original");
     }
   }
-  return { version: ATTACHMENT_MANIFEST_VERSION, staging, assets };
+  return {
+    version: ATTACHMENT_MANIFEST_VERSION,
+    staging,
+    assets,
+    tombstones: (tombstones as AssetTombstone[]).map(cloneTombstone),
+    pendingRemovals: [...(pendingRemovals as string[])],
+  };
 }
 
 function assertOwner(owner: AssetOwner): void {
@@ -694,6 +827,9 @@ export function createAttachmentStore(deps: AttachmentStoreDeps): AttachmentStor
           ...manifest,
           staging: manifest.staging.filter((item) => item.id !== id),
           assets: [...manifest.assets, asset],
+          // A new asset may reuse a digest whose old record was removed; the
+          // object is referenced again and must not be deleted by a retry.
+          pendingRemovals: manifest.pendingRemovals.filter((digest) => digest !== actual),
         });
         await io.removeStaging(profile, id).catch(() => undefined);
         return cloneAsset(asset);
@@ -850,6 +986,188 @@ export function createAttachmentStore(deps: AttachmentStoreDeps): AttachmentStor
         const manifest = await load();
         const asset = manifest.assets.find((item) => item.id === id);
         return asset ? asset.owners.map((owner) => ({ ...owner })) : [];
+      }),
+    inventory: () =>
+      io.exclusive(async () => {
+        const manifest = await load();
+        let freeBytes: number | null = null;
+        if (io.freeBytes) {
+          try {
+            const value = await io.freeBytes();
+            freeBytes = isCount(value) ? value : null;
+          } catch {
+            freeBytes = null;
+          }
+        }
+        return {
+          assets: manifest.assets.map(cloneAsset),
+          staging: manifest.staging.map((stage) => ({
+            id: stage.id,
+            kind: stage.kind,
+            size: stage.size,
+            createdAt: stage.createdAt,
+            owner: { ...stage.owner },
+          })),
+          tombstones: manifest.tombstones.map(cloneTombstone),
+          pendingRemovals: [...manifest.pendingRemovals],
+          freeBytes,
+        };
+      }),
+    retireOwners: (owners, retentionMs) =>
+      io.exclusive(async () => {
+        if (
+          !Array.isArray(owners) ||
+          owners.length === 0 ||
+          owners.length > 64 ||
+          owners.some((owner) => !validOwner(owner) || owner.kind !== "session") ||
+          !isCount(retentionMs) ||
+          retentionMs <= 0 ||
+          retentionMs > 10 * 365 * 24 * 60 * 60 * 1_000
+        ) {
+          return fail("bad_request", "invalid attachment retirement request");
+        }
+        const unique = owners.filter(
+          (owner, index) =>
+            owners.findIndex((candidate) => sameDurableOwner(candidate, owner)) === index,
+        );
+        const manifest = await load();
+        const timestamp = clock();
+        const assetIds = new Set<string>();
+        for (const owner of unique) {
+          for (const asset of manifest.assets) {
+            if (asset.owners.some((entry) => sameDurableOwner(entry, owner))) {
+              assetIds.add(asset.id);
+            }
+          }
+        }
+        const tombstones = [...manifest.tombstones];
+        for (const owner of unique) {
+          const existingIndex = tombstones.findIndex((tombstone) =>
+            sameDurableOwner(tombstone.owner, owner),
+          );
+          if (existingIndex < 0 && tombstones.length >= MAX_TOMBSTONES) {
+            return fail("quota_exceeded", "too many attachment tombstones");
+          }
+          const existing = existingIndex >= 0 ? tombstones[existingIndex] : undefined;
+          const merged = new Set<string>([...(existing?.assetIds ?? []), ...assetIds]);
+          if (merged.size > MAX_TOMBSTONE_ASSETS) {
+            return fail("quota_exceeded", "attachment tombstone is too large");
+          }
+          const next: AssetTombstone = {
+            owner: { ...owner },
+            deletedAt: timestamp,
+            expiresAt: timestamp + retentionMs,
+            assetIds: [...merged],
+          };
+          if (existingIndex >= 0) tombstones[existingIndex] = next;
+          else tombstones.push(next);
+        }
+        const assets = manifest.assets.map((asset) => {
+          const remaining = asset.owners.filter(
+            (owner) => !unique.some((candidate) => sameDurableOwner(candidate, owner)),
+          );
+          if (remaining.length === asset.owners.length) return asset;
+          return {
+            ...asset,
+            owners: remaining,
+            unownedAt: remaining.length === 0 ? timestamp : null,
+          };
+        });
+        await save({ ...manifest, assets, tombstones });
+        return { assets: assetIds.size, tombstones: unique.length };
+      }),
+    clearTombstone: (owner) =>
+      io.exclusive(async () => {
+        if (!validOwner(owner) || owner.kind !== "session") {
+          return fail("bad_request", "invalid attachment tombstone owner");
+        }
+        const manifest = await load();
+        const tombstones = manifest.tombstones.filter(
+          (tombstone) => !sameDurableOwner(tombstone.owner, owner),
+        );
+        if (tombstones.length === manifest.tombstones.length) return 0;
+        await save({ ...manifest, tombstones });
+        return manifest.tombstones.length - tombstones.length;
+      }),
+    isRetired: (owner) =>
+      io.exclusive(async () => {
+        if (!validOwner(owner) || owner.kind !== "session") {
+          return fail("bad_request", "invalid attachment tombstone owner");
+        }
+        const manifest = await load();
+        return manifest.tombstones.some((tombstone) => sameDurableOwner(tombstone.owner, owner));
+      }),
+    removeAsset: (id) =>
+      io.exclusive(async () => {
+        assertId(id);
+        const manifest = await load();
+        const asset = manifest.assets.find((item) => item.id === id);
+        if (!asset) return fail("not_found", "attachment not found");
+        if (asset.owners.length !== 0) {
+          return fail("conflict", "attachment is still referenced by an owner");
+        }
+        if (
+          asset.kind === "original" &&
+          (manifest.assets.some((item) => item.originalId === id) ||
+            manifest.staging.some((item) => item.originalId === id))
+        ) {
+          return fail("conflict", "remove dependent representations before their original");
+        }
+        const shared = manifest.assets.some(
+          (item) => item.id !== id && item.sha256 === asset.sha256,
+        );
+        const pending = [...manifest.pendingRemovals];
+        if (!shared && !pending.includes(asset.sha256)) {
+          if (pending.length >= MAX_PENDING_REMOVALS) {
+            return fail("quota_exceeded", "too many pending object removals");
+          }
+          pending.push(asset.sha256);
+        }
+        await save({
+          ...manifest,
+          assets: manifest.assets.filter((item) => item.id !== id),
+          pendingRemovals: pending,
+        });
+        if (shared) return;
+        try {
+          await io.removeObject(profile, asset.sha256);
+        } catch {
+          // The digest stays pending; the next maintenance pass retries it.
+          return;
+        }
+        try {
+          const current = await load();
+          await save({
+            ...current,
+            pendingRemovals: current.pendingRemovals.filter((digest) => digest !== asset.sha256),
+          });
+        } catch {
+          // A failed acknowledgement is harmless: removing a missing object is a no-op.
+        }
+      }),
+    retryObjectRemovals: () =>
+      io.exclusive(async () => {
+        const manifest = await load();
+        const referenced = new Set(manifest.assets.map((asset) => asset.sha256));
+        const pending = manifest.pendingRemovals.filter((digest) => !referenced.has(digest));
+        let removed = 0;
+        const remaining: string[] = [];
+        for (const digest of pending) {
+          try {
+            await io.removeObject(profile, digest);
+            removed++;
+          } catch {
+            remaining.push(digest);
+          }
+        }
+        const keep = [
+          ...manifest.pendingRemovals.filter((digest) => referenced.has(digest)),
+          ...remaining,
+        ];
+        if (keep.length !== manifest.pendingRemovals.length) {
+          await save({ ...manifest, pendingRemovals: keep });
+        }
+        return removed;
       }),
   };
 }
