@@ -418,6 +418,10 @@ export function SessionView({ tabId }: { tabId: string }) {
         retrying?: unknown;
       }
     | undefined;
+  const attachmentReadinessBlocked =
+    hasAttachmentDescriptors &&
+    (attachmentDraft.state.readiness === null ||
+      attachmentDraft.state.readiness.outcome !== "ready");
   const attachmentReady =
     active.status === "idle" &&
     activeState?.idle === true &&
@@ -793,6 +797,7 @@ export function SessionView({ tabId }: { tabId: string }) {
                 queue={transcript?.queue ?? { steering: [], followUp: [] }}
                 attachmentState={attachmentDraft.available ? attachmentDraft.state : undefined}
                 attachmentReady={attachmentReady}
+                attachmentReadinessBlocked={attachmentReadinessBlocked}
                 onAttachmentFiles={
                   attachmentDraft.available ? attachmentDraft.importFiles : undefined
                 }

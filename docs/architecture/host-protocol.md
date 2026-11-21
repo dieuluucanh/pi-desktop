@@ -74,6 +74,20 @@ negotiation and the milestone-A release gate are tracked separately, so a host
 whose `attachmentDeliveryVersion` is `null` must not be treated as supporting
 delivery.
 
+Main keeps the durable side of a send in its own profile store, not in the
+renderer or the session JSONL: a bounded submission journal (never source text,
+bytes or paths) records dispatch/terminal state, accepted originals and
+representations are promoted to profile-scoped session/branch owners, and a
+30-day tombstone keeps a deleted session's copies recoverable. The journal
+retires only terminal, ownership-reconciled attempts; unresolved or
+protected-capacity records block a send with `storage_full` rather than evicting
+evidence. `attachments.storage`/`attachments.clearStorage` expose bounded
+usage and an explicit reclamation action; `attachments.exportBundle` /
+`attachments.importBundle` are local-only, validate a versioned zip and never
+treat manifest ids or paths as permissions. `/share`, `/bug` and the sanitized
+export use one attachment-private projection; native HTML/JSONL exports remain
+truthful and are gated by a content confirmation.
+
 ## Framing rules
 
 - `JsonlFrameDecoder` buffers chunks and emits complete lines; it tolerates split

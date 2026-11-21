@@ -83,6 +83,8 @@ export interface ComposerProps {
   attachmentState?: AttachmentDraftState;
   /** Host reports idle and no review/compaction/retry is active. */
   attachmentReady?: boolean;
+  /** The non-submitting readiness verdict is missing or blocked for shown files. */
+  attachmentReadinessBlocked?: boolean;
   onAttachmentFiles?: (files: readonly File[]) => Promise<void>;
   onPickAttachments?: () => Promise<void>;
   onRemoveAttachment?: (id: string) => Promise<void>;
@@ -296,6 +298,7 @@ export function Composer({
   onSend,
   attachmentState,
   attachmentReady = true,
+  attachmentReadinessBlocked = false,
   onAttachmentFiles,
   onPickAttachments,
   onRemoveAttachment,
@@ -508,7 +511,8 @@ export function Composer({
   const managedAttachmentBlocked = Boolean(
     attachmentState &&
     (attachmentState.phase !== "ready" ||
-      (attachmentState.descriptors.length > 0 && (!attachmentReady || running)) ||
+      (attachmentState.descriptors.length > 0 &&
+        (!attachmentReady || attachmentReadinessBlocked || running)) ||
       attachmentState.imports.length > 0 ||
       attachmentState.issues.length > 0 ||
       attachmentState.submission.phase === "submitting" ||
@@ -1020,8 +1024,11 @@ export function Composer({
                 managedAttachmentBlocked
                   ? attachmentState?.submission.phase === "uncertain"
                     ? "Delivery is uncertain; use the explicit retry action in the attachment tray."
-                    : attachmentState?.descriptors.length && (!attachmentReady || running)
-                      ? "Files can only be sent when the host is idle; they are never queued."
+                    : attachmentState?.descriptors.length &&
+                        (!attachmentReady || attachmentReadinessBlocked || running)
+                      ? attachmentReadinessBlocked
+                        ? "Resolve the attachment readiness issue before sending."
+                        : "Files can only be sent when the host is idle; they are never queued."
                       : "Wait for attachment import or resolve its blocking issue before sending."
                   : running && (attachmentState?.descriptors.length ?? 0) === 0
                     ? "Enter steers · Alt+Enter queues a follow-up"

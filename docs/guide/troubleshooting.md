@@ -506,3 +506,9 @@ useful issue.
 - [FAQ](faq.md) · [Getting started](getting-started.md)
 - [Release notes v0.11.0](../releases/v0.11.0.md) · [Backlog](../product/backlog.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)
+
+## Attachments
+
+Blocked, over-budget, unsupported or unreadable attachment turns are covered in
+[Attachments](attachments.md), including protocol-restart, storage-full and
+conversion-unavailable states.

@@ -103,17 +103,25 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 Pi 1.5's CLI accepts `@path` arguments at startup and includes text-file
 contents or supported images in the first prompt. Interactive `@path` completion
 instead inserts a file reference for the agent's tools. Desktop's `@` completion
-and Explorer drops follow that reference workflow; its current paperclip,
-clipboard-file, and external-drop attachment path accepts **images only**.
-Direct text-file attachment is planned, not yet implemented.
+and Explorer drops follow that reference workflow, and `#` remains the optional
+Office document mention.
+
+The **paperclip, file paste and external drop** are a separate immutable
+snapshot path (`docs/guide/attachments.md`): bounded UTF-8 text/code/CSV and
+supported raster images are imported into the profile store and sent through
+Pi's native text/image prompt contract. Attachments are idle-only and are never
+consumed by commands, skills or templates. PDF, modern Office and OpenDocument
+files show "local conversion is unavailable" until milestone B; audio/video,
+legacy/macro/encrypted Office and archives are refused with a specific reason.
 
 Pi's SDK user-message contract is text and image content, not native PDF or
-Office document blocks. The approved attachment refactor will send validated
-text directly and offer **explicit local text extraction** for PDF, modern Office,
-and OpenDocument files. Extracted text does not give the model native visual or
-spreadsheet understanding. Audio/video processing belongs to Pi-Studio. Until
-that work is delivered, do not treat provider API documentation as evidence that
-Desktop accepts those file types.
+Office document blocks. A successful managed send means **SDK acceptance**
+(preflight + a persisted user entry/association), not that a provider retained
+or read every image. Images may be normalized/resized by Pi or the app, and
+trusted extensions may rewrite prompt content; the transcript card is honest
+about what Pi persisted. The renderer cannot call the private attachment
+methods directly, and a host that does not advertise the protocol is refused
+before any bytes are staged.
 
 ## Office
 

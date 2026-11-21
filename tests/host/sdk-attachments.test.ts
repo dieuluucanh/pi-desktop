@@ -313,12 +313,20 @@ describe("official SDK attachment dispatch adapter", () => {
   });
 
   it("delivers text through any chat API instead of an artificial allowlist", async () => {
+    // The complete pinned chat-route matrix (plan step 16). Text goes through
+    // the public adapter on every route; image behaviour depends on the model's
+    // input metadata and is covered by the modality tests below/above.
     for (const api of [
       "openai-completions",
       "openai-responses",
+      "azure-openai-responses",
+      "openai-codex-responses",
       "anthropic-messages",
       "google-generative-ai",
+      "google-vertex",
+      "bedrock-converse-stream",
       "mistral-conversations",
+      "pi-messages",
     ]) {
       const h = fixture();
       h.model.api = api;
