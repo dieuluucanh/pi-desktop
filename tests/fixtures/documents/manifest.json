@@ -1,0 +1,190 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "id": "pdf-small-text",
+      "format": "pdf",
+      "class": "representative",
+      "covers": "page-ranged text, multi-page selection",
+      "expected": "success"
+    },
+    {
+      "id": "pdf-scanned-page",
+      "format": "pdf",
+      "class": "representative",
+      "covers": "image-only page with no text layer",
+      "expected": "warnings",
+      "warnings": ["scanned_page_no_text"]
+    },
+    {
+      "id": "pdf-annotations",
+      "format": "pdf",
+      "class": "representative",
+      "covers": "annotations are not silently included",
+      "expected": "warnings",
+      "warnings": ["annotation_omitted"]
+    },
+    {
+      "id": "pdf-encrypted",
+      "format": "pdf",
+      "class": "hostile",
+      "covers": "password-protected document",
+      "expected": "failure",
+      "failure": "encrypted_document"
+    },
+    {
+      "id": "pdf-page-bomb",
+      "format": "pdf",
+      "class": "hostile",
+      "covers": "more than the 200-page selection ceiling",
+      "expected": "failure",
+      "failure": "limit_exceeded"
+    },
+    {
+      "id": "docx-tables-headers",
+      "format": "docx",
+      "class": "representative",
+      "covers": "tables and headers/footers with explicit options",
+      "expected": "success"
+    },
+    {
+      "id": "docx-hidden-comments",
+      "format": "docx",
+      "class": "representative",
+      "covers": "hidden text and comments omitted by default",
+      "expected": "warnings",
+      "warnings": ["hidden_content_omitted", "comments_omitted"]
+    },
+    {
+      "id": "docx-macro-enabled",
+      "format": "docx",
+      "class": "hostile",
+      "covers": "macro-enabled .docm renamed/declared as docx",
+      "expected": "failure",
+      "failure": "macro_enabled"
+    },
+    {
+      "id": "odt-basic",
+      "format": "odt",
+      "class": "representative",
+      "covers": "visible text and tables",
+      "expected": "success"
+    },
+    {
+      "id": "odt-external-entity",
+      "format": "odt",
+      "class": "hostile",
+      "covers": "DTD/external entity and network relationship",
+      "expected": "failure",
+      "failure": "invalid_container"
+    },
+    {
+      "id": "xlsx-cached-formulas",
+      "format": "xlsx",
+      "class": "representative",
+      "covers": "cached formula values, no calculation",
+      "expected": "success"
+    },
+    {
+      "id": "xlsx-missing-formula-cache",
+      "format": "xlsx",
+      "class": "representative",
+      "covers": "formula without a cached value",
+      "expected": "warnings",
+      "warnings": ["formula_cache_missing"]
+    },
+    {
+      "id": "xlsx-hidden-sheets",
+      "format": "xlsx",
+      "class": "representative",
+      "covers": "hidden sheet selection/omission",
+      "expected": "warnings",
+      "warnings": ["hidden_content_omitted"]
+    },
+    {
+      "id": "xlsx-cell-bomb",
+      "format": "xlsx",
+      "class": "hostile",
+      "covers": "sparse/repeated cells beyond 100,000 materialized cells",
+      "expected": "failure",
+      "failure": "limit_exceeded"
+    },
+    {
+      "id": "xlsx-formula-injection",
+      "format": "xlsx",
+      "class": "hostile",
+      "covers": "cell text beginning with = + - @ stays inert",
+      "expected": "warnings",
+      "warnings": ["formula_text_included"]
+    },
+    {
+      "id": "ods-basic",
+      "format": "ods",
+      "class": "representative",
+      "covers": "visible sheets and ranges",
+      "expected": "success"
+    },
+    {
+      "id": "pptx-notes",
+      "format": "pptx",
+      "class": "representative",
+      "covers": "slide text plus notes only when opted in",
+      "expected": "success"
+    },
+    {
+      "id": "pptx-hidden-external",
+      "format": "pptx",
+      "class": "hostile",
+      "covers": "hidden slide and external relationship",
+      "expected": "warnings",
+      "warnings": ["hidden_content_omitted", "external_relationship_ignored"]
+    },
+    {
+      "id": "odp-basic",
+      "format": "odp",
+      "class": "representative",
+      "covers": "slide order and text",
+      "expected": "success"
+    },
+    {
+      "id": "zip-traversal",
+      "format": "docx",
+      "class": "hostile",
+      "covers": "../ and absolute entry names",
+      "expected": "failure",
+      "failure": "invalid_container"
+    },
+    {
+      "id": "zip-duplicate-entry",
+      "format": "xlsx",
+      "class": "hostile",
+      "covers": "case-insensitive duplicate entries",
+      "expected": "failure",
+      "failure": "invalid_container"
+    },
+    {
+      "id": "zip-expansion-bomb",
+      "format": "pptx",
+      "class": "hostile",
+      "covers": "100:1 ratio or >100 MiB actual expansion",
+      "expected": "failure",
+      "failure": "limit_exceeded"
+    },
+    {
+      "id": "malformed-container",
+      "format": "odt",
+      "class": "hostile",
+      "covers": "malformed central directory",
+      "expected": "failure",
+      "failure": "malformed_document"
+    },
+    {
+      "id": "unsupported-format",
+      "format": "docx",
+      "class": "hostile",
+      "covers": "legacy .doc or encrypted package declared as docx",
+      "expected": "failure",
+      "failure": "unsupported_format"
+    }
+  ]
+}

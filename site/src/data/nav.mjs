@@ -38,6 +38,7 @@ export const NAV_GROUPS = [
       "docs/architecture/terminal.md",
       "docs/architecture/editor-and-explorer.md",
       "docs/architecture/host-protocol.md",
+      "docs/architecture/document-conversion.md",
       "docs/architecture/extension-ui.md",
       "docs/architecture/session-parity.md",
       "docs/architecture/source-control.md",
