@@ -98,7 +98,8 @@ const documentMentionSource = (tabId: string) => ({
  */
 
 export function SessionView({ tabId }: { tabId: string }) {
-  const attachmentDraft = useAttachmentDraft(tabId);
+  const attachmentProfileScope = useAppStore((state) => state.info?.profileDir ?? "profile");
+  const attachmentDraft = useAttachmentDraft(tabId, attachmentProfileScope);
   const project = useAppStore((state) => state.project);
   const homeDir = useAppStore((state) => state.info?.homeDir ?? null);
   const tabs = useAppStore((state) => state.tabs);
@@ -689,14 +690,62 @@ export function SessionView({ tabId }: { tabId: string }) {
               active={active.id === focusedTabId}
             />
           ) : tuiOwnsComposer && tuiSurface ? (
-            <TuiSurface
-              tabId={active.id}
-              snapshot={tuiSurface}
-              cell={viewport.cell}
-              grid={{ rows: viewport.rows, cols: viewport.cols }}
-              variant="dock"
-              focusToken={surfaceFocusToken}
-            />
+            <>
+              {attachmentDraft.available && attachmentDraft.state.descriptors.length > 0 ? (
+                <div
+                  className="flex flex-col gap-1 border-t border-line bg-surface px-2 py-1.5"
+                  data-testid="attachment-retained-bar"
+                  aria-label="Retained files"
+                >
+                  <p className="text-[11px] text-ink">
+                    {attachmentDraft.state.descriptors.length} file
+                    {attachmentDraft.state.descriptors.length === 1 ? "" : "s"} retained this draft;
+                    the extension composer cannot send them.
+                  </p>
+                  <ul className="flex min-w-0 flex-wrap gap-1">
+                    {attachmentDraft.state.descriptors.map((descriptor) => (
+                      <li
+                        key={descriptor.id}
+                        className="flex min-w-0 items-center gap-1 rounded-sm border border-line bg-raised/60 px-1.5 py-0.5"
+                      >
+                        <span className="max-w-40 truncate text-[10px]" title={descriptor.name}>
+                          {descriptor.name}
+                        </span>
+                        {descriptor.reason ? (
+                          <span className="text-[10px] text-warn">
+                            {descriptor.reason === "conversion_required"
+                              ? "needs conversion"
+                              : "blocked"}
+                          </span>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="text-[10px] text-ink-muted underline-offset-2 hover:underline"
+                          aria-label={`Remove ${descriptor.name} from this draft`}
+                          onClick={() => void attachmentDraft.remove(descriptor.id)}
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  {attachmentDraft.state.readiness?.outcome === "blocked" ? (
+                    <p className="text-[10px] text-warn" role="status">
+                      Not ready to send. Remove or resolve the files before switching back to the
+                      normal composer.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+              <TuiSurface
+                tabId={active.id}
+                snapshot={tuiSurface}
+                cell={viewport.cell}
+                grid={{ rows: viewport.rows, cols: viewport.cols }}
+                variant="dock"
+                focusToken={surfaceFocusToken}
+              />
+            </>
           ) : (
             <div className="contents" inert={floatingOverlay || undefined}>
               <Composer

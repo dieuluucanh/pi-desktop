@@ -1535,3 +1535,142 @@ describe("private attachment readiness handler", () => {
     ).rejects.toThrow();
   });
 });
+
+describe("attachment protocol support", () => {
+  it("advertises support only when every required attachment port is wired", () => {
+    const complete = harness({
+      createAttachmentTransferStore: (current) =>
+        createAttachmentTransferStore({
+          now: () => 1_000,
+          current,
+          sha256: (value) => createHash("sha256").update(value).digest("hex"),
+          schedule: () => () => {},
+        }),
+      createAttachmentImagePreparation: () =>
+        createAttachmentImagePreparationStore({
+          now: () => 1_000,
+          schedule: () => () => {},
+          sha256: (value) => createHash("sha256").update(value).digest("hex"),
+          encode: async ({ bytes, limits }) => ({
+            bytes: new Uint8Array(bytes),
+            mime: "image/png",
+            original: {
+              mime: "image/png",
+              width: limits.maxWidth,
+              height: limits.maxHeight,
+              encodedWidth: limits.maxWidth,
+              encodedHeight: limits.maxHeight,
+              orientation: 1,
+              animated: false,
+            },
+            width: limits.maxWidth,
+            height: limits.maxHeight,
+            wasResized: false,
+            wasReencoded: false,
+            warnings: [],
+            policy: limits,
+          }),
+        }),
+      dispatchAttachmentPrompt: async () => ({
+        outcome: "blocked",
+        reasons: ["unavailable"],
+        turnId: RACE_IDS.turnId,
+        attemptId: RACE_IDS.attemptId,
+      }),
+      listAttachmentSubmissions: () => [],
+    });
+    expect(complete.core.attachmentDeliverySupport()).toBe(1);
+
+    const missing = harness();
+    expect(missing.core.attachmentDeliverySupport()).toBeNull();
+
+    const partial = harness({ listAttachmentSubmissions: () => [] });
+    expect(partial.core.attachmentDeliverySupport()).toBeNull();
+  });
+});
+
+describe("Desktop model/context route policy", () => {
+  const textModel = {
+    provider: "openai",
+    id: "text-only",
+    api: "openai-completions",
+    input: ["text"],
+    inputLimits: {
+      maxRequestBytes: 20_000_000,
+      images: {
+        maxPerMessage: 0,
+        maxPerRequest: 0,
+        resize: { maxBytes: 0, maxWidth: 0, maxHeight: 0 },
+      },
+    },
+  };
+  const visionModel = {
+    provider: "openai",
+    id: "vision",
+    api: "openai-completions",
+    input: ["text", "image"],
+    inputLimits: {
+      maxRequestBytes: 20_000_000,
+      images: {
+        maxPerMessage: 4,
+        maxPerRequest: 8,
+        resize: { maxBytes: 4 * 1024 * 1024, maxWidth: 2048, maxHeight: 2048 },
+      },
+    },
+  };
+  const imageHistory = () => [
+    { role: "user", content: [{ type: "image", mimeType: "image/png", data: "AAAA" }] },
+  ];
+
+  it("blocks an ordinary prompt when image history meets a text-only model", async () => {
+    const h = harness();
+    await h.call("session.create");
+    h.primary.state.model = textModel as never;
+    h.primary.state.messages = imageHistory();
+    await expect(h.call("prompt", { text: "hello" })).rejects.toMatchObject({
+      code: "model_modality_unsupported",
+    });
+    expect(h.primary.prompts).toHaveLength(0);
+
+    h.primary.state.model = visionModel as never;
+    await expect(h.call("prompt", { text: "hello" })).resolves.toBeTruthy();
+    expect(h.primary.prompts).toHaveLength(1);
+  });
+
+  it("blocks steer and follow-up on the same rule", async () => {
+    const h = harness();
+    await h.call("session.create");
+    h.primary.state.model = textModel as never;
+    h.primary.state.messages = imageHistory();
+    await expect(h.call("steer", { text: "go on" })).rejects.toMatchObject({
+      code: "model_modality_unsupported",
+    });
+    await expect(h.call("followUp", { text: "and then" })).rejects.toMatchObject({
+      code: "model_modality_unsupported",
+    });
+  });
+
+  it("allows an idle model switch but refuses an incompatible target mid-run", async () => {
+    const h = harness();
+    await h.call("session.create");
+    h.primary.state.model = visionModel as never;
+    h.primary.state.messages = imageHistory();
+    await expect(h.call("model.set", { model: textModel })).resolves.toBeTruthy();
+
+    h.primary.state.streaming = true;
+    await expect(h.call("model.set", { model: textModel })).rejects.toMatchObject({
+      code: "model_modality_unsupported",
+    });
+  });
+
+  it("refuses cycling models during an active image run", async () => {
+    const h = harness();
+    await h.call("session.create");
+    h.primary.state.model = visionModel as never;
+    h.primary.state.messages = imageHistory();
+    h.primary.state.streaming = true;
+    await expect(h.call("model.cycle", { direction: "forward" })).rejects.toMatchObject({
+      code: "busy",
+    });
+  });
+});

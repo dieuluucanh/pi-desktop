@@ -115,7 +115,9 @@ export type AttachmentReason =
   | "command_unsupported"
   | "stale_plan"
   | "format_mismatch"
-  | "classification_failed";
+  | "classification_failed"
+  | "host_unsupported"
+  | "release_unavailable";
 
 /** Public metadata only. Source paths, original bytes, and base64 are absent. */
 export interface AttachmentDescriptor extends AttachmentSnapshot {
@@ -1051,6 +1053,8 @@ export const ATTACHMENT_REASONS: readonly AttachmentReason[] = [
   "stale_plan",
   "format_mismatch",
   "classification_failed",
+  "host_unsupported",
+  "release_unavailable",
 ];
 
 export function isAttachmentReason(value: unknown): value is AttachmentReason {

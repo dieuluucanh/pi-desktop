@@ -2,6 +2,7 @@ import type { HostMethod } from "../shared/host-protocol";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
+  ATTACHMENT_DELIVERY_VERSION,
   ATTACHMENT_LIMITS,
   attachmentTranscriptCard,
   isAttachmentId,
@@ -21,7 +22,9 @@ import {
 import {
   createAttachmentPlanInput,
   createAttachmentReadinessPolicyContext,
+  estimateAttachmentHistory,
 } from "./attachment-context";
+import { evaluateModelChange, evaluatePromptRoute } from "./prompt-route-policy";
 import { createAttachmentDispatchCoordinator } from "./attachment-dispatch";
 import {
   createAttachmentPlanner,
@@ -512,6 +515,12 @@ export interface SessionCore {
   session(): HostSession | null;
   /** Current session identity for event fencing (id + attachment epoch). */
   identity(): { sessionId: string | null; epoch: number };
+  /**
+   * Attachment protocol version this core actually supports, or null when a
+   * required port/handler is missing (plan step 8). The greeting must reflect
+   * this rather than a hard-coded value, and the release gate stays separate.
+   */
+  attachmentDeliverySupport(): number | null;
   /**
    * Phase breakdown of the last `session.create`/`session.resume` in this
    * process, or null before the first (2026-11-07 plan). Optional: the control
@@ -1882,6 +1891,19 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       if (input.ack !== undefined && input.ack !== "preflight") {
         throw new SessionCoreError('ack must be "preflight" when provided', "bad_request");
       }
+      // Ordinary Desktop prompts are subject to the same image-context rule as
+      // managed sends: never strip history, refuse a route whose images the
+      // active model cannot accept (plan step 9).
+      const promptRouteReasons = evaluatePromptRoute({
+        model: current.model,
+        historyImageCount: estimateAttachmentHistory(
+          Array.isArray(current.messages) ? current.messages : null,
+        ).imageCount,
+        addingImages: (legacyImages?.length ?? 0) > 0,
+      });
+      if (promptRouteReasons.length > 0) {
+        throw new SessionCoreError(promptRouteReasons.join(", "), promptRouteReasons[0]!);
+      }
       // A new prompt while idle supersedes any dispatch that never produced a
       // user message (a notify-only command); queued follow-ups are streaming
       // and are therefore never dropped here.
@@ -1951,6 +1973,16 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const input = asRecord(params);
       rejectAttachmentFields(input);
       const text = requireString(input.text, "text");
+      const routeReasons = evaluatePromptRoute({
+        model: current.model,
+        historyImageCount: estimateAttachmentHistory(
+          Array.isArray(current.messages) ? current.messages : null,
+        ).imageCount,
+        addingImages: false,
+      });
+      if (routeReasons.length > 0) {
+        throw new SessionCoreError(routeReasons.join(", "), routeReasons[0]!);
+      }
       if (!current.steer) throw new SessionCoreError("steering is not supported", "unsupported");
       await current.steer(text, undefined, { source: "rpc" });
       return { queued: true };
@@ -1962,6 +1994,16 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const input = asRecord(params);
       rejectAttachmentFields(input);
       const text = requireString(input.text, "text");
+      const routeReasons = evaluatePromptRoute({
+        model: current.model,
+        historyImageCount: estimateAttachmentHistory(
+          Array.isArray(current.messages) ? current.messages : null,
+        ).imageCount,
+        addingImages: false,
+      });
+      if (routeReasons.length > 0) {
+        throw new SessionCoreError(routeReasons.join(", "), routeReasons[0]!);
+      }
       if (!current.followUp)
         throw new SessionCoreError("follow-up is not supported", "unsupported");
       await current.followUp(text, undefined, { source: "rpc" });
@@ -2406,6 +2448,14 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const input = asRecord(params);
       const current = ensure();
       requireNoAttachmentContextMutation();
+      if (current.isStreaming === true) {
+        const historyImages = estimateAttachmentHistory(
+          Array.isArray(current.messages) ? current.messages : null,
+        ).imageCount;
+        if ((historyImages ?? 0) > 0) {
+          throw new SessionCoreError("cannot cycle models during an active image context", "busy");
+        }
+      }
       if (!current.cycleModel) {
         throw new SessionCoreError("cycling models is not supported", "unsupported");
       }
@@ -2710,6 +2760,19 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         throw new SessionCoreError("model.set requires a model object", "bad_request");
       if (!current.setModel)
         throw new SessionCoreError("model changes are not supported", "unsupported");
+      // An active image run cannot be re-pointed at a model that would drop its
+      // images. When idle the switch is allowed; the prompt-route policy blocks
+      // dispatch until the context/model pair is compatible again.
+      const modelChangeReasons = evaluateModelChange({
+        model: input.model,
+        historyImageCount: estimateAttachmentHistory(
+          Array.isArray(current.messages) ? current.messages : null,
+        ).imageCount,
+        streaming: current.isStreaming === true,
+      });
+      if (modelChangeReasons.length > 0) {
+        throw new SessionCoreError(modelChangeReasons.join(", "), modelChangeReasons[0]!);
+      }
 
       const persist = input.persist === true;
       const scope = input.scope === "project" || input.scope === "global" ? input.scope : undefined;
@@ -2853,6 +2916,13 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     snapshot,
     session: () => session,
     identity: () => ({ sessionId: session?.sessionId ?? null, epoch: sessionEpoch }),
+    attachmentDeliverySupport: () =>
+      attachmentTransfer &&
+      imagePreparation &&
+      deps.dispatchAttachmentPrompt &&
+      deps.listAttachmentSubmissions
+        ? ATTACHMENT_DELIVERY_VERSION
+        : null,
     lastOpenTimings: () => lastOpen,
     cwd: () => cwd,
     dispose: async () => {

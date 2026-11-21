@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { hasAttachmentDraft, notifyAttachmentTabClosed } from "../attachments/lifecycle";
 import { toast } from "sonner";
 import type { AppInfo, WebTabOpenInput } from "../../../shared/ipc";
 import type { BlobRef, HostMethod } from "../../../shared/host-protocol";
@@ -3186,6 +3187,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       closedTabIds.delete(oldest);
     }
     const removed = closedIds.length > 0;
+    if (removed) notifyAttachmentTabClosed(closedIds);
     // A closed tab must not leave a stale pane assignment: clear its slot (never
     // re-flow the layout), so every reader sees `null` rather than a ghost id.
     // Only a real change writes prefs, so a normal publish touches nothing.
@@ -4414,6 +4416,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   sendPrompt: async (tabId, text, options = {}) => {
     const trimmedInput = text.trim();
+    // A selected managed draft owns the send: a menu, palette or direct store
+    // caller must never silently send text-only while files are retained.
+    if (hasAttachmentDraft(tabId)) {
+      set({ hint: "Files are selected — use Send to include them, or remove them first." });
+      return false;
+    }
     // Immediate UI refusal; `sendPromptNow` repeats it as the final backstop.
     if (
       parseWorkflowStatus(get().extensionUi[tabId]?.statuses?.workflow ?? null)?.mode ===
@@ -4561,6 +4569,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   runCommandInput: async (tabId, text, options = {}) => {
+    if (hasAttachmentDraft(tabId)) {
+      set({ hint: "Commands cannot consume selected files. Send a normal prompt or remove them." });
+      return { handled: true, sent: false };
+    }
     const preferredSource = options.preferredSource;
     const context = (hostCommands: HostCommandEntry[]) =>
       resolveCommandInput(text, {

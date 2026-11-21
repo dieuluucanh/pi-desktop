@@ -611,6 +611,13 @@ export function runService(
         capabilities: {
           checkpointsExtension: checkpointExtension.source !== null,
           checkpointExtensionSource: checkpointExtension.source,
+          // Advertise only what this core actually wired; a control host or a
+          // build missing a required port reports null.
+          attachmentDeliveryVersion:
+            "attachmentDeliverySupport" in core &&
+            typeof core.attachmentDeliverySupport === "function"
+              ? core.attachmentDeliverySupport()
+              : null,
         },
       },
       onShutdown: () => {

@@ -3215,3 +3215,16 @@ describe("tab table publishing", () => {
     expect(envelope.tabs.map((tab) => tab.id)).toEqual([id]);
   });
 });
+
+describe("attachment protocol negotiation on a pin", () => {
+  it("reports a missing capability for a host that greets without one", async () => {
+    const h = createHarness();
+    await h.service.createTab({ cwd: "C:/work" });
+    const host = h.newest();
+    host.emit("state", { sessionId: "session-1" }, { sessionId: "session-1", sessionEpoch: 1 });
+    const pin = h.service.pinSessionHost("tab-1");
+    expect(pin.attachmentDelivery).toEqual({ supported: false, reason: "missing" });
+    pin.release();
+    await h.service.dispose();
+  });
+});

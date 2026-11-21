@@ -69,6 +69,7 @@ import {
 } from "./attachment-submission-journal";
 import { stageAttachmentDelivery } from "./attachment-delivery-transfer";
 import { parseAttachmentReadinessVerdict } from "./attachment-readiness";
+import { resolveAttachmentAvailability } from "./attachment-availability";
 import { openSelectedAttachment } from "./attachment-source-io";
 import { ATTACHMENT_FILE_DIALOG_FILTERS, pickAttachments } from "./attachment-picker";
 import { createNodeFsPort } from "./fs-port";
@@ -736,6 +737,16 @@ interface AttachmentServiceRuntime extends AttachmentService {
   disposeDelivery(): void;
 }
 
+/**
+ * Trusted product gate, independent of protocol support (plan step 8). Packaged
+ * builds stay off until step 16 verifies milestone A; development/tests enable
+ * it through `PI_DESKTOP_ATTACHMENTS`, never through renderer readiness.
+ */
+const attachmentAvailability = resolveAttachmentAvailability({
+  packaged: app.isPackaged,
+  env: process.env,
+});
+
 let attachmentServicePromise: Promise<AttachmentServiceRuntime> | null = null;
 /** Bounded, content-addressed prepared-image thumbnails (never raw originals). */
 const attachmentThumbnails = createAttachmentThumbnailCache();
@@ -792,6 +803,9 @@ function attachmentService(): Promise<AttachmentServiceRuntime> {
           (sessions?.tabs().some((tab) => tab.id === tabId && isHostBackedTab(tab.kind)) ?? false),
         imageThumbnail: (representationSha256) => attachmentThumbnails.get(representationSha256),
         evaluateReadiness: async (assets, text, context) => {
+          if (!attachmentAvailability.available) {
+            return { ok: false as const, reason: "release_unavailable" as const };
+          }
           let pin: ReturnType<SessionService["pinSessionHost"]>;
           try {
             pin = requireSessions().pinSessionHost(context.tabId);
@@ -799,6 +813,9 @@ function attachmentService(): Promise<AttachmentServiceRuntime> {
             return { ok: false as const, reason: "unavailable" as const };
           }
           try {
+            if (!pin.attachmentDelivery.supported) {
+              return { ok: false as const, reason: "host_unsupported" as const };
+            }
             const raw = await pin.request("attachments.readiness", {
               profileKey: profile,
               text,
@@ -883,18 +900,22 @@ function attachmentService(): Promise<AttachmentServiceRuntime> {
           ) {
             return blocked("unavailable");
           }
-          const prepared = await service.prepareForDelivery(senderId, draft, attachmentIds);
-          if ("reasons" in prepared) {
-            return {
-              outcome: "blocked",
-              reasons: prepared.reasons,
-              turnId,
-              attemptId,
-            } satisfies AttachmentPromptResult;
-          }
+          if (!attachmentAvailability.available) return blocked("release_unavailable");
           let pin: ReturnType<SessionService["pinSessionHost"]> | null = null;
           try {
             pin = requireSessions().pinSessionHost(draft.tabId);
+            // Negotiate before any preparation or staging: an old, newer or
+            // malformed host gets zero bytes and no legacy text-only fallback.
+            if (!pin.attachmentDelivery.supported) return blocked("host_unsupported");
+            const prepared = await service.prepareForDelivery(senderId, draft, attachmentIds);
+            if ("reasons" in prepared) {
+              return {
+                outcome: "blocked",
+                reasons: prepared.reasons,
+                turnId,
+                attemptId,
+              } satisfies AttachmentPromptResult;
+            }
             const rawContext = await pin.request("attachments.context", {});
             if (!rawContext || typeof rawContext !== "object" || Array.isArray(rawContext)) {
               return blocked("unavailable");

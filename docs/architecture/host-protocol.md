@@ -41,6 +41,14 @@ approved text/image representations, and dispatches through Pi's public SDK.
 `attachments.prompt` uses the shared versioned request contract plus a
 host-owned plan and transfer binding.
 
+The greeting advertises the attachment protocol version the host actually
+implements (its attachment handlers and ports), never a hard-coded capability.
+Main treats the greeting strictly: a missing, older, newer or malformed version
+is refused before any preparation or staging, with no legacy fallback. Product
+availability is a separate, trusted main-process gate (`PI_DESKTOP_ATTACHMENTS`
+for development/tests; packaged builds stay off until the milestone-A gate), so
+protocol support never implies the feature is enabled in a build.
+
 Readiness is a metadata-only, non-submitting pass: main sends descriptor bytes
 and dimensions (never content), and the host evaluates them with the same
 policy used for delivery planning against its live model/context/history. It

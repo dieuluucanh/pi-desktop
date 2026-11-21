@@ -103,6 +103,10 @@ function deliveryReason(reason: string): string {
       return "The SDK could not guarantee safe attachment delivery.";
     case "original_too_large":
       return "The original file exceeds the supported size limit.";
+    case "host_unsupported":
+      return "This session's host does not support file sending. Restart the app or that session tab to update it.";
+    case "release_unavailable":
+      return "File sending is not enabled in this build yet.";
     default:
       return "The attachment plan is unavailable or stale. Review the selection and try again.";
   }
@@ -392,6 +396,11 @@ export function AttachmentTray({
         </Button>
       </div>
 
+      {state.readiness?.outcome === "blocked" && state.readiness.reasons.length > 0 ? (
+        <p className="text-[11px] text-warn" role="status" aria-live="polite">
+          Not ready to send: {state.readiness.reasons.map(deliveryReason).join(" ")}
+        </p>
+      ) : null}
       {!sendReady && state.descriptors.length > 0 && state.submission.phase !== "uncertain" ? (
         <p className="text-[11px] text-warn" role="status" aria-live="polite">
           Files can only be sent while the host is idle. They will not be queued.

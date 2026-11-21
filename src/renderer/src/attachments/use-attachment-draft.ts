@@ -4,6 +4,7 @@ import {
   type AttachmentController,
   type AttachmentDraftState,
 } from "./controller";
+import { onAttachmentTabClosed, setAttachmentDraftPresence } from "./lifecycle";
 import type {
   AttachmentPreview,
   AttachmentPromptResult,
@@ -11,14 +12,23 @@ import type {
 } from "../../../shared/attachments";
 
 let sharedController: AttachmentController | null = null;
+let sharedControllerScope: string | null = null;
 
-function getSharedController(): AttachmentController | null {
+function getSharedController(profileScope?: string): AttachmentController | null {
   if (typeof window === "undefined" || !window.pi?.attachments || !window.pi.prefs) return null;
-  if (!sharedController) {
+  const scope = profileScope ?? "profile";
+  if (!sharedController || sharedControllerScope !== scope) {
+    sharedControllerScope = scope;
     sharedController = createPersistedAttachmentController({
       attachments: window.pi.attachments,
       prefs: window.pi.prefs,
+      profileScope: scope,
     });
+    // A real tab close (or profile teardown) cancels imports, revokes ephemeral
+    // grants and drops stale callbacks; the durable draft identity stays in prefs.
+    const controller = sharedController;
+    onAttachmentTabClosed((tabId) => controller.forgetTab(tabId));
+    setAttachmentDraftPresence((tabId) => controller.get(tabId).descriptors.length > 0);
   }
   return sharedController;
 }
@@ -39,7 +49,10 @@ function emptyState(tabId: string): AttachmentDraftState {
 }
 
 /** Shared controller with tab-scoped state; panes never receive grants or bytes. */
-export function useAttachmentDraft(tabId: string): {
+export function useAttachmentDraft(
+  tabId: string,
+  profileScope?: string,
+): {
   state: AttachmentDraftState;
   available: boolean;
   importFiles: (files: readonly File[]) => Promise<void>;
@@ -54,7 +67,7 @@ export function useAttachmentDraft(tabId: string): {
   retryDelivery: () => Promise<AttachmentPromptResult | null>;
   resetDraft: () => Promise<boolean>;
 } {
-  const controller = getSharedController();
+  const controller = getSharedController(profileScope);
   const fallback = useMemo(() => emptyState(tabId), [tabId]);
   const subscribe = useCallback(
     (listener: () => void) =>

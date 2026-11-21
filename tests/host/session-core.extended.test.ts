@@ -644,6 +644,21 @@ describe("queue modes and retry", () => {
 describe("prompt semantics", () => {
   it("passes images, streamingBehavior and the RPC source through", async () => {
     const { call, session } = await started();
+    // Legacy image blocks are only eligible for an image-capable model (step 9).
+    (session as unknown as { model: unknown }).model = {
+      provider: "openai",
+      id: "vision",
+      api: "openai-completions",
+      input: ["text", "image"],
+      inputLimits: {
+        maxRequestBytes: 20_000_000,
+        images: {
+          maxPerMessage: 4,
+          maxPerRequest: 8,
+          resize: { maxBytes: 4 * 1024 * 1024, maxWidth: 2048, maxHeight: 2048 },
+        },
+      },
+    } as never;
     const images = [
       {
         type: "image",

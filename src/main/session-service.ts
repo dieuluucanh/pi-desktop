@@ -4,6 +4,7 @@ import {
   type HostMethod,
   type HostRole,
 } from "../shared/host-protocol";
+import { attachmentHostStatus, type AttachmentHostStatus } from "./attachment-protocol";
 import {
   DEFAULT_REQUEST_TIMEOUT_MS,
   HostAlreadyRunningError,
@@ -278,6 +279,8 @@ export interface SessionHostPin {
   readonly sessionId: string;
   readonly sessionEpoch: number;
   isCurrent(): boolean;
+  /** Attachment protocol support reported by this host's greeting. */
+  readonly attachmentDelivery: AttachmentHostStatus;
   /** Parent-only bounded transfer operations; never exposed through session.request. */
   request(method: AttachmentPrivateHostMethod, params: unknown): Promise<unknown>;
   release(): void;
@@ -1587,6 +1590,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           "session_not_ready",
         );
       const process = host.acquirePin();
+      // Read once per pin: a later rebuild changes the host, not this reservation.
+      const attachmentDelivery = attachmentHostStatus(host.info?.()?.capabilities);
       const sessionId = identity.sessionId;
       const sessionEpoch = identity.epoch;
       let released = false;
@@ -1615,6 +1620,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         processGeneration: process.generation,
         sessionId,
         sessionEpoch,
+        attachmentDelivery,
         isCurrent,
         request: async (method: AttachmentPrivateHostMethod, params: unknown) => {
           if (!isPrivateHostMethod(method) || !isCurrent()) {

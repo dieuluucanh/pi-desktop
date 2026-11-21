@@ -61,6 +61,7 @@ function fakeHost(options: { tamperDigest?: boolean; failPrepare?: boolean } = {
     processGeneration: 1,
     sessionId: "session-1",
     sessionEpoch: 1,
+    attachmentDelivery: { supported: true, version: 1 },
     isCurrent: () => true,
     release: vi.fn(),
     request: async (method: AttachmentPrivateHostMethod, params: unknown) => {
@@ -222,5 +223,33 @@ describe("host image encoder", () => {
     ).rejects.toThrow();
     expect(host.calls).toHaveLength(0);
     expect(host.pin.release).not.toHaveBeenCalled();
+  });
+});
+
+describe("host image encoder negotiation", () => {
+  it("refuses an unsupported host before staging a single byte", async () => {
+    const host = fakeHost();
+    const pin = {
+      ...host.pin,
+      attachmentDelivery: { supported: false as const, reason: "old" as const },
+    };
+    const encoder = createHostImageEncoder(
+      {
+        pin: () => pin,
+        newId: () => "123e4567-e89b-42d3-a456-426614174209",
+        sha256: async (bytes) => sha256(bytes),
+        thumbnails: createAttachmentThumbnailCache(),
+      },
+      { tabId: "tab-1", originalId: ORIGINAL },
+    );
+    await expect(
+      encoder.prepare(source(8), "image/png", {
+        maxWidth: 8,
+        maxHeight: 8,
+        maxEncodedBytes: 1024,
+      }),
+    ).rejects.toThrow();
+    expect(host.calls).toHaveLength(0);
+    expect(pin.release).toHaveBeenCalledTimes(1);
   });
 });

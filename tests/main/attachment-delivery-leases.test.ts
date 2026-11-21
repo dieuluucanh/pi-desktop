@@ -104,6 +104,7 @@ async function fixture(
       processGeneration: 3,
       sessionId: "session-1",
       sessionEpoch: 2,
+      attachmentDelivery: { supported: true, version: 1 },
       isCurrent: () => !released && state.host,
       request: async () => ({}),
       release: () => {

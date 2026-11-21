@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   AttachmentController,
+  attachmentDraftScopeKey,
   createPersistedAttachmentController,
 } from "../../src/renderer/src/attachments/controller";
 import type { AttachmentsBridge, PrefsBridge } from "../../src/shared/ipc";
@@ -105,9 +106,14 @@ describe("per-tab attachment draft controller", () => {
     const controller = createPersistedAttachmentController({
       attachments: h.bridge,
       prefs: prefsBridge,
+      profileScope: "C:/profile",
     });
     await controller.open("tab-1");
-    expect(prefs.attachmentDraftIds["tab-1"]).toBe(grant.draftId);
+    // Identity is scoped by the canonical profile; the legacy tab key is retired.
+    expect(prefs.attachmentDraftIds[attachmentDraftScopeKey("C:/profile", "tab-1")]).toBe(
+      grant.draftId,
+    );
+    expect(prefs.attachmentDraftIds["tab-1"]).toBeUndefined();
     expect(prefs).not.toHaveProperty("attachmentGrant");
   });
 
@@ -394,5 +400,20 @@ describe("per-tab attachment draft controller", () => {
     expect(h.controller.get("tab-1").issues).toHaveLength(1);
     h.controller.dismissIssue("tab-1", 0);
     expect(h.controller.get("tab-1").issues).toEqual([]);
+  });
+});
+
+describe("profile-scoped draft identity", () => {
+  it("keys a persisted draft by canonical profile and tab", async () => {
+    const { attachmentDraftScopeKey } =
+      await import("../../src/renderer/src/attachments/controller");
+    expect(attachmentDraftScopeKey("C:/profile", "tab-1")).not.toBe(
+      attachmentDraftScopeKey("D:/profile", "tab-1"),
+    );
+    expect(attachmentDraftScopeKey("C:/profile", "tab-1")).toBe(
+      attachmentDraftScopeKey("C:/profile", "tab-1"),
+    );
+    expect(attachmentDraftScopeKey(undefined, "tab-1")).toContain("tab-1");
+    expect(attachmentDraftScopeKey("  ", "tab-2")).toContain("tab-2");
   });
 });

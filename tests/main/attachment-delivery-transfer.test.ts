@@ -84,6 +84,7 @@ function fixture(
     processGeneration: 8,
     sessionId: "session-1",
     sessionEpoch: 3,
+    attachmentDelivery: { supported: true, version: 1 },
     isCurrent: () => true,
     release: () => {},
     request: async (method, params) => {

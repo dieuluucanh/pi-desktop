@@ -115,6 +115,12 @@ export function createHostImageEncoder(
         return fail();
       const id = deps.newId();
       const pin = deps.pin();
+      // Protocol negotiation happens before any staging, including preview
+      // preparation, so an old host never receives original image bytes.
+      if (!pin.attachmentDelivery.supported) {
+        pin.release();
+        return fail();
+      }
       let staged = false;
       try {
         const originalSha256 = await deps.sha256(new Uint8Array(bytes));
