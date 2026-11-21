@@ -16,6 +16,7 @@ import {
 import { MAX_FRAME_BYTES, type AttachmentPrivateHostMethod } from "../shared/host-protocol";
 import type { AttachmentDeliveryLease } from "./attachment-delivery-leases";
 import type { AttachmentSubmissionJournal } from "./attachment-submission-journal";
+import type { AttachmentOwnershipReconciler } from "./attachment-ownership";
 import type { SessionHostPin } from "./session-service";
 
 const CHUNK = ATTACHMENT_LIMITS.importChunkBytes;
@@ -337,8 +338,14 @@ export async function stageAttachmentDelivery(input: {
   readonly pin: SessionHostPin;
   readonly lease: AttachmentDeliveryLease;
   readonly journal: AttachmentSubmissionJournal;
+  /**
+   * Best-effort durable ownership (plan step 12). A failure here must never
+   * change the dispatch disposition: acceptance stays durable and the next
+   * startup/status sweep repairs promotion.
+   */
+  readonly ownership?: Pick<AttachmentOwnershipReconciler, "adopt" | "promote">;
 }): Promise<StagedAttachmentTransfer> {
-  const { pin, lease, journal } = input;
+  const { pin, lease, journal, ownership } = input;
   let active = true;
   let staged = false;
   let plannedId: string | null = null;
@@ -373,6 +380,18 @@ export async function stageAttachmentDelivery(input: {
     const response = await pin.request(method, params);
     await assertCurrent();
     return response;
+  };
+  const adoptOwnership = async (associations: readonly AttachmentSubmissionAssociation[]) => {
+    if (!ownership) return;
+    try {
+      await ownership.adopt({
+        sessionId: lease.scope.sessionId,
+        branchId: lease.scope.branchId,
+        associations,
+      });
+    } catch {
+      // Retention is repaired by the next sweep; dispatch authority is unchanged.
+    }
   };
   const plan = async (text: string): Promise<AttachmentPlanningResult> => {
     plannedId = null;
@@ -447,6 +466,7 @@ export async function stageAttachmentDelivery(input: {
       );
       if (!currentAssociations) return blocked("unavailable");
       await journal.reconcile(lease.scope, currentAssociations);
+      await adoptOwnership(currentAssociations);
       begun = await journal.begin({
         planId: input.planId,
         turnId: input.turnId,
@@ -490,6 +510,14 @@ export async function stageAttachmentDelivery(input: {
       await journal.reconcile(lease.scope, persistedAssociations);
       const recovered = await journal.get(input.turnId, input.attemptId);
       if (recovered?.state === "accepted" && recovered.result?.outcome === "accepted") {
+        // Promote the exact accepted generation before the caller can clear the
+        // draft. An incomplete promotion is retried by the durable sweep.
+        try {
+          await ownership?.promote(recovered);
+        } catch {
+          // Durable acceptance is still authoritative; never resend.
+        }
+        await adoptOwnership(persistedAssociations);
         return recovered.result;
       }
     } catch {

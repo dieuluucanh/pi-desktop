@@ -192,6 +192,11 @@ export interface AttachmentStore {
   ): Promise<AssetRecord>;
   addOwner(id: string, currentOwner: AssetOwner, newOwner: AssetOwner): Promise<void>;
   releaseOwner(id: string, owner: AssetOwner): Promise<void>;
+  /**
+   * Main-only ownership lookup by immutable asset id: no bytes, content, path
+   * or renderer projection. Used by acceptance/retention reconciliation.
+   */
+  owners(id: string): Promise<readonly AssetOwner[]>;
 }
 
 function fail(code: AttachmentStoreErrorCode, message: string): never {
@@ -838,6 +843,13 @@ export function createAttachmentStore(deps: AttachmentStoreDeps): AttachmentStor
               : item,
           ),
         });
+      }),
+    owners: (id) =>
+      io.exclusive(async () => {
+        assertId(id);
+        const manifest = await load();
+        const asset = manifest.assets.find((item) => item.id === id);
+        return asset ? asset.owners.map((owner) => ({ ...owner })) : [];
       }),
   };
 }

@@ -497,6 +497,20 @@ describe("attachment snapshot store", () => {
     expect(await h.store.list(SESSION)).toHaveLength(2);
   });
 
+  it("reports immutable owners by asset id for main-only reconciliation", async () => {
+    const h = harness();
+    const original = await h.add("data");
+    expect(await h.store.owners(original.id)).toEqual([DRAFT]);
+    await h.store.addOwner(original.id, DRAFT, SESSION);
+    expect(await h.store.owners(original.id)).toEqual([DRAFT, SESSION]);
+    // Caller mutation cannot change the manifest projection.
+    const owners = await h.store.owners(original.id);
+    (owners as AssetOwner[]).push(OTHER);
+    expect(await h.store.owners(original.id)).toEqual([DRAFT, SESSION]);
+    expect(await h.store.owners("123e4567-e89b-42d3-a456-426614174999")).toEqual([]);
+    await expect(h.store.owners("not-an-id")).rejects.toMatchObject({ code: "bad_request" });
+  });
+
   it("tracks shared owners without deleting originals when an owner releases them", async () => {
     const h = harness();
     const original = await h.add("data");

@@ -175,4 +175,22 @@ describe("SDK attachment submission associations", () => {
     expect(readAttachmentSubmissionAssociations(h.session)).toEqual([h.association]);
     expect(readAttachmentSubmissionHistory(h.session, "all")).toHaveLength(1);
   });
+
+  it("reads a fork's copied association although the session id differs", () => {
+    const h = fixture();
+    const manager = h.session.sessionManager as unknown as { getSessionId: () => string };
+    manager.getSessionId = () => "forked-session";
+    // Compaction/summary entries in the same branch never hide or invent a card.
+    h.entries.splice(1, 0, {
+      type: "compaction",
+      id: "compaction-1",
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+    const branch = readAttachmentSubmissionHistory(h.session, "branch");
+    const all = readAttachmentSubmissionHistory(h.session, "all");
+    expect(branch).toHaveLength(1);
+    expect(all).toHaveLength(1);
+    expect(branch[0]?.association.metadata.scope.sessionId).toBe(scope.sessionId);
+    expect(branch[0]?.association.metadata.userEntryId).toBe("user-entry-1");
+  });
 });

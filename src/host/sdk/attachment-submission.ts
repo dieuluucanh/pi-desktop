@@ -307,7 +307,12 @@ export function readAttachmentSubmissionHistory(
       )
         continue;
       const metadata = validateAttachmentSubmissionMetadata(candidate.data);
-      if (!metadata || metadata.scope.sessionId !== session.sessionManager.getSessionId()) continue;
+      if (!metadata) continue;
+      // A Pi fork/clone copies entries verbatim and gets a new session id, while
+      // the association keeps the original scope. Recovery and display therefore
+      // validate structure, entry identity and content digests, not the current
+      // session id; ownership is granted separately by main (plan step 12) from
+      // app-owned journal evidence, never from this host read alone.
       const userEntry = record(byId.get(metadata.userEntryId));
       if (
         userEntry?.type !== "message" ||

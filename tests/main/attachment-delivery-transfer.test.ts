@@ -130,8 +130,20 @@ function fixture(
   };
 }
 
-function stage(h: ReturnType<typeof fixture>, pin: SessionHostPin = h.pin) {
-  return stageAttachmentDelivery({ pin, lease: h.lease, journal: h.journal });
+function stage(
+  h: ReturnType<typeof fixture>,
+  pin: SessionHostPin = h.pin,
+  ownership?: {
+    promote: (entry: unknown) => Promise<"promoted" | "skipped" | "incomplete">;
+    adopt: (input: unknown) => Promise<number>;
+  },
+) {
+  return stageAttachmentDelivery({
+    pin,
+    lease: h.lease,
+    journal: h.journal,
+    ...(ownership ? { ownership } : {}),
+  });
 }
 
 describe("private main-to-host attachment staging", () => {
@@ -246,7 +258,11 @@ describe("private main-to-host attachment staging", () => {
       }
       return {};
     });
-    const staged = await stage(h);
+    const ownership = {
+      promote: vi.fn(async () => "promoted" as const),
+      adopt: vi.fn(async () => 0),
+    };
+    const staged = await stage(h, h.pin, ownership);
     const planned = await staged.plan("Review this note");
     expect(planned).toMatchObject({ outcome: "ready", plan: { id: planId } });
     await expect(
@@ -258,6 +274,17 @@ describe("private main-to-host attachment staging", () => {
       userEntryId: "user-entry-1",
       associationEntryId: "association-entry-1",
     });
+    expect(ownership.promote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        turnId,
+        attemptId,
+        state: "accepted",
+        result: expect.objectContaining({ outcome: "accepted" }),
+      }),
+    );
+    expect(ownership.adopt).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: scope.sessionId, branchId: scope.branchId }),
+    );
     await expect(
       staged.dispatch({ planId, turnId, attemptId, text: "Review this note" }),
     ).resolves.toEqual({
@@ -272,6 +299,86 @@ describe("private main-to-host attachment staging", () => {
     expect(h.calls.at(-1)?.method).toBe("attachments.submissions.list");
     await staged.cancel();
     expect(h.close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps durable acceptance when ownership promotion fails", async () => {
+    const h = fixture(8);
+    const turnId = id("6");
+    const attemptId = id("7");
+    const planId = id("5");
+    vi.spyOn(h.pin, "request").mockImplementation(async (method, params) => {
+      h.calls.push({ method, params });
+      if (method === "attachments.context") {
+        return {
+          sessionId: scope.sessionId,
+          sessionEpoch: scope.sessionEpoch,
+          branchId: scope.branchId,
+          revision: scope.revision,
+        };
+      }
+      if (method === "attachments.plan") {
+        return {
+          outcome: "ready",
+          plan: {
+            version: 1,
+            id: planId,
+            model: { provider: "fake", id: "model", api: "openai-completions" },
+            representationIds: [h.lease.assets[0]!.representation.id],
+            estimatedTokens: 12,
+            blockingReasons: [],
+          },
+        };
+      }
+      if (method === "attachments.prompt") {
+        throw new Error("reply lost");
+      }
+      if (method === "attachments.submissions.list") {
+        return {
+          version: 1,
+          associations: [
+            {
+              associationEntryId: "association-entry-1",
+              metadata: {
+                version: 1,
+                planId,
+                turnId,
+                attemptId,
+                scope,
+                sourceTextSha256: createHash("sha256").update("Review this note").digest("hex"),
+                userEntryId: "user-entry-1",
+                textSha256: "d".repeat(64),
+                images: [],
+                representations: h.lease.assets.map((asset) => ({
+                  representationId: asset.representation.id,
+                  representationSha256: asset.representation.representationSha256,
+                  originalId: asset.original.id,
+                  originalSha256: asset.original.sha256,
+                  modality: asset.representation.modality,
+                })),
+                createdAt: 1_000,
+              },
+            },
+          ],
+        };
+      }
+      return {};
+    });
+    const ownership = {
+      promote: vi.fn(async () => {
+        throw new Error("store unavailable");
+      }),
+      adopt: vi.fn(async () => {
+        throw new Error("store unavailable");
+      }),
+    };
+    const staged = await stage(h, h.pin, ownership);
+    await staged.plan("Review this note");
+    await expect(
+      staged.dispatch({ planId, turnId, attemptId, text: "Review this note" }),
+    ).resolves.toMatchObject({ outcome: "accepted", userEntryId: "user-entry-1" });
+    expect(ownership.promote).toHaveBeenCalledOnce();
+    expect(h.close).not.toHaveBeenCalled();
+    await staged.cancel();
   });
 
   it("treats a prompt timeout as uncertain and never retries the dispatch", async () => {

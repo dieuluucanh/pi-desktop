@@ -63,6 +63,7 @@ import {
   type AttachmentDeliverySubmissionService,
 } from "./attachment-delivery-submission";
 import { createNodeAttachmentStoreIo } from "./attachment-store-io";
+import { createAttachmentOwnershipReconciler } from "./attachment-ownership";
 import {
   createAttachmentSubmissionJournal,
   createNodeAttachmentSubmissionJournalIo,
@@ -774,6 +775,15 @@ function attachmentService(): Promise<AttachmentServiceRuntime> {
         io: createNodeAttachmentSubmissionJournalIo(),
         now: Date.now,
       });
+      const ownership = createAttachmentOwnershipReconciler({
+        store,
+        journal,
+        profileKey: profile,
+        report: (incident) => console.warn(`[attachments] ${incident}`),
+      });
+      // A crash between durable acceptance and promotion is repaired without a
+      // host, and never by resending the turn (plan step 12).
+      void ownership.reconcile().catch(() => undefined);
       const service = createAttachmentService({
         store,
         prepareDirect: async (owner, attachmentId, context) => {
@@ -871,7 +881,8 @@ function attachmentService(): Promise<AttachmentServiceRuntime> {
       });
       const submission = createAttachmentDeliverySubmissionService({
         open: (input) => deliveries.open(input),
-        stage: (lease) => stageAttachmentDelivery({ pin: lease.hostPin, lease, journal }),
+        stage: (lease) =>
+          stageAttachmentDelivery({ pin: lease.hostPin, lease, journal, ownership }),
         closeDraft: (senderId, draft) => service.closeDraft(senderId, draft),
       });
       return Object.assign(service, {
@@ -1001,7 +1012,13 @@ function attachmentService(): Promise<AttachmentServiceRuntime> {
                     ? (raw as Record<string, unknown>).associations
                     : undefined;
                 if (Array.isArray(associations)) {
-                  await journal.reconcile(entry.scope, associations);
+                  const reconciled = await journal.reconcile(entry.scope, associations);
+                  await ownership.reconcile(reconciled);
+                  await ownership.adopt({
+                    sessionId: pin.sessionId,
+                    branchId: null,
+                    associations,
+                  });
                   entry = (await journal.get(entry.turnId, entry.attemptId)) ?? entry;
                 }
               }
