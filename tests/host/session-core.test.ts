@@ -8,6 +8,12 @@ import {
   type SessionRuntimeRequest,
 } from "../../src/host/session-core";
 import type { AttachmentDeliveryScope } from "../../src/shared/attachments";
+import { attachmentTranscriptCard } from "../../src/shared/attachments";
+import { renderAttachmentTextSections } from "../../src/attachments/text";
+import {
+  appendAttachmentSubmissionAssociation,
+  readAttachmentSubmissionHistory,
+} from "../../src/host/sdk/attachment-submission";
 import { createAttachmentTransferStore } from "../../src/host/attachment-transfer";
 import { createAttachmentImagePreparationStore } from "../../src/host/attachment-image-preparation";
 import type { HostMethod } from "../../src/shared/host-protocol";
@@ -1672,5 +1678,157 @@ describe("Desktop model/context route policy", () => {
     await expect(h.call("model.cycle", { direction: "forward" })).rejects.toMatchObject({
       code: "busy",
     });
+  });
+});
+
+describe("attachment transcript chain", () => {
+  const turnId = "123e4567-e89b-42d3-a456-426614174201";
+  const attemptId = "123e4567-e89b-42d3-a456-426614174202";
+  const planId = "123e4567-e89b-42d3-a456-426614174203";
+  const draftId = "123e4567-e89b-42d3-a456-426614174204";
+  const originalId = "123e4567-e89b-42d3-a456-426614174205";
+  const representationId = "123e4567-e89b-42d3-a456-426614174206";
+  const associationEntryId = "association-entry-1";
+  const digest = "a".repeat(64);
+  const scope: AttachmentDeliveryScope = {
+    authorityId: "123e4567-e89b-42d3-a456-426614174207",
+    leaseId: "123e4567-e89b-42d3-a456-426614174208",
+    profileKey: "b".repeat(64),
+    tabId: "tab-1",
+    draftId,
+    hostGeneration: 1,
+    processGeneration: 1,
+    sessionId: "session-1",
+    sessionEpoch: 1,
+    branchId: null,
+    revision: "revision-1",
+  };
+
+  function chain() {
+    const body = "managed text body";
+    const text = `Summarize this\n\n${renderAttachmentTextSections([
+      { id: originalId, name: "notes.txt", representationSha256: digest, text: body },
+    ])}`;
+    const message = { role: "user", content: [{ type: "text", text }] };
+    const entries: Array<Record<string, unknown>> = [
+      { type: "message", id: "user-entry-1", message },
+    ];
+    const sessionManager = {
+      getEntries: () => [...entries],
+      getBranch: () => [...entries],
+      getEntryCount: () => entries.length,
+      getSessionId: () => scope.sessionId,
+      isPersisted: () => entries.some((entry) => entry.type === "message"),
+      appendCustomEntry: (customType: string, data: unknown) => {
+        entries.push({ type: "custom", id: associationEntryId, customType, data });
+        return associationEntryId;
+      },
+    };
+    const session = { sessionManager } as unknown as Parameters<
+      typeof appendAttachmentSubmissionAssociation
+    >[0];
+    const asset = {
+      original: {
+        id: originalId,
+        name: "notes.txt",
+        kind: "text" as const,
+        bytes: 18,
+        sha256: digest,
+      },
+      representation: {
+        id: representationId,
+        attachmentId: originalId,
+        modality: "text" as const,
+        origin: "direct" as const,
+        bytes: 18,
+        originalSha256: digest,
+        representationSha256: digest,
+        preparationVersion: "direct-v1",
+        approved: true,
+        warnings: [],
+      },
+      image: null,
+      approvalDigest: null,
+    };
+    const association = appendAttachmentSubmissionAssociation(session, {
+      planId,
+      turnId,
+      attemptId,
+      sourceTextSha256: digest,
+      scope,
+      text,
+      images: [],
+      assets: [asset],
+      userEntryId: "user-entry-1",
+      createdAt: 1_000,
+    });
+    return { message, entries, session, association };
+  }
+
+  it("appends, reloads and projects the exact persisted turn as a card", async () => {
+    const fixture = chain();
+    expect(fixture.association).not.toBeNull();
+    const reloaded = readAttachmentSubmissionHistory(fixture.session);
+    expect(reloaded).toHaveLength(1);
+    expect(reloaded[0]?.association.metadata.turnId).toBe(turnId);
+
+    const h = harness({
+      listAttachmentSubmissionHistory: () => readAttachmentSubmissionHistory(fixture.session),
+    });
+    await h.call("session.create");
+    h.primary.state.messages = [fixture.message];
+
+    const projected = (await h.call("messages.get", {})) as {
+      messages: Array<Record<string, unknown>>;
+    };
+    expect(projected.messages).toHaveLength(1);
+    expect(projected.messages[0]?.id).toBe("user-entry-1");
+    expect(projected.messages[0]?.desktopAttachmentCard).toEqual(
+      attachmentTranscriptCard(fixture.association!),
+    );
+
+    const looked = (await h.call("messages.get", { attachmentTurnId: turnId })) as {
+      attachmentCard: unknown;
+    };
+    expect(looked.attachmentCard).toEqual(attachmentTranscriptCard(fixture.association!));
+    await expect(
+      h.call("messages.get", { attachmentTurnId: turnId, extra: true } as never),
+    ).rejects.toMatchObject({ code: "bad_request" });
+  });
+
+  it("never attributes an ambiguous duplicate message reference", async () => {
+    const fixture = chain();
+    const h = harness({
+      listAttachmentSubmissionHistory: () => readAttachmentSubmissionHistory(fixture.session),
+    });
+    await h.call("session.create");
+    h.primary.state.messages = [fixture.message, fixture.message];
+
+    const projected = (await h.call("messages.get", {})) as {
+      messages: Array<Record<string, unknown>>;
+    };
+    expect(projected.messages).toHaveLength(2);
+    expect(projected.messages.every((item) => item.desktopAttachmentCard === undefined)).toBe(true);
+  });
+
+  it("degrades to ordinary history when a stored association is invalid", async () => {
+    const fixture = chain();
+    const associationEntry = fixture.entries.find((entry) => entry.id === associationEntryId);
+    expect(associationEntry).toBeDefined();
+    associationEntry!.data = {
+      ...(associationEntry!.data as Record<string, unknown>),
+      turnId: "nope",
+    };
+    const h = harness({
+      listAttachmentSubmissionHistory: () => readAttachmentSubmissionHistory(fixture.session),
+    });
+    await h.call("session.create");
+    h.primary.state.messages = [fixture.message];
+
+    const projected = (await h.call("messages.get", {})) as {
+      messages: Array<Record<string, unknown>>;
+    };
+    expect(projected.messages[0]?.desktopAttachmentCard).toBeUndefined();
+    expect(projected.messages[0]?.id).toBeUndefined();
   });
 });

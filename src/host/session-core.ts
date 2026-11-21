@@ -2046,11 +2046,18 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         matches.push(item);
         byMessage.set(item.message, matches);
       }
+      // A repeated object in history is an ambiguous turn: Pi can hold two
+      // entries that are value-identical, and `messages.get` must not attach one
+      // card to both of them.
+      const occurrences = new Map<unknown, number>();
+      for (const message of messages) {
+        occurrences.set(message, (occurrences.get(message) ?? 0) + 1);
+      }
       const projected = messages.map((message) => {
         const matches = byMessage.get(message);
         // Associate only by the exact persisted message object, never by its
         // filename or text. Ambiguous duplicate references degrade normally.
-        if (!matches || matches.length !== 1) return message;
+        if (!matches || matches.length !== 1 || occurrences.get(message) !== 1) return message;
         const { association } = matches[0]!;
         const card: AttachmentTranscriptCard = attachmentTranscriptCard(association);
         return {
