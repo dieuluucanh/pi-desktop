@@ -41,6 +41,9 @@ function request(over: Record<string, unknown> = {}): Record<string, unknown> {
     operation: "create",
     ownerCommand: "workflow",
     spec: spec(),
+    // Native operations require the host-issued capability grant; a payload's
+    // own owner string is not authority.
+    grant: { token: "grant-1", ownerCommand: "workflow", sessionId: "session-1", epoch: 1 },
     ...over,
   };
 }

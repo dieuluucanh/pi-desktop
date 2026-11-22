@@ -3044,6 +3044,8 @@ describe("related-session host events (orchestrator step 12)", () => {
       operation: "create",
       ownerCommand: "fixture",
       ownerKey: "C:/ext/fixture.ts",
+      // Native operations require the host-issued grant, not just a name.
+      grant: { token: "grant-1", ownerCommand: "fixture", sessionId: "session-1", epoch: 1 },
       spec: {
         requestId: "req-1",
         parentSessionRef: "session-1",

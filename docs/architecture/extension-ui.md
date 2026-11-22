@@ -517,3 +517,19 @@ The installed SDK's event bus is **not** publisher authentication. Source
 binding is established for related-session authority through registered command
 provenance; a contribution's declared owner is a namespace, not an auth token.
 Extensions remain trusted executable code — this is not a new sandbox.
+
+### Related-session identity pass-through (2026-11-22)
+
+A created child now returns both the opaque `sessionRef` handle and the real
+durable `sessionId`/`sessionFile` when the host owns creation. They are distinct
+fields: a handle may identify a tab, while the identity is what an extension
+needs to write bootstrap metadata or reconcile a restart. `open` focuses the
+existing owner rather than starting a second JSONL writer, and a duplicate
+`requestId`/`dedupeKey` joins the original operation.
+
+Bootstrap entries are data, never a turn trigger. The generic contract accepts
+the Workflow-owned `workflow-task-scope` and `workflow-control-grant` types
+alongside the managed/assignment/roadmap entries; the host forwards them
+without interpreting them. The extension reads only a grant _reference_ from
+that metadata — the shared secret stays in a private file, never in argv,
+prompts or contribution text.

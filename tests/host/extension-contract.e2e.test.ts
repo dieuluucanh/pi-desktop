@@ -203,19 +203,53 @@ function relatedHarness(over: Partial<RelatedSessionCapabilities> = {}) {
   const bus = inMemoryBus();
   const clock = fakeClock();
   const forwarded: Array<{ request: unknown; owner: { key: string; label?: string } }> = [];
+  // The host mints grants; a request without one is never forwarded.
+  const issued = new Set<string>();
+  const GRANT = {
+    token: "grant-alpha",
+    ownerCommand: "fixture-alpha",
+    sessionId: "session-1",
+    epoch: 2,
+  };
+  issued.add(GRANT.token);
   const bridge = createSessionHostBridge({
     bus,
     clock,
     capabilities: () => ({ ...RELATED_CAPABILITIES, ...over }),
     resolveOwner: (name) =>
       name === "fixture-alpha" ? { key: "C:/ext/alpha/index.ts", label: "fixture.alpha" } : null,
+    grants: {
+      accept: ({ raw, ownerCommand, sessionId, epoch }) => {
+        const grant = raw as
+          | { token?: unknown; ownerCommand?: unknown; sessionId?: unknown; epoch?: unknown }
+          | undefined;
+        const token = grant?.token;
+        if (typeof token !== "string" || !issued.has(token)) {
+          return { ok: false, error: "the capability grant was not issued by this host" };
+        }
+        // Mirror the host: the token's own claims must match the record and the
+        // live request, so it cannot be re-labelled.
+        if (grant?.ownerCommand !== GRANT.ownerCommand || ownerCommand !== GRANT.ownerCommand) {
+          return { ok: false, error: "the capability grant belongs to another extension" };
+        }
+        if (grant?.sessionId !== GRANT.sessionId || sessionId !== GRANT.sessionId) {
+          return { ok: false, error: "the capability grant belongs to another session" };
+        }
+        if (grant?.epoch !== GRANT.epoch || epoch !== GRANT.epoch) {
+          return { ok: false, error: "the capability grant is from a previous host epoch" };
+        }
+        return { ok: true };
+      },
+    },
+    sessionId: () => GRANT.sessionId,
+    epoch: () => GRANT.epoch,
     forward: (request, owner) => forwarded.push({ request, owner }),
   });
   const results = (): Array<{ requestId: string; result: RelatedSessionResult }> =>
     bus.sent
       .filter((entry) => entry.channel === RELATED_SESSION_CHANNELS.result)
       .map((entry) => entry.payload as { requestId: string; result: RelatedSessionResult });
-  return { bus, clock, forwarded, bridge, results };
+  return { bus, clock, forwarded, bridge, results, grant: GRANT };
 }
 
 function relatedRequest(over: Record<string, unknown> = {}) {
@@ -223,6 +257,12 @@ function relatedRequest(over: Record<string, unknown> = {}) {
     requestId: "req-1",
     operation: "create",
     ownerCommand: "fixture-alpha",
+    grant: {
+      token: "grant-alpha",
+      ownerCommand: "fixture-alpha",
+      sessionId: "session-1",
+      epoch: 2,
+    },
     spec: {
       requestId: "req-1",
       parentSessionRef: "session-parent",
@@ -482,5 +522,57 @@ describe("generic related-session contract", () => {
       accepted: false,
     });
     expect(h.results()).toHaveLength(0);
+  });
+});
+
+describe("related sessions: the grant, not the command name, is the authority", () => {
+  it("refuses a request with no grant even when the command really exists", async () => {
+    const h = relatedHarness();
+    const request = relatedRequest();
+    delete (request as { grant?: unknown }).grant;
+    h.bus.emit(RELATED_SESSION_CHANNELS.request, request);
+    expect(h.forwarded).toHaveLength(0);
+    const [settled] = h.results();
+    expect(settled?.result.ok).toBe(false);
+    expect((settled?.result as { reason?: string }).reason).toMatch(/capability grant/);
+  });
+
+  it("refuses a grant minted for another extension", async () => {
+    const h = relatedHarness();
+    h.bus.emit(
+      RELATED_SESSION_CHANNELS.request,
+      relatedRequest({
+        requestId: "req-foreign",
+        // Same registered command, but the grant itself names another owner.
+        grant: {
+          token: "grant-alpha",
+          ownerCommand: "fixture-beta",
+          sessionId: "session-1",
+          epoch: 2,
+        },
+      }),
+    );
+    expect(h.forwarded).toHaveLength(0);
+    const [settled] = h.results();
+    expect((settled?.result as { reason?: string }).reason).toMatch(/another extension/);
+  });
+
+  it("refuses a stale host epoch", async () => {
+    const h = relatedHarness();
+    h.bus.emit(
+      RELATED_SESSION_CHANNELS.request,
+      relatedRequest({
+        requestId: "req-epoch",
+        grant: {
+          token: "grant-alpha",
+          ownerCommand: "fixture-alpha",
+          sessionId: "session-1",
+          epoch: 1,
+        },
+      }),
+    );
+    expect(h.forwarded).toHaveLength(0);
+    const [settled] = h.results();
+    expect((settled?.result as { reason?: string }).reason).toMatch(/previous host epoch/);
   });
 });

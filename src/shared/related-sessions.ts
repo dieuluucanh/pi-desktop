@@ -108,6 +108,10 @@ export type RelatedSessionResult =
       reused: boolean;
       title?: string;
       running?: boolean;
+      /** Real SDK session identity, when the host created/opened it. */
+      sessionId?: string;
+      /** Durable session file, so a restart can reopen the same child. */
+      sessionFile?: string;
     }
   | { ok: false; code: RelatedSessionErrorCode; reason: string };
 
@@ -117,6 +121,17 @@ export interface RelatedSessionRequest {
   operation: RelatedSessionOperation;
   /** The extension's registered command name; the host resolves its source. */
   ownerCommand: string;
+  /**
+   * Host-issued capability grant. The host only accepts a privileged request
+   * whose grant it minted for this exact command/session/epoch; the command
+   * name alone is a lookup, not proof of the publisher.
+   */
+  grant: {
+    token: string;
+    ownerCommand: string;
+    sessionId: string;
+    epoch: number;
+  };
   spec?: RelatedSessionSpec;
   sessionRef?: string;
 }
@@ -249,15 +264,37 @@ export function validateRelatedSessionRequest(raw: unknown): RelatedSessionReque
   }
   const operation = raw.operation as RelatedSessionOperation;
 
+  const rawGrant = isRecord(raw.grant) ? raw.grant : undefined;
+  const grantToken = rawGrant ? plainText(rawGrant.token, 256) : undefined;
+  const grantOwner = rawGrant ? plainText(rawGrant.ownerCommand, 64) : undefined;
+  const grantSession = rawGrant ? plainText(rawGrant.sessionId, 200) : undefined;
+  if (
+    !rawGrant ||
+    !grantToken ||
+    !grantOwner ||
+    !grantSession ||
+    typeof rawGrant.epoch !== "number" ||
+    !Number.isInteger(rawGrant.epoch) ||
+    rawGrant.epoch < 0
+  ) {
+    return { ok: false, error: "the request has no usable host capability grant" };
+  }
+  const grant = {
+    token: grantToken,
+    ownerCommand: grantOwner,
+    sessionId: grantSession,
+    epoch: rawGrant.epoch,
+  };
+
   if (operation === "create") {
     const spec = validateRelatedSessionSpec(raw.spec);
     if (!spec.ok) return { ok: false, error: spec.error };
-    return { ok: true, value: { requestId, operation, ownerCommand, spec: spec.value } };
+    return { ok: true, value: { requestId, operation, ownerCommand, grant, spec: spec.value } };
   }
 
   const sessionRef = plainText(raw.sessionRef, RELATED_SESSION_LIMITS.maxRefChars);
   if (!sessionRef) return { ok: false, error: "sessionRef is required" };
-  return { ok: true, value: { requestId, operation, ownerCommand, sessionRef } };
+  return { ok: true, value: { requestId, operation, ownerCommand, grant, sessionRef } };
 }
 
 /** Validates a host answer before the extension receives it. */
@@ -275,6 +312,15 @@ export function validateRelatedSessionResult(
     if (raw.title !== undefined && title === undefined) {
       return { ok: false, error: "invalid title" };
     }
+    const sessionId = raw.sessionId === undefined ? undefined : plainText(raw.sessionId, 200);
+    if (raw.sessionId !== undefined && sessionId === undefined) {
+      return { ok: false, error: "invalid sessionId" };
+    }
+    const sessionFile =
+      raw.sessionFile === undefined ? undefined : plainText(raw.sessionFile, 4_000);
+    if (raw.sessionFile !== undefined && sessionFile === undefined) {
+      return { ok: false, error: "invalid sessionFile" };
+    }
     return {
       ok: true,
       value: {
@@ -284,6 +330,8 @@ export function validateRelatedSessionResult(
         reused: raw.reused === true,
         ...(title === undefined ? {} : { title }),
         ...(typeof raw.running === "boolean" ? { running: raw.running } : {}),
+        ...(sessionId === undefined ? {} : { sessionId }),
+        ...(sessionFile === undefined ? {} : { sessionFile }),
       },
     };
   }

@@ -59,6 +59,24 @@ composer's `!`/`!!` stays the "the agent should see this" runner.
 - It is a **local** shell only. There is no SSH/remote session, no tmux control
   mode and no docked split panel; those are backlog.
 
+## Related child sessions
+
+An extension can ask the app to open a **related session**: a normal tab in the
+same project, owned by the session that requested it. The tab is a real session
+with the usual tools, editor, input and transcript — not a hidden background
+worker.
+
+- It starts **idle**. The extension writes its assignment metadata before the
+  session starts, and the child's first turn begins only when the parent hands
+  it an authenticated start grant. A tab you open from a link stays idle.
+- Opening the same related session again **focuses** the existing tab; it never
+  starts a second writer for the same JSONL file.
+- Closing the tab ends that child; the parent sees the close and must reconcile
+  the task rather than silently respawning it.
+- The assignment content is ordinary session metadata. You can inspect it from
+  the transcript/session view; the parent's control secret is never placed in
+  the tab, the prompt or the command line.
+
 ## Working with several sessions at once (grid)
 
 The window can show several tabs side by side. The grid replaces only the content

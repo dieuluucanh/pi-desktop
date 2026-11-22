@@ -54,6 +54,24 @@ export interface SessionHostBridgeOptions {
   clock: RelatedSessionClock;
   /** Source-bound owner resolution; null means the extension is not known. */
   resolveOwner(ownerCommand: string): RelatedSessionOwner | null;
+  /**
+   * Host-issued capability authority. Without it every privileged request is
+   * `unsupported`: a command name that exists proves nothing about who emitted
+   * the message, so the host must have minted a grant for this exact
+   * command + session + epoch.
+   */
+  grants?: {
+    accept(input: {
+      raw: unknown;
+      ownerCommand: string;
+      sessionId: string;
+      epoch: number;
+      operation: string;
+    }): { ok: true } | { ok: false; error: string };
+  };
+  /** Host session/epoch the grants are bound to. */
+  sessionId?(): string;
+  epoch?(): number;
   /** Emits the operation to the desktop main process (fire and forget). */
   forward(request: RelatedSessionRequest, owner: RelatedSessionOwner): void;
   /** Request timeout; a missing answer must not hang the extension forever. */
@@ -157,8 +175,13 @@ export function createSessionHostBridge(options: SessionHostBridgeOptions): Sess
   const handleRequest = (payload: unknown): void => {
     const parsed = validateRelatedSessionRequest(payload);
     if (!parsed.ok) {
-      // Without a valid request id there is no one to answer; the extension
-      // sees no result and its own timeout applies. Never guess an id.
+      // A request that still carries a readable id gets a definite rejection, so
+      // the extension does not sit until its own timeout. An unidentifiable
+      // payload is only reported: there is no one to answer and no id to guess.
+      const maybeId = asRecord(payload).requestId;
+      if (typeof maybeId === "string" && maybeId.trim().length > 0 && maybeId.length <= 200) {
+        reject(maybeId, "rejected", parsed.error);
+      }
       report(new Error(`related-session request rejected: ${parsed.error}`));
       return;
     }
@@ -198,6 +221,27 @@ export function createSessionHostBridge(options: SessionHostBridgeOptions): Sess
         "rejected",
         `no registered command "${request.ownerCommand}" identifies the requesting extension`,
       );
+      return;
+    }
+
+    // The grant is the authority; the resolved owner only names the extension.
+    if (!options.grants) {
+      reject(
+        request.requestId,
+        "unsupported",
+        "this host cannot verify a host-issued capability grant",
+      );
+      return;
+    }
+    const verdict = options.grants.accept({
+      raw: request.grant,
+      ownerCommand: request.ownerCommand,
+      sessionId: options.sessionId?.() ?? "",
+      epoch: options.epoch?.() ?? -1,
+      operation: request.operation,
+    });
+    if (!verdict.ok) {
+      reject(request.requestId, "rejected", verdict.error);
       return;
     }
 

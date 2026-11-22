@@ -29,6 +29,13 @@ function createRequest(over: Record<string, unknown> = {}) {
     operation: "create",
     ownerCommand: "workflow",
     ownerKey: "C:/profile/extensions/workflow/index.ts",
+    grant: {
+      token: "grant-main",
+      ownerCommand: "workflow",
+      sessionId: "session-main",
+      epoch: 2,
+    },
+
     spec: {
       requestId: "req-1",
       parentSessionRef: "parent-session",
@@ -146,6 +153,12 @@ describe("related-session navigation and lifecycle", () => {
           ownerCommand: "workflow",
           ownerKey: "x",
           sessionRef: "tab-child",
+          grant: {
+            token: "grant-main",
+            ownerCommand: "workflow",
+            sessionId: "session-main",
+            epoch: 2,
+          },
         },
         PARENT,
       );
@@ -156,7 +169,17 @@ describe("related-session navigation and lifecycle", () => {
 
   it("focuses, inspects, interrupts and closes its own child", async () => {
     const { port, service } = harness();
-    const base = { ownerCommand: "workflow", ownerKey: "x", sessionRef: "tab-child" };
+    const base = {
+      ownerCommand: "workflow",
+      ownerKey: "x",
+      sessionRef: "tab-child",
+      grant: {
+        token: "grant-main",
+        ownerCommand: "workflow",
+        sessionId: "session-main",
+        epoch: 2,
+      },
+    };
 
     await expect(
       service.handle({ ...base, requestId: "f", operation: "focus" }, PARENT),

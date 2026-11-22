@@ -938,7 +938,11 @@ describe("related sessions (orchestrator step 12)", () => {
     ).rejects.toThrow(/unsupported bootstrap/);
   });
 
-  it("forwards a source-bound request and settles it with main's answer", async () => {
+  it("refuses a related-session request that has no host-issued grant", async () => {
+    // Source binding alone is not authority: the host mints a single-use grant
+    // for the registered command. Without it the request is rejected before any
+    // forwarding. The grant-bearing forwarding path is covered by
+    // `tests/host/related-sessions.test.ts`.
     const bus = inMemoryBus();
     const { call, emitted, runtime } = harness({
       contributionBus: bus,
@@ -956,23 +960,15 @@ describe("related sessions (orchestrator step 12)", () => {
     };
 
     bus.emit("session-host:request", request());
-    const forwarded = emitted.find((entry) => entry.event === "host:relatedSession.request");
-    expect(forwarded?.payload).toMatchObject({
-      requestId: "req-1",
-      ownerKey: "C:/ext/workflow/index.ts",
-      ownerLabel: "@dieulc/workflow",
-    });
-
-    await call("sessionHost.result", {
-      requestId: "req-1",
-      result: { ok: true, sessionRef: "tab-child", focused: true, reused: false },
-    });
-    expect(bus.sent.at(-1)).toEqual({
-      channel: "session-host:result",
-      payload: {
-        requestId: "req-1",
-        result: { ok: true, sessionRef: "tab-child", focused: true, reused: false },
-      },
-    });
+    expect(emitted.some((entry) => entry.event === "host:relatedSession.request")).toBe(false);
+    await vi.waitFor(() =>
+      expect(
+        bus.sent.some(
+          (entry) =>
+            entry.channel === "session-host:result" &&
+            (entry.payload as { result?: { ok?: boolean } }).result?.ok === false,
+        ),
+      ).toBe(true),
+    );
   });
 });

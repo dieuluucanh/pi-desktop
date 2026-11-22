@@ -552,6 +552,82 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
    */
   let relatedBridge: SessionHostBridge | null = null;
 
+  /**
+   * Host-minted capability grants for related-session requests. A grant is
+   * bound to one registered command + session + epoch and expires; it is what
+   * separates "this command exists" from "this extension was handed
+   * authority". Delivered to the extension's companion `<command>-bridge`
+   * command on bind, never persisted and never written to a prompt.
+   */
+  let relatedEpoch = 0;
+  let grantSeq = 0;
+  const issuedGrants = new Map<
+    string,
+    {
+      ownerCommand: string;
+      sessionId: string;
+      epoch: number;
+      expiresAt: number;
+    }
+  >();
+  const sessionIdOf = (): string => session?.sessionId ?? "session";
+
+  const mintGrant = (ownerCommand: string) => {
+    grantSeq += 1;
+    const token = `grant-${Date.now().toString(36)}-${grantSeq}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+    const at = Date.now();
+    const grant = {
+      version: 1 as const,
+      token,
+      ownerCommand,
+      sessionId: sessionIdOf(),
+      epoch: relatedEpoch,
+      issuedAt: at,
+      expiresAt: at + 5 * 60_000,
+    };
+    issuedGrants.set(token, {
+      ownerCommand,
+      sessionId: grant.sessionId,
+      epoch: grant.epoch,
+      expiresAt: grant.expiresAt,
+    });
+    return grant;
+  };
+
+  const acceptGrant = (input: {
+    raw: unknown;
+    ownerCommand: string;
+    sessionId: string;
+    epoch: number;
+  }): { ok: true } | { ok: false; error: string } => {
+    const raw = input.raw as
+      { token?: unknown; ownerCommand?: unknown; sessionId?: unknown; epoch?: unknown } | undefined;
+    const token = typeof raw?.token === "string" ? raw.token : "";
+    if (!token) return { ok: false, error: "the request has no capability grant" };
+    const known = issuedGrants.get(token);
+    if (!known) {
+      return { ok: false, error: "the capability grant was not issued by this host" };
+    }
+    if (Date.now() >= known.expiresAt) {
+      issuedGrants.delete(token);
+      return { ok: false, error: "the capability grant expired" };
+    }
+    // The grant's OWN claims must match the record the host minted AND the live
+    // request: a token cannot be re-labelled to another owner/session/epoch.
+    if (raw?.ownerCommand !== known.ownerCommand || known.ownerCommand !== input.ownerCommand) {
+      return { ok: false, error: "the capability grant belongs to another extension" };
+    }
+    if (raw?.sessionId !== known.sessionId || known.sessionId !== input.sessionId) {
+      return { ok: false, error: "the capability grant belongs to another session" };
+    }
+    if (raw?.epoch !== known.epoch || known.epoch !== input.epoch) {
+      return { ok: false, error: "the capability grant is from a previous host epoch" };
+    }
+    return { ok: true };
+  };
+
   const relatedCapabilities = (): RelatedSessionCapabilities => {
     const commands = session?.extensionRunner?.getRegisteredCommands;
     const sourceBound = typeof commands === "function";
@@ -589,6 +665,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   };
 
   const bindRelatedSessions = (): void => {
+    // A rebind invalidates every grant minted for the previous binding: a
+    // captured token must not authorize a request in the new epoch.
+    relatedEpoch += 1;
     relatedBridge?.dispose();
     relatedBridge = null;
     if (!deps.contributionBus) return;
@@ -601,6 +680,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         clearTimeout: (handle) => clearTimeout(handle as Parameters<typeof clearTimeout>[0]),
       },
       resolveOwner: resolveRelatedOwner,
+      grants: { accept: acceptGrant },
+      sessionId: sessionIdOf,
+      epoch: () => relatedEpoch,
       forward: (request, owner) => {
         deps.emit(
           "host:relatedSession.request",
@@ -615,6 +697,37 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       onError: (error) => recordRuntimeError(error),
     });
     relatedBridge.announce();
+    void deliverRelatedGrants();
+  };
+
+  /**
+   * Hand each extension a grant through its registered companion command.
+   *
+   * Convention: an extension that wants privileged related-session operations
+   * registers `<ownerCommand>-bridge`; the host invokes it with the JSON grant.
+   * Only code reachable from that registration learns the token, so a payload's
+   * self-declared owner can never authorize an operation. A missing companion
+   * is not an error: that extension simply stays unsupported.
+   */
+  const deliverRelatedGrants = async (): Promise<void> => {
+    const runner = liveCommandRunner();
+    if (!runner) return;
+    const names = new Set(
+      (session?.extensionRunner?.getRegisteredCommands?.() ?? [])
+        .map((entry) => (entry as { name?: unknown }).name)
+        .filter((name): name is string => typeof name === "string"),
+    );
+    for (const ownerCommand of names) {
+      if (!names.has(`${ownerCommand}-bridge`)) continue;
+      const grant = mintGrant(ownerCommand);
+      try {
+        await runCommand(runner, `${ownerCommand}-bridge`, JSON.stringify(grant), (report) =>
+          deps.emit("extension_error", report, session?.sessionId ?? undefined),
+        );
+      } catch (error) {
+        recordRuntimeError(error);
+      }
+    }
   };
 
   const liveCommandRunner = (): CommandRunner | null => {

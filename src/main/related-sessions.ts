@@ -45,7 +45,12 @@ export interface RelatedSessionInspection {
 
 export interface RelatedSessionPort {
   parent(parentTabId: string): RelatedSessionParent | null;
-  create(input: CreateRelatedTabInput): Promise<{ sessionRef: string }>;
+  /** `sessionId`/`sessionFile` let a restart reopen the same durable child. */
+  create(input: CreateRelatedTabInput): Promise<{
+    sessionRef: string;
+    sessionId?: string;
+    sessionFile?: string;
+  }>;
   focus(sessionRef: string): Promise<boolean>;
   inspect(sessionRef: string): Promise<RelatedSessionInspection | null>;
   interrupt(sessionRef: string): Promise<boolean>;
@@ -168,6 +173,8 @@ export function createRelatedSessionService(
           sessionRef: created.sessionRef,
           focused: true,
           reused: false,
+          ...(created.sessionId === undefined ? {} : { sessionId: created.sessionId }),
+          ...(created.sessionFile === undefined ? {} : { sessionFile: created.sessionFile }),
         };
       } catch (error) {
         return failure(

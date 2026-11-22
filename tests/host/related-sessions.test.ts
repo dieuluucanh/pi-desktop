@@ -94,6 +94,9 @@ function request(over: Record<string, unknown> = {}) {
     operation: "create",
     ownerCommand: "workflow",
     spec: spec(),
+    // Host-issued capability grant: the bus is anonymous, so a command name
+    // alone is not authority.
+    grant: { token: "grant-1", ownerCommand: "workflow", sessionId: "session-1", epoch: 1 },
     ...over,
   };
 }
@@ -108,6 +111,26 @@ function harness(over: { capabilities?: Partial<RelatedSessionCapabilities> } = 
     capabilities: () => ({ ...CAPS, ...over.capabilities }),
     resolveOwner: (name) =>
       name === "workflow" ? { key: "C:/ext/workflow/index.ts", label: "@dieulc/workflow" } : null,
+    sessionId: () => "session-1",
+    epoch: () => 1,
+    grants: {
+      accept: ({ raw, ownerCommand, sessionId, epoch }) => {
+        const grant = raw as Record<string, unknown> | undefined;
+        if (!grant || typeof grant.token !== "string") {
+          return { ok: false, error: "the request has no capability grant" };
+        }
+        if (grant.ownerCommand !== ownerCommand) {
+          return { ok: false, error: "the capability grant belongs to another extension" };
+        }
+        if (grant.sessionId !== sessionId) {
+          return { ok: false, error: "the capability grant belongs to another session" };
+        }
+        if (grant.epoch !== epoch) {
+          return { ok: false, error: "the capability grant is from a previous host epoch" };
+        }
+        return { ok: true };
+      },
+    },
     forward: (request, owner) => forwarded.push({ request, owner }),
   });
   const results = (): Array<{ requestId: string; result: RelatedSessionResult }> =>
