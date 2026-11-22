@@ -3,16 +3,17 @@ import { fireEvent, render, screen } from "@testing-library/react";
 
 import { ContributionsBar } from "../../src/renderer/src/session/ContributionsBar";
 import { buildContributionSnapshot } from "../../src/shared/extension-contributions-view";
-import type { Contribution } from "../../src/shared/extension-contributions";
+import type { Contribution, ModeContribution } from "../../src/shared/extension-contributions";
 
 /**
- * Generic contribution bar (orchestrator plan step 9).
+ * Generic contribution bar (orchestrator plan step 9; mode-cycle step 8).
  *
  * The fixture uses arbitrary extension names on purpose: the component must
- * render and control any publisher without a Desktop change.
+ * render and control any publisher without a Desktop change. The primary mode
+ * is the composer's concern, so this bar never repeats it.
  */
 
-const mode = (id: string, label: string): Contribution => ({
+const mode = (id: string, label: string): ModeContribution => ({
   id,
   kind: "mode",
   slot: "mode",
@@ -41,7 +42,7 @@ const snapshotOf = (entries: Array<{ ownerId: string; contributions: Contributio
   );
 
 describe("ContributionsBar", () => {
-  it("renders one badge, a row and an action from unrelated owners", () => {
+  it("keeps rows and actions from unrelated owners visible", () => {
     const onRun = vi.fn();
     render(
       <ContributionsBar
@@ -65,7 +66,7 @@ describe("ContributionsBar", () => {
         onRunAction={onRun}
       />,
     );
-    expect(screen.getByTestId("contribution-badge")).toHaveTextContent("Analyze");
+    expect(screen.queryByText("Analyze")).toBeNull();
     expect(screen.getByText("3 of 9")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("contribution-action"));
     expect(onRun).toHaveBeenCalledWith("beta.ext", "go");
@@ -84,15 +85,62 @@ describe("ContributionsBar", () => {
     expect(screen.getByTestId("contribution-action")).toHaveAttribute("title", "busy");
   });
 
-  it("can hide the badge when the composer already names the mode", () => {
-    render(
+  it("does not repeat the primary mode or its referenced action as row chrome", () => {
+    const { container } = render(
       <ContributionsBar
-        showBadge={false}
-        snapshot={snapshotOf([{ ownerId: "alpha.ext", contributions: [mode("m", "Analyze")] }])}
+        snapshot={snapshotOf([
+          {
+            ownerId: "alpha.ext",
+            contributions: [
+              { ...mode("m", "Analyze"), actionRef: "cycle" },
+              {
+                id: "cycle",
+                kind: "action",
+                slot: "action",
+                label: "Cycle mode",
+                tone: "neutral",
+                order: 20,
+                command: { name: "cycle" },
+                enabled: true,
+              },
+            ],
+          },
+        ])}
         onRunAction={() => {}}
       />,
     );
-    expect(screen.queryByTestId("contribution-badge")).toBeNull();
+    // The composer corner owns the mode and its cycle action; a mode-only or
+    // mode+referenced-action snapshot leaves no empty bordered strip here.
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByText("Analyze")).toBeNull();
+    expect(screen.queryByText("Cycle mode")).toBeNull();
+  });
+
+  it("keeps unrelated rows and actions visible beside a primary mode", () => {
+    render(
+      <ContributionsBar
+        snapshot={snapshotOf([
+          { ownerId: "alpha.ext", contributions: [mode("m", "Analyze")] },
+          {
+            ownerId: "beta.ext",
+            contributions: [
+              {
+                id: "s",
+                kind: "status",
+                slot: "status",
+                text: "3 of 9",
+                tone: "neutral",
+                order: 0,
+              },
+              action("go", "Start"),
+            ],
+          },
+        ])}
+        onRunAction={() => {}}
+      />,
+    );
+    expect(screen.getByText("3 of 9")).toBeInTheDocument();
+    expect(screen.getByTestId("contribution-action")).toHaveTextContent("Start");
   });
 
   it("shows a locked input and a host-provided linked tab", () => {

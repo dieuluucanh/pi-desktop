@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 
 import { useAppStore } from "../../src/renderer/src/state/app-store";
+import { buildContributionSnapshot } from "../../src/shared/extension-contributions-view";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { EMPTY_EXTENSION_UI } from "../../src/shared/extension-ui";
 import { isNotificationSuppressed } from "../../src/shared/notifications";
@@ -474,5 +475,166 @@ describe("extension completion bridge", () => {
         prefix: "a",
       }),
     ).toBeNull();
+  });
+});
+
+describe("contribution read fencing and honest action results", () => {
+  const snapshotOf = (label: string) =>
+    buildContributionSnapshot(
+      [
+        {
+          ownerId: "fixture.ext",
+          epoch: 0,
+          revision: 1,
+          contributions: [
+            {
+              id: "mode",
+              kind: "mode",
+              slot: "mode",
+              label,
+              tone: "accent",
+              order: 0,
+              actions: [],
+            },
+          ],
+        },
+      ],
+      { supported: true, updatedAt: 1 },
+    );
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  it("a delayed contributions load cannot overwrite a newer push", async () => {
+    const oi = deferred<unknown>();
+    const contributions = deferred<unknown>();
+    stubRequest((method) =>
+      method === "oi.state"
+        ? oi.promise
+        : method === "contributions.state"
+          ? contributions.promise
+          : Promise.resolve({}),
+    );
+    const loading = useAppStore.getState().loadExtensionUi(TAB);
+    // The host pushes a newer snapshot while the read is still pending.
+    useAppStore.getState().handleExtensionUiEvent(TAB, {
+      event: "contributions.state",
+      payload: snapshotOf("Pushed"),
+    } as never);
+    contributions.resolve(snapshotOf("Stale"));
+    oi.resolve({});
+    await loading;
+    expect(useAppStore.getState().contributions[TAB]?.contributions[0]?.text).toBe("Pushed");
+  });
+
+  it("the later of two overlapping loads wins", async () => {
+    const pending: Array<ReturnType<typeof deferred<unknown>>> = [];
+    stubRequest((method) => {
+      if (method === "oi.state") return Promise.resolve({});
+      const next = deferred<unknown>();
+      pending.push(next);
+      return next.promise;
+    });
+    const loadA = useAppStore.getState().loadExtensionUi(TAB);
+    // Wait until A has actually issued its contributions request, so the two
+    // loads overlap in a defined order.
+    await vi.waitFor(() => expect(pending.length).toBe(1));
+    const loadB = useAppStore.getState().loadExtensionUi(TAB);
+    await vi.waitFor(() => expect(pending.length).toBe(2));
+    pending[1]!.resolve(snapshotOf("Newer"));
+    await loadB;
+    // The earlier load settles last; its token is stale, so it must not win.
+    pending[0]!.resolve(snapshotOf("Older"));
+    await loadA;
+    expect(useAppStore.getState().contributions[TAB]?.contributions[0]?.text).toBe("Newer");
+  });
+
+  it("a failed refresh keeps the last valid snapshot", async () => {
+    useAppStore.setState({ contributions: { [TAB]: snapshotOf("Still live") } });
+    stubRequest(async (method) => {
+      if (method === "contributions.state") throw new Error("host busy");
+      return {};
+    });
+    await useAppStore.getState().refreshContributions(TAB);
+    expect(useAppStore.getState().contributions[TAB]?.contributions[0]?.text).toBe("Still live");
+  });
+
+  it("a read completing after the tab closed does not resurrect its state", async () => {
+    const pending = deferred<unknown>();
+    stubRequest((method) => (method === "oi.state" ? Promise.resolve({}) : pending.promise));
+    const loading = useAppStore.getState().loadExtensionUi(TAB);
+    await Promise.resolve();
+    useAppStore.getState().applyTabs({ tabs: [], activeTabId: null } as never, {
+      adoptSelection: true,
+    });
+    pending.resolve(snapshotOf("Ghost"));
+    await loading;
+    expect(useAppStore.getState().contributions[TAB]).toBeUndefined();
+  });
+
+  const runIn = (response: unknown) =>
+    stubRequest(async (method) => {
+      if (method === "contributions.run") return response;
+      return snapshotOf("After");
+    });
+
+  it("accepts only an error-free acknowledgement", async () => {
+    runIn({ ran: true });
+    expect(
+      await useAppStore.getState().runContributionAction(TAB, "fixture.ext", "mode-cycle"),
+    ).toBe(true);
+
+    for (const [response, expected] of [
+      [{ ran: true, error: "handler threw" }, false],
+      [{ ran: false }, false],
+      [{}, false],
+      [undefined, false],
+    ] as const) {
+      runIn(response);
+      expect(
+        await useAppStore.getState().runContributionAction(TAB, "fixture.ext", "mode-cycle"),
+      ).toBe(expected);
+    }
+  });
+
+  it("refreshes authoritative state but never replays a refusal", async () => {
+    const request = stubRequest(async (method) =>
+      method === "contributions.run" ? { ran: false } : snapshotOf("After"),
+    );
+    const accepted = await useAppStore
+      .getState()
+      .runContributionAction(TAB, "fixture.ext", "mode-cycle");
+    expect(accepted).toBe(false);
+    const methods = request.mock.calls.map(([input]) => (input as { method: string }).method);
+    // One attempt, then a read of the live snapshot: no automatic retry.
+    expect(methods.filter((method) => method === "contributions.run")).toHaveLength(1);
+    await vi.waitFor(() => expect(methods).toContain("contributions.state"));
+  });
+
+  it("suppresses a duplicate activation while one is pending", async () => {
+    const gate = deferred<unknown>();
+    const request = stubRequest((method) =>
+      method === "contributions.run" ? gate.promise : Promise.resolve(snapshotOf("After")),
+    );
+    const first = useAppStore.getState().runContributionAction(TAB, "fixture.ext", "mode-cycle");
+    await Promise.resolve();
+    const second = useAppStore.getState().runContributionAction(TAB, "fixture.ext", "mode-cycle");
+    expect(await second).toBe(false);
+    gate.resolve({ ran: true });
+    expect(await first).toBe(true);
+    expect(
+      request.mock.calls.filter(
+        ([input]) => (input as { method: string }).method === "contributions.run",
+      ),
+    ).toHaveLength(1);
+    // Pending state is cleared for a later activation.
+    expect(useAppStore.getState().contributionActions[TAB]).toEqual({});
   });
 });

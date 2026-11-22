@@ -57,6 +57,7 @@ function resetStore() {
     shortcutsError: null,
     shortcutsTabId: null,
     shortcutsHelpOpen: false,
+    shortcutStates: {},
     settings: null,
     settingsLoaded: false,
   });
@@ -691,5 +692,83 @@ describe("runSkill", () => {
     expect(useAppStore.getState().shortcutsHelpOpen).toBe(true);
     useAppStore.getState().setShortcutsHelpOpen(false);
     expect(useAppStore.getState().shortcutsHelpOpen).toBe(false);
+  });
+});
+
+describe("per-tab shortcut registrations (mode-cycle step 6)", () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((res) => {
+      resolve = res;
+    });
+    return { promise, resolve };
+  }
+
+  it("keeps each tab's own list, ignores a stale response and mirrors the focus", async () => {
+    useAppStore.setState({
+      tabs: [
+        { id: "tab-1", kind: "session", cwd: "C:/work", title: "s" } as never,
+        { id: "tab-2", kind: "session", cwd: "C:/other", title: "s2" } as never,
+      ],
+      activeTabId: "tab-2",
+    });
+    const pending: Array<ReturnType<typeof deferred<unknown>>> = [];
+    stubRequest(() => {
+      const next = deferred<unknown>();
+      pending.push(next);
+      return next.promise;
+    });
+
+    const load1 = useAppStore.getState().loadShortcuts({ tabId: "tab-1" });
+    await vi.waitFor(() => expect(pending.length).toBe(1));
+    const load2 = useAppStore.getState().loadShortcuts({ tabId: "tab-2" });
+    await vi.waitFor(() => expect(pending.length).toBe(2));
+
+    pending[1]!.resolve({
+      shortcuts: [{ key: "tab", extensionPath: "C:/two/ext", source: "two" }],
+      diagnostics: [],
+      loadedAt: 2,
+    });
+    await load2;
+    // The focused pane's projection follows tab-2.
+    expect(useAppStore.getState().shortcutsTabId).toBe("tab-2");
+    expect(useAppStore.getState().shortcuts.shortcuts[0]?.key).toBe("tab");
+
+    pending[0]!.resolve({
+      shortcuts: [{ key: "ctrl+alt+p", extensionPath: "C:/one/ext", source: "one" }],
+      diagnostics: [],
+      loadedAt: 1,
+    });
+    await load1;
+    // tab-1 keeps its own key; the focused (tab-2) projection is untouched.
+    expect(useAppStore.getState().shortcutStates["tab-1"]?.shortcuts.shortcuts[0]?.key).toBe(
+      "ctrl+alt+p",
+    );
+    expect(useAppStore.getState().shortcutStates["tab-2"]?.shortcuts.shortcuts[0]?.key).toBe("tab");
+    expect(useAppStore.getState().shortcutsTabId).toBe("tab-2");
+  });
+
+  it("invokes the explicit tab, not whatever is focused", async () => {
+    useAppStore.setState({
+      tabs: [
+        { id: "tab-1", kind: "session", cwd: "C:/work", title: "s" } as never,
+        { id: "tab-2", kind: "session", cwd: "C:/other", title: "s2" } as never,
+      ],
+      activeTabId: "tab-2",
+    });
+    const request = stubRequest(async () => ({}));
+    expect(await useAppStore.getState().invokeShortcut("tab", "tab-1")).toBe(true);
+    expect(request).toHaveBeenCalledWith({
+      tabId: "tab-1",
+      method: "shortcuts.invoke",
+      params: { key: "tab" },
+    });
+    // Without an explicit target the focused tab is used (app-wide dispatcher).
+    await useAppStore.getState().invokeShortcut("tab");
+    expect(request).toHaveBeenLastCalledWith({
+      tabId: "tab-2",
+      method: "shortcuts.invoke",
+      params: { key: "tab" },
+    });
   });
 });

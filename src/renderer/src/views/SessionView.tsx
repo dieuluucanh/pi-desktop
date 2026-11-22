@@ -113,7 +113,11 @@ export function SessionView({ tabId }: { tabId: string }) {
     () => buildContributionBar(contributionSnapshot ?? EMPTY_CONTRIBUTION_SNAPSHOT),
     [contributionSnapshot],
   );
-  const contributionBadge = contributionBar.badge;
+  // One generic presentation: a single mode identity (composer corner), its
+  // resolved same-owner activation, and the remaining rows/actions. Neither
+  // depends on an extension name, glyph or status text.
+  const contributionMode = contributionBar.mode;
+  const contributionModeAction = contributionBar.modeAction;
   const inputLocked = contributionInputLocked(contributionSnapshot);
   const activateTab = useAppStore((state) => state.activateTab);
   const clearQueue = useAppStore((state) => state.clearQueue);
@@ -169,7 +173,7 @@ export function SessionView({ tabId }: { tabId: string }) {
   const extensionApplyCompletion = useAppStore((state) => state.extensionApplyCompletion);
   // Extension shortcuts (plan step 15) drive the composer's Tab mode cycle; the
   // store loads them per tab (step 7), so both the list and the invoker are here.
-  const shortcuts = useAppStore((state) => state.shortcuts);
+  const shortcutState = useAppStore((state) => state.shortcutStates[tabId]);
   const loadShortcuts = useAppStore((state) => state.loadShortcuts);
   const invokeShortcut = useAppStore((state) => state.invokeShortcut);
   const tuiSurface = useAppStore((state) => state.tuiSurfaces[tabId]);
@@ -295,12 +299,12 @@ export function SessionView({ tabId }: { tabId: string }) {
   // the host resumes. Cheap when the list is already loaded (the store's
   // idempotence guard returns early without a request).
   useEffect(() => {
-    // Only the focused pane owns the global shortcut list; a background pane
-    // refreshes it the moment it gains focus.
-    if (activeId !== null && activeId === focusedTabId && active?.kind === "session") {
-      void loadShortcuts();
+    // Each pane lists its own session: two panes can register different keys, so
+    // a background pane must not inherit (or overwrite) the focused one's list.
+    if (activeId !== null && active?.kind === "session") {
+      void loadShortcuts({ tabId: activeId });
     }
-  }, [activeId, focusedTabId, active?.kind, active?.status, loadShortcuts]);
+  }, [activeId, active?.kind, active?.status, loadShortcuts]);
 
   // Mounting a pane is the gesture that may wake a stopped host. This replaces
   // the old accidental wake through `tui.resize`: the viewport effect still
@@ -562,7 +566,6 @@ export function SessionView({ tabId }: { tabId: string }) {
           />
           <ContributionsBar
             snapshot={contributionSnapshot}
-            showBadge={false}
             linkedTab={
               inputLocked && linkedWebTabId
                 ? {
@@ -639,11 +642,13 @@ export function SessionView({ tabId }: { tabId: string }) {
                 onMentionHandled={(id) =>
                   setMentionRequest((current) => (current?.id === id ? null : current))
                 }
-                contributionBadge={contributionBadge}
+                contributionMode={contributionMode}
+                contributionModeAction={contributionModeAction}
+                onRunContributionMode={(ownerId, id) => runContributionAction(tabId, ownerId, id)}
                 inputLocked={inputLocked}
-                extensionShortcuts={shortcuts.shortcuts}
-                onInvokeShortcut={(key) => void invokeShortcut(key)}
-                onRequestShortcuts={() => void loadShortcuts()}
+                extensionShortcuts={shortcutState?.shortcuts.shortcuts ?? []}
+                onInvokeShortcut={(key) => void invokeShortcut(key, active.id)}
+                onRequestShortcuts={() => void loadShortcuts({ tabId: active.id })}
                 onDraftChange={(text) => setDraft(active.id, text)}
                 onSend={async (text, images, options) => {
                   const mode = options?.followUp ? "followUp" : "steer";

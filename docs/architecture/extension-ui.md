@@ -312,77 +312,65 @@ The rule keys on `display` and on renderer presence — never on a `customType`.
 because hiding `workflow` by name would also hide the Review bands that share the
 prefix.
 
-### The composer’s mode border and the Tab cycle
+### The composer’s mode control and the mode cycle
 
-The composer’s textarea border reflects the Workflow extension’s mode, mirroring
-terminal Pi’s editor border (which tracks the thinking level). The extension
-reports its mode only through `setStatus("workflow", …)`, so
-`src/shared/workflow-mode.ts` decodes that text (`⏸ plan` → warn, `▶ build` →
-accent, `🔍 review` → info, `◦ …` → neutral) and an unrecognised value degrades
-to the neutral border without guessing. The coupling is deliberate and
-documented: the extension lives outside this repo, so the parser is tolerant by
-construction.
+The composer’s top-right corner shows the session’s **current mode** and, when
+the publisher says so, is the control that changes it. Two independent Desktop
+mechanisms are involved and neither knows a mode name:
 
-The desktop shows four modes — Default, Plan, Build, Review. Review is a
-first-class mode since `@dieulc/workflow` 0.11.0, and the status carries its
-phase (`— paused`, `— awaiting decision`). The legacy Plannotator phrase
-`⏸ plan — reviewing in browser` stays a Plan **sub-state**, never Review (the old
-extension emitted it in every Plan mode merely because Plannotator was
-installed), and the composer label always reads `Plan` for it while the raw
-phrase stays visible in the label’s tooltip and the footer’s extension-status
-row (2026-10-20 startup-tab-cycle plan). While Review owns the turn,
-`SessionView` renders one `ReviewBar` after the above-editor widget strips (the
-TODO panel) and before the composer. Its text is the extension's own
-`workflow-review` status — the same line terminal Pi paints, including
-`ESC or /review-pause to pause · /review-abort to stop`, the paused form and the
-handoff form — and the row adds Pause/Resume/Abort (or the review-tab link
-during the handoff). The generic `WorkingRow` is suppressed while the row is
-visible, and the footer omits the promoted status key so the review text
-appears once. The store refuses prose with a preserved draft (2026-11-14
-review-mode-isolation plan; one row, shared text and placement from the
-2026-11-18 review-status-line plan).
+- identity and tone come from a `kind: "mode"` contribution (`label`, `detail`,
+  `tone`); only a mode may define the composer’s label and border. A
+  progress/status row is never promoted into a mode;
+- activation comes from the mode’s optional `actionRef`, the id of a
+  **same-owner, top-level `kind: "action"`** contribution. The reference carries
+  no command: Desktop sends `(tabId, ownerId, actionId)` through
+  `contributions.run`, and the host re-resolves the live action and its
+  registered command. A dangling, cross-owner or non-action reference renders an
+  informative label with no button.
 
-**Colour is never the only signal (2026-10-19, tightened 2026-10-31).** The mode
-is named in the composer’s top-right corner and exposed with `role="status"`.
-Every recognised mode has a label, including `Default`, and the label is shown at
-every window width; Plan/Build/Review use the same warn/accent/info tone as the
-border. It renders inside the composer, so it survives a non-overlay
-`ctx.ui.custom()` replacement of the editor; the footer has no duplicate
-`mode: …` chip (the raw `workflow` status still appears as its mode/progress
-column).
+Nothing is extension-specific: the component (`ComposerModeControl`) never sees
+“workflow”, “plan” or a command name. A third-party publisher gets the same
+control, and its label can be any bounded text. The border uses the mode’s
+semantic tone (`contributionBorderClass`), while a `!` shell line forces the
+warning tone.
 
-**Tab reaches the extension’s shortcut first.** Terminal Pi checks
-`onExtensionShortcut` _before_ the editor (`custom-editor.js`), which is how the
-Workflow extension’s `registerShortcut("tab")` cycles Plan → Build → Default. The
-desktop composer does the same through `shortcuts.invoke`, with one deliberate
-deviation: while a **completion menu is open**, Tab accepts the highlighted item
-and the mode cycle does not fire, because the extension cannot see the app’s
-menu. Extension shortcuts are matched for every key (so `Ctrl+Alt+P`, the
-extension’s alias, works too), and the list is loaded per tab on activation so a
-fresh session has it before the first Tab.
+**The label follows published state, never an optimistic step.** A click (or a
+keyboard activation) is a request; the displayed mode changes only when a new
+validated `contributions.state` snapshot arrives. Acknowledgements are parsed
+honestly: `{ran:true,error}` is a handler failure, `{ran:false}` is a refusal,
+and neither proves a transition. Uncertain requests are never retried
+automatically, and a settled action triggers one guarded refresh of the live
+registry.
 
-**The Tab cycle needs the session to be open.** A boot-time `shortcuts.list` can
-arrive while the host is still resuming its session; main gates tab requests on
-the in-flight spawn so they wait for the session instead of hitting a
-session-less host, and the renderer never latches a failed list — a tab whose
-last attempt errored retries on the next load, on the next Tab press, and when
-the tab becomes ready (2026-10-20 startup-tab-cycle plan). Shortcuts resolve
-against Pi’s effective keybindings (documented defaults with the user’s
-overrides applied), so a user remap behaves exactly as it does in terminal Pi.
+**Clicking does not disturb the prompt.** Pointer activation prevents the
+default focus shift, so the draft, selection and caret stay in the textarea;
+keyboard users Tab to the button and press Enter/Space. The control announces
+mode changes through one polite status node and exposes
+`"<mode> — <action label>"` as its accessible name. The reserved padding is
+measured (`ResizeObserver`, bounded, with a safe default in jsdom) instead of a
+fixed `pr-14`, so “Orchestrator” and localized labels do not overlap text.
 
-**Command arguments fill like terminal Pi (2026-10-24).** The first line of a
-`/` buffer is one command context: before the first whitespace the menu lists
-command names, and after it the host evaluates the command’s
-`getArgumentCompletions(prefix)` (`commands.complete`). App-owned commands use
-renderer completers instead: `/model` suggests `provider/id`, `/thinking`
-suggests levels, `/login` suggests provider ids. Argument items replace the
-whole argument prefix verbatim — their value owns any trailing space
-(`"use "`) — while command-name/file/document items keep the historical
-trailing space. **Enter** on a command-name suggestion applies it and submits
-in the same keystroke; Enter on an argument suggestion applies only; Tab always
-applies only. A delegating autocomplete provider preserves the base item’s
-source and `appendSpace`, so it cannot turn an argument fill into an
-auto-spaced one.
+**No fallback mode row.** The corner control is the only mode surface. When an
+extension dialog or docked `TuiSurface` replaces the composer there is
+deliberately no mode strip above it: the requested UX is “the composer label is
+the control”, and a second location would drift. Unrelated task, progress,
+review, handoff and recovery controls keep their own bar; the bar renders
+nothing when none of them are visible (no empty bordered strip).
+
+**Tab and the button share one controller.** A publisher that offers a cycle
+registers one command and one shortcut (Workflow registers `/workflow-cycle` and
+`tab`); both call the same extension-side operation. Desktop matches registered
+shortcuts before its own completion handling — so Tab cycles when no completion
+menu is open and accepts the highlighted item when it is — and per-tab shortcut
+lists mean two panes with different extensions never run each other’s keys.
+Desktop never assumes `tab` means “mode”: an extension that does not register it
+keeps the ordinary completion behaviour.
+
+**The list is per tab and fenced.** `loadShortcuts({tabId})` /
+`invokeShortcut(key, tabId)` target an explicit session; late responses and
+failures are dropped when a newer load, a push or a lifecycle reset superseded
+them. A boot-time list can arrive before the host resumes, so a failed or empty
+list is not latched: the next activation, Tab press or readiness change retries.
 
 ## Tests
 

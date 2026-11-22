@@ -212,6 +212,14 @@ The composer is a plain text area with Pi’s autocomplete contract:
   extension that provides `!` autocomplete still works. Commands are
   non-interactive: `git status`, `git add`, `git push -u origin main` work with
   configured credentials, but a password/TUI prompt needs a real terminal.
+- The **mode control** sits in the prompt's top-right corner. It always shows
+  the mode the session is actually in (for example `Plan` or `Orchestrator`),
+  and when the extension supports it, clicking it — or pressing its key, such as
+  `Tab` — advances that extension's mode cycle. Both paths run the same
+  extension-side cycle, so the label cannot disagree with the keyboard; it
+  updates only when the new mode is published, never optimistically. Clicking
+  keeps your draft and caret in the prompt, and the control is reachable with the
+  keyboard. There is no separate row of mode buttons above the composer.
 - A large paste collapses to `[paste #1 +240 lines]`; the body stays in memory
   and is expanded when sent. After a restart the marker says its content is lost
   rather than sending the token.

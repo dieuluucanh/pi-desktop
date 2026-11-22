@@ -7,9 +7,10 @@ import {
   contributionViewsBySlot,
   sanitizeContributionSnapshot,
   buildContributionBar,
+  contributionInputLocked,
   contributionKey,
 } from "../../src/shared/extension-contributions-view";
-import type { Contribution } from "../../src/shared/extension-contributions";
+import type { Contribution, ModeContribution } from "../../src/shared/extension-contributions";
 
 /**
  * Renderer-safe contribution view (step 8). The renderer must never need an
@@ -25,7 +26,7 @@ const status = (id: string, order = 0): Contribution => ({
   order,
 });
 
-const mode = (id: string, order: number): Contribution => ({
+const mode = (id: string, order: number): ModeContribution => ({
   id,
   kind: "mode",
   slot: "mode",
@@ -135,7 +136,7 @@ describe("contribution view", () => {
 });
 
 describe("contribution bar model", () => {
-  it("chooses exactly one badge and keeps the rest as rows", () => {
+  it("uses a mode for identity and keeps unrelated progress/status rows", () => {
     const snapshot = buildContributionSnapshot(
       [
         {
@@ -148,21 +149,181 @@ describe("contribution bar model", () => {
       { supported: true, updatedAt: 1 },
     );
     const bar = buildContributionBar(snapshot);
-    expect(bar.badge?.id).toBe("m");
+    expect(bar.mode?.id).toBe("m");
+    expect(bar.modeAction).toBeNull();
     expect(bar.rows.map((entry) => entry.id)).toEqual(["s"]);
     expect(bar.actions.map((entry) => entry.id)).toEqual(["go"]);
     expect(bar.inputs).toEqual([]);
     expect(bar.sessions).toEqual([]);
-    expect(contributionKey(bar.badge!)).toBe("a.ext:m");
+    expect(contributionKey(bar.mode!)).toBe("a.ext:m");
   });
 
-  it("falls back to progress, then status, and stays generic", () => {
+  it("never promotes progress or status into a mode identity", () => {
     const onlyStatus = buildContributionSnapshot(
       [{ ownerId: "x.ext", epoch: 0, revision: 1, contributions: [status("s")] }],
       { supported: true, updatedAt: 1 },
     );
-    expect(buildContributionBar(onlyStatus).badge?.id).toBe("s");
-    expect(buildContributionBar(onlyStatus).rows).toEqual([]);
-    expect(buildContributionBar(EMPTY_CONTRIBUTION_SNAPSHOT).badge).toBeNull();
+    const bar = buildContributionBar(onlyStatus);
+    expect(bar.mode).toBeNull();
+    expect(bar.modeAction).toBeNull();
+    // A status-only publisher still gets its row; it does not become a mode.
+    expect(bar.rows.map((entry) => entry.id)).toEqual(["s"]);
+    expect(buildContributionBar(EMPTY_CONTRIBUTION_SNAPSHOT).mode).toBeNull();
+  });
+
+  it("resolves a mode's same-owner action and does not duplicate it as a row", () => {
+    const snapshot = buildContributionSnapshot(
+      [
+        {
+          ownerId: "a.ext",
+          epoch: 0,
+          revision: 1,
+          contributions: [
+            { ...mode("m", 0), actionRef: "cycle" },
+            {
+              id: "cycle",
+              kind: "action",
+              slot: "action",
+              label: "Cycle mode",
+              tone: "neutral",
+              order: 20,
+              command: { name: "cycle" },
+              enabled: false,
+              disabledReason: "a review owns this turn",
+            },
+            action("other"),
+          ],
+        },
+      ],
+      { supported: true, updatedAt: 1 },
+    );
+    const bar = buildContributionBar(snapshot);
+    expect(bar.modeAction).toEqual({
+      ownerId: "a.ext",
+      id: "cycle",
+      text: "Cycle mode",
+      enabled: false,
+      disabledReason: "a review owns this turn",
+    });
+    // The referenced action is the corner control, not a second bar button.
+    expect(bar.actions.map((entry) => entry.id)).toEqual(["other"]);
+  });
+
+  it("refuses a cross-owner, dangling or non-action reference", () => {
+    const shared = buildContributionSnapshot(
+      [
+        {
+          ownerId: "a.ext",
+          epoch: 0,
+          revision: 1,
+          contributions: [{ ...mode("m", 0), actionRef: "cycle" }],
+        },
+        {
+          ownerId: "b.ext",
+          epoch: 0,
+          revision: 1,
+          contributions: [
+            {
+              id: "cycle",
+              kind: "action",
+              slot: "action",
+              label: "Cycle mode",
+              tone: "neutral",
+              order: 0,
+              command: { name: "cycle" },
+              enabled: true,
+            },
+          ],
+        },
+      ],
+      { supported: true, updatedAt: 1 },
+    );
+    expect(buildContributionBar(shared).modeAction).toBeNull();
+    // The other owner's action is still an ordinary, visible action.
+    expect(buildContributionBar(shared).actions.map((entry) => entry.id)).toEqual(["cycle"]);
+
+    const dangling = buildContributionSnapshot(
+      [
+        {
+          ownerId: "a.ext",
+          epoch: 0,
+          revision: 1,
+          contributions: [{ ...mode("m", 0), actionRef: "gone" }],
+        },
+      ],
+      { supported: true, updatedAt: 1 },
+    );
+    expect(buildContributionBar(dangling).modeAction).toBeNull();
+
+    const wrongKind = buildContributionSnapshot(
+      [
+        {
+          ownerId: "a.ext",
+          epoch: 0,
+          revision: 1,
+          contributions: [{ ...mode("m", 0), actionRef: "s" }, status("s")],
+        },
+      ],
+      { supported: true, updatedAt: 1 },
+    );
+    expect(buildContributionBar(wrongKind).modeAction).toBeNull();
+  });
+
+  it("keeps another publisher's mode visible as a secondary row", () => {
+    const snapshot = buildContributionSnapshot(
+      [
+        { ownerId: "a.ext", epoch: 0, revision: 1, contributions: [mode("m", 0)] },
+        { ownerId: "b.ext", epoch: 0, revision: 1, contributions: [mode("other", 0)] },
+      ],
+      { supported: true, updatedAt: 1 },
+    );
+    const bar = buildContributionBar(snapshot);
+    expect(bar.mode?.ownerId).toBe("a.ext");
+    expect(bar.rows.map((entry) => contributionKey(entry))).toEqual(["b.ext:other"]);
+  });
+
+  it("preserves mode identity, its reference and input ownership across transport", () => {
+    const snapshot = buildContributionSnapshot(
+      [
+        {
+          ownerId: "a.ext",
+          epoch: 0,
+          revision: 1,
+          contributions: [
+            { ...mode("m", 0), actionRef: "cycle" },
+            {
+              id: "cycle",
+              kind: "action",
+              slot: "action",
+              label: "Cycle mode",
+              tone: "neutral",
+              order: 20,
+              command: { name: "cycle" },
+              enabled: true,
+            },
+            {
+              id: "input",
+              kind: "input",
+              slot: "input",
+              availability: "locked",
+              tone: "warning",
+              order: 40,
+              reason: "A reviewer owns this turn",
+            },
+          ],
+        },
+      ],
+      { supported: true, updatedAt: 1 },
+    );
+    const sanitized = sanitizeContributionSnapshot(snapshot);
+    const reSanitized = sanitizeContributionSnapshot(sanitized);
+    expect(reSanitized).toEqual(sanitized);
+
+    const entry = sanitized.contributions.find((item) => item.id === "m");
+    expect(entry?.actionRef).toBe("cycle");
+    const input = sanitized.contributions.find((item) => item.id === "input");
+    expect(input?.availability).toBe("locked");
+    expect(contributionInputLocked(sanitized)).toBe(true);
+    expect(buildContributionBar(sanitized).modeAction?.id).toBe("cycle");
   });
 });

@@ -96,6 +96,14 @@ export interface ModeContribution extends ContributionBase {
   slot: "mode";
   label: string;
   detail?: string;
+  /**
+   * Optional id of a same-owner, top-level `kind:"action"` contribution that
+   * activates this mode label. A reference carries no command of its own: the
+   * host resolves the live action and its registered command before running
+   * anything. Unknown to older readers (the field is additive in v1) and
+   * allowed to dangle, so a label is never made actionable from an id alone.
+   */
+  actionRef?: string;
   actions: ContributionAction[];
 }
 
@@ -292,6 +300,12 @@ function parseContribution(raw: unknown): ContributionResult<Contribution | unde
       }
       const actions = parseActions(raw.actions);
       if (!actions.ok) return actions;
+      // A syntactically valid reference may dangle until a later envelope
+      // publishes its action; resolution (and refusal) happens at run time.
+      const actionRef = raw.actionRef === undefined ? undefined : id(raw.actionRef);
+      if (raw.actionRef !== undefined && actionRef === undefined) {
+        return fail(`mode ${contributionId} actionRef is invalid`);
+      }
       return {
         ok: true,
         value: {
@@ -300,6 +314,7 @@ function parseContribution(raw: unknown): ContributionResult<Contribution | unde
           slot: "mode",
           label,
           ...(detail === undefined ? {} : { detail }),
+          ...(actionRef === undefined ? {} : { actionRef }),
           actions: actions.value,
         },
       };

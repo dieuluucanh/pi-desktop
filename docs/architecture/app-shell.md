@@ -216,33 +216,30 @@ carries its `setWidget` key (`TuiFrame.key`), which is how the bar identifies th
 panel. Older `@dieulc/workflow` versions degrade to no Review+hidden bar, while
 the menu/palette still dispatch the command.
 
-**The workflow mode is shown as text, not just colour.** The composer's textarea
-border reflects the Workflow extension's mode (`Plan` → warn, `Build` → accent,
-`Review` → info), decoded from its status text by
-`src/shared/workflow-mode.ts`; an unrecognised value degrades to the neutral
-border rather than guessing. Since `@dieulc/workflow` 0.11.0 the desktop names
-four modes (Default/Plan/Build/Review). Review is a real mode, not a Plan
-sub-state: the status carries the phase (`🔍 review`, `— paused`,
-`— awaiting decision`), the composer badge reads `Review`, and the legacy
-Plannotator `⏸ plan — reviewing in browser` phrase is still parsed as Plan
-because the old extension emitted it in every Plan mode (2026-11-14
-review-mode-isolation plan). While Review owns the turn the store refuses prose
-and `!` commands with a hint (the draft is preserved), slash commands stay
-available, and one `ReviewBar` below the TODO widget and above the composer
-carries the extension's own `workflow-review` line plus Pause/Resume/Abort. It
-reuses terminal Pi's text (including the command hints) and is the only review
-line: the generic working row is suppressed while it is visible, and the footer
-omits the promoted status. The handoff phase instead links to the review tab. Desktop hosts are launched
-with `PLANNOTATOR_BROWSER=none`, so a review opens in an app tab and never the
-system browser; the web tab's **Open in browser** button remains the escape
-hatch. Because colour alone is not an indicator, the mode is also named in the
-composer's top-right corner, exposed through `role="status"`. Every
-recognised mode has a label, including `Default`; Plan/Build/Review use the
-same `text-warn`/`text-accent`/`text-info` tone as the border, and Default uses
-the readable faint ink. The label renders at every
-window width — it used to be hidden below the `sm` breakpoint — and there is no
-duplicate `mode: …` chip in the footer (2026-10-31 minimal-session-ui).
+**The mode is named in the composer, and its label is the control (2026-11-22).**
+The session’s current mode comes from the generic contribution contract: a
+`kind: "mode"` contribution supplies the label/tone, and an optional `actionRef`
+names a same-owner top-level action that the label activates. Desktop renders
+that as `ComposerModeControl` in the prompt’s top-right corner — a real button
+whose accessible name is “<mode> — <action label>” — and never parses a status
+line or learns an extension name. A publisher without a reference keeps an
+informative, non-interactive label; another publisher’s mode is not consumed by
+this one.
 
+The visible mode follows **published state** only. A click or key activation
+sends `contributions.run`; an acknowledgement (`{ran:true}`, even with an error)
+is not proof of a transition, so the label changes when the next validated
+snapshot arrives, and nothing is retried automatically. A disabled reference
+(current mode, Review ownership, a missing command) stays visible with its
+reason. There is no separate mode-switch row and no fallback mode strip when a
+dialog or docked TUI replaces the composer; task/review/handoff/recovery
+controls remain in the contribution bar.
+
+Pointer activation keeps the prompt’s focus, draft, selection and caret; Tab on
+the button is normal focus navigation, while Tab in the prompt still reaches a
+registered extension shortcut first (so a publisher’s cycle and its button agree
+by construction). The reserved right padding is measured, not fixed, so long and
+localized labels do not cover the first line of text.
 **The composer says where the cursor is (2026-10-21).** The textarea's caret
 carries the app's accent colour, and the composer's status row spells the
 position out (`Ln 2 · Col 7`) next to the shortcut hints. The offset is the one
@@ -733,22 +730,29 @@ and the renderer all read it, so a budget change is one edit.
 - `tests/host/service.test.ts` — in-place event spilling and `host.metrics`.
 - `tests/renderer/transcript.test.tsx` — 10k virtualization and the lazy blob
   fetch.
-- `tests/shared/workflow-mode.test.ts` — the workflow status decoder: every
-  shipped label, ANSI-wrapped text, progress extraction, a label for every
-  recognised mode (including `Default`), and null-on-unknown degradation
-  (2026-10-19 UI rework).
+- `tests/shared/extension-contributions-view.test.ts` — the generic view model:
+  deterministic ordering, mode-only identity (progress/status never promoted),
+  same-owner `actionRef` resolution and refusal, and round-trip sanitization of
+  mode/input metadata.
 - `tests/styles-layering.test.ts` — the global stylesheet stays inside
   `@layer base` (an unlayered rule beats Tailwind's utilities), and the
-  `@source inline(...)` list matches every class `workflowBorderClass` returns.
+  `@source inline(...)` list matches every class `CONTRIBUTION_TONE_CLASSES`
+  returns.
 - `tests/renderer/session-footer.test.tsx` — the Pi-shaped session footer:
   pwd/branch and the token/cost/context line, `model • thinking`, the
   ANSI-coloured extension status line, and no `mode:` chip (the composer names
   the mode now).
 - `tests/renderer/composer.test.tsx` — Enter vs Shift+Enter, IME safety, the
   one-Send streaming model (Enter steers, Alt+Enter queues a follow-up), the hint
-  row, the `! shell` placeholder, the workflow mode border/badge (always visible,
-  announced, focus ring does not mask it), Tab dispatch to a registered extension
-  shortcut before completion, and no built-in completion menu on a shell line.
+  row, the `! shell` placeholder, and the mode control: tone-driven border, a
+  real button with `"<mode> — <action>"` as its name, disabled/pending state,
+  pointer activation that keeps the draft, and a legacy non-interactive label.
+  `mode-cycle-boundary.test.tsx` proves the same path from a published snapshot,
+  and `tests/host/contribution-mode-boundary.test.ts` proves the registry
+  refuses cross-owner/dangling/disabled references.
+- `tests/e2e/composer-mode-cycle.spec.ts` — real Electron geometry/keyboard:
+  click and Tab share the cycle, the draft/caret survive a click, focus is not
+  trapped, and the measured reservation covers the control at 200% zoom.
 - `tests/renderer/session-events.test.ts` — the reducer, including the
   hidden-item boundary: a `display: false` custom message is dropped (live and on
   reload), and the rule never keys on `customType`.

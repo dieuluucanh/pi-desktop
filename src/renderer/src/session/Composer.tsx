@@ -14,8 +14,16 @@ import { insertWorkspaceMention, workspaceMention } from "../../../shared/worksp
 import { isExcludedShellCommand, isShellCommand } from "../../../shared/shell-command";
 import { isExternalFileDrag, isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
 import { isTabDrag } from "../layout/tab-drag";
-import type { ContributionView } from "../../../shared/extension-contributions-view";
-import { contributionBorderClass, contributionTextClass } from "./contribution-tone";
+import type {
+  ContributionModeAction,
+  ContributionView,
+} from "../../../shared/extension-contributions-view";
+import { contributionBorderClass } from "./contribution-tone";
+import {
+  ComposerModeControl,
+  DEFAULT_MODE_CONTROL_WIDTH_PX,
+  MAX_MODE_CONTROL_WIDTH_PX,
+} from "./ComposerModeControl";
 import type { TranscriptQueue } from "./session-events";
 import { CompletionOverlay } from "../completion/CompletionOverlay";
 import { matchShortcut } from "../shortcuts/dom-keys";
@@ -99,11 +107,15 @@ export interface ComposerProps {
   /** Called after a mention request has been inserted (or refused). */
   onMentionHandled?: (id: number) => void;
   /**
-   * The generic mode/status badge the host selected for this session, if any.
-   * Its semantic tone drives the composer border; the composer never parses a
-   * status line or learns an extension name.
+   * The session's primary mode contribution, if its publisher has one. It is
+   * the composer's identity: label text, border tone, and — when the publisher
+   * referenced a live same-owner action — the cycle button.
    */
-  contributionBadge?: ContributionView | null;
+  contributionMode?: ContributionView | null;
+  /** The mode's resolved activation; null keeps the label informative only. */
+  contributionModeAction?: ContributionModeAction | null;
+  /** Runs the mode control's referenced action (`contributions.run`). */
+  onRunContributionMode?: (ownerId: string, id: string) => Promise<boolean>;
   /**
    * True when a published input contribution says another surface owns the
    * turn. The store refuses prose in that state, so the composer must not offer
@@ -266,7 +278,9 @@ export function Composer({
   focusToken = 0,
   draft,
   queue,
-  contributionBadge = null,
+  contributionMode = null,
+  contributionModeAction = null,
+  onRunContributionMode,
   inputLocked = false,
   extensionShortcuts,
   onInvokeShortcut,
@@ -324,9 +338,18 @@ export function Composer({
     new Set(Object.keys(pasteBodies ?? {}).map((key) => Number(key))),
   );
 
-  // The host already chose one generic badge (mode, else progress, else
-  // status). An absent badge degrades to the neutral border and no label.
-  const badgeLabel = contributionBadge?.text ?? null;
+  // How much room the mode control needs above the prompt text. Measured when
+  // the control renders (the old fixed `pr-14` both clipped "Orchestrator" and
+  // wasted space on "Plan"); `DEFAULT_MODE_CONTROL_WIDTH_PX` is the safe
+  // starting point before measurement, and in jsdom where layout is absent.
+  const [modeReservation, setModeReservation] = useState(DEFAULT_MODE_CONTROL_WIDTH_PX);
+  const onModeMeasure = useCallback((width: number) => {
+    const next = Math.min(
+      Math.max(Math.ceil(width) + 8, DEFAULT_MODE_CONTROL_WIDTH_PX),
+      MAX_MODE_CONTROL_WIDTH_PX,
+    );
+    setModeReservation((previous) => (previous === next ? previous : next));
+  }, []);
   // Empty until the store loads the session's shortcuts (the composer asks via
   // `onRequestShortcuts` on the first Tab); an unknown list means Tab keeps its
   // completion behaviour rather than swallowing the key.
@@ -653,9 +676,9 @@ export function Composer({
               // tinted with it, so the cursor is never lost in a dark buffer
               // (plan step 1).
               "caret-accent selection:bg-accent/25",
-              bashMode ? "border-warn" : contributionBorderClass(contributionBadge?.tone),
-              badgeLabel ? "pr-14" : null,
+              bashMode ? "border-warn" : contributionBorderClass(contributionMode?.tone),
             )}
+            style={contributionMode ? { paddingRight: modeReservation } : undefined}
             onChange={(event) => {
               syncCaret(event.target);
               setPickedSource(undefined);
@@ -902,25 +925,13 @@ export function Composer({
             }}
           />
 
-          {badgeLabel ? (
-            <span
-              data-testid="composer-contribution-badge"
-              role="status"
-              aria-live="polite"
-              title={contributionBadge?.detail ?? badgeLabel}
-              className="pointer-events-none absolute right-1.5 top-1 z-10 select-none rounded-xs bg-sunken/90 px-1 text-[10px] font-medium"
-              data-tone={contributionBadge?.tone ?? "neutral"}
-              data-owner={contributionBadge?.ownerId}
-            >
-              <span
-                className={cn(
-                  bashMode ? "text-warn" : contributionTextClass(contributionBadge?.tone),
-                )}
-              >
-                {badgeLabel}
-              </span>
-            </span>
-          ) : null}
+          <ComposerModeControl
+            mode={contributionMode}
+            action={contributionModeAction}
+            bashMode={bashMode}
+            onMeasure={onModeMeasure}
+            {...(onRunContributionMode ? { onRunAction: onRunContributionMode } : {})}
+          />
         </div>
 
         <div className="flex flex-col self-stretch gap-1">

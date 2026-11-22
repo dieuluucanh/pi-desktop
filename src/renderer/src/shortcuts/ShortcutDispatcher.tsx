@@ -39,6 +39,18 @@ function insideBlockingSurface(target: EventTarget | null): boolean {
   );
 }
 
+/**
+ * True when the focused element owns plain Tab navigation (2026-11-22 mode
+ * cycle plan). An extension can register `tab`; dispatching it while a button or
+ * link has focus would swallow the browser's focus move and trap the user on
+ * that control. The composer textarea is unaffected (editable targets return
+ * earlier and keep their own Tab handling).
+ */
+function ownsTabNavigation(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return target.closest("button, a[href], select, summary, [tabindex]") !== null;
+}
+
 /** The default `app.editor.external` keys (plan step 21). */
 const DEFAULT_EXTERNAL_EDITOR_KEYS = resolveKeybindings({})["app.editor.external"] ?? ["ctrl+g"];
 
@@ -98,7 +110,10 @@ export function ShortcutDispatcher() {
         }
       }
       // Extension shortcuts come before the app-wide interrupt, exactly as Pi's
-      // editor checks `onExtensionShortcut` before its own key handling.
+      // editor checks `onExtensionShortcut` before its own key handling. A plain
+      // Tab on an interactive control stays native focus navigation: the
+      // composer's own textarea handler already covers the mode-cycle case.
+      if (event.key === "Tab" && ownsTabNavigation(event.target)) return;
       const shortcuts = state.shortcuts.shortcuts;
       if (shortcuts.length > 0) {
         const matched = matchShortcut(event, shortcuts);

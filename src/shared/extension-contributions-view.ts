@@ -17,7 +17,6 @@
 import {
   sortContributions,
   type Contribution,
-  type ContributionEnvelope,
   type ContributionKind,
   type ContributionSlot,
   type ContributionTone,
@@ -44,6 +43,8 @@ export interface ContributionView {
   stale?: boolean;
   /** Input only. */
   availability?: InputAvailability;
+  /** Mode only: id of the same-owner action that activates this label. */
+  actionRef?: string;
   /** Related-session only. */
   relation?: SessionRelation;
   sessionRef?: string;
@@ -53,7 +54,6 @@ export interface ContributionView {
   enabled: boolean;
   disabledReason?: string;
 }
-
 export interface ContributionOwnerView {
   ownerId: string;
   revision: number;
@@ -103,6 +103,7 @@ function toView(ownerId: string, contribution: Contribution): ContributionView {
         ...base,
         text: contribution.label,
         ...(contribution.detail === undefined ? {} : { detail: contribution.detail }),
+        ...(contribution.actionRef === undefined ? {} : { actionRef: contribution.actionRef }),
       };
     case "progress":
       return {
@@ -192,6 +193,21 @@ function asString(value: unknown, max = 400): string | undefined {
   return trimmed.length > 0 && trimmed.length <= max ? trimmed : undefined;
 }
 
+const INPUT_AVAILABILITIES = ["available", "restricted", "locked"] as const;
+const SESSION_RELATIONS = ["parent", "child", "sibling"] as const;
+
+function asAvailability(value: unknown): ContributionView["availability"] | undefined {
+  return typeof value === "string" && (INPUT_AVAILABILITIES as readonly string[]).includes(value)
+    ? (value as ContributionView["availability"])
+    : undefined;
+}
+
+function asRelation(value: unknown): ContributionView["relation"] | undefined {
+  return typeof value === "string" && (SESSION_RELATIONS as readonly string[]).includes(value)
+    ? (value as ContributionView["relation"])
+    : undefined;
+}
+
 /**
  * Sanitizes a snapshot crossing the IPC frame (or restored from a stale tab).
  * Unknown kinds are dropped, actions keep only a plain command name, and no
@@ -221,6 +237,12 @@ export function sanitizeContributionSnapshot(value: unknown): ContributionSnapsh
       }
       const command = asRecord(entry.command);
       const commandName = asString(command.name, 64);
+      // A mode action reference is an id, never a command: the host resolves the
+      // live action (and refuses a missing/other-owner one) at run time.
+      const actionRef = asString(entry.actionRef, 96);
+      const availability = asAvailability(entry.availability);
+      const relation = asRelation(entry.relation);
+      const sessionRef = asString(entry.sessionRef, 400);
       contributions.push({
         ownerId,
         id,
@@ -232,9 +254,14 @@ export function sanitizeContributionSnapshot(value: unknown): ContributionSnapsh
         ...(asString(entry.detail, 1_200) === undefined
           ? {}
           : { detail: asString(entry.detail, 1_200) as string }),
+        ...(kind === "mode" && actionRef !== undefined ? { actionRef } : {}),
         ...(typeof entry.done === "number" ? { done: entry.done } : {}),
         ...(typeof entry.total === "number" ? { total: entry.total } : {}),
         ...(entry.stale === true ? { stale: true } : {}),
+        ...(availability === undefined ? {} : { availability }),
+        ...(relation === undefined ? {} : { relation }),
+        ...(sessionRef === undefined ? {} : { sessionRef }),
+        ...(entry.focusable === true ? { focusable: true } : {}),
         // `enabled` is required on the view: absent means "not disabled", which
         // matches the wire default and keeps a sanitized row renderable.
         enabled: entry.enabled !== false,
@@ -278,17 +305,35 @@ export function contributionViewsBySlot(
   return snapshot.contributions.filter((entry) => entry.slot === slot);
 }
 
-export type { ContributionEnvelope };
+export interface ContributionModeAction {
+  /** Owner of the mode and of the referenced action (always the same). */
+  ownerId: string;
+  /** The referenced action contribution id. */
+  id: string;
+  /** The publisher's action label, used as the control's accessible action. */
+  text: string;
+  detail?: string;
+  enabled: boolean;
+  disabledReason?: string;
+}
 
 /**
- * One generic bar row the renderer can draw without knowing the extension.
+ * One deterministic presentation resolved from a validated snapshot.
  *
- * The badge is a single line (mode, else progress, else status); the remaining
- * contributions are rows/actions. Nothing here is extension-specific, so an
- * arbitrary publisher gets the same UI.
+ * - `mode` is identity only: a mode contribution, never a progress/status row
+ *   promoted into a mode. The composer binds its label and tone to it.
+ * - `modeAction` is the mode's optional same-owner activation, resolved from a
+ *   live top-level action. It carries no command: the host re-validates the
+ *   action and command when it runs.
+ * - `rows` keep every progress/status/secondary-mode row visible, including
+ *   those from unrelated owners. Nothing is filtered by label, owner or
+ *   command name.
+ * - `actions` excludes the mode action only when the corner control consumes
+ *   it, so a publisher never shows the same control twice.
  */
 export interface ContributionBarModel {
-  badge: ContributionView | null;
+  mode: ContributionView | null;
+  modeAction: ContributionModeAction | null;
   rows: ContributionView[];
   actions: ContributionView[];
   inputs: ContributionView[];
@@ -304,24 +349,63 @@ const SLOT_RANK: Record<ContributionSlot, number> = {
   sessions: 5,
 };
 
-export function buildContributionBar(snapshot: ContributionSnapshot): ContributionBarModel {
-  const ordered = [...snapshot.contributions].sort(
-    (a, b) => SLOT_RANK[a.slot] - SLOT_RANK[b.slot] || a.order - b.order,
+/** Stable, owner-independent presentation order (slot, order, owner, id). */
+function presentationOrder(a: ContributionView, b: ContributionView): number {
+  return (
+    SLOT_RANK[a.slot] - SLOT_RANK[b.slot] ||
+    a.order - b.order ||
+    a.ownerId.localeCompare(b.ownerId) ||
+    a.id.localeCompare(b.id)
   );
-  const modes = ordered.filter((entry) => entry.slot === "mode");
-  const progress = ordered.filter((entry) => entry.slot === "progress");
-  const statuses = ordered.filter((entry) => entry.slot === "status");
-  // Exactly one badge, chosen by priority; everything else stays visible.
-  const badge = modes[0] ?? progress[0] ?? statuses[0] ?? null;
+}
+
+/**
+ * Resolves a mode's referenced action from the *same owner's* top-level
+ * actions. A dangling/cross-owner/wrong-kind id resolves to `null`: the label
+ * stays informative and non-interactive rather than inventing a command.
+ */
+export function resolveContributionAction(
+  snapshot: ContributionSnapshot,
+  mode: ContributionView | null,
+): ContributionModeAction | null {
+  if (!mode || mode.kind !== "mode" || mode.actionRef === undefined) return null;
+  const action = snapshot.contributions.find(
+    (entry) =>
+      entry.ownerId === mode.ownerId && entry.id === mode.actionRef && entry.kind === "action",
+  );
+  if (!action) return null;
+  return {
+    ownerId: action.ownerId,
+    id: action.id,
+    text: action.text,
+    ...(action.detail === undefined ? {} : { detail: action.detail }),
+    enabled: action.enabled,
+    ...(action.disabledReason === undefined ? {} : { disabledReason: action.disabledReason }),
+  };
+}
+
+export function buildContributionBar(snapshot: ContributionSnapshot): ContributionBarModel {
+  const ordered = [...snapshot.contributions].sort(presentationOrder);
+  const mode = ordered.find((entry) => entry.slot === "mode") ?? null;
+  const modeAction = resolveContributionAction(snapshot, mode);
+  // The corner control consumes the primary mode and its referenced action.
+  // Everything else the publisher sent stays visible as a row/action; only the
+  // identical action reference is excluded so it is not shown twice.
   const rows = ordered.filter(
     (entry) =>
-      entry !== badge &&
-      (entry.slot === "mode" || entry.slot === "progress" || entry.slot === "status"),
+      entry !== mode &&
+      (entry.slot === "progress" || entry.slot === "status" || entry.slot === "mode"),
+  );
+  const actions = ordered.filter(
+    (entry) =>
+      entry.slot === "action" &&
+      !(modeAction !== null && entry.ownerId === modeAction.ownerId && entry.id === modeAction.id),
   );
   return {
-    badge,
+    mode,
+    modeAction,
     rows,
-    actions: ordered.filter((entry) => entry.slot === "action"),
+    actions,
     inputs: ordered.filter((entry) => entry.slot === "input"),
     sessions: ordered.filter((entry) => entry.slot === "sessions"),
   };

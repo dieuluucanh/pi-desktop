@@ -150,6 +150,54 @@ describe("extension contributions: Desktop-side limits and safety", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("preserves a mode actionRef and never turns it into a command", () => {
+    const parsed = parseContributionEnvelope({
+      version: 1,
+      owner: { id: "o" },
+      sessionId: "s",
+      epoch: 0,
+      revision: 1,
+      contributions: [
+        { kind: "mode", id: "mode", label: "Plan", actionRef: "mode-cycle" },
+        { kind: "action", id: "mode-cycle", label: "Cycle mode", command: { name: "cycle" } },
+      ],
+    });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      const [mode, action] = parsed.value.envelope.contributions;
+      expect(mode?.kind === "mode" ? mode.actionRef : undefined).toBe("mode-cycle");
+      expect(action?.kind === "action" ? action.command.name : undefined).toBe("cycle");
+      // The reference itself carries no executable field.
+      expect(JSON.stringify(mode)).not.toMatch(/command/);
+    }
+
+    // A dangling reference is valid: the host refuses it at run time rather
+    // than failing the whole envelope (contributions can update separately).
+    const dangling = parseContributionEnvelope({
+      version: 1,
+      owner: { id: "o" },
+      sessionId: "s",
+      epoch: 0,
+      revision: 2,
+      contributions: [{ kind: "mode", id: "mode", label: "Plan", actionRef: "missing" }],
+    });
+    expect(dangling.ok).toBe(true);
+  });
+
+  it("rejects a malformed mode actionRef instead of ignoring it", () => {
+    for (const badRef of ["../../bin/sh", "has space", 7, null, "x".repeat(97)]) {
+      const result = parseContributionEnvelope({
+        version: 1,
+        owner: { id: "o" },
+        sessionId: "s",
+        epoch: 0,
+        revision: 1,
+        contributions: [{ kind: "mode", id: "m", label: "Plan", actionRef: badRef }],
+      });
+      expect(result.ok, JSON.stringify(badRef)).toBe(false);
+    }
+  });
+
   it("drops an unknown kind and keeps the known siblings", () => {
     const result = parseContributionEnvelope({
       version: 1,

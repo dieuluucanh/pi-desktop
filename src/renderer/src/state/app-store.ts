@@ -379,7 +379,10 @@ function clearExtensionDialogTimer(id: string): void {
  * union of own keys so a new `TabRecord` field is always considered.
  */
 function sameTabRecord(left: TabRecord, right: TabRecord): boolean {
+  // SAFETY: a TabRecord is a plain data record; reading it through an index
+  // signature only widens access, it cannot fabricate a field.
   const leftRecord = left as unknown as Record<string, unknown>;
+  // SAFETY: same widening for the comparison side; no field is created here.
   const rightRecord = right as unknown as Record<string, unknown>;
   const keys = new Set([...Object.keys(leftRecord), ...Object.keys(rightRecord)]);
   for (const key of keys) {
@@ -411,6 +414,9 @@ const TAB_SCOPED_RECORDS = [
   "sessionStates",
   "sessionEpochs",
   "extensionUi",
+  "contributions",
+  "contributionActions",
+  "shortcutStates",
   "tuiSurfaces",
   "toolsExpanded",
   "staleHosts",
@@ -437,6 +443,8 @@ function pruneClosedTabRecords(
   const patch: Record<string, unknown> = {};
   let changed = false;
   for (const key of TAB_SCOPED_RECORDS) {
+    // SAFETY: every entry in TAB_SCOPED_RECORDS is a `Record<tabId, …>`; the
+    // list is the single place that declares which state keys have that shape.
     const current = state[key] as unknown as Record<string, unknown>;
     const next = Object.fromEntries(Object.entries(current).filter(([tabId]) => ids.has(tabId)));
     if (Object.keys(next).length !== Object.keys(current).length) {
@@ -1620,13 +1628,21 @@ export interface AppStateShape {
   shortcutsBusy: boolean;
   shortcutsError: string | null;
   /**
+   * Per-tab shortcut registrations. A pane's composer must use *its own* tab's
+   * list, not whatever the focused tab happened to load: two panes can register
+   * different keys, and a delayed response must never populate another pane.
+   * The scalar `shortcuts*` fields above are the focused tab's projection, kept
+   * for app-wide consumers (shortcut help, skills view, the global dispatcher).
+   */
+  shortcutStates: Record<string, ShortcutTabState>;
+  /**
    * The tab the current `shortcuts` were listed from. `loadShortcuts` reuses
    * them for that tab and only refetches for another tab or a `refresh`, so a
    * tab activation costs one request at most (mirrors `resourcesTabId`).
    */
   shortcutsTabId: string | null;
-  loadShortcuts: (options?: { refresh?: boolean }) => Promise<void>;
-  invokeShortcut: (key: string) => Promise<boolean>;
+  loadShortcuts: (options?: { refresh?: boolean; tabId?: string }) => Promise<void>;
+  invokeShortcut: (key: string, tabId?: string) => Promise<boolean>;
   /** The shortcuts help dialog (Ctrl+/). */
   shortcutsHelpOpen: boolean;
   setShortcutsHelpOpen: (open: boolean) => void;
@@ -1639,6 +1655,12 @@ export interface AppStateShape {
   extensionUi: Record<string, ExtensionUiSnapshot>;
   /** Generic extension contributions per tab (orchestrator plan step 9). */
   contributions: Record<string, ContributionSnapshot>;
+  /**
+   * Contribution actions currently in flight, per tab. Inner keys are
+   * `ownerId\u0000actionId`; a duplicate activation of the same action is
+   * ignored without disabling unrelated actions.
+   */
+  contributionActions: Record<string, Record<string, true>>;
   /** Dialogs waiting for an answer, oldest first. */
   extensionDialogs: ExtensionDialogRequest[];
   /**
@@ -1664,6 +1686,11 @@ export interface AppStateShape {
   notificationCooldowns: Record<string, number>;
   /** Fetches `oi.state` for a tab (called on activation). */
   loadExtensionUi: (tabId: string) => Promise<void>;
+  /**
+   * Re-reads only the contribution registry after a settled action. Fenced like
+   * the initial load, so a delayed response cannot overwrite a newer push.
+   */
+  refreshContributions: (tabId: string) => Promise<void>;
   /** Applies one `oi.*` host event (dialog, notification, state, theme, shutdown). */
   handleExtensionUiEvent: (tabId: string, entry: SessionEventEntry) => void;
   /** Answers a dialog through `oi.respond`; `cancelled` closes it unanswered. */
@@ -2128,11 +2155,95 @@ function clearTabSessionUi(state: AppStateShape, tabId: string): Partial<AppStat
   return {
     extensionUi: drop(state.extensionUi),
     contributions: drop(state.contributions),
+    contributionActions: drop(state.contributionActions),
     tuiSurfaces: drop(state.tuiSurfaces),
     toolsExpanded: drop(state.toolsExpanded),
     staleHosts: drop(state.staleHosts),
     dialogAttention: drop(state.dialogAttention),
     extensionDialogs: state.extensionDialogs.filter((dialog) => dialog.tabId !== tabId),
+  };
+}
+
+/**
+ * Fencing for extension-UI/contribution reads.
+ *
+ * Every load, every pushed state frame and every lifecycle reset advances the
+ * tab's token. A response may only be applied when its captured token is still
+ * current, so a delayed `oi.state`/`contributions.state` (or its catch) can
+ * never overwrite a newer push, a newer load, or resurrect a closed/rebound tab.
+ * Wall-clock timestamps and owner revisions are not used here: a full snapshot
+ * can legitimately remove owners, and a restarted host resets its counters.
+ */
+let contributionReadSeq = 0;
+const contributionReadTokens = new Map<string, number>();
+
+function beginContributionRead(tabId: string): number {
+  contributionReadSeq += 1;
+  contributionReadTokens.set(tabId, contributionReadSeq);
+  return contributionReadSeq;
+}
+
+function contributionReadIsCurrent(tabId: string, token: number): boolean {
+  return (contributionReadTokens.get(tabId) ?? 0) === token;
+}
+
+/** Invalidates in-flight reads for a tab (push, rebind, restart, close). */
+function invalidateContributionReads(tabId: string): void {
+  beginContributionRead(tabId);
+}
+
+/** Clears a tab's extension UI while invalidating any read still in flight. */
+function resetTabExtensionUi(tabId: string): Partial<AppStateShape> {
+  invalidateContributionReads(tabId);
+  return clearTabSessionUi(useAppStore.getState(), tabId);
+}
+
+/** One tab's registered extension shortcuts. */
+export interface ShortcutTabState {
+  shortcuts: ShortcutsSnapshot;
+  loaded: boolean;
+  busy: boolean;
+  error: string | null;
+}
+
+/**
+ * Fencing for `shortcuts.list` reads, per tab. A response may only be written
+ * when its tab token is still current, so a slow list for a background pane
+ * cannot overwrite a newer load (or a closed tab's cleared state).
+ */
+let shortcutReadSeq = 0;
+const shortcutReadTokens = new Map<string, number>();
+
+function beginShortcutRead(tabId: string): number {
+  shortcutReadSeq += 1;
+  shortcutReadTokens.set(tabId, shortcutReadSeq);
+  return shortcutReadSeq;
+}
+
+function shortcutReadIsCurrent(tabId: string, token: number): boolean {
+  return (shortcutReadTokens.get(tabId) ?? 0) === token;
+}
+
+/** Drops a tab's shortcut registration and invalidates reads in flight. */
+function dropTabShortcuts(tabId: string): void {
+  beginShortcutRead(tabId);
+}
+
+/** Writes one tab's list and, when it is the focused tab, its projection. */
+function writeShortcutState(
+  state: AppStateShape,
+  tabId: string,
+  next: ShortcutTabState,
+): Partial<AppStateShape> {
+  const shortcutStates = { ...state.shortcutStates, [tabId]: next };
+  if (state.activeTabId !== tabId) return { shortcutStates };
+  return {
+    shortcutStates,
+    shortcuts: next.shortcuts,
+    shortcutsLoaded: next.loaded,
+    shortcutsBusy: next.busy,
+    shortcutsError: next.error,
+    shortcutsTabId: tabId,
   };
 }
 
@@ -2142,6 +2253,31 @@ const REMOTE_ERROR_PREFIX = /^Error invoking remote method '[^']+':\s*(?:Error:\
 /** The message a user should read, without Electron's IPC wrapper. */
 function userFacingError(error: unknown): string {
   return errorMessage(error).replace(REMOTE_ERROR_PREFIX, "");
+}
+
+/**
+ * One `contributions.run` verdict.
+ *
+ * `ran:true` is an *acknowledged invocation*, not a mode change: a handler can
+ * throw (`error` present) or refuse internally. Only an acknowledgement with no
+ * reported error counts as a successful request; everything else is reported
+ * and never replayed.
+ */
+function parseContributionRunResult(value: unknown): { ok: boolean; reason: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, reason: "The host did not confirm the action." };
+  }
+  const record = value as Record<string, unknown>;
+  const error =
+    typeof record.error === "string" && record.error.trim().length > 0
+      ? record.error.trim().slice(0, 400)
+      : undefined;
+  if (record.ran === true && error === undefined) {
+    return { ok: true, reason: "" };
+  }
+  if (error !== undefined) return { ok: false, reason: error };
+  if (record.ran === false) return { ok: false, reason: "The host refused the action." };
+  return { ok: false, reason: "The host returned an unexpected action result." };
 }
 
 /** One sentence for the toast and the transient hint. */
@@ -2579,9 +2715,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   shortcutsBusy: false,
   shortcutsError: null,
   shortcutsTabId: null,
+  shortcutStates: {},
   shortcutsHelpOpen: false,
   extensionUi: {},
   contributions: {},
+  contributionActions: {},
   extensionDialogs: [],
   dialogAttention: {},
   notifications: [],
@@ -3180,6 +3318,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       if (ids.has(tab.id)) continue;
       closedTabIds.add(tab.id);
       closedIds.push(tab.id);
+      // A response for a closed tab must never land in its (soon pruned) slot.
+      invalidateContributionReads(tab.id);
+      dropTabShortcuts(tab.id);
       sessionEnsuredAt.delete(tab.id);
       sessionEnsuring.delete(tab.id);
       transcriptHydrating.delete(tab.id);
@@ -3325,7 +3466,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return;
     }
     if (envelope.events.some((entry) => entry.event === "session.recovered")) {
-      set(clearTabSessionUi(get(), envelope.tabId));
+      set(resetTabExtensionUi(envelope.tabId));
       get().clearStaleHost(envelope.tabId);
       get().invalidateCommands(envelope.tabId);
     }
@@ -3344,7 +3485,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       const previousId = typeof previous === "string" ? previous : null;
       if (nextId !== null && nextId !== previousId) {
         get().resetTranscript(envelope.tabId);
-        set(clearTabSessionUi(get(), envelope.tabId));
+        set(resetTabExtensionUi(envelope.tabId));
         get().invalidateCommands(envelope.tabId);
         void get().hydrateTranscript(envelope.tabId);
         replacedReset = true;
@@ -3352,7 +3493,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
     // A reload keeps the session id but replaces the extension runner. Its
     // statuses/widgets/dialogs belong to the outgoing runner too.
-    if (identityChanged && !replacedReset) set(clearTabSessionUi(get(), envelope.tabId));
+    if (identityChanged && !replacedReset) set(resetTabExtensionUi(envelope.tabId));
     const suppressStaleExtensionError = replacedReset || identityChanged;
     // A trust refusal is a project-level question, not transcript content: raise
     // the prompt and keep it out of the message list (plan step 10).
@@ -3556,8 +3697,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       }
       // A restarted host rebinds its extensions, so any shortcut registered by
       // the fresh session must be re-listed (the previous list may be stale).
-      if (get().activeTabId === tabId) void get().loadShortcuts({ refresh: true });
-      set(clearTabSessionUi(get(), tabId));
+      dropTabShortcuts(tabId);
+      if (get().activeTabId === tabId) void get().loadShortcuts({ refresh: true, tabId });
+      set(resetTabExtensionUi(tabId));
       void get().loadExtensionUi(tabId);
       get().invalidateCommands(tabId);
       // A restart is also the documented fix for a bridge that never bound the
@@ -3572,26 +3714,57 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   loadExtensionUi: async (tabId) => {
     const api = bridge();
     if (!api?.sessions || tabId === CONTROL_TAB_ID) return;
+    // One token covers both reads: a push (or a newer load) that arrives while
+    // either await is pending wins, including over the catch path below.
+    const token = beginContributionRead(tabId);
+    const sessionEpoch = get().sessionEpochs[tabId] ?? 0;
+    const stillCurrent = (): boolean =>
+      contributionReadIsCurrent(tabId, token) && (get().sessionEpochs[tabId] ?? 0) === sessionEpoch;
     try {
       const result = await api.sessions.request({ tabId, method: "oi.state" });
+      if (!stillCurrent()) return;
       const snapshot = sanitizeExtensionUiSnapshot(result);
       set({ extensionUi: { ...get().extensionUi, [tabId]: snapshot } });
       if (snapshot.title && get().activeTabId === tabId) void api.setTitle(snapshot.title);
     } catch {
       // A host without the extension UI port still streams; keep the empty state.
+      if (!stillCurrent()) return;
       set({ extensionUi: { ...get().extensionUi, [tabId]: { ...EMPTY_EXTENSION_UI } } });
     }
     // The generic contribution registry is a separate method; an older host
-    // rejects it and the bar simply never appears.
+    // rejects it and the bar simply never appears. A failed read keeps the last
+    // valid snapshot rather than wiping a mode that was just published.
     try {
       const result = await api.sessions.request({ tabId, method: "contributions.state" });
+      if (!stillCurrent()) return;
       set({
         contributions: { ...get().contributions, [tabId]: sanitizeContributionSnapshot(result) },
       });
     } catch {
+      if (!stillCurrent()) return;
+      if (get().contributions[tabId] === undefined) {
+        set({
+          contributions: { ...get().contributions, [tabId]: { ...EMPTY_CONTRIBUTION_SNAPSHOT } },
+        });
+      }
+    }
+  },
+
+  refreshContributions: async (tabId) => {
+    const api = bridge();
+    if (!api?.sessions || tabId === CONTROL_TAB_ID) return;
+    const token = beginContributionRead(tabId);
+    const sessionEpoch = get().sessionEpochs[tabId] ?? 0;
+    try {
+      const result = await api.sessions.request({ tabId, method: "contributions.state" });
+      if (!contributionReadIsCurrent(tabId, token)) return;
+      if ((get().sessionEpochs[tabId] ?? 0) !== sessionEpoch) return;
       set({
-        contributions: { ...get().contributions, [tabId]: { ...EMPTY_CONTRIBUTION_SNAPSHOT } },
+        contributions: { ...get().contributions, [tabId]: sanitizeContributionSnapshot(result) },
       });
+    } catch {
+      // Keep the last valid state: a refresh is a convergence attempt, not an
+      // authority to erase a mode the host still owns.
     }
   },
 
@@ -3604,6 +3777,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return;
     }
     if (entry.event === "contributions.state") {
+      // A push is newer than any load in flight for this tab.
+      invalidateContributionReads(tabId);
       set({
         contributions: {
           ...get().contributions,
@@ -3613,6 +3788,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return;
     }
     if (entry.event === EXTENSION_UI_STATE_EVENT) {
+      // Same rule for the extension-UI slice: a pushed state frame wins over a
+      // delayed `oi.state` response.
+      invalidateContributionReads(tabId);
       const snapshot = sanitizeExtensionUiSnapshot(entry.payload);
       const previousTitle = get().extensionUi[tabId]?.title ?? null;
       set({ extensionUi: { ...get().extensionUi, [tabId]: snapshot } });
@@ -4793,16 +4971,54 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   runContributionAction: async (tabId, ownerId, id) => {
     const api = bridge();
     if (!api?.sessions) return false;
+    const actionKey = `${ownerId}\u0000${id}`;
+    const inFlight = get().contributionActions[tabId] ?? {};
+    // One gesture, one request: a second click while the first is pending is
+    // ignored, while unrelated actions on the same bar stay usable.
+    if (inFlight[actionKey]) return false;
+    const token = beginContributionRead(tabId);
+    const sessionEpoch = get().sessionEpochs[tabId] ?? 0;
+    set({
+      contributionActions: {
+        ...get().contributionActions,
+        [tabId]: { ...inFlight, [actionKey]: true },
+      },
+    });
+    const stillCurrent = (): boolean =>
+      contributionReadIsCurrent(tabId, token) && (get().sessionEpochs[tabId] ?? 0) === sessionEpoch;
     try {
-      await api.sessions.request({
+      const response = await api.sessions.request({
         tabId,
         method: "contributions.run",
         params: { ownerId, id },
       });
-      return true;
+      if (!stillCurrent()) return false;
+      // The host answers `{ran, error?}`. `ran:true` can accompany a throwing
+      // handler, and an error-free acknowledgement still does not prove a mode
+      // transition: the next published snapshot is the only authority.
+      const result = parseContributionRunResult(response);
+      if (!result.ok) get().noteFailure(new Error(result.reason));
+      // Converge through the guarded read path; no optimistic label change and
+      // no automatic replay of a refused/uncertain request.
+      void get().refreshContributions(tabId);
+      return result.ok;
     } catch (error) {
-      get().noteFailure(error);
+      if (stillCurrent()) {
+        get().noteFailure(error);
+        void get().refreshContributions(tabId);
+      }
       return false;
+    } finally {
+      const pending = { ...(get().contributionActions[tabId] ?? {}) };
+      if (pending[actionKey]) {
+        delete pending[actionKey];
+        set({
+          contributionActions: {
+            ...get().contributionActions,
+            [tabId]: pending,
+          },
+        });
+      }
     }
   },
 
@@ -5626,66 +5842,95 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   loadShortcuts: async (options) => {
     const api = bridge();
     if (!api?.sessions) return;
-    const target = resourcesTarget(get());
-    const current = get();
+    // Explicit target: a pane loads its own tab. Only app-wide callers (startup,
+    // help, skills) fall back to the focused tab.
+    const target = options?.tabId ?? resourcesTarget(get());
+    const perTab = get().shortcutStates[target];
     // A control host has no extension runner, so `shortcuts.list` would fail
     // with `not_implemented`; leave the (empty) list alone rather than flapping
     // into an error state on every activation without a session.
     if (target === CONTROL_TAB_ID && !options?.refresh) {
-      if (!current.shortcutsLoaded) set({ shortcutsLoaded: true, shortcutsTabId: CONTROL_TAB_ID });
+      set(
+        writeShortcutState(get(), target, {
+          shortcuts: perTab?.shortcuts ?? EMPTY_SHORTCUTS,
+          loaded: true,
+          busy: false,
+          error: null,
+        }),
+      );
       return;
     }
-    // The list belongs to a tab: reuse it for the same tab and only refetch on a
-    // refresh or when the active session changed. This is what makes it cheap to
-    // call from `activateTab` (plan step 7). A failed attempt is never latched:
-    // when the last attempt for this tab errored (`shortcutsError`), the next
-    // call retries instead of returning the empty list forever (2026-10-20
-    // startup-tab-cycle plan).
+    // The list belongs to a tab: reuse *that* tab's snapshot and only refetch on
+    // a refresh. A failed attempt is never latched: when the last attempt for
+    // this tab errored, the next call retries instead of returning the empty
+    // list forever (2026-10-20 startup-tab-cycle plan).
     if (
       options?.refresh !== true &&
-      current.shortcutsLoaded &&
-      current.shortcutsTabId === target &&
-      !current.shortcutsError &&
+      perTab !== undefined &&
+      perTab.loaded &&
+      !perTab.error &&
       // An empty successful response is not a reason to stop asking: a session
       // that resumed before its extension runner bound can answer `{shortcuts: []}`
       // once, and the composer's Tab fallback needs the retry (2026-10-24 plan).
-      current.shortcuts.shortcuts.length > 0
+      perTab.shortcuts.shortcuts.length > 0
     ) {
       return;
     }
-    if (current.shortcutsBusy) return;
-    set({ shortcutsBusy: true, shortcutsError: null });
+    if (perTab?.busy) return;
+    const token = beginShortcutRead(target);
+    set(
+      writeShortcutState(get(), target, {
+        shortcuts: perTab?.shortcuts ?? EMPTY_SHORTCUTS,
+        loaded: perTab?.loaded ?? false,
+        busy: true,
+        error: null,
+      }),
+    );
     try {
       const raw = await api.sessions.request({ tabId: target, method: "shortcuts.list" });
-      set({
-        shortcuts: sanitizeShortcutsSnapshot(raw),
-        shortcutsLoaded: true,
-        shortcutsBusy: false,
-        shortcutsError: null,
-        shortcutsTabId: target,
-      });
+      // A newer load (or a closed/rebound tab) wins: never write an old list.
+      if (!shortcutReadIsCurrent(target, token)) return;
+      set(
+        writeShortcutState(get(), target, {
+          shortcuts: sanitizeShortcutsSnapshot(raw),
+          loaded: true,
+          busy: false,
+          error: null,
+        }),
+      );
     } catch (error) {
+      if (!shortcutReadIsCurrent(target, token)) return;
       if (isSessionAsleepError(error)) {
         // This was a passive status-change retry against a recycled host. Leave
         // the list unlatched so activation/ensure retries it once the host is
         // awake; do not show an error or wipe a list the previous session had.
-        set({ shortcutsBusy: false, shortcutsLoaded: false, shortcutsError: null });
+        set(
+          writeShortcutState(get(), target, {
+            shortcuts: perTab?.shortcuts ?? EMPTY_SHORTCUTS,
+            loaded: false,
+            busy: false,
+            error: null,
+          }),
+        );
         return;
       }
-      set({
-        shortcutsBusy: false,
-        shortcutsLoaded: true,
-        shortcutsError: errorMessage(error),
-        shortcuts: EMPTY_SHORTCUTS,
-        shortcutsTabId: target,
-      });
+      set(
+        writeShortcutState(get(), target, {
+          shortcuts: EMPTY_SHORTCUTS,
+          loaded: true,
+          busy: false,
+          error: errorMessage(error),
+        }),
+      );
     }
   },
 
-  invokeShortcut: async (key) => {
+  invokeShortcut: async (key, tabId) => {
     const api = bridge();
     if (!api?.sessions) return false;
-    const target = resourcesTarget(get());
+    // The pane's own composer passes its tab; the global dispatcher uses the
+    // focused tab. A background pane's Tab must never run on the focused host.
+    const target = tabId ?? resourcesTarget(get());
     if (target === CONTROL_TAB_ID) return false;
     try {
       await api.sessions.request({ tabId: target, method: "shortcuts.invoke", params: { key } });
@@ -7077,6 +7322,27 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // older sequence is ignored (see `applyTabs`).
     localSelectionSeq += 1;
     set({ activeTabId: tabId, view: "session" });
+    // The scalar shortcut fields are the focused tab's projection. Switching
+    // tabs must switch them *now*, or the global dispatcher/help would keep the
+    // previous session's registrations until the next load settles.
+    const shortcutState = get().shortcutStates[tabId];
+    set(
+      shortcutState
+        ? {
+            shortcuts: shortcutState.shortcuts,
+            shortcutsLoaded: shortcutState.loaded,
+            shortcutsBusy: shortcutState.busy,
+            shortcutsError: shortcutState.error,
+            shortcutsTabId: tabId,
+          }
+        : {
+            shortcuts: EMPTY_SHORTCUTS,
+            shortcutsLoaded: false,
+            shortcutsBusy: false,
+            shortcutsError: null,
+            shortcutsTabId: null,
+          },
+    );
     get().clearDialogAttention(tabId);
     const tab = get().tabs.find((entry) => entry.id === tabId);
     if (!tab) return;

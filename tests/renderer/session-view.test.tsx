@@ -721,7 +721,11 @@ describe("generic extension contributions (orchestrator step 11)", () => {
       updatedAt: 1,
     });
 
-  const mode = (label: string, tone: Contribution["tone"] = "accent"): Contribution => ({
+  const mode = (
+    label: string,
+    tone: Contribution["tone"] = "accent",
+    actionRef?: string,
+  ): Contribution => ({
     id: "mode",
     kind: "mode",
     slot: "mode",
@@ -729,6 +733,19 @@ describe("generic extension contributions (orchestrator step 11)", () => {
     tone,
     order: 0,
     actions: [],
+    ...(actionRef === undefined ? {} : { actionRef }),
+  });
+
+  /** The single cycle action a mode label references (composer corner). */
+  const modeCycle = (enabled = true): Contribution => ({
+    id: "mode-cycle",
+    kind: "action",
+    slot: "action",
+    label: "Cycle mode",
+    tone: "neutral",
+    order: 20,
+    command: { name: "workflow-cycle" },
+    enabled,
   });
 
   const locked = (reason = "A reviewer owns this turn"): Contribution => ({
@@ -795,7 +812,7 @@ describe("generic extension contributions (orchestrator step 11)", () => {
     expect(useAppStore.getState().prefs.drafts[TAB] ?? "").toBe("");
   });
 
-  it("drives the composer badge and border from the same generic badge", () => {
+  it("drives the composer mode control and border from the published mode", () => {
     useAppStore.setState({
       contributions: { [TAB]: snapshotOf([mode("Analyze", "warning")]) },
     });
@@ -804,8 +821,33 @@ describe("generic extension contributions (orchestrator step 11)", () => {
 
     expect(screen.getByTestId("composer-contribution-badge")).toHaveTextContent("Analyze");
     expect(screen.getByLabelText("Prompt")).toHaveClass("border-warn");
-    // The bar does not repeat the badge the composer already names.
-    expect(screen.queryByTestId("contribution-badge")).toBeNull();
+    // A mode-only snapshot has nothing to put in the bar: no empty mode row.
+    expect(screen.queryByTestId("contributions-bar")).toBeNull();
+  });
+
+  it("runs the mode label's referenced action against this pane's tab", async () => {
+    const request = vi.fn(async (input: { method: string }) =>
+      input.method === "contributions.run" ? { ran: true } : {},
+    );
+    (window.pi as unknown as { sessions: { request: unknown } }).sessions.request = request;
+    useAppStore.setState({
+      contributions: { [TAB]: snapshotOf([mode("Plan", "warning", "mode-cycle"), modeCycle()]) },
+    });
+
+    render(<SessionView tabId={TAB} />);
+    const button = screen.getByTestId("composer-mode-button");
+    expect(button).toHaveTextContent("Plan");
+    fireEvent.click(button);
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: TAB,
+        method: "contributions.run",
+        params: { ownerId: "fixture.ext", id: "mode-cycle" },
+      }),
+    );
+    // The corner is the only control: no duplicated row button.
+    expect(screen.queryByTestId("contributions-bar")).toBeNull();
   });
 
   it("suppresses the working row and Stop while input is locked", () => {
@@ -865,7 +907,23 @@ describe("generic extension contributions (orchestrator step 11)", () => {
 
   it("renders the bar below the above-editor widgets and above the composer", () => {
     useAppStore.setState({
-      contributions: { [TAB]: snapshotOf([mode("Analyze")]) },
+      contributions: {
+        [TAB]: snapshotOf([
+          mode("Analyze", "accent", "mode-cycle"),
+          modeCycle(),
+          {
+            id: "progress",
+            kind: "progress",
+            slot: "progress",
+            label: "Files",
+            tone: "neutral",
+            order: 5,
+            done: 2,
+            total: 5,
+            actions: [],
+          },
+        ]),
+      },
       tuiSurfaces: {
         [TAB]: {
           ...EMPTY_TUI_SURFACE,
@@ -882,6 +940,33 @@ describe("generic extension contributions (orchestrator step 11)", () => {
     const composer = screen.getByTestId("composer-drop");
     expect(widget.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(bar.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("keeps no fallback mode row when a dialog or docked TUI replaces the composer", () => {
+    useAppStore.setState({
+      contributions: { [TAB]: snapshotOf([mode("Plan", "warning", "mode-cycle"), modeCycle()]) },
+      extensionDialogs: [
+        {
+          id: "dialog-1",
+          method: "select",
+          title: "Pick one",
+          options: ["A"],
+          message: "",
+          placeholder: null,
+          prefill: null,
+          timeout: null,
+          tabId: TAB,
+          at: 1,
+        },
+      ],
+    });
+
+    render(<SessionView tabId={TAB} />);
+
+    // The composer (and its corner control) is replaced; the mode does not
+    // reappear as a strip because the plan prefers no fallback mode row.
+    expect(screen.queryByTestId("composer-contribution-badge")).toBeNull();
+    expect(screen.queryByTestId("contributions-bar")).toBeNull();
   });
 
   it("falls back to generic statuses and widgets for a non-publishing extension", () => {

@@ -449,9 +449,9 @@ describe("hint row", () => {
   });
 });
 
-describe("contribution badge border", () => {
-  const badge = (
-    over: Partial<Parameters<typeof Composer>[0]["contributionBadge"] & object> = {},
+describe("composer mode control", () => {
+  const mode = (
+    over: Partial<Parameters<typeof Composer>[0]["contributionMode"] & object> = {},
   ) => ({
     ownerId: "fixture.ext",
     id: "mode",
@@ -465,59 +465,156 @@ describe("contribution badge border", () => {
     ...over,
   });
 
+  const modeAction = (
+    over: Partial<
+      NonNullable<Parameters<typeof Composer>[0]["contributionModeAction"]> & object
+    > = {},
+  ) => ({
+    ownerId: "fixture.ext",
+    id: "mode-cycle",
+    text: "Cycle mode",
+    enabled: true,
+    ...over,
+  });
+
   function promptBox(): HTMLElement {
     return screen.getByLabelText("Prompt");
   }
 
-  it("colours the border from the badge tone and shows its label", () => {
+  it("colours the border from the mode tone and shows its current label", () => {
     // No mode names or glyphs: an arbitrary publisher's tone and label are the
     // only inputs, so a third-party extension looks native with no app change.
     const plan = renderComposer({
-      contributionBadge: badge({ tone: "warning", text: "Plan" }),
+      contributionMode: mode({ tone: "warning", text: "Plan" }),
     });
     expect(promptBox()).toHaveClass("border-warn");
-    expect(promptBox()).toHaveClass("pr-14");
     expect(screen.getByTestId("composer-contribution-badge")).toHaveTextContent("Plan");
     expect(screen.getByTestId("composer-contribution-badge")).toHaveAttribute(
       "data-tone",
       "warning",
     );
-    expect(within(screen.getByTestId("composer-contribution-badge")).getByText("Plan")).toHaveClass(
-      "text-warn",
-    );
+    expect(
+      within(screen.getByTestId("composer-contribution-badge")).getByTestId("composer-mode-label"),
+    ).toHaveClass("text-warn");
     plan.unmount();
 
-    renderComposer({ contributionBadge: badge({ tone: "accent", text: "Build 3/8" }) });
+    renderComposer({ contributionMode: mode({ tone: "accent", text: "Build 3/8" }) });
     expect(promptBox()).toHaveClass("border-accent");
     expect(screen.getByTestId("composer-contribution-badge")).toHaveTextContent("Build 3/8");
     expect(
-      within(screen.getByTestId("composer-contribution-badge")).getByText("Build 3/8"),
+      within(screen.getByTestId("composer-contribution-badge")).getByTestId("composer-mode-label"),
     ).toHaveClass("text-accent");
   });
 
-  it("renders the badge inside the input's top-right corner", () => {
-    renderComposer({ contributionBadge: badge() });
+  it("renders the control inside the input's top-right corner with a capped width", () => {
+    renderComposer({ contributionMode: mode(), contributionModeAction: modeAction() });
     const input = screen.getByTestId("composer-input");
     const element = within(input).getByTestId("composer-contribution-badge");
     expect(input.contains(element)).toBe(true);
     expect(element.className).toContain("absolute");
     expect(element.className).toContain("top-1");
     expect(element.className).not.toContain("bottom-1");
+    // Long/localized labels truncate visually instead of covering the prompt.
+    expect(element.className).toMatch(/max-w-\[/);
+    expect(within(element).getByTestId("composer-mode-button")).toHaveClass("truncate");
   });
 
-  it("keeps the badge readable at every width and to assistive tech", () => {
-    renderComposer({ contributionBadge: badge() });
-    const element = screen.getByTestId("composer-contribution-badge");
-    expect(element.className).not.toMatch(/\bhidden\b/);
-    expect(element.className).not.toMatch(/sm:inline-block/);
-    expect(element).not.toHaveAttribute("aria-hidden");
-    expect(element).toHaveAttribute("role", "status");
-    // The publisher's detail stays reachable on hover.
-    expect(element).toHaveAttribute("title", "fixture detail");
+  it("is a real button that runs the referenced action, keeping the prompt's focus", async () => {
+    const user = userEvent.setup();
+    const onRun = vi.fn(async () => true);
+    renderComposer({
+      contributionMode: mode({ text: "Orchestrator" }),
+      contributionModeAction: modeAction(),
+      onRunContributionMode: onRun,
+    });
+    const button = screen.getByTestId("composer-mode-button");
+    expect(button.tagName).toBe("BUTTON");
+    expect(button).toHaveAttribute("type", "button");
+    // The accessible name carries the current mode and the action.
+    expect(button).toHaveAttribute("aria-label", "Orchestrator — Cycle mode");
+    expect(button).toHaveTextContent("Orchestrator");
+
+    await user.click(button);
+    expect(onRun).toHaveBeenCalledWith("fixture.ext", "mode-cycle");
+    // The label follows published state, never an optimistic local step.
+    expect(screen.getByTestId("composer-mode-button")).toHaveTextContent("Orchestrator");
+  });
+
+  it("supports keyboard activation like any other button", async () => {
+    const user = userEvent.setup();
+    const onRun = vi.fn(async () => true);
+    renderComposer({
+      contributionMode: mode(),
+      contributionModeAction: modeAction(),
+      onRunContributionMode: onRun,
+    });
+    await user.tab();
+    const button = screen.getByTestId("composer-mode-button");
+    button.focus();
+    expect(button).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(onRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a disabled action, explains why, and ignores repeat clicks", async () => {
+    const user = userEvent.setup();
+    const onRun = vi.fn(async () => true);
+    renderComposer({
+      contributionMode: mode({ text: "Review" }),
+      contributionModeAction: modeAction({
+        enabled: false,
+        disabledReason: "a review owns this turn",
+      }),
+      onRunContributionMode: onRun,
+    });
+    const button = screen.getByTestId("composer-mode-button");
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", "a review owns this turn");
+    await user.click(button);
+    expect(onRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps one invocation in flight and re-enables after it settles", async () => {
+    const user = userEvent.setup();
+    let settle: ((value: boolean) => void) | undefined;
+    const onRun = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    renderComposer({
+      contributionMode: mode(),
+      contributionModeAction: modeAction(),
+      onRunContributionMode: onRun,
+    });
+    const button = screen.getByTestId("composer-mode-button");
+    await user.click(button);
+    expect(onRun).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("composer-mode-button")).toBeDisabled();
+    await user.click(screen.getByTestId("composer-mode-button"));
+    expect(onRun).toHaveBeenCalledTimes(1);
+    settle?.(true);
+    await waitFor(() => expect(screen.getByTestId("composer-mode-button")).not.toBeDisabled());
+  });
+
+  it("keeps a legacy mode label informative without inventing an action", () => {
+    renderComposer({ contributionMode: mode({ text: "Plan" }) });
+    expect(screen.queryByTestId("composer-mode-button")).toBeNull();
+    const root = screen.getByTestId("composer-contribution-badge");
+    expect(root).toHaveAttribute("data-actionable", "false");
+    expect(root).toHaveTextContent("Plan");
+    // The mode is still announced, politely, once.
+    expect(within(root).getByRole("status")).toHaveTextContent("Plan");
+    // The publisher's detail stays reachable.
+    expect(within(root).getByTitle("fixture detail")).toBeInTheDocument();
   });
 
   it("survives focus without a ring that hides the tone colour", () => {
-    renderComposer({ contributionBadge: badge({ tone: "accent", text: "Build" }) });
+    renderComposer({
+      contributionMode: mode({ tone: "accent", text: "Build" }),
+      contributionModeAction: modeAction(),
+    });
     const box = promptBox();
     expect(box).toHaveClass("outline-none");
     expect(box.className).toMatch(/focus-visible:ring-2/);
@@ -526,9 +623,19 @@ describe("contribution badge border", () => {
     expect(box).toHaveClass("border-accent");
   });
 
-  it("stays neutral when no badge is published", () => {
+  it("lets the shell-command warning tone win over the mode tone", () => {
+    renderComposer({
+      draft: "!npm test",
+      contributionMode: mode({ tone: "accent", text: "Plan" }),
+      contributionModeAction: modeAction(),
+    });
+    expect(promptBox()).toHaveClass("border-warn");
+    expect(screen.getByTestId("composer-mode-button")).toHaveClass("text-warn");
+  });
+
+  it("stays neutral when no mode is published", () => {
     for (const value of [undefined, null]) {
-      const view = renderComposer({ contributionBadge: value });
+      const view = renderComposer({ contributionMode: value });
       expect(promptBox()).toHaveClass("border-line");
       expect(screen.queryByTestId("composer-contribution-badge")).toBeNull();
       view.unmount();
