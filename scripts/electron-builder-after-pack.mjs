@@ -4,8 +4,13 @@
  * `scripts/gen-shims.mjs` writes the shims when the runtime is *fetched*, so the
  * copies that travel in `extraResources` carry development paths:
  *
- *   dev shim:      <repo>/resources/runtime/bin/pi -> <repo>/out/host/index.mjs
- *   packaged app:  <resources>/runtime/bin/pi      -> <resources>/app.asar.unpacked/out/host/index.mjs
+ *   dev shim:      <repo>/resources/runtime/bin/pi -> <repo>/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js
+ *   packaged app:  <resources>/runtime/bin/pi      -> <resources>/app.asar.unpacked/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js
+ *
+ * The `pi` shim points at the SDK's real CLI, never at `out/host/index.mjs`:
+ * that entry point speaks the app's JSONL service protocol, so a child spawned
+ * as `pi --mode json -p` would be a second host rather than a Pi session
+ * (Workflow plan step 30).
  *
  * Both the app's own PATH prefix (`runtimeEnvOverrides`) and any extension that
  * shells out to `pi`/`node`/`npm`/`npx` resolve through those shims, so without

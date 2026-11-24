@@ -1,7 +1,7 @@
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Composer, isSendKey } from "../../src/renderer/src/session/Composer";
 import type { ImageAttachment } from "../../src/renderer/src/session/image-attachment";
 import {
@@ -23,13 +23,20 @@ import { TAB_DRAG_MIME, TAB_DRAG_VERSION } from "../../src/shared/tab-drag";
  * an IME composition, and the steer/follow-up choice while streaming.
  */
 
+beforeEach(() => {
+  // The revisioned composer draft is tab state on purpose (plan step 18), so it
+  // outlives a component. Clear the slice between cases so an image pasted in
+  // one test cannot appear in the next one's composer.
+  useAppStore.setState({ composerDrafts: {} });
+});
+
 function renderComposer(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
   const onSend = vi.fn(
     async (
       _text: string,
-      _images: ImageAttachment[],
+      _images: readonly ImageAttachment[],
       _options?: { preferredSource?: unknown; followUp?: boolean },
-    ) => true,
+    ) => "sent" as const,
   );
   const onStop = vi.fn();
   const onClearQueue = vi.fn();
@@ -213,7 +220,7 @@ describe("Escape precedence (plan step 23)", () => {
           draft={draft}
           queue={{ steering: [], followUp: [] }}
           onDraftChange={setDraft}
-          onSend={async () => true}
+          onSend={async () => "sent"}
           onStop={onStop}
           onEscape={onEscape}
           onClearQueue={() => undefined}
@@ -328,7 +335,7 @@ function HistoryHarness({
       draft={draft}
       queue={{ steering: [], followUp: [] }}
       onDraftChange={setDraft}
-      onSend={async () => true}
+      onSend={async () => "sent"}
       onStop={() => undefined}
       onClearQueue={() => undefined}
       onRestoreQueue={() => undefined}
@@ -711,6 +718,24 @@ describe("extension shortcut dispatch (Tab)", () => {
     expect(onRequestShortcuts).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps prompt history working while a `tab` shortcut is registered (row 28)", () => {
+    // W's CustomEditor only changes Tab precedence in terminal Pi; the desktop
+    // native composer must leave ArrowUp/Down history untouched.
+    const onHistoryStep = vi.fn(() => ({ kind: "none" as const }));
+    const onInvokeShortcut = vi.fn();
+    renderComposer({
+      extensionShortcuts: [{ key: "tab" }],
+      onInvokeShortcut,
+      onHistoryStep,
+    });
+    const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    fireEvent.keyDown(box, { key: "ArrowUp" });
+    expect(onHistoryStep).toHaveBeenCalledWith(-1, box.value.length);
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(onHistoryStep).toHaveBeenCalledWith(1, box.value.length);
+    expect(onInvokeShortcut).not.toHaveBeenCalled();
+  });
+
   it("leaves Tab to an open completion menu", async () => {
     // A visible menu means the user is picking a suggestion; the mode cycle must
     // never steal that Tab (deliberate deviation from Pi, documented in D7).
@@ -737,7 +762,7 @@ describe("extension shortcut dispatch (Tab)", () => {
           draft={draft}
           queue={{ steering: [], followUp: [] }}
           onDraftChange={setDraft}
-          onSend={async () => true}
+          onSend={async () => "sent"}
           onStop={() => undefined}
           onClearQueue={() => undefined}
           onRestoreQueue={() => undefined}
@@ -805,7 +830,7 @@ describe("sleeping session (2026-10-24 plan)", () => {
         draft=""
         queue={{ steering: [], followUp: [] }}
         onDraftChange={() => undefined}
-        onSend={async () => true}
+        onSend={async () => "sent"}
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
@@ -844,7 +869,7 @@ describe("caret readout", () => {
         draft={draft}
         queue={{ steering: [], followUp: [] }}
         onDraftChange={setDraft}
-        onSend={async () => true}
+        onSend={async () => "sent"}
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}

@@ -1661,7 +1661,17 @@ describe("reconcile (sleep/resume and stale pushes)", () => {
     await Promise.resolve();
     const spawnedBefore = specs.length;
 
-    for (const method of ["tui.resize", "tui.state", "messages.get", "shortcuts.list"] as const) {
+    // Status/toggle reconciliation is a refresh, not a wake (prompt-refinement
+    // plan step 29): these reads answer `host_stopped` and never spawn.
+    for (const method of [
+      "tui.resize",
+      "tui.state",
+      "messages.get",
+      "shortcuts.list",
+      "contributions.state",
+      "composer.current",
+      "composer.status",
+    ] as const) {
       await expect(service.request("tab-1", method)).rejects.toMatchObject({
         code: "host_stopped",
         message: SESSION_ASLEEP_MESSAGE,
@@ -1673,6 +1683,58 @@ describe("reconcile (sleep/resume and stale pushes)", () => {
     await service.ensureTab("tab-1");
     expect(specs).toHaveLength(spawnedBefore + 1);
     expect(service.tabs()[0]!.status).toBe("idle");
+  });
+
+  it("wakes a stopped tab for an explicit contribution toggle, never for a refresh", async () => {
+    const { service, hosts, specs } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const host = hosts.get("tab-1");
+    if (!host) throw new Error("no host");
+    host.setStatus("stopped");
+    host.emitLifecycle("status", "stopped");
+    await Promise.resolve();
+    const spawnedBefore = specs.length;
+
+    // A user gesture through a published action is an explicit start: it owns
+    // the wake, exactly like a prompt.
+    await service.request("tab-1", "contributions.run", { ownerId: "a", id: "b" });
+    expect(specs).toHaveLength(spawnedBefore + 1);
+    expect(service.tabs()[0]!.status).not.toBe("stopped");
+  });
+
+  it("repairs a lost session for a read but never replays a mutating request", async () => {
+    const { service, hosts } = createHarness();
+    await service.createTab({ cwd: "C:\\work\\app" });
+    const host = hosts.get("tab-1");
+    if (!host) throw new Error("no host");
+    const base = host.request.bind(host);
+    const attempts: string[] = [];
+    const lost = new Set<string>();
+    // The host outlives its session once per method: the first dispatch is
+    // answered with a session-lost error, the reopened session succeeds.
+    host.request = ((method: HostMethod, params?: unknown, options?: { timeoutMs?: number }) => {
+      attempts.push(method);
+      if (
+        !lost.has(method) &&
+        (method === "contributions.state" || method === "contributions.run")
+      ) {
+        lost.add(method);
+        return Promise.reject(new HostStoppedError("session-1", method));
+      }
+      return base(method, params, options);
+    }) as typeof host.request;
+
+    // Read-only: the session is reopened once and the request is retried.
+    await expect(service.request("tab-1", "contributions.state")).resolves.toBeTruthy();
+    expect(attempts.filter((method) => method === "contributions.state")).toHaveLength(2);
+
+    // Mutating: the caller gets the error and the request is sent exactly once
+    // (the reopen may still happen, but nothing is replayed automatically).
+    attempts.length = 0;
+    await expect(
+      service.request("tab-1", "contributions.run", { ownerId: "a", id: "b" }),
+    ).rejects.toBeTruthy();
+    expect(attempts.filter((method) => method === "contributions.run")).toHaveLength(1);
   });
 
   it("still wakes a stopped tab for a prompt or an explicit ensure", async () => {

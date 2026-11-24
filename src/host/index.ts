@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -14,12 +14,15 @@ import {
   SERVICE_ENV,
   SERVICE_FLAG,
   SESSION_ID_ENV,
+  WORKFLOW_BUNDLE_DIR_ENV,
   isHostRole,
   type HostRole,
 } from "../shared/host-protocol";
 import { resolveCheckpointExtension } from "./checkpoint-extension";
+import { resolveWorkflowBuiltin, type WorkflowBuiltinResolution } from "./workflow-builtin";
 import { createControlCore } from "./control-core";
 import { createExtensionRendererRegistry } from "./extension-renderers";
+import { createFooterFacts } from "./footer-facts";
 import { createExtensionUiBridge, createExtensionUiPort } from "./extension-ui";
 import {
   createNodeFileListingIo,
@@ -39,6 +42,7 @@ import type { CustomProviderStore } from "./custom-providers";
 import type { ProviderPort } from "./providers";
 import { createSessionCore, type SessionCore } from "./session-core";
 import { createSdkContributionBridge, createSdkEventBus } from "./sdk/contributions";
+import { createSdkComposerTransformHost } from "./sdk/composer-transform";
 import { createSessionCatalog } from "./session-catalog";
 import { createHostService, type HostHandler, type HostService } from "./service";
 import {
@@ -145,6 +149,45 @@ function extensionFileExists(target: string): boolean {
   }
 }
 
+/** Any path (directory or file) that exists; injected into the resolver too. */
+function pathExists(target: string): boolean {
+  try {
+    return existsSync(target);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The bundled Workflow builtin for this host process (plan step 27).
+ *
+ * Main resolved the staged directory (packaged `resources/extensions/workflow`
+ * or the development `resources/`/`out/` copies) and passed it as
+ * {@link WORKFLOW_BUNDLE_DIR_ENV}; this host verifies the identity document and
+ * registers `builtin:workflow`. The SDK still owns enable/disable
+ * (`-builtin:workflow`, project trust) and replacement by an installed copy.
+ *
+ * Safe mode resolves to "nothing registered" without reading the disk, and an
+ * absent/invalid artifact is reported rather than replaced by a checkout or a
+ * runtime install.
+ */
+export function resolveHostWorkflowBuiltin(
+  env: Record<string, string | undefined>,
+  dependencies: {
+    safeMode?: boolean;
+    exists?(target: string): boolean;
+    readFile?(target: string): string;
+  } = {},
+): WorkflowBuiltinResolution {
+  const exists = dependencies.exists ?? pathExists;
+  return resolveWorkflowBuiltin({
+    ...(dependencies.safeMode ? { safeMode: true } : {}),
+    bundleDir: env[WORKFLOW_BUNDLE_DIR_ENV]?.trim() || null,
+    exists,
+    readFile: dependencies.readFile ?? ((target) => readFileSync(target, "utf8")),
+  });
+}
+
 function createCore(options: {
   cwd: string;
   agentDir: string;
@@ -153,6 +196,7 @@ function createCore(options: {
   backupDir?: string;
   safeMode?: boolean;
   checkpointsExtensionPath?: string | null;
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
   bindSession?: (session: never, runtime: never) => Promise<void>;
 }): SessionCore {
   const trustStore = new ProjectTrustStore(options.agentDir);
@@ -173,6 +217,7 @@ function createCore(options: {
     ...(options.checkpointsExtensionPath
       ? { checkpointsExtensionPath: options.checkpointsExtensionPath }
       : {}),
+    ...(options.workflowBuiltin ? { workflowBuiltin: options.workflowBuiltin } : {}),
     ...(options.bindSession ? { bindSession: options.bindSession as never } : {}),
     emit: options.emit,
     trustStore,
@@ -182,6 +227,26 @@ function createCore(options: {
         host,
         bus: contributionBus,
         onError: (error) => console.error("[contributions]", error),
+      }),
+    // Source-bound composer operations (prompt-refinement row 14): the SDK
+    // adapter supplies live command provenance, the companion string handler
+    // invocation and the CSPRNG; the host core owns the job/grants/rendezvous.
+    createComposerTransformHost: (options) =>
+      createSdkComposerTransformHost({
+        ...options,
+        clock: {
+          now: () => Date.now(),
+          setTimeout: (callback, ms) => setTimeout(callback, ms),
+          clearTimeout: (handle) => clearTimeout(handle as Parameters<typeof clearTimeout>[0]),
+        },
+        onError: (error) => {
+          options.onError?.(error);
+          console.error("[composer-transform]", error);
+        },
+        log: (line) => {
+          console.error(`[composer-transform] ${line}`);
+          options.log?.(line);
+        },
       }),
     requiresTrust: (cwd) => hasTrustRequiringProjectResources(cwd),
     // Settings writes use the session's own manager for the session cwd, so a
@@ -282,6 +347,7 @@ function createControlHostCore(options: {
   providers: ProviderPort;
   customProviders: CustomProviderStore;
   npmCommand?: readonly string[] | null;
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
 }) {
   const trust = createProjectTrust({
     store: new ProjectTrustStore(options.agentDir),
@@ -334,7 +400,9 @@ function createControlHostCore(options: {
       cwd: options.cwd,
       isProjectTrusted: (cwd) => trust.status(cwd).trusted,
       ...(options.safeMode ? { safeMode: true } : {}),
+      ...(options.workflowBuiltin ? { workflowBuiltin: options.workflowBuiltin } : {}),
     }),
+    ...(options.workflowBuiltin ? { workflowBuiltin: options.workflowBuiltin } : {}),
     // Profile keybindings and the theme catalogue (plan step 15) work with no
     // session open; the theme port is built per project cwd over a fresh
     // settings manager, exactly as the control settings port does.
@@ -460,6 +528,9 @@ export function runService(
         return {};
       }
     };
+    // The footer's git probe is per host process: a watcher is started only
+    // while an extension footer is subscribed, so an idle session costs nothing.
+    const footerGitIo = createNodeProjectIo();
     const bindSession =
       uiPort && tuiSurface
         ? createSdkExtensionBinder({
@@ -467,6 +538,22 @@ export function runService(
             tuiSurface,
             ...(rendererRegistry ? { renderers: rendererRegistry } : {}),
             readKeybindings,
+            // A custom footer gets the real branch/provider facts Pi provides
+            // (row 28): the branch is polled only while a footer is subscribed,
+            // and the provider count follows the live session model runtime.
+            footerFacts: (session, runtime) =>
+              createFooterFacts({
+                cwd: runtime.cwd,
+                io: footerGitIo,
+                availableProviderCount: () => {
+                  const available = session.modelRuntime?.getAvailableSnapshot?.() ?? [];
+                  return new Set(
+                    available
+                      .map((model) => model.provider)
+                      .filter((provider): provider is string => typeof provider === "string"),
+                  ).size;
+                },
+              }),
             emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
           })
         : null;
@@ -484,6 +571,13 @@ export function runService(
     });
     const checkpointExtensionPath = checkpointExtension.path;
 
+    // The bundled Workflow builtin (plan step 27), resolved once per host
+    // process: the session runtime and the Extensions hub's control-host loader
+    // must register the same named builtin, so one resolution feeds both. Main
+    // chose the staged directory (including an explicit override) and safe mode
+    // short-circuits without touching the disk.
+    const workflowBuiltin = resolveHostWorkflowBuiltin(env, { safeMode });
+
     const core =
       providerPort && customProviderStore
         ? createControlHostCore({
@@ -494,6 +588,7 @@ export function runService(
             ...(npmCommand ? { npmCommand } : {}),
             providers: providerPort,
             customProviders: customProviderStore,
+            ...(workflowBuiltin ? { workflowBuiltin } : {}),
           })
         : createCore({
             cwd,
@@ -508,6 +603,7 @@ export function runService(
               : { checkpointsExtensionPath: checkpointExtensionPath }),
             ...(npmCommand ? { npmCommand } : {}),
             ...(bindSession ? { bindSession } : {}),
+            ...(workflowBuiltin ? { workflowBuiltin } : {}),
             emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
           });
 
@@ -572,6 +668,14 @@ export function runService(
         capabilities: {
           checkpointsExtension: checkpointExtension.source !== null,
           checkpointExtensionSource: checkpointExtension.source,
+          workflowBuiltin: {
+            registered: workflowBuiltin.registered,
+            version: workflowBuiltin.version,
+            source: workflowBuiltin.source,
+            replaceable: workflowBuiltin.replaceable,
+            path: workflowBuiltin.path,
+            disabledBy: workflowBuiltin.disabledBy,
+          },
         },
       },
       onShutdown: () => {

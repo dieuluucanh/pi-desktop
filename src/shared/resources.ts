@@ -48,6 +48,18 @@ export interface ResourceContribution {
   detail?: string;
 }
 
+/** What the app knows about a resource Pi ships itself (`builtin:<name>`). */
+export interface ResourceBuiltinSummary {
+  /** The extension name behind `builtin:<name>`. */
+  name: string;
+  /** Pinned version from the staged artifact, when it could be read. */
+  version: string | null;
+  /** Where the code ships from. */
+  source: "bundled";
+  /** Pi steps this builtin aside for an installed extension that overlaps it. */
+  replaceable: boolean;
+}
+
 /** One loaded (or explicitly disabled) resource. */
 export interface ResourceSummary {
   /** Stable identity: `<kind>:<posix path>`. */
@@ -75,6 +87,8 @@ export interface ResourceSummary {
   disableModelInvocation?: boolean;
   /** The raw settings entry that disabled this resource (when `enabled` is false). */
   override?: string;
+  /** Present when Pi ships this resource itself (`builtin:<name>`). */
+  builtin?: ResourceBuiltinSummary;
 }
 
 /** An override entry that targets a glob the app cannot turn into a resource. */

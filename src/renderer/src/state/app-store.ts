@@ -105,6 +105,7 @@ import {
   EMPTY_TUI_SURFACE,
   TUI_STATE_EVENT,
   sanitizeTuiSurfaceSnapshot,
+  tuiSurfaceNeedsAttention,
   type TuiSurfaceSnapshot,
 } from "../../../shared/tui-surface";
 import {
@@ -133,10 +134,12 @@ import {
 import {
   EMPTY_EXTENSION_UI,
   EXTENSION_UI_NOTIFY_EVENT,
+  EXTENSION_UI_CANCEL_EVENT,
   EXTENSION_UI_REQUEST_EVENT,
   EXTENSION_UI_STATE_EVENT,
   EXTENSION_UI_THEME_EVENT,
   SESSION_SHUTDOWN_REQUEST_EVENT,
+  parseExtensionDialogCancel,
   parseExtensionDialogRequest,
   parseExtensionNotification,
   sanitizeCompletionSuggestions,
@@ -265,6 +268,60 @@ import {
 } from "../session/model-catalog";
 import { composerHasFocus, shouldFocusDialog } from "../session/dialog-focus";
 import {
+  addDraftAttachments,
+  clearDraftAttachments,
+  createComposerDraft,
+  removeDraftAttachment,
+  withDraftSelection,
+  withDraftText,
+  withPasteExpansionChanged,
+  type ComposerDraftSnapshot,
+  type ComposerDraftState,
+  type ComposerSelection,
+} from "../session/composer-draft";
+import {
+  applyDraftCandidate as evaluateDraftCandidate,
+  captureDraftOperation,
+  recordDraftApplyReceipt,
+  type ComposerCaretRequest,
+  type DraftApplyBase,
+  type DraftApplyOutcome,
+  type DraftCandidateText,
+} from "../session/composer-draft-operation";
+import type { ComposerAppliedReceipt } from "../../../shared/composer-operation";
+import {
+  COMPOSER_OPERATION_HOST_EVENTS,
+  EMPTY_COMPOSER_TAB_OPERATION_STATE,
+  composerOperationEventFromHost,
+  composerOperationReconcilable,
+  deriveComposerOperation,
+  projectComposerControls,
+  reduceComposerOperation,
+  type ComposerControlDescriptor,
+  type ComposerOperationConflictKind,
+  type ComposerOperationDerived,
+  type ComposerOperationRecord,
+  type ComposerTabOperationState,
+} from "../../../shared/composer-operation";
+import {
+  COMPOSER_TRANSFORM_CONTRACT,
+  COMPOSER_TRANSFORM_EVENTS,
+  parseComposerTransformCurrentStatus,
+  type ComposerTransformBinding,
+} from "../../../shared/composer-transform";
+import {
+  buildComposerTransformStart,
+  composerTransformRequestId,
+  planComposerSend,
+  type ComposerSendDisposition,
+  type ComposerSendRoute,
+} from "../session/composer-send";
+import {
+  planComposerCommandTransform,
+  type ComposerCommandTransformRoute,
+} from "../session/composer-command-route";
+import type { ImageAttachment } from "../session/image-attachment";
+import {
   defaultModelProblem as defaultModelProblemOf,
   type DefaultModelProblem,
 } from "../../../shared/model-default";
@@ -340,6 +397,14 @@ export interface PromptImage {
 }
 
 /**
+ * A draft apply result from the store (plan step 19): the pure outcome, plus the
+ * one refusal only the store knows — the tab is no longer open. A closed tab
+ * yields no draft because its record was already pruned.
+ */
+export type DraftApplyStoreResult =
+  DraftApplyOutcome | { status: "refused"; reason: "closed-tab"; draft: null };
+
+/**
  * The composer's draft/persist debounce. Writing app state on every keystroke
  * would hammer the disk; the draft is safe in memory immediately and lands in
  * `app-state.json` shortly after the user stops typing.
@@ -348,11 +413,77 @@ let draftPersistTimer: ReturnType<typeof setTimeout> | null = null;
 export const DRAFT_PERSIST_DELAY_MS = 500;
 
 /**
- * The last extension `setEditorText`/`pasteToEditor` sequence applied per tab
- * (plan step 16). A host-issued edit is applied exactly once, so a state push
- * that repeats it cannot clobber the user's typing.
+ * The last editor command applied per tab, fenced by the host/UI binding that
+ * minted its sequence (plan step 17). A host mints a new binding on every
+ * rebind and restarts `seq` at 1, so comparing raw numbers across bindings
+ * would drop a fresh host's low sequence after an old host's high one.
  */
-const appliedEditorSeq = new Map<string, number>();
+const appliedEditorCommand = new Map<string, { binding: string | null; seq: number }>();
+
+/**
+ * Bindings this tab has already moved past (rebind, `/reload`, session
+ * replacement, restart, close). A late frame from one of them must not replay
+ * its old text over the replacement session's composer. Bounded per tab: the
+ * set only needs to cover events still in flight.
+ */
+const retiredEditorBindings = new Map<string, Set<string>>();
+const MAX_RETIRED_EDITOR_BINDINGS = 8;
+
+/** Forgets a tab's editor fencing on close; retired ids do not outlive it. */
+function dropEditorFencing(tabId: string): void {
+  appliedEditorCommand.delete(tabId);
+  retiredEditorBindings.delete(tabId);
+}
+
+/** Remembers a superseded binding so an out-of-order frame cannot revive it. */
+function retireEditorBinding(tabId: string, binding: string | null): void {
+  if (!binding) return;
+  const retired = retiredEditorBindings.get(tabId) ?? new Set<string>();
+  retired.add(binding);
+  while (retired.size > MAX_RETIRED_EDITOR_BINDINGS) {
+    const oldest = retired.values().next();
+    if (oldest.done) break;
+    retired.delete(oldest.value);
+  }
+  retiredEditorBindings.set(tabId, retired);
+}
+
+/**
+ * Applies one host-issued composer edit exactly once per binding, or reports
+ * that it was stale. `binding === null` is an older host: the sequence compare
+ * still holds, and the caller resets it on every lifecycle event.
+ */
+function nextEditorDraft(
+  tabId: string,
+  command: { seq: number; text: string; binding?: string },
+): string | null {
+  const binding = command.binding ?? null;
+  if (binding !== null && retiredEditorBindings.get(tabId)?.has(binding)) return null;
+  const applied = appliedEditorCommand.get(tabId);
+  if (applied) {
+    if (applied.binding !== null && binding !== null && applied.binding !== binding) {
+      // A new host/binding: adopt it and fence the old one permanently.
+      retireEditorBinding(tabId, applied.binding);
+    } else if (command.seq <= applied.seq) {
+      // Same binding and an already-seen sequence: a repeated state frame must
+      // never clobber what the user typed after it.
+      return null;
+    }
+  }
+  appliedEditorCommand.set(tabId, { binding, seq: command.seq });
+  return command.text;
+}
+
+/** Tells the host that one command is spent, so it is never replayed. */
+function acknowledgeEditorCommand(tabId: string, command: { seq: number; binding?: string }): void {
+  const request = bridge()?.sessions?.request({
+    tabId,
+    method: "oi.editorConsumed",
+    params: { seq: command.seq, ...(command.binding ? { binding: command.binding } : {}) },
+  });
+  // An older host rejects the method; a consumed command is not worth a retry.
+  if (request) void request.then(undefined, () => undefined);
+}
 
 /** Per-tab debounce for the `oi.editorText` mirror, so typing is not one frame per key. */
 const editorTextTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -408,6 +539,42 @@ function purgeClosedTabDialogs(openTabs: ReadonlySet<string>): void {
   }));
 }
 
+/** Every tab id the store still holds a per-tab record for but no longer lists. */
+function orphanTabIds(open: ReadonlySet<string>): string[] {
+  const state = useAppStore.getState();
+  const ids = new Set<string>();
+  for (const key of TAB_SCOPED_RECORDS) {
+    for (const id of Object.keys(state[key] as unknown as Record<string, unknown>)) {
+      if (!open.has(id)) ids.add(id);
+    }
+  }
+  for (const dialog of state.extensionDialogs) {
+    if (!open.has(dialog.tabId)) ids.add(dialog.tabId);
+  }
+  return [...ids];
+}
+
+/**
+ * Drops a closed tab's live operation, applied receipts and in-memory draft
+ * record (plan step 23). The persisted draft text in `prefs.drafts` survives,
+ * but the owner is gone, so attachments and pending decisions must not be
+ * inherited by a tab that reuses the id later.
+ */
+function dropClosedTabComposerState(tabId: string): void {
+  // Held frames belong to the closed tab's request and must not survive it.
+  discardComposerEarlyFrames(tabId);
+  useAppStore.setState((state) => {
+    if (!state.composerOperations[tabId] && !state.composerDrafts[tabId]) return state;
+    const composerOperations = { ...state.composerOperations };
+    const composerApplyReceipts = { ...state.composerApplyReceipts };
+    const composerDrafts = { ...state.composerDrafts };
+    delete composerOperations[tabId];
+    delete composerApplyReceipts[tabId];
+    delete composerDrafts[tabId];
+    return { composerOperations, composerApplyReceipts, composerDrafts };
+  });
+}
+
 /** Every per-tab record that is keyed by a tab id and must die with the tab. */
 const TAB_SCOPED_RECORDS = [
   "transcripts",
@@ -433,6 +600,10 @@ const TAB_SCOPED_RECORDS = [
   "historySeed",
   "historyBrowse",
   "pasteBodies",
+  "composerDrafts",
+  "composerApplyReceipts",
+  "composerCaretRequests",
+  "composerOperations",
 ] as const;
 
 /** Drops every per-tab cache entry for a tab that is no longer open. */
@@ -1060,7 +1231,128 @@ export interface AppStateShape {
    * only; never persisted.
    */
   historyBrowse: Record<string, PromptHistoryBrowse>;
+  /**
+   * The revisioned composer draft per tab (2026-11-22 prompt-refinement plan
+   * step 18): the text revision, image attachments and the selection. It is
+   * renderer memory only — image bytes never reach `app-state.json` — and it
+   * survives dialog replacement, composer remounts and ordinary state pushes.
+   */
+  composerDrafts: Record<string, ComposerDraftState>;
+  /**
+   * Applied operation receipts per tab, newest last (plan step 19). They make a
+   * duplicate completion/application idempotent and let a reconciled host learn
+   * that this candidate already landed. Renderer memory only; bounded per tab.
+   */
+  composerApplyReceipts: Record<string, ComposerAppliedReceipt[]>;
+  /**
+   * A caret/focus request minted by a successful draft apply (plan step 19).
+   * The composer places the caret once the DOM carries `text`; the token makes
+   * a remounted composer honour a request it did not render yet.
+   */
+  composerCaretRequests: Record<string, ComposerCaretRequest>;
+  /**
+   * Per-tab composer-transform operation state (2026-11-22 prompt-refinement
+   * plan step 20). The projection is refreshed from the live contribution
+   * snapshot on every read; only explicit arm decisions and the live operation
+   * record are stored here. Renderer memory only.
+   */
+  composerOperations: Record<string, ComposerTabOperationState>;
+  /** Reduces one typed operation event (arm, start, started, progress, …). */
+  applyComposerOperationEvent: (tabId: string, event: unknown) => void;
+  /**
+   * Reconciles one tab against the live host operation instead of starting it
+   * again (parity plan step 23). Works with or without a local record: a
+   * reloaded renderer adopts the operation bound to its tab, a lost operation
+   * is settled as expired, and an already-applied receipt is replayed without
+   * touching the draft a second time. Returns true when live work is present
+   * afterwards.
+   */
+  /**
+   * Reconciles this tab with the live host operation.
+   *
+   * The read is a *refresh*, not a wake: with `wake !== true` it is skipped for
+   * a tab whose host is stopped/crashed, so a renderer reload or a status
+   * effect can never spawn a host that was just recycled (plan step 29). An
+   * explicit activation/start wakes the tab through `ensureSession` first.
+   */
+  reconcileComposerOperation: (tabId: string, options?: { wake?: boolean }) => Promise<boolean>;
+  /**
+   * Applies one host/session/publisher/policy invalidation to a tab: live work
+   * becomes cancelled (never an applicable cached result) while the draft text
+   * and in-memory attachments stay exactly as they are.
+   */
+  invalidateComposerOperation: (
+    tabId: string,
+    kind: ComposerOperationConflictKind,
+    message: string,
+  ) => void;
+  /** Replays applied receipts whose acknowledgement may have been lost. */
+  recoverComposerAppliedReceipts: (tabId: string) => Promise<void>;
+  /** Local one-shot arming for one published control. */
+  setComposerControlArmed: (
+    tabId: string,
+    ownerId: string,
+    controlId: string,
+    armed: boolean,
+  ) => void;
+  /** The live, derived transform state for one tab (never a status string). */
+  composerOperationView: (tabId: string) => ComposerOperationDerived;
+  /**
+   * Cancels the live composer operation for one tab (`composer.cancel`).
+   * Returns true when the key/click was consumed by a refinement — including a
+   * repeated Esc while the first cancel is in flight, which is never sent
+   * twice — so the caller does not fall through to pausing or aborting an
+   * unrelated Review/run. The toggle stays armed: only an applied receipt or an
+   * explicit toggle-off disarms it.
+   */
+  cancelComposerOperation: (tabId: string) => Promise<boolean>;
+  /** True while the live refinement owns Esc/Stop for this tab. */
+  composerOperationOwnsStop: (tabId: string) => boolean;
+  /** Appends image attachments, preserving every existing one and its identity. */
+  addDraftImages: (tabId: string, images: readonly ImageAttachment[]) => void;
+  /** Removes one attachment by its instance id (not by name). */
+  removeDraftImage: (tabId: string, id: string) => void;
+  /** Drops every attachment of a tab (a successful send). */
+  clearDraftImages: (tabId: string) => void;
+  /** Records the caret/selection; never a content revision. */
+  setDraftSelection: (tabId: string, selection: ComposerSelection) => void;
+  /** The live draft capture a composer operation starts from (plan step 19). */
+  draftSnapshot: (tabId: string) => ComposerDraftSnapshot;
+  /**
+   * Applies one returned candidate to its exact still-current base (plan step
+   * 19). `base` is the capture the candidate was computed from; when the draft
+   * moved on (typing, a host write, an attachment change, an ABA edit) nothing
+   * is written and `stale-base` is refused. A successful apply commits the text
+   * and keeps the live attachments in one transition, flushes the ordinary
+   * preferences path and requests the caret.
+   */
+  applyDraftCandidate: (
+    tabId: string,
+    request: { base: DraftApplyBase; candidate: DraftCandidateText },
+  ) => DraftApplyStoreResult;
+  /**
+   * Explicit replace after a conflict (plan step 19). The caller shows the text
+   * it will replace and passes the revision the user confirmed; that revision is
+   * rechecked against the live draft immediately before the same atomic apply.
+   */
+  replaceDraftWithCandidate: (
+    tabId: string,
+    request: { confirmed: DraftApplyBase; candidate: DraftCandidateText },
+  ) => DraftApplyStoreResult;
+  /**
+   * Explicitly replaces the current draft with the result of the live
+   * composer operation after a conflict (plan row 22). The user confirmed the
+   * text shown by the result view, so the revision it replaces is re-read live
+   * immediately before the same atomic apply. A successful replace also sends
+   * the applied receipt and disarms exactly once.
+   */
+  replaceComposerCandidate: (tabId: string) => Promise<DraftApplyStoreResult | null>;
   setDraft: (tabId: string, text: string) => void;
+  /**
+   * The one Send entry point. With an armed, eligible transform control a
+   * normal agent-message submission becomes a draft transformation instead of
+   * a prompt (plan step 20): nothing is cleared and `prompt` is never called.
+   */
   sendPrompt: (
     tabId: string,
     text: string,
@@ -1070,7 +1362,12 @@ export interface AppStateShape {
       preferredSource?: CompletionSource;
       promptOrigin?: string;
     },
-  ) => Promise<boolean>;
+  ) => Promise<ComposerSendDisposition>;
+  /**
+   * The transform routing decision for the current draft, exposed for every
+   * send entry point and for tests. Pure: it never clears or starts anything.
+   */
+  composerSendRoute: (tabId: string, text: string) => ComposerSendRoute;
   /** Sends without command routing (used by the dispatch table itself). */
   sendPromptNow: (
     tabId: string,
@@ -1995,6 +2292,13 @@ export interface CommandOutcome {
   handled: boolean;
   /** True when something was actually sent to the agent (or a host method ran). */
   sent: boolean;
+  /**
+   * Set when the command was a composer transformation instead of a normal
+   * command dispatch (plan step 24). The caller returns it as the Send
+   * disposition, so the generic command/template clear rules never run for a
+   * refinement.
+   */
+  disposition?: ComposerSendDisposition;
 }
 
 /** One direct `commands.run` attempt. */
@@ -2147,6 +2451,12 @@ function isStaleExtensionContextError(entry: SessionEventEntry): boolean {
 
 /** Drops every extension-owned fact for a tab before its replacement attaches. */
 function clearTabSessionUi(state: AppStateShape, tabId: string): Partial<AppStateShape> {
+  // The composer fencing belongs to the outgoing host/UI binding: retire it so
+  // a delayed frame from that binding cannot replay its text, and reset the
+  // applied mark so the replacement host's sequence starts from its own 1.
+  retireEditorBinding(tabId, appliedEditorCommand.get(tabId)?.binding ?? null);
+  retireEditorBinding(tabId, state.extensionUi[tabId]?.editor?.binding ?? null);
+  appliedEditorCommand.delete(tabId);
   const drop = <T>(record: Record<string, T>): Record<string, T> => {
     const next = { ...record };
     delete next[tabId];
@@ -2337,6 +2647,7 @@ function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {
  */
 const EXTENSION_UI_EVENTS = new Set<string>([
   EXTENSION_UI_REQUEST_EVENT,
+  EXTENSION_UI_CANCEL_EVENT,
   EXTENSION_UI_STATE_EVENT,
   // `oi.notify` is deliberately absent: command output is transcript content
   // (2026-10-24 command parity plan). `handleExtensionUiEvent` still archives it
@@ -2374,6 +2685,157 @@ function draftsForPersist(state: AppStateShape): Record<string, string> {
 }
 
 /**
+ * A tab's live composer draft record. A tab that never wrote one starts from
+ * its persisted text, so a restored draft still has a revision to bump from.
+ */
+export function composerDraftFor(state: AppStateShape, tabId: string): ComposerDraftState {
+  return state.composerDrafts[tabId] ?? createComposerDraft(state.prefs.drafts[tabId] ?? "");
+}
+
+/**
+ * The session binding a composer operation belongs to (plan step 20). The
+ * renderer knows the live session id and attachment epoch; the binding id and
+ * host generation are local identity, because the host fences on session and
+ * epoch and the reducer only compares bindings for equality.
+ */
+/**
+ * Whether a tab currently has a host a *passive* read may address (plan step
+ * 29).
+ *
+ * A contribution refresh or an operation-status reconciliation is not a user
+ * wake: main deliberately refuses those reads for a stopped tab
+ * (`SESSION_ASLEEP_MESSAGE`) so a status effect cannot undo an idle/RSS
+ * recycle. Checking here first keeps the renderer from spending a round trip on
+ * a request that must fail, and keeps the last valid snapshot instead of an
+ * error. `starting` is allowed: an open already in flight may become readable
+ * and main waits for that open rather than starting another one.
+ */
+function tabHostReadable(state: AppStateShape, tabId: string): boolean {
+  const tab = state.tabs.find((entry) => entry.id === tabId);
+  if (!tab || !isHostBackedTab(tab.kind)) return false;
+  return tab.status === "idle" || tab.status === "running" || tab.status === "starting";
+}
+
+function composerBindingFor(state: AppStateShape, tabId: string): ComposerTransformBinding | null {
+  const identity = state.sessionStates[tabId] as { sessionId?: string | null } | undefined;
+  const sessionId = typeof identity?.sessionId === "string" ? identity.sessionId : null;
+  if (!sessionId) return null;
+  const epoch = state.sessionEpochs[tabId] ?? 0;
+  return {
+    sessionId,
+    epoch,
+    bindingId: `tab:${tabId}`.slice(0, 160),
+    hostGeneration: epoch,
+  };
+}
+
+/**
+ * The live operation state for one tab: stored arm/operation decisions overlaid
+ * with the projection of the current contribution snapshot. The projection is
+ * never stored, so a withdrawn or republished control is seen immediately and
+ * a stale descriptor cannot look applicable.
+ */
+export function composerOperationStateFor(
+  state: AppStateShape,
+  tabId: string,
+): ComposerTabOperationState {
+  const record = state.composerOperations[tabId] ?? EMPTY_COMPOSER_TAB_OPERATION_STATE;
+  const binding = composerBindingFor(state, tabId) ?? record.binding;
+  return {
+    ...record,
+    projection: projectComposerControls(state.contributions[tabId]),
+    binding,
+  };
+}
+
+/** What the composer may show/route right now for one tab. */
+export function composerOperationDerivedFor(
+  state: AppStateShape,
+  tabId: string,
+): ComposerOperationDerived {
+  return deriveComposerOperation(composerOperationStateFor(state, tabId));
+}
+
+/**
+ * The operation that currently owns Esc/Stop for a tab (parity plan row 22).
+ *
+ * `starting`, `running` and `awaiting-input` are live work: Esc/Stop must reach
+ * them first. `candidate`, `applied` and every failure/terminal state do not —
+ * a ready result waits for the user's apply decision instead of being cancelled
+ * by a stray key.
+ */
+export function liveComposerOperationFor(
+  state: AppStateShape,
+  tabId: string,
+): ComposerOperationRecord | undefined {
+  const operation = state.composerOperations[tabId]?.operation;
+  if (!operation) return undefined;
+  return operation.status === "starting" ||
+    operation.status === "running" ||
+    operation.status === "awaiting-input"
+    ? operation
+    : undefined;
+}
+
+/**
+ * One cancel request in flight per tab/request. A repeated Esc or a second
+ * click while the first cancel is pending is consumed without sending a second
+ * `composer.cancel`, so exactly one cleanup runs.
+ */
+const composerCancelInFlight = new Set<string>();
+
+/** The transcript queue (steering + follow-up) waiting for the agent. */
+function queuedComposerMessages(state: AppStateShape, tabId: string): number {
+  const queue = state.transcripts[tabId]?.queue;
+  if (!queue) return 0;
+  return queue.steering.length + queue.followUp.length;
+}
+
+/**
+ * The typed-command transform decision for one resolved `/command`
+ * (plan step 24). A read of the live store only: it never clears the draft,
+ * remembers history or starts work, so a refusal leaves everything editable.
+ */
+function composerCommandTransformRouteFor(
+  state: AppStateShape,
+  tabId: string,
+  resolution: { name: string; argument: string; source?: string },
+): ComposerCommandTransformRoute {
+  const tab = state.tabs.find((entry) => entry.id === tabId);
+  const bashRunning =
+    (state.sessionStates[tabId] as { bashRunning?: boolean } | undefined)?.bashRunning === true;
+  return planComposerCommandTransform({
+    ...resolution,
+    controls: composerOperationStateFor(state, tabId).projection.controls,
+    operation: composerOperationDerivedFor(state, tabId),
+    running: tab?.status === "running",
+    bashRunning,
+    inputLocked: contributionInputLocked(state.contributions[tabId]),
+    queued: queuedComposerMessages(state, tabId) > 0,
+  });
+}
+
+/**
+ * Adopts a whole `prefs.drafts` map that arrived out of band (startup hydration,
+ * a `prefs.set` echo). The visible text is the persisted one; an existing
+ * record whose text differs takes the new text as a content revision, so a
+ * snapshot taken before the replacement cannot apply over it.
+ */
+function syncDraftRecords(
+  state: AppStateShape,
+  drafts: Record<string, string>,
+): Record<string, ComposerDraftState> | null {
+  let next: Record<string, ComposerDraftState> | null = null;
+  for (const [tabId, record] of Object.entries(state.composerDrafts)) {
+    const text = drafts[tabId] ?? "";
+    if (record.text === text) continue;
+    next = next ?? { ...state.composerDrafts };
+    next[tabId] = withDraftText(record, text);
+  }
+  return next;
+}
+
+/**
  * Writes the composer's visible text: state, the debounced prefs persist and
  * the host mirror. It never touches prompt-history state. The public `setDraft`
  * exits a history browse first (pi-tui's `setText`), while `historyStep` writes
@@ -2382,7 +2844,16 @@ function draftsForPersist(state: AppStateShape): Record<string, string> {
 function writeComposerDraft(tabId: string, text: string): void {
   const current = useAppStore.getState();
   const drafts = { ...current.prefs.drafts, [tabId]: text };
-  useAppStore.setState({ prefs: { ...current.prefs, drafts } });
+  // One state transition: the visible text and the revisioned draft record can
+  // never disagree, and a content change (typing, mentions, a host edit, a
+  // history preview) mints the next monotonic revision.
+  const previousDraft = composerDraftFor(current, tabId);
+  const nextDraft = withDraftText(previousDraft, text);
+  const composerDrafts =
+    nextDraft === previousDraft
+      ? current.composerDrafts
+      : { ...current.composerDrafts, [tabId]: nextDraft };
+  useAppStore.setState({ prefs: { ...current.prefs, drafts }, composerDrafts });
   if (draftPersistTimer) clearTimeout(draftPersistTimer);
   draftPersistTimer = setTimeout(() => {
     draftPersistTimer = null;
@@ -2405,6 +2876,690 @@ function writeComposerDraft(tabId: string, text: string): void {
       state.reportEditorText(tabId, state.expandPastes(tabId, liveDraftOf(state, tabId)));
     }, EDITOR_TEXT_DELAY_MS),
   );
+}
+
+/**
+ * Flushes a draft write through the ordinary preferences path (plan step 19).
+ * A successful operation must not sit behind the typing debounce: the text is
+ * persisted now, the pending timer is coalesced, and the host mirror is told
+ * immediately so a following `getEditorText()` cannot return the old draft.
+ */
+function flushDraftPersistence(state: AppStateShape, tabId: string, text: string): void {
+  if (draftPersistTimer) {
+    clearTimeout(draftPersistTimer);
+    draftPersistTimer = null;
+  }
+  void bridge()?.prefs.set({ drafts: draftsForPersist(state) });
+  const pending = editorTextTimers.get(tabId);
+  if (pending) {
+    clearTimeout(pending);
+    editorTextTimers.delete(tabId);
+  }
+  state.reportEditorText(tabId, state.expandPastes(tabId, text));
+}
+
+/**
+ * The one CAS apply path (plan step 19): automatic apply passes the capture it
+ * started from, an explicit replacement passes the revision the user confirmed.
+ * Both re-read the live record immediately before comparing, and a successful
+ * apply commits the text, the kept attachments, the receipt and the caret
+ * request in one state transition before flushing preferences.
+ */
+function applyDraftCandidateToTab(
+  tabId: string,
+  base: DraftApplyBase,
+  candidate: DraftCandidateText,
+): DraftApplyStoreResult {
+  const state = useAppStore.getState();
+  if (!state.tabs.some((tab) => tab.id === tabId)) {
+    return { status: "refused", reason: "closed-tab", draft: null };
+  }
+  const outcome = evaluateDraftCandidate({
+    draft: composerDraftFor(state, tabId),
+    base,
+    candidate,
+    receipts: state.composerApplyReceipts[tabId] ?? [],
+    appliedAt: Date.now(),
+  });
+  if (outcome.status !== "applied") return outcome;
+
+  const receipts = recordDraftApplyReceipt(
+    state.composerApplyReceipts[tabId] ?? [],
+    outcome.receipt,
+  );
+  const token = (state.composerCaretRequests[tabId]?.token ?? 0) + 1;
+  // A replacement is a real write: leave a history preview first, so the
+  // persisted/visible draft is the candidate and not the recalled prompt.
+  const historyBrowse = state.historyBrowse[tabId]
+    ? omitKey(state.historyBrowse, tabId)
+    : state.historyBrowse;
+  const next: Pick<
+    AppStateShape,
+    "prefs" | "composerDrafts" | "composerApplyReceipts" | "composerCaretRequests" | "historyBrowse"
+  > = {
+    prefs: { ...state.prefs, drafts: { ...state.prefs.drafts, [tabId]: outcome.draft.text } },
+    composerDrafts: { ...state.composerDrafts, [tabId]: outcome.draft },
+    composerApplyReceipts: { ...state.composerApplyReceipts, [tabId]: receipts },
+    composerCaretRequests: {
+      ...state.composerCaretRequests,
+      [tabId]: { token, text: outcome.draft.text, caret: outcome.caret },
+    },
+    historyBrowse,
+  };
+  useAppStore.setState(next);
+  flushDraftPersistence(useAppStore.getState(), tabId, outcome.draft.text);
+  return outcome;
+}
+
+/**
+ * Sends the idempotent applied receipt for one settled operation (plan step
+ * 19/22). The local applied transition happens first, so a lost acknowledgement
+ * can never undo the text the user now has; reconciliation re-reads it through
+ * `composer.status` in a later step.
+ */
+async function sendComposerAppliedReceipt(
+  tabId: string,
+  receipt: ComposerAppliedReceipt,
+): Promise<void> {
+  const state = useAppStore.getState();
+  const operation = state.composerOperations[tabId]?.operation;
+  if (!operation || operation.operationId !== receipt.operationId) return;
+  const api = bridge();
+  if (!api?.sessions) return;
+  try {
+    await api.sessions.request({
+      tabId,
+      method: "composer.applied",
+      params: {
+        contract: COMPOSER_TRANSFORM_CONTRACT,
+        requestId: operation.requestId,
+        operationId: receipt.operationId,
+        appliedRevision: receipt.appliedRevision,
+        disposition: receipt.disposition,
+        appliedAt: receipt.appliedAt,
+      },
+    });
+  } catch (error) {
+    // The text is already applied; a lost receipt is reconciled later and is
+    // never retried through a second provider call.
+    useAppStore.setState({
+      hint: `The refined prompt was inserted, but its receipt was lost — ${errorMessage(error)}`,
+    });
+  }
+}
+
+/**
+ * Applies one candidate frame that arrived from the live host operation
+ * (parity plan row 22). The candidate is applied only to the exact capture the
+ * operation started from; newer typing (or an attachment change) turns it into
+ * a recoverable conflict instead of replacing the draft.
+ */
+async function applyComposerCandidateFromHost(
+  tabId: string,
+  candidate: Record<string, unknown>,
+): Promise<void> {
+  const operationId = typeof candidate.operationId === "string" ? candidate.operationId : "";
+  const candidateRevision =
+    typeof candidate.candidateRevision === "number" ? candidate.candidateRevision : 0;
+  const text = typeof candidate.text === "string" ? candidate.text : "";
+  if (!operationId || candidateRevision <= 0 || text.length === 0) return;
+
+  const store = useAppStore.getState();
+  const operation = store.composerOperations[tabId]?.operation;
+  if (!operation || operation.operationId !== operationId) return;
+  // A duplicate/replayed result frame or a late result after cancellation is
+  // never applied twice: the reducer already dropped it if terminal.
+  if (operation.status !== "candidate") return;
+  if (operation.candidate?.candidateRevision !== candidateRevision) return;
+
+  const attachmentRevision = operation.baseAttachmentRevision;
+  if (attachmentRevision === undefined) {
+    store.applyComposerOperationEvent(tabId, {
+      type: "candidate-conflict",
+      kind: "stale-base",
+      message:
+        "The captured draft version is unknown, so the refined prompt was not inserted. View or copy it, or replace your draft explicitly.",
+    });
+    return;
+  }
+
+  const outcome = applyDraftCandidateToTab(
+    tabId,
+    { revision: operation.baseRevision, attachmentRevision },
+    { operationId, candidateRevision, text },
+  );
+  if (outcome.status === "applied") {
+    useAppStore.getState().applyComposerOperationEvent(tabId, {
+      type: "applied",
+      operationId,
+      appliedRevision: candidateRevision,
+      disposition: outcome.receipt.disposition,
+      appliedAt: outcome.receipt.appliedAt,
+    });
+    await sendComposerAppliedReceipt(tabId, outcome.receipt);
+    return;
+  }
+  if (outcome.reason === "duplicate" || outcome.reason === "already-applied") return;
+  const message =
+    outcome.reason === "stale-base"
+      ? "Your draft changed while it was being refined. The refined prompt is kept below; View or Copy it, or replace your draft explicitly."
+      : outcome.reason === "empty-candidate"
+        ? "The refinement returned an empty prompt, so it was not inserted. Your draft is unchanged."
+        : "The refined prompt could not be inserted. Your draft is unchanged and the result is kept below.";
+  useAppStore.getState().applyComposerOperationEvent(tabId, {
+    type: "candidate-conflict",
+    kind: "stale-base",
+    message,
+  });
+}
+
+/**
+ * Reconciles one tab with the live host operation (parity plan step 23). This
+ * is the reload/reattach path:
+ *  - a renderer that lost its record adopts the operation bound to its tab
+ *    instead of starting a second provider call;
+ *  - a host that restarted/crashed settles the local job as expired without
+ *    touching the draft;
+ *  - an operation the host already recorded as applied is reconciled from its
+ *    idempotent receipt, never by re-inserting the candidate text.
+ *
+ * The response is fenced by tab identity and by the exact binding generation,
+ * and the local record is re-read after the await: a slow read can never
+ * overwrite a newer operation or a closed tab.
+ */
+const composerReconcileInFlight = new Set<string>();
+/**
+ * A reconciliation request that arrived while one was in flight.
+ *
+ * The dedupe must not *drop* the later request: after a renderer reload the
+ * first read starts before the tab knows its session epoch, and the epoch frame
+ * arrives while that read is still awaiting the host. Dropping the second call
+ * left the live operation orphaned (its panel never appeared) even though the
+ * host had it. Re-running once the in-flight read settles adopts it.
+ */
+const composerReconcileQueued = new Set<string>();
+/** Bounded replay memory: one apply receipt is resent at most once per session. */
+const composerReceiptReplayed = new Set<string>();
+const COMPOSER_RECEIPT_REPLAY_LIMIT = 64;
+
+function sameComposerBinding(a: ComposerTransformBinding, b: ComposerTransformBinding): boolean {
+  return (
+    a.sessionId === b.sessionId &&
+    a.epoch === b.epoch &&
+    a.bindingId === b.bindingId &&
+    a.hostGeneration === b.hostGeneration
+  );
+}
+
+async function recoverComposerAppliedReceiptsForTab(tabId: string): Promise<void> {
+  const state = useAppStore.getState();
+  const operation = state.composerOperations[tabId]?.operation;
+  if (!operation || operation.operationId === undefined) return;
+  const receipts = state.composerApplyReceipts[tabId] ?? [];
+  for (const receipt of receipts) {
+    if (receipt.operationId !== operation.operationId) continue;
+    const key = `${tabId}:${receipt.operationId}:${receipt.appliedRevision}`;
+    if (composerReceiptReplayed.has(key)) continue;
+    composerReceiptReplayed.add(key);
+    while (composerReceiptReplayed.size > COMPOSER_RECEIPT_REPLAY_LIMIT) {
+      const oldest = composerReceiptReplayed.values().next().value;
+      if (oldest === undefined) break;
+      composerReceiptReplayed.delete(oldest);
+    }
+    await sendComposerAppliedReceipt(tabId, receipt);
+  }
+}
+
+async function reconcileComposerOperationTab(
+  tabId: string,
+  options: { wake?: boolean } = {},
+): Promise<boolean> {
+  if (composerReconcileInFlight.has(tabId)) {
+    // Queue exactly one re-run instead of silently dropping this request.
+    composerReconcileQueued.add(tabId);
+    return liveComposerOperationFor(useAppStore.getState(), tabId) !== undefined;
+  }
+  const api = bridge();
+  if (!api?.sessions) return false;
+  const state = useAppStore.getState();
+  // Reconciliation is a refresh, never a wake (plan step 29): only a caller
+  // that already ensured the host may read while it is asleep. Otherwise the
+  // local record is left exactly as it was -- no start, no cancellation.
+  if (options.wake !== true && !tabHostReadable(state, tabId)) return false;
+  const binding = composerBindingFor(state, tabId);
+  if (!binding) return false;
+  composerReconcileInFlight.add(tabId);
+  try {
+    let response: unknown;
+    try {
+      response = await api.sessions.request({
+        tabId,
+        method: "composer.current",
+        params: { contract: COMPOSER_TRANSFORM_CONTRACT, binding },
+      });
+    } catch {
+      // An older host has no reconciliation read. Never guess and never start a
+      // second operation from here: the local record stays as it was.
+      return false;
+    }
+    const parsed = parseComposerTransformCurrentStatus(response);
+    if (!parsed.ok) return false;
+    const after = useAppStore.getState();
+    // Fence: the tab must still exist, its binding must be the one we asked
+    // about, and the host must answer for that same binding generation.
+    if (!after.tabs.some((tab) => tab.id === tabId)) return false;
+    const liveBinding = composerBindingFor(after, tabId);
+    if (!liveBinding || !sameComposerBinding(liveBinding, binding)) return false;
+    if (!sameComposerBinding(parsed.value.binding, binding)) return false;
+    const record = after.composerOperations[tabId]?.operation;
+    const host = parsed.value.operation;
+    if (host === null) {
+      if (!record) return false;
+      if (record.operationId === undefined) {
+        // The start receipt was lost and the host has nothing live: settle the
+        // local record, keep the draft, and never resend the start.
+        after.applyComposerOperationEvent(tabId, { type: "cancel" });
+        return false;
+      }
+      if (!composerOperationReconcilable(record)) {
+        await recoverComposerAppliedReceiptsForTab(tabId);
+        return false;
+      }
+      after.applyComposerOperationEvent(tabId, {
+        type: "reconcile",
+        status: {
+          contract: COMPOSER_TRANSFORM_CONTRACT,
+          requestId: record.requestId,
+          operationId: record.operationId,
+          state: "expired",
+          revision: record.revision + 1,
+          updatedAt: Date.now(),
+          terminal: true,
+        },
+      });
+      await recoverComposerAppliedReceiptsForTab(tabId);
+      return false;
+    }
+    if (record && record.requestId !== host.requestId) {
+      // Another client owns the live operation for this composer. Never start a
+      // second one and never adopt a foreign request into this tab.
+      after.applyComposerOperationEvent(tabId, {
+        type: "invalidate",
+        kind: "stale-binding",
+        message:
+          "Another operation is already live in this composer; this tab's lost operation was dropped.",
+      });
+      return true;
+    }
+    const candidate =
+      host.candidate === undefined
+        ? undefined
+        : {
+            contract: COMPOSER_TRANSFORM_CONTRACT,
+            requestId: host.requestId,
+            operationId: host.operationId,
+            candidateRevision: host.candidate.candidateRevision,
+            text: host.candidate.text,
+            ...(host.candidate.summary === undefined ? {} : { summary: host.candidate.summary }),
+            at: host.candidate.at,
+          };
+    if (!record || record.operationId === undefined) {
+      after.applyComposerOperationEvent(tabId, {
+        type: "adopt",
+        binding,
+        requestId: host.requestId,
+        operationId: host.operationId,
+        ownerId: host.ownerId,
+        controlId: host.controlId,
+        state: host.state,
+        revision: host.revision,
+        updatedAt: host.updatedAt,
+        ...(candidate === undefined ? {} : { candidate }),
+      });
+      return composerOperationReconcilable(
+        useAppStore.getState().composerOperations[tabId]?.operation,
+      );
+    }
+    after.applyComposerOperationEvent(tabId, {
+      type: "reconcile",
+      binding,
+      status: {
+        contract: COMPOSER_TRANSFORM_CONTRACT,
+        requestId: host.requestId,
+        operationId: host.operationId,
+        state: host.state,
+        revision: host.revision,
+        updatedAt: host.updatedAt,
+        terminal: false,
+      },
+      ...(candidate === undefined ? {} : { candidate }),
+    });
+    await recoverComposerAppliedReceiptsForTab(tabId);
+    return composerOperationReconcilable(
+      useAppStore.getState().composerOperations[tabId]?.operation,
+    );
+  } finally {
+    composerReconcileInFlight.delete(tabId);
+    if (composerReconcileQueued.delete(tabId)) {
+      // The queued read observed a newer binding than the one that just
+      // finished; run it now that the fence is free.
+      void reconcileComposerOperationTab(tabId, options);
+    }
+  }
+}
+
+/**
+ * Host/session/publisher/policy invalidation for one tab. The local operation
+ * is cancelled first (so a late frame cannot apply), then the host is asked to
+ * cancel the job/grant. Draft text and attachments are never touched.
+ */
+function invalidateComposerOperationTab(
+  tabId: string,
+  kind: ComposerOperationConflictKind,
+  message: string,
+): void {
+  const state = useAppStore.getState();
+  const operation = state.composerOperations[tabId]?.operation;
+  if (!operation) return;
+  discardComposerEarlyFrames(tabId);
+  state.applyComposerOperationEvent(tabId, { type: "invalidate", kind, message });
+  if (operation.operationId === undefined || operation.applied) return;
+  const api = bridge();
+  if (!api?.sessions) return;
+  void Promise.resolve()
+    .then(() =>
+      api.sessions.request({
+        tabId,
+        method: "composer.cancel",
+        params: {
+          contract: COMPOSER_TRANSFORM_CONTRACT,
+          requestId: operation.requestId,
+          operationId: operation.operationId,
+          reason: message,
+          at: Date.now(),
+        },
+      }),
+    )
+    .catch(() => {
+      // The local record is already cancelled; a host that already dropped the
+      // job answers not-found, which is the same outcome.
+    });
+}
+
+/**
+ * Publishes one sanitized contribution snapshot for a tab and reduces the
+ * resulting descriptor generation into the operation lifecycle (plan step 23).
+ * A withdrawn/disabled control or a republished generation cancels live work
+ * instead of leaving a cached candidate applicable.
+ */
+function publishContributions(
+  tabId: string,
+  snapshot: ReturnType<typeof sanitizeContributionSnapshot>,
+): void {
+  useAppStore.setState((state) => ({
+    contributions: { ...state.contributions, [tabId]: snapshot },
+  }));
+  useAppStore.getState().applyComposerOperationEvent(tabId, { type: "descriptor", snapshot });
+}
+
+/**
+ * Routes one host composer-transform frame into the tab's operation state.
+ * These frames never touch the transcript reducer, so a refinement cannot
+ * append synthetic user/assistant turns or mark the conversation as running.
+ */
+/**
+ * Frames that arrive between the local `start` and the host's started receipt.
+ *
+ * The host deliberately starts companion work asynchronously *after* it builds
+ * the receipt, but the receipt and the progress/result frames travel over two
+ * different IPC paths, so a fast publisher can deliver its candidate first. The
+ * reducer has no `operationId` yet at that point, so an unqueued early frame
+ * would be dropped and the draft would silently stay unrefined. Frames for the
+ * same request are therefore held (bounded) and replayed once the receipt names
+ * the operation.
+ */
+const composerEarlyFrames = new Map<string, Array<{ eventName: string; payload: unknown }>>();
+const COMPOSER_EARLY_FRAME_LIMIT = 32;
+
+function composerEarlyFrameKey(tabId: string, requestId: string): string {
+  return `${tabId}\u0000${requestId}`;
+}
+
+function bufferComposerEarlyFrame(
+  tabId: string,
+  requestId: string,
+  eventName: string,
+  payload: unknown,
+): void {
+  const key = composerEarlyFrameKey(tabId, requestId);
+  const frames = composerEarlyFrames.get(key) ?? [];
+  if (frames.length >= COMPOSER_EARLY_FRAME_LIMIT) return;
+  frames.push({ eventName, payload });
+  composerEarlyFrames.set(key, frames);
+}
+
+/** Replays the frames that raced the started receipt, in arrival order. */
+function flushComposerEarlyFrames(tabId: string, requestId: string): void {
+  const key = composerEarlyFrameKey(tabId, requestId);
+  const frames = composerEarlyFrames.get(key);
+  if (!frames) return;
+  composerEarlyFrames.delete(key);
+  for (const frame of frames) applyComposerHostEvent(tabId, frame.eventName, frame.payload);
+}
+
+/** Drops held frames for a tab (a refused/failed start or a tab teardown). */
+function discardComposerEarlyFrames(tabId: string): void {
+  const prefix = `${tabId}\u0000`;
+  for (const key of [...composerEarlyFrames.keys()]) {
+    if (key.startsWith(prefix)) composerEarlyFrames.delete(key);
+  }
+}
+
+function applyComposerHostEvent(tabId: string, eventName: string, payload: unknown): void {
+  // Binding fence (plan step 23): a frame minted for an older host/session/UI
+  // generation must not mutate this tab's record. The IPC already routes by
+  // tab; this catches a rebind/reload between send and delivery, where the
+  // host generation changed but the tab id did not.
+  const state = useAppStore.getState();
+  const operation = state.composerOperations[tabId]?.operation;
+  if (operation) {
+    const liveBinding = composerBindingFor(state, tabId);
+    if (liveBinding && !sameComposerBinding(liveBinding, operation.binding)) {
+      discardComposerEarlyFrames(tabId);
+      state.invalidateComposerOperation(
+        tabId,
+        "stale-binding",
+        "The composer binding changed, so a late refinement frame was dropped. Your draft is unchanged.",
+      );
+      return;
+    }
+    if (operation.status === "starting") {
+      const frameRequestId =
+        typeof (payload as { requestId?: unknown } | null)?.requestId === "string"
+          ? ((payload as { requestId: string }).requestId ?? "")
+          : "";
+      if (frameRequestId.length > 0 && frameRequestId === operation.requestId) {
+        bufferComposerEarlyFrame(tabId, operation.requestId, eventName, payload);
+        return;
+      }
+    }
+  }
+  const mapped = composerOperationEventFromHost(eventName, payload);
+  if (mapped === undefined) return;
+  state.applyComposerOperationEvent(tabId, mapped);
+  if (eventName !== COMPOSER_TRANSFORM_EVENTS.result) return;
+  const record = (payload ?? {}) as Record<string, unknown>;
+  if (typeof record.text === "string") void applyComposerCandidateFromHost(tabId, record);
+}
+
+/**
+ * Routes one normal agent-message submission through an armed transform
+ * (plan step 20). Everything here happens *before* the ordinary send path can
+ * clear the text, remember send history or consume attachments:
+ *  - the live draft is captured, never the debounced `getEditorText()` mirror;
+ *  - a typed start request is sent through `composer.transform`;
+ *  - the operation state is reduced from the started receipt, so a second Send
+ *    refuses instead of starting a second provider call.
+ *
+ * A failed start keeps the draft and the toggle armed and never falls back to
+ * `prompt`: fail closed at routing.
+ */
+async function startComposerTransformSend(
+  tabId: string,
+  text: string,
+  control: ComposerControlDescriptor,
+  options: {
+    /**
+     * The literal refinement input when it differs from the submitted buffer
+     * (a typed `/command <prompt>`: plan step 24). The live draft still is
+     * `text`, so the CAS base stays the composer's real revision while the
+     * model receives only the command's literal arguments.
+     */
+    literalText?: string;
+    /** Arm the control for this explicit typed request before starting. */
+    arm?: boolean;
+  } = {},
+): Promise<ComposerSendDisposition> {
+  const state = useAppStore.getState();
+  // The submitted text and the live capture must agree. A completion-accept
+  // writes the draft synchronously, so a mismatch means something else moved
+  // the draft in between; applying a candidate over it would lose that edit.
+  const capture = state.draftSnapshot(tabId);
+  if (capture.text !== text) {
+    useAppStore.setState({ hint: "The draft changed while sending — press Send again." });
+    return "refused";
+  }
+
+  const tab = state.tabs.find((entry) => entry.id === tabId);
+  if (!tab) return "refused";
+  if (tab.status !== "running") {
+    // Waking a stopped/idle host is the same readiness step a normal send uses;
+    // it never clears the draft and never sends a prompt.
+    const ready = await state.ensureSession(tabId, { force: true });
+    if (!ready) {
+      useAppStore.setState({
+        hint: "The session is not ready — try Refine again once it is idle.",
+      });
+      return "refused";
+    }
+  }
+
+  const live = await reconcileComposerOperationTab(tabId).then(() => useAppStore.getState());
+  // A live operation for this composer (for example after a renderer reload
+  // that lost the record) is adopted instead of starting a second provider
+  // call. A ready candidate is left for the explicit apply decision.
+  const liveRecord = live.composerOperations[tabId]?.operation;
+  if (
+    liveRecord &&
+    (composerOperationReconcilable(liveRecord) || liveRecord.status === "candidate")
+  ) {
+    useAppStore.setState({
+      hint:
+        liveRecord.status === "candidate"
+          ? "The refinement already produced a result — review it below."
+          : "A refinement is already running in this tab.",
+    });
+    return liveRecord.status === "candidate" ? "refined" : "refining";
+  }
+  const binding = composerBindingFor(live, tabId);
+  if (!binding) {
+    useAppStore.setState({ hint: "The session has no live identity yet — try again." });
+    return "refused";
+  }
+  const requestId = composerTransformRequestId();
+  if (!requestId) {
+    useAppStore.setState({
+      hint: "This build cannot mint a refinement request id — turn Refine off to send normally.",
+    });
+    return "refused";
+  }
+  // A typed `/command <prompt>` is an explicit refinement request, even while
+  // the one-shot toggle is off: arm exactly this control for the operation. The
+  // applied receipt disarms it again, so the next Send is an ordinary send.
+  if (options.arm === true) {
+    useAppStore.getState().setComposerControlArmed(tabId, control.ownerId, control.id, true);
+  }
+  // The operation input is the literal prompt (typed command arguments) or the
+  // whole live draft (an armed Send). The base revision is always the live
+  // draft's, so apply still replaces exactly the buffer the user submitted.
+  const literal = options.literalText;
+  const operationDraft =
+    literal === undefined
+      ? capture
+      : {
+          ...capture,
+          text: literal,
+          expandedText: useAppStore.getState().expandPastes(tabId, literal),
+          selection: {
+            start: Math.min(capture.selection.start, literal.length),
+            end: Math.min(capture.selection.end, literal.length),
+          },
+        };
+  const built = buildComposerTransformStart({
+    requestId,
+    binding,
+    control,
+    draft: operationDraft,
+    attachments: composerDraftFor(live, tabId).attachments,
+  });
+  if (!built.ok) {
+    useAppStore.setState({ hint: built.message });
+    return "refused";
+  }
+
+  live.applyComposerOperationEvent(tabId, {
+    type: "start",
+    requestId,
+    ownerId: control.ownerId,
+    controlId: control.id,
+    baseRevision: capture.revision,
+    baseAttachmentRevision: capture.attachmentRevision,
+    baseText: operationDraft.text,
+    binding,
+    descriptorGeneration: control.descriptorGeneration,
+  });
+  const started = composerOperationStateFor(useAppStore.getState(), tabId);
+  if (started.operation?.status !== "starting") {
+    const derived = composerOperationDerivedFor(useAppStore.getState(), tabId);
+    useAppStore.setState({
+      hint: derived.conflict?.message ?? "A refinement is already active in this tab.",
+    });
+    return "refused";
+  }
+
+  const api = bridge();
+  if (!api?.sessions) {
+    useAppStore.setState({ hint: "This host cannot refine a draft — turn Refine off to send." });
+    return "refused";
+  }
+  try {
+    const receipt = await api.sessions.request({
+      tabId,
+      method: "composer.transform",
+      params: built.request,
+    });
+    useAppStore.getState().applyComposerOperationEvent(tabId, { type: "started", receipt });
+    // A candidate/progress frame can win the race against this receipt (the
+    // host starts companion work before the response crosses IPC); replay the
+    // held frames now that the record has an operationId.
+    flushComposerEarlyFrames(tabId, requestId);
+    return "refining";
+  } catch (error) {
+    discardComposerEarlyFrames(tabId);
+    const message = errorMessage(error);
+    useAppStore.getState().applyComposerOperationEvent(tabId, {
+      type: "failure",
+      failure: {
+        requestId,
+        code: "rendezvous-invalid",
+        message,
+        retryable: false,
+        at: Date.now(),
+      },
+    });
+    useAppStore.setState({ hint: `Refinement could not start — ${message}` });
+    return "refused";
+  }
 }
 
 /**
@@ -2600,6 +3755,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   forkCandidates: [],
   importPrompt: null,
   pasteBodies: {},
+  composerDrafts: {},
+  composerApplyReceipts: {},
+  composerOperations: {},
+  composerCaretRequests: {},
   pasteCounter: 1,
   expandedEditorOpen: false,
   expandedEditorError: null,
@@ -2752,7 +3911,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   setPrefs: (patch) => {
     const prefs = { ...get().prefs, ...patch };
-    set({ prefs });
+    // A patch that carries the whole draft map is a replacement, not typing:
+    // reconcile any live record so its revision reflects the new visible text.
+    const composerDrafts = patch.drafts ? syncDraftRecords(get(), prefs.drafts) : null;
+    set(composerDrafts ? { prefs, composerDrafts } : { prefs });
     void bridge()?.prefs.set(patch);
   },
 
@@ -2763,7 +3925,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (!api?.prefs) return terminal;
     try {
       const saved = await api.prefs.set({ terminal });
-      set({ prefs: saved });
+      const composerDrafts = syncDraftRecords(get(), saved.drafts);
+      set(composerDrafts ? { prefs: saved, composerDrafts } : { prefs: saved });
       return saved.terminal;
     } catch (error) {
       get().noteFailure(error);
@@ -3135,6 +4298,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const prompt = get().trustPrompt;
     const api = bridge();
     if (!prompt || !api?.sessions) return;
+    // A trust decision changes the authority a refinement runs under. Cancel any
+    // live operation for that project's tab; it is never an applicable cached
+    // result (plan step 23). The draft and attachments are preserved.
+    if (prompt.tabId) {
+      get().invalidateComposerOperation(
+        prompt.tabId,
+        "invalidated",
+        "The project trust decision changed, so this refinement was cancelled. Your draft is unchanged.",
+      );
+    }
     set({ trustBusy: true });
     try {
       if (answer === "session") {
@@ -3235,7 +4408,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
     try {
       const prefs = await api.prefs.get();
-      set({ prefs, prefsLoaded: true });
+      const composerDrafts = syncDraftRecords(get(), prefs.drafts);
+      set(
+        composerDrafts
+          ? { prefs, prefsLoaded: true, composerDrafts }
+          : { prefs, prefsLoaded: true },
+      );
       // Preferences can arrive after a transcript was already hydrated (tabs and
       // history load independently). Re-annotate it, so a reopened command
       // prompt is collapsed without fetching history again.
@@ -3321,6 +4499,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // A response for a closed tab must never land in its (soon pruned) slot.
       invalidateContributionReads(tab.id);
       dropTabShortcuts(tab.id);
+      dropEditorFencing(tab.id);
       sessionEnsuredAt.delete(tab.id);
       sessionEnsuring.delete(tab.id);
       transcriptHydrating.delete(tab.id);
@@ -3466,6 +4645,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       return;
     }
     if (envelope.events.some((entry) => entry.event === "session.recovered")) {
+      // A recovered/restarted host owns no previous job or grant: cancel the
+      // local operation (keeping the draft) before any late frame is reduced.
+      get().invalidateComposerOperation(
+        envelope.tabId,
+        "stale-binding",
+        "The host restarted, so this refinement was cancelled. Your draft is unchanged.",
+      );
       set(resetTabExtensionUi(envelope.tabId));
       get().clearStaleHost(envelope.tabId);
       get().invalidateCommands(envelope.tabId);
@@ -3484,6 +4670,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       )?.sessionId;
       const previousId = typeof previous === "string" ? previous : null;
       if (nextId !== null && nextId !== previousId) {
+        get().invalidateComposerOperation(
+          envelope.tabId,
+          "stale-binding",
+          "The session was replaced (new/resume/fork/rewind), so this refinement was cancelled. Your draft is unchanged.",
+        );
         get().resetTranscript(envelope.tabId);
         set(resetTabExtensionUi(envelope.tabId));
         get().invalidateCommands(envelope.tabId);
@@ -3492,8 +4683,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       }
     }
     // A reload keeps the session id but replaces the extension runner. Its
-    // statuses/widgets/dialogs belong to the outgoing runner too.
-    if (identityChanged && !replacedReset) set(resetTabExtensionUi(envelope.tabId));
+    // statuses/widgets/dialogs belong to the outgoing runner too, and any live
+    // operation/grant from that generation is invalidated (plan step 23).
+    if (identityChanged && !replacedReset) {
+      get().invalidateComposerOperation(
+        envelope.tabId,
+        "stale-binding",
+        "The session was reloaded, so this refinement was cancelled. Your draft is unchanged.",
+      );
+      set(resetTabExtensionUi(envelope.tabId));
+    }
     const suppressStaleExtensionError = replacedReset || identityChanged;
     // A trust refusal is a project-level question, not transcript content: raise
     // the prompt and keep it out of the message list (plan step 10).
@@ -3503,6 +4702,18 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       const tab = get().tabs.find((entry) => entry.id === envelope.tabId);
       const cwd = status?.cwd ?? tab?.cwd ?? "";
       if (cwd) {
+        // A trust revocation/refusal changes the authority a refinement runs
+        // under: cancel live work instead of leaving a cached result applicable
+        // (plan step 23). A prompt that is merely re-announced for an already
+        // trusted project does not cancel anything.
+        const stillAuthorized = status?.trusted === true && status.needsPrompt !== true;
+        if (!stillAuthorized) {
+          get().invalidateComposerOperation(
+            envelope.tabId,
+            "invalidated",
+            "The project trust decision changed, so this refinement was cancelled. Your draft is unchanged.",
+          );
+        }
         set({
           trustPrompt: {
             cwd,
@@ -3522,6 +4733,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // Extension UI events are not transcript content: dialogs, notifications,
     // status/widget snapshots and theme switches are applied here (plan step 16).
     for (const entry of envelope.events) get().handleExtensionUiEvent(envelope.tabId, entry);
+    // Composer-transform frames belong to the per-tab operation reducer, never
+    // to the transcript reducer: a refinement must not append synthetic
+    // user/assistant turns or mark the conversation as running (plan row 22).
+    for (const entry of envelope.events) {
+      if (!COMPOSER_OPERATION_HOST_EVENTS.includes(entry.event)) continue;
+      applyComposerHostEvent(envelope.tabId, entry.event, entry.payload);
+    }
     const modelScopeChange = envelope.events
       .filter((entry) => entry.event === "model_scope_changed")
       .at(-1);
@@ -3540,7 +4758,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         // are the announcement (plan step 13).
         !(replacedReset && entry.event === "session_replaced") &&
         !(suppressStaleExtensionError && isStaleExtensionContextError(entry)) &&
-        !EXTENSION_UI_EVENTS.has(entry.event),
+        !EXTENSION_UI_EVENTS.has(entry.event) &&
+        !COMPOSER_OPERATION_HOST_EVENTS.includes(entry.event),
     );
     if (rest.length === 0) return;
     // Extension output can carry a review URL too (a tool result, not only a
@@ -3585,10 +4804,24 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     ) {
       return;
     }
+    const previousEpoch = get().sessionEpochs[envelope.tabId] ?? 0;
     if (typeof envelope.sessionEpoch === "number") {
       set({
         sessionEpochs: { ...get().sessionEpochs, [envelope.tabId]: envelope.sessionEpoch },
       });
+    }
+    // A renderer that reloaded lost its in-memory operation record and only
+    // learns the tab's session epoch from this frame. Reconcile once when the
+    // epoch actually changes, so a live refinement is adopted (and its result
+    // delivered at most once) instead of disappearing with the reloaded
+    // renderer. Only a tab with no local record asks; a host that is not live
+    // answers null and the draft is untouched (plan step 23).
+    if (
+      typeof envelope.sessionEpoch === "number" &&
+      envelope.sessionEpoch !== previousEpoch &&
+      !get().composerOperations[envelope.tabId]
+    ) {
+      void get().reconcileComposerOperation(envelope.tabId);
     }
     // A model switch can change the thinking levels a session accepts. The host
     // sends them in every snapshot, but `ThinkingPicker` prefers this cache, so
@@ -3719,13 +4952,30 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const token = beginContributionRead(tabId);
     const sessionEpoch = get().sessionEpochs[tabId] ?? 0;
     const stillCurrent = (): boolean =>
-      contributionReadIsCurrent(tabId, token) && (get().sessionEpochs[tabId] ?? 0) === sessionEpoch;
+      contributionReadIsCurrent(tabId, token) &&
+      (get().sessionEpochs[tabId] ?? 0) === sessionEpoch &&
+      // A tab closed while either read was pending must not have its extension
+      // UI resurrected by a late response (plan step 29).
+      get().tabs.some((tab) => tab.id === tabId);
     try {
       const result = await api.sessions.request({ tabId, method: "oi.state" });
       if (!stillCurrent()) return;
       const snapshot = sanitizeExtensionUiSnapshot(result);
       set({ extensionUi: { ...get().extensionUi, [tabId]: snapshot } });
       if (snapshot.title && get().activeTabId === tabId) void api.setTitle(snapshot.title);
+      // A read is not an edit event (plan step 17). After a renderer reconnect or
+      // reload the snapshot may still carry the last pending command, and
+      // applying it here would overwrite the restored draft. Only give it the
+      // draft when there is nothing to protect -- a command that was never
+      // delivered at all, e.g. an extension prefill before the renderer
+      // attached -- then acknowledge it so no later push can replay it.
+      if (snapshot.editor) {
+        if ((get().prefs.drafts[tabId] ?? "").length === 0) {
+          const text = nextEditorDraft(tabId, snapshot.editor);
+          if (text !== null) get().setDraft(tabId, text);
+        }
+        acknowledgeEditorCommand(tabId, snapshot.editor);
+      }
     } catch {
       // A host without the extension UI port still streams; keep the empty state.
       if (!stillCurrent()) return;
@@ -3737,9 +4987,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       const result = await api.sessions.request({ tabId, method: "contributions.state" });
       if (!stillCurrent()) return;
-      set({
-        contributions: { ...get().contributions, [tabId]: sanitizeContributionSnapshot(result) },
-      });
+      publishContributions(tabId, sanitizeContributionSnapshot(result));
     } catch {
       if (!stillCurrent()) return;
       if (get().contributions[tabId] === undefined) {
@@ -3753,15 +5001,20 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   refreshContributions: async (tabId) => {
     const api = bridge();
     if (!api?.sessions || tabId === CONTROL_TAB_ID) return;
+    // A convergence refresh is passive (plan step 29): it must not wake a
+    // stopped/recycled host, and it must not touch a tab that is already gone.
+    // The last valid snapshot is kept instead of being replaced by an error.
+    if (!tabHostReadable(get(), tabId)) return;
     const token = beginContributionRead(tabId);
     const sessionEpoch = get().sessionEpochs[tabId] ?? 0;
     try {
       const result = await api.sessions.request({ tabId, method: "contributions.state" });
       if (!contributionReadIsCurrent(tabId, token)) return;
       if ((get().sessionEpochs[tabId] ?? 0) !== sessionEpoch) return;
-      set({
-        contributions: { ...get().contributions, [tabId]: sanitizeContributionSnapshot(result) },
-      });
+      // A closed/recycled tab must not have its snapshot resurrected by a slow
+      // read that resolved after the token bump raced the tab removal.
+      if (!get().tabs.some((tab) => tab.id === tabId)) return;
+      publishContributions(tabId, sanitizeContributionSnapshot(result));
     } catch {
       // Keep the last valid state: a refresh is a convergence attempt, not an
       // authority to erase a mode the host still owns.
@@ -3770,21 +5023,26 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   handleExtensionUiEvent: (tabId, entry) => {
     if (entry.event === TUI_STATE_EVENT) {
+      // A push for a tab that is already gone is a late frame from the closed
+      // host; storing it would resurrect a stale surface (row 28).
+      const tab = get().tabs.find((candidate) => candidate.id === tabId);
+      if (!tab) return;
+      const previous = get().tuiSurfaces[tabId];
+      const next = sanitizeTuiSurfaceSnapshot(entry.payload);
       // The whole surface is pushed after every change, so no reconciliation.
-      set({
-        tuiSurfaces: { ...get().tuiSurfaces, [tabId]: sanitizeTuiSurfaceSnapshot(entry.payload) },
-      });
+      set({ tuiSurfaces: { ...get().tuiSurfaces, [tabId]: next } });
+      // A background tab's newly mounted surface owns the keyboard and may be
+      // blocked on an answer. Badge the tab, never yank the user into another
+      // pane (focus is the app's routing decision, not a repaint's).
+      if (tabId !== get().activeTabId && tuiSurfaceNeedsAttention(previous, next)) {
+        get().markDialogAttention(tabId);
+      }
       return;
     }
     if (entry.event === "contributions.state") {
       // A push is newer than any load in flight for this tab.
       invalidateContributionReads(tabId);
-      set({
-        contributions: {
-          ...get().contributions,
-          [tabId]: sanitizeContributionSnapshot(entry.payload),
-        },
-      });
+      publishContributions(tabId, sanitizeContributionSnapshot(entry.payload));
       return;
     }
     if (entry.event === EXTENSION_UI_STATE_EVENT) {
@@ -3804,10 +5062,26 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         void bridge()?.setTitle(snapshot.title);
       }
       const command = snapshot.editor;
-      if (command && command.seq > (appliedEditorSeq.get(tabId) ?? 0)) {
-        appliedEditorSeq.set(tabId, command.seq);
-        get().setDraft(tabId, command.text);
+      if (command) {
+        // A state push may repeat the last edit; apply it at most once per
+        // binding and never when the binding is already retired (plan step 17).
+        const text = nextEditorDraft(tabId, command);
+        if (text !== null) get().setDraft(tabId, text);
+        acknowledgeEditorCommand(tabId, command);
       }
+      return;
+    }
+    if (entry.event === EXTENSION_UI_CANCEL_EVENT) {
+      // The host retracted a dialog it no longer waits for (an aborted
+      // `opts.signal`, or a replaced session). Drop the visible dock and its
+      // timer; an unknown/duplicate id is a no-op (2026-11-22 parity row 28).
+      const cancel = parseExtensionDialogCancel(entry.payload);
+      if (!cancel) return;
+      clearExtensionDialogTimer(cancel.id);
+      if (!get().extensionDialogs.some((dialog) => dialog.id === cancel.id)) return;
+      set({
+        extensionDialogs: get().extensionDialogs.filter((dialog) => dialog.id !== cancel.id),
+      });
       return;
     }
     if (entry.event === EXTENSION_UI_REQUEST_EVENT) {
@@ -4078,6 +5352,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   interruptRun: async (tabId, key = { key: "Escape" }) => {
+    // A live composer refinement owns Esc first (parity plan row 22): cancelling
+    // it must not pause/abort an unrelated Review or stop a parent turn, and a
+    // repeated Esc while the cancel is pending is consumed instead of resent.
+    if (get().composerOperationOwnsStop(tabId)) {
+      await get().cancelComposerOperation(tabId);
+      return;
+    }
     const extensionBusy = (id: string): boolean => {
       const working = get().extensionUi[id]?.working;
       return working?.message != null && working.visible !== false;
@@ -4559,22 +5840,22 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       set({
         hint: "An extension owns this turn — use its controls to pause, resume or stop it.",
       });
-      return false;
+      return "refused";
     }
     if (isShellCommand(trimmedInput)) {
       const excludeFromContext = isExcludedShellCommand(trimmedInput);
       const command = trimmedInput.slice(excludeFromContext ? 2 : 1).trim();
-      if (command.length === 0) return false;
+      if (command.length === 0) return "refused";
       const api = bridge();
-      if (!api?.sessions) return false;
+      if (!api?.sessions) return "refused";
       const tab = get().tabs.find((entry) => entry.id === tabId);
-      if (!tab) return false;
+      if (!tab) return "refused";
       // Terminal Pi refuses a second command while one runs. Refusing here too
       // keeps the text in the composer instead of bouncing it off the host.
       const state = get().sessionStates[tabId] as { bashRunning?: boolean } | undefined;
       if (state?.bashRunning === true) {
         set({ hint: "A shell command is already running — press Esc to cancel it first." });
-        return false;
+        return "refused";
       }
       // Clear before any await (terminal's editor clears in submitValue): a
       // long command must not hold the text (or the composer's send lock)
@@ -4587,7 +5868,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         const ready = await get().ensureSession(tabId, { force: true });
         if (!ready) {
           restoreDraftAfterRefusal(tabId, previous, sequence);
-          return false;
+          return "refused";
         }
       }
       try {
@@ -4596,21 +5877,124 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
           method: "bash.run",
           params: { command, excludeFromContext, ack: "started" },
         });
-        return true;
+        return "sent";
       } catch (error) {
         restoreDraftAfterRefusal(tabId, previous, sequence);
         get().noteFailure(error);
-        return false;
+        return "refused";
       }
     }
     if (trimmedInput.startsWith("/")) {
       const outcome = await get().runCommandInput(tabId, text, options);
       // `handled` covers an executed command, a view switch and an unknown name:
       // in every one of those cases the text was consumed, not sent as prose.
-      if (outcome.handled) return true;
+      // The toggle stays armed and no transform is started for a command.
+      // A typed transform (plan step 24) reports its own disposition instead;
+      // its draft and attachments are never consumed by the clear rules.
+      if (outcome.disposition) return outcome.disposition;
+      if (outcome.handled) return "handled-command";
     }
-    return get().sendPromptNow(tabId, text, options);
+    // Plan step 20: an armed transform turns an ordinary agent-message
+    // submission into a draft transformation. The decision runs before the
+    // normal send path can clear text, remember history or consume attachments;
+    // a transformation never calls `prompt`.
+    const route = get().composerSendRoute(tabId, text);
+    if (route.kind === "refuse") {
+      set({ hint: route.hint });
+      return "refused";
+    }
+    if (route.kind === "transform") {
+      return startComposerTransformSend(tabId, text, route.control);
+    }
+    return (await get().sendPromptNow(tabId, text, options)) ? "sent" : "refused";
   },
+
+  composerSendRoute: (tabId, text) => {
+    const state = get();
+    const tab = state.tabs.find((entry) => entry.id === tabId);
+    const bashRunning =
+      (state.sessionStates[tabId] as { bashRunning?: boolean } | undefined)?.bashRunning === true;
+    return planComposerSend({
+      text,
+      imageCount: composerDraftFor(state, tabId).attachments.length,
+      running: tab?.status === "running",
+      bashRunning,
+      inputLocked: contributionInputLocked(state.contributions[tabId]),
+      queued: queuedComposerMessages(state, tabId) > 0,
+      operation: composerOperationDerivedFor(state, tabId),
+    });
+  },
+
+  composerOperationView: (tabId) => composerOperationDerivedFor(get(), tabId),
+
+  composerOperationOwnsStop: (tabId) => liveComposerOperationFor(get(), tabId) !== undefined,
+
+  cancelComposerOperation: async (tabId) => {
+    const operation = liveComposerOperationFor(get(), tabId);
+    // Nothing live owns the key: let the caller fall through to its own stop
+    // path (Review pause, bash abort, ordinary turn abort).
+    if (!operation) return false;
+    const key = `${tabId}:${operation.requestId}`;
+    if (composerCancelInFlight.has(key)) return true;
+    composerCancelInFlight.add(key);
+    try {
+      // During bootstrap the started receipt has not named the host operation
+      // yet, so only the local record can be settled. A late receipt/candidate
+      // is then dropped by the terminal-status fence.
+      if (operation.operationId === undefined) {
+        get().applyComposerOperationEvent(tabId, { type: "cancel" });
+        return true;
+      }
+      const api = bridge();
+      if (!api?.sessions) {
+        set({
+          hint: "This host cannot cancel a refinement — wait for it to finish, then try again.",
+        });
+        return true;
+      }
+      await api.sessions.request({
+        tabId,
+        method: "composer.cancel",
+        params: {
+          contract: COMPOSER_TRANSFORM_CONTRACT,
+          requestId: operation.requestId,
+          operationId: operation.operationId,
+          reason: "cancelled by the user",
+          at: Date.now(),
+        },
+      });
+      get().applyComposerOperationEvent(tabId, { type: "cancel" });
+      return true;
+    } catch (error) {
+      // The refinement still owns Esc/Stop even when cancellation failed:
+      // falling through here would pause/abort an unrelated Review or turn.
+      set({ hint: `The refinement could not be cancelled — ${errorMessage(error)}` });
+      return true;
+    } finally {
+      composerCancelInFlight.delete(key);
+    }
+  },
+
+  applyComposerOperationEvent: (tabId, event) => {
+    const state = get();
+    const base = composerOperationStateFor(state, tabId);
+    const next = reduceComposerOperation(base, event, Date.now());
+    // The reducer returns its input object for an unknown/no-op frame, so a
+    // replayed or malformed event never churns the store.
+    if (next === base) return;
+    set({ composerOperations: { ...state.composerOperations, [tabId]: next } });
+  },
+
+  setComposerControlArmed: (tabId, ownerId, controlId, armed) => {
+    get().applyComposerOperationEvent(tabId, { type: "arm", ownerId, controlId, armed });
+  },
+
+  reconcileComposerOperation: (tabId, options) => reconcileComposerOperationTab(tabId, options),
+
+  invalidateComposerOperation: (tabId, kind, message) =>
+    invalidateComposerOperationTab(tabId, kind, message),
+
+  recoverComposerAppliedReceipts: (tabId) => recoverComposerAppliedReceiptsForTab(tabId),
 
   loadCommands: async (tabId, options = {}) => {
     const cached = get().completionCommands[tabId];
@@ -4729,6 +6113,29 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
           promptOrigin: text.trim(),
         });
         return { handled: true, sent };
+      }
+
+      // Plan step 24: when this extension command is a composer publisher's
+      // advertised transform entrance, the literal arguments run through the
+      // same structured operation as an armed Send. That happens before any
+      // clear/history/attachment consumption, and it never falls through to the
+      // generic handler, which would drop the attachments and report a
+      // text-only refinement as a success.
+      const typed = composerCommandTransformRouteFor(get(), tabId, {
+        name,
+        argument,
+        source: command.source,
+      });
+      if (typed.kind === "refuse") {
+        set({ hint: typed.hint });
+        return { handled: true, sent: false, disposition: "refused" };
+      }
+      if (typed.kind === "transform") {
+        const disposition = await startComposerTransformSend(tabId, text, typed.control, {
+          literalText: typed.text,
+          arm: true,
+        });
+        return { handled: true, sent: false, disposition };
       }
 
       const outcome = await get().runExtensionCommand(tabId, name, argument);
@@ -4971,6 +6378,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   runContributionAction: async (tabId, ownerId, id) => {
     const api = bridge();
     if (!api?.sessions) return false;
+    // A gesture for a tab that no longer exists is a stale click on virtual DOM:
+    // never send it to a host that has already been torn down.
+    if (!get().tabs.some((tab) => tab.id === tabId)) return false;
     const actionKey = `${ownerId}\u0000${id}`;
     const inFlight = get().contributionActions[tabId] ?? {};
     // One gesture, one request: a second click while the first is pending is
@@ -5040,6 +6450,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   stopRun: async (tabId) => {
+    // Stop is the same user stop as Esc: the current refinement is cancelled
+    // first, and only then does an ordinary bash/retry/compaction/turn stop run.
+    if (get().composerOperationOwnsStop(tabId)) {
+      await get().cancelComposerOperation(tabId);
+      return;
+    }
     const api = bridge();
     if (!api?.sessions) return;
     try {
@@ -5845,6 +7261,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // Explicit target: a pane loads its own tab. Only app-wide callers (startup,
     // help, skills) fall back to the focused tab.
     const target = options?.tabId ?? resourcesTarget(get());
+    // A stale pane can still ask for a closed tab. `shortcuts.list` is passive
+    // (plan step 29), so there is nothing to converge: drop the request instead
+    // of letting a late response resurrect a list for a tab that is gone.
+    if (!get().tabs.some((tab) => tab.id === target)) {
+      dropTabShortcuts(target);
+      return;
+    }
     const perTab = get().shortcutStates[target];
     // A control host has no extension runner, so `shortcuts.list` would fail
     // with `not_implemented`; leave the (empty) list alone rather than flapping
@@ -5904,9 +7327,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         // This was a passive status-change retry against a recycled host. Leave
         // the list unlatched so activation/ensure retries it once the host is
         // awake; do not show an error or wipe a list the previous session had.
+        // Read the *current* snapshot: an earlier successful load may have
+        // completed while this one was pending.
+        const current = get().shortcutStates[target];
         set(
           writeShortcutState(get(), target, {
-            shortcuts: perTab?.shortcuts ?? EMPTY_SHORTCUTS,
+            shortcuts: current?.shortcuts ?? perTab?.shortcuts ?? EMPTY_SHORTCUTS,
             loaded: false,
             busy: false,
             error: null,
@@ -7364,6 +8790,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // The gesture owns the selection: `activate` is the only call that moves
     // the app. Waking the host is a separate `ensure`, so a background pane or
     // a resync can never reassign the active tab (2026-11-06 tab-switch plan).
+    // Activation also reconciles a live refinement instead of starting one
+    // again after a renderer reload/reattach (plan step 23).
+    void get().reconcileComposerOperation(tabId);
     try {
       get().applyTabs(await api.sessions.activate(tabId), { adoptSelection: true });
     } catch {
@@ -7372,6 +8801,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // Switching tabs always re-checks; the ensure refreshes extension UI, the
     // TUI surface, shortcuts and the command cache after the host is awake.
     await get().ensureSession(tabId, { force: true });
+    // The read above is a head start, not the guarantee: after a renderer reload
+    // the tab has no session identity yet, so `composerBindingFor` answered null
+    // and the reconciliation was a no-op. `ensureSession` is what delivers the
+    // identity, so a tab with no local operation record asks again here —
+    // otherwise a live refinement becomes invisible after a reload and its
+    // candidate can never be offered (plan step 23).
+    if (!get().composerOperations[tabId]) void get().reconcileComposerOperation(tabId);
     // An evicted transcript is reset to `hydrated:false`; fetch it again now
     // rather than waiting for a status change that may never happen.
     const transcript = get().transcripts[tabId];
@@ -7446,6 +8882,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     }
     if (!get().tabs.some((tab) => tab.id === tabId)) {
       purgeClosedTabDialogs(new Set(get().tabs.map((tab) => tab.id)));
+      dropClosedTabComposerState(tabId);
+      // A closed pane's surface, footer/header factories, statuses and attention
+      // badge die with it; a reused tab id must not inherit them (row 28).
+      set(resetTabExtensionUi(tabId));
+      dropTabShortcuts(tabId);
     }
   },
 
@@ -7471,7 +8912,15 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     } catch (error) {
       get().noteFailure(error);
     }
-    purgeClosedTabDialogs(new Set(get().tabs.map((tab) => tab.id)));
+    const open = new Set(get().tabs.map((tab) => tab.id));
+    purgeClosedTabDialogs(open);
+    for (const id of Object.keys(get().composerOperations)) {
+      if (!open.has(id)) dropClosedTabComposerState(id);
+    }
+    for (const id of orphanTabIds(open)) {
+      set(resetTabExtensionUi(id));
+      dropTabShortcuts(id);
+    }
   },
 
   closeAllTabs: async (kind) => {
@@ -7482,7 +8931,15 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     } catch (error) {
       get().noteFailure(error);
     }
-    purgeClosedTabDialogs(new Set(get().tabs.map((tab) => tab.id)));
+    const open = new Set(get().tabs.map((tab) => tab.id));
+    purgeClosedTabDialogs(open);
+    for (const id of Object.keys(get().composerOperations)) {
+      if (!open.has(id)) dropClosedTabComposerState(id);
+    }
+    for (const id of orphanTabIds(open)) {
+      set(resetTabExtensionUi(id));
+      dropTabShortcuts(id);
+    }
   },
 
   setTabPinned: async (tabId, pinned) => {
@@ -8146,12 +9603,18 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   registerPaste: (tabId, text) => {
     const id = get().pasteCounter;
     const marker = pasteMarkerText(id, text);
+    const state = get();
+    // The marker text does not change, but the canonical expanded text does:
+    // mint a content revision so a snapshot taken against the old body cannot
+    // apply over the new one (plan step 18).
+    const draft = withPasteExpansionChanged(composerDraftFor(state, tabId));
     set({
       pasteCounter: id + 1,
       pasteBodies: {
-        ...get().pasteBodies,
-        [tabId]: { ...(get().pasteBodies[tabId] ?? {}), [id]: text },
+        ...state.pasteBodies,
+        [tabId]: { ...(state.pasteBodies[tabId] ?? {}), [id]: text },
       },
+      composerDrafts: { ...state.composerDrafts, [tabId]: draft },
     });
     return marker;
   },
@@ -8160,6 +9623,84 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const bodies = get().pasteBodies[tabId] ?? {};
     const map = new Map(Object.entries(bodies).map(([key, value]) => [Number(key), value]));
     return map.size === 0 ? text : expandPasteMarkers(text, map);
+  },
+
+  addDraftImages: (tabId, images) => {
+    if (images.length === 0) return;
+    const state = get();
+    const draft = addDraftAttachments(composerDraftFor(state, tabId), images);
+    if (draft === state.composerDrafts[tabId]) return;
+    set({ composerDrafts: { ...state.composerDrafts, [tabId]: draft } });
+  },
+
+  removeDraftImage: (tabId, id) => {
+    const state = get();
+    const record = state.composerDrafts[tabId];
+    if (!record) return;
+    const draft = removeDraftAttachment(record, id);
+    if (draft === record) return;
+    set({ composerDrafts: { ...state.composerDrafts, [tabId]: draft } });
+  },
+
+  clearDraftImages: (tabId) => {
+    const state = get();
+    const record = state.composerDrafts[tabId];
+    if (!record) return;
+    const draft = clearDraftAttachments(record);
+    if (draft === record) return;
+    set({ composerDrafts: { ...state.composerDrafts, [tabId]: draft } });
+  },
+
+  setDraftSelection: (tabId, selection) => {
+    const state = get();
+    const record = composerDraftFor(state, tabId);
+    const text = state.prefs.drafts[tabId] ?? record.text;
+    const draft = withDraftSelection(record, selection, text);
+    if (draft === record) return;
+    set({ composerDrafts: { ...state.composerDrafts, [tabId]: draft } });
+  },
+
+  draftSnapshot: (tabId) => {
+    const state = get();
+    const record = composerDraftFor(state, tabId);
+    // `expandPastes` reads the tab's paste table, so the snapshot carries the
+    // canonical text a send would use, not just the visible markers.
+    return captureDraftOperation(record, state.expandPastes(tabId, record.text));
+  },
+
+  applyDraftCandidate: (tabId, request) =>
+    applyDraftCandidateToTab(tabId, request.base, request.candidate),
+
+  replaceDraftWithCandidate: (tabId, request) =>
+    applyDraftCandidateToTab(tabId, request.confirmed, request.candidate),
+
+  replaceComposerCandidate: async (tabId) => {
+    const state = get();
+    const operation = state.composerOperations[tabId]?.operation;
+    const candidate = operation?.candidate;
+    if (!operation || !operation.operationId || !candidate) return null;
+    // The user confirmed the text the result view shows; the live revision is
+    // what the atomic apply rechecks immediately before replacing it.
+    const live = state.draftSnapshot(tabId);
+    const outcome = applyDraftCandidateToTab(
+      tabId,
+      { revision: live.revision, attachmentRevision: live.attachmentRevision },
+      {
+        operationId: operation.operationId,
+        candidateRevision: candidate.candidateRevision,
+        text: candidate.text,
+      },
+    );
+    if (outcome.status !== "applied") return outcome;
+    get().applyComposerOperationEvent(tabId, {
+      type: "applied",
+      operationId: operation.operationId,
+      appliedRevision: candidate.candidateRevision,
+      disposition: outcome.receipt.disposition,
+      appliedAt: outcome.receipt.appliedAt,
+    });
+    await sendComposerAppliedReceipt(tabId, outcome.receipt);
+    return outcome;
   },
 
   openShare: async (tabId) => {

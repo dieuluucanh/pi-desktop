@@ -20,24 +20,24 @@ of the SDK's `ExtensionUIContext` appears here.
 
 ## Member mapping
 
-| `ExtensionUIContext` member                                       | Where it lands                                                                                          | Notes                                                                                                                                                                                                                                         |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `select` / `confirm` / `input` / `editor`                         | inline dock in the session column through `oi.request` / `oi.respond`                                   | keyboard-first, live `timeout` countdown (store-enforced), `signal` cancel, Escape cancels                                                                                                                                                    |
-| `notify(message, type)`                                           | transcript notice + notification bell; warning/error also toast (`oi.notify`)                           | every notification prints in the transcript, like terminal Pi's status line; classes/mute rules filter only the bell and toasts; info starts off for the bell; the archive keeps every notification and Show hidden recovers a suppressed row |
-| `setStatus(key, text)`                                            | one column in the wrapping session-footer status rail (`oi.state`)                                      | `undefined` removes the entry; keep status text short so it behaves as a column; values are sanitised for `title` and rendered ANSI-aware                                                                                                     |
-| `setWidget(key, lines \| factory, opts)`                          | string strip (`oi.state`) or TUI widget frames (`tui.state`)                                            | string arrays keep the strip; a component factory renders above/below the editor dock; a **single-line** component frame joins the footer rail instead of taking its own strip (2026-10-31 UI plan); one owner per key                        |
-| `setWorkingMessage` / `setWorkingVisible` / `setWorkingIndicator` | the working row above the composer                                                                      | custom frames + interval honoured; `visible:false` hides it                                                                                                                                                                                   |
-| `setHiddenThinkingLabel`                                          | transcript thinking blocks                                                                              | replaces the collapsed thinking label                                                                                                                                                                                                         |
-| `setTitle`                                                        | window title (validated in main)                                                                        | bounded, single-line                                                                                                                                                                                                                          |
-| `getToolsExpanded` / `setToolsExpanded`                           | transcript tool-card expansion (`oi.state` + `oi.setToolsExpanded`)                                     | the app owns `Ctrl+O`; the host’s copy stays truthful                                                                                                                                                                                         |
-| `pasteToEditor` / `setEditorText`                                 | composer mirror (`oi.editorText`)                                                                       | renderer reports its buffer back, debounced per tab                                                                                                                                                                                           |
-| `getEditorText`                                                   | the mirror                                                                                              | **eventually consistent** — the host cannot read a textarea synchronously                                                                                                                                                                     |
-| `addAutocompleteProvider`                                         | the composer’s completion stack (`completion.suggest` / `apply`)                                        | the host runs `factory(current)`; the renderer sends its `/`, `@`, `#` result as `current` (or `null` on a shell line)                                                                                                                        |
-| `onTerminalInput`                                                 | first shot at keys in the TUI surface                                                                   | runs before the surface’s own handling                                                                                                                                                                                                        |
-| `custom(factory, opts)`                                           | the TUI surface (`tui.state` frames)                                                                    | `overlay`/`overlayOptions`/`onHandle` supported; returns `undefined` when nothing is shown                                                                                                                                                    |
-| `setFooter` / `setHeader`                                         | `setFooter` replaces the built-in session footer; `setHeader` renders a TUI frame in the session column | the factory’s component is rendered per frame; a custom footer owns the statuses (it receives the `FooterDataProvider`)                                                                                                                       |
-| `setEditorComponent` / `getEditorComponent`                       | recorded on the UI port; **never mounted**                                                              | the native composer is always the editor; see “A custom editor is recorded, not mounted”                                                                                                                                                      |
-| `theme` / `getAllThemes` / `getTheme` / `setTheme`                | host theme + `oi.theme`                                                                                 | `setTheme` installs the theme in the host process and persists Pi’s `theme` setting                                                                                                                                                           |
+| `ExtensionUIContext` member                                       | Where it lands                                                                                          | Notes                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `select` / `confirm` / `input` / `editor`                         | inline dock in the session column through `oi.request` / `oi.respond`                                   | keyboard-first, live `timeout` countdown (store-enforced), `signal` cancel, Escape cancels                                                                                                                                                                                                                                                                                                                    |
+| `notify(message, type)`                                           | transcript notice + notification bell; warning/error also toast (`oi.notify`)                           | every notification prints in the transcript, like terminal Pi's status line; classes/mute rules filter only the bell and toasts; info starts off for the bell; the archive keeps every notification and Show hidden recovers a suppressed row                                                                                                                                                                 |
+| `setStatus(key, text)`                                            | one column in the wrapping session-footer status rail (`oi.state`)                                      | `undefined` removes the entry; keep status text short so it behaves as a column; values are sanitised for `title` and rendered ANSI-aware                                                                                                                                                                                                                                                                     |
+| `setWidget(key, lines \| factory, opts)`                          | string strip (`oi.state`) or TUI widget frames (`tui.state`)                                            | string arrays keep the strip; a component factory renders above/below the editor dock; a **single-line** component frame joins the footer rail instead of taking its own strip (2026-10-31 UI plan); one owner per key                                                                                                                                                                                        |
+| `setWorkingMessage` / `setWorkingVisible` / `setWorkingIndicator` | the working row above the composer                                                                      | custom frames + interval honoured; `visible:false` hides it                                                                                                                                                                                                                                                                                                                                                   |
+| `setHiddenThinkingLabel`                                          | transcript thinking blocks                                                                              | replaces the collapsed thinking label                                                                                                                                                                                                                                                                                                                                                                         |
+| `setTitle`                                                        | window title (validated in main)                                                                        | bounded, single-line                                                                                                                                                                                                                                                                                                                                                                                          |
+| `getToolsExpanded` / `setToolsExpanded`                           | transcript tool-card expansion (`oi.state` + `oi.setToolsExpanded`)                                     | the app owns `Ctrl+O`; the host’s copy stays truthful                                                                                                                                                                                                                                                                                                                                                         |
+| `pasteToEditor` / `setEditorText`                                 | composer mirror (`oi.editorText`)                                                                       | renderer reports its buffer back, debounced per tab; each edit carries the host/UI **binding** + `seq` it was minted in, so a rebind can restart at 1 without a new host's low sequence being dropped, a repeated frame never clobbers the user, and `oi.editorConsumed` makes delivery one-shot across a renderer reconnect (`tests/host/extension-ui.test.ts`, `tests/renderer/extension-ui-store.test.ts`) |
+| `getEditorText`                                                   | the mirror                                                                                              | **eventually consistent** — the host cannot read a textarea synchronously                                                                                                                                                                                                                                                                                                                                     |
+| `addAutocompleteProvider`                                         | the composer’s completion stack (`completion.suggest` / `apply`)                                        | the host runs `factory(current)`; the renderer sends its `/`, `@`, `#` result as `current` (or `null` on a shell line)                                                                                                                                                                                                                                                                                        |
+| `onTerminalInput`                                                 | first shot at keys in the TUI surface                                                                   | runs before the surface’s own handling                                                                                                                                                                                                                                                                                                                                                                        |
+| `custom(factory, opts)`                                           | the TUI surface (`tui.state` frames, whole stack)                                                       | `overlay`/`overlayOptions`/`onHandle` supported; a base component and its overlays are all reported (bottom-to-top, `layers`); returns `undefined` when nothing is shown                                                                                                                                                                                                                                      |
+| `setFooter` / `setHeader`                                         | `setFooter` replaces the built-in session footer; `setHeader` renders a TUI frame in the session column | the factory’s component is rendered per frame; a custom footer owns the statuses **and receives the live git branch and available-provider count** through its `FooterDataProvider`                                                                                                                                                                                                                           |
+| `setEditorComponent` / `getEditorComponent`                       | recorded on the UI port; **never mounted**                                                              | the native composer is always the editor; see “A custom editor is recorded, not mounted”                                                                                                                                                                                                                                                                                                                      |
+| `theme` / `getAllThemes` / `getTheme` / `setTheme`                | host theme + `oi.theme`                                                                                 | `setTheme` installs the theme in the host process and persists Pi’s `theme` setting                                                                                                                                                                                                                                                                                                                           |
 
 | `shortcuts` (registered via `pi.registerShortcut`) | the composer’s Tab cycle and the session’s other chords (`shortcuts.list` / `shortcuts.invoke`) | checked before the editor’s own handling, as in Pi; the list is listed per tab on activation |
 
@@ -62,6 +62,16 @@ Every request carries the tab id that owns the host. If that tab is not active,
 it is flagged in the sidebar and focused (per the routing preference); the
 timeout is preserved either way, so a run cannot hang because a dialog went to
 the wrong place (risk R5).
+
+**A background `ctx.ui.custom()` badges, it never steals focus (2026-11-22).**
+A mounted extension surface owns the keyboard and can block until the user
+answers, so its arrival raises the tab's attention dot
+(`tuiSurfaceNeedsAttention`: a newly mounted layer id, not a repaint). The app
+never activates the tab automatically and never moves DOM focus in another pane:
+only the focused pane's `TuiSurface` autofocuses and reports `tui.focus`. This is
+what makes a background questionnaire visible without pulling the user out of a
+running session or another grid pane. The rule is generic — it keys on the
+surface stack, never on an extension name.
 
 ## Rendering
 
@@ -166,6 +176,52 @@ event with `entryRenderable` from the live runner and the transcript reducer
 drops the item when it is not `true`. This is what keeps the Workflow mode
 switches (state entries with no renderer) out of the transcript instead of
 leaving blank padded rows. `custom_message` entries keep their fallback card.
+
+### The custom-surface stack and its ownership (2026-11-22)
+
+**Every mounted surface is reported, bottom-to-top.** The wire used to carry one
+`custom` slot, so a questionnaire overlay hid the review pane underneath it.
+`tui.state` now includes `layers`: one entry per mounted keyboard-bearing
+component with a stable `id`, its own frame, `overlay`, resolved `bounds` and
+`focused`. `custom`/`overlay`/`bounds` still mirror the top of the stack, so a
+renderer (or an older build) that only knows the single slot keeps working.
+`SessionView` docks the base (non-overlay) layer and every floating overlay
+renders above it; a bottom-anchored full-width overlay still docks as a sheet
+and takes the composer. Pi's own composition is the model: the base component is
+a child, overlays float above it.
+
+**Ownership closes in the right order.** `finish()`/`hide()` dispose exactly one
+component and hand focus back to the previous owner (the base layer, or the
+overlay below), not to nothing. `reset()` — every session bind and rebind — now
+settles every pending `custom()` promise with `undefined` before clearing the
+slots, so an extension replaced by `/reload` cannot keep an old promise (and its
+loader) alive.
+
+**An aborted dialog is retracted.** `ctx.ui.select/confirm/input/editor` accept
+an `opts.signal`; aborting it resolves the extension's promise _and_ emits
+`oi.cancel { id }`, so the visible dock disappears immediately instead of
+waiting for the store's five-minute backstop. The same retraction runs when the
+session is replaced (`resetSessionUi`/`bridge.dispose`). Unknown/duplicate ids
+are ignored, and a settled dialog never emits a cancel.
+
+**A custom footer gets real facts.** `ctx.ui.setFooter()` receives the live
+`ReadonlyFooterDataProvider`: extension statuses, the git branch (polled only
+while a footer is subscribed) and the count of providers with available models.
+`src/host/footer-facts.ts` owns the watcher; the SDK adapter only exposes it. The
+built-in session footer is unaffected and still shows the project-inspection
+branch.
+
+### The native composer is still the editor (Tab precedence)
+
+W's `CustomEditor` exists to fix terminal Pi's Tab precedence. The desktop's
+native composer already implements the same order — an open completion menu owns
+Tab first (accept the highlighted item), otherwise a registered extension
+shortcut gets it (the Workflow mode cycle), otherwise completion runs — and
+prompt history (ArrowUp/ArrowDown from the buffer's last line) is untouched by
+extension shortcuts. `setEditorComponent` stays recorded but never mounted, so
+`getEditorComponent()` coordination works while `/`, `@`, `#`, history and the
+extension shortcut bridge keep their real behaviour
+(`tests/renderer/composer.test.tsx`, "extension shortcut dispatch (Tab)").
 
 ### The selection in an extension-drawn surface (2026-10-21)
 
@@ -272,20 +328,18 @@ same `→` marker and selection surface as the TUI surface, `↑`/`↓` move the
 selection (wrapping), `Enter` answers with it and `Esc` cancels. A click still
 answers immediately.
 
-### The Workflow todo panel’s native controls (2026-11-18)
+### Extension-owned panels are generic frame strips (2026-11-22)
 
-A component widget frame now carries its `ctx.ui.setWidget` key as
-`TuiFrame.key`. The host already holds that key in its `widgetsAbove` map; it is
-no longer discarded in `buildSnapshot`. The desktop uses it to identify
-`workflow-todos` without guessing from content (a keyless frame still falls back
-to the summary/row shape). `TodoPanelBar` renders above the above-editor strips
-and dispatches the extension’s `/todos auto|expand|collapse|hide` through
-`commands.run` with `ack: "started"`; it never touches the draft. The bar
-survives Hide, and the extension’s compact `workflow-todos` status
-(`☐ Todos 3/12 · hidden`) supplies progress/state while the panel is hidden or
-Review owns the turn. The desktop footer omits that status while the bar is
-visible. `Ctrl+Alt+L` toggles the panel; `Ctrl+Alt+O` remains Sessions, so the
-extension registers its terminal-only chord on terminal hosts only.
+A component widget frame carries its `ctx.ui.setWidget` key as `TuiFrame.key`
+and is rendered from its ANSI lines only; the renderer never parses a widget's
+glyphs, summary or key to infer workflow state. The retired Workflow adapter
+(`src/shared/workflow-mode.ts`, `src/shared/workflow-todos.ts`, `ReviewBar`,
+`TodoPanelBar`, `/review-*` and `/todos-*` dispatch) is deleted;
+`tests/architecture/no-workflow-adapters.test.ts` fails if the parsers, magic
+keys or command ids return. Status/progress/actions/mode/input come from the
+generic contribution contract, and an extension's own widget is just a
+read-only frame. An older extension that publishes only status prose still gets
+the generic bar, without the structured rows.
 
 ### Pi-parity rules for custom transcript items (2026-10-19 UI rework)
 
@@ -384,27 +438,27 @@ list is not latched: the next activation, Tab press or readiness change retries.
 | Renderer store + components | `tests/renderer/extension-ui-store.test.ts` (dialog timers and close-tab purge), `tests/renderer/extension-ui.test.tsx` (inline dock), `tests/renderer/tui-surface-store.test.ts`, `tests/renderer/extension-render-store.test.ts`, `tests/renderer/extension-block.test.tsx`, `tests/renderer/session-footer.test.tsx` |
 | Integration                 | `tests/host/integration.test.ts` (a real extension’s `confirm()` round-trips `oi.request`/`oi.respond`; a `session_start` `setEditorComponent` produces no editor frame before or after `/reload`), `tests/e2e/custom-editor.spec.ts` (a seeded extension leaves the native composer, and Enter sends)                  |
 
-## Known limitations / backlog (2026-10-26)
+## Known limitations / backlog (updated 2026-11-22, parity row 28)
 
-- **Nested overlays and a base custom under an overlay**: the wire still carries
-  one `custom` slot, so only the topmost overlay is rendered and a non-overlay
-  custom underneath is hidden. Pi composites the overlay stack.
-- **A background tab's `ctx.ui.custom()` does not activate its tab** (only an
-  `oi.request` dialog does), so a background questionnaire can block silently.
-- **`setEditorComponent` remains recorded, never mounted** (the native composer
-  is always the editor).
+Closed in this row, with regressions: nested overlays and a base `custom` under
+an overlay (`layers` stack, `tests/host/tui-surface.test.ts`), background
+`custom()` attention without focus theft
+(`tests/renderer/tui-surface-store.test.ts`, `tests/renderer/tui-surface.test.tsx`),
+`opts.signal` abort retraction (`oi.cancel`, `tests/host/extension-ui.test.ts`,
+`tests/renderer/extension-ui-store.test.ts`), stale surfaces on close/rebind
+(`tests/renderer/tui-surface-store.test.ts`, `reset()` settling pending
+promises), and the reduced custom-footer `FooterDataProvider`
+(`src/host/footer-facts.ts`, `tests/host/footer-facts.test.ts`).
+
+Still open:
+
+- **`setEditorComponent` remains recorded, never mounted.** This is deliberate:
+  the native composer keeps `/`, `@`, `#`, history, paste attachments and the
+  extension-shortcut bridge; mounting Pi's editor would drop them (the same
+  choice Pi's RPC mode makes).
 - **Mouse `handleMouse` dispatch** is not implemented; wheel is delivered as raw
   SGR input, which is what the Workflow questionnaire parses. The inline
   extension editor has no external-editor (`Ctrl+G`) bridge.
-- **`opts.signal` abort** resolves the host promise without clearing an
-  already-visible renderer dialog; the store timeout is the current backstop.
-- **Stale `tuiSurfaces`** are not deleted when a tab closes.
-- **An extension `setFooter` factory gets a reduced `FooterDataProvider`**: the
-  renderer-built session footer shows the real git branch (from project
-  inspection), but a custom footer’s `footerData.getGitBranch()` is `null` and
-  `getAvailableProviderCount()` is `0` (`src/host/sdk/tui-surface.ts`). Fixing
-  that needs a host-side branch watcher and a provider count; the built-in
-  footer is unaffected (2026-10-31 minimal-session-ui).
 
 ## Notification classes, offers and muting (2026-11-08; offers derived 2026-11-18)
 
@@ -505,6 +559,103 @@ The installed SDK's event bus is **not** publisher authentication. Source
 binding is established for related-session authority through registered command
 provenance; a contribution's declared owner is a namespace, not an auth token.
 Extensions remain trusted executable code — this is not a new sandbox.
+
+### Composer transform contract (frozen, row 13)
+
+The additive `composer-transform-v1` capability is frozen in
+`src/shared/composer-transform.ts` and
+`tests/shared/fixtures/composer-transform.conformance.json`, copied
+byte-for-byte from the Workflow package (both suites assert the same SHA-256).
+This row adds the independent Desktop reader, not renderer integration.
+
+- **Contribution shape.** `kind: "composer-control"` uses the
+  `composer-actions` slot, a closed semantic icon list, checked/enabled/reason,
+  an explicit `one-shot-return` or `persistent` behaviour, and same-owner
+  `actionRef` (toggle) and `transformActionRef` (operation) references.
+  `resolveComposerControlTargets` resolves live actions and refuses foreign,
+  wrong-kind, dangling or command-less targets. The transform action must name
+  the declared public input command; the renderer never supplies command text.
+  The ordinary contribution bar ignores the new slot until the composer
+  projection lands, so accepting the kind cannot create a blank row.
+- **Operation metadata and source binding.** `operation` names the public input
+  command and the registered bootstrap companion.
+  `resolveComposerOperationCommands` requires both live SDK registrations to
+  share `sourceInfo` (`path`, `source`, `scope`); equal names from different
+  extensions are refused.
+- **Frames and limits.** Start request (binding/session/epoch, contribution and
+  draft revisions, selection, attachment identity/digest metadata, optional
+  bounded in-band image bytes), started receipt, progress, candidate, status,
+  cancellation, apply receipt and lifecycle failures have independent
+  validators. Draft text, expanded text, image bytes, attachment ids/digests,
+  model/provider context and grants are absent from `composerTransformDiagnostics`.
+  The old contribution `maxArgsChars` stays 1 000; operation transport does not
+  ride on command args.
+- **Bootstrap/rendezvous.** SDK 1.5 command handlers are string-only. The
+  companion bootstrap is a grant-only JSON string (`contract` + `grant`); extra
+  fields are refused. The host arms a single-use listener on the SDK EventBus
+  before bootstrap, the grant id selects a private channel, and a random proof
+  must match before the typed in-process port is handed to the companion
+  callback. Listeners are removed on claim, expiry, rejection and teardown.
+- **Old hosts.** Contribution v1 stays additive: an older Desktop drops the
+  unknown kind and keeps supported status/action rows plus the text command.
+  `composerTransformFallback()` reports `nativeControl: false` and
+  `attachmentAware: false`; a text fallback never promises attachment-aware
+  transformation.
+- **Implementer walkthrough (how a host drives a refinement).** Use the
+  structured capability, never slash-string concatenation:
+  1. Read a published `kind: "composer-control"` from the snapshot and resolve
+     its `actionRef`/`transformActionRef` with `resolveComposerControlTargets`;
+     refuse foreign, wrong-kind, dangling or command-less targets.
+  2. Resolve the declared public input command and the `operation` companion with
+     `resolveComposerOperationCommands`; require both live registrations to share
+     one `sourceInfo`. Refuse equal names from different extensions.
+  3. Arm a single-use EventBus listener, mint a CSPRNG request-scoped grant, and
+     invoke the companion with the grant-only JSON bootstrap. A matching proof
+     hands you the typed in-process port; nothing else does.
+  4. Drive typed frames over that port — `start`, `started`, `progress`,
+     `candidate`, `cancel`, `status`, `apply` — with the per-tab reducer applying
+     a candidate only to the exact still-current draft revision and recording an
+     idempotent apply receipt. Never parse a label, glyph or status string to
+     infer state, and never route the draft through `command.args`.
+  5. Re-resolve trust/grants/policy at each authority boundary; treat a narrowing
+     policy-generation change as cancellation, not as an applicable cached
+     result. Revocation stops future reads/prompts; it does not recall provider
+     data already disclosed in an earlier request.
+     Only a host with none of this may fall back to running the plain text `/prompt`
+     command, and it must report `attachmentAware: false`.
+- **Minimal generic frontend example.** Pseudocode, no Workflow import and no
+  slash concatenation — a second, unrelated publisher gets the same treatment:
+
+  ```ts
+  // 1. Find any publisher's composer control in the validated snapshot.
+  const control = snapshot.contributions.find((c) => c.kind === "composer-control");
+  if (!control) return { state: "unsupported", attachmentAware: false };
+
+  // 2. Resolve its same-owner toggle + transform references against live commands.
+  const targets = resolveComposerControlTargets(snapshot, control);
+  if (!targets.ok) return { state: "disabled", reason: targets.reason };
+
+  // 3. Bind the public input command and its bootstrap companion by provenance.
+  const op = resolveComposerOperationCommands(targets.transformCommand, targets.operation);
+  if (!op.ok) return { state: "refused", reason: op.reason }; // e.g. foreign companion
+
+  // 4. One-use private rendezvous: grant-only bootstrap, proof-checked port.
+  const grant = mintGrant();
+  const port = await armRendezvousBus(grant); // single-use listener; timeout + teardown
+  await runCommand(op.companion, bootstrapString(op.contract, grant));
+  const typed = await port.claimWithProof(); // not a string, not command args
+
+  // 5. Typed operation, CAS apply on the exact current draft revision.
+  const started = await typed.start({ draft: captureRevisionedDraft(), selection, attachments });
+  const applied = await typed.applyCandidate(started.candidateId, {
+    expectedRevision: started.baseRevision,
+  });
+  // Re-resolve policy before each turn; a narrowing generation cancels, never applies a cached candidate.
+  ```
+
+  Workflow registers `/prompt` (input) and `/prompt-refine-companion` (bootstrap)
+  and `/prompt-refine` (toggle) against this contract; the host learns none of
+  those names from its code — they come from the publisher's metadata.
 
 ### Related-session identity pass-through (2026-11-22)
 

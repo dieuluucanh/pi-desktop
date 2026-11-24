@@ -200,21 +200,21 @@ rendered as a footer column instead of its own strip (2026-10-31 UI plan);
 multi-line frames keep Pi's placement. The TUI grid is measured from this column,
 never from the surface's own rendered frame (`src/renderer/src/tui/use-tui-viewport.ts`).
 
-**The Workflow todo panel has a native control bar (2026-11-18).** The panel
-itself stays the extension's read-only `workflow-todos` frame. `TodoPanelBar`
-sits above the above-editor strips in every workflow mode, including Review and
-while a questionnaire owns the composer. It shows `Todos done/total`, the
-effective state, and settled/stale markers, with an Expand/Collapse toggle and a
-menu for Automatic / Show full list / Collapse / Hide. The bar stays mounted when
-the list is hidden, so Hide is reversible. Actions dispatch `/todos <verb>`
-through `commands.run` (not a prompt), so they work in Review and behind a TUI
-overlay; focus returns to the surface or composer afterwards. The desktop chord
-is `Ctrl+Alt+L`; `Ctrl+Alt+O` remains Sessions. The extension publishes a compact
-`workflow-todos` status while its panel is hidden or Review owns the turn; the
-bar hides that key from the footer to avoid a duplicate. A widget frame now
-carries its `setWidget` key (`TuiFrame.key`), which is how the bar identifies the
-panel. Older `@dieulc/workflow` versions degrade to no Review+hidden bar, while
-the menu/palette still dispatch the command.
+**Extension-owned panels are read-only, generic frame strips (2026-11-22).**
+A component-factory widget is drawn from the publisher's ANSI frame only; the
+renderer never parses its content, glyphs or key to infer state. The retired
+Workflow compatibility layer (`src/shared/workflow-mode.ts`,
+`src/shared/workflow-todos.ts`, `ReviewBar`, `TodoPanelBar`) is gone and
+`tests/architecture/no-workflow-adapters.test.ts` keeps it from returning. What
+replaces it is the generic contribution contract: a publisher contributes
+`mode`/`progress`/`status`/`action`/`input` rows that
+`src/renderer/src/session/ContributionsBar.tsx` renders with no extension name,
+and the composer draws an arbitrary publisher's `composer-control` in a generic
+bottom-right row (`ComposerControls.tsx`, see
+[extension-ui.md](extension-ui.md#composer-transform-contract-frozen-row-13)). An
+action names a registered command that the host re-validates; nothing is
+special-cased for one extension. An older extension that publishes only status
+prose still gets the generic row, just without the richer structured controls.
 
 **The mode is named in the composer, and its label is the control (2026-11-22).**
 The session’s current mode comes from the generic contribution contract: a
@@ -1002,3 +1002,139 @@ renderer kept running but ignored every click (radix-ui/primitives#3317,
 - **One reconcile per focus burst.** Alt+Tab emits both `focus` and
   `visibilitychange`; `createFocusResync` coalesces the burst into one
   `sessions.reconcile()`.
+
+## The composer's revisioned draft (2026-11-22)
+
+The composer's text and image attachments are **tab state**, not component
+state. `src/renderer/src/session/composer-draft.ts` is the pure model and
+`useAppStore().composerDrafts[tabId]` holds one record per live tab.
+
+- **Attachments survive component replacement.** A docked extension dialog, a
+  composer remount or a pane move used to empty the locally owned image list.
+  The record now owns the attachment objects (bytes included) in renderer
+  memory, so a replacement composer renders the same chips; a successful send
+  clears them (`clearDraftImages`).
+- **Binary images never reach disk.** `prefs.drafts` stays the persisted,
+  sanitised text map; the attachment payload only lives in the renderer store.
+  Snapshots (`draftSnapshot`) carry id, name, mime type and byte count — never
+  the base64 data — so a later operation request or log line cannot leak it.
+- **Content revisions are monotonic.** Typing, a mention insertion, a host
+  `setEditorText`/restore, an attachment add/remove and a paste body registered
+  under an unchanged marker all mint the next `revision` from a process-wide
+  clock. Edit-then-revert therefore advances twice: a stale result cannot apply
+  because the text happens to match again. Writing identical content is a no-op.
+- **Selection is separate.** `setDraftSelection` records the caret/range and
+  never touches a revision; moving the caret must not invalidate an operation.
+  `attachmentRevision` changes only when the ordered attachment identity set
+  changes.
+- **One image, one identity.** `nextAttachmentId()` gives every attachment
+  instance its own id, so the same screenshot pasted twice is two chips that can
+  be removed separately; the existing size/mime/downscale limits are unchanged.
+- **Paste semantics are unchanged.** The marker stays in the text and the body
+  stays in `pasteBodies`; `draftSnapshot.expandedText` is the canonical text a
+  send would use. Prompt history, completion and caret behaviour are untouched —
+  the store's single text writer, `setDraft`, still goes through
+  `writeComposerDraft`.
+
+Closing a tab drops its record with the other tab-scoped caches
+(`TAB_SCOPED_RECORDS`). Tests: `tests/renderer/composer-draft.test.ts` (model),
+`tests/renderer/composer-draft-store.test.tsx` (store, remount, duplicates,
+close-tab cleanup, host-failure restore) and the existing composer/completion
+suites.
+
+### Atomic snapshot capture and CAS application (2026-11-22, row 19)
+
+`src/renderer/src/session/composer-draft-operation.ts` is the pure half of a
+composer operation; the store actions `applyDraftCandidate` and
+`replaceDraftWithCandidate` commit its result.
+
+- **The capture is the live draft.** `draftSnapshot` reads the revisioned record
+  and the tab's paste table, so `expandedText` is the canonical body a send
+  would use. The debounced `getEditorText()` mirror is never an operation input.
+  Attachment metadata stays id/name/mime/byte-count; the base64 payload stays in
+  renderer memory.
+- **One candidate, one current base.** An automatic apply passes the captured
+  `revision` + `attachmentRevision`; both are compared against the live record
+  immediately before the write. Typing, a host restore, an attachment
+  add/remove/reorder and an edit-then-revert (ABA) all advance one of them, so
+  the apply is refused as `stale-base` and the newer draft is left alone.
+- **Text and attachments move together.** A successful apply builds one new
+  draft record: the candidate text replaced, every live attachment object kept
+  by identity, a new monotonic revision, and the caret collapsed at the end of
+  the new text. The store writes `prefs.drafts` and `composerDrafts` in one
+  `set`, then flushes preferences immediately (coalescing the typing debounce)
+  and reports the new text to the host editor mirror.
+- **Explicit replace rechecks what the user saw.** After a conflict the
+  candidate stays recoverable; `replaceDraftWithCandidate` takes the revision
+  the confirm dialog displayed and re-checks it against the live draft, so an
+  edit made while the dialog was open still wins.
+- **Applications are idempotent.** Per-tab `composerApplyReceipts` (bounded,
+  newest last) record `{operationId, appliedRevision, disposition}`. A replayed
+  completion/apply for the same operation is refused as `duplicate` (or
+  `already-applied`) without a second write, flush or caret move. A successful
+  apply mints a `composerCaretRequests[tabId]` token that `Composer` honours
+  once, only when the DOM carries exactly the applied text.
+
+Tests: `tests/renderer/composer-draft-operation.test.ts` (pure CAS, receipt
+ledger) and `tests/renderer/composer-draft-apply.test.tsx` (store races, tab
+switch/close, explicit replace, duplicate apply, caret/focus).
+
+### Operation lifecycle across renderer/host boundaries (2026-11-22, row 23)
+
+A refinement is host work, but its observable state is per tab. The renderer
+never infers liveness from a label or a status string; it reconciles typed
+frames and host reads against an explicit binding generation.
+
+- **Reload/activation queries the live operation instead of restarting it.**
+  `composer.current` (additive in `composer-transform-v1`) answers with the one
+  non-terminal operation bound to the caller's session/epoch, or `null`. A
+  renderer that lost its in-memory record (renderer reload, HMR, a remount)
+  adopts it with an unknown base revision, so a later candidate is viewable but
+  is never auto-inserted over the reloaded draft; the user confirms an explicit
+  replace. `composer.transform` also refuses a second live operation for the
+  same binding (`request-conflict`), so a reload cannot start a duplicate
+  provider call.
+- **Every event is fenced.** The reducer compares an optional event `binding`
+  against the operation's captured session/epoch/binding/host generation, and
+  the store drops a frame whose live binding generation no longer matches the
+  record. Tab isolation comes from the per-tab IPC envelope, request ids are
+  host-minted and unguessable, and a response is re-read against the tab and
+  binding after every await.
+- **Applied-but-ack-lost is settled by receipts.** `composer.applied` is
+  idempotent on the host and replayed from a bounded settled map after a lost
+  acknowledgement; the renderer replays its own bounded receipt ledger once per
+  operation/revision. Neither path rewrites the draft a second time, and a
+  reconciliation read that reports `applied` settles the record without
+  candidate text.
+- **Invalidation, never a cached result.** Host restart/crash
+  (`session.recovered`), new/resume/fork/rewind (`session_replaced`), `/reload`,
+  a publisher withdraw/disable, a republished control generation, tab close, app
+  quit and a project trust/policy change all cancel the local operation and
+  invalidate the host job/grant. The candidate text stays viewable for recovery
+  but `canApply` is false; an already applied operation is never rolled back.
+  Renderer draft text and in-memory attachments are preserved whenever their
+  owner (the tab) still exists.
+- **Bounded cleanup.** The host keeps at most 64 settled request ids with a
+  60 s replay window (`composerTransformHostLimits`); `reset()` drops every job
+  and receipt on a restart/rebind, and `invalidate()` cancels jobs but keeps
+  bounded receipts. The renderer keeps one record per tab, a bounded applied
+  receipt ledger per tab, and a bounded (64-entry) receipt-replay memory; a
+  closed tab's operation/receipt/attachment records are dropped while
+  `prefs.drafts` keeps the persisted text.
+
+**Binary attachments do not survive a full app/renderer process loss.** Image
+bytes live only in renderer memory (`composerDrafts[tabId].attachments`); the
+persisted `prefs.drafts` map carries sanitised text only. Restarting the app or
+reloading the renderer therefore restores the text but not the attached images;
+a matching operation's candidate can still be reconciled from the host, but the
+original attachments are gone. Surviving them would require a separate secure
+draft-blob store (encrypted at rest, bounded, owner-scoped); this build
+deliberately has none, so the limitation is stated rather than implied.
+
+Tests: `tests/shared/composer-operation-lifecycle.test.ts` (fencing,
+reconcile/adopt/expire, receipt idempotence, invalidation-as-cancellation),
+`tests/host/composer-transform.test.ts` (current read, single live operation,
+invalidate/reset/dispose, bounded retention) and
+`tests/renderer/composer-operation-lifecycle.test.tsx` (reload adoption, host
+loss, receipt replay, publisher/trust/replacement cancellation, closed-tab
+cleanup).

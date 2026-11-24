@@ -76,6 +76,18 @@ export const ROLE_FLAG = "--role";
 export const SAFE_MODE_ENV = "PI_DESKTOP_SAFE_MODE";
 
 /**
+ * Absolute path of the staged Workflow artifact (plan steps 26–27).
+ *
+ * Main resolves the layout once (`resources/extensions/workflow` when packaged,
+ * `resources/` + `out/extensions/` in development) and hands the winner to every
+ * host, so a session runtime and the Extensions hub's control host register
+ * **the same** `builtin:workflow` copy. An absent/empty value means no staged
+ * bundle: the host registers no built-in and reports why, and never falls back
+ * to a developer checkout or an npm install.
+ */
+export const WORKFLOW_BUNDLE_DIR_ENV = "PI_DESKTOP_WORKFLOW_BUNDLE_DIR";
+
+/**
  * Pi's own install-telemetry switch (plan step 23). The app sets `PI_TELEMETRY=0`
  * on every host it spawns unless the user opted in, so an app install never
  * sends the anonymous install/attribution ping by default. It is Pi's variable,
@@ -84,6 +96,51 @@ export const SAFE_MODE_ENV = "PI_DESKTOP_SAFE_MODE";
  * profile terminal Pi also reads.
  */
 export const TELEMETRY_ENV = "PI_TELEMETRY";
+
+/**
+ * The real Pi CLI child agents must run (Workflow plan step 30).
+ *
+ * Workflow's `explore`/review reconnaissance spawn `pi --mode json` themselves.
+ * A host process cannot hand them its own entry point: that entry point runs the
+ * service protocol here, and inheriting {@link SERVICE_ENV} would make the child
+ * a second host instead of a CLI. Main resolves the SDK's own
+ * `dist/bundle/cli.js` and passes it as this variable.
+ */
+export const PI_CLI_ENV = "PI_SUBAGENT_PI_CLI";
+/** Node binary paired with {@link PI_CLI_ENV} (the bundled runtime). */
+export const PI_CLI_NODE_ENV = "PI_SUBAGENT_PI_NODE";
+
+/**
+ * The resolved Workflow entry a child CLI must load (Workflow plan step 30).
+ *
+ * The child's bash gate lives in the Workflow extension, and a fresh CLI process
+ * does not inherit the app's `builtin:workflow` registration. Handing it the
+ * staged artifact and asking for isolation loads exactly one implementation.
+ */
+export const WORKFLOW_EXTENSION_ENV = "PI_SUBAGENT_WORKFLOW_EXTENSION";
+export const WORKFLOW_ISOLATE_ENV = "PI_SUBAGENT_WORKFLOW_ISOLATE";
+
+/**
+ * Names a host must strip from a child CLI's environment.
+ *
+ * Every entry is a Pi Desktop host marker. Inheriting them into a child would
+ * either re-enter service mode or point the child at the app's host bundle —
+ * neither is a Pi session.
+ */
+export const SUBAGENT_ENV_STRIP_ENV = "PI_SUBAGENT_ENV_STRIP";
+
+/** The strip list as it is written into {@link SUBAGENT_ENV_STRIP_ENV}. */
+export function subagentEnvStripList(): string {
+  return [
+    SERVICE_ENV,
+    HOST_ROLE_ENV,
+    SESSION_ID_ENV,
+    HOST_BUILD_ENV,
+    "PI_DESKTOP_HOST_ENTRY",
+    "PI_DESKTOP_TERMINAL_ENTRY",
+    "PI_OFFICE_BRIDGE_PORT",
+  ].join(",");
+}
 
 export type HostRole = "control" | "session";
 
@@ -206,6 +263,17 @@ export const HOST_METHODS = [
   // an extension's create/open/focus/... request to main as an event, and main
   // settles the pending idempotent operation with this request.
   "sessionHost.result",
+  // Composer-transform host contract (prompt-refinement plan step 14). Start
+  // returns a source-bound receipt; status/cancel/applied are idempotent. The
+  // private typed port travels through the in-process rendezvous, never a
+  // prompt or a command string.
+  "composer.transform",
+  "composer.status",
+  "composer.cancel",
+  "composer.applied",
+  // Reconciliation read (prompt-refinement plan step 23): a reloaded renderer
+  // asks for the live operation bound to its tab before starting another.
+  "composer.current",
   "tools.list",
   "tools.setActive",
   "model.list",
@@ -246,6 +314,12 @@ export const HOST_METHODS = [
   // it. Declared explicitly because `isHostMethod` guards the request path.
   "oi.setToolsExpanded",
   "oi.editorText",
+  // The renderer's acknowledgement that it consumed one editor command (plan
+  // step 17). Delivery of `setEditorText`/`pasteToEditor` is one-shot per
+  // renderer attachment, so a reconnected renderer is never handed the same
+  // edit again. Additive: an older host rejects it and the renderer ignores the
+  // rejection.
+  "oi.editorConsumed",
   "completion.suggest",
   "completion.apply",
   // The extension TUI surface (plan step 17). No RPC equivalent: RPC mode's

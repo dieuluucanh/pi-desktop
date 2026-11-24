@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildResourcesSnapshot, createResourceHandlers } from "../../src/host/resources";
 import { createSessionCore } from "../../src/host/session-core";
+import { resolveWorkflowBuiltin } from "../../src/host/workflow-builtin";
 import type { HostRequestContext } from "../../src/host/service";
 import type { ResourcesSnapshot } from "../../src/shared/resources";
 
@@ -362,5 +363,204 @@ describe("the session host's resources.list", () => {
     await core.dispose();
     expect(errorListener).toBeUndefined();
     expect(emitted).toContain("session_started");
+  });
+});
+
+/**
+ * The bundled Workflow builtin in the hub (plan step 27).
+ *
+ * Pi hides a `builtin:` extension from its *startup* list, not from the resource
+ * collection, and a builtin it disables through settings never reaches the
+ * loader at all. The hub must therefore show:
+ *
+ *  - the loaded builtin row with its name, pinned version and replaceability;
+ *  - the settings-disabled row (`-builtin:workflow`) with the same badge;
+ *  - Pi's replacement warning as a diagnostic, so a builtin that stepped aside
+ *    for an installed copy is explained instead of silently missing.
+ */
+describe("builtin:workflow in the hub", () => {
+  function builtinRow(overrides: Record<string, unknown> = {}) {
+    return {
+      path: "builtin:workflow",
+      resolvedPath: "builtin:workflow",
+      sourceInfo: {
+        path: "builtin:workflow",
+        source: "builtin",
+        scope: "user",
+        origin: "top-level",
+      },
+      hidden: true,
+      commands: new Map([["/workflow", { name: "workflow", description: "Workflow modes" }]]),
+      ...overrides,
+    };
+  }
+
+  function resolution() {
+    return resolveWorkflowBuiltin({
+      bundleDir: "C:/resources/extensions/workflow",
+      exists: () => true,
+      readFile: () =>
+        JSON.stringify({
+          schema: 1,
+          package: "@dieulc/workflow",
+          version: "0.13.0",
+          entry: "index.ts",
+          license: "MIT",
+          integrity: "sha512-abc=",
+          hostPeers: ["typebox"],
+          files: [{ path: "index.ts", sha256: "a".repeat(64) }],
+        }),
+    });
+  }
+
+  it("shows the loaded builtin with its pinned version and replacement policy", () => {
+    const snapshot = buildResourcesSnapshot(
+      baseInput({
+        builtin: resolution(),
+        source: {
+          extensions: { extensions: [builtinRow()], errors: [], warnings: [] },
+          skills: { skills: [], diagnostics: [] },
+          prompts: { prompts: [], diagnostics: [] },
+          themes: { themes: [], diagnostics: [] },
+        },
+      }),
+    );
+    const row = snapshot.resources.find((entry) => entry.overridePath === "builtin:workflow");
+    expect(row).toMatchObject({
+      kind: "extensions",
+      name: "workflow",
+      source: "builtin",
+      enabled: true,
+      hidden: true,
+      builtin: { name: "workflow", version: "0.13.0", source: "bundled", replaceable: true },
+    });
+    expect(row?.contributed?.[0]).toMatchObject({ kind: "command", name: "workflow" });
+  });
+
+  it("keeps the settings-disabled opt-out as a re-enableable builtin row", () => {
+    const snapshot = buildResourcesSnapshot(
+      baseInput({
+        builtin: resolution(),
+        settings: {
+          global: { extensions: ["-builtin:workflow"] },
+          project: {},
+        },
+        source: {
+          extensions: { extensions: [], errors: [], warnings: [] },
+          skills: { skills: [], diagnostics: [] },
+          prompts: { prompts: [], diagnostics: [] },
+          themes: { themes: [], diagnostics: [] },
+        },
+      }),
+    );
+    const row = snapshot.resources.find((entry) => entry.overridePath === "builtin:workflow");
+    expect(row).toMatchObject({
+      name: "workflow",
+      enabled: false,
+      override: "-builtin:workflow",
+      builtin: { name: "workflow", version: "0.13.0" },
+    });
+  });
+
+  it("surfaces Pi's replacement warning so a replaced builtin is explained", () => {
+    const message =
+      "Extension C:/profile/extensions/workflow/index.ts registers command `/workflow`, so built-in extension `workflow` was not loaded.";
+    const snapshot = buildResourcesSnapshot(
+      baseInput({
+        builtin: resolution(),
+        source: {
+          extensions: {
+            extensions: [extensionRecord({ path: "C:/profile/extensions/workflow/index.ts" })],
+            errors: [],
+            warnings: [{ path: "builtin:workflow", warning: message }],
+          },
+          skills: { skills: [], diagnostics: [] },
+          prompts: { prompts: [], diagnostics: [] },
+          themes: { themes: [], diagnostics: [] },
+        },
+      }),
+    );
+    expect(snapshot.diagnostics).toContainEqual({
+      type: "warning",
+      message,
+      path: "builtin:workflow",
+    });
+    // The installed copy is what loaded; the builtin row is absent, not invented.
+    expect(snapshot.resources.some((entry) => entry.overridePath === "builtin:workflow")).toBe(
+      false,
+    );
+  });
+
+  it("reports a missing staged bundle as a repair diagnostic, not silence", () => {
+    const missing = resolveWorkflowBuiltin({ bundleDir: null });
+    const snapshot = buildResourcesSnapshot(
+      baseInput({
+        builtin: missing,
+        source: {
+          extensions: { extensions: [], errors: [], warnings: [] },
+          skills: { skills: [], diagnostics: [] },
+          prompts: { prompts: [], diagnostics: [] },
+          themes: { themes: [], diagnostics: [] },
+        },
+      }),
+    );
+    expect(missing).toMatchObject({ registered: false, disabledBy: "missing-bundle" });
+    expect(snapshot.diagnostics).toContainEqual({
+      type: "error",
+      message:
+        "bundled Workflow is not loaded: no staged Workflow bundle was found for this install",
+      path: "builtin:workflow",
+    });
+    expect(snapshot.diagnostics).toContainEqual({
+      type: "warning",
+      message: `repair: ${missing.hint}`,
+      path: "builtin:workflow",
+    });
+    // Nothing is invented: there is no resource row for a bundle that is absent.
+    expect(snapshot.resources).toEqual([]);
+  });
+
+  it("reports a corrupt staged bundle with its own problem and repair hint", () => {
+    const invalid = resolveWorkflowBuiltin({
+      bundleDir: "C:/resources/extensions/workflow",
+      exists: () => true,
+      readFile: () => "{ not json",
+    });
+    const snapshot = buildResourcesSnapshot(
+      baseInput({
+        builtin: invalid,
+        source: {
+          extensions: { extensions: [], errors: [], warnings: [] },
+          skills: { skills: [], diagnostics: [] },
+          prompts: { prompts: [], diagnostics: [] },
+          themes: { themes: [], diagnostics: [] },
+        },
+      }),
+    );
+    expect(invalid.disabledBy).toBe("invalid-bundle");
+    expect(snapshot.diagnostics).toContainEqual({
+      type: "error",
+      message:
+        "bundled Workflow is not loaded: the staged Workflow copy has an invalid workflow-bundle.json",
+      path: "builtin:workflow",
+    });
+  });
+
+  it("adds no repair diagnostic for a loaded copy or for safe mode", () => {
+    const emptySource = {
+      extensions: { extensions: [builtinRow()], errors: [], warnings: [] },
+      skills: { skills: [], diagnostics: [] },
+      prompts: { prompts: [], diagnostics: [] },
+      themes: { themes: [], diagnostics: [] },
+    };
+    const loaded = buildResourcesSnapshot(
+      baseInput({ builtin: resolution(), source: emptySource }),
+    );
+    expect(loaded.diagnostics).toEqual([]);
+
+    const safe = buildResourcesSnapshot(
+      baseInput({ builtin: resolveWorkflowBuiltin({ safeMode: true }), source: emptySource }),
+    );
+    expect(safe.diagnostics).toEqual([]);
   });
 });

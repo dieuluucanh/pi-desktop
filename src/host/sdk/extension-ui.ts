@@ -38,7 +38,7 @@ import {
 import type { ExtensionTerminalInputHandler, ExtensionUiPort } from "../extension-ui";
 import type { ExtensionRendererPort } from "../extension-renderers";
 import type { TuiSurfacePort } from "../tui-surface";
-import { createSdkFooterData, createSdkTuiKeybindings } from "./tui-surface";
+import { createSdkFooterData, createSdkTuiKeybindings, type SdkFooterFacts } from "./tui-surface";
 
 /**
  * Pi installs the active theme on this well-known global symbol
@@ -361,6 +361,12 @@ export interface SdkExtensionBinderOptions {
   renderers?: ExtensionRendererPort | null;
   /** Reads the profile's `keybindings.json` overrides for the global manager. */
   readKeybindings?: () => Promise<Record<string, unknown>>;
+  /**
+   * Live facts for an extension `ctx.ui.setFooter()` component (row 28). Called
+   * once per bind; the previous source is disposed on a rebind so no watcher
+   * outlives the session it described.
+   */
+  footerFacts?: (session: AgentSession, runtime: AgentSessionRuntime) => SdkFooterFacts | undefined;
 }
 
 /**
@@ -370,6 +376,7 @@ export interface SdkExtensionBinderOptions {
 export function createSdkExtensionBinder(
   options: SdkExtensionBinderOptions,
 ): (session: AgentSession, runtime: AgentSessionRuntime) => Promise<void> {
+  let footerFacts: SdkFooterFacts | null = null;
   return async (session, runtime) => {
     // A rebind replaces the session's extensions: every registration from the
     // previous session (statuses, widgets, working state, title, footer/header/
@@ -392,6 +399,11 @@ export function createSdkExtensionBinder(
           }
         : null,
     });
+    // The previous bind's footer watcher must stop before a new session's
+    // footer is built; otherwise a stale branch poll keeps running unseen.
+    footerFacts?.dispose?.();
+    footerFacts = null;
+
     let surface: SdkUiSurface | null = null;
     if (options.tuiSurface) {
       // A rebind replaces the session's extensions, so the previous surface
@@ -399,10 +411,11 @@ export function createSdkExtensionBinder(
       // registration is cleared above and is never mounted anyway.
       options.tuiSurface.reset();
       const user = options.readKeybindings ? await options.readKeybindings().catch(() => ({})) : {};
+      footerFacts = options.footerFacts?.(session, runtime) ?? null;
       surface = {
         port: options.tuiSurface,
         keybindings: createSdkTuiKeybindings(user),
-        footerData: createSdkFooterData(options.port),
+        footerData: createSdkFooterData(options.port, footerFacts ?? undefined),
       };
     }
     // Extension-owned renderers (plan step 18) are re-pointed at the new

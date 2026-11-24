@@ -14,6 +14,9 @@ export default tseslint.config(
       "coverage/**",
       "node_modules/**",
       "resources/runtime/**",
+      // Staged Workflow bundle (gitignored build output copied verbatim from the
+      // W publisher); its sources are linted in that repository, not here.
+      "resources/extensions/**",
       "test-results/**",
       "playwright-report/**",
       ".pi/**",

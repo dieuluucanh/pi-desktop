@@ -36,6 +36,11 @@ import {
   type ContributionHost,
 } from "./contributions";
 import {
+  type ComposerTransformControlPort,
+  type ComposerTransformHost,
+} from "./composer-transform";
+import { COMPOSER_CONTROL_KIND as COMPOSER_CONTROL_CONTRIBUTION_KIND } from "../shared/composer-transform";
+import {
   createSessionHostBridge,
   type RelatedSessionOwner,
   type SessionHostBridge,
@@ -57,6 +62,7 @@ import {
   type KeybindingPort,
 } from "./keybindings";
 import { buildResourcesSnapshot } from "./resources";
+import type { WorkflowBuiltinResolution } from "./workflow-builtin";
 import type { FileListing } from "../workspace/file-listing";
 import type { WorkspaceReadResult } from "../workspace/workspace-files";
 import type { HostHandler } from "./service";
@@ -332,10 +338,33 @@ export interface SessionRuntimeRequest {
    */
   checkpointsExtensionPath?: string | null;
   /**
+   * The bundled Workflow copy as `builtin:workflow` (plan step 27). The runtime
+   * adapter turns a registered resolution into the loader's `extensionFactories`;
+   * the SDK then owns enable/disable (`-builtin:workflow`, trust, safe mode) and
+   * replacement by an installed copy.
+   */
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
+  /**
    * Sub-phase timings this request wants reported (2026-11-07 plan). Passed
    * through to the SDK adapter, which owns `services`/`scope`/`session`.
    */
   onPhase?: (phase: "services" | "scope" | "session", ms: number) => void;
+}
+
+/**
+ * The SDK-free ports the composition root needs to build the composer-transform
+ * host. Registrations and the command runner are getters because a rebind can
+ * replace the live extension runner.
+ */
+export interface ComposerTransformFactoryOptions {
+  bus?: ContributionBus | null;
+  controls: ComposerTransformControlPort;
+  registrations(): readonly unknown[];
+  commands(): CommandRunner | null;
+  binding(): { sessionId: string | null; epoch: number };
+  emit(event: string, payload?: unknown, sessionId?: string): void;
+  onError(error: unknown): void;
+  log(line: string): void;
 }
 
 export interface SessionCoreDeps {
@@ -347,6 +376,12 @@ export interface SessionCoreDeps {
   safeMode?: boolean;
   /** The bundled checkpoint extension (git-checkpoint plan step 24). Safe mode wins. */
   checkpointsExtensionPath?: string | null;
+  /**
+   * The bundled Workflow builtin (plan step 27), resolved once per host process.
+   * Used for the runtime request *and* for `resources.list`, so the Extensions
+   * hub reports the same copy/version the session registered.
+   */
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
   /** Creates the SDK runtime (see `src/host/sdk/index.ts`). */
   createRuntime(
     request: SessionRuntimeRequest,
@@ -402,6 +437,15 @@ export interface SessionCoreDeps {
    * snapshot, so a renderer never falls back to parsing extension status text.
    */
   createContributionBridge?(host: ContributionHost): ContributionBridge | null;
+  /**
+   * Composer-transform operation host (prompt-refinement row 14). The
+   * composition root supplies the SDK ports from `src/host/sdk/composer-transform.ts`;
+   * the core stays SDK-free. Absent means this host advertises no
+   * composer-transform capability and the renderer keeps the text fallback.
+   */
+  createComposerTransformHost?(
+    options: ComposerTransformFactoryOptions,
+  ): ComposerTransformHost | null;
   /**
    * Observes extension-driven model/thinking selections (workflow `/profile`,
    * role switches). Pi announces `model_select` only on the extension runner,
@@ -737,6 +781,103 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   };
 
   /**
+   * Composer-transform host (prompt-refinement row 14). Built lazily so a
+   * control/status call before the first session simply reports no capability,
+   * and rebuilt state is reset on every bind. The control port re-reads the
+   * contribution registry, so a renderer can never invent an owner, action or
+   * revision; the adapter re-resolves live command provenance.
+   */
+  let composerTransform: ComposerTransformHost | null | undefined;
+  const composerControls: ComposerTransformControlPort = {
+    resolve({ ownerId, controlId, contributionRevision }) {
+      const entry = contributionHost.entry(ownerId);
+      if (!entry) {
+        return {
+          ok: false,
+          error: { code: "foreign-action", message: `no contribution owner ${ownerId}` },
+        };
+      }
+      if (entry.revision !== contributionRevision) {
+        return {
+          ok: false,
+          error: {
+            code: "stale-revision",
+            message: `the published revision is ${entry.revision}, not ${contributionRevision}`,
+          },
+        };
+      }
+      const control = entry.contributions.find(
+        (contribution) =>
+          contribution.kind === COMPOSER_CONTROL_CONTRIBUTION_KIND && contribution.id === controlId,
+      );
+      if (!control || control.kind !== COMPOSER_CONTROL_CONTRIBUTION_KIND) {
+        return {
+          ok: false,
+          error: { code: "unresolved-action", message: `no composer control ${controlId}` },
+        };
+      }
+      const actions = entry.contributions.flatMap((contribution) =>
+        contribution.kind === "action"
+          ? [
+              {
+                ownerId,
+                id: contribution.id,
+                kind: contribution.kind,
+                label: contribution.label,
+                command: contribution.command,
+              },
+            ]
+          : [],
+      );
+      return { ok: true, control, actions };
+    },
+  };
+
+  const ensureComposerTransform = (): ComposerTransformHost | null => {
+    if (composerTransform !== undefined) return composerTransform;
+    if (!deps.createComposerTransformHost) {
+      composerTransform = null;
+      return null;
+    }
+    composerTransform = deps.createComposerTransformHost({
+      ...(deps.contributionBus ? { bus: deps.contributionBus } : {}),
+      controls: composerControls,
+      registrations: () => session?.extensionRunner?.getRegisteredCommands?.() ?? [],
+      commands: () => liveCommandRunner(),
+      binding: () => ({ sessionId: session?.sessionId ?? null, epoch: sessionEpoch }),
+      emit: (event, payload, eventSessionId) =>
+        deps.emit(event, payload, eventSessionId ?? session?.sessionId ?? undefined),
+      onError: (error) => recordRuntimeError(error),
+      log: (line) =>
+        deps.emit("composer_transform.diagnostic", { line }, session?.sessionId ?? undefined),
+    });
+    return composerTransform;
+  };
+
+  /**
+   * The four protocol methods stay reachable in every host. Without the SDK
+   * adapter they answer `not_implemented` honestly instead of disappearing from
+   * the allowlist.
+   */
+  const composerTransformHandlers = (): Partial<Record<HostMethod, HostHandler>> => {
+    const host = ensureComposerTransform();
+    if (host) return host.handlers();
+    const unavailable = (): never => {
+      throw new SessionCoreError(
+        "composer transform is not available in this host",
+        "not_implemented",
+      );
+    };
+    return {
+      "composer.transform": unavailable,
+      "composer.status": unavailable,
+      "composer.current": unavailable,
+      "composer.cancel": unavailable,
+      "composer.applied": unavailable,
+    };
+  };
+
+  /**
    * Rebind the contribution bridge for the session that is now live. A previous
    * generation is reset first, so a reload can never leave an actionable stale
    * button; `announce()` is what makes extensions publish at all.
@@ -753,10 +894,25 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     } catch {
       /* a gone renderer must not break a bind */
     }
+    // A rebind invalidates every composer operation/grant/listener from the
+    // previous session generation before the new one is announced. The host
+    // keeps its bounded settled receipts so a lost apply acknowledgement can
+    // still replay, but no old job or grant can deliver a cached result.
+    try {
+      ensureComposerTransform()?.invalidate("the session binding changed");
+    } catch {
+      /* best-effort teardown */
+    }
+    try {
+      ensureComposerTransform()?.reset();
+    } catch {
+      /* best-effort teardown */
+    }
     if (!deps.createContributionBridge) return;
     try {
       contributionBridge = deps.createContributionBridge(contributionHost);
       contributionBridge?.announce();
+      ensureComposerTransform()?.announce();
     } catch (error) {
       recordRuntimeError(error);
       contributionBridge = null;
@@ -1243,6 +1399,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       ...(deps.checkpointsExtensionPath
         ? { checkpointsExtensionPath: deps.checkpointsExtensionPath }
         : {}),
+      ...(deps.workflowBuiltin ? { workflowBuiltin: deps.workflowBuiltin } : {}),
       onPhase: recordOpenPhase,
     });
     runtime = created.runtime;
@@ -1568,6 +1725,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     // Generic extension contributions (orchestrator plan step 8): a renderer
     // reads one snapshot and runs an action by (owner, contribution id).
     ...contributionHost.handlers(),
+    // Source-bound composer operations (prompt-refinement row 14). The handlers
+    // are the frozen allowlist above; every one re-checks the live binding.
+    ...composerTransformHandlers(),
     // Main settles a host-forwarded related-session operation here. The bridge
     // is per bind; before the first bind there is nothing to settle.
     "sessionHost.result": (params) =>
@@ -1591,6 +1751,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
           themes: session?.resourceLoader?.getThemes?.(),
         },
         runtimeErrors,
+        ...(deps.workflowBuiltin ? { builtin: deps.workflowBuiltin } : {}),
         now: deps.now,
       }),
 
@@ -2366,6 +2527,12 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       contributionBridge = null;
       relatedBridge?.dispose();
       relatedBridge = null;
+      try {
+        composerTransform?.dispose();
+      } catch {
+        /* teardown is best-effort */
+      }
+      composerTransform = null;
       try {
         contributionHost.reset();
       } catch {

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { freemem, totalmem } from "node:os";
@@ -134,7 +134,7 @@ import {
   createStartupMetrics,
 } from "../shared/performance";
 import type { DiagnosticsSaveResult } from "../shared/ipc";
-import { resolveAppRuntime, type RuntimeResolution } from "./runtime";
+import { resolveAppRuntime, resolveWorkflowBundle, type RuntimeResolution } from "./runtime";
 import { rendererWindowOptions, sanitizeExternalUrl } from "./security";
 
 /**
@@ -247,6 +247,30 @@ const runtime: RuntimeResolution = resolveAppRuntime({
  * shared by both so the comparison is meaningful.
  */
 const hostBuildId = createHostBuildId(runtime.piHostPath);
+
+/**
+ * The staged Workflow artifact (plan step 27).
+ *
+ * Main is the only layer that knows the packaged/dev layout (`resources/extensions`
+ * vs `out/extensions`), so it resolves the copy **once** and hands the winner to
+ * every host as `PI_DESKTOP_WORKFLOW_BUNDLE_DIR`. Both the control host (the
+ * Extensions hub) and each session host then register the same named builtin.
+ * A missing/invalid stage is not repaired here: nothing is installed, copied or
+ * downloaded, and the hosts report why `builtin:workflow` is absent.
+ */
+const workflowBundle = resolveWorkflowBundle({
+  isPackaged: app.isPackaged,
+  resourcesPath: roots.resourcesDir,
+  appRoot: roots.appRoot,
+  env: process.env,
+  exists: existsSync,
+  readFile: (target) => readFileSync(target, "utf8"),
+});
+if (!workflowBundle.ok) {
+  console.warn(
+    `[pi-desktop] bundled Workflow unavailable: ${workflowBundle.problems.join("; ") || workflowBundle.hint}`,
+  );
+}
 
 /** Where the brand icons are (plan step 28): `resources/branding` or `assets/`. */
 const branding = resolveBranding({
@@ -426,9 +450,20 @@ const hosts = runtime.nodePath
       backupDir: join(paths.userData, "backups"),
       profileDir: paths.profileDir,
       ...(runtime.npmCliPath ? { npmCliPath: runtime.npmCliPath } : {}),
+      // The real Pi CLI child agents run (Workflow plan step 30). Never the host
+      // entry point: that one speaks this app's service protocol.
+      ...(runtime.piCliPath ? { piCliPath: runtime.piCliPath } : {}),
       // Safe mode (plan step 22): every host loads no third-party resources and
       // refuses package mutations.
       safeMode,
+      // The staged Workflow artifact (plan step 27) → `builtin:workflow` in every
+      // host, including the control host the Extensions hub uses.
+      ...(workflowBundle.ok ? { workflowBundleDir: workflowBundle.dir } : {}),
+      // The same resolved Workflow, injected into child CLI runs so their bash
+      // gate exists exactly once (Workflow plan step 30).
+      ...(workflowBundle.ok && workflowBundle.entryPath
+        ? { workflowBundleEntry: workflowBundle.entryPath }
+        : {}),
       // Install telemetry (plan step 23): off unless the user opted in.
       telemetryEnabled: () => telemetryEnabled,
       // The running host reports this id in `host.hello`; a later rebuild makes

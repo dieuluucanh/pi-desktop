@@ -14,6 +14,8 @@
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ResourceInspector, ResourceLoaderSource } from "../resources";
 import { SAFE_MODE_RESOURCE_LOADER_OPTIONS } from "../safe-mode";
+import type { WorkflowBuiltinResolution } from "../workflow-builtin";
+import { workflowBuiltinLoaderOptions } from "./workflow-builtin";
 
 export interface SdkResourceInspectorOptions {
   /** `~/.pi/agent`, resolved by the composition root. */
@@ -24,6 +26,12 @@ export interface SdkResourceInspectorOptions {
   isProjectTrusted?: (cwd: string) => boolean;
   /** Safe mode (plan step 22): the hub reports no third-party resources. */
   safeMode?: boolean;
+  /**
+   * The bundled Workflow copy as `builtin:workflow` (plan step 27). The hub must
+   * register the *same* named builtin a session runtime does, otherwise it would
+   * describe an extension the session never loaded (or miss one it did).
+   */
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
 }
 
 export function createSdkResourceInspector(
@@ -46,6 +54,10 @@ export function createSdkResourceInspector(
         agentDir: options.agentDir,
         settingsManager,
         ...(options.safeMode ? SAFE_MODE_RESOURCE_LOADER_OPTIONS : {}),
+        // Same named builtin as the session runtime (plan step 27). Safe mode is
+        // handled by `resolveWorkflowBuiltin` returning an unregistered copy, so
+        // no factory exists to run even though the option is spread here.
+        ...workflowBuiltinLoaderOptions(options.workflowBuiltin),
       });
       await loader.reload({
         // Answer from the app's store instead of prompting: the hub is not a

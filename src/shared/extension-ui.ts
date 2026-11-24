@@ -47,6 +47,15 @@ export interface ExtensionDialogRequest {
 
 /** Host event names the extension UI uses. */
 export const EXTENSION_UI_REQUEST_EVENT = "oi.request";
+/**
+ * Host → renderer: a visible dialog is no longer waiting for an answer.
+ *
+ * `oi.request` is fire-and-forget, so a dialog whose extension aborted its
+ * `opts.signal` (or whose session was replaced) used to stay on screen with a
+ * store timer as the only backstop. The host retracts it explicitly instead
+ * (2026-11-22 parity row 28). The payload is `{ id }`; unknown ids are ignored.
+ */
+export const EXTENSION_UI_CANCEL_EVENT = "oi.cancel";
 export const EXTENSION_UI_STATE_EVENT = "oi.state";
 export const EXTENSION_UI_NOTIFY_EVENT = "oi.notify";
 export const EXTENSION_UI_THEME_EVENT = "oi.theme";
@@ -116,6 +125,19 @@ export function parseExtensionDialogRequest(
   };
 }
 
+/**
+ * Parses an `oi.cancel` payload: the id of a dialog that no longer waits.
+ *
+ * Deliberately narrow — a malformed or oversized frame can only remove a known
+ * id, never create or answer anything.
+ */
+export function parseExtensionDialogCancel(payload: unknown): { id: string } | null {
+  const record = asRecord(payload);
+  const id = asString(record.id);
+  if (!id || id.length > 200) return null;
+  return { id };
+}
+
 /** Parses an `oi.notify` payload. */
 export function parseExtensionNotification(
   payload: unknown,
@@ -159,10 +181,18 @@ export interface ExtensionWorkingState {
 
 /** A host-issued edit of the composer buffer (`setEditorText` / `pasteToEditor`). */
 export interface ExtensionEditorCommand {
-  /** Monotonic per host: the renderer applies each seq exactly once. */
+  /** Monotonic *within one binding*: the renderer applies each seq once. */
   seq: number;
   /** The full text the composer should hold. */
   text: string;
+  /**
+   * The UI binding that minted `seq` (plan step 17). A session host mints a
+   * fresh value on every rebind and restarts `seq` from 1, so a comparison that
+   * ignored the binding would drop a new host's low sequence after an old
+   * host's high one. Absent means an older host: the renderer falls back to the
+   * per-tab sequence comparison and resets it on every lifecycle event.
+   */
+  binding?: string;
 }
 
 /**
@@ -255,7 +285,13 @@ export function sanitizeExtensionUiSnapshot(value: unknown): ExtensionUiSnapshot
         : 0,
     editor:
       typeof seq === "number" && Number.isFinite(seq) && typeof editor.text === "string"
-        ? { seq, text: editor.text }
+        ? {
+            seq,
+            text: editor.text,
+            ...(typeof editor.binding === "string" && editor.binding.length > 0
+              ? { binding: editor.binding }
+              : {}),
+          }
         : null,
   };
 }

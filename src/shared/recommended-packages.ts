@@ -8,6 +8,13 @@
  * plain npm source that the package manager must resolve, and a failure to
  * resolve surfaces on the card instead of installing something else silently.
  *
+ * **Workflow is deliberately absent.** The app ships the pinned artifact as
+ * `builtin:workflow` (plan step 27), so offering an npm install of the same
+ * extension would be a duplicate default that competes with the builtin. A user
+ * who deliberately wants the npm/git/profile copy can still install it from the
+ * package manager above; an installed copy then replaces the builtin through
+ * Pi's own `replaceable` rules. Nothing here installs or rewrites packages.
+ *
  * `tests/shared/recommended-packages.test.ts` pins the exact ordered id list, so
  * adding or removing an entry is always a deliberate edit in both places.
  *
@@ -55,15 +62,6 @@ export const RECOMMENDED_PACKAGES: readonly RecommendedPackage[] = [
     provides: "Office integration",
     verifiableInRepo: true,
     integration: true,
-  },
-  {
-    id: "dieulc-workflow",
-    name: "@dieulc/workflow",
-    source: "npm:@dieulc/workflow",
-    description:
-      "Plan, review and build workflows with a questionnaire and a decision gate rendered in the app.",
-    provides: "Plan/Review workflow",
-    verifiableInRepo: false,
   },
   {
     id: "plannotator",

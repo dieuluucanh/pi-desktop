@@ -20,6 +20,8 @@ import {
   hasTrustRequiringProjectResources,
 } from "@earendil-works/pi-coding-agent";
 import { checkpointExtensionLoaderOptions } from "../safe-mode";
+import { workflowBuiltinLoaderOptions } from "./workflow-builtin";
+import type { WorkflowBuiltinResolution } from "../workflow-builtin";
 import { resolveSessionScope } from "./model-scope";
 import type {
   AgentSession,
@@ -74,6 +76,12 @@ export type SessionRuntimeFactory = (options: {
    */
   checkpointsExtensionPath?: string | null;
   /**
+   * The bundled Workflow copy as `builtin:workflow` (plan step 27). The host
+   * composition root resolves it once per process from the staged directory main
+   * handed over, so a session and the Extensions hub register the same artifact.
+   */
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
+  /**
    * Reports the duration of the three sub-phases this adapter owns, so the host
    * can attribute an open to services (extensions), scope resolution or session
    * construction instead of one opaque number (2026-11-07 plan).
@@ -119,6 +127,11 @@ export const createSdkSessionRuntime: SessionRuntimeFactory = async (options) =>
           safeMode: options.safeMode,
           extensionPath: options.checkpointsExtensionPath,
         }),
+        // The bundled Workflow extension as a *named builtin* (plan step 27):
+        // disabled by `-builtin:workflow`/safe mode through the SDK's own rules,
+        // replaceable by an installed copy, and never forced in through
+        // `additionalExtensionPaths`. Empty in safe mode or without an artifact.
+        ...workflowBuiltinLoaderOptions(options.workflowBuiltin),
         ...(options.eventBus ? { eventBus: options.eventBus } : {}),
       },
     });
@@ -301,6 +314,15 @@ export {
   type SdkUiSurface,
 } from "./extension-ui";
 
+/** Composer-transform ports (prompt-refinement row 14): provenance + companion invocation. */
+export {
+  composerCommandRegistrations,
+  createSdkComposerTransformHost,
+  nodeComposerRandomBytes,
+  type SdkComposerTransformOptions,
+  type SdkComposerTransformRunner,
+} from "./composer-transform";
+
 /** The extension TUI surface (plan step 17): pi-tui helpers, keybindings, footer data. */
 export {
   createSdkFooterData,
@@ -308,5 +330,6 @@ export {
   createSdkTuiSurface,
   sdkEditorTheme,
   SDK_TUI_KIT,
+  type SdkFooterFacts,
   type SdkTuiSurfaceOptions,
 } from "./tui-surface";

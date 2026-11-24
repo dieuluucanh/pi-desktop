@@ -6,13 +6,14 @@ import { Composer } from "../../src/renderer/src/session/Composer";
 import { createCompletionProvider } from "../../src/renderer/src/completion/stack";
 import { createCommandProvider } from "../../src/renderer/src/completion/command-source";
 import { createFileProvider } from "../../src/renderer/src/completion/file-source";
-import type {
-  CompletionItem,
-  CompletionProvider,
-  CompletionProviderFactory,
-  CompletionResult,
-  CompletionSuggestions,
+import {
+  type CompletionItem,
+  type CompletionProvider,
+  type CompletionProviderFactory,
+  type CompletionResult,
+  type CompletionSuggestions,
 } from "../../src/renderer/src/completion/types";
+import type { ComposerSendDisposition } from "../../src/renderer/src/session/composer-send";
 
 /**
  * The completion overlay inside the composer (plan step 7): `/` opens a list,
@@ -56,7 +57,10 @@ function renderComposer(
     provider?: CompletionProvider;
     draft?: string;
     running?: boolean;
-    onSend?: (text: string, sendOptions?: { preferredSource?: string }) => Promise<boolean>;
+    onSend?: (
+      text: string,
+      sendOptions?: { preferredSource?: string },
+    ) => Promise<ComposerSendDisposition>;
     apply?: (
       item: CompletionItem,
       suggestions: CompletionSuggestions,
@@ -65,8 +69,11 @@ function renderComposer(
   } = {},
 ) {
   const onSend = vi.fn(
-    async (text: string, _images: unknown[], sendOptions?: { preferredSource?: string }) =>
-      options.onSend ? options.onSend(text, sendOptions) : true,
+    async (
+      text: string,
+      _images: readonly unknown[],
+      sendOptions?: { preferredSource?: string },
+    ) => (options.onSend ? options.onSend(text, sendOptions) : "sent"),
   );
   const onStop = vi.fn();
   const onDraftChange = vi.fn();

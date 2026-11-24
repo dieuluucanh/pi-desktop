@@ -23,6 +23,14 @@ import {
   type InputAvailability,
   type SessionRelation,
 } from "./extension-contributions";
+import {
+  COMPOSER_CONTROL_BEHAVIORS,
+  COMPOSER_CONTROL_ICONS,
+  COMPOSER_CONTROL_KIND,
+  COMPOSER_CONTROL_SLOT,
+  type ComposerControlBehavior,
+  type ComposerControlIcon,
+} from "./composer-transform";
 
 export const CONTRIBUTION_SNAPSHOT_VERSION = 1 as const;
 
@@ -43,14 +51,24 @@ export interface ContributionView {
   stale?: boolean;
   /** Input only. */
   availability?: InputAvailability;
-  /** Mode only: id of the same-owner action that activates this label. */
+  /** Mode/composer-control only: id of the same-owner action that activates this label. */
   actionRef?: string;
+  /** Composer-control only: same-owner action that starts the transform. */
+  transformActionRef?: string;
+  /** Composer-control only: presentation state (never a command). */
+  checked?: boolean;
+  icon?: ComposerControlIcon;
+  behavior?: ComposerControlBehavior;
   /** Related-session only. */
   relation?: SessionRelation;
   sessionRef?: string;
   focusable?: boolean;
-  /** Action command, when the contribution is actionable. */
-  command?: { name: string; args?: string };
+  /**
+   * Action command name, when the contribution is actionable. Renderer
+   * snapshots never carry `command.args`: the host re-resolves the live action
+   * (and its arguments) from its own registry before executing anything.
+   */
+  command?: { name: string };
   enabled: boolean;
   disabledReason?: string;
 }
@@ -121,7 +139,7 @@ function toView(ownerId: string, contribution: Contribution): ContributionView {
         ...base,
         text: contribution.label,
         ...(contribution.description === undefined ? {} : { detail: contribution.description }),
-        command: { ...contribution.command },
+        command: { name: contribution.command.name },
         enabled: contribution.enabled,
         ...(contribution.disabledReason === undefined
           ? {}
@@ -141,6 +159,21 @@ function toView(ownerId: string, contribution: Contribution): ContributionView {
         relation: contribution.relation,
         sessionRef: contribution.sessionRef,
         focusable: contribution.focusable,
+      };
+    case COMPOSER_CONTROL_KIND:
+      return {
+        ...base,
+        text: contribution.label,
+        ...(contribution.description === undefined ? {} : { detail: contribution.description }),
+        ...(contribution.icon === undefined ? {} : { icon: contribution.icon }),
+        ...(contribution.behavior === undefined ? {} : { behavior: contribution.behavior }),
+        checked: contribution.checked,
+        enabled: contribution.enabled,
+        ...(contribution.disabledReason === undefined
+          ? {}
+          : { disabledReason: contribution.disabledReason }),
+        actionRef: contribution.actionRef,
+        transformActionRef: contribution.transformActionRef,
       };
     default:
       return { ...base, text: "" };
@@ -231,7 +264,8 @@ export function sanitizeContributionSnapshot(value: unknown): ContributionSnapsh
         kind !== "status" &&
         kind !== "action" &&
         kind !== "input" &&
-        kind !== "related-session"
+        kind !== "related-session" &&
+        kind !== COMPOSER_CONTROL_KIND
       ) {
         continue;
       }
@@ -240,6 +274,9 @@ export function sanitizeContributionSnapshot(value: unknown): ContributionSnapsh
       // A mode action reference is an id, never a command: the host resolves the
       // live action (and refuses a missing/other-owner one) at run time.
       const actionRef = asString(entry.actionRef, 96);
+      const transformActionRef = asString(entry.transformActionRef, 96);
+      const icon = asString(entry.icon, 24);
+      const behavior = asString(entry.behavior, 24);
       const availability = asAvailability(entry.availability);
       const relation = asRelation(entry.relation);
       const sessionRef = asString(entry.sessionRef, 400);
@@ -254,7 +291,22 @@ export function sanitizeContributionSnapshot(value: unknown): ContributionSnapsh
         ...(asString(entry.detail, 1_200) === undefined
           ? {}
           : { detail: asString(entry.detail, 1_200) as string }),
-        ...(kind === "mode" && actionRef !== undefined ? { actionRef } : {}),
+        ...((kind === "mode" || kind === COMPOSER_CONTROL_KIND) && actionRef !== undefined
+          ? { actionRef }
+          : {}),
+        ...(kind !== COMPOSER_CONTROL_KIND
+          ? {}
+          : {
+              ...(transformActionRef === undefined ? {} : { transformActionRef }),
+              checked: entry.checked === true,
+              ...(icon !== undefined && (COMPOSER_CONTROL_ICONS as readonly string[]).includes(icon)
+                ? { icon: icon as ComposerControlIcon }
+                : {}),
+              ...(behavior !== undefined &&
+              (COMPOSER_CONTROL_BEHAVIORS as readonly string[]).includes(behavior)
+                ? { behavior: behavior as ComposerControlBehavior }
+                : {}),
+            }),
         ...(typeof entry.done === "number" ? { done: entry.done } : {}),
         ...(typeof entry.total === "number" ? { total: entry.total } : {}),
         ...(entry.stale === true ? { stale: true } : {}),
@@ -338,6 +390,12 @@ export interface ContributionBarModel {
   actions: ContributionView[];
   inputs: ContributionView[];
   sessions: ContributionView[];
+  /**
+   * Additive `composer-control` contributions, renderer-safe (no command, no
+   * operation metadata). The composer-actions row renders these; an older
+   * Desktop simply never receives the kind.
+   */
+  composerControls: ContributionView[];
 }
 
 const SLOT_RANK: Record<ContributionSlot, number> = {
@@ -347,6 +405,9 @@ const SLOT_RANK: Record<ContributionSlot, number> = {
   action: 3,
   input: 4,
   sessions: 5,
+  // Composer controls are projected by the composer-actions row in step 16;
+  // the ordinary contribution bar does not render them.
+  "composer-actions": 6,
 };
 
 /** Stable, owner-independent presentation order (slot, order, owner, id). */
@@ -408,6 +469,7 @@ export function buildContributionBar(snapshot: ContributionSnapshot): Contributi
     actions,
     inputs: ordered.filter((entry) => entry.slot === "input"),
     sessions: ordered.filter((entry) => entry.slot === "sessions"),
+    composerControls: ordered.filter((entry) => entry.slot === COMPOSER_CONTROL_SLOT),
   };
 }
 

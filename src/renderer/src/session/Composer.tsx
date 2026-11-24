@@ -4,6 +4,9 @@ import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
 import { PROMPT_MAX_HEIGHT_PX, useAutoGrowTextarea } from "../ui/auto-grow";
 import { fileToAttachment, isImageFile, type ImageAttachment } from "./image-attachment";
+import { NO_ATTACHMENTS } from "./composer-draft";
+import type { ComposerCaretRequest } from "./composer-draft-operation";
+import { composerSendConsumesDraft, type ComposerSendDisposition } from "./composer-send";
 import { lostPasteIds, shouldCollapsePaste } from "./paste-markers";
 import { atHistoryEdge, type PromptHistoryStep } from "./prompt-history";
 import { textareaVisualLines } from "./textarea-visual-lines";
@@ -24,6 +27,8 @@ import {
   DEFAULT_MODE_CONTROL_WIDTH_PX,
   MAX_MODE_CONTROL_WIDTH_PX,
 } from "./ComposerModeControl";
+import { ComposerControls } from "./ComposerControls";
+import type { ComposerControlDescriptor } from "../../../shared/composer-operation";
 import type { TranscriptQueue } from "./session-events";
 import { CompletionOverlay } from "../completion/CompletionOverlay";
 import { matchShortcut } from "../shortcuts/dom-keys";
@@ -70,14 +75,20 @@ export interface ComposerProps {
   onWake?: () => void;
   /** Incremented by the view to put the caret in the composer (transcript click). */
   focusToken?: number;
+  /**
+   * A caret/focus request minted by a successful draft apply (plan step 19).
+   * The token makes it one-shot; `text` guards against placing the caret in a
+   * different draft (a newer edit, or a remount after another change).
+   */
+  caretRequest?: ComposerCaretRequest | null;
   draft: string;
   queue: TranscriptQueue;
   onDraftChange: (text: string) => void;
   onSend: (
     text: string,
-    images: ImageAttachment[],
+    images: readonly ImageAttachment[],
     options?: { preferredSource?: CompletionSource; followUp?: boolean },
-  ) => Promise<boolean>;
+  ) => Promise<ComposerSendDisposition>;
   onStop: () => void;
   /**
    * Escape while a run is streaming (plan step 23). Terminal Pi gives the key
@@ -143,6 +154,24 @@ export interface ComposerProps {
    * composer itself stays presentational: the view owns the pickers.
    */
   toolsSlot?: React.ReactNode;
+  /**
+   * Generic composer controls (2026-11-22 prompt-refinement plan step 21).
+   * Already projected and sanitized: this component renders labels, checked
+   * state, the allowlisted icon, disabled reasons and pending state, never an
+   * extension name or a raw command. The view (or the store projection) owns
+   * the descriptors; the composer only places the row at the bottom right. An
+   * older host that publishes no `composer-control` kind passes nothing and the
+   * row is absent.
+   */
+  composerControls?: readonly ComposerControlDescriptor[];
+  /** Keys of the controls armed right now (published `checked` + local). */
+  composerControlArmedKeys?: readonly string[];
+  /** True while an operation started from those controls is active. */
+  composerControlBusy?: boolean;
+  /** Derived conflict explanation (multiple armed, withdrawn publisher, …). */
+  composerControlConflict?: string | null;
+  /** Runs a control's same-owner toggle action through the host. */
+  onActivateComposerControl?: (control: ComposerControlDescriptor) => Promise<boolean> | boolean;
 }
 
 /** What the composer needs from the completion engine (plan step 7). */
@@ -276,6 +305,7 @@ export function Composer({
   sleeping = false,
   onWake,
   focusToken = 0,
+  caretRequest = null,
   draft,
   queue,
   contributionMode = null,
@@ -299,13 +329,28 @@ export function Composer({
   completion,
   completionSlot,
   toolsSlot,
+  composerControls = [],
+  composerControlArmedKeys = [],
+  composerControlBusy = false,
+  composerControlConflict = null,
+  onActivateComposerControl,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // The prompt grows with its content up to a fixed cap, then scrolls. A manual
   // resize would be overwritten by the next keystroke, so the handle is gone.
   useAutoGrowTextarea(textareaRef, draft, PROMPT_MAX_HEIGHT_PX);
-  const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
+  // Attachments are tab state, not component state (2026-11-22 prompt-refinement
+  // plan step 18): a docked dialog, a remount or a pane move replaces this
+  // component, and a locally owned image used to disappear with it. The store
+  // record keeps the attachment objects (bytes included) in renderer memory
+  // only; nothing here is persisted to `app-state.json`.
+  const draftRecord = useAppStore((state) => state.composerDrafts[tabId]);
+  const attachments = draftRecord?.attachments ?? NO_ATTACHMENTS;
+  const addDraftImages = useAppStore((state) => state.addDraftImages);
+  const removeDraftImage = useAppStore((state) => state.removeDraftImage);
+  const clearDraftImages = useAppStore((state) => state.clearDraftImages);
+  const setDraftSelection = useAppStore((state) => state.setDraftSelection);
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [suggestions, setSuggestions] = useState<CompletionSuggestions | null>(null);
@@ -371,15 +416,21 @@ export function Composer({
    * readout. One source of truth: the offset the providers see is the offset
    * the user sees.
    */
-  const syncCaret = useCallback((node: HTMLTextAreaElement | null) => {
-    if (!node) return;
-    const offset = node.selectionStart ?? 0;
-    caretRef.current = offset;
-    const next = caretPosition(node.value, offset);
-    setCaret((previous) =>
-      previous.line === next.line && previous.column === next.column ? previous : next,
-    );
-  }, []);
+  const syncCaret = useCallback(
+    (node: HTMLTextAreaElement | null) => {
+      if (!node) return;
+      const offset = node.selectionStart ?? 0;
+      caretRef.current = offset;
+      // Selection is tracked separately from the content revision: moving the
+      // caret must not invalidate a snapshot (plan step 18).
+      setDraftSelection(tabId, { start: offset, end: node.selectionEnd ?? offset });
+      const next = caretPosition(node.value, offset);
+      setCaret((previous) =>
+        previous.line === next.line && previous.column === next.column ? previous : next,
+      );
+    },
+    [setDraftSelection, tabId],
+  );
 
   const refreshCompletion = useCallback(
     (force: boolean) => {
@@ -485,6 +536,24 @@ export function Composer({
     applyPendingCaret();
   }, [draft, applyPendingCaret]);
 
+  // A successful draft apply replaces the text from outside the textarea and
+  // hands focus back to the composer (plan step 19). The token makes the
+  // request one-shot and the text guard means a newer edit wins: the caret is
+  // only placed when the DOM carries exactly the applied draft.
+  const caretRequestTokenRef = useRef(0);
+  useEffect(() => {
+    if (!caretRequest || caretRequest.token <= caretRequestTokenRef.current) return;
+    const node = textareaRef.current;
+    if (!node || node.disabled || node.value !== caretRequest.text) return;
+    caretRequestTokenRef.current = caretRequest.token;
+    const caret = Math.max(0, Math.min(caretRequest.caret, node.value.length));
+    node.focus();
+    node.setSelectionRange(caret, caret);
+    caretRef.current = caret;
+    setCaret(caretPosition(node.value, caret));
+    setDraftSelection(tabId, { start: caret, end: caret });
+  }, [caretRequest, draft, setDraftSelection, tabId]);
+
   // Clicking the transcript background is an explicit "talk to this session"
   // gesture; the view increments the token instead of reaching into the DOM.
   useEffect(() => {
@@ -499,42 +568,52 @@ export function Composer({
    * remote apply is awaited, and sending the old text would lose the fill.
    */
   const submitText = useCallback(
-    async (text: string, source?: CompletionSource, followUp?: boolean): Promise<boolean> => {
-      if (!enabled || busy) return false;
-      if (text.trim().length === 0 && attachments.length === 0) return false;
+    async (
+      text: string,
+      source?: CompletionSource,
+      followUp?: boolean,
+    ): Promise<ComposerSendDisposition> => {
+      if (!enabled || busy) return "refused";
+      if (text.trim().length === 0 && attachments.length === 0) return "refused";
       setBusy(true);
       try {
-        const sent = await onSend(text, attachments, {
+        const disposition = await onSend(text, attachments, {
           ...(source ? { preferredSource: source } : {}),
           ...(followUp ? { followUp: true } : {}),
         });
-        if (sent) {
-          setAttachments([]);
+        // Only a real send or a consumed command follows the existing clear
+        // rules. A transformation keeps text/attachments until its CAS apply;
+        // a refusal preserves them by definition (plan step 20).
+        if (composerSendConsumesDraft(disposition)) {
+          clearDraftImages(tabId);
           setPickedSource(undefined);
           closeCompletion();
         }
-        return sent;
+        return disposition;
       } finally {
         setBusy(false);
       }
     },
-    [attachments, busy, closeCompletion, enabled, onSend],
+    [attachments, busy, clearDraftImages, closeCompletion, enabled, onSend, tabId],
   );
 
-  const submit = useCallback(async () => {
-    await submitText(draft, pickedSource);
+  const submit = useCallback(async (): Promise<ComposerSendDisposition> => {
+    return submitText(draft, pickedSource);
   }, [draft, pickedSource, submitText]);
 
-  const addFiles = useCallback(async (files: readonly File[]) => {
-    const images = files.filter((file) => isImageFile(file));
-    if (images.length === 0) return;
-    const added: ImageAttachment[] = [];
-    for (const file of images) {
-      const attachment = await fileToAttachment(file);
-      if (attachment) added.push(attachment);
-    }
-    if (added.length > 0) setAttachments((current) => [...current, ...added]);
-  }, []);
+  const addFiles = useCallback(
+    async (files: readonly File[]) => {
+      const images = files.filter((file) => isImageFile(file));
+      if (images.length === 0) return;
+      const added: ImageAttachment[] = [];
+      for (const file of images) {
+        const attachment = await fileToAttachment(file);
+        if (attachment) added.push(attachment);
+      }
+      if (added.length > 0) addDraftImages(tabId, added);
+    },
+    [addDraftImages, tabId],
+  );
 
   const insertMention = useCallback(
     (path: string, kind: WorkspaceEntryKind): boolean => {
@@ -626,10 +705,7 @@ export function Composer({
         <PendingQueue queue={queue} onRestore={onRestoreQueue} onClear={onClearQueue} />
       ) : null}
       {attachments.length > 0 ? (
-        <AttachmentChips
-          attachments={attachments}
-          onRemove={(id) => setAttachments((current) => current.filter((entry) => entry.id !== id))}
-        />
+        <AttachmentChips attachments={attachments} onRemove={(id) => removeDraftImage(tabId, id)} />
       ) : null}
 
       {completionSlot}
@@ -941,10 +1017,25 @@ export function Composer({
             </div>
           ) : null}
           <div className="mt-auto flex h-7 items-center gap-1">
+            {/* Bottom-right generic controls. The row shrinks and scrolls
+                horizontally (`min-w-0 flex-1 overflow-x-auto`) so a verbose
+                publisher can never push Send/Stop off a narrow composer; the
+                action buttons below stay `shrink-0`. */}
+            {composerControls.length > 0 ? (
+              <ComposerControls
+                className="min-w-0 flex-1"
+                controls={composerControls}
+                armedKeys={composerControlArmedKeys}
+                busy={composerControlBusy}
+                conflictMessage={composerControlConflict}
+                onActivate={(control) => onActivateComposerControl?.(control) ?? false}
+              />
+            ) : null}
             <Button
               size="icon-md"
               variant="primary"
               aria-label="Send"
+              className="shrink-0"
               disabled={!enabled || busy}
               onClick={() => void submit()}
               title={running ? "Enter steers · Alt+Enter queues a follow-up" : "Enter"}
@@ -956,6 +1047,7 @@ export function Composer({
                 size="icon-md"
                 variant="danger"
                 aria-label="Stop"
+                className="shrink-0"
                 onClick={onStop}
                 title="Esc"
               >
@@ -965,6 +1057,7 @@ export function Composer({
             <Button
               size="icon-md"
               variant="ghost"
+              className="shrink-0"
               aria-label="Attach image"
               title="Attach image"
               onClick={() => fileInputRef.current?.click()}

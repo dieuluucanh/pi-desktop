@@ -73,6 +73,20 @@ export interface HostCapabilities {
   checkpointsExtension: boolean;
   /** Which copy was found: a profile clone, npm package, or the app bundle. */
   checkpointExtensionSource?: "profile" | "package" | "bundled" | null;
+  /**
+   * The bundled Workflow copy as `builtin:workflow` (plan step 27). `registered`
+   * says the loader was given the factory; whether it actually loaded depends on
+   * the user's `-builtin:workflow`, project trust and installed replacements, so
+   * the Extensions hub is the authority for the loaded state.
+   */
+  workflowBuiltin?: {
+    registered: boolean;
+    version: string | null;
+    source: "bundled" | null;
+    replaceable: boolean;
+    path: string;
+    disabledBy: "safe-mode" | "missing-bundle" | "invalid-bundle" | null;
+  };
 }
 
 export interface HostServiceOptions {

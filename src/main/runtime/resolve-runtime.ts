@@ -5,6 +5,7 @@ import {
   nodeBinaryRelativePath,
   npmCliRelativePath,
   parseNodeVersion,
+  piCliRelativePath,
   joinPathEntries,
   runtimeTarget,
   type RuntimeSource,
@@ -55,6 +56,14 @@ export interface RuntimeResolution {
   npmCommand: string[] | null;
   /** The `out/host/index.mjs` bundle the shims and the supervisor execute. */
   piHostPath: string;
+  /**
+   * The SDK's real Pi CLI (`dist/bundle/cli.js`), or null when it is missing.
+   *
+   * Child agents must run this, not {@link piHostPath}: the host entry point in a
+   * Pi Desktop process is a service (JSONL stdin) and would never answer a
+   * `--mode json -p` invocation. Hosts receive it as `PI_SUBAGENT_PI_CLI`.
+   */
+  piCliPath: string | null;
   /** The `out/host/terminal.mjs` bundle the PTY supervisor executes. */
   terminalHostPath: string;
   problems: string[];
@@ -84,6 +93,22 @@ function resolveHostEntry(env: RuntimeEnvironment): string {
   return env.isPackaged
     ? join(env.resourcesPath, "app.asar.unpacked", "out", "host", "index.mjs")
     : join(env.appRoot, "out", "host", "index.mjs");
+}
+
+/**
+ * The real Pi CLI the app runs for child agents (plan step 30).
+ *
+ * `PI_DESKTOP_PI_CLI` is an explicit override; otherwise it is the SDK's own
+ * bundle inside `node_modules`, which the packaged app ships unpacked (the host
+ * runs under the bundled Node, which has no asar support).
+ */
+function resolvePiCli(env: RuntimeEnvironment): { path: string; exists: boolean } {
+  const override = env.env.PI_DESKTOP_PI_CLI?.trim();
+  if (override) return { path: override, exists: true };
+  const path = env.isPackaged
+    ? join(env.resourcesPath, "app.asar.unpacked", piCliRelativePath())
+    : join(env.appRoot, piCliRelativePath());
+  return { path, exists: env.exists(path) };
 }
 
 /**
@@ -160,7 +185,14 @@ export function resolveRuntime(env: RuntimeEnvironment): RuntimeResolution {
   const nodeDir = join(runtimeDir, "node", target);
   const piHostPath = resolveHostEntry(env);
   const terminalHostPath = resolveTerminalEntry(env);
+  const piCli = resolvePiCli(env);
   const problems: string[] = [];
+  const piCliPath = piCli.exists ? piCli.path : null;
+  if (!piCli.exists) {
+    problems.push(
+      `no Pi CLI for child agents at ${piCli.path}; explore/review subagents will refuse to start`,
+    );
+  }
 
   let selected: Candidate | null = null;
   let selectedVersion: string | null = null;
@@ -200,6 +232,7 @@ export function resolveRuntime(env: RuntimeEnvironment): RuntimeResolution {
       npmCliPath: null,
       npmCommand: null,
       piHostPath,
+      piCliPath,
       terminalHostPath,
       problems,
       hint: "Run `npm run runtime:fetch` to install the bundled Node runtime (add --force to repair an existing one).",
@@ -233,6 +266,7 @@ export function resolveRuntime(env: RuntimeEnvironment): RuntimeResolution {
     npmCliPath: selected.npmCliPath,
     npmCommand: selected.npmCommand,
     piHostPath,
+    piCliPath,
     terminalHostPath,
     problems,
     hint: null,
@@ -257,6 +291,7 @@ export function runtimeEnvOverrides(
   const overrides: Record<string, string> = {
     PI_DESKTOP_HOST_ENTRY: resolution.piHostPath,
     PI_DESKTOP_TERMINAL_ENTRY: resolution.terminalHostPath,
+    ...(resolution.piCliPath ? { PI_DESKTOP_PI_CLI: resolution.piCliPath } : {}),
     PATH: joinPathEntries(
       [resolution.binDir, resolution.nodeBinDir, input.basePath],
       input.platform,

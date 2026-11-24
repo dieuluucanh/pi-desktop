@@ -84,6 +84,14 @@ export interface ContributionHost {
   receive(payload: unknown): { accepted: boolean; reason?: string };
   /** Merged snapshot for the current session. */
   snapshot(): ContributionSnapshot;
+  /**
+   * Raw owner state for host-internal resolvers (never sent to the renderer).
+   * Used by the composer-transform host to re-check same-owner references and
+   * the published revision without trusting a renderer-supplied owner.
+   */
+  entry(
+    ownerId: string,
+  ): { revision: number; epoch: number; contributions: Contribution[] } | undefined;
   /** Runs an action after re-validating that the host still offers it. */
   runAction(ownerId: string, contributionId: string): Promise<{ ran: boolean; error?: string }>;
   reset(): void;
@@ -182,6 +190,16 @@ export function createContributionHost(options: ContributionHostOptions): Contri
     },
 
     snapshot,
+
+    entry(ownerId) {
+      const entry = registry.get(ownerId);
+      if (!entry) return undefined;
+      return {
+        revision: entry.revision,
+        epoch: entry.epoch,
+        contributions: [...entry.contributions.values()],
+      };
+    },
 
     async runAction(ownerId, contributionId) {
       const entry = registry.get(ownerId);

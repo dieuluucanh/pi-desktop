@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Cpu } from "lucide-react";
 import { Composer } from "../session/Composer";
+import { ComposerOperationPanel } from "../session/ComposerOperationPanel";
 import { ContributionsBar } from "../session/ContributionsBar";
 import { RelatedSessionsBar } from "../session/RelatedSessionsBar";
 import { StartingBanner } from "../session/StartingBanner";
@@ -17,7 +18,7 @@ import { WorkingRow } from "../extension-ui/WorkingRow";
 import { RunStatusRow } from "../session/RunStatusRow";
 import { TuiCellProbe, TuiSlotFrame, TuiSurface } from "../tui/TuiSurface";
 import { TuiWidgetStrip, TuiWidgetInline } from "../tui/TuiWidgetStrip";
-import { splitSingleLineFrames } from "../../../shared/tui-surface";
+import { splitSingleLineFrames, type TuiSurfaceLayer } from "../../../shared/tui-surface";
 import { isDockedOverlay } from "../tui/tui-geometry";
 import { useTuiViewport } from "../tui/use-tui-viewport";
 import { createCommandProvider } from "../completion/command-source";
@@ -41,6 +42,12 @@ import {
   contributionInputLocked,
   EMPTY_CONTRIBUTION_SNAPSHOT,
 } from "../../../shared/extension-contributions-view";
+import {
+  EMPTY_COMPOSER_TAB_OPERATION_STATE,
+  deriveComposerOperation,
+  projectComposerControls,
+} from "../../../shared/composer-operation";
+import { composerControlKey } from "../session/composer-controls-model";
 import { isLoopbackUrl } from "../../../shared/web-tabs";
 
 /**
@@ -119,7 +126,27 @@ export function SessionView({ tabId }: { tabId: string }) {
   const contributionMode = contributionBar.mode;
   const contributionModeAction = contributionBar.modeAction;
   const inputLocked = contributionInputLocked(contributionSnapshot);
+  // Generic composer controls (2026-11-22 prompt-refinement plan step 21). The
+  // projection is never stored: a withdrawn or republished control is seen on
+  // the next render, and a disabled one still renders its reason. Arming comes
+  // from the typed operation state, never from a status string.
+  const composerOperationRecord = useAppStore((state) => state.composerOperations[tabId]);
+  const composerControlProjection = useMemo(
+    () => projectComposerControls(contributionSnapshot),
+    [contributionSnapshot],
+  );
+  const composerOperation = useMemo(
+    () =>
+      deriveComposerOperation({
+        ...(composerOperationRecord ?? EMPTY_COMPOSER_TAB_OPERATION_STATE),
+        projection: composerControlProjection,
+      }),
+    [composerOperationRecord, composerControlProjection],
+  );
   const activateTab = useAppStore((state) => state.activateTab);
+  const cancelComposerOperation = useAppStore((state) => state.cancelComposerOperation);
+  const composerOperationOwnsStop = useAppStore((state) => state.composerOperationOwnsStop);
+  const replaceComposerCandidate = useAppStore((state) => state.replaceComposerCandidate);
   const clearQueue = useAppStore((state) => state.clearQueue);
   const restoreQueue = useAppStore((state) => state.restoreQueue);
   const setDraft = useAppStore((state) => state.setDraft);
@@ -177,6 +204,8 @@ export function SessionView({ tabId }: { tabId: string }) {
   const loadShortcuts = useAppStore((state) => state.loadShortcuts);
   const invokeShortcut = useAppStore((state) => state.invokeShortcut);
   const tuiSurface = useAppStore((state) => state.tuiSurfaces[tabId]);
+  // A successful draft apply asks the composer for focus/caret (plan step 19).
+  const composerCaretRequest = useAppStore((state) => state.composerCaretRequests[tabId]);
   // Only the count drove a section header; the strip's badges now come from the
   // snapshot and the checkpoint store directly.
   const [composerFocusToken, setComposerFocusToken] = useState(0);
@@ -343,11 +372,35 @@ export function SessionView({ tabId }: { tabId: string }) {
   // full-width overlay (the workflow questionnaire) is a bottom sheet, so it is
   // docked in flow as well: the transcript shrinks and stays scrollable instead
   // of being covered by a popup. Any other overlay floats inside this column.
-  const dockedOverlay = Boolean(
-    tuiSurface?.custom && tuiSurface.overlay && isDockedOverlay(tuiSurface.bounds, viewport),
-  );
-  const tuiOwnsComposer = Boolean(tuiSurface?.custom && (!tuiSurface.overlay || dockedOverlay));
-  const floatingOverlay = Boolean(tuiSurface?.custom && tuiSurface.overlay && !dockedOverlay);
+  // Every mounted extension surface, bottom-to-top. A host that predates the
+  // stack still sends only `custom`; the legacy view falls back to it so an old
+  // host keeps rendering exactly one surface (2026-11-22 parity row 28).
+  const surfaceLayers: TuiSurfaceLayer[] =
+    tuiSurface && tuiSurface.layers.length > 0
+      ? tuiSurface.layers
+      : tuiSurface?.custom
+        ? [
+            {
+              id: "legacy",
+              overlay: tuiSurface.overlay,
+              bounds: tuiSurface.bounds,
+              focused: tuiSurface.focus === "custom",
+              frame: tuiSurface.custom,
+            },
+          ]
+        : [];
+  const topSurfaceLayer = surfaceLayers.at(-1) ?? null;
+  // A bottom sheet is docked in flow; a base (non-overlay) custom is docked
+  // underneath a floating overlay. Only the docked layer takes the composer.
+  const dockLayer =
+    topSurfaceLayer &&
+    (!topSurfaceLayer.overlay || isDockedOverlay(topSurfaceLayer.bounds, viewport))
+      ? topSurfaceLayer
+      : (surfaceLayers.find((layer) => !layer.overlay) ?? null);
+  const floatLayers = surfaceLayers.filter((layer) => layer !== dockLayer && layer.overlay);
+  const tuiOwnsComposer = dockLayer !== null;
+  const floatingOverlay = floatLayers.length > 0;
+  const paneFocused = active.id === focusedTabId;
   // A docked/float surface owns the keyboard while it is up. Clicking the
   // transcript must give the keys back to it, never to the hidden (or inert)
   // composer — otherwise Tab/arrow keys silently stop reaching the extension.
@@ -583,23 +636,40 @@ export function SessionView({ tabId }: { tabId: string }) {
               focusToken={surfaceFocusToken}
               active={active.id === focusedTabId}
             />
-          ) : tuiOwnsComposer && tuiSurface ? (
+          ) : tuiOwnsComposer && tuiSurface && dockLayer ? (
             <TuiSurface
               tabId={active.id}
               snapshot={tuiSurface}
+              layer={dockLayer}
               cell={viewport.cell}
               grid={{ rows: viewport.rows, cols: viewport.cols }}
               variant="dock"
               focusToken={surfaceFocusToken}
+              active={paneFocused}
             />
           ) : (
             <div className="contents" inert={floatingOverlay || undefined}>
+              <ComposerOperationPanel
+                operation={composerOperation}
+                onCancel={() => void cancelComposerOperation(active.id)}
+                onReplace={() =>
+                  void replaceComposerCandidate(active.id).then((outcome) => {
+                    if (!outcome || outcome.status === "applied") return;
+                    setHint(
+                      outcome.reason === "stale-base"
+                        ? "Your draft changed again — review it and replace once more if you still want the refined text."
+                        : "The refined prompt could not replace the draft; it is still available to view and copy.",
+                    );
+                  })
+                }
+              />
               <Composer
                 tabId={active.id}
                 running={active.status === "running"}
                 enabled={active.status !== "crashed" && active.status !== "failed"}
                 sleeping={active.status === "stopped"}
                 focusToken={composerFocusToken}
+                caretRequest={composerCaretRequest ?? null}
                 onWake={() => void ensureSession(active.id)}
                 toolsSlot={
                   <>
@@ -645,6 +715,34 @@ export function SessionView({ tabId }: { tabId: string }) {
                 contributionMode={contributionMode}
                 contributionModeAction={contributionModeAction}
                 onRunContributionMode={(ownerId, id) => runContributionAction(tabId, ownerId, id)}
+                composerControls={composerControlProjection.controls}
+                composerControlArmedKeys={composerOperation.armed.map((control) =>
+                  composerControlKey(control),
+                )}
+                composerControlBusy={
+                  composerOperation.isRunning ||
+                  composerOperation.isAwaitingInput ||
+                  composerOperation.hasCandidate
+                }
+                composerControlConflict={
+                  composerOperation.isConflict
+                    ? (composerOperation.conflict?.message ?? null)
+                    : null
+                }
+                onActivateComposerControl={async (control) => {
+                  // Explicit toggle-off cancels/disarms (parity plan row 22): a
+                  // live refinement is stopped first so the arm cannot flip off
+                  // while the host keeps working. Other cancellation (Esc) leaves
+                  // the toggle armed for a retry.
+                  const key = composerControlKey(control);
+                  const armedNow = composerOperation.armed.some(
+                    (entry) => composerControlKey(entry) === key,
+                  );
+                  if (armedNow && composerOperationOwnsStop(tabId)) {
+                    await cancelComposerOperation(tabId);
+                  }
+                  return runContributionAction(tabId, control.ownerId, control.actionRef);
+                }}
                 inputLocked={inputLocked}
                 extensionShortcuts={shortcutState?.shortcuts.shortcuts ?? []}
                 onInvokeShortcut={(key) => void invokeShortcut(key, active.id)}
@@ -672,9 +770,16 @@ export function SessionView({ tabId }: { tabId: string }) {
                 onStop={() => void stopRun(active.id)}
                 // Escape goes through the extension first (plan step 24): a
                 // running review pauses instead of aborting. A manual review
-                // runs on an idle tab, so `escapeActive` forwards too.
+                // runs on an idle tab, so `escapeActive` forwards too. A live
+                // composer refinement on an otherwise idle tab also owns Esc
+                // (parity plan row 22), so it must arm the same path.
                 onEscape={() => void interruptRun(active.id)}
-                escapeActive={extensionBusy || inputLocked}
+                escapeActive={
+                  extensionBusy ||
+                  inputLocked ||
+                  composerOperation.isRunning ||
+                  composerOperation.isAwaitingInput
+                }
                 onClearQueue={() => void clearQueue(active.id)}
                 onRestoreQueue={() => void restoreQueue(active.id)}
                 onHistoryStep={(direction, caret) => historyStep(active.id, direction, caret)}
@@ -734,16 +839,21 @@ export function SessionView({ tabId }: { tabId: string }) {
               statuses={extensionUi?.statuses}
             />
           )}
-          {floatingOverlay && tuiSurface ? (
-            <TuiSurface
-              tabId={active.id}
-              snapshot={tuiSurface}
-              cell={viewport.cell}
-              grid={{ rows: viewport.rows, cols: viewport.cols }}
-              variant="float"
-              focusToken={surfaceFocusToken}
-            />
-          ) : null}
+          {tuiSurface
+            ? floatLayers.map((layer) => (
+                <TuiSurface
+                  key={layer.id}
+                  tabId={active.id}
+                  snapshot={tuiSurface}
+                  layer={layer}
+                  cell={viewport.cell}
+                  grid={{ rows: viewport.rows, cols: viewport.cols }}
+                  variant="float"
+                  focusToken={surfaceFocusToken}
+                  active={paneFocused}
+                />
+              ))
+            : null}
         </div>
       </div>
 

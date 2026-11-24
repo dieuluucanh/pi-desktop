@@ -142,9 +142,15 @@ function harness(
     sessionFile?: string | null;
     maxHosts?: number;
     npmCliPath?: string;
+    /** The real Pi CLI child agents must run (Workflow plan step 30). */
+    piCliPath?: string | null;
+    /** The staged Workflow entry injected into child CLI runs. */
+    workflowBundleEntry?: string | null;
     env?: Record<string, string | undefined>;
     safeMode?: boolean;
     telemetryEnabled?: boolean | (() => boolean);
+    /** The staged Workflow directory main resolved (plan step 27). */
+    workflowBundleDir?: string | null;
     hostBuildId?: () => string | null;
     /** Log every completed request (0 = log all); absent keeps the 2 s default. */
     slowRequestLogMs?: number;
@@ -185,6 +191,8 @@ function harness(
     profileDir: normalize("C:/Users/Test/.pi/agent"),
     env: options.env ?? { PATH: normalize("C:/Windows/System32") },
     ...(options.npmCliPath ? { npmCliPath: options.npmCliPath } : {}),
+    ...(options.piCliPath ? { piCliPath: options.piCliPath } : {}),
+    ...(options.workflowBundleEntry ? { workflowBundleEntry: options.workflowBundleEntry } : {}),
     spawner,
     fs,
     requestTimeoutMs: 1_000,
@@ -203,6 +211,7 @@ function harness(
       : { memoryOverBudgetSamples: options.memoryOverBudgetSamples }),
     safeMode: options.safeMode ?? false,
     telemetryEnabled: options.telemetryEnabled ?? false,
+    ...(options.workflowBundleDir ? { workflowBundleDir: options.workflowBundleDir } : {}),
     ...(options.hostBuildId ? { hostBuildId: options.hostBuildId } : {}),
     ...(options.isPinned ? { isPinned: options.isPinned } : {}),
     ...(options.isBridgeOwner ? { isBridgeOwner: options.isBridgeOwner } : {}),
@@ -293,6 +302,50 @@ describe("host supervisor startup", () => {
     const { supervisor, spawnCalls } = harness();
     await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
     expect(spawnCalls[0]?.env).not.toHaveProperty("PI_DESKTOP_NPM_CLI");
+  });
+
+  it("hands hosts the real Pi CLI for child agents, never the host entry", async () => {
+    const piCliPath = normalize(
+      "C:/app/resources/app.asar.unpacked/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+    );
+    const { supervisor, spawnCalls } = harness({ piCliPath });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(spawnCalls[0]?.env.PI_SUBAGENT_PI_CLI).toBe(piCliPath);
+    expect(spawnCalls[0]?.env.PI_SUBAGENT_PI_NODE).toBe(NODE_PATH);
+  });
+
+  it("omits the Pi CLI variable when the SDK bundle is missing", async () => {
+    const { supervisor, spawnCalls } = harness();
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(spawnCalls[0]?.env).not.toHaveProperty("PI_SUBAGENT_PI_CLI");
+  });
+
+  it("lists the host markers a child CLI must not inherit", async () => {
+    const { supervisor, spawnCalls } = harness();
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    const strip = String(spawnCalls[0]?.env.PI_SUBAGENT_ENV_STRIP ?? "");
+    for (const name of [
+      "PI_DESKTOP_HOST_MODE",
+      "PI_DESKTOP_HOST_ROLE",
+      "PI_DESKTOP_SESSION_ID",
+      "PI_DESKTOP_HOST_BUILD",
+      "PI_DESKTOP_HOST_ENTRY",
+    ]) {
+      expect(strip.split(",")).toContain(name);
+    }
+  });
+
+  it("injects the staged Workflow entry into child CLI runs, isolated", async () => {
+    const entry = normalize("C:/app/resources/extensions/workflow/index.js");
+    const { supervisor, spawnCalls } = harness({ workflowBundleEntry: entry });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(spawnCalls[0]?.env.PI_SUBAGENT_WORKFLOW_EXTENSION).toBe(entry);
+    expect(spawnCalls[0]?.env.PI_SUBAGENT_WORKFLOW_ISOLATE).toBe("1");
+
+    const without = harness({ workflowBundleEntry: null });
+    await without.supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
+    expect(without.spawnCalls[0]?.env).not.toHaveProperty("PI_SUBAGENT_WORKFLOW_EXTENSION");
+    expect(without.spawnCalls[0]?.env).not.toHaveProperty("PI_SUBAGENT_WORKFLOW_ISOLATE");
   });
 
   it("reserves port 38617 for the Office host and hands out 38618+ to everyone else", async () => {
@@ -931,6 +984,19 @@ describe("host supervisor reliability (plan step 22)", () => {
     const on = harness({ safeMode: true });
     await on.supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
     expect(on.spawnCalls[0]?.env.PI_DESKTOP_SAFE_MODE).toBe("1");
+  });
+
+  it("hands every host the staged Workflow directory, and nothing when none exists", async () => {
+    const staged = normalize("C:/app/resources/extensions/workflow");
+    const withBundle = harness({ workflowBundleDir: staged });
+    await withBundle.supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(withBundle.spawnCalls[0]?.env.PI_DESKTOP_WORKFLOW_BUNDLE_DIR).toBe(staged);
+
+    // No staged artifact: the variable is absent, never an empty path a host
+    // could mistake for a directory named "".
+    const without = harness({ workflowBundleDir: null });
+    await without.supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
+    expect(without.spawnCalls[0]?.env).not.toHaveProperty("PI_DESKTOP_WORKFLOW_BUNDLE_DIR");
   });
 
   it("forces Pi's install telemetry off unless the user opted in", async () => {

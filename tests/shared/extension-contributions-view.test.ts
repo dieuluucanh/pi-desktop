@@ -70,12 +70,13 @@ describe("contribution view", () => {
     expect(snapshot.updatedAt).toBe(5);
   });
 
-  it("keeps an actionable command, and a disabled reason", () => {
+  it("keeps an actionable command name but never forwards command args", () => {
     const snapshot = buildContributionSnapshot(
       [{ ownerId: "a.ext", epoch: 0, revision: 1, contributions: [action("go")] }],
       { supported: true, updatedAt: 1 },
     );
-    expect(snapshot.contributions[0]?.command).toEqual({ name: "build", args: "--fast" });
+    expect(snapshot.contributions[0]?.command).toEqual({ name: "build" });
+    expect(snapshot.contributions[0]?.command).not.toHaveProperty("args");
     expect(snapshot.contributions[0]?.enabled).toBe(true);
   });
 

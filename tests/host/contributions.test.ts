@@ -159,6 +159,33 @@ describe("contribution host registry", () => {
     });
   });
 
+  it("keeps a nonempty command.args host-owned and out of the renderer snapshot", async () => {
+    const h = harness();
+    h.host.receive(
+      envelope({
+        contributions: [
+          {
+            id: "go",
+            kind: "action",
+            slot: "action",
+            label: "Build fast",
+            tone: "accent",
+            order: 0,
+            command: { name: "build", args: "--fast" },
+            enabled: true,
+          },
+        ],
+      }),
+    );
+    const snapshot = h.host.snapshot();
+    // The renderer snapshot carries the command identity only; the executable
+    // arguments stay in the host registry and are re-resolved on run.
+    expect(snapshot.contributions[0]?.command).toEqual({ name: "build" });
+    expect(snapshot.contributions[0]?.command).not.toHaveProperty("args");
+    await expect(h.host.runAction("dieulc.example", "go")).resolves.toEqual({ ran: true });
+    expect(h.commands).toEqual([{ name: "build", args: "--fast" }]);
+  });
+
   it("refuses a disabled action and a nested display action", async () => {
     const h = harness();
     h.host.receive(

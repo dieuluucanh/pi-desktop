@@ -220,6 +220,82 @@ describe("session chrome", () => {
   });
 });
 
+describe("extension surface stack (row 28)", () => {
+  const frame = (seq: number, text: string, height = 2) => ({
+    seq,
+    width: 40,
+    height,
+    lines: Array.from({ length: height }, (_, index) => (index === 0 ? text : "")),
+    cursor: null,
+  });
+
+  it("keeps a base custom pane docked while an overlay floats above it", () => {
+    useAppStore.setState({
+      tuiSurfaces: {
+        [TAB]: {
+          ...EMPTY_TUI_SURFACE,
+          active: true,
+          overlay: true,
+          focus: "custom",
+          bounds: { row: 8, col: 0, width: 40, height: 2 },
+          custom: frame(2, "QUESTION"),
+          layers: [
+            {
+              id: "custom-1",
+              overlay: false,
+              bounds: null,
+              focused: false,
+              frame: frame(1, "REVIEW"),
+            },
+            {
+              id: "overlay-2",
+              overlay: true,
+              bounds: { row: 8, col: 0, width: 40, height: 2 },
+              focused: true,
+              frame: frame(2, "QUESTION"),
+            },
+          ],
+        },
+      },
+    });
+
+    render(<SessionView tabId={TAB} />);
+    expect(screen.getByText("REVIEW")).toBeInTheDocument();
+    expect(screen.getByText("QUESTION")).toBeInTheDocument();
+    expect(document.querySelectorAll("[data-tui-surface='dock']")).toHaveLength(1);
+    expect(document.querySelectorAll("[data-tui-surface='overlay']")).toHaveLength(1);
+  });
+
+  it("renders a docked bottom-sheet overlay alone when nothing is mounted underneath", () => {
+    useAppStore.setState({
+      tuiSurfaces: {
+        [TAB]: {
+          ...EMPTY_TUI_SURFACE,
+          active: true,
+          overlay: true,
+          focus: "custom",
+          bounds: { row: 0, col: 0, width: 1000, height: 1000 },
+          custom: frame(1, "SHEET"),
+          layers: [
+            {
+              id: "overlay-1",
+              overlay: true,
+              bounds: { row: 0, col: 0, width: 1000, height: 1000 },
+              focused: true,
+              frame: frame(1, "SHEET"),
+            },
+          ],
+        },
+      },
+    });
+
+    render(<SessionView tabId={TAB} />);
+    expect(screen.getByText("SHEET")).toBeInTheDocument();
+    expect(document.querySelectorAll("[data-tui-surface='dock']")).toHaveLength(1);
+    expect(document.querySelectorAll("[data-tui-surface='overlay']")).toHaveLength(0);
+  });
+});
+
 describe("extension footer and widget placement (minimal-session-ui step 7)", () => {
   const frame = (seq: number, text: string) => ({
     seq,

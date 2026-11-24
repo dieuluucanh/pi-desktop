@@ -29,7 +29,7 @@ function renderComposer(draft: string) {
       draft={draft}
       queue={{ steering: [], followUp: [] }}
       onDraftChange={vi.fn()}
-      onSend={async () => true}
+      onSend={async () => "sent"}
       onStop={vi.fn()}
       onClearQueue={vi.fn()}
       onRestoreQueue={onRestoreQueue}

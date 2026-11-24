@@ -67,11 +67,16 @@ describe("gen-shims Windows output", () => {
     expect(readFileSync(join(binDir, "node"), "utf8")).toContain("#!/bin/sh");
   });
 
-  it("points the packaged pi shim at app.asar.unpacked", () => {
+  it("points the packaged pi shim at the SDK's real CLI, not the host entry", () => {
     const binDir = generate("win32-x64");
-    expect(readFileSync(join(binDir, "pi.cmd"), "utf8")).toContain(
-      "..\\app.asar.unpacked\\out\\host\\index.mjs",
+    const shim = readFileSync(join(binDir, "pi.cmd"), "utf8");
+    expect(shim).toContain(
+      "..\\app.asar.unpacked\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\bundle\\cli.js",
     );
+    // The host entry speaks the service protocol; a child spawned through it
+    // would be a second host rather than a Pi session (Workflow plan step 30).
+    expect(shim).not.toContain("out\\host\\index.mjs");
+    expect(shim).toContain("PI_DESKTOP_PI_CLI");
   });
 
   it("prunes a stale node.cmd left by an older build", () => {
@@ -107,5 +112,7 @@ describe("gen-shims POSIX output", () => {
     expect(pi).toContain("#!/bin/sh");
     expect(pi).toContain("command -v");
     expect(pi).toContain("PI_DESKTOP_NODE");
+    expect(pi).toContain("PI_DESKTOP_PI_CLI");
+    expect(pi).toContain("@earendil-works/pi-coding-agent/dist/bundle/cli.js");
   });
 });

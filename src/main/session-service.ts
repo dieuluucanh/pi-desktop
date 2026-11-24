@@ -156,6 +156,15 @@ export interface HostInfoLike {
   capabilities?: {
     checkpointsExtension?: boolean;
     checkpointExtensionSource?: "profile" | "package" | "bundled" | null;
+    /** The bundled Workflow builtin reported on `host.hello` (plan step 27). */
+    workflowBuiltin?: {
+      registered: boolean;
+      version: string | null;
+      source: "bundled" | null;
+      replaceable: boolean;
+      path: string;
+      disabledBy: "safe-mode" | "missing-bundle" | "invalid-bundle" | null;
+    };
   };
 }
 
@@ -496,14 +505,37 @@ const PASSIVE_METHODS: ReadonlySet<string> = new Set([
   "shortcuts.list",
   "files.list",
   "oi.state",
+  // Acknowledge a consumed composer edit. Delivery is already one-shot, so the
+  // ack for a tab whose host is gone is simply dropped; like the other passive
+  // reads it must never be the reason a recycled host is spawned again.
+  "oi.editorConsumed",
   "tui.state",
   "tui.resize",
   "model.available",
   "render.request",
   "render.markdown",
+  // Generic contribution state (prompt-refinement plan step 29). The renderer
+  // re-reads it after a status change, an action acknowledgement and a
+  // reconciliation, so it is a passive refresh: a stopped/recycled host must
+  // not be spawned just to publish a mode label or a toggle's checked state.
+  // `contributions.run` is deliberately absent: it is an explicit gesture.
+  "contributions.state",
+  // Operation status reads (plan steps 23/29). A reconciliation query must not
+  // be the reason a recycled host comes back; only an explicit activation, a
+  // user start (`composer.transform`) or an ensure may wake the tab.
+  "composer.current",
+  "composer.status",
 ]);
 
-/** Repair-and-retry is safe only for methods that cannot change user state. */
+/**
+ * Repair-and-retry is safe only for methods that cannot change user state.
+ *
+ * A lost session is repaired above only for these methods. A mutating request
+ * (`prompt`, `contributions.run`, `composer.transform`, `composer.cancel`,
+ * `composer.applied`, …) deliberately stays out of this set: it is reported to
+ * its caller instead, which owns the decision and the composer draft. Nothing
+ * is ever replayed automatically (prompt-refinement plan step 29).
+ */
 const READ_ONLY_RETRY_METHODS: ReadonlySet<string> = new Set([
   "state.get",
   "messages.get",
@@ -515,6 +547,9 @@ const READ_ONLY_RETRY_METHODS: ReadonlySet<string> = new Set([
   "shortcuts.list",
   "oi.state",
   "tui.state",
+  "contributions.state",
+  "composer.current",
+  "composer.status",
 ]);
 
 /** Normalizes a supervisor event payload into a protocol entry. */
@@ -2268,6 +2303,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         if (isSessionLostError(error)) {
           // The host outlived/replaced its session between ensure and dispatch.
           // Reopen once; only a read-only call is safe to replay automatically.
+          // A mutating method still reopens the session below (so the tab is
+          // usable again) but is never replayed: the caller gets the error and
+          // the renderer keeps the draft/arming state.
           sessionReady.delete(tab.id);
           recovering.add(tab.id);
           try {

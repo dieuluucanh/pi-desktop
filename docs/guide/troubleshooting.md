@@ -428,12 +428,13 @@ Every known limitation is recorded with the release notes:
 - **macOS and Linux are beta** — built and structurally verified in CI, but no
   real macOS launch and no fresh Linux desktop install have been exercised by a
   person for this release. Windows is the verified target.
-- **The live Review line needs the matching extension** — the desktop prefers the
-  extension's `workflow-review` text, but `@dieulc/workflow` 0.13.0 (which
-  publishes it and the hidden-panel `workflow-todos` status) is a separate
-  package. With 0.12.x the row falls back to the canonical phase line and the
-  todo bar is absent while the list is hidden or Review owns the turn (there is
-  no compact status to read); commands and controls keep working.
+- **The live Review line needs the matching extension** — Review/progress/mode
+  now arrive through the generic contribution contract, so the desktop draws a
+  publisher's own row instead of parsing a Review sub-state. `@dieulc/workflow`
+  0.13.0 publishes it; with an older extension the row falls back to a plain
+  generic status when one is supplied and the review-specific controls are
+  absent. Commands, composer (including the Refine prompt control) and controls
+  keep working.
 - **Extension dialogs diverge from terminal Pi in two deliberate places** —
   Ctrl+C in an input/editor stays copy rather than cancel, and confirm needs a
   focused button for Enter rather than answering the highlighted “Yes”. Both

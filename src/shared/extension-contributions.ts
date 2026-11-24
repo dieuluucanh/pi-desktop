@@ -25,6 +25,13 @@
  * TypeScript projects.
  */
 
+import {
+  COMPOSER_CONTROL_KIND,
+  COMPOSER_CONTROL_SLOT,
+  parseComposerControlContribution,
+  type ComposerControlContribution,
+} from "./composer-transform";
+
 export const HOST_CONTRIBUTION_VERSION = 1 as const;
 
 export const HOST_CONTRIBUTION_LIMITS = {
@@ -39,6 +46,8 @@ export const HOST_CONTRIBUTION_LIMITS = {
   maxOwnerChars: 80,
   maxSessionRefChars: 400,
   maxRemoved: 64,
+  /** Composer controls are heavyweight; keep the row count small by contract. */
+  maxComposerControls: 4,
 } as const;
 
 export const CONTRIBUTION_TONES = [
@@ -58,6 +67,7 @@ export const CONTRIBUTION_KINDS = [
   "action",
   "input",
   "related-session",
+  COMPOSER_CONTROL_KIND,
 ] as const;
 export type ContributionKind = (typeof CONTRIBUTION_KINDS)[number];
 
@@ -68,6 +78,7 @@ export const CONTRIBUTION_SLOTS = [
   "action",
   "input",
   "sessions",
+  COMPOSER_CONTROL_SLOT,
 ] as const;
 export type ContributionSlot = (typeof CONTRIBUTION_SLOTS)[number];
 
@@ -156,7 +167,8 @@ export type Contribution =
   | StatusContribution
   | ActionContribution
   | InputContribution
-  | RelatedSessionContribution;
+  | RelatedSessionContribution
+  | ComposerControlContribution;
 
 export interface HostContributionCapabilities {
   contractVersion: number;
@@ -438,6 +450,13 @@ function parseContribution(raw: unknown): ContributionResult<Contribution | unde
         },
       };
     }
+    case COMPOSER_CONTROL_KIND: {
+      // Additive v1 kind: old readers never reach here because the kind is not
+      // in their vocabulary. New readers use the independent composer reader.
+      const control = parseComposerControlContribution({ ...raw, id: contributionId });
+      if (!control.ok) return fail(`${control.error.code}: ${control.error.message}`);
+      return { ok: true, value: control.value };
+    }
     default:
       return { ok: true, value: undefined };
   }
@@ -512,6 +531,12 @@ export function parseContributionEnvelope(raw: unknown): ContributionResult<Pars
     const count = (perKind.get(parsed.value.kind) ?? 0) + 1;
     if (count > HOST_CONTRIBUTION_LIMITS.maxPerKind) {
       return fail(`too many ${parsed.value.kind} contributions`);
+    }
+    if (
+      parsed.value.kind === COMPOSER_CONTROL_KIND &&
+      count > HOST_CONTRIBUTION_LIMITS.maxComposerControls
+    ) {
+      return fail("too many composer-control contributions");
     }
     perKind.set(parsed.value.kind, count);
     contributions.push(parsed.value);

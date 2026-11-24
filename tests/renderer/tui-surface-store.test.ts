@@ -333,3 +333,90 @@ describe("interruptRun", () => {
     expect(stopRun).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("background attention and stale cleanup (row 28)", () => {
+  const OTHER = "tab-2";
+
+  function twoTabs(): void {
+    useAppStore.setState({
+      tabs: [
+        ...useAppStore.getState().tabs,
+        {
+          id: OTHER,
+          kind: "session",
+          cwd: "C:/work/other",
+          title: "other",
+          sessionFile: null,
+          status: "idle",
+          createdAt: 2,
+          lastActiveAt: 2,
+          model: null,
+        },
+      ],
+      activeTabId: OTHER,
+    });
+  }
+
+  const frame = (seq: number) => ({
+    seq,
+    width: 20,
+    height: 2,
+    lines: ["Q1", "> a"],
+    cursor: null,
+  });
+
+  it("flags a background tab whose surface requests input without stealing focus", () => {
+    twoTabs();
+    const activate = vi.spyOn(useAppStore.getState(), "activateTab").mockResolvedValue(undefined);
+    useAppStore.getState().handleExtensionUiEvent(TAB, {
+      event: TUI_STATE_EVENT,
+      payload: {
+        active: true,
+        focus: "custom",
+        custom: frame(1),
+        layers: [{ id: "custom-1", overlay: false, focused: true, frame: frame(1) }],
+      },
+    });
+    expect(useAppStore.getState().dialogAttention[TAB]).toBe(true);
+    expect(activate).not.toHaveBeenCalled();
+    expect(useAppStore.getState().activeTabId).toBe(OTHER);
+
+    // A repaint of the same mounted surface must not keep re-raising it.
+    useAppStore.getState().clearDialogAttention(TAB);
+    useAppStore.getState().handleExtensionUiEvent(TAB, {
+      event: TUI_STATE_EVENT,
+      payload: {
+        active: true,
+        focus: "custom",
+        custom: frame(2),
+        layers: [{ id: "custom-1", overlay: false, focused: true, frame: frame(2) }],
+      },
+    });
+    expect(useAppStore.getState().dialogAttention[TAB]).toBeUndefined();
+    activate.mockRestore();
+  });
+
+  it("drops a surface push for a tab that is already closed", () => {
+    useAppStore.getState().handleExtensionUiEvent("tab-gone", {
+      event: TUI_STATE_EVENT,
+      payload: {
+        active: true,
+        custom: frame(1),
+        layers: [{ id: "custom-1", overlay: false, focused: true, frame: frame(1) }],
+      },
+    });
+    expect(useAppStore.getState().tuiSurfaces["tab-gone"]).toBeUndefined();
+  });
+
+  it("clears a closed tab's surface and attention flag", async () => {
+    useAppStore.setState({ dialogAttention: { [TAB]: true } });
+    useAppStore.getState().handleExtensionUiEvent(TAB, {
+      event: TUI_STATE_EVENT,
+      payload: { active: true, custom: frame(1) },
+    });
+    expect(useAppStore.getState().tuiSurfaces[TAB]).toBeTruthy();
+    await useAppStore.getState().closeTab(TAB);
+    expect(useAppStore.getState().tuiSurfaces[TAB]).toBeUndefined();
+    expect(useAppStore.getState().dialogAttention[TAB]).toBeUndefined();
+  });
+});

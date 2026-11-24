@@ -10,11 +10,18 @@ import {
   JsonlFrameDecoder,
   NODE_BIN_ENV,
   NPM_CLI_ENV,
+  PI_CLI_ENV,
+  PI_CLI_NODE_ENV,
   SAFE_MODE_ENV,
+  SUBAGENT_ENV_STRIP_ENV,
   TELEMETRY_ENV,
+  WORKFLOW_BUNDLE_DIR_ENV,
+  WORKFLOW_EXTENSION_ENV,
+  WORKFLOW_ISOLATE_ENV,
   encodeFrame,
   isEventFrame,
   isResponseFrame,
+  subagentEnvStripList,
   type HostMethod,
   type HostRequestFrame,
   type HostRole,
@@ -131,6 +138,15 @@ export interface HostInfo {
     checkpointsExtension?: boolean;
     /** Which installed copy was found, or the bundled fallback. */
     checkpointExtensionSource?: "profile" | "package" | "bundled" | null;
+    /** The bundled Workflow builtin reported on `host.hello` (plan step 27). */
+    workflowBuiltin?: {
+      registered: boolean;
+      version: string | null;
+      source: "bundled" | null;
+      replaceable: boolean;
+      path: string;
+      disabledBy: "safe-mode" | "missing-bundle" | "invalid-bundle" | null;
+    };
   };
 }
 
@@ -260,6 +276,32 @@ export interface HostSupervisorOptions {
    * the host loads no third-party resources and refuses package changes.
    */
   safeMode?: boolean;
+  /**
+   * Absolute path of the staged Workflow artifact (plan step 27), passed to every
+   * child as `PI_DESKTOP_WORKFLOW_BUNDLE_DIR`. The main process owns the layout
+   * (packaged `resources/extensions/workflow` vs the development `resources/`
+   * and `out/` copies) and hands the winner to both the control host (Extensions
+   * hub) and every session host, so exactly one copy is registered as
+   * `builtin:workflow`. `null`/absent means no staged copy: hosts register no
+   * builtin and report why instead of falling back to a checkout or an install.
+   */
+  workflowBundleDir?: string | null;
+  /**
+   * The real Pi CLI child agents run (Workflow plan step 30), passed as
+   * `PI_SUBAGENT_PI_CLI`. Without it a host entry point would be mistaken for
+   * Pi: the child would inherit this service protocol instead of `-p`. `null`
+   * (SDK bundle missing) is reported by `resolveRuntime`; hosts then pass no
+   * descriptor and Workflow refuses gated children honestly.
+   */
+  piCliPath?: string | null;
+  /**
+   * The resolved Workflow entry injected into child CLI runs (Workflow plan step
+   * 30), passed as `PI_SUBAGENT_WORKFLOW_EXTENSION` together with
+   * `PI_SUBAGENT_WORKFLOW_ISOLATE=1`. A child `pi` process does not inherit the
+   * app's `builtin:workflow` registration, so the artifact has to be named
+   * explicitly; isolation keeps an installed copy from loading a second one.
+   */
+  workflowBundleEntry?: string | null;
   /**
    * Pi's install telemetry (plan step 23). Evaluated at each spawn and passed as
    * `PI_TELEMETRY`, so it can follow a live preference change without restarting
@@ -664,6 +706,25 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
           [SESSION_ID_ENV]: this.sessionId,
           [HOST_ROLE_ENV]: this.spec.role ?? "session",
           [SAFE_MODE_ENV]: options.safeMode ? "1" : "0",
+          ...(options.workflowBundleDir
+            ? { [WORKFLOW_BUNDLE_DIR_ENV]: options.workflowBundleDir }
+            : {}),
+          // Workflow plan step 30: a child agent is a real Pi CLI, and it must
+          // load the resolved Workflow policy exactly once so its bash gate is
+          // the same implementation the parent applies.
+          ...(options.piCliPath
+            ? {
+                [PI_CLI_ENV]: options.piCliPath,
+                [PI_CLI_NODE_ENV]: options.nodePath,
+              }
+            : {}),
+          [SUBAGENT_ENV_STRIP_ENV]: subagentEnvStripList(),
+          ...(options.workflowBundleEntry
+            ? {
+                [WORKFLOW_EXTENSION_ENV]: options.workflowBundleEntry,
+                [WORKFLOW_ISOLATE_ENV]: "1",
+              }
+            : {}),
           [TELEMETRY_ENV]: telemetry ? "1" : "0",
           [BLOB_DIR_ENV]: options.blobDir,
           [SERVICE_ENV]: "service",

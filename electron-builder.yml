@@ -62,6 +62,13 @@ extraResources:
   - from: resources/office
     to: office
     filter: ["**/*"]
+  # The pinned Workflow bundle is loaded by path from outside the asar. It is
+  # staged by `npm run workflow:stage` after the host build and verified by
+  # `npm run workflow:verify`; the tracked README keeps the directory present
+  # on a clean clone.
+  - from: resources/extensions
+    to: extensions
+    filter: ["**/*"]
   # The window and macOS dock icons are read by path at runtime, so they must be
   # outside the asar too (plan step 28). The filter is an explicit list on
   # purpose: the Office-branded SVGs and the add-in's 80px raster have no reason

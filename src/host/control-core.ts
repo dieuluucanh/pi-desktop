@@ -18,6 +18,7 @@ import {
   type ResourceInspector,
 } from "./resources";
 import { createThemeHandlers, THEME_METHODS, type ThemePort } from "./themes";
+import type { WorkflowBuiltinResolution } from "./workflow-builtin";
 import { resolveListedSession, SessionFileError } from "./session-files";
 import { createSettingsHandlers, SETTINGS_METHODS, type SettingsPort } from "./settings";
 import type { HostHandler } from "./service";
@@ -66,6 +67,12 @@ export interface ControlCoreDeps {
    * `not_implemented` instead of pretending it has no resources.
    */
   resources?: ResourceInspector;
+  /**
+   * The bundled Workflow builtin (plan step 27), resolved once per host process.
+   * `resources.list` reports its version/source/replacement state next to the
+   * loaded extensions, so the hub describes the same copy sessions load.
+   */
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
   /** The cwd used when the hub does not name a project (the host's own cwd). */
   defaultCwd?: string;
   /**
@@ -202,6 +209,7 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
             scope: "control",
             settings,
             source,
+            ...(deps.workflowBuiltin ? { builtin: deps.workflowBuiltin } : {}),
             now: deps.now,
           });
         },

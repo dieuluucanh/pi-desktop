@@ -38,6 +38,7 @@ import {
 } from "../shared/resources";
 import type { SettingsScope } from "../shared/settings-schema";
 import type { HostHandler } from "./service";
+import type { WorkflowBuiltinResolution } from "./workflow-builtin";
 
 /** A handler that is deliberately not wired yet, with the step that owns it. */
 export class ResourceError extends Error {
@@ -69,6 +70,12 @@ export interface ResourceInspectionInput {
   source: ResourceLoaderSource;
   /** Live `extension_error` history (a session host only). */
   runtimeErrors?: readonly unknown[];
+  /**
+   * The bundled Workflow builtin (plan step 27), when this host resolved one.
+   * A `builtin:<name>` row then carries its pinned version/source, and the
+   * settings-disabled row Pi no longer reports gets the same badge.
+   */
+  builtin?: WorkflowBuiltinResolution | null;
   now?: () => number;
 }
 
@@ -217,6 +224,52 @@ function diagnosticsOf(value: unknown): ResourceDiagnosticSummary[] {
     .filter((entry): entry is ResourceDiagnosticSummary => entry !== null);
 }
 
+/**
+ * Pi's loader warnings (`{ path, warning }`) as diagnostics.
+ *
+ * Replacement rides here: when an installed extension registers an overlapping
+ * command/tool/flag, Pi omits the replaceable builtin and records one warning
+ * naming the winner. Dropping the array would make `builtin:workflow` vanish
+ * from the hub with no explanation.
+ */
+function warningsOf(value: unknown): ResourceDiagnosticSummary[] {
+  const warnings = asArray(asRecord(value).warnings);
+  const summaries: ResourceDiagnosticSummary[] = [];
+  for (const entry of warnings) {
+    const record = asRecord(entry);
+    const message = asString(record.warning) ?? asString(record.message);
+    if (!message) continue;
+    const path = asString(record.path);
+    summaries.push({ type: "warning", message, ...(path ? { path } : {}) });
+  }
+  return summaries;
+}
+
+/** The `builtin:<name>` name behind a synthetic path, or null. */
+function builtinNameOf(path: string): string | null {
+  const prefix = "builtin:";
+  return path.startsWith(prefix) && path.length > prefix.length ? path.slice(prefix.length) : null;
+}
+
+/**
+ * What the app knows about one `builtin:<name>` resource.
+ *
+ * Version and size come from the staged artifact's identity document, resolved
+ * once per host process — never from a developer checkout or a registry probe.
+ */
+function builtinSummary(
+  builtin: WorkflowBuiltinResolution | null | undefined,
+  name: string,
+): ResourceSummary["builtin"] {
+  const known = builtin?.name === name ? builtin : null;
+  return {
+    name,
+    version: known?.version ?? null,
+    source: "bundled",
+    replaceable: known?.replaceable ?? false,
+  };
+}
+
 function runtimeErrorOf(value: unknown): ExtensionRuntimeErrorSummary | null {
   const record = asRecord(value);
   const error = asString(record.error);
@@ -247,6 +300,7 @@ function extensionErrorMap(value: unknown): Map<string, string> {
 function buildExtensions(
   source: unknown,
   diagnostics: ResourceDiagnosticSummary[],
+  builtin: WorkflowBuiltinResolution | null | undefined,
 ): { resources: ResourceSummary[]; errors: Array<{ path: string; error: string }> } {
   const result = asRecord(source);
   const loadErrors = extensionErrorMap(result);
@@ -260,10 +314,14 @@ function buildExtensions(
     const provenance = provenanceOf(record);
     const contributed = extensionContributions(record);
     const error = loadErrors.get(overridePath);
+    // A builtin is still a real resource row: Pi only hides it from the *startup*
+    // list. Show its own name and pinned version, not `builtin:workflow` as a
+    // basename.
+    const builtinName = builtinNameOf(overridePath);
     resources.push({
       id: resourceIdOf("extensions", overridePath),
       kind: "extensions",
-      name: basenameOf(overridePath),
+      name: builtinName ?? basenameOf(overridePath),
       path: rawPath,
       overridePath,
       source: provenance.source,
@@ -274,13 +332,16 @@ function buildExtensions(
       ...(record.hidden === true ? { hidden: true } : {}),
       ...(contributed.length > 0 ? { contributed } : {}),
       ...(error ? { error } : {}),
+      ...(builtinName ? { builtin: builtinSummary(builtin, builtinName) } : {}),
     });
   }
 
   // Loader diagnostics for the resource kinds ride along on the snapshot, and an
   // extension that failed to load entirely (so it never became a resource) must
-  // still surface — never hidden, per the step-13 acceptance.
+  // still surface — never hidden, per the step-13 acceptance. Warnings carry
+  // Pi's "built-in extension `workflow` was not loaded" replacement sentence.
   diagnostics.push(...diagnosticsOf({ diagnostics: asArray(result.diagnostics) }));
+  diagnostics.push(...warningsOf(result));
   const matched = new Set(
     resources
       .filter((resource) => resource.error !== undefined)
@@ -398,6 +459,7 @@ function buildOverrides(
   settings: { global: Record<string, unknown>; project: Record<string, unknown> },
   loaded: ReadonlySet<string>,
   diagnostics: ResourceDiagnosticSummary[],
+  builtin?: WorkflowBuiltinResolution | null,
 ): {
   resources: ResourceSummary[];
   overrides: ResourceOverride[];
@@ -429,10 +491,14 @@ function buildOverrides(
         continue;
       }
       seen.add(`${kind}:${token}`);
+      // A settings-disabled builtin (`-builtin:workflow`) never reaches the
+      // loader, so this row is the only place the hub can show it — with the
+      // same badge and pinned version an enabled row carries.
+      const builtinName = kind === "extensions" ? builtinNameOf(token) : null;
       resources.push({
         id: resourceIdOf(kind, token),
         kind,
-        name: basenameOf(token),
+        name: builtinName ?? basenameOf(token),
         path: token,
         overridePath: token,
         source: entry,
@@ -441,6 +507,7 @@ function buildOverrides(
         settingsKey: kind,
         enabled: false,
         override: entry,
+        ...(builtinName ? { builtin: builtinSummary(builtin, builtinName) } : {}),
       });
     }
   }
@@ -448,12 +515,45 @@ function buildOverrides(
   return { resources, overrides };
 }
 
+/**
+ * Repair diagnostics for a bundled Workflow copy that never reached the loader.
+ *
+ * A missing or invalid stage is deliberately *not* repaired at runtime: nothing
+ * is installed, downloaded or replaced by a developer checkout. But an absent
+ * row alone leaves the user with no idea why Workflow vanished, so the hub says
+ * what is wrong and how to fix the build. Safe mode and a loaded or
+ * user-disabled copy add nothing: safe mode is the user's choice, and the
+ * disabled row already explains `-builtin:workflow`.
+ */
+function builtinRepairDiagnostics(
+  builtin: WorkflowBuiltinResolution | null | undefined,
+): ResourceDiagnosticSummary[] {
+  if (!builtin || builtin.registered) return [];
+  if (builtin.disabledBy !== "missing-bundle" && builtin.disabledBy !== "invalid-bundle") return [];
+  const diagnostics: ResourceDiagnosticSummary[] = builtin.problems.map((problem) => ({
+    type: "error" as const,
+    message: `bundled Workflow is not loaded: ${problem}`,
+    path: builtin.path,
+  }));
+  if (diagnostics.length === 0) {
+    diagnostics.push({
+      type: "error",
+      message: "bundled Workflow is not loaded: no usable staged artifact was found",
+      path: builtin.path,
+    });
+  }
+  if (builtin.hint) {
+    diagnostics.push({ type: "warning", message: `repair: ${builtin.hint}`, path: builtin.path });
+  }
+  return diagnostics;
+}
+
 /** Turns Pi's loader objects into the hub snapshot. Pure and deterministic. */
 export function buildResourcesSnapshot(input: ResourceInspectionInput): ResourcesSnapshot {
   const now = input.now ?? (() => Date.now());
   const diagnostics: ResourceDiagnosticSummary[] = [];
 
-  const extensions = buildExtensions(input.source.extensions, diagnostics);
+  const extensions = buildExtensions(input.source.extensions, diagnostics, input.builtin);
   const loaded: ResourceSummary[] = [
     ...extensions.resources,
     ...buildSkills(input.source.skills, diagnostics),
@@ -465,7 +565,7 @@ export function buildResourcesSnapshot(input: ResourceInspectionInput): Resource
   const disabled: ResourceSummary[] = [];
   const overrides: ResourceOverride[] = [];
   for (const kind of ["extensions", "skills", "prompts", "themes"] as const) {
-    const derived = buildOverrides(kind, input.settings, loadedIds, diagnostics);
+    const derived = buildOverrides(kind, input.settings, loadedIds, diagnostics, input.builtin);
     disabled.push(...derived.resources);
     overrides.push(...derived.overrides);
   }
@@ -473,6 +573,8 @@ export function buildResourcesSnapshot(input: ResourceInspectionInput): Resource
   const runtimeErrors = asArray(input.runtimeErrors)
     .map(runtimeErrorOf)
     .filter((entry): entry is ExtensionRuntimeErrorSummary => entry !== null);
+
+  diagnostics.push(...builtinRepairDiagnostics(input.builtin));
 
   return {
     cwd: input.cwd,

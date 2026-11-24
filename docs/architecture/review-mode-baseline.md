@@ -108,21 +108,19 @@ unrelated extension text.
 
 The desktop half of the contract:
 
-- **One visible status row.** `ReviewBar` renders after the above-editor widget
-  strips (the TODO panel) and immediately above the composer, matching terminal
-  Pi's placement. Its text is the extension's `workflow-review` status:
-  `🔍 Reviewing plan… · ESC or /review-pause to pause · /review-abort to stop ·
-<phase detail>`, `⏸ Review paused — /review-resume to continue,
-/review-abort to stop`, or `🔍 review · awaiting decision — /review-abort to
-skip`. The row adds Pause/Abort while running, Resume/Abort while paused, and
-  **Open review tab** during the handoff. The generic working row is suppressed
-  while it is visible and the footer omits `workflow-review` so the line
-  appears once. The bar reads the linked loopback web tab for this session, so
-  a closed review tab degrades to the command path instead of a dead button.
-- **An older extension still gets a line.** If `workflow-review` is absent, the
-  desktop composes the canonical phase line and appends the running hints. The
-  fallback has the commands and phase, but not the extension's live
-  pass/finding detail; the next companion release supplies the full line.
+- **One visible status row.** The extension publishes its review/progress state
+  through the generic contribution contract; the renderer draws a single
+  extension-owned row after the above-editor widget strips (the TODO panel) and
+  immediately above the composer, matching terminal Pi's placement. Its text is
+  the publisher's own; no Review sub-state is parsed from prose. The row
+  exposes the publisher's Pause/Abort/Resume actions (or **Open review tab**
+  during the handoff) as same-owner action references the host re-validates. The
+  generic working row is suppressed while it is visible. A closed review tab
+  degrades to the command path instead of a dead button.
+- **An older extension still gets a line.** If only status prose is published,
+  the generic bar renders it as an ordinary status row. The fallback has the
+  text but not the extension's live pass/finding detail or structured actions;
+  the matching extension release supplies the full contract.
 - **The store refuses prose, not commands.** `sendPrompt`/`sendPromptNow`
   reject anything that does not start with `/` while the workflow status is
   Review, set a hint, and leave the draft untouched. The extension remains the
@@ -135,23 +133,25 @@ skip`. The row adds Pause/Abort while running, Resume/Abort while paused, and
   browser. The review page opens as a focused web tab; `web.open` now carries
   `reload` and honours `activate`, so a reused Plannotator URL is reloaded only
   after the parked view is created, and the app window is raised.
-- **Composer.** The Review badge uses the `info` tone, Stop is hidden while
-  Review owns the turn (Stop would abort the parent run, not the review), and
-  the hint row explains that only review/model/profile commands are accepted.
-- **Todo panel.** The native Todo bar above the panel exposes the four display
-  verbs in Review; the extension's `workflow-todos` status supplies progress
-  while the panel is hidden or Review owns the turn, and a same-path Review
-  rewrite keeps the user's collapse/hide choice (plan-scoped preference).
+- **Composer.** The Review badge uses the `info` tone from the generic
+  contribution contract (the app no longer parses a Review sub-state), Stop is
+  hidden while Review owns the turn (Stop would abort the parent run, not the
+  review), and the hint row explains that only review/model/profile commands are
+  accepted.
+- **Todo panel.** The extension's own todo widget is a read-only frame; the
+  generic contribution bar supplies progress/state (`workflow-todos` is no
+  longer a parsed magic key), and a same-path Review rewrite keeps the user's
+  collapse/hide choice (plan-scoped preference).
 
 Both halves must be upgraded together. A new extension with an old desktop
 degrades to no badge but keeps the extension-side lock; an old extension with
-the new desktop keeps emitting the legacy Plan sub-state, which is parsed as
-Plan and never as Review.
+the new desktop keeps emitting status prose that the generic bar renders as a
+plain row — it is never parsed as a Review sub-state.
 
-Verification: `tests/renderer/review-bar.test.tsx`,
-`tests/shared/workflow-mode.test.ts`, `tests/renderer/session-view.test.tsx`,
-`tests/renderer/session-footer.test.tsx`, `tests/renderer/composer.test.tsx`,
-`tests/renderer/composer-store.test.ts`, `tests/renderer/web-tab-store.test.ts`
-and `tests/main/host-supervisor.test.ts`.
+Verification: `tests/renderer/extension-contributions.test.tsx`,
+`tests/renderer/session-view.test.tsx`, `tests/renderer/session-footer.test.tsx`,
+`tests/renderer/composer.test.tsx`, `tests/renderer/composer-store.test.ts`,
+`tests/renderer/web-tab-store.test.ts` and `tests/main/host-supervisor.test.ts`.
+The retired parser is guarded by `tests/architecture/no-workflow-adapters.test.ts`.
 The manual cross-version matrix in the 2026-11-14 plan (step 19) has not been
 exercised on real provider sessions for this release.

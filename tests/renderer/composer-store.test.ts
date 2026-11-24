@@ -57,7 +57,7 @@ describe("sendPrompt", () => {
     const request = stubRequest(async () => ({}));
     useAppStore.getState().setDraft("tab-1", "please fix it");
 
-    await expect(useAppStore.getState().sendPrompt("tab-1", "please fix it")).resolves.toBe(true);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "please fix it")).resolves.toBe("sent");
 
     expect(request).toHaveBeenCalledWith({
       tabId: "tab-1",
@@ -72,7 +72,9 @@ describe("sendPrompt", () => {
     const request = stubRequest(async () => ({}));
     useAppStore.setState({ tabs: [tab("running")] });
 
-    await expect(useAppStore.getState().sendPrompt("tab-1", "one more thing")).resolves.toBe(true);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "one more thing")).resolves.toBe(
+      "sent",
+    );
     expect(request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: "prompt",
@@ -112,7 +114,7 @@ describe("sendPrompt", () => {
     stubRequest(async () => {
       throw new Error("the agent is already streaming");
     });
-    await expect(useAppStore.getState().sendPrompt("tab-1", "hi")).resolves.toBe(false);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "hi")).resolves.toBe("refused");
     expect(useAppStore.getState().hint).toMatch(/already streaming/);
   });
 
@@ -133,7 +135,7 @@ describe("sendPrompt", () => {
 
     await vi.waitFor(() => expect(typeof release).toBe("function"));
     release({});
-    await expect(pending).resolves.toBe(true);
+    await expect(pending).resolves.toBe("sent");
   });
 
   it("restores a refused send above a newer draft", async () => {
@@ -155,7 +157,7 @@ describe("sendPrompt", () => {
     await vi.waitFor(() => expect(typeof reject).toBe("function"));
     reject(new Error("host is down"));
 
-    await expect(pending).resolves.toBe(false);
+    await expect(pending).resolves.toBe("refused");
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("please fix it\n\na newer thought");
   });
 
@@ -244,7 +246,7 @@ describe("runExtensionCommand", () => {
 describe("bash mode", () => {
   it("routes `!command` to bash.run and never to prompt", async () => {
     const request = stubRequest(async () => ({ result: { output: "/work/app" } }));
-    await expect(useAppStore.getState().sendPrompt("tab-1", "!pwd")).resolves.toBe(true);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "!pwd")).resolves.toBe("sent");
     const bashCalls = request.mock.calls.filter(([input]) => input.method === "bash.run");
     expect(bashCalls).toHaveLength(1);
     expect(request.mock.calls.some(([input]) => input.method === "prompt")).toBe(false);
@@ -283,19 +285,19 @@ describe("bash mode", () => {
 
     await vi.waitFor(() => expect(typeof release).toBe("function"));
     release({});
-    await expect(pending).resolves.toBe(true);
+    await expect(pending).resolves.toBe("sent");
   });
 
   it("ignores a bare `!` (nothing to run)", async () => {
     const request = stubRequest(async () => ({}));
-    await expect(useAppStore.getState().sendPrompt("tab-1", "!   ")).resolves.toBe(false);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "!   ")).resolves.toBe("refused");
     expect(request).not.toHaveBeenCalled();
   });
 
   it("refuses a second command while one runs and keeps the text", async () => {
     const request = stubRequest(async () => ({}));
     useAppStore.setState({ sessionStates: { "tab-1": { bashRunning: true } as never } });
-    await expect(useAppStore.getState().sendPrompt("tab-1", "!ls")).resolves.toBe(false);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "!ls")).resolves.toBe("refused");
     expect(request).not.toHaveBeenCalled();
     expect(useAppStore.getState().hint).toMatch(/already running/i);
   });
@@ -508,7 +510,7 @@ describe("prompt history (2026-11-07 plan)", () => {
     useAppStore.getState().setDraft("tab-1", "pending");
     useAppStore.getState().historyStep("tab-1", -1, 0);
 
-    await expect(useAppStore.getState().sendPrompt("tab-1", "newest")).resolves.toBe(true);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "newest")).resolves.toBe("sent");
 
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("");
     expect(useAppStore.getState().historyBrowse["tab-1"]).toBeUndefined();
@@ -789,13 +791,17 @@ describe("input-ownership prompt guard", () => {
     useAppStore.setState({ contributions: { "tab-1": locked }, hint: null });
     useAppStore.getState().setDraft("tab-1", "please fix it");
 
-    await expect(useAppStore.getState().sendPrompt("tab-1", "please fix it")).resolves.toBe(false);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "please fix it")).resolves.toBe(
+      "refused",
+    );
     expect(request).not.toHaveBeenCalled();
     // The draft is preserved so the user can use the published controls.
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("please fix it");
     expect(useAppStore.getState().hint).toMatch(/An extension owns this turn/);
 
-    await expect(useAppStore.getState().sendPrompt("tab-1", "!git status")).resolves.toBe(false);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "!git status")).resolves.toBe(
+      "refused",
+    );
     expect(request).not.toHaveBeenCalled();
   });
 
@@ -811,7 +817,9 @@ describe("input-ownership prompt guard", () => {
 
     // A non-publishing extension keeps working through ordinary prose: the app
     // no longer parses its status as authority.
-    await expect(useAppStore.getState().sendPrompt("tab-1", "plain text")).resolves.not.toBe(false);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "plain text")).resolves.not.toBe(
+      "refused",
+    );
     expect(request).toHaveBeenCalled();
   });
 });
