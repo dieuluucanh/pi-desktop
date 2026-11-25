@@ -550,6 +550,24 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
           (name) => !registered.includes(name),
         );
         expect(missing.sort()).toEqual([...PINNED_ARTIFACT_MISSING].sort());
+
+        // The hyphenated siblings are gone: each family has one command and a
+        // verb argument. The canonical grammar lives in `command.name +
+        // command.args`, so a removed name must never be registered again.
+        for (const removed of [
+          "orchestrator-pause",
+          "orchestrator-resume",
+          "orchestrator-abort",
+          "orchestrator-view",
+          "review-mode",
+          "review-prompt",
+          "review-status",
+          "review-pause",
+          "review-resume",
+          "review-abort",
+        ]) {
+          expect(registered, `/${removed} must not be registered`).not.toContain(removed);
+        }
       } finally {
         await booted.cleanup();
       }
@@ -1048,17 +1066,19 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
     it("keeps the Review control commands safe when no review round exists", async () => {
       const booted = await boot();
       try {
-        await booted.run("review-status");
+        // One `/review` command with verb arguments; the hyphenated siblings are
+        // no longer registered (asserted in the inventory test above).
+        await booted.run("review", "status");
         expect(booted.notices()).toMatch(/review/i);
 
         booted.ui.notifies.length = 0;
-        await booted.run("review-pause");
+        await booted.run("review", "pause");
         expect(booted.notices()).toMatch(/no .*review|not (?:running|paused)|nothing/i);
 
         booted.ui.notifies.length = 0;
-        await booted.run("review-resume");
-        await booted.run("review-abort");
-        await booted.run("review-prompt", "say hello to the reviewer");
+        await booted.run("review", "resume");
+        await booted.run("review", "abort");
+        await booted.run("review", "prompt");
 
         // No reviewer was started, so no model/provider/tool work happened and
         // no prompt was routed to a phantom session.
@@ -1300,11 +1320,13 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
       }
     });
 
-    it("refuses an Orchestrator start with no approved plan or agreed steps", async () => {
+    it("refuses an Orchestrator start with no approved plan", async () => {
       const booted = await boot();
       try {
+        // `start` requires Orchestrator mode and no longer switches implicitly.
+        await booted.run("orchestrator");
         await booted.run("orchestrator", "start");
-        expect(booted.notices()).toMatch(/No agreed steps were found/i);
+        expect(booted.notices()).toMatch(/No approved plan is bound/);
         expect(booted.notices()).toMatch(/\/orchestrator start <path>/);
         assertNoExecution(booted.pi);
         expect(booted.relatedRequests()).toEqual([]);
@@ -1318,18 +1340,21 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
     it("keeps child controls honest and inert when no in-process child exists", async () => {
       const booted = await boot();
       try {
-        for (const name of ["orchestrator-pause", "orchestrator-resume", "orchestrator-abort"]) {
-          expect(booted.pi.commands.has(name), `/${name} is registered`).toBe(true);
-          await booted.run(name);
+        expect(booted.pi.commands.has("orchestrator"), "/orchestrator is registered").toBe(true);
+        // The child verbs require Orchestrator mode; enter it without a run so
+        // the controls hit the no-run guard before any child effect.
+        await booted.run("orchestrator");
+        for (const verb of ["pause", "resume", "abort"]) {
+          await booted.run("orchestrator", verb);
         }
-        expect(booted.notices()).toMatch(/No Orchestrator child is active\./);
-        // Pause/resume/abort never claim success without a live child.
+        expect(booted.notices()).toMatch(/No Orchestrator run is bound yet/);
+        // Pause/resume/abort never claim success without a live child or run.
         expect(booted.notices()).not.toMatch(/Child paused\.|Child resumed\.|Child aborted\./);
 
-        await booted.run("orchestrator-view", "child");
-        expect(booted.notices()).toMatch(/Orchestrator view: child/);
+        await booted.run("orchestrator", "view child");
+        expect(booted.notices()).toMatch(/View: child/);
         expect(booted.notices()).toMatch(/No child is active\./);
-        await booted.run("orchestrator-view", "auto");
+        await booted.run("orchestrator", "view auto");
 
         assertNoExecution(booted.pi);
         expect(booted.relatedRequests()).toEqual([]);

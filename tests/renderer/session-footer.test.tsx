@@ -128,7 +128,7 @@ describe("SessionFooter", () => {
         facts={{}}
         statuses={{
           workflow: "🔍 review",
-          "workflow-review": "🔍 Reviewing plan… · /review-pause",
+          "workflow-review": "🔍 Reviewing plan… · /review pause",
         }}
       />,
     );

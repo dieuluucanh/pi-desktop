@@ -288,18 +288,18 @@ visible while main still rejects the call.
   Verify a Command Code model in `/model`, then remove the old hand-written
   `command-code` entry from `models.json`. If the failure still recurs on a different
   provider, switch the reviewer (`/profile use …` or `/role set reviewer …`) and retry
-  `/review`; `/review-status` names the model and the last provider error. See
+  `/review`; `/review status` names the model and the last provider error. See
   [Review Mode provider baseline](../architecture/review-mode-baseline.md).
 
 - **Manual `/review` shows no “Reviewing” status** — fixed: an extension-owned
   round on an idle tab now renders one review row below the todo panel, with the
   same hint-complete line terminal Pi paints (`🔍 Reviewing plan… · ESC or
-/review-pause to pause · /review-abort to stop`), and forwards Escape, so it
+/review pause to pause · /review abort to stop`), and forwards Escape, so it
   pauses exactly like an automatic round.
 - **The composer refuses my prompt during a review** — that is the isolated Review
   mode (`@dieulc/workflow` 0.11.0+): prose and `!` shell commands are refused while
   the reviewer owns the turn, with a hint and your draft kept. Use the **Review**
-  row (Pause/Resume/Abort), `/review-pause`, `/review-resume`, `/review-abort`, or
+  row (Pause/Resume/Abort), `/review pause`, `/review resume`, `/review abort`, or
   change model/profile. Approve or annotate in the review tab to hand the plan
   back. With an older workflow extension the row falls back to the canonical line
   (the commands and phase are still named), so the controls remain available.
@@ -308,19 +308,19 @@ visible while main still rejects the call.
   Pi process, that process keeps its own browser behaviour; the desktop tab's
   **Open in browser** button is the deliberate escape hatch in the other direction.
 - **The Review row has no Open review tab button** — the linked loopback tab was
-  closed, or the page is not a loopback URL. `/review-abort` still hands the plan
+  closed, or the page is not a loopback URL. `/review abort` still hands the plan
   over, and **Open in browser** in the tab chrome (or the notification row) can
   reopen it.
 - **Review round 2+ does not reopen Plannotator** — fixed: a new round or manual
   `/review` supersedes an older browser gate, stale browser decisions are
   discarded, and the full review correlation is persisted. After a reload the
-  extension asks Plannotator `review-status`; `/review-status` names a pending
+  extension asks Plannotator `review-status`; `/review status` names a pending
   browser handoff and its URL.
 - **Esc does not stop the run during a review** — that is deliberate. Escape is
   sent to the session's extension handlers first (the same path terminal Pi uses),
   and Review Mode pauses the round instead of aborting it: the review row shows
-  `⏸ Review paused — /review-resume to continue, /review-abort to stop`. A second
-  Esc stays paused. Use `/review-resume` to continue, or `/review-abort` to end
+  `⏸ Review paused — /review resume to continue, /review abort to stop`. A second
+  Esc stays paused. Use `/review resume` to continue, or `/review abort` to end
   the round and hand the author's plan over. Outside a review, Esc still stops the
   run as before. If you remapped `app.interrupt` in `keybindings.json` to a chord
   with no terminal encoding (anything but Escape and the byte-encodable chords),

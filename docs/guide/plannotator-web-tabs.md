@@ -31,8 +31,8 @@ unaffected and keeps opening the system browser.
 
 While Review owns the turn the session shows a **Review bar** (Pause/Resume/
 Abort, or **Open review tab** during the handoff). The composer refuses prose
-and `!` shell commands with a hint and keeps your draft; `/review-pause`,
-`/review-resume`, `/review-abort` and `/model`/`/thinking`/`/profile` stay
+and `!` shell commands with a hint and keeps your draft; `/review pause`,
+`/review resume`, `/review abort` and `/model`/`/thinking`/`/profile` stay
 available. Approve or annotate in the review tab to hand the plan back to Plan
 or Build.
 

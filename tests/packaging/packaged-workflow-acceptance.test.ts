@@ -197,7 +197,9 @@ describe("registration counting", () => {
     expect(REQUIRED_REFINEMENT_COMMANDS).toContain("prompt");
     expect(REQUIRED_REFINEMENT_COMMANDS).toContain("prompt-refine-companion");
     expect(REQUIRED_PARITY_COMMANDS).toContain("workflow-cycle");
-    expect(REQUIRED_PARITY_COMMANDS).toContain("review-abort");
+    expect(REQUIRED_PARITY_COMMANDS).toContain("review");
+    expect(REQUIRED_PARITY_COMMANDS).toContain("orchestrator");
+    expect(REQUIRED_PARITY_COMMANDS).not.toContain("review-abort");
     expect(new Set(REQUIRED_PARITY_COMMANDS).size).toBe(REQUIRED_PARITY_COMMANDS.length);
   });
 });

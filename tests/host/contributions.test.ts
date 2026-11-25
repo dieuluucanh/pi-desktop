@@ -28,7 +28,7 @@ const envelope = (over: Partial<ContributionEnvelope> = {}): ContributionEnvelop
 function harness() {
   const emitted: Array<{ event: string; payload?: unknown }> = [];
   const commands: Array<{ name: string; args: string }> = [];
-  let known = new Set(["build", "review-pause"]);
+  let known = new Set(["build", "review"]);
   const host = createContributionHost({
     emit: (event, payload) => emitted.push({ event, payload }),
     runCommand: async (name, args) => {
@@ -184,6 +184,31 @@ describe("contribution host registry", () => {
     expect(snapshot.contributions[0]?.command).not.toHaveProperty("args");
     await expect(h.host.runAction("dieulc.example", "go")).resolves.toEqual({ ran: true });
     expect(h.commands).toEqual([{ name: "build", args: "--fast" }]);
+  });
+
+  it("routes a /review action verb through the host-owned command.args", async () => {
+    const h = harness();
+    h.host.receive(
+      envelope({
+        contributions: [
+          {
+            id: "review-pause",
+            kind: "action",
+            slot: "action",
+            label: "Pause review",
+            tone: "accent",
+            order: 0,
+            command: { name: "review", args: "pause" },
+            enabled: true,
+          },
+        ],
+      }),
+    );
+    await expect(h.host.runAction("dieulc.example", "review-pause")).resolves.toEqual({
+      ran: true,
+    });
+    // `review` is the registered command; `pause` is its host-owned verb arg.
+    expect(h.commands).toEqual([{ name: "review", args: "pause" }]);
   });
 
   it("refuses a disabled action and a nested display action", async () => {
