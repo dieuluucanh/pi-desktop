@@ -15,8 +15,11 @@
  */
 
 import {
+  ACTION_PLACEMENTS,
   sortContributions,
+  type ActionPlacement,
   type Contribution,
+  type ContributionActionGroup,
   type ContributionKind,
   type ContributionSlot,
   type ContributionTone,
@@ -51,12 +54,24 @@ export interface ContributionView {
   stale?: boolean;
   /** Input only. */
   availability?: InputAvailability;
-  /** Mode/composer-control only: id of the same-owner action that activates this label. */
+  /**
+   * Mode/mode-choice/composer-control only: id of the same-owner top-level
+   * `kind:"action"` that owns execution and disabled state. A reference never
+   * carries a command of its own.
+   */
   actionRef?: string;
   /** Composer-control only: same-owner action that starts the transform. */
   transformActionRef?: string;
-  /** Composer-control only: presentation state (never a command). */
+  /**
+   * Mode-choice/composer-control only: presentation state (never a command).
+   * For a mode-choice the referenced action still owns execution.
+   */
   checked?: boolean;
+  /**
+   * Action only: additive v1 presentation group. Group identity is
+   * `(ownerId, group.id)`; absent means a legacy ungrouped action.
+   */
+  group?: ContributionActionGroup;
   icon?: ComposerControlIcon;
   behavior?: ComposerControlBehavior;
   /** Related-session only. */
@@ -123,6 +138,16 @@ function toView(ownerId: string, contribution: Contribution): ContributionView {
         ...(contribution.detail === undefined ? {} : { detail: contribution.detail }),
         ...(contribution.actionRef === undefined ? {} : { actionRef: contribution.actionRef }),
       };
+    case "mode-choice":
+      // Presentation data only: the referenced action owns execution. `checked`
+      // is always present so a sanitizer round-trip is byte-stable.
+      return {
+        ...base,
+        text: contribution.label,
+        ...(contribution.description === undefined ? {} : { detail: contribution.description }),
+        actionRef: contribution.actionRef,
+        checked: contribution.checked === true,
+      };
     case "progress":
       return {
         ...base,
@@ -139,6 +164,7 @@ function toView(ownerId: string, contribution: Contribution): ContributionView {
         ...base,
         text: contribution.label,
         ...(contribution.description === undefined ? {} : { detail: contribution.description }),
+        ...(contribution.group === undefined ? {} : { group: contribution.group }),
         command: { name: contribution.command.name },
         enabled: contribution.enabled,
         ...(contribution.disabledReason === undefined
@@ -241,6 +267,28 @@ function asRelation(value: unknown): ContributionView["relation"] | undefined {
     : undefined;
 }
 
+function asPlacement(value: unknown): ActionPlacement | undefined {
+  return typeof value === "string" && (ACTION_PLACEMENTS as readonly string[]).includes(value)
+    ? (value as ActionPlacement)
+    : undefined;
+}
+
+/** Rebuilds an action group from a validated shape; a malformed group is dropped. */
+function asActionGroup(value: unknown): ContributionActionGroup | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const group = value as Record<string, unknown>;
+  const id = asString(group.id, 96);
+  const label = asString(group.label, 120);
+  const placement = asPlacement(group.placement);
+  if (!id || !label || placement === undefined) return undefined;
+  return {
+    id,
+    label,
+    order: typeof group.order === "number" && Number.isFinite(group.order) ? group.order : 0,
+    placement,
+  };
+}
+
 /**
  * Sanitizes a snapshot crossing the IPC frame (or restored from a stale tab).
  * Unknown kinds are dropped, actions keep only a plain command name, and no
@@ -260,6 +308,7 @@ export function sanitizeContributionSnapshot(value: unknown): ContributionSnapsh
       const kind = entry.kind;
       if (
         kind !== "mode" &&
+        kind !== "mode-choice" &&
         kind !== "progress" &&
         kind !== "status" &&
         kind !== "action" &&
@@ -269,44 +318,61 @@ export function sanitizeContributionSnapshot(value: unknown): ContributionSnapsh
       ) {
         continue;
       }
+      const slot = asString(entry.slot, 20) ?? kind;
       const command = asRecord(entry.command);
       const commandName = asString(command.name, 64);
-      // A mode action reference is an id, never a command: the host resolves the
-      // live action (and refuses a missing/other-owner one) at run time.
+      // A mode/mode-choice action reference is an id, never a command: the host
+      // resolves the live action (and refuses a missing/other-owner one) at run
+      // time. A mode-choice cannot be interactive without one.
       const actionRef = asString(entry.actionRef, 96);
+      if (kind === "mode-choice") {
+        // Own slot only: a choice must never claim the primary mode identity,
+        // and its required reference must be a plain id.
+        if (slot !== "mode-choice" || actionRef === undefined) continue;
+      }
       const transformActionRef = asString(entry.transformActionRef, 96);
       const icon = asString(entry.icon, 24);
       const behavior = asString(entry.behavior, 24);
       const availability = asAvailability(entry.availability);
       const relation = asRelation(entry.relation);
       const sessionRef = asString(entry.sessionRef, 400);
+      // A malformed group only loses its presentation metadata; the action
+      // itself stays usable as a legacy ungrouped action.
+      const group = kind === "action" ? asActionGroup(entry.group) : undefined;
       contributions.push({
         ownerId,
         id,
         kind,
-        slot: (asString(entry.slot, 20) ?? kind) as ContributionView["slot"],
+        slot: slot as ContributionView["slot"],
         tone: (asString(entry.tone, 20) ?? "neutral") as ContributionView["tone"],
         order: typeof entry.order === "number" && Number.isFinite(entry.order) ? entry.order : 0,
         text,
         ...(asString(entry.detail, 1_200) === undefined
           ? {}
           : { detail: asString(entry.detail, 1_200) as string }),
-        ...((kind === "mode" || kind === COMPOSER_CONTROL_KIND) && actionRef !== undefined
+        ...((kind === "mode" || kind === "mode-choice" || kind === COMPOSER_CONTROL_KIND) &&
+        actionRef !== undefined
           ? { actionRef }
           : {}),
-        ...(kind !== COMPOSER_CONTROL_KIND
+        ...(kind !== "mode-choice" && kind !== COMPOSER_CONTROL_KIND
           ? {}
           : {
-              ...(transformActionRef === undefined ? {} : { transformActionRef }),
               checked: entry.checked === true,
-              ...(icon !== undefined && (COMPOSER_CONTROL_ICONS as readonly string[]).includes(icon)
-                ? { icon: icon as ComposerControlIcon }
-                : {}),
-              ...(behavior !== undefined &&
-              (COMPOSER_CONTROL_BEHAVIORS as readonly string[]).includes(behavior)
-                ? { behavior: behavior as ComposerControlBehavior }
+              ...(kind === COMPOSER_CONTROL_KIND
+                ? {
+                    ...(transformActionRef === undefined ? {} : { transformActionRef }),
+                    ...(icon !== undefined &&
+                    (COMPOSER_CONTROL_ICONS as readonly string[]).includes(icon)
+                      ? { icon: icon as ComposerControlIcon }
+                      : {}),
+                    ...(behavior !== undefined &&
+                    (COMPOSER_CONTROL_BEHAVIORS as readonly string[]).includes(behavior)
+                      ? { behavior: behavior as ComposerControlBehavior }
+                      : {}),
+                  }
                 : {}),
             }),
+        ...(group === undefined ? {} : { group }),
         ...(typeof entry.done === "number" ? { done: entry.done } : {}),
         ...(typeof entry.total === "number" ? { total: entry.total } : {}),
         ...(entry.stale === true ? { stale: true } : {}),
@@ -315,12 +381,17 @@ export function sanitizeContributionSnapshot(value: unknown): ContributionSnapsh
         ...(sessionRef === undefined ? {} : { sessionRef }),
         ...(entry.focusable === true ? { focusable: true } : {}),
         // `enabled` is required on the view: absent means "not disabled", which
-        // matches the wire default and keeps a sanitized row renderable.
-        enabled: entry.enabled !== false,
-        ...(asString(entry.disabledReason, 400) === undefined
+        // matches the wire default and keeps a sanitized row renderable. A
+        // mode-choice owns no execution state: its referenced action does.
+        enabled: kind === "mode-choice" ? true : entry.enabled !== false,
+        ...(kind === "mode-choice" || asString(entry.disabledReason, 400) === undefined
           ? {}
           : { disabledReason: asString(entry.disabledReason, 400) as string }),
-        ...(commandName === undefined ? {} : { command: { name: commandName } }),
+        // Only a top-level action is executable, so only it may carry a command
+        // name through the frame; a mode-choice can never gain one.
+        ...(commandName === undefined || kind !== "action"
+          ? {}
+          : { command: { name: commandName } }),
       });
     }
   }
@@ -357,6 +428,40 @@ export function contributionViewsBySlot(
   return snapshot.contributions.filter((entry) => entry.slot === slot);
 }
 
+/** Inline bar buttons are capped; the rest move to their group or overflow. */
+export const MAX_INLINE_ACTIONS = 3;
+
+/**
+ * One action group as the bar renders it. Group identity is
+ * `(ownerId, group.id)`, so two publishers can never merge accidentally.
+ *
+ * Metadata comes from the FIRST declaration in presentation order; later
+ * conflicting declarations for the same `(ownerId, group.id)` keep the first
+ * `label`/`order`/`placement` and only contribute their actions here.
+ */
+export interface ContributionActionGroupView {
+  ownerId: string;
+  id: string;
+  label: string;
+  order: number;
+  placement: ActionPlacement;
+  /** Group members in action order/id order; empty groups are never emitted. */
+  actions: ContributionView[];
+}
+
+/**
+ * One mode-menu entry: the renderer-safe `mode-choice` view (label in `text`,
+ * optional `detail`, `checked`) plus its resolved same-owner action.
+ *
+ * `action` is `null` when the reference is dangling, cross-owner, wrong-kind or
+ * the choice carries no reference: the entry stays visible and non-actionable
+ * rather than inventing a command.
+ */
+export interface ContributionModeChoice {
+  choice: ContributionView;
+  action: ContributionModeAction | null;
+}
+
 export interface ContributionModeAction {
   /** Owner of the mode and of the referenced action (always the same). */
   ownerId: string;
@@ -380,8 +485,14 @@ export interface ContributionModeAction {
  * - `rows` keep every progress/status/secondary-mode row visible, including
  *   those from unrelated owners. Nothing is filtered by label, owner or
  *   command name.
- * - `actions` excludes the mode action only when the corner control consumes
- *   it, so a publisher never shows the same control twice.
+ * - `actions` excludes every same-owner action the corner control consumes:
+ *   the primary mode's `actionRef` and each mode-choice's resolved
+ *   `actionRef`. A publisher never shows the same control twice, and a
+ *   dangling/cross-owner reference excludes nothing (the other owner keeps its
+ *   action).
+ * - `inlineActions`/`overflowActions`/`actionGroups` partition `actions` once
+ *   (owner-namespaced) group metadata resolves, so the bar never re-derives
+ *   placement or owner rules.
  */
 export interface ContributionBarModel {
   mode: ContributionView | null;
@@ -396,18 +507,36 @@ export interface ContributionBarModel {
    * Desktop simply never receives the kind.
    */
   composerControls: ContributionView[];
+  /**
+   * Mode-menu entries: `mode-choice` views from the primary mode's owner only,
+   * in presentation order (order, then id). Empty when there is no primary mode
+   * or a choice belongs to another owner.
+   */
+  modeChoices: ContributionModeChoice[];
+  /** First `MAX_INLINE_ACTIONS` inline-grouped and legacy ungrouped actions. */
+  inlineActions: ContributionView[];
+  /** Menu groups plus inline groups whose actions overflowed the inline cap. */
+  actionGroups: ContributionActionGroupView[];
+  /** Legacy ungrouped actions beyond the inline cap. */
+  overflowActions: ContributionView[];
+  /** Progress/status views for the footer rail, in presentation order. */
+  progressRows: ContributionView[];
+  statusRows: ContributionView[];
 }
 
 const SLOT_RANK: Record<ContributionSlot, number> = {
   mode: 0,
-  progress: 1,
-  status: 2,
-  action: 3,
-  input: 4,
-  sessions: 5,
+  // A mode-choice is menu data only: it sorts after mode/action rows and is
+  // never returned as `mode` or as an ordinary row.
+  "mode-choice": 1,
+  progress: 2,
+  status: 3,
+  action: 4,
+  input: 5,
+  sessions: 6,
   // Composer controls are projected by the composer-actions row in step 16;
   // the ordinary contribution bar does not render them.
-  "composer-actions": 6,
+  "composer-actions": 7,
 };
 
 /** Stable, owner-independent presentation order (slot, order, owner, id). */
@@ -421,18 +550,21 @@ function presentationOrder(a: ContributionView, b: ContributionView): number {
 }
 
 /**
- * Resolves a mode's referenced action from the *same owner's* top-level
- * actions. A dangling/cross-owner/wrong-kind id resolves to `null`: the label
- * stays informative and non-interactive rather than inventing a command.
+ * Resolves a mode label's (or mode-choice's) referenced action from the
+ * *same owner's* top-level actions. A dangling/cross-owner/wrong-kind id
+ * resolves to `null`: the label/choice stays informative and non-interactive
+ * rather than inventing a command. Only a top-level `kind:"action"` is ever
+ * accepted, so a reference can never reach a non-executable contribution.
  */
 export function resolveContributionAction(
   snapshot: ContributionSnapshot,
-  mode: ContributionView | null,
+  source: ContributionView | null,
 ): ContributionModeAction | null {
-  if (!mode || mode.kind !== "mode" || mode.actionRef === undefined) return null;
+  if (!source || (source.kind !== "mode" && source.kind !== "mode-choice")) return null;
+  if (source.actionRef === undefined) return null;
   const action = snapshot.contributions.find(
     (entry) =>
-      entry.ownerId === mode.ownerId && entry.id === mode.actionRef && entry.kind === "action",
+      entry.ownerId === source.ownerId && entry.id === source.actionRef && entry.kind === "action",
   );
   if (!action) return null;
   return {
@@ -445,23 +577,118 @@ export function resolveContributionAction(
   };
 }
 
+/** Owner-namespaced group identity: two publishers never merge. */
+function actionGroupKey(ownerId: string, groupId: string): string {
+  return `${ownerId}\u0000${groupId}`;
+}
+
+/** Group members keep action order/id order, independent of input order. */
+function actionOrder(a: ContributionView, b: ContributionView): number {
+  return a.order - b.order || a.id.localeCompare(b.id);
+}
+
 export function buildContributionBar(snapshot: ContributionSnapshot): ContributionBarModel {
   const ordered = [...snapshot.contributions].sort(presentationOrder);
-  const mode = ordered.find((entry) => entry.slot === "mode") ?? null;
+  // Identity is the primary mode only. A `mode-choice` has its own slot and
+  // kind, so it can never be promoted here even when its order/id sorts first.
+  const mode = ordered.find((entry) => entry.kind === "mode" && entry.slot === "mode") ?? null;
   const modeAction = resolveContributionAction(snapshot, mode);
   // The corner control consumes the primary mode and its referenced action.
   // Everything else the publisher sent stays visible as a row/action; only the
-  // identical action reference is excluded so it is not shown twice.
+  // identical action reference is excluded so it is not shown twice. A
+  // mode-choice is menu data only and never becomes an ordinary row.
   const rows = ordered.filter(
     (entry) =>
       entry !== mode &&
+      entry.kind !== "mode-choice" &&
       (entry.slot === "progress" || entry.slot === "status" || entry.slot === "mode"),
   );
+
+  // Mode menu: only choices from the primary mode's owner. A choice cannot be
+  // actionable without a same-owner top-level action, so a bad reference is a
+  // non-actionable entry rather than a command.
+  const modeChoices: ContributionModeChoice[] =
+    mode === null
+      ? []
+      : ordered
+          .filter((entry) => entry.kind === "mode-choice" && entry.ownerId === mode.ownerId)
+          .map((choice) => ({ choice, action: resolveContributionAction(snapshot, choice) }));
+
+  // The mode menu consumes each choice's *resolved same-owner* action, exactly
+  // like `modeAction`. Only resolved references are excluded: a dangling or
+  // cross-owner id matches no action here, so an unrelated publisher keeps its
+  // action in the bar/menu.
+  const consumedActions = new Set<string>();
+  const consume = (action: ContributionModeAction | null): void => {
+    if (action !== null) consumedActions.add(`${action.ownerId}\u0000${action.id}`);
+  };
+  consume(modeAction);
+  for (const entry of modeChoices) consume(entry.action);
+
   const actions = ordered.filter(
-    (entry) =>
-      entry.slot === "action" &&
-      !(modeAction !== null && entry.ownerId === modeAction.ownerId && entry.id === modeAction.id),
+    (entry) => entry.slot === "action" && !consumedActions.has(`${entry.ownerId}\u0000${entry.id}`),
   );
+
+  // Group metadata is resolved from the visible bar actions only. The FIRST
+  // declaration in presentation order wins for label/order/placement; a later
+  // conflicting declaration still joins the same `(ownerId, group.id)` group.
+  const groupMetadata = new Map<string, ContributionActionGroup>();
+  for (const entry of actions) {
+    if (entry.group === undefined) continue;
+    const key = actionGroupKey(entry.ownerId, entry.group.id);
+    if (!groupMetadata.has(key)) groupMetadata.set(key, { ...entry.group });
+  }
+
+  // Inline slot: inline-grouped actions plus the legacy ungrouped fallback, in
+  // presentation order, capped. The group's resolved placement (first
+  // declaration wins) decides where an action goes.
+  const inlineCandidates = actions.filter((entry) => {
+    if (entry.group === undefined) return true;
+    const meta = groupMetadata.get(actionGroupKey(entry.ownerId, entry.group.id));
+    return meta?.placement === "inline";
+  });
+  const inlineActions = inlineCandidates.slice(0, MAX_INLINE_ACTIONS);
+  const inlineOverflow = inlineCandidates.slice(MAX_INLINE_ACTIONS);
+
+  // Ungrouped actions beyond the cap stay a flat overflow list; grouped ones
+  // join the group that already contains their siblings.
+  const overflowActions = inlineOverflow.filter((entry) => entry.group === undefined);
+
+  const grouped = new Map<
+    string,
+    { meta: ContributionActionGroup; ownerId: string; actions: ContributionView[] }
+  >();
+  const addToGroup = (entry: ContributionView): void => {
+    if (entry.group === undefined) return;
+    const key = actionGroupKey(entry.ownerId, entry.group.id);
+    const meta = groupMetadata.get(key);
+    if (meta === undefined) return;
+    const bucket = grouped.get(key);
+    if (bucket) bucket.actions.push(entry);
+    else grouped.set(key, { meta, ownerId: entry.ownerId, actions: [entry] });
+  };
+  // Every menu group action belongs in the menu; inline groups only surface
+  // when the cap pushed some of their actions out of the bar.
+  for (const entry of actions) {
+    if (entry.group === undefined) continue;
+    const meta = groupMetadata.get(actionGroupKey(entry.ownerId, entry.group.id));
+    if (meta?.placement === "menu") addToGroup(entry);
+  }
+  for (const entry of inlineOverflow) addToGroup(entry);
+
+  const actionGroups: ContributionActionGroupView[] = [...grouped.values()]
+    .map((bucket) => ({
+      ownerId: bucket.ownerId,
+      id: bucket.meta.id,
+      label: bucket.meta.label,
+      order: bucket.meta.order,
+      placement: bucket.meta.placement,
+      actions: [...bucket.actions].sort(actionOrder),
+    }))
+    .sort(
+      (a, b) => a.order - b.order || a.ownerId.localeCompare(b.ownerId) || a.id.localeCompare(b.id),
+    );
+
   return {
     mode,
     modeAction,
@@ -470,6 +697,12 @@ export function buildContributionBar(snapshot: ContributionSnapshot): Contributi
     inputs: ordered.filter((entry) => entry.slot === "input"),
     sessions: ordered.filter((entry) => entry.slot === "sessions"),
     composerControls: ordered.filter((entry) => entry.slot === COMPOSER_CONTROL_SLOT),
+    modeChoices,
+    inlineActions,
+    actionGroups,
+    overflowActions,
+    progressRows: ordered.filter((entry) => entry.kind === "progress"),
+    statusRows: ordered.filter((entry) => entry.kind === "status"),
   };
 }
 

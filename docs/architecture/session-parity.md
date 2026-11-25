@@ -97,11 +97,15 @@ drift from the terminal.
     Markdown is a rendered line: `remark-breaks` turns a CommonMark soft break
     into a `<br>`, matching `pi-tui`'s inline renderer, while fenced/indented
     code keeps its own newlines. Extension **plain text** — `ctx.ui.notify`, a
-    `ctx.ui.confirm` message, `ctx.ui.select` option labels,
-    `setWorkingMessage` and the session error banner — is rendered verbatim by
-    `MultilineText` (`white-space: pre-wrap`) and is **never** parsed as
-    Markdown; only `custom_message` / `custom` entry content goes through the
-    Markdown pipeline. The notice severity badge and the bell/toast class and
+    `ctx.ui.confirm` message, `ctx.ui.select` option labels and the session
+    error banner — is rendered verbatim by `MultilineText`
+    (`white-space: pre-wrap`) and is **never** parsed as Markdown; only
+    `custom_message` / `custom` entry content goes through the Markdown
+    pipeline. `setWorkingMessage` keeps the same verbatim, unparsed text, but
+    its bar is one row: the message is clamped visually to a single line with
+    the full value in `title` and in a visually hidden `role="status"` node, so
+    the clamp costs nothing for assistive tech or a hover title (2026-11-25).
+    The notice severity badge and the bell/toast class and
     mute rules are orthogonal to line preservation; they never gate whether the
     transcript row exists. A find query that spans a soft
     break is still counted by the item-model matcher but cannot paint one

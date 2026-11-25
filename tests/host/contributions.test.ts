@@ -310,6 +310,15 @@ describe("contribution bus bridge", () => {
     expect(b.emitted.at(-1)?.channel).toBe(CONTRIBUTION_EVENTS.hello);
   });
 
+  it("advertises the additive v1 mode-choice kind and slot", () => {
+    const h = harness();
+    const capabilities = h.host.hello();
+    expect(capabilities.kinds).toContain("mode-choice");
+    expect(capabilities.slots).toContain("mode-choice");
+    // The additive kind does not bump the contract version.
+    expect(capabilities.contractVersion).toBe(1);
+  });
+
   it("a throwing bus listener is reported, never propagated", () => {
     const h = harness();
     const errors: unknown[] = [];

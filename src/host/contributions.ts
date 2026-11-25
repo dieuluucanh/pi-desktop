@@ -111,8 +111,8 @@ export function createContributionHost(options: ContributionHostOptions): Contri
 
   const capabilities: HostContributionCapabilities = {
     contractVersion: HOST_CONTRIBUTION_VERSION,
-    kinds: ["mode", "progress", "status", "action", "input", "related-session"],
-    slots: ["mode", "progress", "status", "action", "input", "sessions"],
+    kinds: ["mode", "mode-choice", "progress", "status", "action", "input", "related-session"],
+    slots: ["mode", "mode-choice", "progress", "status", "action", "input", "sessions"],
     maxContributions: HOST_CONTRIBUTION_LIMITS.maxContributions,
     ...options.capabilities,
   };

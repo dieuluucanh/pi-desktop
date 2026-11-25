@@ -155,3 +155,57 @@ Verification: `tests/renderer/extension-contributions.test.tsx`,
 The retired parser is guarded by `tests/architecture/no-workflow-adapters.test.ts`.
 The manual cross-version matrix in the 2026-11-14 plan (step 19) has not been
 exercised on real provider sessions for this release.
+
+## 2026-11-25 follow-up — the merged working bar and Review's Pause/Resume/Abort
+
+This is a follow-up to the 2026-11-14 record above, not a correction of it: the
+behaviour described there was the state at that date. What changed since:
+
+- **One native bar, not two rows.** `WorkingRow` and `ContributionsBar` are
+  replaced by a single `WorkingBar`: one thin row directly above the composer
+  (after the widget strips and the related-sessions bar). Review keeps that bar —
+  it is no longer suppressed while a contribution declares `inputLocked`; the
+  lock is drawn from the bar's `input` row as a lock marker with its reason. So
+  Review, the handoff phase, Orchestrator parent and child and ordinary runs
+  share one row shape. `RunStatusRow` (retry/compaction) stays a separate
+  transient row because it is not a working status.
+- **Review publishes Pause/Resume + Abort as ordinary working controls.** While
+  the review runs it publishes `Pause review` (`/review pause`) and
+  `Abort review` (`/review abort`) in an inline group; while it is paused it
+  publishes `Resume review` (`/review resume`) and `Abort review`. The generic
+  bar renders them inline as compact buttons and knows no “review”. During
+  handoff no Pause/Abort controls are published; the input lock, the mode's
+  disabled reasons and the host-provided linked review tab remain. The old
+  `Review status`/`Stop review` pair is no longer part of the working controls;
+  the footer/status line carries the phase detail.
+- **Telemetry moved to the footer rail.** Contribution `status`/`progress` rows
+  no longer render in the bar: `SessionFooter` renders them after the
+  `ctx.ui.setStatus` entries, wrapping inside a bounded `min-h-10 max-h-24` rail
+  instead of truncating a status at 48ch. The child telemetry line is readable
+  there, and the publisher stops publishing the duplicate `orchestrator-child`
+  status row (the `workflow-orchestrator` status remains the footer's source).
+- **The TODO panel and its header are untouched.** The panel is still the
+  extension's own read-only TUI widget frame, header included
+  (`Child x/x · model · ctx · local todos`). Desktop parses nothing, moves
+  nothing and adds no second progress row or `Todos n/m` chip above the
+  composer; when the bar is idle with menu actions it shows the first menu
+  group's label (`Todos`) next to the three-dot trigger.
+- **The mode label is a split control** when the publisher supplies same-owner
+  `mode-choice` entries: the label still cycles on click/Tab, and a chevron
+  opens an upward list where the current mode is checked and disabled.
+
+The Desktop half stays generic — `HOST_CONTRIBUTION_VERSION` remains 1 and the
+new `group`/`mode-choice` shapes are additive, with `mode-choice` in its own
+slot so no slot-based reader can promote a menu entry into the composer's mode.
+No Workflow id, glyph, `workflow-*` key or `/review-*` dispatch lives in `src/`;
+`tests/architecture/no-workflow-adapters.test.ts` still guards it. The publisher
+half is `@dieulc/workflow` 0.15.0; the currently staged/pinned bundle
+(`resources/workflow.lock.json`) is still 0.13.0, whose fallback uses the
+hyphenated `/review-pause`, `/review-resume` and `/review-abort` commands and
+renders as flat actions behind the dots.
+
+Verification: `tests/renderer/working-bar.test.tsx` (replaces
+`contributions-bar.test.tsx`), `tests/renderer/session-footer.test.tsx`,
+`tests/renderer/composer.test.tsx`, `tests/renderer/session-view.test.tsx`,
+`tests/renderer/extension-ui.test.tsx`, `tests/shared/extension-contributions.test.ts`
+and `tests/shared/extension-contributions-view.test.ts`.

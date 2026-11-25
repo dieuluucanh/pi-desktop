@@ -154,8 +154,9 @@ describe("mode cycle through the real contribution boundary", () => {
 
     expect(screen.getByTestId("composer-mode-button")).toHaveTextContent("Plan");
     expect(screen.getByLabelText("Prompt")).toHaveClass("border-warn");
-    // The mode is not repeated as a bar; only the composer corner owns it.
-    expect(screen.queryByTestId("contributions-bar")).toBeNull();
+    // The mode is not repeated as a bar; only the composer corner owns it, and
+    // the referenced cycle action is consumed there.
+    expect(screen.queryByTestId("working-bar")).toBeNull();
   });
 
   it("advances to the newly published mode on click, never optimistically", async () => {
@@ -181,7 +182,7 @@ describe("mode cycle through the real contribution boundary", () => {
     await waitFor(() =>
       expect(screen.getByTestId("composer-mode-button")).toHaveTextContent("Orchestrator"),
     );
-    expect(screen.queryByTestId("contributions-bar")).toBeNull();
+    expect(screen.queryByTestId("working-bar")).toBeNull();
   });
 
   it("shows a disabled referenced action without invoking it", () => {
@@ -265,9 +266,12 @@ describe("mode cycle through the real contribution boundary", () => {
     render(<SessionView tabId={TAB} />);
 
     expect(screen.getByTestId("composer-mode-button")).toHaveTextContent("Plan");
-    const bar = screen.getByTestId("contributions-bar");
-    expect(bar).toHaveTextContent("Todos");
+    const bar = screen.getByTestId("working-bar");
+    // The bar carries the generic action, never the mode identity or its cycle
+    // action. The progress row now belongs to the footer rail.
     expect(screen.getByRole("button", { name: "Use direct Build" })).toBeInTheDocument();
+    expect(bar).not.toHaveTextContent("Todos");
+    expect(screen.getByTestId("session-footer")).toHaveTextContent("Todos");
     expect(bar).not.toHaveTextContent("Plan");
     expect(bar).not.toHaveTextContent("Cycle mode");
   });

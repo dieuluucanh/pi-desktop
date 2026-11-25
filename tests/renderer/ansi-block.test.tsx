@@ -2,6 +2,7 @@ import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { AnsiBlock, AnsiLine } from "../../src/renderer/src/tui/AnsiBlock";
+import { stripAnsi, visibleWidth } from "../../src/shared/ansi";
 
 /**
  * ANSI → HTML (plan step 17).
@@ -69,6 +70,29 @@ describe("AnsiBlock", () => {
   it("pads a short line to the frame width", () => {
     const { container } = render(<AnsiLine line="ab" width={5} />);
     expect(container.textContent).toBe("ab   ");
+  });
+
+  it("soft-wraps on request without fixed-width padding", () => {
+    // The footer rail (plan step 4) shares its row with the session facts, so an
+    // ANSI telemetry line wraps inside the rail instead of being clipped. The
+    // default stays the fixed terminal grid (`whitespace-pre` + padding).
+    const line = "\x1b[33mplan \x1b[0m".repeat(20).trim();
+    const wrapped = render(<AnsiLine line={line} width={visibleWidth(line)} wrap />);
+
+    const root = wrapped.container.firstElementChild as HTMLElement;
+    expect(root.className).toContain("whitespace-pre-wrap");
+    expect(root.className).toContain("break-words");
+    expect(root.className).not.toContain("whitespace-pre ");
+    // No padding: the line occupies exactly its own text.
+    expect(root.textContent).toBe(stripAnsi(line));
+    // Colour is preserved per span.
+    expect(root.querySelector("span")?.style.color).toBe("rgb(215, 175, 95)");
+
+    wrapped.unmount();
+    const plain = render(<AnsiLine line="ab" width={5} />);
+    const plainRoot = plain.container.firstElementChild as HTMLElement;
+    expect(plainRoot.className).toBe("ansi-line whitespace-pre");
+    expect(plainRoot.textContent).toBe("ab   ");
   });
 
   it("repaints a background-filled span with the app's selection style", () => {

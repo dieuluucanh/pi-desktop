@@ -8,7 +8,6 @@ import { CONTROL_TAB_ID } from "../../src/shared/session-ipc";
 import type { ExtensionDialogRequest } from "../../src/shared/extension-ui";
 import { ExtensionDialogDock } from "../../src/renderer/src/extension-ui/ExtensionDialog";
 import { WidgetStrip } from "../../src/renderer/src/extension-ui/WidgetStrip";
-import { WorkingRow } from "../../src/renderer/src/extension-ui/WorkingRow";
 import { StatusBar } from "../../src/renderer/src/layout/StatusBar";
 import { ToolCard, Transcript } from "../../src/renderer/src/session/Transcript";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
@@ -570,77 +569,6 @@ describe("WidgetStrip", () => {
   it("renders nothing without widgets", () => {
     const { container } = render(<WidgetStrip tabId={TAB} placement="aboveEditor" />);
     expect(container).toBeEmptyDOMElement();
-  });
-});
-
-describe("WorkingRow", () => {
-  it("shows the custom message and hides on demand", () => {
-    const { rerender } = render(
-      <WorkingRow
-        working={{ message: "Compacting", visible: null, frames: null, intervalMs: null }}
-      />,
-    );
-    expect(screen.getByText("Compacting")).toBeInTheDocument();
-
-    rerender(
-      <WorkingRow working={{ message: null, visible: false, frames: null, intervalMs: null }} />,
-    );
-    expect(screen.queryByTestId("extension-working-row")).toBeNull();
-  });
-
-  it("keeps every line of a working message", () => {
-    render(
-      <WorkingRow
-        working={{ message: "line one\nline two", visible: null, frames: null, intervalMs: null }}
-      />,
-    );
-
-    const message = screen.getByText(/line one\s+line two/);
-    expect(message.className).toContain("whitespace-pre-wrap");
-    expect(message.textContent).toBe("line one\nline two");
-  });
-
-  it("uses the default label and hides on empty frames", () => {
-    const { rerender } = render(
-      <WorkingRow working={{ message: null, visible: null, frames: null, intervalMs: null }} />,
-    );
-    expect(screen.getByText("Working…")).toBeInTheDocument();
-
-    rerender(
-      <WorkingRow working={{ message: null, visible: null, frames: [], intervalMs: null }} />,
-    );
-    expect(screen.queryByTestId("extension-working-row")).toBeNull();
-  });
-
-  it("shows elapsed time and the Esc hint for a running session (plan step 8)", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-01-01T00:00:10Z"));
-    render(
-      <WorkingRow
-        working={{ message: null, visible: null, frames: null, intervalMs: null }}
-        startedAt={Date.now() - 65_000}
-        showCancelHint
-      />,
-    );
-    expect(screen.getByText("1:05")).toBeInTheDocument();
-    expect(screen.getByText("Esc to cancel")).toBeInTheDocument();
-
-    act(() => {
-      vi.advanceTimersByTime(2_000);
-    });
-    expect(screen.getByText("1:07")).toBeInTheDocument();
-    vi.useRealTimers();
-  });
-
-  it("uses the caller's action hint for a review", () => {
-    render(
-      <WorkingRow
-        working={{ message: "🔍 Reviewing plan…", visible: null, frames: null, intervalMs: null }}
-        showCancelHint
-        cancelHint="ESC to pause · /review pause, /review abort"
-      />,
-    );
-    expect(screen.getByText("ESC to pause · /review pause, /review abort")).toBeInTheDocument();
   });
 });
 

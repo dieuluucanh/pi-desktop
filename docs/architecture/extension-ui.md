@@ -24,9 +24,9 @@ of the SDK's `ExtensionUIContext` appears here.
 | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `select` / `confirm` / `input` / `editor`                         | inline dock in the session column through `oi.request` / `oi.respond`                                   | keyboard-first, live `timeout` countdown (store-enforced), `signal` cancel, Escape cancels                                                                                                                                                                                                                                                                                                                    |
 | `notify(message, type)`                                           | transcript notice + notification bell; warning/error also toast (`oi.notify`)                           | every notification prints in the transcript, like terminal Pi's status line; classes/mute rules filter only the bell and toasts; info starts off for the bell; the archive keeps every notification and Show hidden recovers a suppressed row                                                                                                                                                                 |
-| `setStatus(key, text)`                                            | one column in the wrapping session-footer status rail (`oi.state`)                                      | `undefined` removes the entry; keep status text short so it behaves as a column; values are sanitised for `title` and rendered ANSI-aware                                                                                                                                                                                                                                                                     |
-| `setWidget(key, lines \| factory, opts)`                          | string strip (`oi.state`) or TUI widget frames (`tui.state`)                                            | string arrays keep the strip; a component factory renders above/below the editor dock; a **single-line** component frame joins the footer rail instead of taking its own strip (2026-10-31 UI plan); one owner per key                                                                                                                                                                                        |
-| `setWorkingMessage` / `setWorkingVisible` / `setWorkingIndicator` | the working row above the composer                                                                      | custom frames + interval honoured; `visible:false` hides it                                                                                                                                                                                                                                                                                                                                                   |
+| `setStatus(key, text)`                                            | one column in the wrapping session-footer status rail (`oi.state`)                                      | `undefined` removes the entry; keep status text short so it behaves as a column; values are sanitised for `title` and rendered ANSI-aware; contribution `status`/`progress` rows share this rail, after these entries (2026-11-25)                                                                                                                                                                            |
+| `setWidget(key, lines \| factory, opts)`                          | string strip (`oi.state`) or TUI widget frames (`tui.state`)                                            | string arrays keep the strip; a component factory renders above/below the editor dock; a **single-line** component frame joins the footer rail instead of taking its own strip (2026-10-31 UI plan); one owner per key; the extension’s own TODO panel keeps its frame and header, untouched by the bar (2026-11-25)                                                                                          |
+| `setWorkingMessage` / `setWorkingVisible` / `setWorkingIndicator` | the one working bar above the composer                                                                  | custom frames + interval honoured; a message is the bar’s hint and suppresses the default `Esc to cancel`; `visible:false` and `frames:[]` hide **only** the indicator/message (inline controls, menu and the lock marker stay); the message is clamped visually to one line with the full text in `title` and in a visually hidden `role="status"` node (see “One working bar”, 2026-11-25)                  |
 | `setHiddenThinkingLabel`                                          | transcript thinking blocks                                                                              | replaces the collapsed thinking label                                                                                                                                                                                                                                                                                                                                                                         |
 | `setTitle`                                                        | window title (validated in main)                                                                        | bounded, single-line                                                                                                                                                                                                                                                                                                                                                                                          |
 | `getToolsExpanded` / `setToolsExpanded`                           | transcript tool-card expansion (`oi.state` + `oi.setToolsExpanded`)                                     | the app owns `Ctrl+O`; the host’s copy stays truthful                                                                                                                                                                                                                                                                                                                                                         |
@@ -35,7 +35,7 @@ of the SDK's `ExtensionUIContext` appears here.
 | `addAutocompleteProvider`                                         | the composer’s completion stack (`completion.suggest` / `apply`)                                        | the host runs `factory(current)`; the renderer sends its `/`, `@`, `#` result as `current` (or `null` on a shell line)                                                                                                                                                                                                                                                                                        |
 | `onTerminalInput`                                                 | first shot at keys in the TUI surface                                                                   | runs before the surface’s own handling                                                                                                                                                                                                                                                                                                                                                                        |
 | `custom(factory, opts)`                                           | the TUI surface (`tui.state` frames, whole stack)                                                       | `overlay`/`overlayOptions`/`onHandle` supported; a base component and its overlays are all reported (bottom-to-top, `layers`); returns `undefined` when nothing is shown                                                                                                                                                                                                                                      |
-| `setFooter` / `setHeader`                                         | `setFooter` replaces the built-in session footer; `setHeader` renders a TUI frame in the session column | the factory’s component is rendered per frame; a custom footer owns the statuses **and receives the live git branch and available-provider count** through its `FooterDataProvider`                                                                                                                                                                                                                           |
+| `setFooter` / `setHeader`                                         | `setFooter` replaces the built-in session footer; `setHeader` renders a TUI frame in the session column | the factory’s component is rendered per frame; a custom footer owns the statuses **and receives the live git branch and available-provider count** through its `FooterDataProvider`; because the replacement is wholesale, the generic contribution status/progress rows are **not** injected into it                                                                                                         |
 | `setEditorComponent` / `getEditorComponent`                       | recorded on the UI port; **never mounted**                                                              | the native composer is always the editor; see “A custom editor is recorded, not mounted”                                                                                                                                                                                                                                                                                                                      |
 | `theme` / `getAllThemes` / `getTheme` / `setTheme`                | host theme + `oi.theme`                                                                                 | `setTheme` installs the theme in the host process and persists Pi’s `theme` setting                                                                                                                                                                                                                                                                                                                           |
 
@@ -338,8 +338,157 @@ glyphs, summary or key to infer workflow state. The retired Workflow adapter
 `tests/architecture/no-workflow-adapters.test.ts` fails if the parsers, magic
 keys or command ids return. Status/progress/actions/mode/input come from the
 generic contribution contract, and an extension's own widget is just a
-read-only frame. An older extension that publishes only status prose still gets
-the generic bar, without the structured rows.
+read-only frame. An older extension that publishes only `ctx.ui.setStatus` prose
+still lands in the footer rail, without the structured rows and controls. The
+successor of the deleted native bar is the single `WorkingBar` below.
+
+### One working bar, grouped actions and the mode menu (2026-11-25)
+
+The native chrome above the composer is **one** thin row (`WorkingBar` in
+`src/renderer/src/session/WorkingBar.tsx`), mounted once directly above the
+composer, after the above-editor widget strips and the related-sessions bar
+(where the contributed bar sat before). The old `WorkingRow` and
+`ContributionsBar` are deleted; `RunStatusRow` (retry/compaction) stays separate
+because it is a transient run row, not a second working bar. Each mounted pane
+renders its own copy, one per session tab. The extension's own TODO panel is a
+separate region and is **not** part of this row.
+
+**What the row contains.** A spinner (`working.frames`, else the app's pulsing
+marker), the extension working message or `Working…` when the tab is running,
+the elapsed time, the default `Esc to cancel` hint, the publisher's inline
+controls, a compact linked-tab button, a lock marker for
+`input.availability === "locked"` (its reason in `title`) and the three-dot
+menu. It hides only when _all_ of those are empty — no visible indicator, no idle
+group label, no inline action, no linked tab, no menu, no input lock. It is not
+suppressed while input is locked (Review must show it) and it is not mounted on
+`stopped`/`crashed`/`failed` tabs, so a stale click cannot dispatch into a dead
+host.
+
+**`setWorkingMessage` semantics.** A message is the bar's hint: it renders
+verbatim (never Markdown) and the desktop **does not append** its own
+`Esc to cancel`, because the publisher's text already names its chords. A plain
+run with no extension message keeps `Working… · Esc to cancel`. The message is
+clamped visually to one line (`truncate`, full text in `title`) so the bar stays
+one row, and the same full text is always present in a visually hidden
+`role="status"` node — the clamp is visual only, never a truncation of what
+assistive technology reads. `setWorkingVisible(false)` and
+`setWorkingIndicator({frames: []})` hide **only** the indicator and message: the
+publisher's inline controls, the menu and the lock marker stay, because “hide
+the spinner” is not “remove the controls”.
+
+**Actions may declare a group and a placement.** Optional additive v1 metadata
+on a top-level `kind: "action"` contribution:
+
+```ts
+interface ContributionActionGroup {
+  id: string; // owner-namespaced
+  label: string;
+  order: number; // default 0
+  placement: "inline" | "menu"; // default "inline"
+}
+```
+
+`placement` is a closed enum, so an unknown value is rejected rather than
+guessed. Group identity is `(ownerId, group.id)`: two publishers never merge,
+and the **first declaration in presentation order** fixes the group's
+`label`/`order`/`placement` while a later conflicting declaration only
+contributes its actions. `buildContributionBar()` partitions the visible actions
+once:
+
+- `inlineActions` — inline-grouped and legacy ungrouped actions, in
+  presentation order, capped at `MAX_INLINE_ACTIONS = 3`;
+- `actionGroups` — menu groups, plus an inline group whose members overflowed
+  the cap, ordered by group order, owner id, group id, and actions by action
+  order/id;
+- `overflowActions` — legacy ungrouped actions past the cap (rendered under a
+  generic `More actions` label).
+
+The renderer never re-derives groups or owner rules. A publisher with no group
+keeps exactly the old fallback (the first few inline, the rest behind the dots),
+so the addition is backward compatible.
+
+**`mode-choice` is menu data with its own slot.** A new closed kind:
+
+```ts
+interface ModeChoiceContribution {
+  kind: "mode-choice";
+  slot: "mode-choice"; // its own slot, never "mode"
+  label: string;
+  description?: string;
+  actionRef: string; // same-owner top-level kind:"action" id
+  checked?: boolean; // presentation state only
+}
+```
+
+A choice carries **no command** and no `enabled`/`disabledReason` of its own:
+execution and disabled state belong to the same-owner top-level
+`kind: "action"` named by `actionRef`, resolved exactly like the mode label's
+reference (`resolveContributionAction`). A dangling, cross-owner, wrong-kind or
+missing reference leaves the entry visible and non-actionable instead of
+inventing a command. The dedicated slot is deliberate: `bar.mode`,
+`contributionViewsBySlot(snapshot, "mode")` and every other slot-based reader can
+never promote a menu option into the composer's identity, and
+`buildContributionBar()` excludes choices from `rows`. **Only `kind: "mode"`
+supplies the composer's label/tone/border**; choices from another owner than the
+primary mode are ignored.
+
+**The mode control is a split control.** The published mode label stays the
+cycle button (its pointer-focus rule is unchanged). When the model has
+`modeChoices`, a separate chevron on its right (`aria-label="Switch mode"`,
+`aria-haspopup="menu"`, testid `composer-mode-menu`) opens an upward menu
+(`side="top" align="end"`) with one `role="menuitemradio"` row per choice, a
+check icon and `aria-checked` for the current mode. The current mode is checked
+and disabled with its reason; a choice whose action is missing or disabled is
+disabled with the reason in `title`. Selecting a choice runs the referenced
+action through `contributions.run`, so the label moves only on the next
+validated snapshot — never optimistically. The chevron stays usable while the
+cycle action itself is disabled (e.g. during Review), so the reasons remain
+readable, and a publisher with no choices gets the label alone. The **whole**
+control is measured (label + chevron) so the textarea's first-line reservation
+clears both.
+
+**Status and progress rows live in the footer.** Contribution `status` and
+`progress` rows no longer render in the bar. `SessionFooter` renders them after
+the `ctx.ui.setStatus` entries, tone-aware via `contributionTextClass`, with the
+progress counts (`done/total`, stale marker) appended and `detail ?? text` in
+`title`. The rail is bounded (`min-h-10 max-h-24`) and an entry may wrap
+(`max-w-[72ch]`, `whitespace-pre-wrap break-words`; ANSI lines pass the opt-in
+`wrap` mode of `AnsiLine`), so a long child-telemetry line is readable instead of
+being clipped at 48ch. `contributionRows` counts toward the empty-rail guard.
+
+**A custom `ctx.ui.setFooter()` replaces the footer, rows included.** The
+built-in footer is replaced wholesale, so the generic `status`/`progress` rows
+are deliberately **not** injected into the publisher's custom footer: a
+publisher that replaces the footer owns its own presentation. Statuses are still
+handed to the factory through its `FooterDataProvider`.
+
+**Focus returns to the real owner.** A bar action runs in the host and then
+bumps `surfaceFocusToken` whenever a dialog, dock or floating overlay owns the
+keyboard (`surfaceOwnsKeyboard`), otherwise `composerFocusToken`. A
+questionnaire or extension dialog never loses focus to a bar button.
+
+**The extension TODO panel and its header are untouched.** The panel stays the
+publisher's own read-only TUI widget frame, including the
+`Child 2/7 · model · ctx · local todos` header it composes itself. Desktop never
+parses, moves or re-composes that header, and the bar does not mirror a
+`Todos n/m` chip: when the bar is idle and only has menu actions it shows the
+first menu group's label (e.g. `Todos`) so the three-dot trigger is not an
+orphan. Progress lives in the panel header and the footer rail.
+
+**Compatibility matrix.** The Desktop's staged/pinned publisher bundle is
+`resources/workflow.lock.json` (`@dieulc/workflow` **0.13.0**, verified file by
+file against the lock by `npm run workflow:stage`); the local Workflow checkout
+is **0.14.0**; **0.15.0** is the publisher that ships the group/mode-choice
+metadata. Contribution v1 stays additive: `HOST_CONTRIBUTION_VERSION` does not
+move, and the kinds list in the host capabilities gains `mode-choice`.
+
+| Desktop | Publisher               | Behavior                                                                                                                                                                                                                                                                                                                  |
+| ------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| New     | 0.15.0 (planned)        | Full UX: one working bar, inline Pause/Resume/Abort, grouped three-dot TODO controls, `Auto todos`, the mode chevron, telemetry only in the footer                                                                                                                                                                        |
+| New     | 0.14.0 (local checkout) | No groups and no `mode-choice`: legacy flat actions (first few inline, rest in the dots), no chevron, verb-grammar commands (`/orchestrator pause`, `/review pause`)                                                                                                                                                      |
+| New     | 0.13.0 (staged/pinned)  | Same fallback with hyphenated commands (`/orchestrator-pause`, `/orchestrator-resume`, `/orchestrator-abort`, `/orchestrator-view`, `/review-pause`, `/review-resume`, `/review-abort`, `/review-status`); its `orchestrator-child` status row is routed to the footer and may duplicate the `workflow-orchestrator` line |
+| Old     | 0.15.0                  | The old reader drops the unknown `mode-choice` kind, ignores `group` and renders the remaining actions in its old “first four + More…” layout; the new Review labels are visible, and the removed `orchestrator-child` row does not affect the old footer                                                                 |
+| Old     | 0.13.0 / 0.14.0         | Existing behavior; no regression                                                                                                                                                                                                                                                                                          |
 
 ### Pi-parity rules for custom transcript items (2026-10-19 UI rework)
 
@@ -373,14 +522,20 @@ the publisher says so, is the control that changes it. Two independent Desktop
 mechanisms are involved and neither knows a mode name:
 
 - identity and tone come from a `kind: "mode"` contribution (`label`, `detail`,
-  `tone`); only a mode may define the composer’s label and border. A
-  progress/status row is never promoted into a mode;
+  `tone`); **only a mode** may define the composer’s label and border. A
+  progress/status row is never promoted into a mode, and a `mode-choice` menu
+  entry (its own slot, see “One working bar”) never is either;
 - activation comes from the mode’s optional `actionRef`, the id of a
   **same-owner, top-level `kind: "action"`** contribution. The reference carries
   no command: Desktop sends `(tabId, ownerId, actionId)` through
   `contributions.run`, and the host re-resolves the live action and its
   registered command. A dangling, cross-owner or non-action reference renders an
   informative label with no button.
+- the label is a **split control** when the publisher also supplies same-owner
+  `mode-choice` entries: the label keeps its cycle behaviour and a chevron on its
+  right opens an upward mode list (`role="menuitemradio"`, checked + disabled for
+  the current mode). No choices means no chevron, so a legacy publisher keeps the
+  exact label/cycle control it had.
 
 Nothing is extension-specific: the component (`ComposerModeControl`) never sees
 “workflow”, “plan” or a command name. A third-party publisher gets the same
@@ -408,8 +563,9 @@ fixed `pr-14`, so “Orchestrator” and localized labels do not overlap text.
 extension dialog or docked `TuiSurface` replaces the composer there is
 deliberately no mode strip above it: the requested UX is “the composer label is
 the control”, and a second location would drift. Unrelated task, progress,
-review, handoff and recovery controls keep their own bar; the bar renders
-nothing when none of them are visible (no empty bordered strip).
+review, handoff and recovery controls belong to the single working bar (below),
+and status/progress rows belong to the footer rail; the bar renders nothing when
+none of them are visible (no empty bordered strip).
 
 **Tab and the button share one controller.** A publisher that offers a cycle
 registers one command and one shortcut (Workflow registers `/workflow-cycle` and

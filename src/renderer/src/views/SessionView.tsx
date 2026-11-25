@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Cpu } from "lucide-react";
 import { Composer } from "../session/Composer";
 import { ComposerOperationPanel } from "../session/ComposerOperationPanel";
-import { ContributionsBar } from "../session/ContributionsBar";
 import { RelatedSessionsBar } from "../session/RelatedSessionsBar";
+import { WorkingBar } from "../session/WorkingBar";
 import { StartingBanner } from "../session/StartingBanner";
 import { SessionFooter } from "../session/SessionFooter";
 import { Transcript } from "../session/Transcript";
@@ -14,7 +14,6 @@ import { useAppStore } from "../state/app-store";
 import { selectDefaultModelProblem } from "../state/selectors";
 import { WidgetStrip } from "../extension-ui/WidgetStrip";
 import { ExtensionDialogDock } from "../extension-ui/ExtensionDialog";
-import { WorkingRow } from "../extension-ui/WorkingRow";
 import { RunStatusRow } from "../session/RunStatusRow";
 import { TuiCellProbe, TuiSlotFrame, TuiSurface } from "../tui/TuiSurface";
 import { TuiWidgetStrip, TuiWidgetInline } from "../tui/TuiWidgetStrip";
@@ -42,6 +41,7 @@ import {
   contributionInputLocked,
   EMPTY_CONTRIBUTION_SNAPSHOT,
 } from "../../../shared/extension-contributions-view";
+import { EMPTY_EXTENSION_WORKING } from "../../../shared/extension-ui";
 import {
   EMPTY_COMPOSER_TAB_OPERATION_STATE,
   deriveComposerOperation,
@@ -406,6 +406,28 @@ export function SessionView({ tabId }: { tabId: string }) {
   // composer — otherwise Tab/arrow keys silently stop reaching the extension.
   const surfaceOwnsKeyboard = tuiOwnsComposer || floatingOverlay || dialog !== null;
   const composerUnavailable = surfaceOwnsKeyboard;
+  // A dead host cannot run a contribution command. The bar is not mounted at
+  // all on these tabs, so a stale click has nothing to dispatch into (plan step
+  // 6); `idle`/`starting`/`running` keep the bar.
+  const barHostDead =
+    active.status === "stopped" || active.status === "crashed" || active.status === "failed";
+
+  /**
+   * A working-bar action runs in the host, then hands the keys back to whatever
+   * owned them before the click. The bar's buttons sit outside the composer, so
+   * this uses the same rule as the transcript: a dialog or docked/floating TUI
+   * keeps keyboard ownership (`surfaceFocusToken`, which the dialog dock and
+   * the docked surface already consume), otherwise the composer takes it back.
+   * A questionnaire or dialog must never lose focus to a bar button.
+   */
+  const runBarAction = async (ownerId: string, id: string): Promise<boolean> => {
+    try {
+      return await runContributionAction(active.id, ownerId, id);
+    } finally {
+      if (surfaceOwnsKeyboard) setSurfaceFocusToken((token) => token + 1);
+      else setComposerFocusToken((token) => token + 1);
+    }
+  };
 
   const resetDrop = (): void => {
     dropDepth.current = 0;
@@ -588,20 +610,6 @@ export function SessionView({ tabId }: { tabId: string }) {
               }}
             />
           ) : null}
-          {(active.status === "running" || extensionBusy) && !inputLocked ? (
-            <WorkingRow
-              working={
-                extensionUi?.working ?? {
-                  message: null,
-                  visible: null,
-                  frames: null,
-                  intervalMs: null,
-                }
-              }
-              startedAt={transcript?.runStartedAt ?? null}
-              showCancelHint
-            />
-          ) : null}
           {tuiSurface?.header ? (
             <TuiSlotFrame
               frame={tuiSurface.header}
@@ -617,18 +625,26 @@ export function SessionView({ tabId }: { tabId: string }) {
             onActivate={(id) => void activateTab(id)}
             onOpenArchived={(entry) => void openArchivedRelatedSession(entry)}
           />
-          <ContributionsBar
-            snapshot={contributionSnapshot}
-            linkedTab={
-              inputLocked && linkedWebTabId
-                ? {
-                    label: "Open linked tab",
-                    onOpen: () => void activateTab(linkedWebTabId),
-                  }
-                : null
-            }
-            onRunAction={(ownerId, id) => void runContributionAction(tabId, ownerId, id)}
-          />
+          {/* The single native working bar (one row, plan step 6). It is not
+              suppressed while input is locked: Review must show its own bar,
+              and the lock is drawn from `model.inputs`. */}
+          {barHostDead ? null : (
+            <WorkingBar
+              working={extensionUi?.working ?? EMPTY_EXTENSION_WORKING}
+              running={active.status === "running"}
+              startedAt={transcript?.runStartedAt ?? null}
+              model={contributionBar}
+              linkedTab={
+                inputLocked && linkedWebTabId
+                  ? {
+                      label: "Open linked tab",
+                      onOpen: () => void activateTab(linkedWebTabId),
+                    }
+                  : null
+              }
+              onRunAction={runBarAction}
+            />
+          )}
           {dialog ? (
             <ExtensionDialogDock
               dialog={dialog}
@@ -714,6 +730,7 @@ export function SessionView({ tabId }: { tabId: string }) {
                 }
                 contributionMode={contributionMode}
                 contributionModeAction={contributionModeAction}
+                contributionModeChoices={contributionBar.modeChoices}
                 onRunContributionMode={(ownerId, id) => runContributionAction(tabId, ownerId, id)}
                 composerControls={composerControlProjection.controls}
                 composerControlArmedKeys={composerOperation.armed.map((control) =>
@@ -837,6 +854,10 @@ export function SessionView({ tabId }: { tabId: string }) {
                     : null,
               }}
               statuses={extensionUi?.statuses}
+              // Status/progress rows moved out of the native bar (plan step 6):
+              // the footer is the telemetry rail. A custom `setFooter()`
+              // replacement keeps its own presentation (see SessionFooter).
+              contributionRows={[...contributionBar.statusRows, ...contributionBar.progressRows]}
             />
           )}
           {tuiSurface

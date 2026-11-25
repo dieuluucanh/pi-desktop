@@ -19,6 +19,7 @@ import { isExternalFileDrag, isWorkspaceDrag, readWorkspaceDrop } from "../files
 import { isTabDrag } from "../layout/tab-drag";
 import type {
   ContributionModeAction,
+  ContributionModeChoice,
   ContributionView,
 } from "../../../shared/extension-contributions-view";
 import { contributionBorderClass } from "./contribution-tone";
@@ -125,6 +126,12 @@ export interface ComposerProps {
   contributionMode?: ContributionView | null;
   /** The mode's resolved activation; null keeps the label informative only. */
   contributionModeAction?: ContributionModeAction | null;
+  /**
+   * The publisher's same-owner `mode-choice` entries (the model's
+   * `modeChoices`). They feed the label's chevron menu; empty keeps the legacy
+   * label/cycle control without a menu.
+   */
+  contributionModeChoices?: readonly ContributionModeChoice[];
   /** Runs the mode control's referenced action (`contributions.run`). */
   onRunContributionMode?: (ownerId: string, id: string) => Promise<boolean>;
   /**
@@ -310,6 +317,7 @@ export function Composer({
   queue,
   contributionMode = null,
   contributionModeAction = null,
+  contributionModeChoices = [],
   onRunContributionMode,
   inputLocked = false,
   extensionShortcuts,
@@ -1004,6 +1012,7 @@ export function Composer({
           <ComposerModeControl
             mode={contributionMode}
             action={contributionModeAction}
+            choices={contributionModeChoices}
             bashMode={bashMode}
             onMeasure={onModeMeasure}
             {...(onRunContributionMode ? { onRunAction: onRunContributionMode } : {})}

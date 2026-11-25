@@ -506,13 +506,13 @@ const POLICY_COMMANDS = [
 ] as const;
 
 /**
- * Row commands the **currently pinned** artifact does not register. The W source
- * registers `/workflow` unconditionally (step 31 fix); the staged v0.13.0
- * release predates it, so it appears after the next re-pin. Keeping this an
- * exact ledger makes the test fail in both directions: a newly missing command,
- * or a re-pin that is not reflected here.
+ * Row commands the **currently pinned** artifact does not register. The staged
+ * v0.15.0 release registers the whole row set, including `/workflow` (the
+ * v0.13.0 release predated it). Keeping this an exact ledger makes the test fail
+ * in both directions: a newly missing command, or a re-pin that is not
+ * reflected here.
  */
-const PINNED_ARTIFACT_MISSING: readonly string[] = ["workflow"];
+const PINNED_ARTIFACT_MISSING: readonly string[] = [];
 
 describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
   "staged Workflow artifact: command/mode/config/policy parity",
@@ -1007,7 +1007,7 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
           expect(action.enabled).toBe(true);
         }
         expect(todoActions.map((entry) => entry.id)).toEqual(
-          expect.arrayContaining(["todos-toggle", "todos-hide"]),
+          expect.arrayContaining(["todos-auto", "todos-expand", "todos-collapse", "todos-hide"]),
         );
 
         await booted.run("todos", "hide");
@@ -1282,8 +1282,8 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
     it("enters Orchestrator mode, keeps the run status read-only and dispatches nothing", async () => {
       const booted = await boot();
       try {
-        // Mode entry is display-only: the parent tool set is the read-only
-        // plan/verification set plus the three parent tools, never edit/write.
+        // Mode entry is display-only: 0.15.0 keeps the full Build tool set and
+        // adds the three parent tools; nothing is dispatched on entry.
         await booted.run("orchestrator");
         const tools = lastToolSet(booted.pi) ?? [];
         expect(tools).toEqual(
@@ -1293,17 +1293,22 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
             "orchestrator_retry",
           ]),
         );
-        // Plan-style tools stay registered; the parent's actual mutation gate is
-        // the tool-call hook. Prove the parent cannot edit project sources even
-        // though the tool object exists.
+        // The mutation gate is the tool-call hook. In 0.15.0 the parent keeps
+        // full Build authority until a run is bound and a Build child owns the
+        // worktree, so an edit with no run/child is not refused here; the
+        // bound-child refusal ("A Build child owns this worktree") is pinned by
+        // the Workflow package's own parent-exclusion tests.
+        expect(
+          booted.pi.handlers.get("tool_call")?.length ?? 0,
+          "the tool-call mutation gate is registered",
+        ).toBeGreaterThan(0);
         const verdicts = await booted.pi.emit(
           "tool_call",
           { toolName: "edit", input: { path: "src/child-owned.ts" } },
           booted.ui.ctx,
         );
         const verdict = verdicts[0] as { block?: boolean; reason?: string } | undefined;
-        expect(verdict?.block).toBe(true);
-        expect(String(verdict?.reason)).toMatch(/Orchestrator parent/);
+        expect(verdict?.block).toBeFalsy();
         assertNoExecution(booted.pi);
 
         const status = await booted.runTool("orchestrator_status", {});

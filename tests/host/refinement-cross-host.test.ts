@@ -789,8 +789,14 @@ describe("new host: the real artifact publishes the generic composer control", (
         "the deterministic bootstrap failure",
       );
       const terminal = results.at(-1) as { payload?: { code?: string; message?: string } };
-      expect(terminal.payload?.code).toMatch(/expired|rendezvous-invalid/);
-      expect(booted.ui.notifies.join("\n")).toContain("bootstrap refused (unauthorized)");
+      // 0.15.0 validates the full composer binding (sessionId, epoch, bindingId,
+      // hostGeneration) before it adopts a host-minted grant, so a harness
+      // binding that does not match the live composer is refused as
+      // `invalid-binding`. Older artifacts refused later (expired/rendezvous).
+      expect(terminal.payload?.code).toMatch(/expired|rendezvous-invalid|invalid-binding/);
+      expect(booted.ui.notifies.join("\n")).toMatch(
+        /bootstrap refused \((?:unauthorized|expired|rendezvous-invalid|invalid-binding)\)/,
+      );
       expect(booted.ui.notifies.join("\n")).not.toContain(scenario.draftText);
       expect(logs.join("\n")).not.toContain(scenario.draftText);
       expect(booted.sessions).toHaveLength(0);

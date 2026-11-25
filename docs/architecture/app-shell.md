@@ -20,10 +20,17 @@ status bar       active project path · build version · Pi profile · bundled
 panel rail       docked at the right edge of a session: an always-visible 44 px
                  menu strip (Source Control · Checkpoints · Documents) beside one
                  resizable panel body; the strip's order is user-adjustable
+working bar      one thin extension row directly above the composer (the old
+                 WorkingRow + ContributionsBar duo): working status/hint, inline
+                 publisher controls, a linked-tab button, the three-dot action
+                 menu and the input-lock marker; it is absent when a tab has
+                 nothing to show
 session footer   one responsive status rail under the composer: pwd (branch) ·
                  tokens/cost/context · model • thinking · extension statuses
-                 (ctx.ui.setStatus) · single-line extension widgets; an extension
-                 ctx.ui.setFooter() replaces the whole footer
+                 (ctx.ui.setStatus) · contribution status/progress rows ·
+                 single-line extension widgets; it wraps inside a bounded rail,
+                 and an extension ctx.ui.setFooter() replaces the whole footer
+                 (so the contribution rows are not injected into it)
 overlays         command palette (Ctrl+K), toast host
 ```
 
@@ -207,14 +214,17 @@ Workflow compatibility layer (`src/shared/workflow-mode.ts`,
 `src/shared/workflow-todos.ts`, `ReviewBar`, `TodoPanelBar`) is gone and
 `tests/architecture/no-workflow-adapters.test.ts` keeps it from returning. What
 replaces it is the generic contribution contract: a publisher contributes
-`mode`/`progress`/`status`/`action`/`input` rows that
-`src/renderer/src/session/ContributionsBar.tsx` renders with no extension name,
-and the composer draws an arbitrary publisher's `composer-control` in a generic
+`mode`/`mode-choice`/`progress`/`status`/`action`/`input` rows that
+`src/renderer/src/session/WorkingBar.tsx` renders with no extension name, and
+the composer draws an arbitrary publisher's `composer-control` in a generic
 bottom-right row (`ComposerControls.tsx`, see
 [extension-ui.md](extension-ui.md#composer-transform-contract-frozen-row-13)). An
 action names a registered command that the host re-validates; nothing is
 special-cased for one extension. An older extension that publishes only status
-prose still gets the generic row, just without the richer structured controls.
+prose still lands in the footer rail, just without the richer structured
+controls. The extension's own TODO panel — header included — is a read-only
+frame and is neither moved nor re-composed by the app; the session footer is the
+telemetry rail (see below).
 
 **The mode is named in the composer, and its label is the control (2026-11-22).**
 The session’s current mode comes from the generic contribution contract: a
@@ -231,9 +241,12 @@ sends `contributions.run`; an acknowledgement (`{ran:true}`, even with an error)
 is not proof of a transition, so the label changes when the next validated
 snapshot arrives, and nothing is retried automatically. A disabled reference
 (current mode, Review ownership, a missing command) stays visible with its
-reason. There is no separate mode-switch row and no fallback mode strip when a
-dialog or docked TUI replaces the composer; task/review/handoff/recovery
-controls remain in the contribution bar.
+reason. When the publisher also supplies same-owner `mode-choice` entries the
+label becomes a split control: its right-hand chevron opens an upward list with
+the current mode checked and disabled and the others selectable (the label still
+cycles on click). No choices means no chevron. There is no separate mode-switch
+row and no fallback mode strip when a dialog or docked TUI replaces the
+composer; task/review/handoff/recovery controls remain in the working bar.
 
 Pointer activation keeps the prompt’s focus, draft, selection and caret; Tab on
 the button is normal focus navigation, while Tab in the prompt still reaches a
@@ -1138,3 +1151,57 @@ invalidate/reset/dispose, bounded retention) and
 `tests/renderer/composer-operation-lifecycle.test.tsx` (reload adoption, host
 loss, receipt replay, publisher/trust/replacement cancellation, closed-tab
 cleanup).
+
+## One working bar and the footer telemetry rail (2026-11-25)
+
+The session column used to carry two native extension rows: `WorkingRow` (the
+working status + `Esc to cancel`) and `ContributionsBar` (progress/status rows,
+the input state, the linked tab and the first four actions). Review suppressed
+the first one, so the same job had two shapes. They are merged into a single
+`src/renderer/src/session/WorkingBar.tsx`, mounted once immediately above the
+composer (after the above/below-editor widget strips and `RelatedSessionsBar`),
+in every pane:
+
+- **One row, one place.** It shows the extension working message (the default
+  `Working…` + `Esc to cancel` only when the publisher sent no message), the
+  elapsed time, a compact linked-tab button, the publisher's inline controls, a
+  lock marker for a `locked` input contribution, and a `MoreVertical` three-dot
+  menu for grouped/overflow actions. It hides only when none of that exists, and
+  it is not suppressed while input is locked, so Review keeps it. It is not
+  mounted on `stopped`/`crashed`/`failed` tabs (a dead host cannot run an
+  action). `RunStatusRow` remains a separate transient retry/compaction row.
+- **The publisher declares placement.** An action may carry a `group`
+  (`id`/`label`/`order`/`placement` of `inline` or `menu`); ungrouped legacy
+  actions keep the old fallback (first three inline, the rest in the menu). The
+  pure `buildContributionBar()` model decides `inlineActions`, `actionGroups`
+  and `overflowActions` once, and the renderer never re-derives owner rules.
+- **The footer is the telemetry rail.** `status`/`progress` contribution rows
+  moved out of the bar into `SessionFooter`, after the `ctx.ui.setStatus`
+  entries, tone-aware, with `done/total` and the stale marker. The rail grows
+  within `min-h-10 max-h-24` and wraps (`max-w-[72ch]`,
+  `whitespace-pre-wrap`; ANSI statuses pass `AnsiLine`'s opt-in `wrap`), so the
+  child telemetry is readable instead of truncated at 48ch. A custom
+  `ctx.ui.setFooter()` still replaces the whole footer, so the rows are not
+  injected into it.
+- **The TODO panel is untouched.** The extension's own `workflow-todos` widget
+  stays a read-only TUI frame with its own `Child x/x · model · ctx · local
+todos` header; the app adds no progress row and no `Todos n/m` chip above the
+  composer. An idle bar with menu-only actions shows the first group's label
+  (`Todos`) next to the dots.
+- **The mode label is a split control.** A same-owner `mode-choice` list adds a
+  chevron that opens an upward menu (`menuitemradio`, current mode checked and
+  disabled); `mode-choice` has its own slot so it can never become the composer's
+  identity. The whole control is measured, so the textarea clears label and
+  chevron.
+
+Nothing here knows an extension name: the guard
+`tests/architecture/no-workflow-adapters.test.ts` still passes, the contract
+stays additive v1, and the publisher that supplies groups/choices is
+`@dieulc/workflow` 0.15.0 (the staged/pinned bundle in
+`resources/workflow.lock.json` is 0.13.0 and falls back to flat actions with its
+hyphenated commands). Tests: `tests/renderer/working-bar.test.tsx`,
+`tests/renderer/session-footer.test.tsx`, `tests/renderer/composer.test.tsx`,
+`tests/renderer/session-view.test.tsx`,
+`tests/shared/extension-contributions-view.test.ts` and
+`docs/architecture/extension-ui.md` (“One working bar, grouped actions and the
+mode menu”).

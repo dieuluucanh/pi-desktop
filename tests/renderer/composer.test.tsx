@@ -1,7 +1,7 @@
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Composer, isSendKey } from "../../src/renderer/src/session/Composer";
 import type { ImageAttachment } from "../../src/renderer/src/session/image-attachment";
 import {
@@ -647,6 +647,329 @@ describe("composer mode control", () => {
       expect(screen.queryByTestId("composer-contribution-badge")).toBeNull();
       view.unmount();
     }
+  });
+
+  describe("mode menu", () => {
+    type ModeChoices = NonNullable<Parameters<typeof Composer>[0]["contributionModeChoices"]>;
+    type ModeChoiceEntry = ModeChoices[number];
+
+    /**
+     * One `mode-choice` view plus its resolved same-owner action. `action:
+     * null` is the dangling/cross-owner case (the model never resolves it).
+     */
+    function choiceEntry(
+      text: string,
+      over: {
+        checked?: boolean;
+        choice?: Partial<ModeChoiceEntry["choice"]>;
+        action?: Partial<NonNullable<ModeChoiceEntry["action"]>> | null;
+      } = {},
+    ): ModeChoiceEntry {
+      const id = `choice-${text.toLowerCase()}`;
+      return {
+        choice: {
+          ownerId: "fixture.ext",
+          id,
+          kind: "mode-choice",
+          slot: "mode-choice",
+          tone: "neutral",
+          order: 10,
+          text,
+          enabled: true,
+          ...(over.checked === undefined ? {} : { checked: over.checked }),
+          ...over.choice,
+        },
+        action:
+          over.action === null
+            ? null
+            : {
+                ownerId: "fixture.ext",
+                id: `run-${id}`,
+                text: `Switch to ${text}`,
+                enabled: true,
+                ...over.action,
+              },
+      };
+    }
+
+    function fourChoices(): ModeChoices {
+      return [
+        choiceEntry("Default"),
+        choiceEntry("Plan", { checked: true }),
+        choiceEntry("Orchestrator"),
+        choiceEntry("Build"),
+      ];
+    }
+
+    /** Radix menus are reliable from the keyboard (see working-bar tests). */
+    async function openMenu(): Promise<HTMLElement> {
+      const trigger = screen.getByTestId("composer-mode-menu");
+      act(() => trigger.focus());
+      await userEvent.keyboard("{Enter}");
+      return screen.findByRole("menu");
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("shows no chevron for a publisher without mode choices", () => {
+      renderComposer({ contributionMode: mode(), contributionModeAction: modeAction() });
+      expect(screen.queryByTestId("composer-mode-menu")).toBeNull();
+      expect(screen.getByTestId("composer-mode-button")).toHaveTextContent("Analyze");
+    });
+
+    it("opens an upward, end-aligned menu with every choice under one group label", async () => {
+      renderComposer({
+        contributionMode: mode({ text: "Plan" }),
+        contributionModeAction: modeAction(),
+        contributionModeChoices: fourChoices(),
+      });
+
+      const menu = await openMenu();
+      expect(menu).toHaveAttribute("data-side", "top");
+      expect(menu).toHaveAttribute("data-align", "end");
+      expect(within(menu).getByText("Modes")).toBeInTheDocument();
+      expect(within(menu).getAllByRole("group")).toHaveLength(1);
+      expect(
+        within(menu)
+          .getAllByRole("menuitemradio")
+          .map((item) => item.textContent),
+      ).toEqual(["Default", "Plan", "Orchestrator", "Build"]);
+    });
+
+    it("checks and disables the current choice, leaving the others selectable", async () => {
+      renderComposer({
+        contributionMode: mode({ text: "Plan" }),
+        contributionModeAction: modeAction(),
+        contributionModeChoices: fourChoices(),
+      });
+
+      const menu = await openMenu();
+      const current = within(menu).getByTestId("composer-mode-choice-choice-plan");
+      expect(current).toHaveAttribute("aria-checked", "true");
+      expect(current).toHaveAttribute("data-checked", "true");
+      expect(current).toHaveAttribute("aria-disabled", "true");
+      expect(current).toHaveAttribute("title", "Switch to Plan");
+      expect(current.querySelector("svg")).not.toBeNull();
+
+      const other = within(menu).getByTestId("composer-mode-choice-choice-build");
+      expect(other).toHaveAttribute("aria-checked", "false");
+      expect(other).not.toHaveAttribute("data-checked");
+      expect(other).not.toHaveAttribute("aria-disabled");
+      expect(other.querySelector("svg")).toBeNull();
+    });
+
+    it("forwards the referenced owner/action for a selected choice, not the cycle action", async () => {
+      const onRun = vi.fn(async () => true);
+      renderComposer({
+        contributionMode: mode({ text: "Plan" }),
+        contributionModeAction: modeAction(),
+        contributionModeChoices: fourChoices(),
+        onRunContributionMode: onRun,
+      });
+
+      const menu = await openMenu();
+      await userEvent.click(within(menu).getByTestId("composer-mode-choice-choice-build"));
+      expect(onRun).toHaveBeenCalledWith("fixture.ext", "run-choice-build");
+      // Never optimistic: the published label is untouched until a snapshot.
+      expect(screen.getByTestId("composer-mode-button")).toHaveTextContent("Plan");
+    });
+
+    it("disables a dangling choice and a disabled action with their reasons", async () => {
+      const onRun = vi.fn(async () => true);
+      renderComposer({
+        contributionMode: mode({ text: "Plan" }),
+        contributionModeAction: modeAction(),
+        contributionModeChoices: [
+          choiceEntry("Default", {
+            action: null,
+            choice: { detail: "no live action for this choice" },
+          }),
+          choiceEntry("Build", {
+            action: { enabled: false, disabledReason: "a review owns this turn" },
+          }),
+        ],
+        onRunContributionMode: onRun,
+      });
+
+      const menu = await openMenu();
+      const dangling = within(menu).getByTestId("composer-mode-choice-choice-default");
+      expect(dangling).toHaveAttribute("aria-disabled", "true");
+      expect(dangling).toHaveAttribute("data-disabled");
+      expect(dangling).toHaveAttribute("title", "no live action for this choice");
+
+      const disabled = within(menu).getByTestId("composer-mode-choice-choice-build");
+      expect(disabled).toHaveAttribute("aria-disabled", "true");
+      expect(disabled).toHaveAttribute("title", "a review owns this turn");
+
+      await userEvent.click(dangling);
+      await userEvent.click(disabled);
+      expect(onRun).not.toHaveBeenCalled();
+    });
+
+    it("stays usable when the cycle action itself is disabled", async () => {
+      renderComposer({
+        contributionMode: mode({ text: "Review" }),
+        contributionModeAction: modeAction({
+          enabled: false,
+          disabledReason: "a review owns this turn",
+        }),
+        contributionModeChoices: [choiceEntry("Default"), choiceEntry("Review", { checked: true })],
+      });
+
+      expect(screen.getByTestId("composer-mode-button")).toBeDisabled();
+      // The chevron is a separate control, so the reasons stay readable.
+      expect(screen.getByTestId("composer-mode-menu")).toBeEnabled();
+      const menu = await openMenu();
+      expect(within(menu).getAllByRole("menuitemradio")).toHaveLength(2);
+      expect(within(menu).getByTestId("composer-mode-choice-choice-default")).toHaveAttribute(
+        "title",
+        "Switch to Default",
+      );
+    });
+
+    it("navigates the menu with the keyboard and selects with Enter", async () => {
+      const onRun = vi.fn(async () => true);
+      renderComposer({
+        contributionMode: mode({ text: "Plan" }),
+        contributionModeAction: modeAction(),
+        contributionModeChoices: fourChoices(),
+        onRunContributionMode: onRun,
+      });
+
+      const menu = await openMenu();
+      // Opening focuses the first enabled item; the checked/disabled Plan is
+      // skipped, so ArrowDown lands on Orchestrator.
+      await waitFor(() =>
+        expect(within(menu).getByTestId("composer-mode-choice-choice-default")).toHaveFocus(),
+      );
+      await userEvent.keyboard("{ArrowDown}");
+      expect(within(menu).getByTestId("composer-mode-choice-choice-orchestrator")).toHaveFocus();
+      await userEvent.keyboard("{Enter}");
+      expect(onRun).toHaveBeenCalledWith("fixture.ext", "run-choice-orchestrator");
+    });
+
+    it("follows the next published label instead of changing optimistically", async () => {
+      const { props, rerender } = renderComposer({
+        contributionMode: mode({ text: "Plan" }),
+        contributionModeAction: modeAction(),
+        contributionModeChoices: fourChoices(),
+        onRunContributionMode: vi.fn(async () => true),
+      });
+      expect(screen.getByTestId("composer-mode-button")).toHaveTextContent("Plan");
+
+      rerender(
+        <Composer
+          {...props}
+          contributionMode={mode({ text: "Build" })}
+          contributionModeChoices={[choiceEntry("Build", { checked: true }), choiceEntry("Plan")]}
+        />,
+      );
+      expect(screen.getByTestId("composer-mode-button")).toHaveTextContent("Build");
+    });
+
+    it("keeps the label's one-click cycle while the chevron opens the menu", async () => {
+      const user = userEvent.setup();
+      const onRun = vi.fn(async () => true);
+      renderComposer({
+        contributionMode: mode({ text: "Plan" }),
+        contributionModeAction: modeAction(),
+        contributionModeChoices: fourChoices(),
+        onRunContributionMode: onRun,
+      });
+
+      await user.click(screen.getByTestId("composer-mode-button"));
+      expect(onRun).toHaveBeenCalledWith("fixture.ext", "mode-cycle");
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+
+    it("keeps the prompt's draft, caret and selection on a label click", async () => {
+      const user = userEvent.setup();
+      const onRun = vi.fn(async () => true);
+      const { onDraftChange } = renderComposer({
+        draft: "hello world",
+        contributionMode: mode({ text: "Plan" }),
+        contributionModeAction: modeAction(),
+        contributionModeChoices: fourChoices(),
+        onRunContributionMode: onRun,
+      });
+
+      const prompt = promptBox() as HTMLTextAreaElement;
+      await user.click(prompt);
+      prompt.setSelectionRange(6, 11);
+
+      await user.click(screen.getByTestId("composer-mode-button"));
+      expect(onRun).toHaveBeenCalledWith("fixture.ext", "mode-cycle");
+      // The pointer path never steals focus from the prompt.
+      expect(prompt).toHaveFocus();
+      expect(prompt.selectionStart).toBe(6);
+      expect(prompt.selectionEnd).toBe(11);
+      expect(onDraftChange).not.toHaveBeenCalled();
+    });
+
+    it("reserves the whole control's measured width, chevron included", () => {
+      interface Observed {
+        node: Element | null;
+        trigger: () => void;
+      }
+      const observed: Observed[] = [];
+      class FakeResizeObserver {
+        private readonly callback: ResizeObserverCallback;
+        private readonly entry: Observed = { node: null, trigger: () => undefined };
+
+        constructor(callback: ResizeObserverCallback) {
+          this.callback = callback;
+          const entry = this.entry;
+          entry.trigger = () => this.callback([], this as unknown as ResizeObserver);
+          observed.push(entry);
+        }
+
+        observe(node: Element): void {
+          this.entry.node = node;
+        }
+
+        unobserve(): void {}
+        disconnect(): void {}
+      }
+      vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+
+      renderComposer({
+        contributionMode: mode({ text: "Orchestrator Plan" }),
+        contributionModeAction: modeAction(),
+        contributionModeChoices: fourChoices(),
+      });
+
+      const root = screen.getByTestId("composer-contribution-badge");
+      // The control measures the ROOT (label + chevron); the label alone is much
+      // narrower, so a label-only measurement would reserve 48px, not 158px.
+      Object.defineProperty(root, "getBoundingClientRect", {
+        configurable: true,
+        value: () => ({ width: 150 }) as DOMRect,
+      });
+      Object.defineProperty(screen.getByTestId("composer-mode-button"), "getBoundingClientRect", {
+        configurable: true,
+        value: () => ({ width: 40 }) as DOMRect,
+      });
+
+      const latest = observed.at(-1);
+      expect(latest?.node).toBe(root);
+      act(() => latest?.trigger());
+      expect(promptBox()).toHaveStyle({ paddingRight: "158px" });
+
+      // A very long label is capped for the visible control...
+      Object.defineProperty(root, "getBoundingClientRect", {
+        configurable: true,
+        value: () => ({ width: 400 }) as DOMRect,
+      });
+      act(() => latest?.trigger());
+      expect(promptBox()).toHaveStyle({ paddingRight: "240px" });
+      // ...while the accessible text stays complete.
+      expect(screen.getByTestId("composer-mode-button")).toHaveAttribute(
+        "aria-label",
+        "Orchestrator Plan — Cycle mode",
+      );
+    });
   });
 });
 

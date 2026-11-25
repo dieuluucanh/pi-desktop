@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -38,6 +39,15 @@ interface Conformance {
 
 const FIXTURE = join(__dirname, "fixtures", "host-contract.conformance.json");
 
+/**
+ * Content pin shared with the Workflow publisher copy. Row 8 of the plan
+ * updates the Workflow fixture to the same content; either side drifting fails
+ * here. Line endings are normalized before hashing because a Windows checkout
+ * materializes CRLF while the repository and a POSIX checkout store LF — the
+ * fixture's JSON content is the contract, not its checkout encoding.
+ */
+const FIXTURE_SHA256 = "e6384a320438b798d1976555f4cf4a7f2297e061b3a810612f43e40e7d5ce685";
+
 function readFixture(): Conformance {
   return JSON.parse(readFileSync(FIXTURE, "utf8")) as Conformance;
 }
@@ -62,6 +72,15 @@ function statusEnvelope(ids: string[], epoch: number, revision: number): Contrib
 }
 
 describe("extension contributions: conformance with the publisher", () => {
+  it("pins the fixture content shared with the publisher", () => {
+    expect(
+      createHash("sha256")
+        .update(readFileSync(FIXTURE).toString("utf8").replace(/\r\n/g, "\n"))
+        .digest("hex"),
+      "fixture content drifted from the Workflow copy",
+    ).toBe(FIXTURE_SHA256);
+  });
+
   it("agrees on every envelope verdict", () => {
     const fixture = readFixture();
     expect(fixture.version).toBe(1);
@@ -249,5 +268,172 @@ describe("extension contributions: Desktop-side limits and safety", () => {
     const result = applyEnvelope(current, statusEnvelope(["b"], 2, 1));
     expect(result.ok).toBe(true);
     if (result.ok) expect([...result.value.contributions.keys()]).toEqual(["b"]);
+  });
+});
+
+/**
+ * Additive v1: action groups and `mode-choice`.
+ *
+ * These assertions are parsed-value tests, not just accept/reject: the fixture
+ * only proves both readers agree on verdicts, while these pin the exact shape a
+ * renderer receives (group defaults, the choice's own slot, and the absence of
+ * any executable field on a mode-choice).
+ */
+
+function envelopeOf(contributions: unknown[]): unknown {
+  return {
+    version: HOST_CONTRIBUTION_VERSION,
+    owner: { id: "dieulc.example" },
+    sessionId: "session-a",
+    epoch: 0,
+    revision: 1,
+    contributions,
+  };
+}
+
+function parseOne(contribution: unknown): Contribution | undefined {
+  const parsed = parseContributionEnvelope(envelopeOf([contribution]));
+  if (!parsed.ok) throw new Error(parsed.error);
+  return parsed.value.envelope.contributions[0];
+}
+
+describe("extension contributions: action groups", () => {
+  const grouped = (group: unknown): unknown => ({
+    kind: "action",
+    id: "todos-expand",
+    label: "Expand todos",
+    group,
+    command: { name: "workflow-todos-expand" },
+  });
+
+  it("parses an inline group with id, label, order and placement", () => {
+    const action = parseOne(
+      grouped({
+        id: "workflow.todos",
+        label: "Todos",
+        order: 10,
+        placement: "inline",
+      }),
+    );
+    expect(action?.kind).toBe("action");
+    expect(action?.kind === "action" ? action.group : undefined).toEqual({
+      id: "workflow.todos",
+      label: "Todos",
+      order: 10,
+      placement: "inline",
+    });
+  });
+
+  it("parses a menu group", () => {
+    const action = parseOne(
+      grouped({ id: "workflow.orchestrator", label: "Orchestrator", order: 20, placement: "menu" }),
+    );
+    expect(action?.kind === "action" ? action.group?.placement : undefined).toBe("menu");
+  });
+
+  it("defaults a supplied group's order to 0 and placement to inline", () => {
+    const action = parseOne(grouped({ id: "workflow.automation", label: "Automation" }));
+    expect(action?.kind === "action" ? action.group : undefined).toEqual({
+      id: "workflow.automation",
+      label: "Automation",
+      order: 0,
+      placement: "inline",
+    });
+  });
+
+  it("keeps a legacy ungrouped action free of group metadata", () => {
+    const action = parseOne({
+      kind: "action",
+      id: "legacy",
+      label: "Legacy",
+      command: { name: "workflow-legacy" },
+    });
+    expect(action).toMatchObject({ id: "legacy", kind: "action" });
+    expect(action).not.toHaveProperty("group");
+  });
+
+  it("rejects a supplied malformed group instead of ignoring it", () => {
+    const malformed: unknown[] = [
+      "workflow.todos",
+      { label: "Todos", placement: "menu" },
+      { id: "workflow.todos", placement: "menu" },
+      { id: "workflow.todos", label: "Todos", placement: "sidebar" },
+      { id: "workflow.todos", label: "Todos", order: "first" },
+    ];
+    for (const group of malformed) {
+      const parsed = parseContributionEnvelope(envelopeOf([grouped(group)]));
+      expect(parsed.ok, JSON.stringify(group)).toBe(false);
+    }
+  });
+});
+
+describe("extension contributions: mode-choice", () => {
+  const choice = {
+    kind: "mode-choice",
+    id: "choice-plan",
+    label: "Plan",
+    description: "Read-only planning",
+    tone: "warning",
+    order: 10,
+    actionRef: "mode-plan",
+    checked: true,
+  };
+
+  it("parses the presentation fields and its own slot", () => {
+    const parsed = parseOne(choice);
+    expect(parsed).toEqual({
+      id: "choice-plan",
+      kind: "mode-choice",
+      slot: "mode-choice",
+      tone: "warning",
+      order: 10,
+      label: "Plan",
+      description: "Read-only planning",
+      actionRef: "mode-plan",
+      checked: true,
+    });
+  });
+
+  it("defaults an unchecked choice and ignores a supplied slot", () => {
+    const parsed = parseOne({
+      kind: "mode-choice",
+      id: "choice-build",
+      slot: "mode",
+      label: "Build",
+      actionRef: "mode-build",
+    });
+    expect(parsed?.slot).toBe("mode-choice");
+    expect(parsed?.kind).not.toBe("mode");
+    expect(parsed).not.toHaveProperty("checked");
+  });
+
+  it("carries no command, enabled or disabledReason of its own", () => {
+    const parsed = parseOne({
+      ...choice,
+      command: { name: "workflow-plan" },
+      enabled: false,
+      disabledReason: "current mode",
+    });
+    // Unknown fields are ignored; execution belongs to the referenced action.
+    expect(JSON.stringify(parsed)).not.toMatch(/command/);
+    expect(parsed).not.toHaveProperty("enabled");
+    expect(parsed).not.toHaveProperty("disabledReason");
+  });
+
+  it("requires a syntactically valid actionRef but allows it to dangle", () => {
+    const dangling = parseOne({
+      kind: "mode-choice",
+      id: "choice-gone",
+      label: "Gone",
+      actionRef: "not-published-yet",
+    });
+    expect(dangling).toMatchObject({ actionRef: "not-published-yet" });
+
+    for (const badRef of [undefined, "../../bin/sh", "has space", 7, null, "x".repeat(97)]) {
+      const parsed = parseContributionEnvelope(
+        envelopeOf([{ kind: "mode-choice", id: "choice-plan", label: "Plan", actionRef: badRef }]),
+      );
+      expect(parsed.ok, JSON.stringify(badRef) ?? "undefined").toBe(false);
+    }
   });
 });
