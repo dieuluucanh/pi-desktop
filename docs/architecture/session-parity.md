@@ -116,6 +116,21 @@ drift from the terminal.
     rules filter the bell and toasts only; they never hide a transcript row.
     Only an immediately repeated identical notice collapses; a repeat after any
     other transcript content adds a row.
+16. **Transcript follow is pinned state, not a distance test.**
+    `use-stick-to-bottom.ts` owns the state (`pinnedRef` plus the `pinnedTopRef`
+    baseline) and `scroll-follow.ts` owns the decision table. A `scroll` event may
+    detach only when `scrollTop` falls below that baseline; content growing or
+    shrinking under a pinned viewport re-records the baseline instead of
+    detaching. A wheel up, an upward touch drag and `PageUp`/`Home`/`ArrowUp`
+    detach immediately, before the scroll event they cause, so a slow drag cannot
+    be beaten by the next pin. The virtualizer does not adjust the scroll while
+    pinned (`shouldAdjustScrollPositionOnItemSizeChange` asks `isPinned()`), so a
+    measured row above the tail is never read as intent. Auto-follow is instant;
+    `smooth` belongs to the pill and `Ctrl+End` and is guarded while it animates.
+    The 80 px distance rule is retired because `src/main/session-service.ts`
+    coalesces `message_update` deltas: one commit can grow the content further
+    than any threshold before its `scroll` event is dispatched, and that event
+    used to detach permanently.
 
 ## Gap matrix (terminal 1.5.0 → desktop)
 

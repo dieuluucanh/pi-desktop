@@ -169,6 +169,33 @@ surface still pending).
   tab-strip horizontal scrollbar is 2 px; the strips reset
   `scrollbar-width`/`scrollbar-color` so the WebKit pixel size applies.
 
+## Wrap and measure
+
+The editor has two independent defaults, both stored in `prefs.editor` in the
+app state file and both editable under **Settings → Editor**:
+
+- **Wrap** (`wordWrap`) is `auto | always | never`. `always` soft-wraps every
+  line and `never` soft-wraps none. `auto` is prose-only: it wraps `markdown`,
+  `mdx` and `plaintext` and leaves code unwrapped, so a plan or a README reads
+  like a document while a `.ts` file keeps its line structure.
+- **Width** (`width`) is `auto | full | compact`. An explicit `full` or
+  `compact` wins for every language; `auto` resolves to `compact` for prose and
+  `full` for code. Compact is a centred column of `widthColumns` characters
+  (default 100, clamped to 60..200).
+
+Compact **always** wraps, even if the wrap default is `never`: the column is a
+fixed measure, and wrapping is the only way to honour it without producing a
+horizontal scrollbar. The editors' scroller hides horizontal overflow in compact
+mode for the same reason. `shouldWrap` is therefore
+`compact || effectiveWordWrap`, not just the wrap preference.
+
+A per-tab override sits in the editor toolbar and never changes the default:
+**Alt+Z** (or the Wrap button) toggles wrapping for the focused tab, and the
+Width button (`Full width` / `Compact width`) switches that one tab between the
+full pane and the compact column. Both overrides are session-scoped in
+`editor-store` and are dropped when the tab closes, so reopening the file uses
+the Settings defaults again.
+
 ## File actions
 
 Right-click a file, folder, search result or the tree's blank area. Files expose

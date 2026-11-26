@@ -8,6 +8,7 @@ import type { ProfileMode } from "./profile";
 import type {
   GitAction,
   GitActionResult,
+  GitCommitContext,
   GitCommitEntry,
   GitDiff,
   GitDiffRequest,
@@ -273,6 +274,8 @@ export const IPC = {
   gitHeadMessage: "git:head-message",
   /** Local branch names, for the checkout menu. */
   gitBranches: "git:branches",
+  /** The bounded staged-diff input for an AI commit message. */
+  gitCommitContext: "git:commit-context",
   /** Main → renderer: a folder's snapshot changed. */
   gitPushed: "git:state",
 
@@ -724,6 +727,11 @@ export interface GitBridge {
   headMessage(projectPath: string): Promise<string | null>;
   /** Local branch names, sorted, for the checkout menu. */
   branches(projectPath: string): Promise<string[]>;
+  /**
+   * The bounded staged-diff input for an AI commit message: the `--stat`
+   * summary, the recent subjects and a size-capped patch. Never stages anything.
+   */
+  commitContext(projectPath: string): Promise<GitCommitContext>;
   /** Main → renderer: a watched folder's snapshot changed. */
   onSnapshot(listener: (snapshot: GitSnapshot) => void): () => void;
 }

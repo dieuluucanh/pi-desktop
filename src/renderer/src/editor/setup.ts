@@ -29,11 +29,15 @@ import {
 } from "@codemirror/language";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 
-import { editorHighlightStyle, editorTheme } from "./theme";
+import { editorHighlightStyle, editorMeasureTheme, editorTheme } from "./theme";
+
+/** The two content measures: the pane width, or a centred reading column. */
+export type EditorMeasure = "full" | "compact";
 
 export interface EditorCompartments {
   language: Compartment;
   wrap: Compartment;
+  measure: Compartment;
   font: Compartment;
   tabSize: Compartment;
 }
@@ -43,12 +47,29 @@ export interface EditorStateInput {
   readOnly: boolean;
   fontSize: number;
   wordWrap: boolean;
+  measure: EditorMeasure;
+  widthColumns: number;
   tabSize: number;
   onUpdate?: (update: ViewUpdate) => void;
   /** `Mod-s` inside the editor surface (the editor view owns this chord). */
   onSave?: () => void;
   /** `Shift-Alt-f` inside the editor surface. */
   onFormat?: () => void;
+}
+
+/**
+ * The extension pair for one measure.
+ *
+ * Compact carries both the class/attribute hook (which the tests and the CSS
+ * target) and the theme, so the mode is assertable without computed styles.
+ * Full is empty: the editor is simply the pane width.
+ */
+export function measureExtension(measure: EditorMeasure, widthColumns: number): Extension {
+  if (measure !== "compact") return [];
+  return [
+    EditorView.editorAttributes.of({ class: "cm-measure-compact", "data-measure": "compact" }),
+    editorMeasureTheme(widthColumns),
+  ];
 }
 
 export function createEditorState(input: EditorStateInput): {
@@ -58,6 +79,7 @@ export function createEditorState(input: EditorStateInput): {
   const compartments: EditorCompartments = {
     language: new Compartment(),
     wrap: new Compartment(),
+    measure: new Compartment(),
     font: new Compartment(),
     tabSize: new Compartment(),
   };
@@ -112,6 +134,7 @@ export function createEditorState(input: EditorStateInput): {
     EditorView.editable.of(!input.readOnly),
     compartments.language.of([]),
     compartments.wrap.of(input.wordWrap ? EditorView.lineWrapping : []),
+    compartments.measure.of(measureExtension(input.measure, input.widthColumns)),
     compartments.font.of(editorTheme(input.fontSize)),
     compartments.tabSize.of(EditorState.tabSize.of(input.tabSize)),
     ...(input.onUpdate ? [EditorView.updateListener.of(input.onUpdate)] : []),

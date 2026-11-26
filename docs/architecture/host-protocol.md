@@ -20,14 +20,14 @@ is declared but not yet wired answers
 it** in the message — see “Implementation status” below, which is the current
 truth and supersedes the group table's implications.
 
-| Group         | Methods                                                                                                                                                                                                                   |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| transport     | `host.hello`, `host.ping`, `host.shutdown`, `host.blobs.read`, `host.metrics`                                                                                                                                             |
-| sessions      | `session.create/open/list/resume/fork/clone/delete/rename/exportHtml`                                                                                                                                                     |
-| conversation  | `prompt`, `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                      |
-| state         | `state.get`, `messages.get`, `entries.get`, `tree.get`, `stats.get`, `compact`, `commands.list`, `tools.*`, `model.*`, `thinking.*`                                                                                       |
-| configuration | `settings.*`, `providers.*`, `packages.*`                                                                                                                                                                                 |
-| other         | `oi.respond` (extension UI answers), `oi.state`, `oi.editorText`, `completion.suggest`, `completion.apply` (extension UI + composer bridge), `tui.state`, `tui.resize`, `tui.input` (extension TUI surface), `files.list` |
+| Group         | Methods                                                                                                                                                                                                                                                                                                          |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| transport     | `host.hello`, `host.ping`, `host.shutdown`, `host.blobs.read`, `host.metrics`                                                                                                                                                                                                                                    |
+| sessions      | `session.create/open/list/resume/fork/clone/delete/rename/exportHtml`                                                                                                                                                                                                                                            |
+| conversation  | `prompt`, `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                                                                                                             |
+| state         | `state.get`, `messages.get`, `entries.get`, `tree.get`, `stats.get`, `compact`, `commands.list`, `tools.*`, `model.*`, `thinking.*`                                                                                                                                                                              |
+| configuration | `settings.*`, `providers.*`, `packages.*`                                                                                                                                                                                                                                                                        |
+| other         | `oi.respond` (extension UI answers), `oi.state`, `oi.editorText`, `completion.suggest`, `completion.apply` (extension UI + composer bridge), `tui.state`, `tui.resize`, `tui.input` (extension TUI surface), `files.list`, `text.models`, `text.generate`, `text.cancel` (session-less generation, control host) |
 
 ## Framing rules
 
@@ -122,7 +122,7 @@ drives the real bundle when `out/host/index.mjs` has been built.
 | models & thinking | `model.list`, `model.available`, `model.set`, `model.cycle`, `thinking.levels`, `thinking.set`, `thinking.cycle`                                                                                                                                                                                                                                                                                                                                                                                                                                | `src/host/session-core.ts`                                                                                                        |
 | session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`, `session.abortCompaction`, `session.abortBranchSummary`                                                                                                                                                                                                                                                                                                                                                                                               | `src/host/session-core.ts`                                                                                                        |
 | settings          | `settings.get`, `settings.set`, `settings.raw` (read **or** write a whole scope), `settings.flush`; every response carries **both** scopes, the two file paths + mtimes, `drainErrors` and the project-trust flag. Writes are schema-validated: a named `SettingsManager` setter when Pi has one, otherwise an atomic whole-document edit, always with a backup before the first write                                                                                                                                                          | `src/host/settings.ts` + `src/host/sdk/settings.ts`, in both cores                                                                |
-| control host      | `settings.*`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `packages.*`, `project.inspect`, `project.trust`, `resources.list` (loads a project's resources with no session), `themes.*`, `keybindings.*`                                                                                                                                                                                                                          | `src/host/control-core.ts`                                                                                                        |
+| control host      | `settings.*`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `packages.*`, `project.inspect`, `project.trust`, `resources.list` (loads a project's resources with no session), `themes.*`, `keybindings.*`, `text.models`/`text.generate`/`text.cancel` (one-shot, no session)                                                                                                                                                      | `src/host/control-core.ts`                                                                                                        |
 | extensions hub    | `resources.list` (both cores): extensions/skills/prompts/themes with source, scope, origin, contributed tools/commands/shortcuts/flags, loader diagnostics and live `extension_error` history                                                                                                                                                                                                                                                                                                                                                   | `src/host/resources.ts` (+ `src/host/sdk/resources.ts`)                                                                           |
 | extension UI      | `oi.respond` + `oi.request` events; `oi.state` (the pushed snapshot, also readable on demand), `oi.editorText` (composer mirror), `completion.suggest`/`completion.apply` (host-run extension autocomplete providers). The full `ExtensionUIContext` is bound to every session via `bindSession`                                                                                                                                                                                                                                                | `src/host/extension-ui.ts` + `src/host/sdk/extension-ui.ts` (session host only)                                                   |
 | TUI surface       | `tui.state` (pull the whole surface snapshot), `tui.resize` (the **session column's** measured rows/cols), `tui.input` (raw terminal bytes). The host emulates `TUI` for `ctx.ui.custom()`, resolves overlay geometry and renders `custom`/`header`/`footer`/`widgetsAbove`/`widgetsBelow` to ANSI frames; the renderer converts them to HTML, docks a bottom sheet, floats any other overlay, and forwards DOM keys/wheel                                                                                                                      | `src/host/tui-surface.ts` + `src/host/sdk/tui-surface.ts`, `src/renderer/src/tui/*` (session host only)                           |
@@ -438,7 +438,58 @@ has no session-state channel, no editor mirror, and cannot evaluate extension
 autocomplete providers), `tui.state`/`tui.resize`/`tui.input` (RPC mode's
 `custom()` returns `undefined`, so it has no terminal to render into or feed
 keys to), `render.request`/`render.markdown` (RPC mode renders tool/message
-components in-process; it has no client that could display ANSI lines).
+components in-process; it has no client that could display ANSI lines),
+`text.models`/`text.generate`/`text.cancel` (RPC mode has no session-less
+one-shot: its only model path is a prompt into a live session).
+
+### Session-less text generation (2026-11-25 commit-AI plan, step 16)
+
+`text.models`, `text.generate` and `text.cancel` are the app's only **session-less**
+model methods. They are served by the **control host only**
+(`src/host/text-generation.ts`, registered in `CONTROL_METHODS`), through the
+`ModelCompletionPort` on `ProviderPort.completion` — Pi's
+`ModelRuntime.completeSimple`, never an `AgentSession`. They exist because the
+commit box needs a message without writing a transcript turn, and `/commit`
+(Workflow) is a session command. They are app-internal — the reason they sit in
+the “no RPC equivalent” list above, by the same rule as `providers.runtimeKey`.
+
+| Method          | Params                                                                              | Result                                                                                    |
+| --------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `text.models`   | `{ cwd?: string \| null }`                                                          | `{ models: ModelChoice[], defaultModel: ModelChoice \| null, defaultAvailable: boolean }` |
+| `text.generate` | `{ requestId, cwd?, model?: { provider, id } \| null, system, prompt, maxTokens? }` | `{ requestId, text, model: ModelChoice, usage?: { input, output } }`                      |
+| `text.cancel`   | `{ requestId }`                                                                     | `{ ok: true }` (idempotent: an unknown or finished id is a no-op, not an error)           |
+
+`ModelChoice` is `{ provider, id, name }`. `requestId` is
+`/^[A-Za-z0-9_-]{1,64}$/` — the pair key for one generate/cancel. A `null`
+`model` means **Default**, which the host resolves from the project's then the
+global `defaultProvider`/`defaultModel`; when that default is not in the
+catalogue it falls back to the first available row, and `text.models` still
+reports the saved ref with `defaultAvailable: false` so the picker can say so.
+
+**Bounds.** `sanitizeTextGenerationRequest` enforces `MAX_SYSTEM_CHARS`
+(4 000), `MAX_PROMPT_CHARS` (120 000) and `MAX_OUTPUT_TOKENS` (2 048, default
+1 024). A violation is `bad_request`, never a silent truncation. A missing port
+answers `not_implemented` — the handlers are always registered, which is what
+keeps the control host's `handlers == CONTROL_METHODS` invariant true.
+
+**Failure codes.** `bad_request`, `not_implemented`, `no_model`,
+`unknown_model`, `aborted`, `timeout`, `provider_error`. Provider failures are
+values, not rejections in the SDK, so the adapter inspects `stopReason`: `error`
+→ `provider_error` (with the provider's `errorMessage`), `aborted` → `aborted`,
+and an empty `text` is refused rather than returned as a "successful" empty
+message. `length` stays a success — the text is real, just cut off — because the
+commit-message cleaner re-caps an over-long subject and body.
+
+**Two clocks.** The host owns a `GENERATION_TIMEOUT_MS = 90_000` abort per
+request, so it can answer `timeout` itself; `session-service`'s
+`REQUEST_TIMEOUT_OVERRIDES` gives `text.generate` 120 s, longer than the host's
+own clock so the typed code wins over a transport refusal.
+
+**Never replayed.** `text.generate` is in neither `PASSIVE_METHODS` nor
+`READ_ONLY_RETRY_METHODS`. Every other retryable method is a read or an
+idempotent state write; a generation is neither — a replay would bill a second
+call and return a second, different message. Cancellation is explicit
+(`text.cancel`), and a dropped frame surfaces as a failure the user can retry.
 
 ### Host build identity and stale recycling (2026-10-24)
 

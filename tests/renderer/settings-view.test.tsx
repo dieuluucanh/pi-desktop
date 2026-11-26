@@ -90,6 +90,21 @@ describe("SettingsView", () => {
     await waitFor(() => expect(useAppStore.getState().settingsFocus).toBeNull());
   });
 
+  it("renders the Editor card after App preferences and before Terminal", () => {
+    stubRequest();
+    render(<SettingsView />);
+
+    const appPreferences = screen.getByTestId("app-preferences");
+    const editor = screen.getByTestId("settings-editor");
+    const terminal = screen.getByTestId("settings-terminal");
+    expect(appPreferences.compareDocumentPosition(editor) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(editor.compareDocumentPosition(terminal) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
   it("renders every schema group with its fields", async () => {
     stubRequest();
     render(<SettingsView />);

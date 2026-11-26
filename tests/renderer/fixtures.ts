@@ -21,6 +21,7 @@ import {
   emptyGitSnapshot,
   type GitAction,
   type GitActionResult,
+  type GitCommitContext,
   type GitCommitEntry,
   type GitDiff,
   type GitSnapshot,
@@ -124,6 +125,21 @@ export function documentsViewFixture(
   };
 }
 
+/** A zeroed commit context for the fixture's git fake. */
+function emptyGitCommitContext(projectPath: string): GitCommitContext {
+  return {
+    projectPath,
+    branch: null,
+    stat: "",
+    patch: "",
+    truncated: false,
+    files: 0,
+    insertions: 0,
+    deletions: 0,
+    recentSubjects: [],
+  };
+}
+
 export interface BridgeOptions {
   appInfo?: Partial<AppInfo>;
   prefs?: Partial<UiPrefs>;
@@ -149,6 +165,13 @@ export interface BridgeOptions {
   checkpointsAction?: CheckpointActionResult;
   /** Shell profiles the terminal bridge reports. */
   terminalProfiles?: TerminalProfileSnapshot;
+  /** The staged diff `git.commitContext` answers with (defaults to empty). */
+  gitCommitContext?: GitCommitContext;
+  /**
+   * Answers a `sessions.request` host call other than the default
+   * `session.list`. Every call is recorded on {@link BridgeHandles.hostRequests}.
+   */
+  hostRequest?: (input: { tabId: string; method: string; params?: unknown }) => unknown;
 }
 
 export interface BridgeHandles {
@@ -170,6 +193,8 @@ export interface BridgeHandles {
   emitTuiPaste(tabId: string): void;
   /** Every session:create request, in order. */
   sessionCreateCalls: CreateTabInput[];
+  /** Every `sessions.request` host call, in order, with its params. */
+  hostRequests: Array<{ tabId: string; method: string; params?: unknown }>;
   checkpointCalls: Array<{ kind: string; projectPath: string; payload?: unknown }>;
   emitCheckpointState: (state: CheckpointState) => void;
   emitWebState(state: WebTabState): void;
@@ -211,6 +236,7 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
   const tuiFocusCalls: Array<{ tabId: string; focused: boolean }> = [];
   const tuiPasteListeners = new Set<(tabId: string) => void>();
   const sessionCreateCalls: CreateTabInput[] = [];
+  const hostRequests: Array<{ tabId: string; method: string; params?: unknown }> = [];
   const terminalProfiles: TerminalProfileSnapshot = options.terminalProfiles ?? {
     profiles: [],
     defaultProfileId: null,
@@ -350,10 +376,13 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
       restore: async () => ({ tabs: [], activeTabId: null }),
       restart: async () => ({ tabs: [], activeTabId: null }),
       stop: async () => ({ tabs: [], activeTabId: null }),
-      request: async (input: { method: string }) =>
-        input.method === "session.list"
-          ? { sessions: [], total: 0, matched: 0, truncated: false, error: null }
-          : {},
+      request: async (input: { tabId: string; method: string; params?: unknown }) => {
+        hostRequests.push(input);
+        if (input.method === "session.list") {
+          return { sessions: [], total: 0, matched: 0, truncated: false, error: null };
+        }
+        return options.hostRequest?.(input) ?? {};
+      },
       deleteSession: async (sessionFile: string) => ({ ok: true, path: sessionFile }),
       onEvent: () => () => undefined,
       onState: () => () => undefined,
@@ -564,6 +593,10 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
         gitCalls.push({ kind: "branches", projectPath });
         return gitBranches;
       },
+      commitContext: async (projectPath) => {
+        gitCalls.push({ kind: "commit-context", projectPath });
+        return { ...(options.gitCommitContext ?? emptyGitCommitContext(projectPath)), projectPath };
+      },
       onSnapshot: (listener) => {
         gitListeners.add(listener);
         return () => gitListeners.delete(listener);
@@ -667,6 +700,7 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
       for (const listener of tuiPasteListeners) listener(tabId);
     },
     sessionCreateCalls,
+    hostRequests,
     gitCalls,
     emitGitSnapshot: (snapshot: GitSnapshot) => {
       for (const listener of gitListeners) listener(snapshot);

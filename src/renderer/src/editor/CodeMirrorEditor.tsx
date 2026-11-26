@@ -6,7 +6,7 @@ import { useEditorStore } from "./editor-store";
 import { syncDocToView } from "./doc-sync";
 import { registerEditorView, unregisterEditorView } from "./editor-registry";
 import { languageExtension } from "./language-support";
-import { createEditorState, type EditorCompartments } from "./setup";
+import { createEditorState, measureExtension, type EditorCompartments } from "./setup";
 import { editorTheme } from "./theme";
 
 export interface CodeMirrorEditorProps {
@@ -16,6 +16,8 @@ export interface CodeMirrorEditorProps {
   readOnly: boolean;
   fontSize: number;
   wordWrap: boolean;
+  measure: "full" | "compact";
+  widthColumns: number;
   tabSize: number;
   /**
    * Focus the editor when it mounts. False for a pane that is not the focused
@@ -68,6 +70,8 @@ export function CodeMirrorEditor(props: CodeMirrorEditorProps): React.JSX.Elemen
       readOnly: props.readOnly,
       fontSize: props.fontSize,
       wordWrap: props.wordWrap,
+      measure: props.measure,
+      widthColumns: props.widthColumns,
       tabSize: props.tabSize,
       onUpdate,
       onSave: () => void useEditorStore.getState().save(props.tabId),
@@ -130,6 +134,17 @@ export function CodeMirrorEditor(props: CodeMirrorEditorProps): React.JSX.Elemen
       effects: compartments.wrap.reconfigure(props.wordWrap ? EditorView.lineWrapping : []),
     });
   }, [props.wordWrap]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    const compartments = compartmentsRef.current;
+    if (!view || !compartments) return;
+    view.dispatch({
+      effects: compartments.measure.reconfigure(
+        measureExtension(props.measure, props.widthColumns),
+      ),
+    });
+  }, [props.measure, props.widthColumns]);
 
   useEffect(() => {
     const view = viewRef.current;

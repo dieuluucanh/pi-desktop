@@ -297,6 +297,12 @@ export const HOST_METHODS = [
   "providers.login",
   "providers.logout",
   "providers.setKey",
+  // session-less text generation (commit message): one-shot `completeSimple` on
+  // the control host — no `AgentSession`, no JSONL and no extension. No RPC
+  // equivalent either: RPC has no session-less completion.
+  "text.models",
+  "text.generate",
+  "text.cancel",
   "packages.install",
   "packages.remove",
   "packages.update",

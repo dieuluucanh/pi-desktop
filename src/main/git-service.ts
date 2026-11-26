@@ -21,6 +21,7 @@ import type { GitService } from "../git/service";
 import type {
   GitAction,
   GitActionResult,
+  GitCommitContext,
   GitCommitEntry,
   GitDiff,
   GitDiffRequest,
@@ -61,6 +62,8 @@ export interface GitPushService {
   headMessage(projectPath: string): Promise<string | null>;
   /** Local branch names, for the checkout menu. */
   branches(projectPath: string): Promise<string[]>;
+  /** The bounded staged-diff input for an AI commit message. */
+  commitContext(projectPath: string): Promise<GitCommitContext>;
   /** Starts the poll loop (idempotent). */
   start(): void;
   /** Stops the poll loop (idempotent). */
@@ -200,6 +203,8 @@ export function createGitPushService(deps: GitPushServiceDeps): GitPushService {
       const { local } = await deps.git.branches(projectPath);
       return local;
     },
+
+    commitContext: (projectPath) => deps.git.commitContext(projectPath),
 
     start() {
       if (running || disposed) return;

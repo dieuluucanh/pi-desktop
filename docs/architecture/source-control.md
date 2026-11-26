@@ -230,6 +230,14 @@ Three scrollers instead of one pinned header over one list, because a long chang
 list used to push the commit log off the bottom — scrolling to a commit scrolled
 the changed files away. Neither list can now evict the other.
 
+**Each block remembers its scroll position per folder** (2026-11-25 transcript/
+rail plan step 6). The memory is in-process only, keyed `block:folder` in an LRU
+map bounded to 50 entries: it survives remounts (a menu or view switch) but is
+deliberately not persisted across launches. A block never writes its offset
+while it is showing its loading/empty state — a block with no list would save a
+clamped `0` over the offset it is about to restore — and a wheel, pointer or key
+gesture cancels any pending restore, so the reader always wins.
+
 **Block headers are pinned** (2026-10-30 rail-headers plan). Each block's header
 is the first child of its scroller, `sticky top-0` with an opaque `bg-surface`
 and a `border-b` hairline, so the block's name, count and its one block-wide
@@ -279,13 +287,13 @@ to cost four rows in a column that also has to show changed files — while
 _Stash changes_ stays outside the fold, because stashing is what you do while
 looking at a change.
 
-**Rows act where they read.** Clicking a row's path (or its _Show diff_ icon)
-opens the diff for the side that group represents: the index side under _Staged
-Changes_, the work tree under _Changes_, and the synthesised full-file addition
-for an untracked file. The hover actions are _Show diff_, _Open file_,
-_Stage_/_Unstage_, and _Discard_. _Open file_ is hidden for a `deleted` path,
-because there is no work-tree file to open; _Discard_ is hidden on a staged-only
-row, because the service's revert has no work-tree edit to undo. The rows are
+**Rows act where they read.** Clicking a row's path opens the diff for the side
+that group represents: the index side under _Staged Changes_, the work tree under
+_Changes_, and the synthesised full-file addition for an untracked file. The
+hover actions are _Open file_, _Stage_/_Unstage_, and _Discard_. _Open file_ is
+hidden for a `deleted` path, because there is no work-tree file to open;
+_Discard_ is hidden on a staged-only row, because the service's revert has no
+work-tree edit to undo. The rows are
 rendered in path order (`orderFiles`), not git's order, so a newly created file
 cannot sink below a long list of modifications.
 
@@ -454,6 +462,57 @@ drift; this is why there is no second store.
 
 A malformed config file is **reported and kept** (AGENTS rule 5). Main falls back
 to the defaults for that read; the next explicit prefs change replaces it.
+
+## Commit message generation is app-native
+
+The sparkle in the commit box (2026-11-25 transcript/rail plan, Task 3) is the
+app's only model call that is **not bound to a session**. It runs on the
+**control host** through `ModelCompletionPort`, which `src/host/sdk/providers.ts`
+implements over Pi's `ModelRuntime.completeSimple` on the same lazy runtime the
+provider hub already owns. Three consequences, each pinned by a test:
+
+- **No `AgentSession` and no JSONL.** A generation writes no transcript turn and
+  no session file, so it cannot appear in the transcript, History or the tree.
+  `/commit` does write a turn; this does not.
+- **No renderer prompt and no `commands.run`.** The renderer builds a plain
+  `text.generate` request from the commit box; it never invokes `/commit`, and
+  the control host never needs a session tab.
+- **No extension dependency.** `/commit` is contributed by the bundled Workflow
+  extension. The sparkle is app-native, so it works with Workflow absent — and
+  when Workflow _is_ installed, `/commit` stays available and independent. Two
+  paths to the same suggestion, one of which leaves a trace in the transcript.
+
+**Staged only.** The input is `readCommitContext` (`src/git/diff.ts`):
+`git diff --cached --stat`, `--numstat` for the file and line totals, and the
+unified patch (`-U3 --no-color --no-ext-diff --no-textconv`). The `--stat` block
+is always read; the patch is skipped outright when the numstat total crosses
+`MAX_COMMIT_PATCH_LINES`, and otherwise truncated at the last complete
+`diff --git` header at or below `MAX_COMMIT_CONTEXT_BYTES` (60 KB), with
+`truncated: true` carried into the prompt as its own marker. A 700 KB staged
+diff therefore cannot become a 175 k-token request. Nothing in this path stages:
+an empty index is an explanation, never an implicit `git add` — it is `/commit`,
+not `/commit -a`.
+
+**A real model choice.** `prefs.commitMessage.model` (`{ provider, id } | null`)
+is the one writer, and `null` means **Default**, resolved from the project's then
+the global `defaultProvider`/`defaultModel` — the same keys Workflow's
+Default-mode model mirrors, read through `readDefaultModelRef` so the app keeps
+one definition. `text.models` answers the catalogue, that default and
+`defaultAvailable`, so a saved model the catalogue no longer offers is _named_ in
+the picker instead of silently replaced. `text.generate` echoes the model that
+actually answered and the success toast names it.
+
+**One bounded request, never replayed.** The host aborts a generation after
+`GENERATION_TIMEOUT_MS` (90 s) and answers `timeout`; main's transport waits
+120 s (`REQUEST_TIMEOUT_OVERRIDES`) so the host's code wins over a refusal.
+`text.cancel` aborts by `requestId`, and the second click on the sparkle is that
+cancel. `text.generate` is deliberately absent from `PASSIVE_METHODS` and
+`READ_ONLY_RETRY_METHODS`: a dropped frame must never start a second model call.
+
+The result is a **draft in the composer**, cleaned by `cleanCommitMessage`
+(fences, labels and quotes stripped, subject capped at 72 characters, body at 6
+lines). Only the user's Commit click commits, and a non-empty draft is replaced
+only after a `ConfirmDialog`.
 
 ## Trust boundaries
 

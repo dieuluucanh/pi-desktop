@@ -229,6 +229,20 @@ async function register(recording: Recording): Promise<void> {
       },
       headMessage: async () => null,
       branches: async () => [],
+      commitContext: async (projectPath) => {
+        recording.gitCalls.push({ kind: "commit-context", arg: projectPath });
+        return {
+          projectPath,
+          branch: null,
+          stat: "",
+          patch: "",
+          truncated: false,
+          files: 0,
+          insertions: 0,
+          deletions: 0,
+          recentSubjects: [],
+        };
+      },
     },
     checkpoints: {
       resolveProjectPath: async (value) => requireProjectPath(knownProjects, value),
@@ -431,6 +445,17 @@ describe("the project-folder allowlist", () => {
     await expect(invoke(IPC.gitSnapshot, { path: OPEN_PROJECT })).rejects.toThrow(
       /project folder is required/,
     );
+  });
+
+  it("resolves the folder before reading the commit context", async () => {
+    const context = await invoke(IPC.gitCommitContext, OPEN_PROJECT);
+    expect(context).toMatchObject({ projectPath: OPEN_PROJECT });
+    expect(recording.gitCalls).toEqual([{ kind: "commit-context", arg: OPEN_PROJECT }]);
+  });
+
+  it("refuses an unknown folder for the commit context", async () => {
+    await expect(invoke(IPC.gitCommitContext, "/etc")).rejects.toThrow(/not an open project/);
+    expect(recording.gitCalls).toEqual([]);
   });
 
   it("applies the same rule to the checkpoint channels", async () => {

@@ -1857,6 +1857,7 @@ if (!app.requestSingleInstanceLock()) {
         log: (projectPath, request) => gitPush.log(projectPath, request),
         headMessage: (projectPath) => gitPush.headMessage(projectPath),
         branches: (projectPath) => gitPush.branches(projectPath),
+        commitContext: (projectPath) => gitPush.commitContext(projectPath),
       },
       checkpoints: {
         // The same folder allowlist the git rail uses: one rule, one place.

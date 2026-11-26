@@ -20,16 +20,7 @@
  */
 
 import { useState } from "react";
-import {
-  ChevronDown,
-  ChevronRight,
-  ExternalLink,
-  FileText,
-  Plus,
-  RotateCcw,
-  Trash2,
-  X,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { ConfirmDialog } from "../ui/confirm-dialog";
@@ -108,17 +99,12 @@ function FileRow({
         )}
       </button>
 
-      {/* Hover-revealed, but always in the DOM so keyboard and tests reach them. */}
+      {/*
+       * Hover-revealed, but always in the DOM so keyboard and tests reach them.
+       * The path above is the diff target — a second, icon-only diff button was
+       * pure repetition — so the cluster is Open / Stage / Unstage / Discard.
+       */}
       <span className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-        <button
-          type="button"
-          className="text-ink-faint hover:text-ink"
-          aria-label={`Show diff for ${file.path}`}
-          title="Show diff"
-          onClick={() => void openGitDiff(projectPath, request)}
-        >
-          <FileText className="size-3" aria-hidden />
-        </button>
         {canOpenFile(file) ? (
           <button
             type="button"

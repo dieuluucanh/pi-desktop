@@ -15,7 +15,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { collectProviders, ProviderError } from "../../src/host/providers";
-import { createSdkProviderPort, keyOnlyInteraction } from "../../src/host/sdk/providers";
+import {
+  completionResultFromMessage,
+  createSdkProviderPort,
+  keyOnlyInteraction,
+  type CompletionMessageLike,
+} from "../../src/host/sdk/providers";
 
 const SECRET = "sk-test-provider-secret-value";
 
@@ -177,5 +182,74 @@ describe("sdk provider port", () => {
     const port = createSdkProviderPort({ agentDir: profile() });
     expect(port.authStatus("no-such-provider")).toEqual({ configured: false });
     expect(port.modelCount("no-such-provider")).toBe(0);
+  });
+});
+
+/**
+ * The `AssistantMessage` → result mapping (2026-11-25 plan, step 16; advisory
+ * R5). Pi reports a provider failure as a *value* (`stopReason: "error"` plus
+ * `errorMessage`), so the adapter has to turn it into a typed error instead of
+ * returning the empty joined text as a successful message.
+ */
+describe("completionResultFromMessage", () => {
+  function message(overrides: Partial<CompletionMessageLike> = {}): CompletionMessageLike {
+    return {
+      content: [
+        { type: "thinking" },
+        { type: "text", text: "feat: " },
+        { type: "text", text: "add a thing" },
+      ],
+      stopReason: "stop",
+      usage: { input: 21, output: 7 },
+      ...overrides,
+    };
+  }
+
+  it("joins the text blocks and reports the usage", () => {
+    expect(completionResultFromMessage(message())).toEqual({
+      text: "feat: add a thing",
+      usage: { input: 21, output: 7 },
+    });
+  });
+
+  it("maps stopReason 'error' to provider_error with the provider's message", () => {
+    let thrown: unknown;
+    try {
+      completionResultFromMessage(
+        message({ stopReason: "error", errorMessage: "quota exceeded", content: [] }),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ProviderError);
+    expect(thrown).toMatchObject({ code: "provider_error", message: "quota exceeded" });
+  });
+
+  it("falls back to a generic provider_error when the error carries no message", () => {
+    expect(() => completionResultFromMessage(message({ stopReason: "error" }))).toThrow(
+      /the provider returned an error/,
+    );
+  });
+
+  it("maps stopReason 'aborted' to the aborted code even when text arrived", () => {
+    expect(() => completionResultFromMessage(message({ stopReason: "aborted" }))).toThrow(
+      expect.objectContaining({ code: "aborted" }),
+    );
+  });
+
+  it("returns a 'length' reply as a success: the text is real, only cut off", () => {
+    expect(completionResultFromMessage(message({ stopReason: "length" }))).toMatchObject({
+      text: "feat: add a thing",
+    });
+  });
+
+  it("refuses an empty reply instead of returning an empty message", () => {
+    expect(() =>
+      completionResultFromMessage(
+        message({ content: [{ type: "thinking" }, { type: "text", text: "  " }] }),
+      ),
+    ).toThrow(
+      expect.objectContaining({ code: "provider_error", message: "the model returned no text" }),
+    );
   });
 });

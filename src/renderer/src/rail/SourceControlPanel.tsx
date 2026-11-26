@@ -31,6 +31,13 @@
  *    through `railSplitFractions`, which clamps for display; only an explicit
  *    gesture — a drag released, a key pressed, a double-click — calls
  *    `setRailSplit`.
+ *
+ * Each block also remembers its own scroll offset per folder in memory, through
+ * `useScrollMemory` (2026-11-25 rail scroll plan step 6). The `ready` gate is
+ * the folder's git snapshot for the first two blocks and its commit-log page for
+ * the third: a block showing "loading" has no list to measure, so the save side
+ * stays silent until the real content arrives. Restores are independent, so
+ * switching folders cannot carry one project's offset into another's block.
  */
 
 import { useRef, useState } from "react";
@@ -42,6 +49,7 @@ import { CommitBox } from "./CommitBox";
 import { GitBranchRow, GitSyncNote, GitSyncStatus, StashList } from "./GitSection";
 import { HistorySection } from "./HistorySection";
 import { blockFlex, blockTestId } from "./source-control-view";
+import { useScrollMemory } from "./use-scroll-memory";
 
 export interface SourceControlPanelProps {
   /** The folder this panel is showing (a tab's cwd). */
@@ -51,6 +59,23 @@ export interface SourceControlPanelProps {
 export function SourceControlPanel({ projectPath }: SourceControlPanelProps) {
   const split = useAppStore((state) => state.prefs.rail.split);
   const setRailSplit = useAppStore((state) => state.setRailSplit);
+  // Narrow selectors: a snapshot or log page for another folder must not
+  // re-render this panel, and `undefined` is the one true "loading" state.
+  const snapshot = useAppStore((state) => state.git[projectPath]);
+  const logPage = useAppStore((state) => state.gitLog[projectPath]);
+
+  const sourceControlScroll = useScrollMemory({
+    key: `source-control:${projectPath}`,
+    ready: snapshot !== undefined,
+  });
+  const changesScroll = useScrollMemory({
+    key: `changes:${projectPath}`,
+    ready: snapshot !== undefined,
+  });
+  const historyScroll = useScrollMemory({
+    key: `history:${projectPath}`,
+    ready: logPage !== undefined,
+  });
 
   // The drag math needs the body's real height, which only the DOM knows.
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -64,6 +89,7 @@ export function SourceControlPanel({ projectPath }: SourceControlPanelProps) {
     <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col" data-testid="source-control-panel">
       {/* Block 1: where am I, what am I committing, how do I move it. */}
       <div
+        ref={sourceControlScroll}
         className="flex min-h-0 flex-col overflow-y-auto"
         style={{ flex: flex[0] }}
         data-testid={blockTestId("source-control")}
@@ -94,6 +120,7 @@ export function SourceControlPanel({ projectPath }: SourceControlPanelProps) {
 
       {/* Block 2: the working tree. */}
       <div
+        ref={changesScroll}
         className="min-h-0 overflow-y-auto"
         style={{ flex: flex[1] }}
         data-testid={blockTestId("changes")}
@@ -119,6 +146,7 @@ export function SourceControlPanel({ projectPath }: SourceControlPanelProps) {
 
       {/* Block 3: the log. */}
       <div
+        ref={historyScroll}
         className="min-h-0 overflow-y-auto"
         style={{ flex: flex[2] }}
         data-testid={blockTestId("history")}

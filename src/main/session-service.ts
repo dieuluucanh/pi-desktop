@@ -85,6 +85,11 @@ const REQUEST_TIMEOUT_OVERRIDES: Readonly<Partial<Record<HostMethod, number>>> =
   // A sweep shells `npm view` per unpinned package (10 s each, concurrency 4)
   // and may enrich a few floating ones; 30 s is too tight for a cold registry.
   "packages.checkUpdates": 120_000,
+  // One generation is bounded by the host's own 90 s abort; the transport waits
+  // longer so the host's `timeout`/`provider_error` code wins over a refusal.
+  // Never replayed: `text.generate` is in neither `PASSIVE_METHODS` nor
+  // `READ_ONLY_RETRY_METHODS` (2026-11-25 plan, step 16).
+  "text.generate": 120_000,
 };
 
 export function requestTimeoutFor(

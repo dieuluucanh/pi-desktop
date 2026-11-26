@@ -4,6 +4,7 @@ import type { AppInfo, WebTabOpenInput } from "../../../shared/ipc";
 import type { BlobRef, HostMethod } from "../../../shared/host-protocol";
 import { DEFAULT_PREFS, type PackageCheckPrefs, type UiPrefs } from "../../../shared/prefs";
 import { mergeTerminalPrefs, type TerminalPrefs } from "../../../shared/terminal-prefs";
+import { mergeEditorPrefs, type EditorPrefs } from "../../../shared/editor-prefs";
 import { contributionInputLocked } from "../../../shared/extension-contributions-view";
 import {
   sanitizeRelatedArchive,
@@ -348,11 +349,19 @@ import {
   syncVerbLabel,
   type GitAction,
   type GitActionResult,
+  type GitCommitContext,
   type GitCommitEntry,
   type GitDiff,
   type GitDiffRequest,
   type GitSnapshot,
 } from "../../../shared/git";
+import {
+  MAX_MODEL_ID_LENGTH,
+  type ModelChoice,
+  type TextGenerationModelCatalog,
+} from "../../../shared/text-generation";
+import { buildCommitMessagePrompt, cleanCommitMessage } from "../../../shared/commit-message";
+import type { CommitMessageModelRef } from "../../../shared/commit-prefs";
 import {
   firstOnboardingStep,
   nextOnboardingStep,
@@ -860,6 +869,99 @@ export interface GitSyncState {
 
 /** Most project folders whose snapshot the store keeps. */
 export const MAX_GIT_SNAPSHOTS = 5;
+
+/**
+ * One folder's commit-message generation (2026-11-25 plan step 17).
+ *
+ * `requestId` is the live `text.generate` id, kept so the sparkle can become a
+ * Cancel button; `error` is the last failure, cleared when a new run starts.
+ */
+export interface CommitGenerationState {
+  phase: "idle" | "running";
+  requestId: string | null;
+  error: string | null;
+}
+
+const IDLE_COMMIT_GENERATION: CommitGenerationState = {
+  phase: "idle",
+  requestId: null,
+  error: null,
+};
+
+/**
+ * Validates a `text.models` reply into a catalogue, or null when it is not one.
+ * The wire is untrusted even though the control host produced it: a stale host
+ * can answer without `models` at all, and the picker must then say so instead of
+ * rendering `undefined.map`.
+ */
+function parseCommitModelCatalog(input: unknown): TextGenerationModelCatalog | null {
+  const source =
+    input && typeof input === "object" && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : null;
+  if (!source) return null;
+  if (!Array.isArray(source.models)) return null;
+  const models: ModelChoice[] = [];
+  for (const entry of source.models) {
+    if (!entry || typeof entry !== "object") return null;
+    const row = entry as Record<string, unknown>;
+    const provider = boundedModelPart(row.provider);
+    const id = boundedModelPart(row.id);
+    const name = boundedModelPart(row.name);
+    if (!provider || !id || !name) return null;
+    models.push({ provider, id, name });
+  }
+  const defaultModel = source.defaultModel === null ? null : parseModelChoice(source.defaultModel);
+  if (source.defaultModel !== null && !defaultModel) return null;
+  if (typeof source.defaultAvailable !== "boolean") return null;
+  return { models, defaultModel, defaultAvailable: source.defaultAvailable };
+}
+
+/** One `{ provider, id, name }` row, or null when it is not one. */
+function parseModelChoice(input: unknown): ModelChoice | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const row = input as Record<string, unknown>;
+  const provider = boundedModelPart(row.provider);
+  const id = boundedModelPart(row.id);
+  const name = boundedModelPart(row.name);
+  if (!provider || !id || !name) return null;
+  return { provider, id, name };
+}
+
+/** A `text.generate` reply: the raw text plus the model that produced it. */
+function parseGenerationResult(input: unknown): { text: string; model: ModelChoice } | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const row = input as Record<string, unknown>;
+  if (typeof row.text !== "string") return null;
+  const model = parseModelChoice(row.model);
+  if (!model) return null;
+  return { text: row.text, model };
+}
+
+/** Trim, then require a bounded non-empty string (the shared wire bound). */
+function boundedModelPart(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_MODEL_ID_LENGTH) return null;
+  return trimmed;
+}
+
+/**
+ * The request id for one generation. `crypto.randomUUID` is the normal source;
+ * a runtime without it refuses the generation rather than minting a guessable id
+ * that a stale `text.cancel` could abort.
+ */
+function commitRequestId(): string | null {
+  const mint = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto?.randomUUID?.bind(
+    globalThis.crypto,
+  );
+  if (typeof mint !== "function") return null;
+  try {
+    return mint();
+  } catch {
+    return null;
+  }
+}
 /** One commit-log page (mirrors the main-process default). */
 export const GIT_LOG_PAGE_SIZE = 30;
 const EMPTY_GIT_LOG_PAGE: GitLogPage = {
@@ -1114,6 +1216,8 @@ export interface AppStateShape {
   setPrefs: (patch: Partial<UiPrefs>) => void;
   /** Merges and persists terminal prefs, resolving after main has applied them. */
   setTerminalPrefs: (patch: Partial<TerminalPrefs>) => Promise<TerminalPrefs>;
+  /** Merges and persists editor prefs, resolving with the server echo. */
+  setEditorPrefs: (patch: Partial<EditorPrefs>) => Promise<UiPrefs>;
   /** Persists a display-zoom level (clamped by the shared helper). */
   setZoomFactor: (factor: number) => void;
   zoomIn: () => void;
@@ -1750,6 +1854,41 @@ export interface AppStateShape {
    * inventing one.
    */
   loadHeadCommitMessage: (projectPath: string) => Promise<string | null>;
+  /**
+   * The bounded staged-diff context for the AI commit-message button. Returns
+   * null when the bridge is missing or the read fails; nothing is stored, because
+   * the generation flow (not the store) owns the request.
+   */
+  loadCommitContext: (projectPath: string) => Promise<GitCommitContext | null>;
+
+  /**
+   * The commit-message model catalogue per folder (2026-11-25 plan step 17).
+   * Cached so opening the picker twice does not re-ask the control host, and so
+   * the list survives a menu close.
+   */
+  commitModels: Record<string, TextGenerationModelCatalog>;
+  /** One generation per folder: its phase, live request id and last failure. */
+  commitGeneration: Record<string, CommitGenerationState>;
+  /**
+   * Reads the model catalogue for one folder (`text.models`). Returns null and
+   * records the failure when the host refuses, so the picker can explain it.
+   */
+  loadCommitModels: (projectPath: string) => Promise<TextGenerationModelCatalog | null>;
+  /**
+   * Saves the commit-message model. `null` restores Default (the project's then
+   * the global saved default).
+   */
+  setCommitMessageModel: (model: CommitMessageModelRef | null) => void;
+  /**
+   * Generates a commit message from the staged diff. Staged-only: nothing staged
+   * is a refusal, never an implicit stage. Resolves with the clean message and
+   * the model that wrote it, or the failure to show.
+   */
+  generateCommitMessage: (
+    projectPath: string,
+  ) => Promise<{ ok: true; message: string; model: ModelChoice } | { ok: false; error: string }>;
+  /** Aborts the live generation for a folder, if any. */
+  cancelCommitMessage: (projectPath: string) => Promise<void>;
   /** Dismisses one folder's rail error line. */
   clearGitError: (projectPath: string) => void;
   /** Dismisses one folder's sync status line. */
@@ -3855,6 +3994,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   gitDiffLoading: false,
   gitLog: {},
   gitBranches: {},
+  commitModels: {},
+  commitGeneration: {},
   checkpoints: {},
   checkpointsError: null,
   checkpointsUndoRef: {},
@@ -3931,6 +4072,22 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     } catch (error) {
       get().noteFailure(error);
       return get().prefs.terminal;
+    }
+  },
+
+  setEditorPrefs: async (patch) => {
+    const editor = mergeEditorPrefs(get().prefs.editor, patch);
+    set({ prefs: { ...get().prefs, editor } });
+    const api = bridge();
+    if (!api?.prefs) return get().prefs;
+    try {
+      const saved = await api.prefs.set({ editor });
+      const composerDrafts = syncDraftRecords(get(), saved.drafts);
+      set(composerDrafts ? { prefs: saved, composerDrafts } : { prefs: saved });
+      return saved;
+    } catch (error) {
+      get().noteFailure(error);
+      throw error;
     }
   },
 
@@ -8143,6 +8300,118 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     } catch (error) {
       get().noteFailure(error);
       return null;
+    }
+  },
+
+  loadCommitContext: async (projectPath) => {
+    const api = bridge()?.git;
+    if (!api) return null;
+    try {
+      return await api.commitContext(projectPath);
+    } catch (error) {
+      get().noteFailure(error);
+      return null;
+    }
+  },
+
+  // ---- AI commit message (2026-11-25 plan step 17) ----
+
+  loadCommitModels: async (projectPath) => {
+    // A folder's catalogue is cached: opening the picker twice must not re-ask
+    // the host, and a failed read stores nothing so a retry still works.
+    const cached = get().commitModels[projectPath];
+    if (cached) return cached;
+    const api = bridge()?.sessions;
+    if (!api) return null;
+    try {
+      const result = await api.request({
+        tabId: CONTROL_TAB_ID,
+        method: "text.models",
+        params: { cwd: projectPath },
+      });
+      const catalogue = parseCommitModelCatalog(result);
+      if (!catalogue) throw new Error("The host returned an unexpected model catalogue.");
+      set({ commitModels: boundByRecent({ ...get().commitModels, [projectPath]: catalogue }) });
+      return catalogue;
+    } catch (error) {
+      get().noteFailure(error);
+      return null;
+    }
+  },
+
+  setCommitMessageModel: (model) => {
+    // One writer: `prefs.commitMessage` is the source, and main persists it.
+    get().setPrefs({ commitMessage: { model } });
+  },
+
+  generateCommitMessage: async (projectPath) => {
+    if (get().commitGeneration[projectPath]?.phase === "running") {
+      return { ok: false, error: "already running" };
+    }
+    const context = await get().loadCommitContext(projectPath);
+    // Staged-only (plan decision D10): an empty index is an explanation, never an
+    // implicit `git add -u`.
+    if (!context || context.files === 0) {
+      return { ok: false, error: "Stage the changes you want to commit first." };
+    }
+    const api = bridge()?.sessions;
+    if (!api) return { ok: false, error: "The preload bridge is unavailable." };
+    const requestId = commitRequestId();
+    if (!requestId) return { ok: false, error: "This build cannot start a generation." };
+
+    const { system, prompt } = buildCommitMessagePrompt(context);
+    const model = get().prefs.commitMessage.model;
+    const writeGeneration = (state: CommitGenerationState): void => {
+      set({
+        commitGeneration: boundByRecent({ ...get().commitGeneration, [projectPath]: state }),
+      });
+    };
+
+    writeGeneration({ phase: "running", requestId, error: null });
+    try {
+      const result = await api.request({
+        tabId: CONTROL_TAB_ID,
+        method: "text.generate",
+        params: { requestId, cwd: projectPath, model, system, prompt },
+      });
+      const parsed = parseGenerationResult(result);
+      if (!parsed) throw new Error("The host returned an unexpected generation result.");
+      const message = cleanCommitMessage(parsed.text);
+      if (!message) throw new Error("The model returned no usable commit message.");
+      writeGeneration({ ...IDLE_COMMIT_GENERATION });
+      return { ok: true, message, model: parsed.model };
+    } catch (error) {
+      const message = errorMessage(error);
+      writeGeneration({ phase: "idle", requestId: null, error: message });
+      return { ok: false, error: message };
+    }
+  },
+
+  cancelCommitMessage: async (projectPath) => {
+    const generation = get().commitGeneration[projectPath];
+    if (!generation || generation.phase !== "running" || !generation.requestId) return;
+    const api = bridge()?.sessions;
+    try {
+      await api?.request({
+        tabId: CONTROL_TAB_ID,
+        method: "text.cancel",
+        params: { requestId: generation.requestId },
+      });
+    } catch (error) {
+      // `text.cancel` is idempotent on the host; a refused abort must still leave
+      // the button clickable.
+      get().noteFailure(error);
+    } finally {
+      const live = get().commitGeneration[projectPath];
+      // A second generation that started while the abort flew keeps its own id.
+      if (live?.requestId === generation.requestId) {
+        set({
+          commitGeneration: boundByRecent({
+            ...get().commitGeneration,
+            [projectPath]: { ...IDLE_COMMIT_GENERATION },
+          }),
+        });
+      }
     }
   },
 

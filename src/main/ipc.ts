@@ -84,6 +84,7 @@ import {
   parseGitLogRequest,
   type GitAction,
   type GitActionResult,
+  type GitCommitContext,
   type GitCommitEntry,
   type GitDiff,
   type GitDiffRequest,
@@ -277,6 +278,7 @@ export interface IpcDependencies {
     log(projectPath: string, request: GitLogRequest): Promise<GitCommitEntry[]>;
     headMessage(projectPath: string): Promise<string | null>;
     branches(projectPath: string): Promise<string[]>;
+    commitContext(projectPath: string): Promise<GitCommitContext>;
   };
   /** Folder checkpoints (git-checkpoint plan step 21). */
   checkpoints: {
@@ -967,6 +969,9 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   );
   ipcMain.handle(IPC.gitBranches, async (_event, projectPath: unknown) =>
     deps.git.branches(await deps.git.resolveProjectPath(projectPath)),
+  );
+  ipcMain.handle(IPC.gitCommitContext, async (_event, projectPath: unknown) =>
+    deps.git.commitContext(await deps.git.resolveProjectPath(projectPath)),
   );
 
   // Folder checkpoints (git-checkpoint plan step 21). Same two rules as git: the

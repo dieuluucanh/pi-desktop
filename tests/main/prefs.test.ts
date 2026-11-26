@@ -28,6 +28,7 @@ describe("sanitizePrefs", () => {
     expect(Object.keys(result).sort()).toEqual(
       [
         "checkpoints",
+        "commitMessage",
         "desktopKeybindings",
         "dialogs",
         "drafts",
@@ -592,5 +593,63 @@ describe("rail and checkpoint preferences", () => {
       maxPerSession: 250,
       exclude: ["*.iso"],
     });
+  });
+});
+
+/**
+ * The AI commit-message model (2026-11-25 plan step 17).
+ *
+ * One nested choice: `{ model: { provider, id } | null }`, where `null` is the
+ * Default mode model. The sanitizer must be total (a hand-edited app-state.json
+ * can say anything) and the merge must not let a model patch drop the rest of
+ * the block.
+ */
+describe("commit message preferences", () => {
+  it("defaults to Default for an older app-state.json", () => {
+    expect(sanitizePrefs({ theme: "light" }).commitMessage).toEqual({ model: null });
+    expect(DEFAULT_PREFS.commitMessage).toEqual({ model: null });
+  });
+
+  it("collapses junk, an empty half or an over-long id to Default", () => {
+    expect(sanitizePrefs({ commitMessage: "openai/gpt-5" }).commitMessage).toEqual({
+      model: null,
+    });
+    expect(
+      sanitizePrefs({ commitMessage: { model: { provider: "openai" } } }).commitMessage,
+    ).toEqual({ model: null });
+    expect(
+      sanitizePrefs({ commitMessage: { model: { provider: "", id: "gpt-5" } } }).commitMessage,
+    ).toEqual({ model: null });
+    expect(
+      sanitizePrefs({
+        commitMessage: { model: { provider: "x".repeat(201), id: "gpt-5" } },
+      }).commitMessage,
+    ).toEqual({ model: null });
+    expect(sanitizePrefs({ commitMessage: { model: 42 } }).commitMessage).toEqual({
+      model: null,
+    });
+  });
+
+  it("keeps a valid ref", () => {
+    expect(
+      sanitizePrefs({
+        commitMessage: { model: { provider: "openai", id: "gpt-5" } },
+      }).commitMessage,
+    ).toEqual({ model: { provider: "openai", id: "gpt-5" } });
+  });
+
+  it("keeps the rest of the block when only the model is patched", () => {
+    const current = sanitizePrefs({
+      commitMessage: { model: { provider: "openai", id: "gpt-5" } },
+    });
+    // A patch that only clears the pick must not lose the block's other keys; the
+    // block is one level deep today, and the merge keeps it that way.
+    expect(mergePrefs(current, { commitMessage: { model: null } }).commitMessage).toEqual({
+      model: null,
+    });
+    expect(mergePrefs(current, { theme: "light" }).commitMessage).toEqual(current.commitMessage);
+    expect(
+      mergePrefs(current, { commitMessage: { model: { provider: "x", id: "y" } } }).commitMessage,
+    ).toEqual({ model: { provider: "x", id: "y" } });
   });
 });

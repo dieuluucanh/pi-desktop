@@ -85,6 +85,7 @@ import type {
 import type {
   GitAction,
   GitActionResult,
+  GitCommitContext,
   GitCommitEntry,
   GitDiff,
   GitDiffRequest,
@@ -269,6 +270,8 @@ const git: GitBridge = {
     ipcRenderer.invoke(IPC.gitHeadMessage, projectPath) as Promise<string | null>,
   branches: (projectPath: string) =>
     ipcRenderer.invoke(IPC.gitBranches, projectPath) as Promise<string[]>,
+  commitContext: (projectPath: string) =>
+    ipcRenderer.invoke(IPC.gitCommitContext, projectPath) as Promise<GitCommitContext>,
   onSnapshot: (listener: (snapshot: GitSnapshot) => void) =>
     subscribe<GitSnapshot>(IPC.gitPushed, listener),
 };

@@ -16,6 +16,13 @@
  * in this column clips and steals pointer events. It holds *Amend last commit*,
  * and whichever of *Change identity* / *Set identity* applies.
  *
+ * The **sparkle** in the textarea's top-right corner asks the model for a
+ * message; the chevron beside it picks the model. Both are app-native (no
+ * extension, no session), the input is the *staged* diff only, and the result
+ * lands in the composer — the user still presses Commit. A draft is never
+ * replaced without a confirmation, and nothing here stages anything (that is the
+ * `/commit` vs `/commit -a` rule).
+ *
  * The three rules that keep it honest:
  *
  *  - **The button says what it will do.** With nothing staged but changes
@@ -28,11 +35,13 @@
  *    never executed on the user's behalf.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Ellipsis } from "lucide-react";
+import { ChevronDown, Ellipsis, Loader2, Sparkles } from "lucide-react";
 import { Button } from "../ui/button";
+import { ConfirmDialog } from "../ui/confirm-dialog";
 import { COMMIT_MESSAGE_MAX_HEIGHT_PX, useAutoGrowTextarea } from "../ui/auto-grow";
+import { CommitModelMenu } from "./CommitModelMenu";
 import { RailMenuItem } from "./RailMenuItem";
 import { useAppStore } from "../state/app-store";
 import {
@@ -52,6 +61,10 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
   const snapshot = useAppStore((state) => state.git[projectPath]);
   const runGitAction = useAppStore((state) => state.runGitAction);
   const loadHeadCommitMessage = useAppStore((state) => state.loadHeadCommitMessage);
+  const generateCommitMessage = useAppStore((state) => state.generateCommitMessage);
+  const cancelCommitMessage = useAppStore((state) => state.cancelCommitMessage);
+  const generation = useAppStore((state) => state.commitGeneration[projectPath]);
+  const modelChoice = useAppStore((state) => state.prefs.commitMessage.model);
 
   const [message, setMessage] = useState("");
   const messageRef = useRef<HTMLTextAreaElement | null>(null);
@@ -63,6 +76,11 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
   const [identityOpen, setIdentityOpen] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const optionsTrigger = useRef<HTMLButtonElement | null>(null);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const modelTrigger = useRef<HTMLButtonElement | null>(null);
+  // "Replace the current commit message?" — only when the box already has a draft.
+  const [replaceOpen, setReplaceOpen] = useState(false);
+  const closeModelMenu = useCallback(() => setModelMenuOpen(false), []);
   const [consent, setConsent] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -89,6 +107,43 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
   const count = messageCount(message);
   const label = primaryActionLabel(snapshot, amend);
   const summary = identity ? identitySummary(identity) : null;
+  const generating = generation?.phase === "running";
+  const modelLabel = modelChoice
+    ? `${modelChoice.provider}/${modelChoice.id}`
+    : "Default mode model";
+
+  // `generateCommitMessage` owns the context read, the prompt and the request;
+  // this is only the paint: a success fills the box, a failure leaves the draft.
+  const runGeneration = async (): Promise<void> => {
+    const result = await generateCommitMessage(projectPath);
+    if (result.ok) {
+      setMessage(result.message);
+      toast.success(`Message generated with ${result.model.provider}/${result.model.id}`);
+      return;
+    }
+    // The draft is the user's work, not the failed attempt's: never clear it.
+    toast.error(result.error);
+  };
+
+  const startGeneration = (): void => {
+    if (generating) {
+      void cancelCommitMessage(projectPath);
+      return;
+    }
+    // A commit in flight owns the box; generating into it would race the click.
+    if (busy) return;
+    if (snapshot.staged.length === 0) {
+      // Staged-only, like `/commit` and unlike `/commit -a`: never stage here.
+      toast.warning("Stage the changes you want to commit first.");
+      return;
+    }
+    // Replacing a draft is destructive to typed work, so it asks first (D13).
+    if (message.trim().length > 0) {
+      setReplaceOpen(true);
+      return;
+    }
+    void runGeneration();
+  };
 
   const submit = async (): Promise<void> => {
     if (busy) return;
@@ -154,26 +209,78 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
 
   return (
     <div className="flex flex-col gap-1.5 px-3 pt-2" data-testid="commit-box">
-      <textarea
-        ref={messageRef}
-        aria-label="Commit message"
-        placeholder="Commit message"
-        rows={2}
-        value={message}
-        onChange={(event) => setMessage(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-            event.preventDefault();
-            void submit();
-          }
-          if (event.key === "Escape") {
-            // Escape gives the keyboard back to the session; it never discards
-            // what the user typed.
-            event.currentTarget.blur();
-          }
-        }}
-        className="w-full resize-none overflow-y-auto rounded-sm border border-line bg-sunken px-2 py-1 text-xs text-ink outline-none focus:border-accent"
-      />
+      {/* The control is inside the textarea's corner, so the text keeps clear of
+          it with `pr-12` (two icon buttons) rather than a second row. */}
+      <div className="relative">
+        <textarea
+          ref={messageRef}
+          aria-label="Commit message"
+          placeholder="Commit message"
+          rows={2}
+          value={message}
+          onChange={(event) => setMessage(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              void submit();
+            }
+            if (event.key === "Escape") {
+              // Escape gives the keyboard back to the session; it never discards
+              // what the user typed.
+              event.currentTarget.blur();
+            }
+          }}
+          className="w-full resize-none overflow-y-auto rounded-sm border border-line bg-sunken px-2 py-1 pr-12 text-xs text-ink outline-none focus:border-accent"
+        />
+        <div className="absolute right-1 top-1 flex items-center gap-0.5">
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            data-testid="commit-generate"
+            aria-label={generating ? "Cancel commit message generation" : "Generate commit message"}
+            title={
+              generating
+                ? "Cancel the generation that is running"
+                : `Generate from staged changes (${modelLabel})`
+            }
+            // A commit in flight owns the box, and a cancellable run is never
+            // disabled: the second click is the abort.
+            disabled={busy}
+            onClick={startGeneration}
+          >
+            {generating ? (
+              <Loader2
+                className="size-3 animate-spin"
+                aria-hidden
+                data-testid="commit-generate-spinner"
+              />
+            ) : (
+              <Sparkles className="size-3" aria-hidden />
+            )}
+          </Button>
+          <Button
+            ref={modelTrigger}
+            size="icon-sm"
+            variant="ghost"
+            data-testid="commit-model"
+            aria-label="Commit message model"
+            aria-expanded={modelMenuOpen}
+            aria-controls="commit-model-menu"
+            onClick={() => setModelMenuOpen((open) => !open)}
+          >
+            <ChevronDown className="size-3" aria-hidden />
+          </Button>
+        </div>
+      </div>
+
+      {/* In flow, never a portal: a popup in this 320 px column clips. */}
+      {modelMenuOpen ? (
+        <CommitModelMenu
+          projectPath={projectPath}
+          onClose={closeModelMenu}
+          returnFocusTo={modelTrigger}
+        />
+      ) : null}
 
       {/* Meta row: how long the message is, who it is attributed to, options. */}
       <div className="flex items-center gap-2 text-[11px] text-ink-faint">
@@ -316,6 +423,21 @@ export function CommitBox({ projectPath }: CommitBoxProps) {
             a terminal to set it for every repository.
           </p>
         </form>
+      ) : null}
+
+      {replaceOpen ? (
+        <ConfirmDialog
+          open
+          tone="accent"
+          title="Replace the current commit message?"
+          description="The generated message replaces the draft you have typed; the draft is not kept."
+          confirmLabel="Replace draft"
+          onConfirm={() => {
+            setReplaceOpen(false);
+            void runGeneration();
+          }}
+          onCancel={() => setReplaceOpen(false)}
+        />
       ) : null}
     </div>
   );

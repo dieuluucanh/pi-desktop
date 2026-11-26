@@ -31,6 +31,12 @@ export const MAX_DIFF_BYTES = 2_000_000;
 export const MAX_DIFF_FILES = 200;
 /** Largest commit message the app will send. */
 export const MAX_COMMIT_MESSAGE = 20_000;
+/** Largest staged context the app will hand to a commit-message model. */
+export const MAX_COMMIT_CONTEXT_BYTES = 60_000;
+/** Most files one commit context will describe. */
+export const MAX_COMMIT_CONTEXT_FILES = 200;
+/** Most recent commit subjects offered to the model as a style hint. */
+export const MAX_RECENT_COMMIT_SUBJECTS = 8;
 /** Longest accepted branch name (git's own practical limit is far below this). */
 export const MAX_BRANCH_NAME = 200;
 /** Longest path accepted from the renderer, in characters. */
@@ -240,6 +246,38 @@ export interface GitDiffRequest {
    * incompatible with `staged`/`commit`: there is no index side to compare.
    */
   untracked?: boolean;
+}
+
+/* ---------------------------------------------------------- commit context */
+
+/**
+ * The bounded input for an AI commit message (2026-11-25 plan, step 14).
+ *
+ * This is a contract type only: the git engine fills it in (step 15), the
+ * prompt builder in `./commit-message` consumes it, and the renderer never
+ * assembles one itself. The bounds are what keep a 700 KB staged diff from
+ * becoming a 175 k-token request; `truncated` must always be truthful, because
+ * the prompt says so to the model.
+ */
+export interface GitCommitContext {
+  /** The folder the staged changes were read from (absolute). */
+  projectPath: string;
+  /** Branch name, or null when HEAD is detached. */
+  branch: string | null;
+  /** `git diff --cached --stat` output, or "" when nothing is staged. */
+  stat: string;
+  /** Bounded unified patch, or "" when nothing is staged. */
+  patch: string;
+  /** True when the patch exceeded {@link MAX_COMMIT_CONTEXT_BYTES} and was cut. */
+  truncated: boolean;
+  /** Files the index differs by (0 when nothing is staged). */
+  files: number;
+  /** Lines added by the staged change. */
+  insertions: number;
+  /** Lines removed by the staged change. */
+  deletions: number;
+  /** Up to {@link MAX_RECENT_COMMIT_SUBJECTS} subjects, newest first. */
+  recentSubjects: string[];
 }
 
 /** One page of the commit log, as the rail asks for it. */

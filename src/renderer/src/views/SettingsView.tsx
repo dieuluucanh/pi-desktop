@@ -27,6 +27,7 @@ import {
   SourceControlSettingsCard,
 } from "../settings/SourceControlSettings";
 import { NotificationsSettingsCard } from "../settings/NotificationsSettings";
+import { EditorSettingsCard } from "../settings/EditorSettings";
 import { TerminalSettingsCard } from "../settings/TerminalSettings";
 import { setSidebarWidth } from "../state/sidebar-width";
 import { ViewShell } from "./ViewShell";
@@ -341,6 +342,8 @@ export function SettingsView() {
           </div>
         </Row>
       </section>
+
+      <EditorSettingsCard />
 
       <div ref={terminalCardRef}>
         <TerminalSettingsCard />

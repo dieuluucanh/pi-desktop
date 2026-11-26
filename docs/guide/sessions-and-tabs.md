@@ -193,6 +193,16 @@ Tabs, order and the active tab are stored in app state and restored on launch,
 but **no host is spawned until a tab is activated**. The most recently used tab
 is warmed in the background so the first session is fast.
 
+## Following the transcript
+
+The transcript follows new output as it streams. While the view is on the tail,
+every new message, tool result and streamed delta keeps it there. Scroll up —
+with the wheel, a touch drag or `PageUp`/`Home`/`↑` — and following stops at once,
+leaving you where you are. Scroll back down to the bottom, or press the **Jump to
+latest** pill (`Ctrl+End`), to resume. The pill reads **New messages · jump to
+latest** only when content arrived while you were reading above; if nothing new
+has come in since you scrolled up it stays plain **Jump to latest**.
+
 ## Composer
 
 The composer is a plain text area with Pi’s autocomplete contract:

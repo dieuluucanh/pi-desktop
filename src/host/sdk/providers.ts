@@ -28,6 +28,7 @@ import {
   type ProviderDescriptor,
   type ProviderPort,
 } from "../providers";
+import type { ModelChoice } from "../../shared/text-generation";
 
 export interface SdkProviderPortOptions {
   /** The Pi profile directory (`~/.pi/agent`); `auth.json` lives here. */
@@ -52,6 +53,56 @@ function authTypesOf(provider: RuntimeProviderLike): string[] {
   if (provider.auth.oauth) types.push("oauth");
   if (provider.auth.apiKey) types.push("api_key");
   return types;
+}
+
+/** The subset of Pi's `AssistantMessage` this adapter reads (kept structural). */
+export interface CompletionMessageLike {
+  content: readonly { type: string; text?: string }[];
+  stopReason: string;
+  errorMessage?: string;
+  usage: { input: number; output: number };
+}
+
+/**
+ * Turns one `AssistantMessage` into a result or a typed error (advisory R5).
+ *
+ * Pi reports provider failures as *values*, not rejections: auth, quota and
+ * rate-limit errors arrive with `stopReason: "error"` and an `errorMessage`, and
+ * an aborted request arrives with `stopReason: "aborted"`. Returning the joined
+ * text in those cases would hand the caller an empty message and hide the cause,
+ * so both become `ProviderError`s with the codes `text-generation.ts` maps.
+ *
+ * `"length"` is deliberately a success: the text is real, just cut off, and the
+ * commit-message cleaner re-caps an over-long subject. `"toolUse"`/`"deferred"`
+ * cannot arise from a request with no tools and no deferred option; they fall
+ * through to the same success branch as `"stop"`.
+ */
+export function completionResultFromMessage(message: CompletionMessageLike): {
+  text: string;
+  usage: { input: number; output: number };
+} {
+  const text = message.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text ?? "")
+    .join("");
+
+  if (message.stopReason === "error") {
+    throw new ProviderError(
+      message.errorMessage ?? "the provider returned an error",
+      "provider_error",
+    );
+  }
+  if (message.stopReason === "aborted") {
+    throw new ProviderError("generation was aborted", "aborted");
+  }
+  if (text.trim().length === 0) {
+    throw new ProviderError("the model returned no text", "provider_error");
+  }
+  return { text, usage: { input: message.usage.input, output: message.usage.output } };
+}
+
+function toChoice(model: { provider: string; id: string; name: string }): ModelChoice {
+  return { provider: model.provider, id: model.id, name: model.name };
 }
 
 /**
@@ -184,6 +235,46 @@ export function createSdkProviderPort(options: SdkProviderPortOptions): Provider
       // The interaction mirrors pi-ai's `AuthInteraction`, so it is forwarded as
       // it stands: Pi owns the flow, the app owns its prompts and progress.
       await modelRuntime.login(providerId, "oauth", interaction as AuthInteraction);
+    },
+
+    // Session-less one-shot generation (plan step 16): no `AgentSession`, no
+    // JSONL, no extension, over the same lazy runtime `providers.*` uses.
+    completion: {
+      availableModels: async (): Promise<readonly ModelChoice[]> => {
+        const modelRuntime = await ensure();
+        try {
+          // `getAvailable()` awaits the auth/availability pass (advisory R7), so
+          // a cold control host does not report a partial catalogue and the
+          // "first available" fallback cannot pick an unusable model.
+          return (await modelRuntime.getAvailable()).map(toChoice);
+        } catch {
+          // Offline/expired profiles: Pi's availability pass can throw while the
+          // static catalogue is still complete. Showing it keeps the picker
+          // usable, and `defaultAvailable` still tells the truth about whether
+          // the saved default is in that list.
+          return modelRuntime.getModels().map(toChoice);
+        }
+      },
+
+      complete: async (input) => {
+        const modelRuntime = await ensure();
+        const model = modelRuntime.getModel(input.model.provider, input.model.id);
+        if (!model) {
+          throw new ProviderError(
+            `unknown model ${input.model.provider}/${input.model.id}`,
+            "unknown_model",
+          );
+        }
+        const message = await modelRuntime.completeSimple(
+          model,
+          {
+            systemPrompt: input.system,
+            messages: [{ role: "user", content: input.prompt, timestamp: Date.now() }],
+          },
+          { signal: input.signal, maxTokens: input.maxTokens },
+        );
+        return completionResultFromMessage(message);
+      },
     },
 
     envHas: (name: string): boolean => {

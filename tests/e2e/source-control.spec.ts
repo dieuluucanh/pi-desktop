@@ -129,7 +129,10 @@ test.describe("source control", () => {
       app.window.getByTestId("changes-group-staged").getByTestId("change-row-README.md"),
     ).toBeVisible({ timeout: 15_000 });
 
-    const message = app.window.getByLabel(/commit message/i);
+    // The commit box now also carries two `aria-label`s that mention the message
+    // ("Generate commit message", "Commit message model"), so the textarea is
+    // addressed by role and exact name instead of a loose label regex.
+    const message = app.window.getByRole("textbox", { name: "Commit message", exact: true });
     await message.fill("feat: an outside edit");
     await app.window
       .getByRole("button", { name: /commit (all|staged)|^commit$/i })
@@ -150,6 +153,49 @@ test.describe("source control", () => {
         .getByText(/an outside edit/)
         .first(),
     ).toBeVisible({ timeout: 20_000 });
+  });
+
+  test("offers the AI commit controls and opens the model picker", async () => {
+    app = await launchFakeApp();
+    initRepo(app.projectDir);
+    writeFileSync(
+      join(app.projectDir, "README.md"),
+      "# E2E project\n\nstaged for a message\n",
+      "utf8",
+    );
+
+    await app.window
+      .getByRole("button", { name: /new session/i })
+      .first()
+      .click();
+    await expect(app.window.getByLabel("Prompt")).toBeVisible({ timeout: 30_000 });
+    await openRail(app, "source-control");
+
+    // The two controls sit inside the commit box: the sparkle generates, the
+    // chevron picks the model. Neither is the commit button. This test never
+    // clicks the sparkle — a generation would contact a provider, and the E2E
+    // deliberately stays offline. The "stage first" warning and a real
+    // generation are pinned by `rail-commit-ai.test.tsx` instead.
+    const generate = app.window.getByTestId("commit-generate");
+    const model = app.window.getByTestId("commit-model");
+    await expect(generate).toBeVisible({ timeout: 15_000 });
+    await expect(model).toBeVisible();
+    await expect(generate).toHaveAttribute("aria-label", "Generate commit message");
+    await expect(model).toHaveAttribute("aria-expanded", "false");
+
+    // Opening the picker reads the catalogue (`text.models`) and nothing else.
+    // A host with no catalogue still renders the list *and* an error line, so
+    // the assertion is on the menu, not on a model row.
+    await model.click();
+    const menu = app.window.getByTestId("commit-model-menu");
+    await expect(menu).toBeVisible({ timeout: 15_000 });
+    await expect(app.window.getByTestId("commit-model-list")).toBeVisible();
+    await expect(model).toHaveAttribute("aria-expanded", "true");
+
+    // Escape closes it and hands focus back to the chevron.
+    await app.window.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await expect(model).toBeFocused();
   });
 
   test("collapses a change group and drags a block splitter", async () => {
@@ -326,7 +372,9 @@ test.describe("source control", () => {
       app.window.getByTestId("changes-group-staged").getByTestId("change-row-feature/new/deep.ts"),
     ).toBeVisible({ timeout: 15_000 });
 
-    await app.window.getByLabel(/commit message/i).fill("feat: add the deep module");
+    await app.window
+      .getByRole("textbox", { name: "Commit message", exact: true })
+      .fill("feat: add the deep module");
     await app.window
       .getByRole("button", { name: /commit (all|staged)|^commit$/i })
       .first()

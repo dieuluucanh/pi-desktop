@@ -81,6 +81,17 @@ function persistedCollapsed(): { staged: boolean; changed: boolean; stashes: boo
 let handles: ReturnType<typeof installBridge>;
 
 /**
+ * The accessible names of the buttons inside one row, in DOM order. Every action
+ * here is icon-only, so its `aria-label` *is* its name; the path button's name is
+ * its visible text.
+ */
+function buttonNames(row: HTMLElement): (string | undefined)[] {
+  return within(row)
+    .getAllByRole("button")
+    .map((button) => button.getAttribute("aria-label") ?? button.textContent?.trim());
+}
+
+/**
  * The last *mutating* call the UI dispatched. A successful action is followed by
  * a refresh, so the very last bridge call is not the action under test.
  */
@@ -185,44 +196,6 @@ describe("per-file actions", () => {
     });
   });
 
-  it("opens the working-tree diff for a tracked file", async () => {
-    seed(snapshot({ changed: [file("src/a.ts")] }));
-    render(<ChangesSection projectPath={PROJECT} />);
-
-    await userEvent.click(screen.getByRole("button", { name: "Show diff for src/a.ts" }));
-
-    expect(handles.gitCalls.at(-1)).toEqual({
-      kind: "diff",
-      projectPath: PROJECT,
-      payload: { path: "src/a.ts" },
-    });
-  });
-
-  it("opens the staged diff from the staged group", async () => {
-    seed(snapshot({ staged: [file("src/a.ts", { staged: true, unstaged: false })] }));
-    render(<ChangesSection projectPath={PROJECT} />);
-
-    await userEvent.click(screen.getByRole("button", { name: "Show diff for src/a.ts" }));
-
-    expect(handles.gitCalls.at(-1)?.payload).toEqual({
-      path: "src/a.ts",
-      staged: true,
-    });
-  });
-
-  it("opens the full-file diff for an untracked file", async () => {
-    seed(snapshot({ changed: [file("new.ts", { status: "untracked" })] }));
-    render(<ChangesSection projectPath={PROJECT} />);
-
-    await userEvent.click(screen.getByRole("button", { name: "Show diff for new.ts" }));
-
-    expect(handles.gitCalls.at(-1)).toEqual({
-      kind: "diff",
-      projectPath: PROJECT,
-      payload: { path: "new.ts", untracked: true },
-    });
-  });
-
   it("opens the diff from the clickable path", async () => {
     seed(snapshot({ changed: [file("src/a.ts")] }));
     render(<ChangesSection projectPath={PROJECT} />);
@@ -259,6 +232,31 @@ describe("per-file actions", () => {
     seed(snapshot({ changed: [file("gone.ts", { status: "deleted" })] }));
     render(<ChangesSection projectPath={PROJECT} />);
     expect(screen.queryByRole("button", { name: "Open gone.ts" })).not.toBeInTheDocument();
+  });
+
+  it("offers the path plus Open and Unstage on a staged row", () => {
+    seed(snapshot({ staged: [file("src/a.ts", { staged: true, unstaged: false })] }));
+    render(<ChangesSection projectPath={PROJECT} />);
+
+    const row = screen.getByTestId("change-row-src/a.ts");
+    // The path is the row's diff target, *_not* a second icon beside it: the
+    // cluster is exactly Open file + Stage/Unstage (+ Discard when unstaged).
+    expect(buttonNames(row)).toEqual(["src/a.ts", "Open src/a.ts", "Unstage src/a.ts"]);
+    expect(within(row).queryByRole("button", { name: /^Show diff/ })).not.toBeInTheDocument();
+  });
+
+  it("offers the path plus Open, Stage and Discard on an unstaged row", () => {
+    seed(snapshot({ changed: [file("src/a.ts")] }));
+    render(<ChangesSection projectPath={PROJECT} />);
+
+    const row = screen.getByTestId("change-row-src/a.ts");
+    expect(buttonNames(row)).toEqual([
+      "src/a.ts",
+      "Open src/a.ts",
+      "Stage src/a.ts",
+      "Discard changes in src/a.ts",
+    ]);
+    expect(within(row).queryByRole("button", { name: /^Show diff/ })).not.toBeInTheDocument();
   });
 
   it("orders the changed rows by path", () => {
