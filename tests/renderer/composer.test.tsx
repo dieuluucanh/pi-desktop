@@ -250,8 +250,10 @@ describe("queue and attachments", () => {
     const { onClearQueue, onRestoreQueue } = renderComposer({
       running: true,
       queue: {
-        steering: ["stop and test the parser"],
-        followUp: ["then commit with a long message that would not fit a chip"],
+        steering: [{ text: "stop and test the parser", origin: "user" }],
+        followUp: [
+          { text: "then commit with a long message that would not fit a chip", origin: "user" },
+        ],
       },
     });
 
@@ -262,6 +264,14 @@ describe("queue and attachments", () => {
     expect(pending.textContent).toContain(
       "then commit with a long message that would not fit a chip",
     );
+    // A user row keeps its whole text in the DOM and in the tooltip.
+    expect(screen.getByText("stop and test the parser")).toHaveAttribute(
+      "title",
+      "stop and test the parser",
+    );
+    expect(
+      screen.getByText("then commit with a long message that would not fit a chip"),
+    ).toHaveAttribute("title", "then commit with a long message that would not fit a chip");
 
     await user.click(screen.getByRole("button", { name: /restore all/i }));
     expect(onRestoreQueue).toHaveBeenCalledTimes(1);
@@ -270,11 +280,75 @@ describe("queue and attachments", () => {
     expect(onClearQueue).toHaveBeenCalledTimes(1);
   });
 
+  it("shows an extension's queued turn as one dim first line, with no actions", () => {
+    // The workflow extension queues its own Planner revision while the run is
+    // streaming; the panel must not present it as the user's row (terminal Pi
+    // renders it as a single dim line, `interactive-mode.js:3943-3959`).
+    const revision =
+      "# Planner revision — round 1 of 3\n\nPlan file: C:\\plans\\x.md\nR1 · secret detail";
+    const { container } = renderComposer({
+      running: true,
+      queue: {
+        steering: [{ text: revision, origin: "extension" }],
+        followUp: [],
+      },
+    });
+
+    const row = screen.getByTestId("pending-queue-extension");
+    expect(row.textContent).toContain("Steering");
+    expect(row.textContent).toContain("# Planner revision — round 1 of 3");
+    expect(row.className).toContain("text-ink-faint");
+    expect(screen.getByTestId("pending-queue")).toBeInTheDocument();
+
+    // Only line 1 is in the DOM, so nothing beyond it can leak.
+    expect(screen.queryByText(/Planner revision/)).toBeInTheDocument();
+    expect(screen.queryByText(/Plan file/)).toBeNull();
+    expect(screen.queryByText(/R1 · secret detail/)).toBeNull();
+    for (const element of container.querySelectorAll("[title]")) {
+      const title = element.getAttribute("title") ?? "";
+      expect(title).not.toContain("Plan file");
+      expect(title).not.toContain("secret detail");
+    }
+
+    // Nothing to restore or clear, so the footer is absent.
+    expect(screen.queryByRole("button", { name: /restore all/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /clear queue/i })).toBeNull();
+  });
+
+  it("keeps the actions when the queue mixes a user row with an extension row", async () => {
+    const user = userEvent.setup();
+    const { onClearQueue, onRestoreQueue } = renderComposer({
+      running: true,
+      queue: {
+        steering: [{ text: "only the user's", origin: "user" }],
+        followUp: [
+          { text: "# Planner revision — round 1 of 3\nR1 · secret detail", origin: "extension" },
+        ],
+      },
+    });
+
+    expect(screen.getByText("only the user's")).toBeInTheDocument();
+    expect(screen.getAllByTestId("pending-queue-extension")).toHaveLength(1);
+    expect(screen.getByTestId("pending-queue").textContent).toContain(
+      "# Planner revision — round 1 of 3",
+    );
+
+    const restore = screen.getAllByRole("button", { name: /restore all/i });
+    const clear = screen.getAllByRole("button", { name: /clear queue/i });
+    expect(restore).toHaveLength(1);
+    expect(clear).toHaveLength(1);
+
+    await user.click(restore[0] as HTMLElement);
+    expect(onRestoreQueue).toHaveBeenCalledTimes(1);
+    await user.click(clear[0] as HTMLElement);
+    expect(onClearQueue).toHaveBeenCalledTimes(1);
+  });
+
   it("restores the whole queue on Alt+Up", async () => {
     const user = userEvent.setup();
     const { onRestoreQueue } = renderComposer({
       running: true,
-      queue: { steering: ["one"], followUp: [] },
+      queue: { steering: [{ text: "one", origin: "user" }], followUp: [] },
     });
     await user.click(screen.getByLabelText("Prompt"));
     await user.keyboard("{Alt>}{ArrowUp}{/Alt}");

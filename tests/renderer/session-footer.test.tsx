@@ -155,6 +155,28 @@ describe("SessionFooter", () => {
     );
   });
 
+  it("shows the reviewer model from the status line, separate from the parent model", () => {
+    // The reviewer publishes its model on the live review line. The footer
+    // renders that text verbatim; the parent model stays in its own surface.
+    const reviewLine = "🔍 review · pass 2/2 · reviewer model → synthetic/hf:reviewer";
+    render(
+      <SessionFooter
+        facts={{
+          model: "anthropic/claude-sonnet-4",
+          modelId: "claude-sonnet-4",
+          thinking: "high",
+        }}
+        statuses={{ workflow: "⏸ plan", "workflow-review": reviewLine }}
+      />,
+    );
+
+    expect(screen.getByTestId("extension-status-workflow-review")).toHaveTextContent(reviewLine);
+    expect(screen.getByTestId("extension-status-workflow")).toHaveTextContent("⏸ plan");
+    const parent = screen.getByTestId("session-footer-model");
+    expect(parent).toHaveTextContent("claude-sonnet-4 • high");
+    expect(parent).not.toHaveTextContent("reviewer model");
+  });
+
   it("does not keep an otherwise empty rail alive", () => {
     const { container } = render(<SessionFooter facts={{}} statuses={{}} />);
     expect(container).toBeEmptyDOMElement();

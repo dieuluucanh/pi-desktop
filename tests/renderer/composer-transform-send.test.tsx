@@ -13,6 +13,7 @@ import {
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { TabRecord } from "../../src/shared/session-ipc";
 import { composerOperationDerivedFor, useAppStore } from "../../src/renderer/src/state/app-store";
+import { createTranscriptState } from "../../src/renderer/src/session/session-events";
 import type { ImageAttachment } from "../../src/renderer/src/session/image-attachment";
 import { installBridge } from "./fixtures";
 
@@ -330,7 +331,10 @@ describe("armed Send refusals", () => {
     const request = stubRequest();
     resetStore({
       transcripts: {
-        "tab-1": { queue: { steering: ["later"], followUp: [] } } as never,
+        "tab-1": {
+          ...createTranscriptState(),
+          queue: { steering: [{ text: "later", origin: "user" }], followUp: [] },
+        },
       },
     });
     useAppStore.getState().setDraft("tab-1", "please fix it");
@@ -340,6 +344,52 @@ describe("armed Send refusals", () => {
     );
     expect(methods(request)).not.toContain("prompt");
     expect(useAppStore.getState().hint).toMatch(/queued/);
+  });
+
+  it("starts the refinement while only extension rows are queued", async () => {
+    const request = stubRequest();
+    resetStore({
+      transcripts: {
+        "tab-1": {
+          ...createTranscriptState(),
+          queue: {
+            steering: [{ text: "# Planner revision — round 1 of 3", origin: "extension" }],
+            followUp: [],
+          },
+        },
+      },
+    });
+    useAppStore.getState().setDraft("tab-1", "please fix it");
+
+    // The guard counts only the user's own rows, so an extension's queued turn
+    // no longer refuses the refinement.
+    await expect(useAppStore.getState().sendPrompt("tab-1", "please fix it")).resolves.toBe(
+      "refining",
+    );
+    expect(methods(request)).toContain("composer.transform");
+    expect(methods(request)).not.toContain("prompt");
+    expect(useAppStore.getState().hint ?? "").not.toMatch(/queued/);
+  });
+
+  it("sends a prompt while only extension rows are queued", async () => {
+    const request = stubRequest();
+    resetStore({
+      contributions: { "tab-1": contributions(composerControl({ checked: false })) },
+      transcripts: {
+        "tab-1": {
+          ...createTranscriptState(),
+          queue: {
+            steering: [{ text: "# Planner revision — round 1 of 3", origin: "extension" }],
+            followUp: [],
+          },
+        },
+      },
+    });
+    useAppStore.getState().setDraft("tab-1", "please fix it");
+
+    await expect(useAppStore.getState().sendPrompt("tab-1", "please fix it")).resolves.toBe("sent");
+    expect(methods(request)).toContain("prompt");
+    expect(useAppStore.getState().hint ?? "").not.toMatch(/queued/);
   });
 });
 

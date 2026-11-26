@@ -217,6 +217,12 @@ export function isSendKey(event: {
   return event.key === "Enter" && !event.shiftKey && !event.altKey;
 }
 
+/** The first line of a queued text — the part Pi Terminal shows for an injected turn. */
+function firstLineOf(text: string): string {
+  const newline = text.indexOf("\n");
+  return newline === -1 ? text : text.slice(0, newline);
+}
+
 function PendingQueue({
   queue,
   onRestore,
@@ -227,47 +233,78 @@ function PendingQueue({
   onClear: () => void;
 }) {
   const rows = [
-    ...queue.steering.map((text, index) => ({ kind: "Steering" as const, text, index })),
-    ...queue.followUp.map((text, index) => ({ kind: "Follow-up" as const, text, index })),
+    ...queue.steering.map((entry, index) => ({
+      kind: "Steering" as const,
+      text: entry.text,
+      origin: entry.origin,
+      index,
+    })),
+    ...queue.followUp.map((entry, index) => ({
+      kind: "Follow-up" as const,
+      text: entry.text,
+      origin: entry.origin,
+      index,
+    })),
   ];
+  // `restore all` / `clear queue` can only hand back what the user queued; with
+  // nothing of the user's in the queue the actions would restore nothing (an
+  // extension's own turn is not the user's to re-send).
+  const hasUserRow = rows.some((row) => row.origin !== "extension");
   return (
     <div
       className="mb-2 flex flex-col gap-1 rounded-sm border border-line bg-raised/60 px-2 py-1.5"
       data-testid="pending-queue"
     >
-      {rows.map((row) => (
-        <div
-          key={`${row.kind}-${row.index}`}
-          className="flex min-w-0 items-baseline gap-2 text-[11px]"
-        >
-          <span
-            className={cn(
-              "shrink-0 rounded-xs px-1 font-medium",
-              row.kind === "Steering" ? "bg-accent/15 text-accent" : "bg-raised text-ink-muted",
-            )}
+      {rows.map((row) =>
+        row.origin === "extension" ? (
+          // Pi Terminal renders an injected turn as one dim line cut at the
+          // first newline (`interactive-mode.js:3943-3959`): the extension
+          // queued it for itself, so it gets no title, no actions and only the
+          // first line is in the DOM. Wide text is clipped by CSS instead.
+          <div
+            key={`${row.kind}-${row.index}`}
+            className="flex min-w-0 items-baseline gap-2 text-[11px] text-ink-faint"
+            data-testid="pending-queue-extension"
           >
-            {row.kind}
-          </span>
-          {/* Full text, bounded to two lines so a long message cannot push the
-              composer off screen; the title carries the whole thing. */}
-          <span className="line-clamp-2 min-w-0 flex-1 whitespace-pre-wrap" title={row.text}>
-            {row.text}
-          </span>
+            <span className="shrink-0 font-medium">{row.kind}</span>
+            <span className="min-w-0 flex-1 truncate">{firstLineOf(row.text)}</span>
+          </div>
+        ) : (
+          <div
+            key={`${row.kind}-${row.index}`}
+            className="flex min-w-0 items-baseline gap-2 text-[11px]"
+          >
+            <span
+              className={cn(
+                "shrink-0 rounded-xs px-1 font-medium",
+                row.kind === "Steering" ? "bg-accent/15 text-accent" : "bg-raised text-ink-muted",
+              )}
+            >
+              {row.kind}
+            </span>
+            {/* Full text, bounded to two lines so a long message cannot push the
+                composer off screen; the title carries the whole thing. */}
+            <span className="line-clamp-2 min-w-0 flex-1 whitespace-pre-wrap" title={row.text}>
+              {row.text}
+            </span>
+          </div>
+        ),
+      )}
+      {hasUserRow ? (
+        <div className="flex items-center gap-3 pt-0.5 text-[11px]">
+          <button
+            type="button"
+            className="text-ink-muted hover:text-ink"
+            onClick={onRestore}
+            title="Alt+Up"
+          >
+            restore all
+          </button>
+          <button type="button" className="text-ink-faint hover:text-ink" onClick={onClear}>
+            clear queue
+          </button>
         </div>
-      ))}
-      <div className="flex items-center gap-3 pt-0.5 text-[11px]">
-        <button
-          type="button"
-          className="text-ink-muted hover:text-ink"
-          onClick={onRestore}
-          title="Alt+Up"
-        >
-          restore all
-        </button>
-        <button type="button" className="text-ink-faint hover:text-ink" onClick={onClear}>
-          clear queue
-        </button>
-      </div>
+      ) : null}
     </div>
   );
 }

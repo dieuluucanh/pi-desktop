@@ -1156,3 +1156,155 @@ describe("changelog (plan step 15)", () => {
     await expect(call("session.changelog")).rejects.toThrow(/not available/i);
   });
 });
+
+describe("queue origins (2026-11-26 queue-bar plan)", () => {
+  type Listener = (event: { type: string; [key: string]: unknown }) => void;
+
+  /**
+   * A stateful fake that mirrors the SDK's queue behaviour: `steer`/`followUp`
+   * append, the getters return the live arrays, and `clearQueue` emits the
+   * SDK's own empty `queue_update` through the captured listener *before* it
+   * drains and returns the pre-clear lists.
+   */
+  async function queueSession(options: { gate?: boolean; extraOnPush?: string } = {}) {
+    const steering: string[] = [];
+    const followUp: string[] = [];
+    let listener: Listener | null = null;
+    const push = (target: string[], text: string): void => {
+      target.push(text);
+      if (options.extraOnPush !== undefined) target.push(options.extraOnPush);
+    };
+    const overrides: Record<string, unknown> = {
+      isStreaming: true,
+      subscribe: (next: Listener) => {
+        listener = next;
+        return () => undefined;
+      },
+      steer: vi.fn(async (text: string) => push(steering, text)),
+      followUp: vi.fn(async (text: string) => push(followUp, text)),
+      getSteeringMessages: () => [...steering],
+      getFollowUpMessages: () => [...followUp],
+      clearQueue: () => {
+        listener?.({ type: "queue_update", steering: [], followUp: [] });
+        const cleared = { steering: [...steering], followUp: [...followUp] };
+        steering.length = 0;
+        followUp.length = 0;
+        return cleared;
+      },
+    };
+    if (options.gate === false) {
+      overrides.getSteeringMessages = undefined;
+      overrides.getFollowUpMessages = undefined;
+    }
+    const context = await started(overrides);
+    if (!listener) throw new Error("the session listener was not attached");
+    return {
+      ...context,
+      listener: listener as Listener,
+      steering,
+      followUp,
+    };
+  }
+
+  function lastQueueUpdate(
+    emitted: Array<{ event: string; payload?: unknown }>,
+  ): Record<string, unknown> | undefined {
+    return emitted.filter((entry) => entry.event === "queue_update").at(-1)?.payload as
+      Record<string, unknown> | undefined;
+  }
+
+  it("re-emits an annotated queue_update after a followUp RPC", async () => {
+    const context = await queueSession();
+    await expect(context.call("followUp", { text: "later" })).resolves.toEqual({ queued: true });
+    expect(lastQueueUpdate(context.emitted)).toMatchObject({
+      followUp: ["later"],
+      queueOrigins: { steering: [], followUp: ["user"] },
+    });
+  });
+
+  it("classifies a later SDK frame as user plus extension", async () => {
+    const context = await queueSession();
+    await context.call("followUp", { text: "later" });
+    context.emitted.length = 0;
+    context.listener({
+      type: "queue_update",
+      steering: [],
+      followUp: ["later", "# Planner revision — round 1 of 3"],
+    });
+    const payload = lastQueueUpdate(context.emitted);
+    expect(payload?.queueOrigins).toEqual({
+      steering: [],
+      followUp: ["user", "extension"],
+    });
+    // The SDK arrays stay complete; only the annotation is added.
+    expect(payload?.followUp).toEqual(["later", "# Planner revision — round 1 of 3"]);
+  });
+
+  it("claims every text in an ambiguous two-text diff window", async () => {
+    const context = await queueSession({ extraOnPush: "# injected in the same tick" });
+    await context.call("followUp", { text: "later" });
+    expect(lastQueueUpdate(context.emitted)?.queueOrigins).toEqual({
+      steering: [],
+      followUp: ["user", "user"],
+    });
+  });
+
+  it("keeps a claim across agent_settled while the text is still queued", async () => {
+    const context = await queueSession();
+    await context.call("followUp", { text: "later" });
+    context.listener({ type: "queue_update", steering: [], followUp: ["later"] });
+    context.listener({ type: "agent_settled" });
+    context.emitted.length = 0;
+    context.listener({
+      type: "queue_update",
+      steering: [],
+      followUp: ["later", "# injected after settle"],
+    });
+    expect(lastQueueUpdate(context.emitted)?.queueOrigins).toEqual({
+      steering: [],
+      followUp: ["user", "extension"],
+    });
+  });
+
+  it("reports only the user's text from a pre-clear snapshot and counts the dropped turn", async () => {
+    const context = await queueSession();
+    await context.call("followUp", { text: "later" });
+    context.followUp.push("# injected while queued");
+    context.emitted.length = 0;
+
+    const result = (await context.call("clearQueue")) as {
+      cleared: { steering: string[]; followUp: string[] };
+      dropped: number;
+    };
+    expect(result).toEqual({ cleared: { steering: [], followUp: ["later"] }, dropped: 1 });
+    // The fake emitted the SDK's empty frame first; the report still comes from
+    // the pre-clear snapshot.
+    expect(
+      context.emitted.some(
+        (entry) =>
+          entry.event === "queue_update" &&
+          Array.isArray((entry.payload as { followUp?: unknown }).followUp) &&
+          (entry.payload as { followUp: unknown[] }).followUp.length === 0,
+      ),
+    ).toBe(true);
+  });
+
+  it("leaves the frame unannotated and the cleared list untouched when the gate is closed", async () => {
+    const context = await queueSession({ gate: false });
+    context.steering.push("a");
+    context.followUp.push("b");
+    context.emitted.length = 0;
+
+    context.listener({ type: "queue_update", steering: ["a"], followUp: ["b"] });
+    const payload = lastQueueUpdate(context.emitted);
+    expect(payload).toEqual({ steering: ["a"], followUp: ["b"] });
+    expect(payload).not.toHaveProperty("queueOrigins");
+
+    const result = (await context.call("clearQueue")) as {
+      cleared: { steering?: string[]; followUp?: string[] };
+      dropped?: number;
+    };
+    expect(result.cleared).toEqual({ steering: ["a"], followUp: ["b"] });
+    expect(result.dropped ?? 0).toBe(0);
+  });
+});

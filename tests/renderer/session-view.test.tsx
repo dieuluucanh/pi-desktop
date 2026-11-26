@@ -181,6 +181,33 @@ describe("session chrome", () => {
     );
   });
 
+  it("follows an extension-driven model_select state frame in the chip and footer", () => {
+    // The host observer refreshes the whole `state` snapshot after Pi emits
+    // `model_select`; the renderer only has to project it (no status parsing).
+    render(<SessionView tabId={TAB} />);
+    act(() => {
+      useAppStore.getState().applySessionState({
+        tabId: TAB,
+        state: {
+          model: { provider: "synthetic", id: "live-switch-target" },
+          thinkingLevel: "high",
+        },
+      });
+    });
+
+    expect(screen.getByTestId("composer-model")).toHaveAttribute(
+      "title",
+      "synthetic/live-switch-target · thinking high",
+    );
+    expect(screen.getByTestId("session-footer-model")).toHaveAttribute(
+      "title",
+      "synthetic/live-switch-target",
+    );
+    expect(screen.getByTestId("session-footer-model")).toHaveTextContent(
+      "live-switch-target • high",
+    );
+  });
+
   it("keeps the error banner's Restart when the host crashed", () => {
     useAppStore.setState({
       tabs: [{ ...useAppStore.getState().tabs[0]!, status: "crashed", error: "host failed" }],

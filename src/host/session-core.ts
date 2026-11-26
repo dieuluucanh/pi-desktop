@@ -53,6 +53,7 @@ import {
 } from "../shared/related-sessions";
 import { isTrustAnswer } from "../shared/projects";
 import { createPromptOriginTracker } from "./prompt-origin";
+import { createQueueOriginTracker, type QueueKind } from "./queue-origin";
 import { createSettingsHandlers, SettingsError, type SettingsPort } from "./settings";
 import { createShortcutHandlers, ShortcutError, type ShortcutRunner } from "./shortcuts";
 import { createThemeHandlers, type ThemePort } from "./themes";
@@ -82,6 +83,15 @@ import type { HostHandler } from "./service";
 export interface ClearedQueue {
   steering?: readonly string[];
   followUp?: readonly string[];
+}
+
+/**
+ * The host's `clearQueue` answer: the user's cleared texts plus how many
+ * extension-owned turns the SDK's all-or-nothing clear discarded.
+ */
+export interface ClearQueueResult {
+  cleared: ClearedQueue | null;
+  dropped: number;
 }
 
 /**
@@ -567,6 +577,8 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   // Pairs each accepted prompt/command with the user message it produces, so
   // the renderer can name the command instead of showing its expanded body.
   const promptOrigins = createPromptOriginTracker();
+  // Pairs each queued text with who queued it, from a before/after queue diff.
+  const queueOrigins = createQueueOriginTracker();
 
   /**
    * Generic extension contributions (orchestrator plan step 8). One registry
@@ -1218,11 +1230,97 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     return origin === null ? event : { ...event, promptOrigin: origin };
   };
 
+  /**
+   * The capability gate: attribution needs *both* SDK queue getters. Without
+   * them the host never annotates and never filters — a legacy host keeps the
+   * renderer's `"user"` default and the SDK's cleared list unchanged.
+   */
+  const hasQueueGetters = (current: SessionStateLike): boolean =>
+    typeof current.getSteeringMessages === "function" &&
+    typeof current.getFollowUpMessages === "function";
+
+  /** Reads both SDK queues, keeping only string entries; `null` closes the gate. */
+  const readQueue = (
+    current: SessionStateLike,
+  ): { steering: string[]; followUp: string[] } | null => {
+    if (!hasQueueGetters(current)) return null;
+    try {
+      const steering = current.getSteeringMessages?.() ?? [];
+      const followUp = current.getFollowUpMessages?.() ?? [];
+      return {
+        steering: steering.filter((text): text is string => typeof text === "string"),
+        followUp: followUp.filter((text): text is string => typeof text === "string"),
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  /** Multiset difference: the texts in `after` not already present in `before`. */
+  const addedTexts = (before: readonly string[], after: readonly string[]): string[] => {
+    const remaining = new Map<string, number>();
+    for (const text of before) remaining.set(text, (remaining.get(text) ?? 0) + 1);
+    const added: string[] = [];
+    for (const text of after) {
+      const count = remaining.get(text) ?? 0;
+      if (count > 0) remaining.set(text, count - 1);
+      else added.push(text);
+    }
+    return added;
+  };
+
+  /**
+   * Records the texts a renderer request newly admitted into `kind`'s queue and
+   * re-emits one annotated `queue_update`.
+   *
+   * The SDK emits its own unannotated `queue_update` before this claim exists,
+   * so this single re-emit corrects it. Main preserves frame order, so the
+   * renderer's final state is annotated.
+   */
+  const claimQueueDelta = (
+    current: HostSession,
+    kind: QueueKind,
+    before: { steering: string[]; followUp: string[] } | null,
+  ): void => {
+    if (before === null) return;
+    const now = readQueue(current);
+    if (now === null) return;
+    const added = addedTexts(before[kind], now[kind]);
+    if (added.length === 0) return;
+    queueOrigins.claim(kind, added);
+    deps.emit(
+      "queue_update",
+      {
+        steering: now.steering,
+        followUp: now.followUp,
+        queueOrigins: queueOrigins.classify(now.steering, now.followUp),
+      },
+      current.sessionId ?? undefined,
+    );
+  };
+
+  /**
+   * Annotates an SDK `queue_update` with per-entry origins. The SDK arrays stay
+   * untouched (the snapshot and `isSessionBusyState` need them complete); with
+   * the gate closed the frame stays unannotated, which the renderer reads as
+   * `"user"` — today's behaviour.
+   */
+  const withQueueOrigins = (
+    current: HostSession,
+    event: { type: string; [key: string]: unknown },
+  ): { type: string; [key: string]: unknown } => {
+    if (event.type !== "queue_update" || !hasQueueGetters(current)) return event;
+    const steering = Array.isArray(event.steering) ? (event.steering as readonly string[]) : [];
+    const followUp = Array.isArray(event.followUp) ? (event.followUp as readonly string[]) : [];
+    return { ...event, queueOrigins: queueOrigins.classify(steering, followUp) };
+  };
+
   const attach = (next: HostSession): void => {
     unsubscribe?.();
     unsubscribeErrors?.();
     unsubscribeModelChanges?.();
     promptOrigins.reset();
+    queueOrigins.reset();
     session = next;
     sessionEpoch += 1;
     // The Extensions hub reads this list; errors from the outgoing runner must
@@ -1237,10 +1335,15 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       unsubscribeModelChanges = null;
     }
     const listener = (event: { type: string; [key: string]: unknown }): void => {
-      const enriched = withPromptOrigin(withEntryRenderability(next, event));
+      const enriched = withQueueOrigins(
+        next,
+        withPromptOrigin(withEntryRenderability(next, event)),
+      );
       const frame = eventToFrame(enriched);
       deps.emit(frame.event, frame.payload, next.sessionId ?? undefined);
       if (event.type === "agent_settled") promptOrigins.settle();
+      // Queue claims are deliberately not settled here: an aborted/settled run
+      // leaves the SDK queues populated, so queued entries keep their owner.
       if (STATE_EVENTS.has(event.type)) emitState();
     };
     unsubscribe = next.subscribe ? next.subscribe(listener) : null;
@@ -1578,6 +1681,15 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       if (input.ack !== undefined && input.ack !== "preflight") {
         throw new SessionCoreError('ack must be "preflight" when provided', "bad_request");
       }
+      // Attribution window: only a streaming prompt with an explicit behavior
+      // queues, so only that combination needs a pre-call snapshot.
+      const queueKind: QueueKind | null =
+        current.isStreaming === true && behavior !== undefined
+          ? behavior === "steer"
+            ? "steering"
+            : "followUp"
+          : null;
+      const queueBefore = queueKind === null ? null : readQueue(current);
       // A new prompt while idle supersedes any dispatch that never produced a
       // user message (a notify-only command); queued follow-ups are streaming
       // and are therefore never dropped here.
@@ -1599,6 +1711,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
           const finish = (disposition: string): void => {
             if (settled) return;
             settled = true;
+            // Nothing is claimed before the call, so a `started`/`handled`
+            // disposition cannot leave a stale entry behind.
+            if (disposition === "queued" && queueKind !== null) {
+              claimQueueDelta(current, queueKind, queueBefore);
+            }
             resolve({ ...snapshot(), disposition });
           };
           options.preflightResult = (disposition: string) => finish(disposition);
@@ -1634,6 +1751,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       }
       try {
         await current.prompt(text, Object.keys(options).length > 0 ? options : undefined);
+        if (queueKind !== null) claimQueueDelta(current, queueKind, queueBefore);
         return snapshot();
       } catch (error) {
         promptOrigins.forget(pending);
@@ -1645,7 +1763,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const current = ensure();
       const text = requireString(asRecord(params).text, "text");
       if (!current.steer) throw new SessionCoreError("steering is not supported", "unsupported");
+      const before = readQueue(current);
       await current.steer(text, undefined, { source: "rpc" });
+      claimQueueDelta(current, "steering", before);
       return { queued: true };
     },
 
@@ -1654,7 +1774,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const text = requireString(asRecord(params).text, "text");
       if (!current.followUp)
         throw new SessionCoreError("follow-up is not supported", "unsupported");
+      const before = readQueue(current);
       await current.followUp(text, undefined, { source: "rpc" });
+      claimQueueDelta(current, "followUp", before);
       return { queued: true };
     },
 
@@ -1665,9 +1787,41 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     },
 
     clearQueue: () => {
-      const cleared = ensure().clearQueue?.() ?? null;
+      const current = ensure();
+      // The SDK empties both arrays and emits its own empty `queue_update`
+      // before returning, and the tracker prunes on absence — so classify the
+      // pre-clear snapshot, then reset after clearing.
+      const before = readQueue(current);
+      const origins =
+        before === null ? null : queueOrigins.classify(before.steering, before.followUp);
+      const cleared = current.clearQueue?.() ?? null;
+      queueOrigins.reset();
       emitState();
-      return { cleared };
+      if (cleared === null) return { cleared: null, dropped: 0 };
+      // Gate closed: never filter what cannot be attributed. The SDK's cleared
+      // list passes through unchanged; an absent `dropped` reads as 0.
+      if (origins === null) return { cleared };
+      // The SDK call still clears everything (there is no selective API), so
+      // this return is a report, not a filter. The dropped extension turn is
+      // why the renderer shows a hint (plan step 7).
+      const steering: string[] = [];
+      const followUp: string[] = [];
+      let dropped = 0;
+      const keepUserTexts = (
+        texts: readonly string[] | undefined,
+        originList: readonly string[] | undefined,
+        into: string[],
+      ): void => {
+        if (texts === undefined) return;
+        texts.forEach((text, index) => {
+          // An entry beyond the snapshot (a length mismatch) reads as user.
+          if (originList?.[index] === "extension") dropped += 1;
+          else into.push(text);
+        });
+      };
+      keepUserTexts(cleared.steering, origins.steering, steering);
+      keepUserTexts(cleared.followUp, origins.followUp, followUp);
+      return { cleared: { steering, followUp }, dropped };
     },
 
     "state.get": () => snapshot(),
@@ -2519,6 +2673,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     cwd: () => cwd,
     dispose: async () => {
       promptOrigins.reset();
+      queueOrigins.reset();
       try {
         contributionBridge?.dispose();
       } catch {

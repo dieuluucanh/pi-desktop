@@ -1197,9 +1197,10 @@ todos` header; the app adds no progress row and no `Todos n/m` chip above the
 Nothing here knows an extension name: the guard
 `tests/architecture/no-workflow-adapters.test.ts` still passes, the contract
 stays additive v1, and the publisher that supplies groups/choices is
-`@dieulc/workflow` 0.15.0 (the staged/pinned bundle in
-`resources/workflow.lock.json` is 0.13.0 and falls back to flat actions with its
-hyphenated commands). Tests: `tests/renderer/working-bar.test.tsx`,
+`@dieulc/workflow` 0.15.0 — the staged/pinned bundle in
+`resources/workflow.lock.json` is also 0.15.0, so grouped actions and the mode
+chevron are active in the pinned desktop. The live `/profile use` model switch
+is in unreleased W 0.17.2 work and is not in the pinned 0.15.0 bundle. Tests: `tests/renderer/working-bar.test.tsx`,
 `tests/renderer/session-footer.test.tsx`, `tests/renderer/composer.test.tsx`,
 `tests/renderer/session-view.test.tsx`,
 `tests/shared/extension-contributions-view.test.ts` and

@@ -199,10 +199,12 @@ new `group`/`mode-choice` shapes are additive, with `mode-choice` in its own
 slot so no slot-based reader can promote a menu entry into the composer's mode.
 No Workflow id, glyph, `workflow-*` key or `/review-*` dispatch lives in `src/`;
 `tests/architecture/no-workflow-adapters.test.ts` still guards it. The publisher
-half is `@dieulc/workflow` 0.15.0; the currently staged/pinned bundle
-(`resources/workflow.lock.json`) is still 0.13.0, whose fallback uses the
-hyphenated `/review-pause`, `/review-resume` and `/review-abort` commands and
-renders as flat actions behind the dots.
+half is `@dieulc/workflow` 0.15.0, and the currently staged/pinned bundle
+(`resources/workflow.lock.json`) is also 0.15.0: it supplies the grouped actions
+and mode-choice metadata behind the working bar. The hyphenated
+`/review-pause`, `/review-resume` and `/review-abort` fallback belongs to the
+older 0.13.0 publisher. The live reviewer model switch is in unreleased W
+0.17.2 work and is not present in the pinned 0.15.0 bundle.
 
 Verification: `tests/renderer/working-bar.test.tsx` (replaces
 `contributions-bar.test.tsx`), `tests/renderer/session-footer.test.tsx`,

@@ -212,9 +212,12 @@ The composer is a plain text area with Pi’s autocomplete contract:
   manual resize handle.
 - While the agent is streaming, Enter **steers** the current turn. `Ctrl+Q` /
   `Alt+Enter` queue a **follow-up** instead. Queued messages appear as pending
-  rows above the composer labelled **Steering** / **Follow-up**; `Alt+Up`
-  restores them all into the draft ("restore all"), and a Settings queue-mode
-  change applies to open sessions without a reload.
+  rows above the composer labelled **Steering** / **Follow-up**: the rows list
+  the texts this app queued for you, and `Alt+Up` restores them all into the
+  draft ("restore all"). A turn an extension queued for itself appears as one
+  dim line — like terminal Pi — and is not restored by `Alt+Up` or `Esc`; those
+  actions say when they discard one ("Discarded N queued extension turn(s).").
+  A Settings queue-mode change applies to open sessions without a reload.
 - `!command` runs a shell command in the session folder (streamed into the
   transcript, `Esc` cancels it); `!!command` keeps it out of the model's context.
   The composer shows a **shell** chip and a `! shell` hint. Unlike `/`, `@` and

@@ -1,5 +1,6 @@
 import type { SessionEventEntry } from "../../../shared/session-ipc";
 import { hashPromptText } from "../../../shared/prompt-origin";
+import { readQueueOriginList, type QueueEntryOrigin } from "../../../shared/queue-origin";
 import { parseReviewDecision, type ReviewDecision } from "../../../shared/web-tabs";
 
 /**
@@ -111,9 +112,22 @@ export type TranscriptItem =
   | { kind: "tool"; id: string; tool: TranscriptToolRun }
   | { kind: "notice"; id: string; notice: TranscriptNotice };
 
+/**
+ * One pending message plus who queued it (2026-11-26 queue-bar plan, step 4).
+ *
+ * `origin` comes from the host's `queue_update.queueOrigins` annotation: the SDK
+ * queue stores text only, so an extension's own turn and the user's are
+ * identical on the wire. A missing annotation reads as `"user"` — today's
+ * behaviour — so a legacy host never hides or drops a user's row.
+ */
+export interface QueuedMessage {
+  text: string;
+  origin: QueueEntryOrigin;
+}
+
 export interface TranscriptQueue {
-  steering: string[];
-  followUp: string[];
+  steering: QueuedMessage[];
+  followUp: QueuedMessage[];
 }
 
 export type TranscriptRunStatus =
@@ -852,15 +866,20 @@ export function reduceSessionEvents(
         next = applyBashDelta(next, payload);
         break;
 
-      case "queue_update":
+      case "queue_update": {
+        // The SDK sends text only; `queueOrigins` is the host's parallel
+        // annotation (step 3). Pair it positionally, dropping non-string texts
+        // as before so the row count matches the annotation.
+        const origins = asRecord(payload.queueOrigins);
         next = {
           ...next,
           queue: {
-            steering: asStringArray(payload.steering),
-            followUp: asStringArray(payload.followUp),
+            steering: queueRows(asStringArray(payload.steering), origins.steering),
+            followUp: queueRows(asStringArray(payload.followUp), origins.followUp),
           },
         };
         break;
+      }
 
       case "compaction_start":
         next = { ...next, runStatus: { kind: "compacting" } };
@@ -1021,6 +1040,16 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+/**
+ * Pairs queued texts with their host annotation, positionally. Every text gets a
+ * `QueuedMessage`; a short, absent or malformed annotation leaves the tail (or
+ * the whole list) as `"user"`, the fail-open default.
+ */
+function queueRows(texts: readonly string[], origins: unknown): QueuedMessage[] {
+  const list = readQueueOriginList(origins, texts.length);
+  return texts.map((text, index) => ({ text, origin: list[index] ?? "user" }));
 }
 
 /** Text of a tool result/partial payload (`{content:[{type:"text",text}]}`). */

@@ -2543,6 +2543,15 @@ function isSessionAsleepError(error: unknown): boolean {
   return errorMessage(error).includes(SESSION_ASLEEP_MESSAGE);
 }
 
+/**
+ * One wording for every path that clears the queue: the user only gets their
+ * own texts back, so report how many extension-owned turns were discarded
+ * (never the prompt itself).
+ */
+function discardedQueueHint(dropped: number): string {
+  return `Discarded ${dropped} queued extension ${dropped === 1 ? "turn" : "turns"}.`;
+}
+
 const STALE_EXTENSION_CONTEXT = "This extension ctx is stale after session replacement or reload.";
 
 /** Repeat presses inside this window are one interrupt, not two (plan step 22). */
@@ -2923,11 +2932,25 @@ export function liveComposerOperationFor(
  */
 const composerCancelInFlight = new Set<string>();
 
-/** The transcript queue (steering + follow-up) waiting for the agent. */
+/**
+ * How many queued rows belong to the user — the composer guard's count.
+ *
+ * Only the rows the pending-queue panel can show and clear count here: an
+ * `"extension"` row was injected by an extension for its own turn, so refusing
+ * a refinement over it would name a message the user cannot see or clear.
+ * Everything else counts as the user's: a missing origin, a legacy bare-string
+ * payload and an unannotated host frame all fail open to `"user"` (the shared
+ * reader's default), which keeps a legacy host's behaviour unchanged.
+ *
+ * Both guard consumers read this count: `composerSendRoute` → `planComposerSend`
+ * ("Clear the queued messages before refining this draft.") and
+ * `composerCommandTransformRouteFor` → `planComposerCommandTransform`
+ * ("Clear the queued messages before refining.").
+ */
 function queuedComposerMessages(state: AppStateShape, tabId: string): number {
   const queue = state.transcripts[tabId]?.queue;
   if (!queue) return 0;
-  return queue.steering.length + queue.followUp.length;
+  return [...queue.steering, ...queue.followUp].filter((row) => row.origin !== "extension").length;
 }
 
 /**
@@ -5908,7 +5931,13 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       const result = (await api.sessions.request({ tabId, method: "clearQueue" })) as {
         cleared?: { steering?: string[]; followUp?: string[] };
+        dropped?: number;
       };
+      // The host cannot always attribute a cleared text (an older host omits
+      // the key); treat that as "nothing discarded". Report it before the
+      // empty-text early return so an all-extension clear still says so.
+      const dropped = result?.dropped ?? 0;
+      if (dropped > 0) get().setHint(discardedQueueHint(dropped));
       // Terminal Pi restores steering first, then follow-ups, each on its own
       // line, so the order the user queued them survives.
       const restored = [
@@ -6637,7 +6666,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       // text to the editor so a cancelled run never loses what the user typed.
       const result = (await api.sessions.request({ tabId, method: "clearQueue" })) as {
         cleared?: { steering?: string[]; followUp?: string[] };
+        dropped?: number;
       };
+      // Report the discarded extension turns before the conditional draft
+      // restore: a clear that restored nothing still discarded a turn.
+      const dropped = result?.dropped ?? 0;
+      if (dropped > 0) get().setHint(discardedQueueHint(dropped));
       await api.sessions.request({ tabId, method: "abort" });
       const restored = [
         ...(result?.cleared?.steering ?? []),
@@ -6653,7 +6687,11 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const api = bridge();
     if (!api?.sessions) return;
     try {
-      await api.sessions.request({ tabId, method: "clearQueue" });
+      const result = (await api.sessions.request({ tabId, method: "clearQueue" })) as {
+        dropped?: number;
+      };
+      const dropped = result?.dropped ?? 0;
+      if (dropped > 0) get().setHint(discardedQueueHint(dropped));
     } catch (error) {
       get().noteFailure(error);
     }

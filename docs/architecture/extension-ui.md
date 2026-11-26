@@ -476,19 +476,26 @@ first menu group's label (e.g. `Todos`) so the three-dot trigger is not an
 orphan. Progress lives in the panel header and the footer rail.
 
 **Compatibility matrix.** The Desktop's staged/pinned publisher bundle is
-`resources/workflow.lock.json` (`@dieulc/workflow` **0.13.0**, verified file by
-file against the lock by `npm run workflow:stage`); the local Workflow checkout
-is **0.14.0**; **0.15.0** is the publisher that ships the group/mode-choice
-metadata. Contribution v1 stays additive: `HOST_CONTRIBUTION_VERSION` does not
-move, and the kinds list in the host capabilities gains `mode-choice`.
+`resources/workflow.lock.json` (`@dieulc/workflow` **0.15.0**, verified file by
+file against the lock by `npm run workflow:stage`), the same version that ships
+the group/mode-choice metadata. The live `/profile use` model-switch work lives
+in the W checkout at **0.17.2**, which is unreleased and unpublished and is
+neither staged nor pinned. Contribution v1 stays additive:
+`HOST_CONTRIBUTION_VERSION` does not move, and the kinds list in the host
+capabilities gains `mode-choice`.
 
-| Desktop | Publisher               | Behavior                                                                                                                                                                                                                                                                                                                  |
-| ------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| New     | 0.15.0 (planned)        | Full UX: one working bar, inline Pause/Resume/Abort, grouped three-dot TODO controls, `Auto todos`, the mode chevron, telemetry only in the footer                                                                                                                                                                        |
-| New     | 0.14.0 (local checkout) | No groups and no `mode-choice`: legacy flat actions (first few inline, rest in the dots), no chevron, verb-grammar commands (`/orchestrator pause`, `/review pause`)                                                                                                                                                      |
-| New     | 0.13.0 (staged/pinned)  | Same fallback with hyphenated commands (`/orchestrator-pause`, `/orchestrator-resume`, `/orchestrator-abort`, `/orchestrator-view`, `/review-pause`, `/review-resume`, `/review-abort`, `/review-status`); its `orchestrator-child` status row is routed to the footer and may duplicate the `workflow-orchestrator` line |
-| Old     | 0.15.0                  | The old reader drops the unknown `mode-choice` kind, ignores `group` and renders the remaining actions in its old “first four + More…” layout; the new Review labels are visible, and the removed `orchestrator-child` row does not affect the old footer                                                                 |
-| Old     | 0.13.0 / 0.14.0         | Existing behavior; no regression                                                                                                                                                                                                                                                                                          |
+| Desktop | Publisher                         | Behavior                                                                                                                                                                                                                                                                                                                  |
+| ------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| New     | 0.15.0 (staged/pinned)            | Full UX: one working bar, inline Pause/Resume/Abort, grouped three-dot TODO controls, `Auto todos`, the mode chevron, telemetry only in the footer; no live `/profile use` model switch in this pinned bundle                                                                                                             |
+| New     | 0.17.2 (W, unreleased/not staged) | The live owner-by-owner `/profile use` switch and its `workflow-model-switch` entry; inactive in the desktop until 0.17.2 is released and the lock is re-pinned                                                                                                                                                           |
+| New     | 0.14.0 (older checkout)           | No groups and no `mode-choice`: legacy flat actions (first few inline, rest in the dots), no chevron, verb-grammar commands (`/orchestrator pause`, `/review pause`)                                                                                                                                                      |
+| New     | 0.13.0 (legacy, no longer pinned) | Same fallback with hyphenated commands (`/orchestrator-pause`, `/orchestrator-resume`, `/orchestrator-abort`, `/orchestrator-view`, `/review-pause`, `/review-resume`, `/review-abort`, `/review-status`); its `orchestrator-child` status row is routed to the footer and may duplicate the `workflow-orchestrator` line |
+| Old     | 0.15.0                            | The old reader drops the unknown `mode-choice` kind, ignores `group` and renders the remaining actions in its old “first four + More…” layout; the new Review labels are visible, and the removed `orchestrator-child` row does not affect the old footer                                                                 |
+| Old     | 0.13.0 / 0.14.0                   | Existing behavior; no regression                                                                                                                                                                                                                                                                                          |
+
+> **Live-switch pin status:** W 0.17.2 is unreleased/unpublished, so the staged
+> and pinned publisher remains 0.15.0. The desktop live-switch behaviour waits
+> for the 0.17.2 release and re-pin; step 11 did not re-pin the lock.
 
 ### Pi-parity rules for custom transcript items (2026-10-19 UI rework)
 

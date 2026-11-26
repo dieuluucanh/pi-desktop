@@ -164,6 +164,21 @@ legacy await-the-operation behavior is preserved for other callers.
   (for example `/commit`'s `sendUserMessage`) is tagged too.
   `message_start.promptOrigin` is the only source of the transcript's command
   row; the renderer never infers it.
+- `queue_update` carries a host-added `queueOrigins: { steering, followUp }`
+  annotation, one `"user"` | `"extension"` per entry **in queue order**. The
+  SDK's own arrays stay complete (the snapshot and `isSessionBusyState` are
+  unchanged); the annotation is the renderer's only source of ownership. The
+  host attributes by diffing the SDK queues around a renderer request (`prompt`
+  with `streamingBehavior`, `steer`, `followUp`) and re-emits **one** annotated
+  `queue_update` right after it records the admitted texts, because the SDK's
+  own frame goes out first. The annotation is capability-gated: a session
+  without `getSteeringMessages`/`getFollowUpMessages` sends none, and the
+  renderer then treats every entry as the user's.
+- `clearQueue` answers `{ cleared, dropped }`: `cleared` holds only the user's
+  texts, and `dropped` counts the extension-owned entries the SDK-wide clear
+  discarded (the SDK has no selective clear, so this return is a report, not a
+  filter). `dropped` is absent when the host cannot attribute — the capability
+  gate above — and `cleared` is then the SDK's list unchanged.
 
 ### Packages (plan step 14)
 

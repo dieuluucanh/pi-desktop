@@ -332,7 +332,10 @@ describe("stopRun", () => {
   it("clears the queue, aborts, and hands the queued text back to the editor", async () => {
     const request = stubRequest(async (input) => {
       if (input.method === "clearQueue") {
-        return { cleared: { steering: ["stop and test"], followUp: ["then commit"] } };
+        return {
+          cleared: { steering: ["stop and test"], followUp: ["then commit"] },
+          dropped: 0,
+        };
       }
       return { aborted: true };
     });
@@ -342,6 +345,22 @@ describe("stopRun", () => {
 
     expect(request.mock.calls.map((call) => call[0]?.method)).toEqual(["clearQueue", "abort"]);
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("stop and test\n\nthen commit");
+    expect(useAppStore.getState().hint).toBeNull();
+  });
+
+  it("reports an extension turn it discarded while restoring the user's own text", async () => {
+    stubRequest(async (input) => {
+      if (input.method === "clearQueue") {
+        return { cleared: { steering: ["stop and test"], followUp: [] }, dropped: 1 };
+      }
+      return { aborted: true };
+    });
+    useAppStore.setState({ tabs: [tab("running")] });
+
+    await useAppStore.getState().stopRun("tab-1");
+
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("stop and test");
+    expect(useAppStore.getState().hint).toMatch(/Discarded 1 queued extension turn\./);
   });
 
   it("does not touch the draft when nothing was queued", async () => {
@@ -352,12 +371,26 @@ describe("stopRun", () => {
     await useAppStore.getState().stopRun("tab-1");
 
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("my own draft");
+    // A host that cannot attribute a clear omits `dropped`: no discard hint.
+    expect(useAppStore.getState().hint).toBeNull();
+  });
+
+  it("leaves an existing hint alone when nothing was discarded", async () => {
+    stubRequest(async () => ({ cleared: { steering: [], followUp: [] }, dropped: 0 }));
+    useAppStore.setState({ tabs: [tab("running")], hint: "an earlier note" });
+
+    await useAppStore.getState().stopRun("tab-1");
+
+    expect(useAppStore.getState().hint).toBe("an earlier note");
   });
 
   it("restores the queue without aborting the run (Alt+Up, plan step 9)", async () => {
     const request = stubRequest(async (input) => {
       if (input.method === "clearQueue") {
-        return { cleared: { steering: ["steer text"], followUp: ["follow text"] } };
+        return {
+          cleared: { steering: ["steer text"], followUp: ["follow text"] },
+          dropped: 1,
+        };
       }
       return {};
     });
@@ -371,6 +404,52 @@ describe("stopRun", () => {
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe(
       "steer text\n\nfollow text\n\nstill typing",
     );
+    expect(useAppStore.getState().hint).toMatch(/Discarded 1 queued extension turn\./);
+  });
+
+  it("reports an all-extension queue without touching the draft (Alt+Up)", async () => {
+    stubRequest(async () => ({ cleared: { steering: [], followUp: [] }, dropped: 1 }));
+    useAppStore.setState({ tabs: [tab("running")] });
+    useAppStore.getState().setDraft("tab-1", "still typing");
+
+    await useAppStore.getState().restoreQueue("tab-1");
+
+    // Nothing of the user's to restore: the hint still reports the discard.
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("still typing");
+    expect(useAppStore.getState().hint).toMatch(/Discarded 1 queued extension turn\./);
+  });
+
+  it("pluralises the discard count", async () => {
+    stubRequest(async () => ({ cleared: { steering: [], followUp: [] }, dropped: 2 }));
+    useAppStore.setState({ tabs: [tab("running")] });
+
+    await useAppStore.getState().restoreQueue("tab-1");
+
+    expect(useAppStore.getState().hint).toMatch(/Discarded 2 queued extension turns\./);
+  });
+});
+
+describe("clearQueue", () => {
+  it("reports a discarded extension turn from the panel button", async () => {
+    const request = stubRequest(async () => ({
+      cleared: { steering: [], followUp: [] },
+      dropped: 1,
+    }));
+    useAppStore.setState({ tabs: [tab("running")] });
+
+    await useAppStore.getState().clearQueue("tab-1");
+
+    expect(request.mock.calls.map((call) => call[0]?.method)).toEqual(["clearQueue"]);
+    expect(useAppStore.getState().hint).toMatch(/Discarded 1 queued extension turn\./);
+  });
+
+  it("sets no discard hint when nothing was discarded", async () => {
+    stubRequest(async () => ({ cleared: { steering: ["user text"], followUp: [] } }));
+    useAppStore.setState({ tabs: [tab("running")] });
+
+    await useAppStore.getState().clearQueue("tab-1");
+
+    expect(useAppStore.getState().hint).toBeNull();
   });
 });
 
@@ -803,6 +882,51 @@ describe("input-ownership prompt guard", () => {
       "refused",
     );
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("runs /profile use as a command while input is locked and shows its notify", async () => {
+    const profileCommand = {
+      name: "profile",
+      description: "Switch profile",
+      source: "extension" as const,
+    };
+    const request = stubRequest(async (input) => {
+      if (input.method === "commands.list") return { commands: [profileCommand] };
+      if (input.method === "commands.run") return { ran: true };
+      return {};
+    });
+    useAppStore.setState({ contributions: { "tab-1": locked }, hint: null, transcripts: {} });
+    const text = "/profile use parity-roles-only";
+    useAppStore.getState().setDraft("tab-1", text);
+
+    await expect(useAppStore.getState().sendPrompt("tab-1", text)).resolves.toBe("handled-command");
+
+    expect(request).toHaveBeenCalledWith({
+      tabId: "tab-1",
+      method: "commands.run",
+      params: { name: "profile", args: "use parity-roles-only", ack: "started" },
+    });
+    // The lock refuses prose but never swallows a published slash command.
+    expect(request.mock.calls.some(([input]) => input.method === "prompt")).toBe(false);
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("");
+    expect(useAppStore.getState().draftHistory["tab-1"]).toEqual([text]);
+
+    useAppStore.getState().applySessionEvents({
+      tabId: "tab-1",
+      seq: 1,
+      events: [
+        {
+          event: "oi.notify",
+          payload: { message: "Now using parity-roles-only", type: "info" },
+        },
+      ],
+    });
+    const items = useAppStore.getState().transcripts["tab-1"]?.items ?? [];
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "notice",
+      notice: { event: "oi.notify", severity: "info", text: "Now using parity-roles-only" },
+    });
   });
 
   it("does not infer a lock from status text alone", async () => {

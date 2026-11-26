@@ -131,6 +131,22 @@ drift from the terminal.
     coalesces `message_update` deltas: one commit can grow the content further
     than any threshold before its `scroll` event is dispatched, and that event
     used to detach permanently.
+17. **A queued message has an owner.** The SDK's pending queues store text only
+    (`getSteeringMessages()`/`getFollowUpMessages()` return strings), so a queued
+    turn carries no provenance on the wire. The host therefore records what a
+    renderer request admitted: it diffs the target queue around `prompt` (with
+    `streamingBehavior`), `steer` and `followUp`, claims every newly added text
+    and annotates `queue_update` with `queueOrigins`. It never matches text — the
+    SDK expands prompt templates and skill commands before queueing, so the
+    queued text need not be what the renderer sent. A claim is sticky while the
+    text is queued: repeated frames and `agent_settled` (or an abort, which
+    leaves the queue populated) keep it, and it is pruned only when the queue no
+    longer contains the text. An extension-injected turn renders as one dim,
+    first-line-only line with no tooltip and no restore/clear of its own, like
+    terminal Pi's truncated pending row; the panel's footer appears only when at
+    least one row is the user's. Restore is a **deliberate divergence**, not
+    parity: `Alt+Up`, stop and `clear queue` hand back only the user's texts and
+    say how many extension turns the SDK-wide clear discarded.
 
 ## Gap matrix (terminal 1.5.0 → desktop)
 
@@ -146,7 +162,7 @@ drift from the terminal.
 | Command prompts          | skill blocks collapse; injected prompts full | ✅ host-tagged command row collapsed by default; setting/Ctrl+O/row reveals                                 | 2026-10-26  |
 | Retry                    | countdown + cancel                           | ✅ countdown row + Esc/Cancel                                                                               | 8           |
 | Compaction               | spinner + cancel                             | ✅ status row + `session.abortCompaction`                                                                   | 8           |
-| Queue                    | pending rows + Alt+Up                        | ✅ pending rows, Alt+Up, Ctrl+Q/Alt+Enter, live modes                                                       | 9           |
+| Queue                    | pending rows + Alt+Up                        | ✅ pending rows for the user's own messages (Alt+Up, Ctrl+Q/Alt+Enter); extension turns are one dim line    | 9           |
 | Streaming follow         | pinned + jump-to-latest                      | ✅ content-size follow + jump pill + Ctrl+End                                                               | 10          |
 | Find                     | Ctrl+Shift+F                                 | ✅ Ctrl+F, inline marks, next/prev (remappable)                                                             | 11          |
 | Multi-line output        | one source line per line                     | ✅ 2026-11-14 (`remark-breaks`; verbatim extension text)                                                    | 2026-11-14  |
@@ -255,6 +271,12 @@ status` notices print with the default `info: false` prefs and keep every
   best-effort. TUI editors need a TTY the app does not have.
 - **Paste markers** are persisted with a bounded paste map; the terminal keeps
   them in memory only.
+- **Queued-turn restore.** Terminal `restoreQueuedMessagesToEditor`
+  (`interactive-mode.js:3961-3979`) restores every queued text, including a turn
+  an extension injected for itself. The desktop restores only the user's own
+  texts and reports how many extension turns a clear discarded ("Discarded N
+  queued extension turn(s)."). A deliberate divergence: the terminal can re-send
+  an extension's internal prompt as if the user had written it.
 - **Mermaid** renders SVG in the desktop (terminal renders Unicode diagrams).
 - **No transcript measure.** The transcript column is the pane width (minus the
   scroll area's 16 px gutter) at every zoom level, so a zoomed-out window shows

@@ -288,7 +288,11 @@ visible while main still rejects the call.
   Verify a Command Code model in `/model`, then remove the old hand-written
   `command-code` entry from `models.json`. If the failure still recurs on a different
   provider, switch the reviewer (`/profile use …` or `/role set reviewer …`) and retry
-  `/review`; `/review status` names the model and the last provider error. See
+  `/review`; `/review status` names the model and the last provider error. In the
+  live-switch contract the live review line also names the reviewer model, and a
+  refused switch warns with both the current and target model names while the
+  round keeps running; that contract is active only after the new bundle is
+  released and pinned, not with the currently pinned 0.15.0 bundle. See
   [Review Mode provider baseline](../architecture/review-mode-baseline.md).
 
 - **Manual `/review` shows no “Reviewing” status** — fixed: an extension-owned
