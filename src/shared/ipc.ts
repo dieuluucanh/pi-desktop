@@ -110,6 +110,7 @@ export const IPC = {
   /** Sessions (plan step 3): tabs are the renderer's handle on a Pi host. */
   sessionTabs: "session:tabs",
   sessionCreate: "session:create",
+  /** Idempotently closes a well-formed real tab id, including an already-retired id. */
   sessionClose: "session:close",
   /** Closes every non-pinned tab of one kind. */
   sessionCloseAll: "session:close-all",
@@ -147,6 +148,7 @@ export const IPC = {
   sessionStop: "session:stop",
   /** Wakes a tab's host and session without changing the active tab. */
   sessionEnsure: "session:ensure",
+  /** Passive request races for proven retired tabs may resolve with tab-closed cancellation data. */
   sessionRequest: "session:request",
   /** Deletes a session to the OS trash (plan step 11; validated in main). */
   sessionDelete: "session:delete",
@@ -452,7 +454,9 @@ export interface WindowState {
 /** Session tabs and host events (plan step 3). */
 export interface SessionsBridge {
   list(): Promise<SessionTabsEnvelope>;
+  /** In-flight create may resolve with a tab-closed cancellation envelope. */
   create(input: CreateTabInput): Promise<SessionTabsEnvelope>;
+  /** Closing is idempotent; stale/repeated IDs resolve with the current tab envelope. */
   close(tabId: string): Promise<SessionTabsEnvelope>;
   /** Closes every non-pinned tab of `kind`. */
   closeAll(kind: TabKind): Promise<SessionTabsEnvelope>;
@@ -468,11 +472,13 @@ export interface SessionsBridge {
   reorder(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
   /** Makes this tab the single Office host (plan step 20), restarting its host. */
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
+  /** In-flight activation may resolve with a tab-closed cancellation envelope. */
   activate(tabId: string): Promise<SessionTabsEnvelope>;
   /**
    * Wakes a tab's host and session without changing the selection. This is the
    * call a background pane/reconcile makes; `activate` stays the gesture that
-   * moves the app (2026-11-06 tab-switch plan).
+   * moves the app (2026-11-06 tab-switch plan). It can resolve with a
+   * cancellation-marked envelope if explicitly closed in flight.
    */
   ensure(tabId: string): Promise<SessionTabsEnvelope>;
   /**

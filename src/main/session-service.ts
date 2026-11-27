@@ -45,6 +45,7 @@ import { PI_OFFICE_BRIDGE } from "../shared/office";
 import {
   CONTROL_TAB_ID,
   SESSION_ASLEEP_MESSAGE,
+  isPassiveSessionMethod,
   isEditorTab,
   isHostBackedTab,
   isSessionBusyState,
@@ -302,6 +303,8 @@ export interface SessionService {
   /** The tabs the renderer last reported as visible (bounded). */
   visibleTabIds(): string[];
   envelope(): SessionTabsEnvelope;
+  /** Narrow ephemeral lookup for IPC stale-passive-request classification. */
+  wasRecentlyClosed(tabId: string): boolean;
   restoreTabs(): Promise<SessionTabsEnvelope>;
   createTab(input: CreateTabInput): Promise<SessionTabsEnvelope>;
   activateTab(tabId: string): Promise<SessionTabsEnvelope>;
@@ -398,10 +401,12 @@ interface SnapshotLike {
 
 class SessionServiceError extends Error {
   readonly code: string;
+  readonly tabId?: string;
 
-  constructor(message: string, code: string) {
+  constructor(message: string, code: string, tabId?: string) {
     super(message);
     this.code = code;
+    if (tabId) this.tabId = tabId;
   }
 }
 
@@ -500,37 +505,7 @@ const SESSION_ESTABLISHING_METHODS: ReadonlySet<string> = new Set([
  * Only an explicit activation/ensure, a prompt or a lifecycle command may wake
  * a stopped tab.
  */
-const PASSIVE_METHODS: ReadonlySet<string> = new Set([
-  "messages.get",
-  "entries.get",
-  "tree.get",
-  "stats.get",
-  "commands.list",
-  "commands.complete",
-  "shortcuts.list",
-  "files.list",
-  "oi.state",
-  // Acknowledge a consumed composer edit. Delivery is already one-shot, so the
-  // ack for a tab whose host is gone is simply dropped; like the other passive
-  // reads it must never be the reason a recycled host is spawned again.
-  "oi.editorConsumed",
-  "tui.state",
-  "tui.resize",
-  "model.available",
-  "render.request",
-  "render.markdown",
-  // Generic contribution state (prompt-refinement plan step 29). The renderer
-  // re-reads it after a status change, an action acknowledgement and a
-  // reconciliation, so it is a passive refresh: a stopped/recycled host must
-  // not be spawned just to publish a mode label or a toggle's checked state.
-  // `contributions.run` is deliberately absent: it is an explicit gesture.
-  "contributions.state",
-  // Operation status reads (plan steps 23/29). A reconciliation query must not
-  // be the reason a recycled host comes back; only an explicit activation, a
-  // user start (`composer.transform`) or an ensure may wake the tab.
-  "composer.current",
-  "composer.status",
-]);
+/* PASSIVE_METHODS centralized in src/shared/session-ipc.ts. */
 
 /**
  * Repair-and-retry is safe only for methods that cannot change user state.
@@ -595,6 +570,26 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    * is open (explicit `session.create` uses it directly).
    */
   const starting = new Map<string, Promise<SupervisorHostLike>>();
+  /** Bounded, ephemeral proof that a real tab lifetime was explicitly closed. */
+  const retiredTabIds = new Set<string>();
+  const closingTabs = new Map<string, Promise<SessionTabsEnvelope>>();
+  const RETIRED_TAB_ID_LIMIT = 256;
+  const retireTabId = (tabId: string): void => {
+    retiredTabIds.delete(tabId);
+    retiredTabIds.add(tabId);
+    while (retiredTabIds.size > RETIRED_TAB_ID_LIMIT) {
+      const oldest = retiredTabIds.values().next().value as string | undefined;
+      if (oldest === undefined) break;
+      retiredTabIds.delete(oldest);
+    }
+  };
+  const tabClosedError = (tabId: string): SessionServiceError =>
+    new SessionServiceError(`session tab closed during startup: ${tabId}`, "tab_closed", tabId);
+  const wasClosed = (tabId: string): boolean => retiredTabIds.has(tabId);
+  const cancellationEnvelope = async (tabId: string): Promise<SessionTabsEnvelope> => {
+    await closingTabs.get(tabId);
+    return { ...envelope(), cancelled: { reason: "tab-closed", tabId } };
+  };
   /**
    * In-flight session opens/resumes, separate from process starts. A tab can
    * have a live host that is not session-ready (crash restart, failed resume,
@@ -1280,9 +1275,9 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         sessionFile: tab.sessionFile,
       });
     } catch (error) {
-      // A failed spawn must never leave a phantom `starting` tab. Keep the tab
-      // and its error so the user can read what happened and close/retry it; the
-      // trust retry path is a session.open failure below, not a spawn failure.
+      // A close racing this continuation is cancellation only when this exact
+      // tab lifetime was retired. Other spawn failures remain ordinary failures.
+      if (wasClosed(tab.id)) throw tabClosedError(tab.id);
       const message = error instanceof Error ? error.message : String(error);
       setStatus(tab, "failed", message);
       throw error;
@@ -1291,7 +1286,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     // flight. Never publish a host over the replacement; stop the orphan.
     if (disposed || !tabs.has(tab.id) || (generations.get(tab.id) ?? 0) !== generation) {
       await deps.supervisor.stop(tab.id).catch(() => undefined);
-      throw new SessionServiceError("tab closed while its host was starting", "tab_closed");
+      if (wasClosed(tab.id)) throw tabClosedError(tab.id);
+      throw new SessionServiceError("host start was superseded", "stale_start");
     }
     hosts.set(tab.id, host);
     subscribe(tab, host);
@@ -1300,6 +1296,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
   /** Process-start coalescer: one child per tab, never opens a session. */
   const ensureProcess = async (tab: TabRecord): Promise<SupervisorHostLike> => {
+    if (wasClosed(tab.id)) throw tabClosedError(tab.id);
     if (!isHostBackedTab(tab.kind)) {
       throw new SessionServiceError(
         tab.kind === "editor" ? "an editor tab has no Pi host" : "a web tab has no Pi host",
@@ -1312,12 +1309,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     // a second process while the old one is still shutting down.
     const inPark = parking.get(tab.id);
     if (inPark) await inPark;
+    if (wasClosed(tab.id)) throw tabClosedError(tab.id);
     const existing = hosts.get(tab.id);
     if (existing && existing.status() === "ready") return existing;
     if (existing) await detachHost(tab.id, { cancelled: false });
     const raced = starting.get(tab.id);
     if (raced) return raced;
     await requestSlot(tab.id);
+    if (wasClosed(tab.id)) throw tabClosedError(tab.id);
     const startedWhileQueued = starting.get(tab.id);
     if (startedWhileQueued) return startedWhileQueued;
     const run = startProcess(tab);
@@ -1359,7 +1358,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           });
       if (disposed || !tabs.has(tab.id) || (generations.get(tab.id) ?? 0) !== generation) {
         await deps.supervisor.stop(tab.id).catch(() => undefined);
-        throw new SessionServiceError("tab closed while its session was opening", "tab_closed");
+        if (wasClosed(tab.id)) throw tabClosedError(tab.id);
+        throw new SessionServiceError("session open was superseded", "stale_open");
       }
       bootstrapForTab.delete(tab.id);
       applySnapshot(tab, snapshot);
@@ -1372,6 +1372,10 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       }
       return host;
     } catch (error) {
+      if (wasClosed(tab.id)) {
+        await deps.supervisor.stop(tab.id).catch(() => undefined);
+        throw tabClosedError(tab.id);
+      }
       sessionReady.delete(tab.id);
       // A `tab_closed` failure has no tab record left to update: the generation
       // bump already stopped the process it just opened.
@@ -1399,6 +1403,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
    * and one open. `ready` is never returned before this settles.
    */
   const ensureSession = async (tab: TabRecord): Promise<SupervisorHostLike> => {
+    if (wasClosed(tab.id)) throw tabClosedError(tab.id);
     if (!isHostBackedTab(tab.kind)) {
       throw new SessionServiceError(
         tab.kind === "editor" ? "an editor tab has no Pi host" : "a web tab has no Pi host",
@@ -1413,6 +1418,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // cleanup (it stops the host it started), then fall through to a new run
       // for the current generation. Never run both at once.
       await inFlight.promise.catch(() => undefined);
+      if (wasClosed(tab.id)) throw tabClosedError(tab.id);
       const current = opening.get(tab.id);
       const currentGeneration = generations.get(tab.id) ?? 0;
       if (current && current.generation === currentGeneration) return current.promise;
@@ -1427,6 +1433,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       // use it to distinguish its repair from an external stop/close.
       const cancelEpochAtStart = cancelEpochs.get(tab.id) ?? 0;
       let host = await ensureProcess(tab);
+      if (wasClosed(tab.id)) throw tabClosedError(tab.id);
       if (host.status() === "ready" && sessionReady.has(tab.id)) return host;
       if (host.status() !== "ready") {
         // The supervisor is restarting, failed, or has no child: preempt its
@@ -1682,6 +1689,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       const existing = findTabBySessionFile(tabs.values(), requestedFile);
       if (existing) {
         if (input.activate !== false) await service.activateTab(existing.id);
+        if (wasClosed(existing.id)) throw tabClosedError(existing.id);
         return { tab: existing, envelope: { ...envelope(), reusedTabId: existing.id } };
       }
     }
@@ -1708,6 +1716,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       ...(kind === "terminal" && input.profileId ? { profileId: input.profileId } : {}),
     };
     tabs.set(id, tab);
+    retiredTabIds.delete(id);
     if (input.bootstrap && input.bootstrap.length > 0) {
       bootstrapForTab.set(id, input.bootstrap);
     }
@@ -1722,9 +1731,11 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     }
     publishTabs();
     await persist();
+    if (wasClosed(id)) throw tabClosedError(id);
     // A background web tab (a review URL discovered in a tool result) must not
     // select itself or spawn anything. Only a user gesture activates.
     if (activate) await service.activateTab(id);
+    if (wasClosed(id)) throw tabClosedError(id);
     return { tab, envelope: envelope() };
   };
 
@@ -1809,6 +1820,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
 
     visibleTabIds: () => [...visibleTabs],
     envelope,
+    wasRecentlyClosed: (tabId) => retiredTabIds.has(tabId),
 
     incidents: () => [...incidents],
     extensionErrors: () => [...extensionErrors],
@@ -1897,6 +1909,7 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       const collapsed = collapseDuplicateSessionTabs(sanitizeTabs(state.tabs));
       relatedArchive = sanitizeRelatedArchive(state.relatedSessions);
       tabs.clear();
+      retiredTabIds.clear();
       hosts.clear();
       starting.clear();
       opening.clear();
@@ -1949,27 +1962,47 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
     },
 
     async createTab(input) {
-      return (await addTab(input)).envelope;
+      try {
+        return (await addTab(input)).envelope;
+      } catch (error) {
+        if (error instanceof SessionServiceError && error.code === "tab_closed") {
+          return cancellationEnvelope(error.tabId ?? "");
+        }
+        throw error;
+      }
     },
 
     async ensureTab(tabId) {
       const tab = requireTab(tabId);
-      // A web or editor tab has no host to wake; the envelope still lets the
-      // caller apply the latest table.
-      if (isHostBackedTab(tab.kind)) await ensureSession(tab);
-      return envelope();
+      try {
+        if (isHostBackedTab(tab.kind)) await ensureSession(tab);
+        if (wasClosed(tabId)) throw tabClosedError(tabId);
+        return envelope();
+      } catch (error) {
+        if (error instanceof SessionServiceError && error.code === "tab_closed") {
+          return cancellationEnvelope(tabId);
+        }
+        throw error;
+      }
     },
 
     async activateTab(tabId) {
       const tab = requireTab(tabId);
-      selectTab(tabId);
-      tab.lastActiveAt = now();
-      publishTabs();
-      // A web or editor tab has no host to start (plan step 7); main reconciles
-      // the web view from the tab table and the editor from its own buffer.
-      if (isHostBackedTab(tab.kind)) await ensureSession(tab);
-      await persist();
-      return envelope();
+      try {
+        selectTab(tabId);
+        tab.lastActiveAt = now();
+        publishTabs();
+        if (isHostBackedTab(tab.kind)) await ensureSession(tab);
+        if (wasClosed(tabId) || !tabs.has(tabId)) throw tabClosedError(tabId);
+        await persist();
+        if (wasClosed(tabId)) throw tabClosedError(tabId);
+        return envelope();
+      } catch (error) {
+        if (error instanceof SessionServiceError && error.code === "tab_closed") {
+          return cancellationEnvelope(tabId);
+        }
+        throw error;
+      }
     },
 
     async deactivate() {
@@ -2025,13 +2058,18 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       return envelope();
     },
 
-    async closeTab(tabId) {
+    closeTab(tabId) {
+      const existingClose = closingTabs.get(tabId);
+      if (existingClose) return existingClose;
       const tab = tabs.get(tabId);
-      if (!tab) return envelope();
+      if (!tab) return Promise.resolve(envelope());
+      // Record the explicit lifetime end before any supervisor/store await.
+      retireTabId(tabId);
       // Capture the selection's record before the table changes: the next tab is
       // chosen from what remains, and a linked web tab must be able to name its
       // opener even though the opener is no longer the active tab.
       const activeRecord = activeId ? tabs.get(activeId) : undefined;
+      const selectionSeqAtClose = selectionSeq;
       // A web tab is a view of the session that opened it. Closing that session
       // must not leave a dead review page in the strip, so remove its linked web
       // tabs in the same pass. Pinned children are included: the page's server is
@@ -2055,32 +2093,44 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           closedAt: now(),
         });
       }
-      for (const entry of linkedWebTabs) forgetTab(entry.id);
+      for (const entry of linkedWebTabs) {
+        retireTabId(entry.id);
+        forgetTab(entry.id);
+      }
       forgetTab(tabId);
-      try {
-        // A web or editor tab has no supervisor host to stop (plan step 7); the
-        // cascaded web tabs have no host either.
-        if (isHostBackedTab(tab.kind)) await deps.supervisor.stop(tabId);
-      } catch {
-        // A host that is already gone is not an error for the user.
-      }
-      if (selectionLost) {
-        const next = nextActiveTabAfterClose(activeRecord, tabs.values());
-        if (next) {
-          // The app is now showing this tab, so it is the most recently used one.
-          // Persisting the bump keeps the next close's fallback coherent.
-          const record = tabs.get(next.id);
-          if (record) record.lastActiveAt = now();
-          selectTab(next.id);
-        } else {
-          selectTab(null);
+      const closeRun = (async (): Promise<SessionTabsEnvelope> => {
+        try {
+          // A web or editor tab has no supervisor host to stop (plan step 7); the
+          // cascaded web tabs have no host either.
+          if (isHostBackedTab(tab.kind)) await deps.supervisor.stop(tabId);
+        } catch {
+          // A host that is already gone is not an error for the user.
         }
-      }
-      // One table change for the owner and every cascaded web tab; the renderer
-      // never sees an intermediate empty selection.
-      publishTabs();
-      await persist();
-      return envelope();
+        if (selectionLost && selectionSeq === selectionSeqAtClose) {
+          const next = nextActiveTabAfterClose(activeRecord, tabs.values());
+          if (next) {
+            // The app is now showing this tab, so it is the most recently used one.
+            // Persisting the bump keeps the next close's fallback coherent.
+            const record = tabs.get(next.id);
+            if (record) record.lastActiveAt = now();
+            selectTab(next.id);
+          } else {
+            selectTab(null);
+          }
+        }
+        // One table change for the owner and every cascaded web tab; the renderer
+        // never sees an intermediate empty selection.
+        publishTabs();
+        await persist();
+        return envelope();
+      })();
+      closingTabs.set(tabId, closeRun);
+      void closeRun
+        .finally(() => {
+          if (closingTabs.get(tabId) === closeRun) closingTabs.delete(tabId);
+        })
+        .catch(() => undefined);
+      return closeRun;
     },
 
     async closeOthers(tabId) {
@@ -2253,11 +2303,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           tab.kind === "editor" ? "editor_tab" : "web_tab",
         );
       }
-      if (PASSIVE_METHODS.has(method) && !sessionReady.has(tab.id)) {
+      if (isPassiveSessionMethod(method) && !sessionReady.has(tab.id)) {
         // An open already in flight may make this readable. Wait for that open
         // (never start another) and refuse if it did not establish a session.
         const inFlight = opening.get(tab.id);
         if (inFlight) await inFlight.promise.catch(() => undefined);
+        if (wasClosed(tab.id)) return { cancelled: { reason: "tab-closed", tabId } };
+        if (!tabs.has(tab.id))
+          throw new SessionServiceError(`unknown session tab: ${tabId}`, "unknown_tab");
         if (!sessionReady.has(tab.id)) {
           throw new SessionServiceError(SESSION_ASLEEP_MESSAGE, "host_stopped");
         }
@@ -2277,12 +2330,14 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         try {
           result = await host.request(method, params, { timeoutMs: requestTimeoutFor(method) });
         } catch (error) {
+          if (wasClosed(tab.id)) throw error;
           // The caller owns the operation, so it is not replayed here — but a
           // host that died mid-open must not leave the tab on `starting`
           // forever. `stopped` is retryable: the next interaction respawns.
           if (isRecoverableOpenError(error)) await detachHost(tab.id);
           throw error;
         }
+        if (wasClosed(tab.id)) throw tabClosedError(tab.id);
         if (isSessionSnapshot(result)) {
           applySnapshot(tab, result);
           sessionReady.add(tab.id);
@@ -2290,7 +2345,18 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
         }
         return result;
       }
-      let host = await ensureSession(tab);
+      let host: SupervisorHostLike;
+      try {
+        host = await ensureSession(tab);
+      } catch (error) {
+        if (isPassiveSessionMethod(method) && wasClosed(tab.id)) {
+          return { cancelled: { reason: "tab-closed", tabId } };
+        }
+        throw error;
+      }
+      if (isPassiveSessionMethod(method) && wasClosed(tab.id)) {
+        return { cancelled: { reason: "tab-closed", tabId } };
+      }
       if (hostIsStale(host)) {
         try {
           host = await recycleStaleHost(tab);
@@ -2299,9 +2365,19 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
           // respawn failed, and the unsupported fallback below still applies.
         }
       }
+      if (isPassiveSessionMethod(method) && wasClosed(tab.id)) {
+        return { cancelled: { reason: "tab-closed", tabId } };
+      }
       try {
-        return await host.request(method, params, { timeoutMs: requestTimeoutFor(method) });
+        const result = await host.request(method, params, { timeoutMs: requestTimeoutFor(method) });
+        if (isPassiveSessionMethod(method) && wasClosed(tab.id)) {
+          return { cancelled: { reason: "tab-closed", tabId } };
+        }
+        return result;
       } catch (error) {
+        if (isPassiveSessionMethod(method) && wasClosed(tab.id)) {
+          return { cancelled: { reason: "tab-closed", tabId } };
+        }
         if (method === "commands.complete" && isMissingCommandComplete(error)) {
           return { items: null, unsupported: true } satisfies CommandCompleteResult;
         }
@@ -2410,6 +2486,8 @@ export function createSessionService(deps: SessionServiceDeps): SessionService {
       recovering.clear();
       recycling.clear();
       createParams.clear();
+      retiredTabIds.clear();
+      closingTabs.clear();
       control = null;
       controlStarting = null;
       await deps.supervisor.stopAll();

@@ -48,28 +48,31 @@ interface Recording {
   officeCalls: { kind: string; tabId?: string; takeover?: boolean }[];
   workspaceCalls: { kind: string; input?: unknown }[];
   sessionCalls: { kind: string; arg?: unknown }[];
+  sessionRequestCalls: { tabId: string; method: string; params?: unknown }[];
   tuiFocusCalls: { windowId: number; tabId: string | null }[];
 }
 
 const OPEN_PROJECT = "/work/app";
 
+let liveTabIds: string[] = ["t1"];
+let retiredTabIds = new Set<string>();
+let closeOperations = new Map<string, Promise<SessionTabsEnvelope>>();
+let heldClose: Promise<void> | null = null;
+let releaseHeldClose: (() => void) | null = null;
+
 function envelope(): SessionTabsEnvelope {
-  return {
-    tabs: [
-      {
-        id: "t1",
-        kind: "session",
-        cwd: OPEN_PROJECT,
-        title: "app",
-        sessionFile: null,
-        status: "idle",
-        createdAt: 0,
-        lastActiveAt: 0,
-        model: null,
-      },
-    ],
-    activeTabId: "t1",
-  };
+  const tabs = liveTabIds.map((id) => ({
+    id,
+    kind: "session" as const,
+    cwd: OPEN_PROJECT,
+    title: "app",
+    sessionFile: null,
+    status: "idle" as const,
+    createdAt: 0,
+    lastActiveAt: 0,
+    model: null,
+  }));
+  return { tabs, activeTabId: liveTabIds[0] ?? null };
 }
 
 function projects(): ProjectsSnapshot {
@@ -112,13 +115,27 @@ async function register(recording: Recording): Promise<void> {
       },
     },
     sessions: {
-      knownTabIds: () => ["t1"],
+      knownTabIds: () => [...liveTabIds],
+      wasRecentlyClosed: (tabId) => retiredTabIds.has(tabId),
       list: envelope,
       create: async (input) => {
         recording.sessionCalls.push({ kind: "create", arg: input });
         return envelope();
       },
-      close: async () => envelope(),
+      close: (tabId) => {
+        const existing = closeOperations.get(tabId);
+        if (existing) return existing;
+        if (!liveTabIds.includes(tabId)) return Promise.resolve(envelope());
+        recording.sessionCalls.push({ kind: "close", arg: tabId });
+        liveTabIds = liveTabIds.filter((id) => id !== tabId);
+        retiredTabIds.add(tabId);
+        const operation = (async () => {
+          if (heldClose) await heldClose;
+          return envelope();
+        })();
+        closeOperations.set(tabId, operation);
+        return operation;
+      },
       closeAll: async (kind) => {
         recording.sessionCalls.push({ kind: "closeAll", arg: kind });
         return envelope();
@@ -151,7 +168,10 @@ async function register(recording: Recording): Promise<void> {
       restart: async () => envelope(),
       stop: async () => envelope(),
       ensure: async () => envelope(),
-      request: async () => null,
+      request: async ({ tabId, method, params }) => {
+        recording.sessionRequestCalls.push({ tabId, method, params });
+        return null;
+      },
       deleteSession: async () => ({ ok: true }) as never,
     },
     projects: {
@@ -380,8 +400,14 @@ beforeEach(async () => {
     officeCalls: [],
     workspaceCalls: [],
     sessionCalls: [],
+    sessionRequestCalls: [],
     tuiFocusCalls: [],
   };
+  liveTabIds = ["t1"];
+  retiredTabIds = new Set();
+  closeOperations = new Map();
+  heldClose = null;
+  releaseHeldClose = null;
   await register(recording);
 });
 
@@ -563,6 +589,104 @@ describe("checkpoint action validation", () => {
     const action = recording.checkpointCalls[0]?.arg as CheckpointAction;
     expect(action.kind).toBe("create");
     expect((action as { label?: string }).label?.length).toBe(300);
+  });
+});
+
+describe("session close/request race channels", () => {
+  it("coalesces deferred duplicate closes and settles late closes after retirement", async () => {
+    heldClose = new Promise<void>((resolve) => {
+      releaseHeldClose = resolve;
+    });
+    const first = invoke(IPC.sessionClose, "t1") as Promise<SessionTabsEnvelope>;
+    expect(liveTabIds).toEqual([]);
+    const concurrent = invoke(IPC.sessionClose, "t1") as Promise<SessionTabsEnvelope>;
+    const late = invoke(IPC.sessionClose, "t1") as Promise<SessionTabsEnvelope>;
+    expect(invoke(IPC.sessionRequest, { tabId: "t1", method: "messages.get" })).toEqual({
+      cancelled: { reason: "tab-closed", tabId: "t1" },
+    });
+    expect(recording.sessionRequestCalls).toEqual([]);
+    expect(recording.sessionCalls).toEqual([{ kind: "close", arg: "t1" }]);
+    releaseHeldClose?.();
+    await expect(Promise.all([first, concurrent, late])).resolves.toEqual([
+      { tabs: [], activeTabId: null },
+      { tabs: [], activeTabId: null },
+      { tabs: [], activeTabId: null },
+    ]);
+    await expect(invoke(IPC.sessionClose, "t1")).resolves.toEqual({
+      tabs: [],
+      activeTabId: null,
+    });
+    expect(recording.sessionCalls).toHaveLength(1);
+  });
+
+  it("returns cancellation only for a validated passive request to a retired id", async () => {
+    liveTabIds = [];
+    retiredTabIds.add("t1");
+    expect(invoke(IPC.sessionRequest, { tabId: "t1", method: "messages.get" })).toEqual({
+      cancelled: { reason: "tab-closed", tabId: "t1" },
+    });
+    expect(recording.sessionRequestCalls).toEqual([]);
+
+    await expect(
+      Promise.resolve().then(() =>
+        invoke(IPC.sessionRequest, { tabId: "made-up", method: "messages.get" }),
+      ),
+    ).rejects.toThrow(/unknown tab/);
+    await expect(
+      Promise.resolve().then(() =>
+        invoke(IPC.sessionRequest, { tabId: "t1", method: "not.a.method" }),
+      ),
+    ).rejects.toThrow(/unsupported host method/);
+    await expect(
+      Promise.resolve().then(() =>
+        invoke(IPC.sessionRequest, { tabId: "t1", method: "session.create" }),
+      ),
+    ).rejects.toThrow(/unknown tab/);
+    for (const method of [
+      "prompt",
+      "contributions.run",
+      "composer.transform",
+      "composer.cancel",
+      "composer.applied",
+    ]) {
+      await expect(
+        Promise.resolve().then(() => invoke(IPC.sessionRequest, { tabId: "t1", method })),
+      ).rejects.toThrow(/unknown tab/);
+    }
+    expect(() => invoke(IPC.sessionActivate, "t1")).toThrow(/unknown tab/);
+    expect(() => invoke(IPC.sessionEnsure, "t1")).toThrow(/unknown tab/);
+    expect(recording.sessionRequestCalls).toEqual([]);
+  });
+
+  it("rejects malformed/control addresses and preserves live/control requests", async () => {
+    for (const value of [null, 0, "", undefined]) {
+      expect(() => invoke(IPC.sessionClose, value)).toThrow(/tab id/);
+      expect(() => invoke(IPC.sessionRequest, { tabId: value, method: "messages.get" })).toThrow(
+        /tab id/,
+      );
+    }
+    expect(() => invoke(IPC.sessionClose, "control")).toThrow(/control host/);
+    expect(() => invoke(IPC.sessionRequest, { tabId: "control", method: "unsupported" })).toThrow(
+      /unsupported host method/,
+    );
+    await expect(
+      invoke(IPC.sessionRequest, { tabId: "t1", method: "messages.get", params: { limit: 3 } }),
+    ).resolves.toBeNull();
+    await expect(
+      invoke(IPC.sessionRequest, { tabId: "control", method: "settings.get" }),
+    ).resolves.toBeNull();
+    expect(recording.sessionRequestCalls).toEqual([
+      { tabId: "t1", method: "messages.get", params: { limit: 3 } },
+      { tabId: "control", method: "settings.get", params: undefined },
+    ]);
+  });
+
+  it("forwards a valid absent close to the service without weakening live-target operations", async () => {
+    liveTabIds = [];
+    await expect(invoke(IPC.sessionClose, "t1")).resolves.toEqual({ tabs: [], activeTabId: null });
+    expect(() => invoke(IPC.sessionActivate, "t1")).toThrow(/unknown tab/);
+    expect(() => invoke(IPC.sessionEnsure, "t1")).toThrow(/unknown tab/);
+    expect(recording.sessionCalls).toEqual([]);
   });
 });
 

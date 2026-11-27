@@ -507,12 +507,15 @@ const POLICY_COMMANDS = [
 
 /**
  * Row commands the **currently pinned** artifact does not register. The staged
- * v0.15.0 release registers the whole row set, including `/workflow` (the
- * v0.13.0 release predated it). Keeping this an exact ledger makes the test fail
+ * 0.17.4 release registers the whole row set, including `/workflow` (the
+ * 0.13.0 release predated it). Keeping this an exact ledger makes the test fail
  * in both directions: a newly missing command, or a re-pin that is not
  * reflected here.
  */
 const PINNED_ARTIFACT_MISSING: readonly string[] = [];
+
+/** The local tarball version staged by row 13; 0.17.4 carries the child-todo fixes. */
+const STAGED_WORKFLOW_VERSION = "0.17.4";
 
 describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
   "staged Workflow artifact: command/mode/config/policy parity",
@@ -523,7 +526,18 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
       ) as { package: string; version: string; entry: string };
       expect(metadata.package).toBe("@dieulc/workflow");
       expect(metadata.entry).toBe("index.ts");
-      expect(metadata.version).toMatch(/^\d+\.\d+\.\d+/);
+      // A newly staged bundle must be reflected here, so an old copy left on
+      // disk (or a W checkout) can never satisfy this suite silently. Both
+      // shipped copies are staged from the same local tarball.
+      expect(metadata.version).toBe(STAGED_WORKFLOW_VERSION);
+      const shipped = JSON.parse(
+        readFileSync(
+          join(process.cwd(), "resources", "extensions", "workflow", "workflow-bundle.json"),
+          "utf8",
+        ),
+      ) as { package: string; version: string };
+      expect(shipped.package).toBe("@dieulc/workflow");
+      expect(shipped.version).toBe(STAGED_WORKFLOW_VERSION);
     });
 
     it("registers the command inventory this row exercises", async () => {
@@ -606,8 +620,8 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
         expect(booted.statusValue("workflow")).toMatch(/plan/);
 
         // `/workflow` is the Plan-mode entry (alias for /plan in this host).
-        // Pinned artifact: absent until the next re-pin; the ledger above records
-        // it, and the W source registers it unconditionally (step 31 fix).
+        // The 0.17.4 artifact registers it; the ledger above would record a
+        // regression to an older bundle that predates it.
         if (!PINNED_ARTIFACT_MISSING.includes("workflow")) {
           await booted.run("workflow");
           expect(booted.statusValue("workflow")).toMatch(/plan/);
@@ -983,7 +997,23 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
     it("publishes todo progress, panel visibility and command-backed actions", async () => {
       const booted = await boot();
       try {
+        // 0.17.3+ Plan is read-only for the list: the parent setup must enter
+        // Build before mutating workflow_todo, and Plan must refuse the add.
         await booted.run("plan");
+        const refused = (await booted.runTool("workflow_todo", {
+          action: "add",
+          text: "Must not be created in Plan",
+        })) as {
+          isError?: boolean;
+          content: Array<{ text: string }>;
+          details?: { error?: string; todos?: unknown[] };
+        };
+        expect(refused.isError).toBe(true);
+        expect(refused.details?.error).toBe("plan-mode-read-only");
+        expect(refused.content[0]!.text).toMatch(/Plan mode is read-only/);
+        expect(refused.details?.todos).toEqual([]);
+
+        await booted.run("build");
         await booted.runTool("workflow_todo", { action: "add", text: "Wire CSV export" });
         await booted.runTool("workflow_todo", { action: "add", text: "Add export tests" });
 
@@ -1282,7 +1312,7 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
     it("enters Orchestrator mode, keeps the run status read-only and dispatches nothing", async () => {
       const booted = await boot();
       try {
-        // Mode entry is display-only: 0.15.0 keeps the full Build tool set and
+        // Mode entry is display-only: 0.17.4 keeps the full Build tool set and
         // adds the three parent tools; nothing is dispatched on entry.
         await booted.run("orchestrator");
         const tools = lastToolSet(booted.pi) ?? [];
@@ -1293,7 +1323,7 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
             "orchestrator_retry",
           ]),
         );
-        // The mutation gate is the tool-call hook. In 0.15.0 the parent keeps
+        // The mutation gate is the tool-call hook. In 0.17.4 the parent keeps
         // full Build authority until a run is bound and a Build child owns the
         // worktree, so an edit with no run/child is not refused here; the
         // bound-child refusal ("A Build child owns this worktree") is pinned by
@@ -1361,6 +1391,132 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
         expect(booted.notices()).toMatch(/No child is active\./);
         await booted.run("orchestrator", "view auto");
 
+        assertNoExecution(booted.pi);
+        expect(booted.relatedRequests()).toEqual([]);
+      } finally {
+        await booted.cleanup();
+      }
+    });
+
+    it("publishes the child todo display verbs before any child row and keeps the parent panel detail", async () => {
+      const booted = await boot();
+      try {
+        // Parent rows with a non-default, assertable panel state.
+        await booted.run("build");
+        await booted.runTool("workflow_todo", { action: "add", text: "Parent row one" });
+        await booted.runTool("workflow_todo", { action: "add", text: "Parent row two" });
+        await booted.run("todos", "expand");
+        const parentBefore = booted
+          .latestContributions()
+          .find((entry) => entry.kind === "progress" && entry.id === "todos");
+        expect(parentBefore, "the parent panel publishes its progress").toBeTruthy();
+        expect(parentBefore!.detail).toBe("Expanded");
+        expect(parentBefore!.total).toBe(2);
+
+        // A standalone run binds explicit steps as the parent roadmap. It
+        // creates no child state/header, which is exactly the presentation
+        // case this test owns (a live child widget is covered by the package).
+        await booted.run("orchestrator");
+        const started = await booted.runTool("orchestrator_start", {
+          title: "Standalone child-view parity",
+          steps: ["Wire CSV export", "Add export tests"],
+        });
+        expect(JSON.stringify(started)).toMatch(/created with 2 row/);
+
+        await booted.run("orchestrator", "view child");
+        expect(booted.notices()).toMatch(/View: child/);
+
+        const childContributions = booted.latestContributions();
+        // The four display verbs publish before a child header/row exists; the
+        // progress contribution stays independently gated on total > 0, so no
+        // fabricated 0/0 row appears just to make the controls reachable.
+        expect(childContributions.filter((entry) => entry.kind === "progress")).toEqual([]);
+        const childActions = childContributions.filter(
+          (entry) => entry.kind === "action" && String(entry.id).startsWith("todos-"),
+        );
+        expect(childActions.map((entry) => String(entry.id)).sort()).toEqual(
+          ["todos-auto", "todos-collapse", "todos-expand", "todos-hide"].sort(),
+        );
+
+        const expectedChildActions: Array<[string, string, string]> = [
+          ["todos-auto", "Auto todos", "auto"],
+          ["todos-expand", "Show todos", "expand"],
+          ["todos-collapse", "Collapse todos", "collapse"],
+          ["todos-hide", "Hide todos", "hide"],
+        ];
+        for (const [id, label, args] of expectedChildActions) {
+          const action = childActions.find((entry) => entry.id === id);
+          expect(action, `/todos ${args} is contributed in child view`).toBeTruthy();
+          expect(action).toMatchObject({
+            kind: "action",
+            slot: "action",
+            id,
+            label,
+            tone: "neutral",
+            order: 11,
+            enabled: true,
+          });
+          // Stable group identity/order/placement and the command-backed wire
+          // shape the generic working bar dispatches. No Workflow-specific
+          // Desktop adapter exists for these verbs.
+          expect(action!.group).toEqual({
+            id: "todos",
+            label: "Child todos",
+            order: 40,
+            placement: "menu",
+          });
+          expect(action!.command).toEqual({ name: "todos", args });
+        }
+
+        // No child header/state exists, so no child TODO widget frame is
+        // installed: the last write for the key is an explicit clear.
+        const todoWidgets = booted.ui.widgets.filter((entry) => entry.key === "workflow-todos");
+        expect(todoWidgets.length).toBeGreaterThan(0);
+        expect(todoWidgets.at(-1)!.value).toBeUndefined();
+
+        // Show/Collapse/Hide/Auto target the active child view. The stream
+        // keeps the same four verbs and still publishes no progress row.
+        for (const verb of ["show", "collapse", "hide", "auto"]) {
+          await booted.run("todos", verb);
+          const after = booted.latestContributions();
+          expect(
+            after.filter((entry) => entry.kind === "progress"),
+            `/todos ${verb} must not invent a zero-total child progress row`,
+          ).toEqual([]);
+          const actions = after.filter(
+            (entry) => entry.kind === "action" && String(entry.id).startsWith("todos-"),
+          );
+          expect(actions).toHaveLength(4);
+          for (const action of actions) {
+            expect((action.group as { label?: string } | undefined)?.label).toBe("Child todos");
+          }
+        }
+
+        await booted.run("orchestrator", "view parent");
+        const parentAfter = booted.latestContributions();
+        const parentProgress = parentAfter.find(
+          (entry) => entry.kind === "progress" && entry.id === "todos",
+        );
+        expect(parentProgress, "the parent panel is published again").toBeTruthy();
+        // Child display changes never rewrote the parent preference/detail.
+        expect(parentProgress!.detail).toBe("Expanded");
+        expect(parentProgress!.done).toBe(0);
+        expect(parentProgress!.total).toBe(2);
+
+        const parentActions = parentAfter.filter(
+          (entry) => entry.kind === "action" && String(entry.id).startsWith("todos-"),
+        );
+        expect(parentActions.map((entry) => String(entry.id)).sort()).toEqual(
+          ["todos-auto", "todos-collapse", "todos-expand", "todos-hide"].sort(),
+        );
+        for (const action of parentActions) {
+          // Back in parent view the same group id is labelled `Todos`.
+          expect(action.enabled).toBe(true);
+          expect((action.group as { label?: string } | undefined)?.label).toBe("Todos");
+        }
+
+        // Presentation and view switches dispatch no work and never use the
+        // authenticated external-session bridge.
         assertNoExecution(booted.pi);
         expect(booted.relatedRequests()).toEqual([]);
       } finally {

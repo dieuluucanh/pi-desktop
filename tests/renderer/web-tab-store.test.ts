@@ -28,6 +28,20 @@ function state(overrides: Partial<WebTabState> = {}): WebTabState {
   };
 }
 
+function sessionRecord(id = "s1"): TabRecord {
+  return {
+    id,
+    kind: "session",
+    cwd: "C:/work/app",
+    title: "app",
+    sessionFile: null,
+    status: "idle",
+    createdAt: 1,
+    lastActiveAt: 1,
+    model: null,
+  };
+}
+
 function webRecord(overrides: Partial<TabRecord> = {}): TabRecord {
   return {
     id: "w1",
@@ -208,7 +222,12 @@ describe("the manual URL dialog", () => {
 describe("automatic loopback detection (plan step 21)", () => {
   it("opens a review URL that arrives in an extension notification", async () => {
     const handles = installBridge();
-    useAppStore.setState({ tabs: [], activeTabId: null, webTabStates: {}, transcripts: {} });
+    useAppStore.setState({
+      tabs: [sessionRecord()],
+      activeTabId: "s1",
+      webTabStates: {},
+      transcripts: {},
+    });
 
     useAppStore.getState().handleExtensionUiEvent("s1", {
       event: "oi.notify",
@@ -229,7 +248,12 @@ describe("automatic loopback detection (plan step 21)", () => {
 
   it("ignores a notification with no loopback URL", async () => {
     const handles = installBridge();
-    useAppStore.setState({ tabs: [], activeTabId: null, webTabStates: {}, transcripts: {} });
+    useAppStore.setState({
+      tabs: [sessionRecord()],
+      activeTabId: "s1",
+      webTabStates: {},
+      transcripts: {},
+    });
 
     useAppStore.getState().handleExtensionUiEvent("s1", {
       event: "oi.notify",
@@ -285,7 +309,7 @@ describe("automatic loopback detection (plan step 21)", () => {
   it("reloads and keeps the focus on an already-open notification review", async () => {
     const handles = installBridge();
     useAppStore.setState({
-      tabs: [webRecord()],
+      tabs: [sessionRecord(), webRecord()],
       activeTabId: "w1",
       webTabStates: { w1: state() },
       transcripts: {},

@@ -180,6 +180,51 @@ export function isSessionTab(tab: TabRecord): tab is SessionTab {
  * already open, so that tab was activated instead of a second one being minted
  * (one JSONL must never have two live managers).
  */
+export type TabClosedCancellation = {
+  reason: "tab-closed";
+  tabId: string;
+};
+
+/** Explicit lifecycle cancellation data; unlike Error fields this survives Electron IPC. */
+export type SessionCancellation = { cancelled: TabClosedCancellation };
+
+export function isTabClosedCancellation(value: unknown): value is SessionCancellation {
+  if (!value || typeof value !== "object") return false;
+  const cancelled = (value as { cancelled?: unknown }).cancelled;
+  return (
+    !!cancelled &&
+    typeof cancelled === "object" &&
+    (cancelled as { reason?: unknown }).reason === "tab-closed" &&
+    typeof (cancelled as { tabId?: unknown }).tabId === "string" &&
+    (cancelled as { tabId: string }).tabId.length > 0
+  );
+}
+
+/** Methods that are passive reads/refreshes and must never wake a stopped host. */
+export const PASSIVE_SESSION_METHODS: ReadonlySet<string> = new Set([
+  "messages.get",
+  "entries.get",
+  "tree.get",
+  "stats.get",
+  "commands.list",
+  "commands.complete",
+  "shortcuts.list",
+  "files.list",
+  "oi.state",
+  "oi.editorConsumed",
+  "tui.state",
+  "tui.resize",
+  "model.available",
+  "render.request",
+  "render.markdown",
+  "contributions.state",
+  "composer.current",
+  "composer.status",
+]);
+
+export const isPassiveSessionMethod = (method: string): boolean =>
+  PASSIVE_SESSION_METHODS.has(method);
+
 export type SessionTabsEnvelope = {
   tabs: TabRecord[];
   activeTabId: string | null;
@@ -191,6 +236,8 @@ export type SessionTabsEnvelope = {
    * 13). Navigation metadata only; the transcript stays in the session JSONL.
    */
   relatedArchive?: ArchivedRelatedSession[];
+  /** Present only when an admitted lifecycle operation was explicitly closed. */
+  cancelled?: TabClosedCancellation;
 };
 
 /**

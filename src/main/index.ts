@@ -717,6 +717,7 @@ function requireSessions(): SessionService {
 /** The validated session surface the IPC layer drives. */
 const sessionsIpc: IpcSessionDeps = {
   knownTabIds: () => sessions?.tabs().map((tab) => tab.id) ?? [],
+  wasRecentlyClosed: (tabId: string) => sessions?.wasRecentlyClosed(tabId) ?? false,
   list: () => sessions?.envelope() ?? { tabs: [], activeTabId: null },
   create: (input: CreateTabInput) => requireSessions().createTab(input),
   close: (tabId: string) => requireSessions().closeTab(tabId),

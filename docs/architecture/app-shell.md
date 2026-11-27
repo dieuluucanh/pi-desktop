@@ -558,9 +558,38 @@ The app treats failure as a first-class state rather than a silent no-op:
   with **Restart session**. Diagnostics shows the host build id and a
   `stale build` badge. The renderer's `commands.complete` fallback also converts
   a missing host method into a banner instead of an empty completion menu.
-- **Cancellation.** Abort/clear-queue already restore the queued text; closing a
-  tab mid-run stops its host through the supervisor (a test pins that no host is
-  left behind).
+- **Close is idempotent and startup cancellation is normal.** A session tab is
+  published with its real ID before the asynchronous create/activate lifecycle
+  has completed. Its yellow `starting` chip is therefore a real, intentionally
+  closable tab, not a placeholder; close removes it from the authoritative table
+  and stops its host. Concurrent/repeated close requests for a well-formed real
+  tab ID settle against the same close operation/current table. A lifecycle
+  continuation whose captured tab lifetime was explicitly retired returns
+  `cancelled: { reason: "tab-closed", tabId }` as data (with the current tab
+  envelope), rather than surfacing the host's expected `host_stopped` as a user
+  failure. Passive reads racing that retirement are cancelled only for IDs
+  proven recently closed and only for the allowlisted passive methods; unknown
+  IDs, unsupported methods, live-tab failures and mutations remain errors.
+  Renderer startup work checks cancellation/removal before issuing dependent
+  reads, so a late continuation cannot hydrate or recreate closed-tab state.
+  The real-Electron regression in `tests/e2e/session.spec.ts` gates extension
+  `session_start` on a test-owned loopback response, closes by one × gesture,
+  and checks both survivor selection and the Welcome fallback in one app launch.
+
+  **Diagnosis and limits.** The reproduced startup race confirms this chain:
+  the tab is published while creation is pending; the user's close intentionally
+  removes/stops it, draining shared create/activate work; continuations that do
+  not treat that retirement as cancellation can then issue stale reads or report
+  shutdown as a failure. This explains the fresh `session:create` / `session:activate`
+  `host_stopped` followed by a `session:request` for an unknown tab. It does not
+  establish the original reported `session:close` unknown-tab producer: that
+  exception proves the close arrived after its ID was absent from main's table,
+  but its particular earlier removal or caller sequence remains unproven. Do not
+  infer a double click, extension shutdown, corrupted session or spontaneous
+  host crash from that message. Any request-method attribution must come from
+  captured runtime evidence; the initial unlabelled request is not known to be
+  `messages.get`.
+
 - **Offline.** `isOfflineEnv` mirrors Pi's own `PI_OFFLINE` rule (`1`/`true`/
   `yes`); the value travels in `AppInfo.piOffline` and raises a persistent banner.
   Every user-visible catch path funnels through the store's `noteFailure`, which

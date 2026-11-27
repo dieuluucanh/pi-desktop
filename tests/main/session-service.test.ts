@@ -54,6 +54,10 @@ class FakeHost implements SupervisorHostLike {
   private readonly bootMs: number | undefined;
   stopReasonValue: TabStopReason | null = null;
   overMemoryValue = false;
+  private pendingOpenReject: ((error: Error) => void) | null = null;
+  private pendingOpenResolve: ((value: unknown) => void) | null = null;
+  private readonly onOpen: (() => void) | undefined;
+  private readonly leaveOpenPendingOnStop: boolean;
 
   constructor(
     sessionId: string,
@@ -66,6 +70,9 @@ class FakeHost implements SupervisorHostLike {
       rssBytes?: number;
       openTimings?: HostOpenTimings;
       bootMs?: number;
+      holdOpen?: boolean;
+      onOpen?: () => void;
+      leaveOpenPendingOnStop?: boolean;
     } = {},
   ) {
     this.sessionId = sessionId;
@@ -80,6 +87,22 @@ class FakeHost implements SupervisorHostLike {
     this.rssBytes = options.rssBytes ?? 0;
     this.openTimings = options.openTimings;
     this.bootMs = options.bootMs;
+    this.onOpen = options.onOpen;
+    this.holdOpen = options.holdOpen ?? false;
+    this.leaveOpenPendingOnStop = options.leaveOpenPendingOnStop ?? false;
+  }
+
+  private readonly holdOpen: boolean;
+
+  drainOpen(): void {
+    if (this.leaveOpenPendingOnStop) return;
+    this.pendingOpenReject?.(new HostStoppedError(this.sessionId, "session.create"));
+    this.pendingOpenReject = null;
+  }
+
+  completeOpenLate(): void {
+    this.pendingOpenResolve?.(this.reply("session.create"));
+    this.pendingOpenResolve = null;
   }
 
   status(): string {
@@ -125,6 +148,13 @@ class FakeHost implements SupervisorHostLike {
       ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     });
     if (this.fail?.method === method) return Promise.reject(this.fail.error);
+    if (this.holdOpen && (method === "session.create" || method === "session.resume")) {
+      this.onOpen?.();
+      return new Promise((resolve, reject) => {
+        this.pendingOpenResolve = resolve;
+        this.pendingOpenReject = reject;
+      });
+    }
     return Promise.resolve(this.reply(method));
   }
 
@@ -209,6 +239,7 @@ class FakeHost implements SupervisorHostLike {
 function createHarness(
   options: {
     maxLiveHosts?: number;
+    newId?: () => string;
     failCreate?: Error | ((spawnIndex: number) => Error | undefined);
     /** Expected bundle fingerprint; absent disables the stale check. */
     hostBuildId?: () => string | null;
@@ -234,6 +265,18 @@ function createHarness(
     fail?: { method: HostMethod; error: Error };
     /** Awaited inside the fake `supervisor.start`, to hold a spawn in flight. */
     onStart?: (spec: SpawnSpec) => Promise<void> | void;
+    /** Holds a stop deterministically for close-coalescing regressions. */
+    onStop?: (id: string) => Promise<void> | void;
+    /** Holds session.create/resume until stop drains it with HostStoppedError. */
+    holdOpen?: (spec: SpawnSpec) => boolean;
+    leaveOpenPendingOnStop?: boolean;
+    onOpen?: (spec: SpawnSpec) => void;
+    /** Gates a serialized store update for persistence/lifecycle races. */
+    onStoreUpdate?: (patch: {
+      tabs?: unknown;
+      activeTabId?: unknown;
+      relatedSessions?: unknown;
+    }) => Promise<void> | void;
     /**
      * Mirrors the real supervisor's one-child-per-id guard (2026-11-07 plan),
      * so adoption and the single-flight behaviour are tested against the same
@@ -261,6 +304,7 @@ function createHarness(
   const stopped: string[] = [];
   const pushes: Array<{ channel: "event" | "state" | "tabs"; payload: unknown }> = [];
   const stored: { tabs: TabRecord[]; activeTabId: string | null } = { tabs: [], activeTabId: null };
+  let updateQueue: Promise<void> = Promise.resolve();
 
   const supervisor: SupervisorLike = {
     start: async (spec) => {
@@ -281,6 +325,9 @@ function createHarness(
           ? {}
           : { createdSessionFile: options.createdSessionFile }),
         ...(options.fail ? { fail: options.fail } : {}),
+        holdOpen: options.holdOpen?.(spec) ?? false,
+        leaveOpenPendingOnStop: options.leaveOpenPendingOnStop,
+        onOpen: options.onOpen ? () => options.onOpen?.(spec) : undefined,
         pinned: options.pinnedFor?.(spec) ?? false,
         ...(options.bootMs === undefined ? {} : { bootMs: options.bootMs }),
         ...(options.openTimings === undefined ? {} : { openTimings: options.openTimings }),
@@ -320,6 +367,8 @@ function createHarness(
     list: () => [...hosts.values()],
     stop: async (id) => {
       stopped.push(id);
+      await options.onStop?.(id);
+      hosts.get(id)?.drainOpen();
       hosts.delete(id);
     },
     stopAll: async () => {
@@ -333,15 +382,23 @@ function createHarness(
     supervisor,
     store: {
       read: async () => ({ tabs: stored.tabs, activeTabId: stored.activeTabId }),
-      update: async (patch) => {
-        if ("tabs" in patch) stored.tabs = (patch.tabs as TabRecord[]) ?? [];
-        if ("activeTabId" in patch) stored.activeTabId = (patch.activeTabId as string) ?? null;
-        return { tabs: stored.tabs, activeTabId: stored.activeTabId };
+      update: (patch) => {
+        const update = updateQueue.then(async () => {
+          await options.onStoreUpdate?.(patch);
+          if ("tabs" in patch) stored.tabs = (patch.tabs as TabRecord[]) ?? [];
+          if ("activeTabId" in patch) stored.activeTabId = (patch.activeTabId as string) ?? null;
+          return { tabs: stored.tabs, activeTabId: stored.activeTabId };
+        });
+        updateQueue = update.then(
+          () => undefined,
+          () => undefined,
+        );
+        return update;
       },
     },
     controlCwd: "C:\\state",
     now: options.now ?? (() => 1_000),
-    newId: () => `tab-${++counter}`,
+    newId: options.newId ?? (() => `tab-${++counter}`),
     ...(options.hostBuildId ? { hostBuildId: options.hostBuildId } : {}),
     ...(options.maxLiveHosts === undefined ? {} : { maxLiveHosts: options.maxLiveHosts }),
     ...(options.hostRssLimitBytes === undefined
@@ -519,6 +576,30 @@ describe("tab lifecycle", () => {
     expect(stored.activeTabId).toBe("tab-1");
     expect(pushes.filter((push) => push.channel === "tabs").length).toBeGreaterThan(0);
     expect(pushes.some((push) => push.channel === "state")).toBe(true);
+  });
+
+  it("forgets retired metadata when an ID is legitimately reintroduced", async () => {
+    const ids = ["tab-reused", "tab-reused"];
+    const { service } = createHarness({ newId: () => ids.shift() ?? "tab-fallback" });
+    const first = await service.createTab({ kind: "web", url: "http://localhost:1/first" });
+    await service.closeTab(first.tabs[0]!.id);
+    expect(service.wasRecentlyClosed("tab-reused")).toBe(true);
+
+    await service.createTab({ kind: "web", url: "http://localhost:1/second" });
+    expect(service.wasRecentlyClosed("tab-reused")).toBe(false);
+  });
+
+  it("bounds retired-tab metadata and resets it on restore", async () => {
+    const { service } = createHarness();
+    for (let index = 0; index < 257; index += 1) {
+      const created = await service.createTab({ kind: "web", url: `http://localhost:1/${index}` });
+      await service.closeTab(created.tabs[0]!.id);
+    }
+
+    expect(service.wasRecentlyClosed("tab-1")).toBe(false);
+    expect(service.wasRecentlyClosed("tab-257")).toBe(true);
+    await service.restoreTabs();
+    expect(service.wasRecentlyClosed("tab-257")).toBe(false);
   });
 
   it("stores a terminal tab's shell profile", async () => {
@@ -1358,6 +1439,389 @@ describe("reliability and recovery (plan step 22)", () => {
     expect(service.diagnosticsHosts()).toEqual([]);
   });
 
+  it("does not activate a tab closed during its initial serialized persistence", async () => {
+    let updates = 0;
+    let release!: () => void;
+    let entered!: () => void;
+    const persistGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const persistEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const harness = createHarness({
+      onStoreUpdate: async () => {
+        updates += 1;
+        if (updates === 3) {
+          entered();
+          await persistGate;
+        }
+      },
+    });
+    await harness.service.createTab({ cwd: "C:\\work\\survivor" });
+    const creating = harness.service.createTab({ cwd: "C:\\work\\closing" });
+    await persistEntered;
+    const closing = harness.service.closeTab("tab-2");
+    release();
+    const [created, closed] = await Promise.all([creating, closing]);
+
+    expect(created).toMatchObject({ cancelled: { reason: "tab-closed", tabId: "tab-2" } });
+    expect(closed.tabs.map((tab) => tab.id)).toEqual(["tab-1"]);
+    expect(closed.activeTabId).toBe("tab-1");
+    expect(harness.specs.some((spec) => spec.sessionId === "tab-2")).toBe(false);
+    expect(harness.stored.tabs.map((tab) => tab.id)).toEqual(["tab-1"]);
+    expect(harness.stored.activeTabId).toBe("tab-1");
+  });
+
+  it("keeps an early idle state from bypassing the pending session open", async () => {
+    let entered!: () => void;
+    const openEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const harness = createHarness({
+      holdOpen: (spec) => spec.sessionId === "tab-1",
+      leaveOpenPendingOnStop: true,
+      onOpen: () => entered(),
+    });
+    const creating = harness.service.createTab({ cwd: "C:\\work\\app" });
+    await openEntered;
+    const host = harness.hosts.get("tab-1")!;
+    host.emit("state", { sessionId: "session-early", streaming: false });
+    expect(harness.service.tabs()[0]?.status).toBe("idle");
+
+    let readSettled = false;
+    const reading = harness.service.request("tab-1", "messages.get").then((value) => {
+      readSettled = true;
+      return value;
+    });
+    await Promise.resolve();
+    expect(readSettled).toBe(false);
+    expect(host.requests.map((request) => request.method)).toEqual(["session.create"]);
+
+    host.completeOpenLate();
+    await Promise.all([creating, reading]);
+    expect(host.requests.map((request) => request.method)).toEqual([
+      "session.create",
+      "messages.get",
+    ]);
+  });
+
+  it("cancels the create reply when its final activation persistence loses to close", async () => {
+    let updates = 0;
+    let release!: () => void;
+    let entered!: () => void;
+    const persistGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const persistEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const harness = createHarness({
+      onStoreUpdate: async () => {
+        updates += 1;
+        if (updates === 4) {
+          entered();
+          await persistGate;
+        }
+      },
+    });
+    await harness.service.createTab({ cwd: "C:\\work\\survivor" });
+    const creating = harness.service.createTab({ cwd: "C:\\work\\closing" });
+    await persistEntered;
+    const closing = harness.service.closeTab("tab-2");
+    release();
+    const [created, closed] = await Promise.all([creating, closing]);
+
+    expect(created).toMatchObject({ cancelled: { reason: "tab-closed", tabId: "tab-2" } });
+    expect(closed.tabs.map((tab) => tab.id)).toEqual(["tab-1"]);
+    expect(closed.activeTabId).toBe("tab-1");
+    expect(harness.stored.tabs.map((tab) => tab.id)).toEqual(["tab-1"]);
+    expect(harness.stored.activeTabId).toBe("tab-1");
+  });
+
+  it("stops an orphan host when session.create succeeds after close", async () => {
+    let entered!: () => void;
+    const openEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const harness = createHarness({
+      holdOpen: (spec) => spec.sessionId === "tab-1",
+      leaveOpenPendingOnStop: true,
+      onOpen: () => entered(),
+    });
+    const creating = harness.service.createTab({ cwd: "C:\\work\\app" });
+    await openEntered;
+    const lateHost = harness.hosts.get("tab-1")!;
+    await harness.service.closeTab("tab-1");
+    lateHost.completeOpenLate();
+
+    await expect(creating).resolves.toMatchObject({
+      cancelled: { reason: "tab-closed", tabId: "tab-1" },
+      tabs: [],
+    });
+    expect(harness.stopped.filter((id) => id === "tab-1").length).toBeGreaterThanOrEqual(2);
+    expect(harness.service.tabs()).toEqual([]);
+    expect(harness.hosts.has("tab-1")).toBe(false);
+  });
+
+  it("cancels a reused-tab create when its activation persistence loses to close", async () => {
+    let updates = 0;
+    let release!: () => void;
+    let entered!: () => void;
+    const persistGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const persistEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const harness = createHarness({
+      createdSessionFile: "C:\\profile\\sessions\\reuse.jsonl",
+      onStoreUpdate: async () => {
+        updates += 1;
+        if (updates === 3) {
+          entered();
+          await persistGate;
+        }
+      },
+    });
+    await harness.service.createTab({ cwd: "C:\\work\\app" });
+    const reusing = harness.service.createTab({
+      cwd: "C:\\work\\app",
+      sessionFile: "C:\\profile\\sessions\\reuse.jsonl",
+    });
+    await persistEntered;
+    const closing = harness.service.closeTab("tab-1");
+    release();
+    const [reused, closed] = await Promise.all([reusing, closing]);
+
+    expect(reused).toMatchObject({ cancelled: { reason: "tab-closed", tabId: "tab-1" } });
+    expect(closed.tabs).toEqual([]);
+    expect(harness.stored.tabs).toEqual([]);
+  });
+
+  it("cancels a background tab closed during its initial persistence", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const persistGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const persistEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const harness = createHarness({
+      onStoreUpdate: async () => {
+        entered();
+        await persistGate;
+      },
+    });
+    const creating = harness.service.createTab({
+      kind: "web",
+      url: "http://localhost:1/background",
+      activate: false,
+    });
+    await persistEntered;
+    const closing = harness.service.closeTab("tab-1");
+    release();
+    const [created, closed] = await Promise.all([creating, closing]);
+
+    expect(created).toMatchObject({ cancelled: { reason: "tab-closed", tabId: "tab-1" } });
+    expect(closed).toMatchObject({ tabs: [], activeTabId: null });
+    expect(harness.specs).toEqual([]);
+  });
+
+  it("leaves an empty-table fallback when initial persistence loses to close", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const persistGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const persistEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const harness = createHarness({
+      onStoreUpdate: async () => {
+        entered();
+        await persistGate;
+      },
+    });
+    const creating = harness.service.createTab({ cwd: "C:\\work\\app" });
+    await persistEntered;
+    const closing = harness.service.closeTab("tab-1");
+    release();
+    const [created, closed] = await Promise.all([creating, closing]);
+
+    expect(created).toMatchObject({ cancelled: { reason: "tab-closed", tabId: "tab-1" } });
+    expect(closed).toMatchObject({ tabs: [], activeTabId: null });
+    expect(harness.specs).toEqual([]);
+    expect(harness.stored).toEqual({ tabs: [], activeTabId: null });
+  });
+
+  it("does not report activation success when close wins during its final persistence", async () => {
+    let updates = 0;
+    let release!: () => void;
+    let entered!: () => void;
+    const persistGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const persistEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const harness = createHarness({
+      onStoreUpdate: async () => {
+        updates += 1;
+        if (updates === 3) {
+          entered();
+          await persistGate;
+        }
+      },
+    });
+    await harness.service.createTab({ cwd: "C:\\work\\app" });
+    const activating = harness.service.activateTab("tab-1");
+    await persistEntered;
+    const closing = harness.service.closeTab("tab-1");
+    release();
+    const [activated, closed] = await Promise.all([activating, closing]);
+
+    expect(activated).toMatchObject({ cancelled: { reason: "tab-closed", tabId: "tab-1" } });
+    expect(closed.tabs).toEqual([]);
+    expect(closed.activeTabId).toBeNull();
+    expect(harness.stored.tabs).toEqual([]);
+    expect(harness.stored.activeTabId).toBeNull();
+  });
+
+  it("returns cancellation data when close drains a pending session.create joined by ensure", async () => {
+    let entered!: () => void;
+    const openEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const { service, stopped, hosts } = createHarness({
+      holdOpen: (spec) => spec.sessionId === "tab-1",
+      onOpen: () => entered(),
+    });
+
+    const creating = service.createTab({ cwd: "C:\\work\\app" });
+    await openEntered;
+    const ensuring = service.ensureTab("tab-1");
+    const activating = service.activateTab("tab-1");
+    const reading = service.request("tab-1", "messages.get");
+    const closing = service.closeTab("tab-1");
+    const [created, ensured, activated, read, closed] = await Promise.all([
+      creating,
+      ensuring,
+      activating,
+      reading,
+      closing,
+    ]);
+
+    expect(created).toMatchObject({ cancelled: { reason: "tab-closed", tabId: "tab-1" } });
+    expect(ensured).toMatchObject({ cancelled: { reason: "tab-closed", tabId: "tab-1" } });
+    expect(activated).toMatchObject({ cancelled: { reason: "tab-closed", tabId: "tab-1" } });
+    expect(read).toEqual({ cancelled: { reason: "tab-closed", tabId: "tab-1" } });
+    expect(closed).toMatchObject({ tabs: [], activeTabId: null });
+    expect(stopped).toContain("tab-1");
+    expect(hosts.has("tab-1")).toBe(false);
+  });
+
+  it("preserves persistence failures both with and without a concurrent close", async () => {
+    const failure = new Error("store write failed");
+    const noClose = createHarness({ onStoreUpdate: () => Promise.reject(failure) });
+    await expect(noClose.service.createTab({ cwd: "C:\\work\\app" })).rejects.toBe(failure);
+
+    let release!: () => void;
+    let entered!: () => void;
+    const persistGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const persistEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let firstWrite = true;
+    const concurrent = createHarness({
+      onStoreUpdate: async () => {
+        if (!firstWrite) return;
+        firstWrite = false;
+        entered();
+        await persistGate;
+        throw failure;
+      },
+    });
+    const creating = concurrent.service.createTab({ cwd: "C:\\work\\app" });
+    await persistEntered;
+    const closing = concurrent.service.closeTab("tab-1");
+    release();
+    const [created, closed] = await Promise.allSettled([creating, closing]);
+
+    expect(created).toMatchObject({ status: "rejected", reason: failure });
+    expect(closed.status).toBe("fulfilled");
+    expect(concurrent.service.tabs()).toEqual([]);
+  });
+
+  it("keeps genuinely unknown activation IDs as errors", async () => {
+    const { service } = createHarness();
+    await expect(service.activateTab("tab-missing")).rejects.toMatchObject({ code: "unknown_tab" });
+  });
+
+  it("does not overwrite an explicit selection made while close cleanup is pending", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const stopGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const stopEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const harness = createHarness({
+      onStop: async (id) => {
+        if (id !== "tab-2") return;
+        entered();
+        await stopGate;
+      },
+    });
+    await harness.service.createTab({ cwd: "C:\\work\\one" });
+    await harness.service.createTab({ cwd: "C:\\work\\two" });
+    await harness.service.createTab({ cwd: "C:\\work\\three" });
+    await harness.service.activateTab("tab-2");
+
+    const closing = harness.service.closeTab("tab-2");
+    await stopEntered;
+    await harness.service.activateTab("tab-1");
+    release();
+    const closed = await closing;
+
+    expect(closed.tabs.map((tab) => tab.id)).toEqual(["tab-1", "tab-3"]);
+    expect(closed.activeTabId).toBe("tab-1");
+  });
+
+  it("coalesces concurrent closes until stop and persistence settle", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const stopGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const stopEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const { service, stored } = createHarness({
+      onStop: async () => {
+        entered();
+        await stopGate;
+      },
+    });
+    await service.createTab({ cwd: "C:\\work\\app" });
+
+    const first = service.closeTab("tab-1");
+    await stopEntered;
+    const second = service.closeTab("tab-1");
+    release();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult).toEqual(secondResult);
+    expect(firstResult).toMatchObject({ tabs: [], activeTabId: null });
+    expect(stored.tabs).toEqual([]);
+    expect(stored.activeTabId).toBeNull();
+    expect(service.wasRecentlyClosed("tab-1")).toBe(true);
+  });
+
   it("stops a host that finished starting after its tab was closed (plan step 27)", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -1381,7 +1845,12 @@ describe("reliability and recovery (plan step 22)", () => {
     await service.closeTab("tab-1");
     release();
 
-    await expect(creating).rejects.toThrow(/closed while its host was starting/);
+    await expect(creating).resolves.toMatchObject({
+      tabs: [],
+      activeTabId: null,
+      cancelled: { reason: "tab-closed", tabId: "tab-1" },
+    });
+    expect(service.wasRecentlyClosed("tab-1")).toBe(true);
     expect(stopped).toContain("tab-1");
     expect(hosts.has("tab-1")).toBe(false);
     expect(service.diagnosticsHosts()).toEqual([]);

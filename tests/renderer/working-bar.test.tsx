@@ -71,6 +71,36 @@ function input(availability: InputAvailability, reason?: string): Contribution {
   };
 }
 
+/**
+ * A generic child TODO panel group: the exact four display verbs and stable
+ * ids a publisher may ship, with an arbitrary owner and command. The bar only
+ * renders props and forwards owner/id, so no Workflow name appears here.
+ */
+function childTodosActions(): ActionContribution[] {
+  return [
+    action("todos-auto", "Auto todos", {
+      order: 11,
+      group: group("todos", "Child todos", "menu", 40),
+      command: { name: "panel", args: "auto" },
+    }),
+    action("todos-expand", "Show todos", {
+      order: 12,
+      group: group("todos", "Child todos", "menu", 40),
+      command: { name: "panel", args: "expand" },
+    }),
+    action("todos-collapse", "Collapse todos", {
+      order: 13,
+      group: group("todos", "Child todos", "menu", 40),
+      command: { name: "panel", args: "collapse" },
+    }),
+    action("todos-hide", "Hide todos", {
+      order: 14,
+      group: group("todos", "Child todos", "menu", 40),
+      command: { name: "panel", args: "hide" },
+    }),
+  ];
+}
+
 function progress(id: string, label: string, done: number, total: number): Contribution {
   return {
     id,
@@ -320,6 +350,29 @@ describe("WorkingBar idle and actions", () => {
     expect(screen.getByTestId("working-bar-menu")).toBeInTheDocument();
   });
 
+  it("shows the Child todos idle label for a zero-row child with no progress row", () => {
+    renderBar({ model: modelOf(childTodosActions()) });
+
+    // Availability is independent of progress: four display verbs, no rows.
+    expect(screen.getByTestId("working-bar-group-label")).toHaveTextContent("Child todos");
+    expect(screen.queryByTestId("working-bar-action")).toBeNull();
+    expect(screen.getByTestId("working-bar-menu")).toBeInTheDocument();
+    // No invented 0/0 progress row just to keep the controls reachable.
+    expect(screen.queryByText(/0\s*\/\s*0/)).toBeNull();
+    expect(screen.queryByText(/^Steps$/)).toBeNull();
+  });
+
+  it("keeps the Child todos label and menu for a hidden zero-row child", () => {
+    renderBar({
+      working: workingState({ visible: false }),
+      model: modelOf(childTodosActions()),
+    });
+
+    expect(screen.getByTestId("working-bar-group-label")).toHaveTextContent("Child todos");
+    expect(screen.getByTestId("working-bar-menu")).toBeInTheDocument();
+    expect(screen.queryByText(/0\s*\/\s*0/)).toBeNull();
+  });
+
   it("keeps inline actions in model presentation order", () => {
     renderBar({
       model: modelOf([
@@ -450,6 +503,38 @@ describe("WorkingBar menu", () => {
     // The first item has focus; Enter runs it through the same forwarding path.
     await userEvent.keyboard("{Enter}");
     expect(onRun).toHaveBeenCalledWith("alpha.ext", "pause");
+  });
+
+  it("lists all four Child todos verbs in one stable group and forwards the owner/id", async () => {
+    const onRun = vi.fn();
+    renderBar({ model: modelOf(childTodosActions()), onRunAction: onRun });
+
+    const trigger = screen.getByTestId("working-bar-menu");
+    act(() => trigger.focus());
+    await userEvent.keyboard("{Enter}");
+
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByText("Child todos")).toBeInTheDocument();
+    // One menu group: the child panel's display verbs never split into a second
+    // section, so the group label/order/placement stay stable.
+    expect(within(menu).getAllByRole("group")).toHaveLength(1);
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent),
+    ).toEqual(["Auto todos", "Show todos", "Collapse todos", "Hide todos"]);
+
+    for (const id of ["todos-auto", "todos-expand", "todos-collapse", "todos-hide"]) {
+      const item = within(menu).getByTestId(`working-bar-menu-item-alpha.ext:${id}`);
+      expect(item).toHaveAttribute("data-owner", "alpha.ext");
+      expect(item).toHaveAttribute("data-id", id);
+      expect(item).not.toHaveAttribute("aria-disabled", "true");
+    }
+
+    // The first item has focus; Enter forwards the exact owner/id pair. The
+    // existing inline pending/double-click guard test still covers re-entry.
+    await userEvent.keyboard("{Enter}");
+    expect(onRun).toHaveBeenCalledWith("alpha.ext", "todos-auto");
   });
 
   it("folds legacy ungrouped actions into the menu and activates them from the keyboard", async () => {

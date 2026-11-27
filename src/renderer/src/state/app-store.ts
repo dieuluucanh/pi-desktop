@@ -101,6 +101,7 @@ import {
   type SessionTabsEnvelope,
   type TabKind,
   type TabRecord,
+  isTabClosedCancellation,
 } from "../../../shared/session-ipc";
 import {
   EMPTY_TUI_SURFACE,
@@ -722,7 +723,37 @@ const sessionEnsuring = new Map<string, Promise<boolean>>();
  * guard keeps tests and a future re-import honest).
  */
 const closedTabIds = new Set<string>();
+const closingTabIds = new Set<string>();
+const closingTabPromises = new Map<string, Promise<void>>();
+let tabLifetimeSeq = 0;
+const tabLifetimeTokens = new Map<string, number>();
 const MAX_CLOSED_TAB_IDS = 100;
+
+function captureTabLifetime(tabId: string): number {
+  let token = tabLifetimeTokens.get(tabId);
+  if (token === undefined) {
+    token = ++tabLifetimeSeq;
+    tabLifetimeTokens.set(tabId, token);
+  }
+  return token;
+}
+
+function invalidateTabLifetime(tabId: string): void {
+  tabLifetimeTokens.set(tabId, ++tabLifetimeSeq);
+}
+
+function tabLifetimeIsCurrent(tabId: string, token: number): boolean {
+  return tabLifetimeTokens.get(tabId) === token && tabLifetimeIsLive(tabId);
+}
+
+function tabLifetimeIsLive(tabId: string): boolean {
+  if (closingTabIds.has(tabId)) return false;
+  const present = useAppStore.getState().tabs.some((tab) => tab.id === tabId);
+  // A real table re-publication is authoritative even in tests/re-import paths
+  // that update the store directly rather than passing through applyTabs.
+  if (present) closedTabIds.delete(tabId);
+  return present && !closedTabIds.has(tabId);
+}
 /**
  * In-flight transcript hydrations. A restored tab mounts and then receives its
  * first state frame; without this guard both effects call `messages.get` and
@@ -731,6 +762,7 @@ const MAX_CLOSED_TAB_IDS = 100;
  * two reads any more).
  */
 const transcriptHydrating = new Map<string, Promise<void>>();
+const sessionEnsureIdentities = new Map<string, object>();
 /**
  * Tabs whose hydration failure was already reported. The view retries on every
  * status change; without this a broken read would toast on each retry.
@@ -2634,6 +2666,8 @@ function clearTabSessionUi(state: AppStateShape, tabId: string): Partial<AppStat
  */
 let contributionReadSeq = 0;
 const contributionReadTokens = new Map<string, number>();
+let tuiReadSeq = 0;
+const tuiReadTokens = new Map<string, number>();
 
 function beginContributionRead(tabId: string): number {
   contributionReadSeq += 1;
@@ -4675,6 +4709,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     for (const tab of state.tabs) {
       if (ids.has(tab.id)) continue;
       closedTabIds.add(tab.id);
+      tabLifetimeTokens.delete(tab.id);
       closedIds.push(tab.id);
       // A response for a closed tab must never land in its (soon pruned) slot.
       invalidateContributionReads(tab.id);
@@ -4683,6 +4718,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       sessionEnsuredAt.delete(tab.id);
       sessionEnsuring.delete(tab.id);
       transcriptHydrating.delete(tab.id);
+      tuiReadTokens.delete(tab.id);
       transcriptHydrateNoted.delete(tab.id);
     }
     for (const id of ids) closedTabIds.delete(id);
@@ -4802,6 +4838,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       for (const entry of envelope.events) get().applyControlEvent(entry);
       return;
     }
+    if (closingTabIds.has(envelope.tabId)) return;
+    if (closedTabIds.has(envelope.tabId) && !get().tabs.some((tab) => tab.id === envelope.tabId))
+      return;
     // A batch from an older attachment (the runner a replacement invalidated)
     // must not append to the new session, even when the session id is unchanged
     // after a reload. Use the highest identity in the batch so a replacement
@@ -4818,6 +4857,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (identityChanged) {
       set({ sessionEpochs: { ...get().sessionEpochs, [envelope.tabId]: batchEpoch } });
     }
+    // Never let startup state/events mutate caches once close intent is synchronous,
+    // even while the close IPC is still settling.
+    if (closingTabIds.has(envelope.tabId)) return;
     // A late batch for a just-closed tab must not recreate its caches. If the id
     // is open again (a test or a future re-import uses setState directly), the
     // current table wins over the closed-tab marker.
@@ -4978,6 +5020,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   applySessionState: (envelope) => {
+    if (closingTabIds.has(envelope.tabId)) return;
+    if (closedTabIds.has(envelope.tabId) && !get().tabs.some((tab) => tab.id === envelope.tabId))
+      return;
     if (
       typeof envelope.sessionEpoch === "number" &&
       envelope.sessionEpoch < (get().sessionEpochs[envelope.tabId] ?? 0)
@@ -5022,7 +5067,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   hydrateTranscript: async (tabId) => {
     const api = bridge();
-    if (!api?.sessions) return;
+    if (!api?.sessions || !tabLifetimeIsLive(tabId)) return;
+    const lifetime = captureTabLifetime(tabId);
     const current = get().transcripts[tabId];
     if (current?.hydrated) return;
     const inFlight = transcriptHydrating.get(tabId);
@@ -5033,7 +5079,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
           messages?: unknown[];
         };
         // The tab may have been closed while the read was in flight.
-        if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
+        if (!tabLifetimeIsCurrent(tabId, lifetime)) return;
+        if (isTabClosedCancellation(result)) return;
         transcriptHydrateNoted.delete(tabId);
         const base = get().transcripts[tabId] ?? createTranscriptState();
         const hydrated = hydrateMessages(base, result.messages ?? [], get().prefs.promptOrigins);
@@ -5048,7 +5095,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         // host may still be starting, and the view retries hydration when the tab
         // status changes (plan step 25). It must also not look like an empty
         // session: report the first failure for this tab, then stay quiet.
-        if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
+        if (!tabLifetimeIsCurrent(tabId, lifetime)) return;
         // A sleeping tab is normal after a recycle. Do not report it and do not
         // latch an error: the explicit activation/ensure passes this again.
         if (!isSessionAsleepError(error) && !transcriptHydrateNoted.has(tabId)) {
@@ -5065,7 +5112,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       await run;
     } finally {
-      transcriptHydrating.delete(tabId);
+      if (transcriptHydrating.get(tabId) === run) transcriptHydrating.delete(tabId);
     }
   },
 
@@ -5126,20 +5173,22 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   loadExtensionUi: async (tabId) => {
     const api = bridge();
-    if (!api?.sessions || tabId === CONTROL_TAB_ID) return;
+    if (!api?.sessions || tabId === CONTROL_TAB_ID || !tabLifetimeIsLive(tabId)) return;
     // One token covers both reads: a push (or a newer load) that arrives while
     // either await is pending wins, including over the catch path below.
+    const lifetime = captureTabLifetime(tabId);
     const token = beginContributionRead(tabId);
     const sessionEpoch = get().sessionEpochs[tabId] ?? 0;
     const stillCurrent = (): boolean =>
       contributionReadIsCurrent(tabId, token) &&
+      tabLifetimeIsCurrent(tabId, lifetime) &&
       (get().sessionEpochs[tabId] ?? 0) === sessionEpoch &&
       // A tab closed while either read was pending must not have its extension
       // UI resurrected by a late response (plan step 29).
       get().tabs.some((tab) => tab.id === tabId);
     try {
       const result = await api.sessions.request({ tabId, method: "oi.state" });
-      if (!stillCurrent()) return;
+      if (isTabClosedCancellation(result) || !stillCurrent()) return;
       const snapshot = sanitizeExtensionUiSnapshot(result);
       set({ extensionUi: { ...get().extensionUi, [tabId]: snapshot } });
       if (snapshot.title && get().activeTabId === tabId) void api.setTitle(snapshot.title);
@@ -5166,7 +5215,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // valid snapshot rather than wiping a mode that was just published.
     try {
       const result = await api.sessions.request({ tabId, method: "contributions.state" });
-      if (!stillCurrent()) return;
+      if (isTabClosedCancellation(result) || !stillCurrent()) return;
       publishContributions(tabId, sanitizeContributionSnapshot(result));
     } catch {
       if (!stillCurrent()) return;
@@ -5180,7 +5229,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   refreshContributions: async (tabId) => {
     const api = bridge();
-    if (!api?.sessions || tabId === CONTROL_TAB_ID) return;
+    if (!api?.sessions || tabId === CONTROL_TAB_ID || !tabLifetimeIsLive(tabId)) return;
     // A convergence refresh is passive (plan step 29): it must not wake a
     // stopped/recycled host, and it must not touch a tab that is already gone.
     // The last valid snapshot is kept instead of being replaced by an error.
@@ -5189,8 +5238,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     const sessionEpoch = get().sessionEpochs[tabId] ?? 0;
     try {
       const result = await api.sessions.request({ tabId, method: "contributions.state" });
-      if (!contributionReadIsCurrent(tabId, token)) return;
-      if ((get().sessionEpochs[tabId] ?? 0) !== sessionEpoch) return;
+      if (isTabClosedCancellation(result) || !contributionReadIsCurrent(tabId, token)) return;
+      if (!tabLifetimeIsLive(tabId) || (get().sessionEpochs[tabId] ?? 0) !== sessionEpoch) return;
       // A closed/recycled tab must not have its snapshot resurrected by a slow
       // read that resolved after the token bump raced the tab removal.
       if (!get().tabs.some((tab) => tab.id === tabId)) return;
@@ -5202,11 +5251,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   handleExtensionUiEvent: (tabId, entry) => {
+    if (tabId !== CONTROL_TAB_ID && !tabLifetimeIsLive(tabId)) return;
     if (entry.event === TUI_STATE_EVENT) {
       // A push for a tab that is already gone is a late frame from the closed
       // host; storing it would resurrect a stale surface (row 28).
       const tab = get().tabs.find((candidate) => candidate.id === tabId);
-      if (!tab) return;
+      if (!tab || closingTabIds.has(tabId) || closedTabIds.has(tabId)) return;
       const previous = get().tuiSurfaces[tabId];
       const next = sanitizeTuiSurfaceSnapshot(entry.payload);
       // The whole surface is pushed after every change, so no reconciliation.
@@ -5488,15 +5538,27 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   loadTuiSurface: async (tabId) => {
     const api = bridge();
-    if (!api?.sessions || tabId === CONTROL_TAB_ID) return;
+    if (!api?.sessions || tabId === CONTROL_TAB_ID || !tabLifetimeIsLive(tabId)) return;
+    const lifetime = captureTabLifetime(tabId);
+    const epoch = get().sessionEpochs[tabId] ?? 0;
+    const token = ++tuiReadSeq;
+    tuiReadTokens.set(tabId, token);
+    const stillCurrent = (): boolean =>
+      tabLifetimeIsCurrent(tabId, lifetime) &&
+      tuiReadTokens.get(tabId) === token &&
+      (get().sessionEpochs[tabId] ?? 0) === epoch;
     try {
       const result = await api.sessions.request({ tabId, method: "tui.state" });
+      if (isTabClosedCancellation(result) || !stillCurrent()) return;
       set({
         tuiSurfaces: { ...get().tuiSurfaces, [tabId]: sanitizeTuiSurfaceSnapshot(result) },
       });
     } catch {
-      // A host without a TUI surface still streams; keep the empty surface.
+      // A ready live host without a TUI surface keeps the historical empty fallback.
+      if (!stillCurrent()) return;
       set({ tuiSurfaces: { ...get().tuiSurfaces, [tabId]: { ...EMPTY_TUI_SURFACE } } });
+    } finally {
+      if (tuiReadTokens.get(tabId) === token) tuiReadTokens.delete(tabId);
     }
   },
 
@@ -7507,7 +7569,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     try {
       const raw = await api.sessions.request({ tabId: target, method: "shortcuts.list" });
       // A newer load (or a closed/rebound tab) wins: never write an old list.
-      if (!shortcutReadIsCurrent(target, token)) return;
+      if (
+        isTabClosedCancellation(raw) ||
+        !shortcutReadIsCurrent(target, token) ||
+        !tabLifetimeIsLive(target)
+      )
+        return;
       set(
         writeShortcutState(get(), target, {
           shortcuts: sanitizeShortcutsSnapshot(raw),
@@ -7517,7 +7584,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         }),
       );
     } catch (error) {
-      if (!shortcutReadIsCurrent(target, token)) return;
+      if (!shortcutReadIsCurrent(target, token) || !tabLifetimeIsLive(target)) return;
       if (isSessionAsleepError(error)) {
         // This was a passive status-change retry against a recycled host. Leave
         // the list unlatched so activation/ensure retries it once the host is
@@ -8916,9 +8983,22 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // a second tab never re-prompts.
     if (get().sessionTrust.includes(project.path)) input.trust = "session";
     try {
-      get().applyTabs(await api.sessions.create(input), { adoptSelection: true });
+      const result = await api.sessions.create(input);
+      if (isTabClosedCancellation(result)) {
+        get().applyTabs(result, { adoptSelection: false });
+        return;
+      }
+      // A concurrent close can win while creation is resolving. The table may
+      // still be useful, but this old create gesture cannot reclaim selection.
+      const staleActive =
+        result.activeTabId !== null &&
+        closedTabIds.has(result.activeTabId) &&
+        !get().tabs.some((tab) => tab.id === result.activeTabId);
+      get().applyTabs(result, { adoptSelection: !staleActive });
+      if (staleActive) return;
       set({ view: "session", hint: null });
     } catch (error) {
+      if (isTabClosedCancellation(error)) return;
       const message = userFacingError(error);
       setHint(message);
       // The host emits `project_trust` before it refuses, so the prompt is usually
@@ -9050,7 +9130,8 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   activateTab: async (tabId) => {
     const api = bridge();
-    if (!api?.sessions) return;
+    if (!api?.sessions || !tabLifetimeIsLive(tabId)) return;
+    const lifetime = captureTabLifetime(tabId);
     // This is the gesture: it owns the selection, and every later push with an
     // older sequence is ignored (see `applyTabs`).
     localSelectionSeq += 1;
@@ -9088,9 +9169,12 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // cannot snap the view back to the previous tab (2026-11-06 tab-switch plan).
     if (!isHostBackedTab(tab.kind)) {
       try {
-        get().applyTabs(await api.sessions.activate(tabId), { adoptSelection: true });
+        const result = await api.sessions.activate(tabId);
+        if (isTabClosedCancellation(result) || !tabLifetimeIsCurrent(tabId, lifetime)) return;
+        get().applyTabs(result, { adoptSelection: true });
       } catch (error) {
-        get().noteFailure(error);
+        if (!isTabClosedCancellation(error) && tabLifetimeIsCurrent(tabId, lifetime))
+          get().noteFailure(error);
       }
       return;
     }
@@ -9101,13 +9185,18 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     // again after a renderer reload/reattach (plan step 23).
     void get().reconcileComposerOperation(tabId);
     try {
-      get().applyTabs(await api.sessions.activate(tabId), { adoptSelection: true });
+      const result = await api.sessions.activate(tabId);
+      if (isTabClosedCancellation(result) || !tabLifetimeIsCurrent(tabId, lifetime)) return;
+      get().applyTabs(result, { adoptSelection: true });
     } catch {
-      // `ensureSession` below is the retry path and reports the failure once.
+      // `ensureSession` below is the retry path and reports a genuine live failure.
+      if (!tabLifetimeIsCurrent(tabId, lifetime)) return;
     }
+    if (!tabLifetimeIsCurrent(tabId, lifetime)) return;
     // Switching tabs always re-checks; the ensure refreshes extension UI, the
     // TUI surface, shortcuts and the command cache after the host is awake.
-    await get().ensureSession(tabId, { force: true });
+    const ensured = await get().ensureSession(tabId, { force: true });
+    if (!ensured || !tabLifetimeIsCurrent(tabId, lifetime)) return;
     // The read above is a head start, not the guarantee: after a renderer reload
     // the tab has no session identity yet, so `composerBindingFor` answered null
     // and the reconciliation was a no-op. `ensureSession` is what delivers the
@@ -9123,8 +9212,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
 
   ensureSession: async (tabId, options = {}) => {
     const api = bridge();
+    if (!tabLifetimeIsLive(tabId)) return false;
     const tab = get().tabs.find((entry) => entry.id === tabId);
     if (!api?.sessions || !tab || !isHostBackedTab(tab.kind)) return false;
+    const lifetime = captureTabLifetime(tabId);
     // A crashed/failed tab needs the explicit Restart action (or the banner),
     // not an accidental spawn from a keystroke.
     if (tab.status === "crashed" || tab.status === "failed") return false;
@@ -9134,14 +9225,31 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       const last = sessionEnsuredAt.get(tabId) ?? 0;
       if (Date.now() - last < SESSION_ENSURE_THROTTLE_MS) return true;
     }
+    const operation = {};
+    sessionEnsureIdentities.set(tabId, operation);
     const run = (async () => {
       try {
-        get().applyTabs(await api.sessions.ensure(tabId), { adoptSelection: false });
+        const result = await api.sessions.ensure(tabId);
+        if (isTabClosedCancellation(result)) {
+          get().applyTabs(result, { adoptSelection: false });
+          return false;
+        }
+        if (
+          !tabLifetimeIsCurrent(tabId, lifetime) ||
+          sessionEnsureIdentities.get(tabId) !== operation
+        )
+          return false;
+        get().applyTabs(result, { adoptSelection: false });
         await Promise.all([
-          get().loadShortcuts({ refresh: true }),
+          get().loadShortcuts({ refresh: true, tabId }),
           get().loadExtensionUi(tabId),
           get().loadTuiSurface(tabId),
         ]);
+        if (
+          !tabLifetimeIsCurrent(tabId, lifetime) ||
+          sessionEnsureIdentities.get(tabId) !== operation
+        )
+          return false;
         get().invalidateCommands(tabId);
         // An ensure may spawn a host from the current bundle, so any stale-host
         // banner for the previous process is obsolete.
@@ -9150,10 +9258,14 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
         const current = get().tabs.find((entry) => entry.id === tabId);
         return current?.status !== "failed";
       } catch (error) {
-        get().noteFailure(error);
+        if (!isTabClosedCancellation(error) && tabLifetimeIsCurrent(tabId, lifetime))
+          get().noteFailure(error);
         return false;
       } finally {
-        sessionEnsuring.delete(tabId);
+        if (sessionEnsureIdentities.get(tabId) === operation) {
+          sessionEnsureIdentities.delete(tabId);
+          sessionEnsuring.delete(tabId);
+        }
       }
     })();
     sessionEnsuring.set(tabId, run);
@@ -9180,21 +9292,50 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   closeTab: async (tabId) => {
+    const existing = closingTabPromises.get(tabId);
+    if (existing) return existing;
     const api = bridge();
     if (!api?.sessions) return;
-    try {
-      get().applyTabs(await api.sessions.close(tabId), { adoptSelection: true });
-    } catch (error) {
-      get().noteFailure(error);
-    }
     if (!get().tabs.some((tab) => tab.id === tabId)) {
-      purgeClosedTabDialogs(new Set(get().tabs.map((tab) => tab.id)));
+      // A table push can retire the record before the close gesture's local
+      // cleanup runs. Retire remaining owner-scoped composer state idempotently;
+      // persisted draft text intentionally remains in prefs.
       dropClosedTabComposerState(tabId);
-      // A closed pane's surface, footer/header factories, statuses and attention
-      // badge die with it; a reused tab id must not inherit them (row 28).
-      set(resetTabExtensionUi(tabId));
-      dropTabShortcuts(tabId);
+      return;
     }
+    // Close intent is synchronous: no continuation or push may start more work
+    // for this tab while IPC is waiting on host cleanup.
+    closingTabIds.add(tabId);
+    invalidateTabLifetime(tabId);
+    invalidateContributionReads(tabId);
+    beginShortcutRead(tabId);
+    transcriptHydrating.delete(tabId);
+    sessionEnsuring.delete(tabId);
+    sessionEnsureIdentities.delete(tabId);
+    sessionEnsuredAt.delete(tabId);
+    const run = (async () => {
+      try {
+        get().applyTabs(await api.sessions.close(tabId), { adoptSelection: true });
+      } catch (error) {
+        if (get().tabs.some((tab) => tab.id === tabId)) {
+          closingTabIds.delete(tabId);
+          get().noteFailure(error);
+        }
+      } finally {
+        if (!get().tabs.some((tab) => tab.id === tabId)) {
+          purgeClosedTabDialogs(new Set(get().tabs.map((tab) => tab.id)));
+          dropClosedTabComposerState(tabId);
+          // A closed pane's surface, footer/header factories, statuses and attention
+          // badge die with it; a reused tab id must not inherit them (row 28).
+          set(resetTabExtensionUi(tabId));
+          dropTabShortcuts(tabId);
+        }
+        closingTabIds.delete(tabId);
+        closingTabPromises.delete(tabId);
+      }
+    })();
+    closingTabPromises.set(tabId, run);
+    return run;
   },
 
   closeActiveTab: async () => {

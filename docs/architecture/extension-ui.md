@@ -472,30 +472,63 @@ publisher's own read-only TUI widget frame, including the
 `Child 2/7 · model · ctx · local todos` header it composes itself. Desktop never
 parses, moves or re-composes that header, and the bar does not mirror a
 `Todos n/m` chip: when the bar is idle and only has menu actions it shows the
-first menu group's label (e.g. `Todos`) so the three-dot trigger is not an
-orphan. Progress lives in the panel header and the footer rail.
+first menu group's label (e.g. `Todos` or `Child todos`) so the three-dot
+trigger is not an orphan. Progress lives in the panel header and the footer
+rail.
+
+**The TODO display controls target the active panel.** With the pinned 0.17.4
+publisher the four verbs (`Auto todos`, `Show todos`, `Collapse todos`,
+`Hide todos`), bare `/todos` and the terminal `Ctrl+Alt+O` shortcut act on
+whichever panel `/orchestrator view` resolves as active: the child while the
+child panel is active, otherwise the parent. The working bar's menu group is
+`Child todos` in child view and `Todos` in parent view; the group id (`todos`)
+and every action id/command stay stable, so nothing in the Desktop contract
+changes. Preferences are per target: the parent keeps its plan-scoped choice on
+`TodoStore`, while the child has an independent session-scoped display choice
+keyed to `child-run:<runId>` (or `child-session` without a run). A new run
+starts at Auto; reloading the same run restores the choice; switching views or
+clearing the parent never resets it. `/todos clear` stays **parent-only** — in
+child view it refuses with `/orchestrator view parent` guidance and leaves both
+lists untouched. A zero-row child is not settled: the four verbs (and the child
+header) remain available so a preference can be stored, but that never invents
+a child header, a TODO row or a `0/0` progress row. A real header renders alone
+in Auto/expanded, header plus `No todos yet · /todos expand` when collapsed, and
+no widget when hidden; with neither header nor rows — for example an explicit
+child view restored after reload — no widget is registered at all. Menu
+availability, derived display state and widget content are separate concerns.
+The Desktop still never parses or re-composes the panel: the seam remains the
+generic contribution contract.
 
 **Compatibility matrix.** The Desktop's staged/pinned publisher bundle is
-`resources/workflow.lock.json` (`@dieulc/workflow` **0.15.0**, verified file by
-file against the lock by `npm run workflow:stage`), the same version that ships
-the group/mode-choice metadata. The live `/profile use` model-switch work lives
-in the W checkout at **0.17.2**, which is unreleased and unpublished and is
-neither staged nor pinned. Contribution v1 stays additive:
-`HOST_CONTRIBUTION_VERSION` does not move, and the kinds list in the host
-capabilities gains `mode-choice`.
+`resources/workflow.lock.json`: `@dieulc/workflow` **0.17.4**, pinned as a
+**local tarball** (`source.kind: "tarball"`,
+`source.path: resources/workflow/dieulc-workflow-0.17.4.tgz`, 99 source files,
+`source.integrity: sha512-IwbMvsiVi8YBHno5XUNS9CcucDsgvk4USPKUFN4/zuNk7UQpvB61wPjT0tREvZe0VKKhQbhdadKVYiF77rvYiA==`;
+no release `url` or `tag`). `npm run workflow:lock`/`workflow:stage` verified
+every byte against the lock and staged both `resources/extensions/workflow`
+and `out/extensions/workflow`; `npm run workflow:verify --offline --require-dev`
+re-read both staged copies. The artifact came from the W checkout and is
+**unreleased and unpublished**: pin/stage/verify could not read a published
+asset, and this pin is neither release nor packaged acceptance. Promoting it to
+a release URL/tag is a separately authorized follow-up. Contribution v1 stays
+additive: `HOST_CONTRIBUTION_VERSION` does not move, and the kinds list in the
+host capabilities gains `mode-choice`.
 
-| Desktop | Publisher                         | Behavior                                                                                                                                                                                                                                                                                                                  |
-| ------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| New     | 0.15.0 (staged/pinned)            | Full UX: one working bar, inline Pause/Resume/Abort, grouped three-dot TODO controls, `Auto todos`, the mode chevron, telemetry only in the footer; no live `/profile use` model switch in this pinned bundle                                                                                                             |
-| New     | 0.17.2 (W, unreleased/not staged) | The live owner-by-owner `/profile use` switch and its `workflow-model-switch` entry; inactive in the desktop until 0.17.2 is released and the lock is re-pinned                                                                                                                                                           |
-| New     | 0.14.0 (older checkout)           | No groups and no `mode-choice`: legacy flat actions (first few inline, rest in the dots), no chevron, verb-grammar commands (`/orchestrator pause`, `/review pause`)                                                                                                                                                      |
-| New     | 0.13.0 (legacy, no longer pinned) | Same fallback with hyphenated commands (`/orchestrator-pause`, `/orchestrator-resume`, `/orchestrator-abort`, `/orchestrator-view`, `/review-pause`, `/review-resume`, `/review-abort`, `/review-status`); its `orchestrator-child` status row is routed to the footer and may duplicate the `workflow-orchestrator` line |
-| Old     | 0.15.0                            | The old reader drops the unknown `mode-choice` kind, ignores `group` and renders the remaining actions in its old “first four + More…” layout; the new Review labels are visible, and the removed `orchestrator-child` row does not affect the old footer                                                                 |
-| Old     | 0.13.0 / 0.14.0                   | Existing behavior; no regression                                                                                                                                                                                                                                                                                          |
+| Desktop | Publisher                             | Behavior                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| New     | 0.17.4 (local tarball, staged/pinned) | Full UX: one working bar, inline Pause/Resume/Abort, active parent/child TODO targeting with the `Child todos`/`Todos` menu group and four display verbs, `Auto todos`, the mode chevron, the live owner-by-owner `/profile use` switch and its `workflow-model-switch` entry, telemetry only in the footer. This is a local/unpublished artifact (99 source files); no release asset was verified |
+| New     | 0.15.0 (older, no longer pinned)      | Full UX with grouped three-dot TODO controls, `Auto todos` and the mode chevron, but no child-specific display controls and no live `/profile use` model switch                                                                                                                                                                                                                                    |
+| New     | 0.14.0 (older checkout)               | No groups and no `mode-choice`: legacy flat actions (first few inline, rest in the dots), no chevron, verb-grammar commands (`/orchestrator pause`, `/review pause`)                                                                                                                                                                                                                               |
+| New     | 0.13.0 (legacy, no longer pinned)     | Same fallback with hyphenated commands (`/orchestrator-pause`, `/orchestrator-resume`, `/orchestrator-abort`, `/orchestrator-view`, `/review-pause`, `/review-resume`, `/review-abort`, `/review-status`); its `orchestrator-child` status row is routed to the footer and may duplicate the `workflow-orchestrator` line                                                                          |
+| Old     | 0.17.4                                | The old reader drops the unknown `mode-choice` kind, ignores `group` and renders the remaining actions in its old “first four + More…” layout; the four `/todos` display actions stay dispatchable but carry no `Child todos` grouping, and the removed `orchestrator-child` row does not affect the old footer                                                                                    |
+| Old     | 0.15.0 / 0.14.0 / 0.13.0              | Existing behavior; no regression                                                                                                                                                                                                                                                                                                                                                                   |
 
-> **Live-switch pin status:** W 0.17.2 is unreleased/unpublished, so the staged
-> and pinned publisher remains 0.15.0. The desktop live-switch behaviour waits
-> for the 0.17.2 release and re-pin; step 11 did not re-pin the lock.
+> **Pin status:** the staged and pinned publisher is 0.17.4 from a **local
+> tarball** (99 files), not a published release asset. The live model switch
+> and the child display controls are compiled into this staged bundle, but no
+> GitHub release, npm publication, packaged build or live provider walkthrough
+> stands behind it. Manual Terminal/Desktop child acceptance remains **NOT
+> RUN**, and no native Todo panel bar or new Desktop chord was added.
 
 ### Pi-parity rules for custom transcript items (2026-10-19 UI rework)
 

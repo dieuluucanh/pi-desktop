@@ -13,9 +13,11 @@ import type {
 } from "../shared/projects";
 import {
   isControlTabId,
+  isPassiveSessionMethod,
   isTabKind,
   type CreateTabInput,
   type RetargetEditorTabsInput,
+  type SessionCancellation,
   type SessionTabsEnvelope,
   type TabKind,
 } from "../shared/session-ipc";
@@ -119,6 +121,8 @@ import {
 export interface IpcSessionDeps {
   /** Tab ids that currently exist; used to reject stale renderer state. */
   knownTabIds(): readonly string[];
+  /** True only for a real tab id explicitly retired by the session service. */
+  wasRecentlyClosed(tabId: string): boolean;
   list(): SessionTabsEnvelope;
   create(input: CreateTabInput): Promise<SessionTabsEnvelope>;
   close(tabId: string): Promise<SessionTabsEnvelope>;
@@ -497,11 +501,7 @@ function parseRetargetEditorTabs(value: unknown): RetargetEditorTabsInput {
   return { fromProjectPath, fromPath, toProjectPath, toPath, kind: record.kind };
 }
 
-/**
- * Rejects a tab id that is missing, malformed, or no longer open. The control
- * host is a valid address for `session.request` only (plan D-A3) — it is never
- * a tab, so activation/close still require a live tab.
- */
+/** Rejects a missing, malformed, or no-longer-live tab id. */
 function requireTabId(deps: IpcDependencies, value: unknown): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new Error("session: a tab id is required");
@@ -591,16 +591,28 @@ export function parseWebOpen(value: unknown): WebTabOpenInput {
   return input;
 }
 
-/** Validates a `session.request` envelope: a live tab and a real host method. */
+/** Validates a `session.request` envelope and its method before stale-id classification. */
 function parseSessionRequest(
   deps: IpcDependencies,
   value: unknown,
-): { tabId: string; method: HostMethod; params?: unknown } {
+): { tabId: string; method: HostMethod; params?: unknown } | SessionCancellation {
   const record = asRecord(value);
-  const tabId = requireTabId(deps, record.tabId);
+  const tabId = record.tabId;
+  if (typeof tabId !== "string" || tabId.length === 0) {
+    throw new Error("session: a tab id is required");
+  }
   const method = record.method;
   if (!isHostMethod(method)) {
     throw new Error(`session: unsupported host method ${String(method)}`);
+  }
+  if (isControlTabId(tabId)) {
+    return "params" in record ? { tabId, method, params: record.params } : { tabId, method };
+  }
+  if (!deps.sessions.knownTabIds().includes(tabId)) {
+    if (isPassiveSessionMethod(method) && deps.sessions.wasRecentlyClosed(tabId)) {
+      return { cancelled: { reason: "tab-closed", tabId } };
+    }
+    throw new Error(`session: unknown tab ${tabId}`);
   }
   return "params" in record ? { tabId, method, params: record.params } : { tabId, method };
 }
@@ -752,9 +764,13 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.sessionCreate, (_event, input: unknown) =>
     deps.sessions.create(parseCreateTab(input)),
   );
-  ipcMain.handle(IPC.sessionClose, (_event, tabId: unknown) =>
-    deps.sessions.close(requireTabId(deps, tabId)),
-  );
+  ipcMain.handle(IPC.sessionClose, (_event, tabId: unknown) => {
+    if (typeof tabId !== "string" || tabId.length === 0) {
+      throw new Error("session: a tab id is required");
+    }
+    if (isControlTabId(tabId)) throw new Error("session: the control host is not a tab");
+    return deps.sessions.close(tabId);
+  });
   ipcMain.handle(IPC.sessionCloseOthers, (_event, tabId: unknown) =>
     deps.sessions.closeOthers(requireTabId(deps, tabId)),
   );
@@ -800,9 +816,11 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.sessionStop, (_event, tabId: unknown) =>
     deps.sessions.stop(requireTabId(deps, tabId)),
   );
-  ipcMain.handle(IPC.sessionRequest, (_event, input: unknown) =>
-    deps.sessions.request(parseSessionRequest(deps, input)),
-  );
+  ipcMain.handle(IPC.sessionRequest, (_event, input: unknown) => {
+    const parsed = parseSessionRequest(deps, input);
+    if ("cancelled" in parsed) return parsed;
+    return deps.sessions.request(parsed);
+  });
   ipcMain.handle(IPC.sessionDelete, (_event, sessionFile: unknown) => {
     if (typeof sessionFile !== "string" || sessionFile.length === 0) {
       return { ok: false, error: "session: a session file is required" } as SessionDeleteResult;
