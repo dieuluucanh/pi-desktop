@@ -39,4 +39,11 @@ describe("development build scripts", () => {
     expect(devRunner).toContain('"dev:host"');
     expect(devRunner).toContain('"dev:electron"');
   });
+
+  it("stops each child's whole tree, not just the cmd.exe shell", () => {
+    // Windows spawns npm through `shell: true`, so child.kill() leaves the
+    // Vite/Electron descendants (and the renderer dev port) behind.
+    expect(devRunner).toContain('from "./dev-stop.mjs"');
+    expect(devRunner).toContain("stopChild(child, process.platform)");
+  });
 });

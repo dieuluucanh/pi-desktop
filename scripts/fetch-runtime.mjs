@@ -22,7 +22,7 @@
  *   - the archive checksum (sha256, pinned in the lock);
  *   - the npm payload inside the distribution, digest-pinned per platform in
  *     `node.lock.json`, which is what `installedVersion` used to stand for;
- *   - the version stamped into the binary (`node.js/v24.21.0`) cross-checked
+ *   - the version stamped into the binary (`node.js/v24.22.2`) cross-checked
  *     against `include/node/node_version.h` where the distribution ships it.
  *
  * Only the host platform's runtime is additionally executed, which is the one
@@ -43,6 +43,7 @@ import { pipeline } from "node:stream/promises";
 import { parseArgs } from "node:util";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { fetchWithRetry } from "./fetch-retry.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const lockPath = join(repoRoot, "resources", "runtime", "node.lock.json");
@@ -78,7 +79,7 @@ function nodePayloadRelative(platform) {
 /** Present in every non-Windows tarball; the Windows ZIP has no `include/`. */
 const VERSION_HEADER = "include/node/node_version.h";
 
-/** Every Node binary (`.exe`, ELF, Mach-O) embeds the literal `node.js/v24.21.0`. */
+/** Every Node binary (`.exe`, ELF, Mach-O) embeds the literal `node.js/v24.22.2`. */
 const BINARY_VERSION_MARKER = "node.js/v";
 
 function hostTarget() {
@@ -99,7 +100,7 @@ function platformOf(target) {
   return target.split("-")[0];
 }
 
-/** `"24.21.0"` and `"v24.21.0"` compare equal. */
+/** `"24.22.2"` and `"v24.22.2"` compare equal. */
 function sameVersion(left, right) {
   if (typeof left !== "string" || typeof right !== "string") return false;
   return left.trim().replace(/^v/i, "") === right.trim().replace(/^v/i, "");
@@ -113,7 +114,11 @@ async function readLock() {
   }
 }
 
-/** Regenerates the lock from the release's SHASUMS256.txt (authoritative). */
+/**
+ * Regenerates the lock from the release's SHASUMS256.txt (authoritative) and
+ * returns it, so `updateNpmPayload` writes the refreshed artifacts and not the
+ * copy it read before the rewrite.
+ */
 async function updateLock({ mirror, platform }) {
   const lock = await readLock();
   const node = lock.node ?? {};
@@ -125,22 +130,34 @@ async function updateLock({ mirror, platform }) {
   const v = version.startsWith("v") ? version : `v${version}`;
 
   log(`fetch-runtime: refreshing lock from ${base}/${v}/SHASUMS256.txt`);
-  const response = await fetch(`${base}/${v}/SHASUMS256.txt`);
+  let response;
+  try {
+    response = await fetchWithRetry(`${base}/${v}/SHASUMS256.txt`, {
+      onRetry: ({ attempt, attempts, status, error, delayMs }) => {
+        const detail =
+          status ?? (error instanceof Error ? error.message : String(error ?? "network error"));
+        log(
+          `fetch-runtime: retrying SHASUMS256.txt (${detail}) in ${Math.round(delayMs / 1000)}s [${attempt}/${attempts}]`,
+        );
+      },
+    });
+  } catch (error) {
+    fail(`cannot refresh the lock: ${error instanceof Error ? error.message : String(error)}`);
+  }
   if (!response.ok) fail(`SHASUMS256.txt returned HTTP ${response.status}`);
 
   const wanted = platform === "all" ? SUPPORTED : [platform];
   const artifacts = { ...(node.artifacts ?? {}) };
+  const matched = new Set();
   let changed = 0;
 
   for (const line of (await response.text()).split("\n")) {
     const match = line.trim().match(/^([0-9a-f]{64})\s+\*?(.+)$/);
     if (!match) continue;
     const [, sha256, archive] = match;
-    const target = SUPPORTED.find((entry) => {
-      const [os, arch] = entry.split("-");
-      return archive === `node-${v}-${os}-${arch}.${archiveFormat(os)}`;
-    });
+    const target = SUPPORTED.find((entry) => archive === archiveName(v, entry));
     if (!target || !wanted.includes(target)) continue;
+    matched.add(target);
     const previous = artifacts[target];
     if (!previous || previous.sha256 !== sha256) changed += 1;
     artifacts[target] = {
@@ -152,8 +169,12 @@ async function updateLock({ mirror, platform }) {
     };
   }
 
+  // An artifact already in the lock is not proof that this release ships it:
+  // matching the wrong naming convention (Windows archives are `win-x64`, not
+  // `win32-x64`) used to leave the previous release's checksum in place and pass
+  // the "no artifact" guard below.
   for (const target of wanted) {
-    if (!artifacts[target]) fail(`no artifact found for ${target} in ${v}/SHASUMS256.txt`);
+    if (!matched.has(target)) fail(`no artifact found for ${target} in ${v}/SHASUMS256.txt`);
   }
 
   const next = { ...lock, node: { ...node, baseUrl: node.baseUrl ?? base, artifacts } };
@@ -161,12 +182,24 @@ async function updateLock({ mirror, platform }) {
   log(
     `fetch-runtime: lock updated (${changed} checksum(s) changed, ${Object.keys(artifacts).length} tracked)`,
   );
+  return next;
 }
 
 function archiveFormat(os) {
   if (os === "win32") return "zip";
   if (os === "darwin") return "tar.gz";
   return "tar.xz";
+}
+
+/**
+ * The archive nodejs.org publishes for a `<platform>-<arch>` target. Windows is
+ * `win` in the file name (`node-v24.22.2-win-x64.zip`) while the runtime
+ * directory — and the lock's target key — says `win32`.
+ */
+function archiveName(v, target) {
+  const [os, arch] = target.split("-");
+  const distro = os === "win32" ? "win" : os;
+  return `node-${v}-${distro}-${arch}.${archiveFormat(os)}`;
 }
 
 function archiveRoot(archive) {
@@ -191,9 +224,17 @@ async function sha256TextFile(target) {
 }
 
 async function download(url, destination) {
-  const response = await fetch(url);
+  const response = await fetchWithRetry(url, {
+    onRetry: ({ attempt, attempts, status, error, delayMs }) => {
+      const detail =
+        status ?? (error instanceof Error ? error.message : String(error ?? "network error"));
+      log(
+        `fetch-runtime: retrying ${url} (${detail}) in ${Math.round(delayMs / 1000)}s [${attempt}/${attempts}]`,
+      );
+    },
+  });
   if (!response.ok || !response.body) {
-    fail(`download failed: HTTP ${response.status} for ${url}`);
+    throw new Error(`download failed: HTTP ${response.status} for ${url}`);
   }
   const total = Number(response.headers.get("content-length") ?? 0);
   let received = 0;
@@ -214,6 +255,29 @@ async function download(url, destination) {
   });
   await pipeline(body, progressStream, createWriteStream(destination));
   return received;
+}
+
+/**
+ * The HTTP helper already retries 5xx; this outer loop covers a stream that
+ * dies mid-transfer (the request succeeded, then the connection dropped).
+ */
+async function downloadWithRetry(url, destination, target) {
+  const attempts = 3;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await download(url, destination);
+      return;
+    } catch (error) {
+      if (attempt >= attempts) throw error;
+      await rm(destination, { force: true });
+      const delayMs = attempt * 5000;
+      const detail = error instanceof Error ? error.message : String(error);
+      log(
+        `fetch-runtime: ${target} download failed (${detail}); retrying in ${delayMs / 1000}s [${attempt}/${attempts}]`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
 }
 
 function extract(archive, destination) {
@@ -389,7 +453,7 @@ async function installOne(target, lock, { force, mirror }) {
   try {
     const archive = join(staging, artifact.archive);
     log(`fetch-runtime: downloading ${artifact.archive} (${target})`);
-    await download(url, archive);
+    await downloadWithRetry(url, archive, target);
 
     const digest = await sha256File(archive);
     if (digest !== artifact.sha256) {
@@ -473,13 +537,27 @@ async function updateNpmPayload(lock) {
 
   let sample = null;
   for (const target of SUPPORTED) {
-    const npmFile = join(runtimeRoot, "node", target, NPM_PAYLOAD[platformOf(target)]);
+    const nodeDir = join(runtimeRoot, "node", target);
+    const npmFile = join(nodeDir, NPM_PAYLOAD[platformOf(target)]);
     try {
-      sample = { digest: await sha256TextFile(npmFile), from: target };
-      break;
+      await stat(npmFile);
     } catch {
       // Not installed on this host; the next candidate is tried.
+      continue;
     }
+    // Only a tree of the *pinned* release may speak for the pinned npm: after a
+    // version bump the previous runtime is still on disk and would quietly
+    // record its npm digest against the new version.
+    const installed =
+      (await headerVersion(nodeDir)) ?? (await stampedVersion(nodeBinaryPath(target, nodeDir)));
+    if (!sameVersion(installed, lock.node.version)) {
+      log(
+        `fetch-runtime: ignoring ${target} (${installed ?? "unknown"}) — the lock pins ${lock.node.version}`,
+      );
+      continue;
+    }
+    sample = { digest: await sha256TextFile(npmFile), from: target };
+    break;
   }
 
   if (!sample) {
@@ -546,8 +624,11 @@ async function main() {
   if (typeof lock?.node?.version !== "string") fail("node.lock.json is missing node.version");
 
   if (values["update-lock"]) {
-    await updateLock({ mirror: values.mirror, platform: values.all ? "all" : values.platform });
-    await updateNpmPayload(lock);
+    const updated = await updateLock({
+      mirror: values.mirror,
+      platform: values.all ? "all" : values.platform,
+    });
+    await updateNpmPayload(updated);
     return;
   }
 
@@ -576,4 +657,6 @@ async function main() {
   log(`fetch-runtime: ${installed} runtime(s) installed; shims ready in resources/runtime/bin`);
 }
 
-await main();
+await main().catch((error) => {
+  fail(error instanceof Error ? error.message : String(error));
+});

@@ -6,6 +6,7 @@ import {
   type SessionCoreDeps,
   type SessionRuntimeRequest,
 } from "../../src/host/session-core";
+import { createSdkContributionBridge } from "../../src/host/sdk/contributions";
 import type { HostMethod } from "../../src/shared/host-protocol";
 import type { HostRequestContext } from "../../src/host/service";
 
@@ -160,7 +161,6 @@ function harness(deps: Partial<SessionCoreDeps> = {}) {
     createRuntime: async () => ({ runtime, session: runtime.session }),
     newSessionManager: () => ({ id: "new" }),
     openSessionManager: () => ({ id: "opened" }),
-    listSessions: async () => [{ id: "s1", name: "Budget work" }],
     trustStore: {
       get: (cwd) => trustStore.get(cwd) ?? null,
       set: (cwd, decision) => {
@@ -202,6 +202,12 @@ describe("session core lifecycle", () => {
     expect(events()).toContain("session_started");
     expect(events()).toContain("state");
     expect(emitted.find((entry) => entry.event === "session_started")?.sessionId).toBe("session-1");
+    // The renderer and the service dedupe on the reason, so the payload says it
+    // (2026-11-06 plan, step 15).
+    expect(emitted.find((entry) => entry.event === "session_started")?.payload).toMatchObject({
+      reason: "new",
+      sessionId: "session-1",
+    });
     expect(core.cwd()).toBe(CWD);
   });
 
@@ -409,9 +415,9 @@ describe("session core configuration", () => {
     });
   });
 
-  it("lists sessions for the browser", async () => {
-    const { call } = harness();
-    expect(await call("session.list")).toEqual({ sessions: [{ id: "s1", name: "Budget work" }] });
+  it("leaves the profile-wide session listing to the control host", () => {
+    const { core } = harness();
+    expect(core.handlers()["session.list"]).toBeUndefined();
   });
 });
 
@@ -528,5 +534,441 @@ describe("session core safe mode (plan step 22)", () => {
     });
     await call("session.create");
     expect(requests[0]?.projectTrusted).toBe(false);
+  });
+});
+
+describe("session open timings (2026-11-07 host-singleton plan)", () => {
+  function timingHarness() {
+    let clock = 1_000;
+    const session = fakeSession().session;
+    const runtime: RuntimeLike = {
+      get session() {
+        return session;
+      },
+      get services() {
+        return { cwd: CWD };
+      },
+    };
+    const requests: SessionRuntimeRequest[] = [];
+    const harnessed = harness({
+      // Deterministic clock: the fake phases move it, so a recorded phase and
+      // the end-to-end total describe the same timeline.
+      now: () => clock,
+      bindSession: async () => {
+        clock += 30;
+      },
+      createRuntime: async (request) => {
+        requests.push(request);
+        clock += 400;
+        request.onPhase?.("services", 400);
+        clock += 25;
+        request.onPhase?.("scope", 25);
+        clock += 35;
+        request.onPhase?.("session", 35);
+        return { runtime, session };
+      },
+    });
+    return { ...harnessed, requests };
+  }
+
+  it("records the phase breakdown of a create", async () => {
+    const { call, core } = timingHarness();
+
+    await call("session.create");
+
+    const timings = core.lastOpenTimings?.() ?? null;
+    expect(timings).not.toBeNull();
+    expect(timings?.servicesMs).toBe(400);
+    expect(timings?.scopeMs).toBe(25);
+    expect(timings?.sessionMs).toBe(35);
+    expect(timings?.bindMs).toBe(30);
+    // End-to-end also covers legs the phases do not name (model apply,
+    // snapshot); it must never be smaller than the measured legs.
+    const legs =
+      (timings?.trustMs ?? 0) +
+      (timings?.servicesMs ?? 0) +
+      (timings?.scopeMs ?? 0) +
+      (timings?.sessionMs ?? 0) +
+      (timings?.bindMs ?? 0) +
+      (timings?.reconcileMs ?? 0);
+    expect(timings?.totalMs).toBeGreaterThanOrEqual(legs);
+    expect(timings?.totalMs).toBeGreaterThanOrEqual(490);
+  });
+
+  it("records a total for the in-place resume fast path", async () => {
+    let clock = 1_000;
+    const session = fakeSession().session;
+    const runtime: RuntimeLike = {
+      get session() {
+        return session;
+      },
+      get services() {
+        return { cwd: CWD };
+      },
+      async switchSession() {
+        clock += 2_500;
+        return { cancelled: false };
+      },
+    };
+    const harnessed = harness({
+      now: () => clock,
+      createRuntime: async () => ({ runtime, session }),
+    });
+    await harnessed.call("session.create");
+
+    await harnessed.call("session.resume", { sessionFile: "C:/sessions/one.jsonl" });
+
+    const timings = harnessed.core.lastOpenTimings?.() ?? null;
+    expect(timings).not.toBeNull();
+    expect(timings?.totalMs).toBe(2_500);
+    // The SDK owns the legs on this path; only the total is knowable here.
+    expect(timings?.servicesMs).toBe(0);
+  });
+
+  it("has no timings before the first open", () => {
+    const { core } = harness();
+    expect(core.lastOpenTimings?.()).toBeNull();
+  });
+});
+
+describe("session replacement rebinds once (2026-11-07 plan)", () => {
+  function replacingHarness(runtimeCallsRebind: boolean) {
+    const session = fakeSession().session;
+    let rebind: (() => Promise<void>) | undefined;
+    const runtime: RuntimeLike = {
+      get session() {
+        return session;
+      },
+      get services() {
+        return { cwd: CWD };
+      },
+      setRebindSession(fn) {
+        rebind = fn;
+      },
+      async newSession() {
+        if (runtimeCallsRebind) await rebind?.();
+        return { cancelled: false };
+      },
+    };
+    const binds: string[] = [];
+    const harnessed = harness({
+      createRuntime: async () => ({ runtime, session }),
+      bindSession: async () => {
+        binds.push("bind");
+      },
+    });
+    return { ...harnessed, binds };
+  }
+
+  it("binds once when the runtime reports the replacement itself", async () => {
+    const { call, binds } = replacingHarness(true);
+    await call("session.create");
+    binds.length = 0;
+
+    await call("session.new");
+
+    // The SDK calls `rebindSession`; the handler must not run the whole bind a
+    // second time (extension session_start, resources_discover, scope resolve).
+    expect(binds).toHaveLength(1);
+  });
+
+  it("binds once as a fallback when the runtime does not report it", async () => {
+    const { call, binds } = replacingHarness(false);
+    await call("session.create");
+    binds.length = 0;
+
+    await call("session.new");
+
+    expect(binds).toHaveLength(1);
+  });
+});
+
+describe("the open path reads settings once (2026-11-07 plan)", () => {
+  it("does not reload settings after the runtime factory already read them", async () => {
+    const reloads: string[] = [];
+    const settingsPort = {
+      read: async () => ({ global: {}, project: {} }),
+      files: async () => ({
+        global: { path: "/g.json", exists: false, mtimeMs: 0 },
+        project: { path: "/p.json", exists: false, mtimeMs: 0 },
+      }),
+      isProjectTrusted: () => true,
+      write: async () => undefined,
+      compareAndWrite: async () => undefined,
+      writeMany: async () => undefined,
+      writeScope: async () => undefined,
+      flush: async () => undefined,
+      reload: async () => {
+        reloads.push("reload");
+      },
+    };
+    const { call } = harness({
+      createSettingsPort: () => settingsPort as never,
+    });
+
+    await call("session.create");
+
+    expect(reloads).toEqual([]);
+  });
+});
+
+describe("generic extension contributions (orchestrator step 8)", () => {
+  /** A validated v1 envelope from an arbitrary extension. */
+  const envelope = (revision = 1) => ({
+    version: 1,
+    owner: { id: "fixture.ext" },
+    sessionId: "session-1",
+    epoch: 0,
+    revision,
+    removed: [],
+    contributions: [
+      {
+        id: "mode",
+        kind: "mode",
+        slot: "mode",
+        label: "Analyze",
+        tone: "accent",
+        order: 0,
+        actions: [],
+      },
+    ],
+  });
+
+  function inMemoryBus() {
+    const listeners = new Map<string, Array<(payload: unknown) => unknown>>();
+    const sent: Array<{ channel: string; payload: unknown }> = [];
+    return {
+      sent,
+      on(channel: string, handler: (payload: unknown) => unknown) {
+        const list = listeners.get(channel) ?? [];
+        list.push(handler);
+        listeners.set(channel, list);
+        return () => {
+          const index = list.indexOf(handler);
+          if (index >= 0) list.splice(index, 1);
+        };
+      },
+      emit(channel: string, payload?: unknown) {
+        sent.push({ channel, payload });
+        for (const handler of [...(listeners.get(channel) ?? [])]) handler(payload);
+      },
+    };
+  }
+
+  it("gives the runtime the shared bus and answers contributions.state", async () => {
+    const bus = inMemoryBus();
+    const requests: SessionRuntimeRequest[] = [];
+    const base = harness();
+    const { core, call, emitted } = harness({
+      contributionBus: bus,
+      createContributionBridge: (host) => createSdkContributionBridge({ host, bus }),
+      createRuntime: async (request) => {
+        requests.push(request);
+        return { runtime: base.runtime, session: base.runtime.session };
+      },
+    });
+
+    await call("session.create");
+    // The loader gets the same instance the bridge listens on; otherwise an
+    // extension's `pi.events` publication would land on a private bus.
+    expect(requests[0]?.eventBus).toBe(bus);
+    // Bind announces support, which is what makes an extension publish.
+    expect(bus.sent.some((entry) => entry.channel === "host-contributions:hello")).toBe(true);
+
+    bus.emit("host-contributions:update", envelope());
+    const snapshot = (await call("contributions.state")) as {
+      supported: boolean;
+      contributions: Array<{ ownerId: string; text: string }>;
+    };
+    expect(snapshot.supported).toBe(true);
+    expect(snapshot.contributions).toEqual([
+      expect.objectContaining({ ownerId: "fixture.ext", text: "Analyze" }),
+    ]);
+    // The renderer is pushed the same snapshot instead of polling on a render.
+    const pushed = emitted.filter((entry) => entry.event === "contributions.state").at(-1);
+    expect(pushed?.payload).toMatchObject({ supported: true });
+    expect(pushed?.sessionId).toBe("session-1");
+
+    await core.dispose();
+  });
+
+  it("resets registrations on rebind, so a stale action never survives", async () => {
+    const bus = inMemoryBus();
+    const { call, forks } = harness({
+      contributionBus: bus,
+      createContributionBridge: (host) => createSdkContributionBridge({ host, bus }),
+    });
+
+    await call("session.create");
+    bus.emit("host-contributions:update", envelope());
+    expect(
+      ((await call("contributions.state")) as { contributions: unknown[] }).contributions,
+    ).toHaveLength(1);
+
+    await call("session.fork", { entryId: "entry-1" });
+    expect(forks).toEqual(["entry-1"]);
+    // Reset publishes an empty snapshot; the bridge re-announces for the new
+    // generation, so a reload leaves no actionable stale button behind.
+    expect(
+      ((await call("contributions.state")) as { contributions: unknown[] }).contributions,
+    ).toHaveLength(0);
+    expect(bus.sent.filter((entry) => entry.channel === "host-contributions:hello")).toHaveLength(
+      2,
+    );
+  });
+
+  it("runs an action through the live command runner with the published args", async () => {
+    const bus = inMemoryBus();
+    const ran: Array<{ name: string; args: string }> = [];
+    const context = {};
+    const { call, primary } = harness({
+      contributionBus: bus,
+      createContributionBridge: (host) => createSdkContributionBridge({ host, bus }),
+      wrapCommandRunner: () =>
+        ({
+          getCommand: (name: string) =>
+            name === "analyze"
+              ? {
+                  handler: (args: string) => {
+                    ran.push({ name, args });
+                  },
+                }
+              : undefined,
+          createCommandContext: () => context,
+        }) as never,
+    });
+    // A live runner is only present on a real session object.
+    (primary.session as unknown as { extensionRunner: unknown }).extensionRunner = {};
+
+    await call("session.create");
+    bus.emit("host-contributions:update", {
+      ...envelope(),
+      contributions: [
+        {
+          id: "go",
+          kind: "action",
+          slot: "action",
+          label: "Start",
+          tone: "info",
+          order: 0,
+          command: { name: "analyze", args: "--now" },
+          enabled: true,
+        },
+      ],
+    });
+
+    const result = (await call("contributions.run", {
+      ownerId: "fixture.ext",
+      id: "go",
+    })) as { ran: boolean };
+    expect(result.ran).toBe(true);
+    expect(ran).toEqual([{ name: "analyze", args: "--now" }]);
+  });
+});
+
+describe("related sessions (orchestrator step 12)", () => {
+  function inMemoryBus() {
+    const listeners = new Map<string, Array<(payload: unknown) => unknown>>();
+    const sent: Array<{ channel: string; payload: unknown }> = [];
+    return {
+      sent,
+      on(channel: string, handler: (payload: unknown) => unknown) {
+        const list = listeners.get(channel) ?? [];
+        list.push(handler);
+        listeners.set(channel, list);
+        return () => {
+          const index = list.indexOf(handler);
+          if (index >= 0) list.splice(index, 1);
+        };
+      },
+      emit(channel: string, payload?: unknown) {
+        sent.push({ channel, payload });
+        for (const handler of [...(listeners.get(channel) ?? [])]) handler(payload);
+      },
+    };
+  }
+
+  const request = (over: Record<string, unknown> = {}) => ({
+    requestId: "req-1",
+    operation: "create",
+    ownerCommand: "workflow",
+    spec: {
+      requestId: "req-1",
+      parentSessionRef: "session-1",
+      relation: "child",
+      title: "Task 2",
+      cwd: "C:/work/app",
+      dedupeKey: "task-2",
+      bootstrap: [{ customType: "workflow-managed-session", content: "{}", display: false }],
+    },
+    ...over,
+  });
+
+  it("writes the bounded bootstrap before the runtime is created", async () => {
+    const order: string[] = [];
+    const manager = {
+      appendMessage: (message: unknown) => {
+        const record = message as { role?: string; customType?: string };
+        order.push(`append:${record.role}:${record.customType}`);
+        return "entry";
+      },
+    };
+    const base = harness();
+    const { call } = harness({
+      newSessionManager: () => manager,
+      createRuntime: async () => {
+        order.push("runtime");
+        return { runtime: base.runtime, session: base.runtime.session };
+      },
+    });
+
+    await call("session.create", {
+      bootstrap: [{ customType: "workflow-managed-session", content: "{}", display: false }],
+    });
+
+    expect(order).toEqual(["append:custom:workflow-managed-session", "runtime"]);
+  });
+
+  it("rejects an unbounded bootstrap at session.create", async () => {
+    const { call } = harness();
+    await expect(
+      call("session.create", {
+        bootstrap: [{ customType: "not-a-bootstrap", content: "x", display: false }],
+      }),
+    ).rejects.toThrow(/unsupported bootstrap/);
+  });
+
+  it("refuses a related-session request that has no host-issued grant", async () => {
+    // Source binding alone is not authority: the host mints a single-use grant
+    // for the registered command. Without it the request is rejected before any
+    // forwarding. The grant-bearing forwarding path is covered by
+    // `tests/host/related-sessions.test.ts`.
+    const bus = inMemoryBus();
+    const { call, emitted, runtime } = harness({
+      contributionBus: bus,
+      createContributionBridge: (host) => createSdkContributionBridge({ host, bus }),
+    });
+
+    await call("session.create");
+    (runtime.session as unknown as { extensionRunner: unknown }).extensionRunner = {
+      getRegisteredCommands: () => [
+        {
+          name: "workflow",
+          sourceInfo: { path: "C:/ext/workflow/index.ts", source: "@dieulc/workflow" },
+        },
+      ],
+    };
+
+    bus.emit("session-host:request", request());
+    expect(emitted.some((entry) => entry.event === "host:relatedSession.request")).toBe(false);
+    await vi.waitFor(() =>
+      expect(
+        bus.sent.some(
+          (entry) =>
+            entry.channel === "session-host:result" &&
+            (entry.payload as { result?: { ok?: boolean } }).result?.ok === false,
+        ),
+      ).toBe(true),
+    );
   });
 });

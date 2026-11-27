@@ -27,6 +27,80 @@ test.afterEach(async () => {
   }
 });
 
+test("editor fills the pane for prose and code", async () => {
+  projectDir = mkdtempSync(join(tmpdir(), "pi-desktop-editor-e2e-"));
+  // One long paragraph: if prose were rendered unwrapped it would overflow the
+  // pane horizontally, so the scroller assertion below is not vacuous.
+  const paragraph = "The quick brown fox jumps over the lazy dog. ".repeat(34).trim();
+  writeFileSync(join(projectDir, "notes.md"), `${paragraph}\n`, "utf8");
+  writeFileSync(join(projectDir, "app.ts"), "const answer = 1;\n", "utf8");
+
+  const current = (app = await launchFakeApp({ projectDir }));
+  const window = current.window;
+
+  // Any open rail panel (Explorer, or the Documents panel that can auto-open
+  // at startup) narrows the pane to ~648 px, below the old 100ch measure,
+  // which would make the width equality poll pass on the buggy build too.
+  await window.getByRole("button", { name: "E2E project", exact: true }).click();
+  const railPanel = window.getByTestId("rail-panel");
+  const railOpen = await railPanel
+    .waitFor({ state: "visible", timeout: 2_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (railOpen) await window.getByRole("button", { name: "Collapse panel" }).click();
+  await expect(railPanel).toHaveCount(0);
+
+  async function openViaQuickOpen(name: string): Promise<void> {
+    await current.menuCommand("open-file");
+    await expect(window.getByTestId("quick-open")).toBeVisible();
+    await window.getByPlaceholder("Search files by name…").fill(name);
+    await window.getByText(name).last().click();
+    await expect(window.getByTestId("editor-tab-view")).toBeVisible();
+    await expect(window.locator(".cm-editor")).toBeVisible();
+  }
+
+  async function readLayout(): Promise<{ pane: number; editor: number }> {
+    return window.evaluate(() => {
+      const host = document.querySelector<HTMLElement>('[data-testid="editor-surface"]');
+      const editor = host?.querySelector<HTMLElement>(".cm-editor");
+      if (!host || !editor) throw new Error("the editor surface is missing");
+      return { pane: host.clientWidth, editor: editor.getBoundingClientRect().width };
+    });
+  }
+
+  for (const name of ["notes.md", "app.ts"]) {
+    await openViaQuickOpen(name);
+    const { pane } = await readLayout();
+    // The removed column capped at widthColumns ch (100ch is roughly 0.72-0.78k
+    // px at the default 13 px mono font). The pane must stay wider than that
+    // cap, otherwise this guard could not tell the fixed build from the buggy
+    // one.
+    expect(pane).toBeGreaterThan(800);
+
+    await expect
+      .poll(
+        async () => {
+          const layout = await readLayout();
+          return Math.abs(layout.editor - layout.pane);
+        },
+        { timeout: 10_000 },
+      )
+      .toBeLessThanOrEqual(2);
+
+    if (name === "notes.md") {
+      const overflow = await window.evaluate(() => {
+        const scroller = document.querySelector<HTMLElement>(
+          '[data-testid="editor-surface"] .cm-scroller',
+        );
+        if (!scroller) throw new Error("the editor scroller is missing");
+        return { scrollWidth: scroller.scrollWidth, clientWidth: scroller.clientWidth };
+      });
+      // Prose wraps at the pane width, so a document needs no horizontal scroll.
+      expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 2);
+    }
+  }
+});
+
 test("@smoke explorer opens a file in an editor tab and saves it", async () => {
   projectDir = mkdtempSync(join(tmpdir(), "pi-desktop-editor-e2e-"));
   writeFileSync(join(projectDir, "app.ts"), "const answer = 1;\n", "utf8");

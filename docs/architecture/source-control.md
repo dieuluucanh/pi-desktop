@@ -28,6 +28,45 @@ everything platform-shaped arrives as a port:
 (`BrowserWindow.isFocused`, the live Office registry, the tab table,
 `window-all-closed` teardown).
 
+## Reading `git status`
+
+The rail asks git for **`status --porcelain=v2 --branch -z --untracked-files=all`**
+(plus `--ignore-submodules=dirty`). `-uall` is not an optimisation detail: git's
+default `-unormal` collapses every untracked directory into one `? <dir>/`
+record, and a trailing-slash path is refused by `isSafeRepoPath` (an empty final
+segment), so a file an agent just created in a brand-new folder would disappear
+before the renderer saw it. VS Code passes `-uall` for the same reason. A
+remaining `? <path>/` record can only be a **nested repository** (git refuses to
+descend into another repository); `parseStatus` skips it deliberately. This app
+does not discover nested repositories, so listing a non-diffable folder row that
+stages a gitlink would be worse than leaving it to the Explorer.
+
+The snapshot is capped at `MAX_STATUS_PATHS` (2 000) with `truncated: true`, and
+the Changes block says so instead of pretending the list is complete. The status
+read has its own **10 s budget** (`GIT_STATUS_READ_TIMEOUT_MS`); the cheap
+`rev-parse`/config/stash probes keep their 2 s budget. A read that times out is
+reported as `GitUnavailableReason: "timeout"` — never as `not_a_repo` — so the
+empty state says _Git did not answer_ and does **not** offer _Initialize
+repository_ to a folder that is already a repository.
+
+**An untracked file's diff is synthesised.** `git diff` has no index side for it,
+so `src/git/untracked.ts` reads the work-tree bytes through the editor's own
+`readWorkspaceContent` (realpath containment, the 2 MB `MAX_DIFF_BYTES` product
+cap, UTF-8 BOM stripping, and binary/UTF-16 detection all live there once) and
+builds one all-added file section: header `-0,0 +1,N`, every line an `add`, a
+trailing `\ No newline at end of file` when the file has none, and no
+`patchOldPath`/`patchNewPath`. Binary files become one honest "binary" row;
+an oversized file becomes the viewer's existing too-large notice. No hunk
+staging is offered for an untracked file: a partial new file is not a sound index
+state, so staging is whole-file from the Changes row. The engine only sees the
+read through the injected `readUntrackedFile` port (`src/main/index.ts` wires the
+shared `createNodeWorkspaceIo`), so `src/git/**` stays filesystem-free.
+
+The two groups are rendered in **path order** (`orderFiles` in
+`rail/changes-view.ts`), not git's order. Sorting is a view decision: the engine
+stays faithful to git's output, while the rail matches VS Code's SCM list and
+stops untracked files from being appended below a long list of modifications.
+
 ## Never touch the project's `.git`
 
 A checkpoint is a commit in a **bare repository under the Pi profile**:
@@ -138,6 +177,12 @@ of runs easily lands two snapshots in the same second — sorting on the timesta
 alone would then be free to drop the newest one. The log position is the real
 chronology, so the store passes it.
 
+The sweep itself runs **in the background** at `session_start`: it is a 30-day
+maintenance pass, so awaiting its directory walk (and a `git log` per shadow
+repo) would put retention on the critical path of every open
+(2026-11-07 host-singleton plan). `store.ensure(cwd)` stays awaited — the
+git-missing notice and the first snapshot depend on it.
+
 Because the retained set is always a **suffix** of the log, dropping the oldest
 commits needs nothing but moving the branch tip to the newest retained commit
 (compare-and-swap, retried once on loss). Reachability then ends at that tip, and
@@ -184,6 +229,14 @@ its own `overflow-y-auto`:
 Three scrollers instead of one pinned header over one list, because a long change
 list used to push the commit log off the bottom — scrolling to a commit scrolled
 the changed files away. Neither list can now evict the other.
+
+**Each block remembers its scroll position per folder** (2026-11-25 transcript/
+rail plan step 6). The memory is in-process only, keyed `block:folder` in an LRU
+map bounded to 50 entries: it survives remounts (a menu or view switch) but is
+deliberately not persisted across launches. A block never writes its offset
+while it is showing its loading/empty state — a block with no list would save a
+clamped `0` over the offset it is about to restore — and a wheel, pointer or key
+gesture cancels any pending restore, so the reader always wins.
 
 **Block headers are pinned** (2026-10-30 rail-headers plan). Each block's header
 is the first child of its scroller, `sticky top-0` with an opaque `bg-surface`
@@ -233,6 +286,16 @@ _Stage all_ never doubles as a fold. Stashes start collapsed — three stashes u
 to cost four rows in a column that also has to show changed files — while
 _Stash changes_ stays outside the fold, because stashing is what you do while
 looking at a change.
+
+**Rows act where they read.** Clicking a row's path opens the diff for the side
+that group represents: the index side under _Staged Changes_, the work tree under
+_Changes_, and the synthesised full-file addition for an untracked file. The
+hover actions are _Open file_, _Stage_/_Unstage_, and _Discard_. _Open file_ is
+hidden for a `deleted` path, because there is no work-tree file to open;
+_Discard_ is hidden on a staged-only row, because the service's revert has no
+work-tree edit to undo. The rows are
+rendered in path order (`orderFiles`), not git's order, so a newly created file
+cannot sink below a long list of modifications.
 
 ## Network actions: one status, one toast
 
@@ -399,6 +462,66 @@ drift; this is why there is no second store.
 
 A malformed config file is **reported and kept** (AGENTS rule 5). Main falls back
 to the defaults for that read; the next explicit prefs change replaces it.
+
+## Commit message generation is app-native
+
+The sparkle in the commit box (2026-11-25 transcript/rail plan, Task 3) is the
+app's only model call that is **not bound to a session**. It runs on the
+**control host** through `ModelCompletionPort`, which `src/host/sdk/providers.ts`
+implements over Pi's `ModelRuntime.completeSimple` on the same lazy runtime the
+provider hub already owns. Three consequences, each pinned by a test:
+
+- **No `AgentSession` and no JSONL.** A generation writes no transcript turn and
+  no session file, so it cannot appear in the transcript, History or the tree.
+  `/commit` does write a turn; this does not.
+- **No renderer prompt and no `commands.run`.** The renderer builds a plain
+  `text.generate` request from the commit box; it never invokes `/commit`, and
+  the control host never needs a session tab.
+- **No extension dependency.** `/commit` is contributed by the bundled Workflow
+  extension. The sparkle is app-native, so it works with Workflow absent — and
+  when Workflow _is_ installed, `/commit` stays available and independent. Two
+  paths to the same suggestion, one of which leaves a trace in the transcript.
+
+**Staged only.** The input is `readCommitContext` (`src/git/diff.ts`):
+`git diff --cached --stat`, `--numstat` for the file and line totals, and the
+unified patch (`-U3 --no-color --no-ext-diff --no-textconv`). The `--stat` block
+is always read; the patch is skipped outright when the numstat total crosses
+`MAX_COMMIT_PATCH_LINES`, and otherwise truncated at the last complete
+`diff --git` header at or below `MAX_COMMIT_CONTEXT_BYTES` (60 KB), with
+`truncated: true` carried into the prompt as its own marker. A 700 KB staged
+diff therefore cannot become a 175 k-token request. Nothing in this path stages:
+an empty index is an explanation, never an implicit `git add` — it is `/commit`,
+not `/commit -a`.
+
+**A real model choice.** `prefs.commitMessage.model` (`{ provider, id } | null`)
+is the one writer, and `null` means **Default**, resolved from the project's then
+the global `defaultProvider`/`defaultModel` — the same keys Workflow's
+Default-mode model mirrors, read through `readDefaultModelRef` so the app keeps
+one definition. `text.models` answers the catalogue, that default and
+`defaultAvailable`, so a saved model the catalogue no longer offers is _named_ in
+the picker instead of silently replaced. `text.generate` echoes the model that
+actually answered and the success toast names it.
+
+**One bounded request, never replayed.** The host aborts a generation after
+`GENERATION_TIMEOUT_MS` (90 s) and answers `timeout`; main's transport waits
+120 s (`REQUEST_TIMEOUT_OVERRIDES`) so the host's code wins over a refusal.
+`text.cancel` aborts by `requestId`, and the second click on the sparkle is that
+cancel. `text.generate` is deliberately absent from `PASSIVE_METHODS` and
+`READ_ONLY_RETRY_METHODS`: a dropped frame must never start a second model call.
+
+**A stable conversation id, no session.** The session-less call still carries a
+host-owned conversation id — one opaque UUID minted per control-host process by
+`createCompletion` in `src/host/sdk/providers.ts`, the single minter — so provider
+request routing and prompt caching work as they do for a real session. OpenCode
+Go and Zen require it as `x-opencode-session`, which pi-ai derives from that id,
+and answer HTTP 400 `MissingSessionID` without it; a normal `AgentSession`, and a
+`pi` CLI session, gets its id from `SessionManager`. Nothing is written: no
+session file, no JSONL, no transcript turn.
+
+The result is a **draft in the composer**, cleaned by `cleanCommitMessage`
+(fences, labels and quotes stripped, subject capped at 72 characters, body at 6
+lines). Only the user's Commit click commits, and a non-empty draft is replaced
+only after a `ConfirmDialog`.
 
 ## Trust boundaries
 

@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DRAFT_PERSIST_DELAY_MS, useAppStore } from "../../src/renderer/src/state/app-store";
+import {
+  DRAFT_PERSIST_DELAY_MS,
+  EDITOR_TEXT_DELAY_MS,
+  useAppStore,
+} from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { hashPromptText } from "../../src/shared/prompt-origin";
 import type { TabRecord } from "../../src/shared/session-ipc";
@@ -39,7 +43,7 @@ beforeEach(() => {
     transcripts: {},
     sessionStates: {},
     draftHistory: {},
-    historyIndex: {},
+    historyBrowse: {},
     hint: null,
   });
 });
@@ -53,7 +57,7 @@ describe("sendPrompt", () => {
     const request = stubRequest(async () => ({}));
     useAppStore.getState().setDraft("tab-1", "please fix it");
 
-    await expect(useAppStore.getState().sendPrompt("tab-1", "please fix it")).resolves.toBe(true);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "please fix it")).resolves.toBe("sent");
 
     expect(request).toHaveBeenCalledWith({
       tabId: "tab-1",
@@ -68,7 +72,9 @@ describe("sendPrompt", () => {
     const request = stubRequest(async () => ({}));
     useAppStore.setState({ tabs: [tab("running")] });
 
-    await expect(useAppStore.getState().sendPrompt("tab-1", "one more thing")).resolves.toBe(true);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "one more thing")).resolves.toBe(
+      "sent",
+    );
     expect(request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: "prompt",
@@ -108,7 +114,7 @@ describe("sendPrompt", () => {
     stubRequest(async () => {
       throw new Error("the agent is already streaming");
     });
-    await expect(useAppStore.getState().sendPrompt("tab-1", "hi")).resolves.toBe(false);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "hi")).resolves.toBe("refused");
     expect(useAppStore.getState().hint).toMatch(/already streaming/);
   });
 
@@ -129,7 +135,7 @@ describe("sendPrompt", () => {
 
     await vi.waitFor(() => expect(typeof release).toBe("function"));
     release({});
-    await expect(pending).resolves.toBe(true);
+    await expect(pending).resolves.toBe("sent");
   });
 
   it("restores a refused send above a newer draft", async () => {
@@ -151,7 +157,7 @@ describe("sendPrompt", () => {
     await vi.waitFor(() => expect(typeof reject).toBe("function"));
     reject(new Error("host is down"));
 
-    await expect(pending).resolves.toBe(false);
+    await expect(pending).resolves.toBe("refused");
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("please fix it\n\na newer thought");
   });
 
@@ -179,10 +185,68 @@ describe("sendPrompt", () => {
   });
 });
 
+describe("runContributionAction", () => {
+  it("runs a published action and never clears the draft", async () => {
+    const request = stubRequest(async () => ({ ran: true }));
+    useAppStore.getState().setDraft("tab-1", "keep this for after the review");
+
+    await expect(
+      useAppStore.getState().runContributionAction("tab-1", "fixture.ext", "pause"),
+    ).resolves.toBe(true);
+
+    expect(request).toHaveBeenCalledWith({
+      tabId: "tab-1",
+      method: "contributions.run",
+      params: { ownerId: "fixture.ext", id: "pause" },
+    });
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("keep this for after the review");
+  });
+
+  it("reports a failed request through the normal failure path", async () => {
+    stubRequest(async () => {
+      throw new Error("not implemented");
+    });
+
+    await expect(
+      useAppStore.getState().runContributionAction("tab-1", "fixture.ext", "gone"),
+    ).resolves.toBe(false);
+  });
+});
+
+describe("runExtensionCommand", () => {
+  it("returns ran/missing/unavailable without touching the draft", async () => {
+    useAppStore.getState().setDraft("tab-1", "keep this");
+    const request = stubRequest(async () => ({ ran: false }));
+
+    await expect(
+      useAppStore.getState().runExtensionCommand("tab-1", "analyze", "deep"),
+    ).resolves.toBe("missing");
+    expect(request).toHaveBeenCalledWith({
+      tabId: "tab-1",
+      method: "commands.run",
+      params: { name: "analyze", args: "deep", ack: "started" },
+    });
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("keep this");
+
+    stubRequest(async () => ({ ran: true }));
+    await expect(
+      useAppStore.getState().runExtensionCommand("tab-1", "analyze", "quick"),
+    ).resolves.toBe("ran");
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("keep this");
+
+    stubRequest(async () => {
+      throw new Error("not implemented");
+    });
+    await expect(useAppStore.getState().runExtensionCommand("tab-1", "analyze", "")).resolves.toBe(
+      "unavailable",
+    );
+  });
+});
+
 describe("bash mode", () => {
   it("routes `!command` to bash.run and never to prompt", async () => {
     const request = stubRequest(async () => ({ result: { output: "/work/app" } }));
-    await expect(useAppStore.getState().sendPrompt("tab-1", "!pwd")).resolves.toBe(true);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "!pwd")).resolves.toBe("sent");
     const bashCalls = request.mock.calls.filter(([input]) => input.method === "bash.run");
     expect(bashCalls).toHaveLength(1);
     expect(request.mock.calls.some(([input]) => input.method === "prompt")).toBe(false);
@@ -221,19 +285,19 @@ describe("bash mode", () => {
 
     await vi.waitFor(() => expect(typeof release).toBe("function"));
     release({});
-    await expect(pending).resolves.toBe(true);
+    await expect(pending).resolves.toBe("sent");
   });
 
   it("ignores a bare `!` (nothing to run)", async () => {
     const request = stubRequest(async () => ({}));
-    await expect(useAppStore.getState().sendPrompt("tab-1", "!   ")).resolves.toBe(false);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "!   ")).resolves.toBe("refused");
     expect(request).not.toHaveBeenCalled();
   });
 
   it("refuses a second command while one runs and keeps the text", async () => {
     const request = stubRequest(async () => ({}));
     useAppStore.setState({ sessionStates: { "tab-1": { bashRunning: true } as never } });
-    await expect(useAppStore.getState().sendPrompt("tab-1", "!ls")).resolves.toBe(false);
+    await expect(useAppStore.getState().sendPrompt("tab-1", "!ls")).resolves.toBe("refused");
     expect(request).not.toHaveBeenCalled();
     expect(useAppStore.getState().hint).toMatch(/already running/i);
   });
@@ -268,7 +332,10 @@ describe("stopRun", () => {
   it("clears the queue, aborts, and hands the queued text back to the editor", async () => {
     const request = stubRequest(async (input) => {
       if (input.method === "clearQueue") {
-        return { cleared: { steering: ["stop and test"], followUp: ["then commit"] } };
+        return {
+          cleared: { steering: ["stop and test"], followUp: ["then commit"] },
+          dropped: 0,
+        };
       }
       return { aborted: true };
     });
@@ -278,6 +345,22 @@ describe("stopRun", () => {
 
     expect(request.mock.calls.map((call) => call[0]?.method)).toEqual(["clearQueue", "abort"]);
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("stop and test\n\nthen commit");
+    expect(useAppStore.getState().hint).toBeNull();
+  });
+
+  it("reports an extension turn it discarded while restoring the user's own text", async () => {
+    stubRequest(async (input) => {
+      if (input.method === "clearQueue") {
+        return { cleared: { steering: ["stop and test"], followUp: [] }, dropped: 1 };
+      }
+      return { aborted: true };
+    });
+    useAppStore.setState({ tabs: [tab("running")] });
+
+    await useAppStore.getState().stopRun("tab-1");
+
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("stop and test");
+    expect(useAppStore.getState().hint).toMatch(/Discarded 1 queued extension turn\./);
   });
 
   it("does not touch the draft when nothing was queued", async () => {
@@ -288,12 +371,26 @@ describe("stopRun", () => {
     await useAppStore.getState().stopRun("tab-1");
 
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("my own draft");
+    // A host that cannot attribute a clear omits `dropped`: no discard hint.
+    expect(useAppStore.getState().hint).toBeNull();
+  });
+
+  it("leaves an existing hint alone when nothing was discarded", async () => {
+    stubRequest(async () => ({ cleared: { steering: [], followUp: [] }, dropped: 0 }));
+    useAppStore.setState({ tabs: [tab("running")], hint: "an earlier note" });
+
+    await useAppStore.getState().stopRun("tab-1");
+
+    expect(useAppStore.getState().hint).toBe("an earlier note");
   });
 
   it("restores the queue without aborting the run (Alt+Up, plan step 9)", async () => {
     const request = stubRequest(async (input) => {
       if (input.method === "clearQueue") {
-        return { cleared: { steering: ["steer text"], followUp: ["follow text"] } };
+        return {
+          cleared: { steering: ["steer text"], followUp: ["follow text"] },
+          dropped: 1,
+        };
       }
       return {};
     });
@@ -307,6 +404,52 @@ describe("stopRun", () => {
     expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe(
       "steer text\n\nfollow text\n\nstill typing",
     );
+    expect(useAppStore.getState().hint).toMatch(/Discarded 1 queued extension turn\./);
+  });
+
+  it("reports an all-extension queue without touching the draft (Alt+Up)", async () => {
+    stubRequest(async () => ({ cleared: { steering: [], followUp: [] }, dropped: 1 }));
+    useAppStore.setState({ tabs: [tab("running")] });
+    useAppStore.getState().setDraft("tab-1", "still typing");
+
+    await useAppStore.getState().restoreQueue("tab-1");
+
+    // Nothing of the user's to restore: the hint still reports the discard.
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("still typing");
+    expect(useAppStore.getState().hint).toMatch(/Discarded 1 queued extension turn\./);
+  });
+
+  it("pluralises the discard count", async () => {
+    stubRequest(async () => ({ cleared: { steering: [], followUp: [] }, dropped: 2 }));
+    useAppStore.setState({ tabs: [tab("running")] });
+
+    await useAppStore.getState().restoreQueue("tab-1");
+
+    expect(useAppStore.getState().hint).toMatch(/Discarded 2 queued extension turns\./);
+  });
+});
+
+describe("clearQueue", () => {
+  it("reports a discarded extension turn from the panel button", async () => {
+    const request = stubRequest(async () => ({
+      cleared: { steering: [], followUp: [] },
+      dropped: 1,
+    }));
+    useAppStore.setState({ tabs: [tab("running")] });
+
+    await useAppStore.getState().clearQueue("tab-1");
+
+    expect(request.mock.calls.map((call) => call[0]?.method)).toEqual(["clearQueue"]);
+    expect(useAppStore.getState().hint).toMatch(/Discarded 1 queued extension turn\./);
+  });
+
+  it("sets no discard hint when nothing was discarded", async () => {
+    stubRequest(async () => ({ cleared: { steering: ["user text"], followUp: [] } }));
+    useAppStore.setState({ tabs: [tab("running")] });
+
+    await useAppStore.getState().clearQueue("tab-1");
+
+    expect(useAppStore.getState().hint).toBeNull();
   });
 });
 
@@ -331,15 +474,278 @@ describe("drafts", () => {
       "tab-2": "second tab draft",
     });
   });
+
+  it("persists the stashed draft, not the history preview", () => {
+    vi.useFakeTimers();
+    const set = vi.fn(async (patch: unknown) => patch);
+    (window.pi as unknown as { prefs: { set: unknown } }).prefs.set = set;
+    useAppStore.setState({ draftHistory: { "tab-1": ["recalled prompt"] }, historyBrowse: {} });
+
+    useAppStore.getState().setDraft("tab-1", "pending draft");
+    useAppStore.getState().historyStep("tab-1", -1, 0);
+    // The preview is the visible buffer, but not what belongs on disk.
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("recalled prompt");
+
+    vi.advanceTimersByTime(DRAFT_PERSIST_DELAY_MS + 1);
+    expect(set).toHaveBeenLastCalledWith({ drafts: { "tab-1": "pending draft" } });
+
+    // Returning to the draft resumes normal persistence with the same text.
+    useAppStore.getState().historyStep("tab-1", 1, 0);
+    vi.advanceTimersByTime(DRAFT_PERSIST_DELAY_MS + 1);
+    expect(set).toHaveBeenLastCalledWith({ drafts: { "tab-1": "pending draft" } });
+  });
+
+  it("mirrors the stashed draft to the host, not the history preview", () => {
+    vi.useFakeTimers();
+    const request = stubRequest(async () => ({}));
+    useAppStore.setState({ draftHistory: { "tab-1": ["recalled prompt"] }, historyBrowse: {} });
+
+    useAppStore.getState().setDraft("tab-1", "pending draft");
+    useAppStore.getState().historyStep("tab-1", -1, 0);
+
+    vi.advanceTimersByTime(EDITOR_TEXT_DELAY_MS + 1);
+
+    const mirror = request.mock.calls.find((call) => call[0]?.method === "oi.editorText");
+    expect(mirror?.[0]?.params).toEqual({ text: "pending draft" });
+  });
 });
 
-describe("history", () => {
-  it("walks back through prompts and forward to the live draft", () => {
-    useAppStore.setState({ draftHistory: { "tab-1": ["newest", "older"] }, historyIndex: {} });
-    expect(useAppStore.getState().historyStep("tab-1", -1)).toBe("newest");
-    expect(useAppStore.getState().historyStep("tab-1", -1)).toBe("older");
-    expect(useAppStore.getState().historyStep("tab-1", 1)).toBe("newest");
-    expect(useAppStore.getState().historyStep("tab-1", 1)).toBeNull();
+describe("prompt history (2026-11-07 plan)", () => {
+  it("recalls the newest prompt, writes the preview and stashes the draft", () => {
+    useAppStore.setState({ draftHistory: { "tab-1": ["newest", "older"] }, historyBrowse: {} });
+    useAppStore.getState().setDraft("tab-1", "pending draft");
+
+    expect(useAppStore.getState().historyStep("tab-1", -1, 4)).toEqual({
+      kind: "applied",
+      text: "newest",
+      caret: "newest".length,
+      browse: { index: 0, draftText: "pending draft", draftCaret: 4 },
+    });
+    // The visible buffer is the preview; the stash holds the draft.
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("newest");
+    expect(useAppStore.getState().historyBrowse["tab-1"]).toEqual({
+      index: 0,
+      draftText: "pending draft",
+      draftCaret: 4,
+    });
+  });
+
+  it("walks older entries and restores the draft text and caret", () => {
+    useAppStore.setState({ draftHistory: { "tab-1": ["newest", "older"] }, historyBrowse: {} });
+    useAppStore.getState().setDraft("tab-1", "pending\ntyping");
+
+    useAppStore.getState().historyStep("tab-1", -1, 7);
+    expect(useAppStore.getState().historyStep("tab-1", -1, 0)).toMatchObject({
+      kind: "applied",
+      text: "older",
+    });
+    expect(useAppStore.getState().historyStep("tab-1", 1, 0)).toMatchObject({
+      kind: "applied",
+      text: "newest",
+    });
+
+    expect(useAppStore.getState().historyStep("tab-1", 1, 0)).toEqual({
+      kind: "applied",
+      text: "pending\ntyping",
+      caret: 7,
+      browse: null,
+    });
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("pending\ntyping");
+    expect(useAppStore.getState().historyBrowse["tab-1"]).toBeUndefined();
+  });
+
+  it("restores an empty draft instead of reporting no step", () => {
+    useAppStore.setState({ draftHistory: { "tab-1": ["newest"] }, historyBrowse: {} });
+
+    useAppStore.getState().historyStep("tab-1", -1, 0);
+    expect(useAppStore.getState().historyStep("tab-1", 1, 0)).toEqual({
+      kind: "applied",
+      text: "",
+      caret: 0,
+      browse: null,
+    });
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("");
+  });
+
+  it("does nothing when the tab has no sent prompts", () => {
+    useAppStore.getState().setDraft("tab-1", "typed");
+    expect(useAppStore.getState().historyStep("tab-1", -1, 5)).toEqual({ kind: "none" });
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("typed");
+  });
+
+  it("leaves history when a real write lands while browsing", () => {
+    useAppStore.setState({ draftHistory: { "tab-1": ["newest"] }, historyBrowse: {} });
+    useAppStore.getState().historyStep("tab-1", -1, 0);
+
+    useAppStore.getState().setDraft("tab-1", "edited instead");
+
+    expect(useAppStore.getState().historyBrowse["tab-1"]).toBeUndefined();
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("edited instead");
+  });
+
+  it("ends browsing and empties the composer when a recalled prompt is sent", async () => {
+    stubRequest(async () => ({}));
+    useAppStore.setState({ draftHistory: { "tab-1": ["newest"] }, historyBrowse: {} });
+    useAppStore.getState().setDraft("tab-1", "pending");
+    useAppStore.getState().historyStep("tab-1", -1, 0);
+
+    await expect(useAppStore.getState().sendPrompt("tab-1", "newest")).resolves.toBe("sent");
+
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("");
+    expect(useAppStore.getState().historyBrowse["tab-1"]).toBeUndefined();
+  });
+
+  it("does not duplicate a prompt that is already the newest entry", async () => {
+    stubRequest(async () => ({}));
+    await useAppStore.getState().sendPrompt("tab-1", "same prompt");
+    await useAppStore.getState().sendPrompt("tab-1", "same prompt");
+    expect(useAppStore.getState().draftHistory["tab-1"]).toEqual(["same prompt"]);
+  });
+
+  it("caps the history at a hundred entries", async () => {
+    stubRequest(async () => ({}));
+    useAppStore.setState({
+      draftHistory: {
+        "tab-1": Array.from({ length: 100 }, (_, index) => `prompt ${index}`),
+      },
+    });
+
+    await useAppStore.getState().sendPrompt("tab-1", "the newest prompt");
+
+    const history = useAppStore.getState().draftHistory["tab-1"] ?? [];
+    expect(history).toHaveLength(100);
+    expect(history[0]).toBe("the newest prompt");
+  });
+
+  it("keeps each tab's walk independent", () => {
+    useAppStore.setState({
+      draftHistory: { "tab-1": ["first tab prompt"], "tab-2": ["second tab prompt"] },
+      historyBrowse: {},
+    });
+    useAppStore.getState().setDraft("tab-2", "second draft");
+
+    useAppStore.getState().historyStep("tab-1", -1, 0);
+
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("first tab prompt");
+    expect(useAppStore.getState().prefs.drafts["tab-2"]).toBe("second draft");
+    expect(useAppStore.getState().historyBrowse["tab-2"]).toBeUndefined();
+  });
+});
+
+describe("prompt history seed (2026-11-07 restart plan)", () => {
+  it("rebuilds history from the transcript when a session is resumed", async () => {
+    stubRequest(async (input) =>
+      input.method === "messages.get"
+        ? {
+            messages: [
+              { id: "m1", role: "user", content: "first prompt" },
+              { id: "m2", role: "assistant", content: "answer" },
+              { id: "m3", role: "user", content: [{ type: "text", text: "newest prompt" }] },
+            ],
+          }
+        : {},
+    );
+
+    await useAppStore.getState().hydrateTranscript("tab-1");
+
+    expect(useAppStore.getState().historySeed["tab-1"]).toEqual(["newest prompt", "first prompt"]);
+    expect(useAppStore.getState().historyStep("tab-1", -1, 0)).toMatchObject({
+      kind: "applied",
+      text: "newest prompt",
+    });
+  });
+
+  it("keeps a prompt sent before hydration above the seeded history", async () => {
+    stubRequest(async (input) =>
+      input.method === "messages.get"
+        ? { messages: [{ id: "m1", role: "user", content: "from the session" }] }
+        : {},
+    );
+
+    useAppStore.getState().setDraft("tab-1", "sent this run");
+    await useAppStore.getState().sendPrompt("tab-1", "sent this run");
+    await useAppStore.getState().hydrateTranscript("tab-1");
+
+    expect(useAppStore.getState().historySeed["tab-1"]).toEqual(["from the session"]);
+    expect(useAppStore.getState().historyStep("tab-1", -1, 0)).toMatchObject({
+      kind: "applied",
+      text: "sent this run",
+    });
+    expect(useAppStore.getState().historyStep("tab-1", -1, 0)).toMatchObject({
+      kind: "applied",
+      text: "from the session",
+    });
+  });
+
+  it("re-seeds on a branch switch but keeps prompts sent this run", async () => {
+    let messages = [{ id: "a1", role: "user", content: "branch a" }];
+    stubRequest(async (input) => (input.method === "messages.get" ? { messages } : {}));
+
+    await useAppStore.getState().hydrateTranscript("tab-1");
+    expect(useAppStore.getState().historySeed["tab-1"]).toEqual(["branch a"]);
+
+    useAppStore.getState().setDraft("tab-1", "live prompt");
+    await useAppStore.getState().sendPrompt("tab-1", "live prompt");
+
+    useAppStore.getState().resetTranscript("tab-1");
+    expect(useAppStore.getState().historySeed["tab-1"]).toBeUndefined();
+    expect(useAppStore.getState().draftHistory["tab-1"]).toEqual(["live prompt"]);
+
+    messages = [{ id: "b1", role: "user", content: "branch b" }];
+    await useAppStore.getState().hydrateTranscript("tab-1");
+
+    expect(useAppStore.getState().historySeed["tab-1"]).toEqual(["branch b"]);
+    expect(useAppStore.getState().historyStep("tab-1", -1, 0)).toMatchObject({
+      text: "live prompt",
+    });
+    expect(useAppStore.getState().historyStep("tab-1", -1, 0)).toMatchObject({
+      text: "branch b",
+    });
+  });
+
+  it("upgrades a command seed to the typed origin when prefs arrive", async () => {
+    stubRequest(async (input) =>
+      input.method === "messages.get"
+        ? { messages: [{ id: "m1", role: "user", content: "expanded body" }] }
+        : {},
+    );
+    await useAppStore.getState().hydrateTranscript("tab-1");
+    expect(useAppStore.getState().historySeed["tab-1"]).toEqual(["expanded body"]);
+
+    const promptOrigins = { [hashPromptText("expanded body")]: "/skill:review src" };
+    (window.pi as unknown as { prefs: { get: unknown } }).prefs.get = async () => ({
+      ...DEFAULT_PREFS,
+      promptOrigins,
+    });
+    await useAppStore.getState().loadPrefs();
+
+    expect(useAppStore.getState().prefs.promptOrigins).toEqual(promptOrigins);
+    expect(useAppStore.getState().historySeed["tab-1"]).toEqual(["/skill:review src"]);
+  });
+
+  it("seeds nothing for a transcript with no user prompts", async () => {
+    stubRequest(async (input) =>
+      input.method === "messages.get"
+        ? {
+            messages: [
+              {
+                id: "m1",
+                role: "user",
+                content: [
+                  { type: "image", source: { type: "base64", mediaType: "image/png", data: "AA" } },
+                ],
+              },
+              { id: "m2", role: "assistant", content: "answer" },
+              { id: "m3", role: "bashExecution", command: "pwd", output: "/work" },
+            ],
+          }
+        : {},
+    );
+
+    await useAppStore.getState().hydrateTranscript("tab-1");
+
+    expect(useAppStore.getState().historySeed["tab-1"]).toEqual([]);
+    expect(useAppStore.getState().historyStep("tab-1", -1, 0)).toEqual({ kind: "none" });
   });
 });
 
@@ -435,5 +841,109 @@ describe("prompt origin persistence", () => {
     expect(useAppStore.getState().prefs.promptOrigins).toEqual({
       [hashPromptText(body)]: "/commit -a",
     });
+  });
+});
+
+describe("input-ownership prompt guard", () => {
+  const locked = {
+    version: 1 as const,
+    supported: true,
+    owners: [{ ownerId: "fixture.ext", revision: 1, epoch: 0 }],
+    contributions: [
+      {
+        ownerId: "fixture.ext",
+        id: "input",
+        kind: "input" as const,
+        slot: "input" as const,
+        tone: "warning" as const,
+        order: 0,
+        text: "locked",
+        availability: "locked" as const,
+        enabled: true,
+      },
+    ],
+    updatedAt: 1,
+  };
+
+  it("refuses prose and ! shell commands while a contribution locks input", async () => {
+    const request = stubRequest(async () => ({}));
+    useAppStore.setState({ contributions: { "tab-1": locked }, hint: null });
+    useAppStore.getState().setDraft("tab-1", "please fix it");
+
+    await expect(useAppStore.getState().sendPrompt("tab-1", "please fix it")).resolves.toBe(
+      "refused",
+    );
+    expect(request).not.toHaveBeenCalled();
+    // The draft is preserved so the user can use the published controls.
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("please fix it");
+    expect(useAppStore.getState().hint).toMatch(/An extension owns this turn/);
+
+    await expect(useAppStore.getState().sendPrompt("tab-1", "!git status")).resolves.toBe(
+      "refused",
+    );
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("runs /profile use as a command while input is locked and shows its notify", async () => {
+    const profileCommand = {
+      name: "profile",
+      description: "Switch profile",
+      source: "extension" as const,
+    };
+    const request = stubRequest(async (input) => {
+      if (input.method === "commands.list") return { commands: [profileCommand] };
+      if (input.method === "commands.run") return { ran: true };
+      return {};
+    });
+    useAppStore.setState({ contributions: { "tab-1": locked }, hint: null, transcripts: {} });
+    const text = "/profile use parity-roles-only";
+    useAppStore.getState().setDraft("tab-1", text);
+
+    await expect(useAppStore.getState().sendPrompt("tab-1", text)).resolves.toBe("handled-command");
+
+    expect(request).toHaveBeenCalledWith({
+      tabId: "tab-1",
+      method: "commands.run",
+      params: { name: "profile", args: "use parity-roles-only", ack: "started" },
+    });
+    // The lock refuses prose but never swallows a published slash command.
+    expect(request.mock.calls.some(([input]) => input.method === "prompt")).toBe(false);
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("");
+    expect(useAppStore.getState().draftHistory["tab-1"]).toEqual([text]);
+
+    useAppStore.getState().applySessionEvents({
+      tabId: "tab-1",
+      seq: 1,
+      events: [
+        {
+          event: "oi.notify",
+          payload: { message: "Now using parity-roles-only", type: "info" },
+        },
+      ],
+    });
+    const items = useAppStore.getState().transcripts["tab-1"]?.items ?? [];
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "notice",
+      notice: { event: "oi.notify", severity: "info", text: "Now using parity-roles-only" },
+    });
+  });
+
+  it("does not infer a lock from status text alone", async () => {
+    const request = stubRequest(async () => ({}));
+    useAppStore.setState({
+      contributions: {},
+      extensionUi: {
+        "tab-1": { statuses: { workflow: "🔍 review" }, working: null },
+      } as never,
+      hint: null,
+    });
+
+    // A non-publishing extension keeps working through ordinary prose: the app
+    // no longer parses its status as authority.
+    await expect(useAppStore.getState().sendPrompt("tab-1", "plain text")).resolves.not.toBe(
+      "refused",
+    );
+    expect(request).toHaveBeenCalled();
   });
 });

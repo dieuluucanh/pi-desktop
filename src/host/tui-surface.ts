@@ -26,6 +26,8 @@ import {
   type TuiCursor,
   type TuiFrame,
   type TuiSlot,
+  type TuiInputResult,
+  type TuiSurfaceLayer,
   type TuiSurfaceSnapshot,
 } from "../shared/tui-surface";
 import type { HostMethod } from "../shared/host-protocol";
@@ -197,7 +199,15 @@ export interface TuiSurfacePort {
   dispose(reason: string): void;
 }
 
+interface MountedCustom {
+  /** Stable while this component is mounted; a remount mints a new id. */
+  id: string;
+  component: SurfaceComponent;
+}
+
 interface OverlayEntry {
+  /** Stable while this overlay is mounted (the renderer keys its layer). */
+  id: string;
   component: SurfaceComponent;
   options: SurfaceOverlayOptions;
   hidden: boolean;
@@ -338,8 +348,9 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
 
   let headerComponent: SurfaceComponent | null = null;
   let footerComponent: SurfaceComponent | null = null;
-  let customComponent: SurfaceComponent | null = null;
+  let customMount: MountedCustom | null = null;
   let focusedComponent: SurfaceComponent | null = null;
+  let surfaceIdCounter = 0;
   const overlays: OverlayEntry[] = [];
   const widgetsAbove = new Map<string, SurfaceComponent>();
   const widgetsBelow = new Map<string, SurfaceComponent>();
@@ -352,6 +363,8 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
   let disposed = false;
   const inputListeners = new Set<(data: string) => SurfaceInputResult>();
   const pendingCustom = new Set<(result: unknown) => void>();
+
+  const nextSurfaceId = (kind: "custom" | "overlay"): string => `${kind}-${++surfaceIdCounter}`;
 
   const isOverlayVisible = (entry: OverlayEntry): boolean => {
     if (entry.hidden) return false;
@@ -409,73 +422,99 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
     return null;
   };
 
-  const makeFrame = (component: SurfaceComponent | null, width: number): TuiFrame | null => {
+  const makeFrame = (
+    component: SurfaceComponent | null,
+    width: number,
+    key?: string,
+  ): TuiFrame | null => {
     if (!component) return null;
     const lines = renderComponent(component, width);
     const cursor = component === focusedComponent ? extractCursor(lines) : null;
-    return { seq: ++frameSeq, width: Math.max(1, width), height: lines.length, cursor, lines };
+    const frame: TuiFrame = {
+      seq: ++frameSeq,
+      width: Math.max(1, width),
+      height: lines.length,
+      cursor,
+      lines,
+    };
+    if (key) frame.key = key;
+    return frame;
   };
 
   const buildSnapshot = (): TuiSurfaceSnapshot => {
     const widgetFrames = (widgets: Map<string, SurfaceComponent>): TuiFrame[] =>
-      [...widgets.values()]
-        .map((component) => makeFrame(component, cols))
+      [...widgets.entries()]
+        .map(([key, component]) => makeFrame(component, cols, key))
         .filter((frame): frame is TuiFrame => frame !== null);
     const widgetsAboveFrames = widgetFrames(widgetsAbove);
     const widgetsBelowFrames = widgetFrames(widgetsBelow);
-    const topOverlay = visibleOverlays().at(-1);
-    if (topOverlay) {
-      const { width, maxHeight } = resolveOverlayLayout(topOverlay.options, 0, cols, rows);
-      const lines = renderComponent(topOverlay.component, width);
+
+    // The stack is every mounted keyboard-bearing component, bottom-to-top:
+    // the base `custom` first, then overlays in their focus order. Pi composites
+    // the same way, so a questionnaire overlay keeps the review pane visible
+    // underneath instead of replacing it (2026-11-22 parity row 28).
+    const layers: TuiSurfaceLayer[] = [];
+    if (customMount) {
+      const frame = makeFrame(customMount.component, cols);
+      if (frame) {
+        layers.push({
+          id: customMount.id,
+          overlay: false,
+          bounds: null,
+          focused: customMount.component === focusedComponent,
+          frame,
+        });
+      }
+    }
+    for (const entry of visibleOverlays()) {
+      const { width, maxHeight } = resolveOverlayLayout(entry.options, 0, cols, rows);
+      const lines = renderComponent(entry.component, width);
       const clipped = maxHeight !== undefined ? lines.slice(0, maxHeight) : lines;
-      const layout = resolveOverlayLayout(topOverlay.options, clipped.length, cols, rows);
-      topOverlay.bounds = {
+      const layout = resolveOverlayLayout(entry.options, clipped.length, cols, rows);
+      entry.bounds = {
         row: layout.row,
         col: layout.col,
         width: layout.width,
         height: clipped.length,
       };
-      const cursor = topOverlay.component === focusedComponent ? extractCursor(clipped) : null;
-      return {
-        active: true,
+      const cursor = entry.component === focusedComponent ? extractCursor(clipped) : null;
+      layers.push({
+        id: entry.id,
         overlay: true,
-        bounds: topOverlay.bounds,
-        focus: "custom",
-        custom: {
+        bounds: entry.bounds,
+        focused: entry.component === focusedComponent,
+        frame: {
           seq: ++frameSeq,
           width: layout.width,
           height: clipped.length,
           lines: clipped,
           cursor,
         },
-        footer: makeFrame(footerComponent, cols),
-        header: makeFrame(headerComponent, cols),
-        widgetsAbove: widgetsAboveFrames,
-        widgetsBelow: widgetsBelowFrames,
-      };
+      });
     }
-    for (const entry of overlays) entry.bounds = undefined;
-    const custom = makeFrame(customComponent, cols);
+    for (const entry of overlays) {
+      if (!isOverlayVisible(entry)) entry.bounds = undefined;
+    }
+
+    const top = layers.at(-1) ?? null;
     const footer = makeFrame(footerComponent, cols);
     const header = makeFrame(headerComponent, cols);
-    const focus: TuiSlot | null =
-      focusedComponent === null ? null : focusedComponent === customComponent ? "custom" : null;
+    // The legacy single-slot view mirrors the top of the stack; an older
+    // renderer therefore renders the same surface it always did.
+    const focus: TuiSlot | null = focusedComponent === null || top === null ? null : "custom";
     return {
       active: Boolean(
-        custom ||
-        footer ||
-        header ||
-        widgetsAboveFrames.length > 0 ||
-        widgetsBelowFrames.length > 0,
+        top || footer || header || widgetsAboveFrames.length > 0 || widgetsBelowFrames.length > 0,
       ),
-      overlay: false,
-      bounds: null,
+      overlay: top?.overlay ?? false,
+      bounds: top?.bounds ?? null,
       focus,
-      custom,
+      custom: top?.frame ?? null,
       footer,
       header,
       widgetsAbove: widgetsAboveFrames,
       widgetsBelow: widgetsBelowFrames,
+      layers,
     };
   };
 
@@ -532,7 +571,7 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
       setProgress: () => undefined,
     },
     get children(): SurfaceComponent[] {
-      return [headerComponent, customComponent, footerComponent].filter(
+      return [headerComponent, customMount?.component ?? null, footerComponent].filter(
         (component): component is SurfaceComponent => component !== null,
       );
     },
@@ -545,7 +584,7 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
       flush();
     },
     invalidate: () => {
-      for (const component of [headerComponent, footerComponent, customComponent]) {
+      for (const component of [headerComponent, footerComponent, customMount?.component ?? null]) {
         component?.invalidate?.();
       }
       for (const component of widgetsAbove.values()) component.invalidate?.();
@@ -563,6 +602,7 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
     getFocusedComponent: () => focusedComponent,
     showOverlay: (component, overlayOptions) => {
       const entry: OverlayEntry = {
+        id: nextSurfaceId("overlay"),
         component,
         options: overlayOptions ?? {},
         hidden: false,
@@ -616,40 +656,77 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
     }
   };
 
-  /** Extension input filters → TUI listeners → the focused component. */
-  const routeInput = (data: string): void => {
-    if (disposed || data.length === 0) return;
+  /**
+   * Extension input filters → TUI listeners → the focused component.
+   *
+   * Returns what happened, because the renderer's Escape fallback depends on it:
+   * `consumed` means a handler claimed the key (so the renderer must not also
+   * stop the run), `dispatched` means the bytes reached anything at all. Every
+   * handler is wrapped: a throwing extension must not lose the key or escape
+   * into the IPC handler.
+   */
+  const routeInput = (data: string): TuiInputResult => {
+    if (disposed || data.length === 0) {
+      return { ok: true, consumed: false, dispatched: false };
+    }
     let current = data;
+    let consumed = false;
+    let dispatched = false;
     for (const handler of options.terminalInput?.() ?? []) {
-      const result = handler(current);
-      if (result?.consume) return;
-      if (result?.data !== undefined) current = result.data;
-    }
-    if (current.length === 0) return;
-    for (const listener of inputListeners) {
-      const result = listener(current);
-      if (result?.consume) return;
-      if (result?.data !== undefined) current = result.data;
-    }
-    if (current.length === 0) return;
-    const target = focusedComponent;
-    if (target?.handleInput) {
+      let result: SurfaceInputResult;
       try {
-        target.handleInput(current);
+        result = handler(current);
       } catch {
-        // A throwing handler must not crash the host; the next render recovers.
+        // A broken extension filter must not swallow the key.
+        continue;
+      }
+      if (result?.consume) {
+        consumed = true;
+        break;
+      }
+      if (result?.data !== undefined) current = result.data;
+    }
+    if (!consumed && current.length > 0) {
+      for (const listener of inputListeners) {
+        let result: SurfaceInputResult;
+        try {
+          result = listener(current);
+        } catch {
+          continue;
+        }
+        if (result?.consume) {
+          consumed = true;
+          break;
+        }
+        if (result?.data !== undefined) current = result.data;
       }
     }
-    scheduleRender();
+    if (!consumed && current.length > 0) {
+      const target = focusedComponent;
+      if (target?.handleInput) {
+        dispatched = true;
+        try {
+          target.handleInput(current);
+        } catch {
+          // A throwing handler must not crash the host; the next render recovers.
+        }
+      }
+    }
+    if (consumed) {
+      // Someone claimed the key: repaint so the component's reaction shows.
+      dispatched = true;
+      scheduleRender();
+    }
+    return { ok: true, consumed, dispatched };
   };
 
   const clearSlots = (): void => {
     disposeComponent(headerComponent);
     disposeComponent(footerComponent);
-    disposeComponent(customComponent);
+    disposeComponent(customMount?.component ?? null);
     headerComponent = null;
     footerComponent = null;
-    customComponent = null;
+    customMount = null;
     for (const component of widgetsAbove.values()) disposeComponent(component);
     for (const component of widgetsBelow.values()) disposeComponent(component);
     widgetsAbove.clear();
@@ -681,7 +758,7 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
             overlayHandle.hide();
           } else if (component) {
             const wasFocused = focusedComponent === component;
-            if (customComponent === component) customComponent = null;
+            if (customMount?.component === component) customMount = null;
             if (wasFocused) setComponentFocus(null);
             disposeComponent(component);
           }
@@ -709,8 +786,8 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
               overlayHandle = tui.showOverlay(created, overlayOptions);
               customOptions.onHandle?.(overlayHandle);
             } else {
-              disposeComponent(customComponent);
-              customComponent = created;
+              disposeComponent(customMount?.component ?? null);
+              customMount = { id: nextSurfaceId("custom"), component: created };
               setComponentFocus(created);
             }
             scheduleRender();
@@ -755,7 +832,9 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
     },
 
     input(data) {
-      routeInput(data);
+      // Host-internal paths (TUI components calling `tui.input`) ignore the
+      // result; only the IPC handler reports consumption to the renderer.
+      void routeInput(data);
     },
 
     invalidate() {
@@ -763,6 +842,11 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
     },
 
     reset() {
+      // A rebind replaces the session's extensions: their pending `custom()`
+      // promises must settle instead of hanging forever in the old runner
+      // (2026-11-22 parity row 28, stale-surface cleanup).
+      for (const finish of [...pendingCustom]) finish(undefined);
+      pendingCustom.clear();
       clearSlots();
       scheduleRender();
     },
@@ -779,12 +863,11 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
         scheduleRender();
         return { ok: true, rows, cols };
       },
-      "tui.input": (params) => {
+      "tui.input": (params): TuiInputResult => {
         const request = sanitizeTuiInput(params);
         if (!request) throw new Error("tui.input requires { data }");
         // Route through the same path as a host-side key so listeners run too.
-        routeInput(request.data);
-        return { ok: true };
+        return routeInput(request.data);
       },
     }),
 

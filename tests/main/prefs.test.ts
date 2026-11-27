@@ -13,7 +13,8 @@ import {
 import { hashPromptText } from "../../src/shared/prompt-origin";
 import { MIN_SCAN_INTERVAL_MS } from "../../src/shared/checkpoints";
 import { DEFAULT_RAIL_WIDTH, MAX_RAIL_WIDTH, MIN_RAIL_WIDTH } from "../../src/shared/rail";
-import { muteRuleFor } from "../../src/shared/notifications";
+import { DEFAULT_NOTIFICATION_CLASSES, muteRuleFor } from "../../src/shared/notifications";
+import { MAX_PACKAGE_UPDATE_SIGNATURE } from "../../src/shared/packages";
 
 describe("sanitizePrefs", () => {
   it("returns defaults for non-objects", () => {
@@ -27,7 +28,9 @@ describe("sanitizePrefs", () => {
     expect(Object.keys(result).sort()).toEqual(
       [
         "checkpoints",
+        "commitMessage",
         "desktopKeybindings",
+        "dialogs",
         "drafts",
         "editor",
         "explorer",
@@ -35,6 +38,7 @@ describe("sanitizePrefs", () => {
         "grid",
         "notifications",
         "onboardingCompletedAt",
+        "packages",
         "privacyAcknowledged",
         "profileMode",
         "promptOrigins",
@@ -43,6 +47,7 @@ describe("sanitizePrefs", () => {
         "sidebarCollapsed",
         "sidebarWidth",
         "telemetryEnabled",
+        "terminal",
         "theme",
         "themeColors",
         "updates",
@@ -230,15 +235,32 @@ describe("sanitizePrefs", () => {
     expect(Object.keys(sanitizePrefs({ themeColors }).themeColors)).toHaveLength(32);
   });
 
-  it("defaults automatic update checks on and accepts a per-version dismissal", () => {
-    expect(sanitizePrefs({}).updates).toEqual({ autoCheck: true, dismissedVersion: null });
+  it("defaults automatic update checks on and accepts a notified version", () => {
+    expect(sanitizePrefs({}).updates).toEqual({
+      autoCheck: true,
+      notifiedVersion: null,
+      dismissedVersion: null,
+    });
     expect(sanitizePrefs({ updates: { autoCheck: false } }).updates).toEqual({
       autoCheck: false,
+      notifiedVersion: null,
       dismissedVersion: null,
     });
     expect(
-      sanitizePrefs({ updates: { autoCheck: "yes", dismissedVersion: " 0.4.0 " } }).updates,
-    ).toEqual({ autoCheck: true, dismissedVersion: "0.4.0" });
+      sanitizePrefs({ updates: { autoCheck: "yes", notifiedVersion: " 0.5.0 " } }).updates,
+    ).toEqual({ autoCheck: true, notifiedVersion: "0.5.0", dismissedVersion: null });
+    expect(sanitizePrefs({ updates: { notifiedVersion: "" } }).updates.notifiedVersion).toBeNull();
+    expect(
+      sanitizePrefs({ updates: { notifiedVersion: "x".repeat(500) } }).updates.notifiedVersion
+        ?.length,
+    ).toBe(201);
+  });
+
+  it("bounds the dismissed update version and keeps it independent of notified", () => {
+    expect(sanitizePrefs({}).updates.dismissedVersion).toBeNull();
+    expect(
+      sanitizePrefs({ updates: { dismissedVersion: " v0.5.0 " } }).updates.dismissedVersion,
+    ).toBe("v0.5.0");
     expect(
       sanitizePrefs({ updates: { dismissedVersion: "" } }).updates.dismissedVersion,
     ).toBeNull();
@@ -246,6 +268,53 @@ describe("sanitizePrefs", () => {
       sanitizePrefs({ updates: { dismissedVersion: "x".repeat(500) } }).updates.dismissedVersion
         ?.length,
     ).toBe(201);
+    expect(
+      sanitizePrefs({
+        updates: { notifiedVersion: "0.5.0", dismissedVersion: "0.4.0" },
+      }).updates,
+    ).toEqual({ autoCheck: true, notifiedVersion: "0.5.0", dismissedVersion: "0.4.0" });
+  });
+
+  it("defaults extension update checks on and bounds the notified signature", () => {
+    expect(sanitizePrefs({}).packages).toEqual({
+      autoCheck: true,
+      notifiedSignature: null,
+      dismissedSignature: null,
+    });
+    expect(sanitizePrefs({ packages: { autoCheck: false } }).packages).toEqual({
+      autoCheck: false,
+      notifiedSignature: null,
+      dismissedSignature: null,
+    });
+    // A non-boolean keeps the default, like every other switch.
+    expect(sanitizePrefs({ packages: { autoCheck: "yes" } }).packages.autoCheck).toBe(true);
+    expect(
+      sanitizePrefs({ packages: { notifiedSignature: "x".repeat(2_000) } }).packages
+        .notifiedSignature,
+    ).toHaveLength(MAX_PACKAGE_UPDATE_SIGNATURE);
+    expect(
+      sanitizePrefs({ packages: { notifiedSignature: "" } }).packages.notifiedSignature,
+    ).toBeNull();
+  });
+
+  it("bounds the dismissed update signature and keeps it independent of notified", () => {
+    expect(sanitizePrefs({}).packages.dismissedSignature).toBeNull();
+    expect(
+      sanitizePrefs({ packages: { dismissedSignature: "x".repeat(2_000) } }).packages
+        .dismissedSignature,
+    ).toHaveLength(MAX_PACKAGE_UPDATE_SIGNATURE);
+    expect(
+      sanitizePrefs({ packages: { dismissedSignature: "" } }).packages.dismissedSignature,
+    ).toBeNull();
+    expect(
+      sanitizePrefs({
+        packages: { notifiedSignature: "npm:foo@2.0.0", dismissedSignature: "npm:foo@1.0.0" },
+      }).packages,
+    ).toEqual({
+      autoCheck: true,
+      notifiedSignature: "npm:foo@2.0.0",
+      dismissedSignature: "npm:foo@1.0.0",
+    });
   });
 
   it("accepts every documented theme", () => {
@@ -273,16 +342,53 @@ describe("mergePrefs", () => {
 
   it("preserves the update prefs unless the patch replaces a field", () => {
     const current = sanitizePrefs({
-      updates: { autoCheck: true, dismissedVersion: "0.4.0" },
+      updates: { autoCheck: true, notifiedVersion: "0.4.0", dismissedVersion: "0.3.0" },
     });
-    // A patch that only turns auto-check off must keep the dismissal.
+    // A patch that only turns auto-check off must keep both markers.
     const merged = mergePrefs(current, { updates: { autoCheck: false } });
-    expect(merged.updates).toEqual({ autoCheck: false, dismissedVersion: "0.4.0" });
+    expect(merged.updates).toEqual({
+      autoCheck: false,
+      notifiedVersion: "0.4.0",
+      dismissedVersion: "0.3.0",
+    });
     // An unrelated patch must not touch the updater prefs at all.
     expect(mergePrefs(current, { theme: "light" }).updates).toEqual(current.updates);
+    expect(mergePrefs(current, { updates: { notifiedVersion: null } }).updates).toEqual({
+      autoCheck: true,
+      notifiedVersion: null,
+      dismissedVersion: "0.3.0",
+    });
     expect(mergePrefs(current, { updates: { dismissedVersion: null } }).updates).toEqual({
       autoCheck: true,
+      notifiedVersion: "0.4.0",
       dismissedVersion: null,
+    });
+  });
+
+  it("preserves the package-check prefs unless the patch replaces a field", () => {
+    const current = sanitizePrefs({
+      packages: {
+        autoCheck: true,
+        notifiedSignature: "npm:foo@2.0.0",
+        dismissedSignature: "npm:foo@1.9.0",
+      },
+    });
+    // Turning background checks off must keep both markers.
+    expect(mergePrefs(current, { packages: { autoCheck: false } }).packages).toEqual({
+      autoCheck: false,
+      notifiedSignature: "npm:foo@2.0.0",
+      dismissedSignature: "npm:foo@1.9.0",
+    });
+    expect(mergePrefs(current, { theme: "light" }).packages).toEqual(current.packages);
+    expect(mergePrefs(current, { packages: { notifiedSignature: null } }).packages).toEqual({
+      autoCheck: true,
+      notifiedSignature: null,
+      dismissedSignature: "npm:foo@1.9.0",
+    });
+    expect(mergePrefs(current, { packages: { dismissedSignature: null } }).packages).toEqual({
+      autoCheck: true,
+      notifiedSignature: "npm:foo@2.0.0",
+      dismissedSignature: null,
     });
   });
 
@@ -302,16 +408,45 @@ describe("mergePrefs", () => {
     expect(mergePrefs(current, { notifications: { muted: [] } }).notifications.muted).toHaveLength(
       0,
     );
+
+    // A class patch keeps the rules, and a mute patch keeps the classes.
+    const infoOn = mergePrefs(current, { notifications: { classes: { info: true } } });
+    expect(infoOn.notifications.classes).toEqual({
+      ...DEFAULT_NOTIFICATION_CLASSES,
+      info: true,
+    });
+    expect(infoOn.notifications.muted).toHaveLength(1);
+    expect(mergePrefs(infoOn, { notifications: { muted: [] } }).notifications.classes).toEqual({
+      ...DEFAULT_NOTIFICATION_CLASSES,
+      info: true,
+    });
   });
 });
 
 describe("notification preferences", () => {
-  it("defaults to no muted rules and uses a fresh array", () => {
-    expect(sanitizePrefs({}).notifications).toEqual({ muted: [] });
+  it("defaults to the class defaults and no muted rules with fresh objects", () => {
+    expect(sanitizePrefs({}).notifications).toEqual({
+      classes: DEFAULT_NOTIFICATION_CLASSES,
+      muted: [],
+    });
     const prefs = sanitizePrefs({});
     prefs.notifications.muted.push(muteRuleFor({ message: "x", type: "info" }, "exact"));
+    prefs.notifications.classes.info = true;
     expect(DEFAULT_PREFS.notifications.muted).toHaveLength(0);
+    expect(DEFAULT_PREFS.notifications.classes.info).toBe(false);
     expect(sanitizePrefs({}).notifications.muted).toHaveLength(0);
+    expect(sanitizePrefs({}).notifications.classes.info).toBe(false);
+  });
+
+  it("sanitizes each class flag independently", () => {
+    const result = sanitizePrefs({
+      notifications: { classes: { info: true, warning: "yes", nope: true } },
+    });
+    expect(result.notifications.classes).toEqual({
+      ...DEFAULT_NOTIFICATION_CLASSES,
+      info: true,
+    });
+    expect(result.notifications.classes).not.toHaveProperty("nope");
   });
 
   it("keeps a valid rule and drops malformed ones", () => {
@@ -458,5 +593,63 @@ describe("rail and checkpoint preferences", () => {
       maxPerSession: 250,
       exclude: ["*.iso"],
     });
+  });
+});
+
+/**
+ * The AI commit-message model (2026-11-25 plan step 17).
+ *
+ * One nested choice: `{ model: { provider, id } | null }`, where `null` is the
+ * Default mode model. The sanitizer must be total (a hand-edited app-state.json
+ * can say anything) and the merge must not let a model patch drop the rest of
+ * the block.
+ */
+describe("commit message preferences", () => {
+  it("defaults to Default for an older app-state.json", () => {
+    expect(sanitizePrefs({ theme: "light" }).commitMessage).toEqual({ model: null });
+    expect(DEFAULT_PREFS.commitMessage).toEqual({ model: null });
+  });
+
+  it("collapses junk, an empty half or an over-long id to Default", () => {
+    expect(sanitizePrefs({ commitMessage: "openai/gpt-5" }).commitMessage).toEqual({
+      model: null,
+    });
+    expect(
+      sanitizePrefs({ commitMessage: { model: { provider: "openai" } } }).commitMessage,
+    ).toEqual({ model: null });
+    expect(
+      sanitizePrefs({ commitMessage: { model: { provider: "", id: "gpt-5" } } }).commitMessage,
+    ).toEqual({ model: null });
+    expect(
+      sanitizePrefs({
+        commitMessage: { model: { provider: "x".repeat(201), id: "gpt-5" } },
+      }).commitMessage,
+    ).toEqual({ model: null });
+    expect(sanitizePrefs({ commitMessage: { model: 42 } }).commitMessage).toEqual({
+      model: null,
+    });
+  });
+
+  it("keeps a valid ref", () => {
+    expect(
+      sanitizePrefs({
+        commitMessage: { model: { provider: "openai", id: "gpt-5" } },
+      }).commitMessage,
+    ).toEqual({ model: { provider: "openai", id: "gpt-5" } });
+  });
+
+  it("keeps the rest of the block when only the model is patched", () => {
+    const current = sanitizePrefs({
+      commitMessage: { model: { provider: "openai", id: "gpt-5" } },
+    });
+    // A patch that only clears the pick must not lose the block's other keys; the
+    // block is one level deep today, and the merge keeps it that way.
+    expect(mergePrefs(current, { commitMessage: { model: null } }).commitMessage).toEqual({
+      model: null,
+    });
+    expect(mergePrefs(current, { theme: "light" }).commitMessage).toEqual(current.commitMessage);
+    expect(
+      mergePrefs(current, { commitMessage: { model: { provider: "x", id: "y" } } }).commitMessage,
+    ).toEqual({ model: { provider: "x", id: "y" } });
   });
 });

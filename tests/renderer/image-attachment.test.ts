@@ -52,6 +52,21 @@ describe("fileToAttachment", () => {
     expect((attachment?.data.length ?? 0) > 0).toBe(true);
   });
 
+  it("gives two copies of the same image distinct identities", async () => {
+    // The same screenshot pasted twice is two chips the user can remove
+    // separately (2026-11-22 prompt-refinement plan step 18).
+    const file = new File([new Uint8Array([1, 2, 3, 4])], "shot.png", { type: "image/png" });
+    const first = await fileToAttachment(file);
+    const second = await fileToAttachment(file);
+
+    expect(first?.id).toBeTruthy();
+    expect(second?.id).toBeTruthy();
+    expect(first?.id).not.toBe(second?.id);
+    expect(second?.name).toBe(first?.name);
+    expect(second?.mimeType).toBe(first?.mimeType);
+    expect(second?.data).toBe(first?.data);
+  });
+
   it("refuses a non-image file", async () => {
     const file = new File(["hello"], "notes.txt", { type: "text/plain" });
     expect(await fileToAttachment(file)).toBeNull();

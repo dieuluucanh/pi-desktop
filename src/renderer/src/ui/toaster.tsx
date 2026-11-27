@@ -1,6 +1,6 @@
 import { Toaster as SonnerToaster } from "sonner";
 
-/** Toast host (plan step 1): extension notifications and app errors land here. */
+/** Toast host (plan step 1): notifications and app errors land here. */
 export function Toaster({ theme }: { theme: "dark" | "light" | "system" }) {
   return (
     <SonnerToaster

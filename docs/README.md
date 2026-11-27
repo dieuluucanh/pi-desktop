@@ -1,18 +1,71 @@
 # Pi Desktop docs
 
+> **On the web:** [Pi Desktop product site](https://dieuluucanh.github.io/pi-desktop/) ·
+> [Installation](https://dieuluucanh.github.io/pi-desktop/#installation)
+
 ## Product
 
 - [`product/parity.md`](product/parity.md) — the feature matrix against terminal Pi (implemented,
   planned at which step, and what is deliberately out of scope, including MCP).
 - [`product/backlog.md`](product/backlog.md) — the deferred backlog: post-MVP items, MVP scope
   deferred during the plan, release engineering and the upstream watch list.
+- [`product/traceability.md`](product/traceability.md) — requirement → plan step → test/doc
+  evidence, so a claim can be traced to something that runs.
 
-## Releases
+## Release notes
 
+- [`releases/v0.11.0.md`](releases/v0.11.0.md) — v0.11.0 release notes (extension
+  dialogs that own the keyboard, one extension-owned Review line below the todo panel, the
+  native Workflow todo bar, terminal wheel paging and questionnaire paste, web tabs that
+  close and return to their opener, offers derived from live state, and the pinned
+  Projects header), install table, known limitations and verification status.
+- [`releases/v0.10.1.md`](releases/v0.10.1.md) — v0.10.1 release notes (prompt history
+  gates on displayed rows, the plain-arrow chord table, the layout-independent fallback
+  and the real-Chromium E2E proof), install table, known limitations and verification
+  status.
+- [`releases/v0.10.0.md`](releases/v0.10.0.md) — v0.10.0 release notes (extension
+  update checks with consent-gated updates, the Pi agent release channel, every
+  extension notification in the transcript, a full-width transcript, the
+  dismissable notification popover and the refreshed recommended set), install
+  table, known limitations and verification status.
+- [`releases/v0.9.0.md`](releases/v0.9.0.md) — v0.9.0 release notes (Review Mode is an
+  isolated turn with a Review bar and an in-app handoff; transcript/extension line
+  rendering; the one-write terminal paste fix; `@dieulc/workflow` 0.11.0), install
+  table, known limitations and verification status.
+- [`releases/v0.8.2.md`](releases/v0.8.2.md) — v0.8.2 release notes (Review Mode
+  handoff continuity and manual-review visibility, focused review web tabs, SDK 1.5.0
+  and the workflow 0.10.0 provider recovery), install table, known limitations and
+  verification status.
+- [`releases/v0.8.1.md`](releases/v0.8.1.md) — v0.8.1 release notes (the Linux
+  terminal fix: a pinned Debian 11 `node-pty` build, a packaged-PTY smoke test and a
+  fail-closed ELF floor gate, plus release-pipeline retries and caching), install table,
+  known limitations and verification status.
+- [`releases/v0.8.0.md`](releases/v0.8.0.md) — v0.8.0 release notes (notification
+  classes and the rebuilt bell, the update offer as a notification, and About & updates
+  as its own view), install table, known limitations and verification status.
+- [`releases/v0.7.3.md`](releases/v0.7.3.md) — v0.7.3 release notes (the first published
+  0.7 build: the PTY-backed integrated terminal, the session reliability pass,
+  host-side transcript search and the Node 24.22.2 runtime), the three release-tooling
+  fixes, install table, known limitations and verification status.
+- [`releases/v0.7.2.md`](releases/v0.7.2.md) — v0.7.2 release notes, kept for the record:
+  the tag was cut but the Linux artefact guard failed, so this version was never
+  published.
+- [`releases/v0.7.1.md`](releases/v0.7.1.md) — v0.7.1 release notes, kept for the record:
+  the tag was cut but the run failed while packaging Linux, so this version was never
+  published.
+- [`releases/v0.7.0.md`](releases/v0.7.0.md) — v0.7.0 release notes, kept for the record:
+  the tag was cut but the run failed before uploading, so this version was never
+  published.
+- [`releases/v0.6.0.md`](releases/v0.6.0.md) — v0.6.0 release notes (new files in
+  brand-new folders now appear in Changes with a full-file diff, honest status
+  timeouts, and the one-page product site), install table, the known-limitations
+  list and the verification status.
 - [`releases/v0.5.0.md`](releases/v0.5.0.md) — v0.5.0 release notes (first public,
   cross-platform, auto-updating release: the tag-driven pipeline, the macOS artefacts,
   the live update feed and the macOS manual-update rule), install table, the
   known-limitations list and the verification status.
+- [`releases/v0.4.0.md`](releases/v0.4.0.md) — the local v0.4.0 build: the explorer, editor tabs
+  and the first local Windows/Linux packaging run, with the same limitations.
 - [`releases/v0.3.0.md`](releases/v0.3.0.md) — v0.3.0 release notes (session-first
   chrome, the interface pass, source-control feedback and one-line history), install table,
   the known-limitations list and the verification status.
@@ -34,7 +87,8 @@
   usage, tool detail.
 - [`guide/extensions-and-packages.md`](guide/extensions-and-packages.md) — the Extensions hub,
   enable/disable, packages and consent, safe mode.
-- [`guide/settings.md`](guide/settings.md) — every Pi setting, scopes, raw JSON, backups.
+- [`guide/settings.md`](guide/settings.md) — every Pi setting, scopes, raw JSON, backups,
+  plus the app-owned Terminal and appearance preferences.
 - [`guide/skills-themes-keybindings.md`](guide/skills-themes-keybindings.md) — skills, themes and
   `keybindings.json`.
 - [`guide/office-setup.md`](guide/office-setup.md) — Pi for Office as an optional integration.
@@ -42,6 +96,9 @@
   History and Checkpoints sections: staging and committing, what a checkpoint is (and is not),
   restoring safely, retention, and `/checkpoint` in terminal Pi.
 - [`guide/plannotator-web-tabs.md`](guide/plannotator-web-tabs.md) — in-app web tabs and reviews.
+- [`guide/prompt-refinement.md`](guide/prompt-refinement.md) — refining a drafted request with
+  `/prompt` and the one-shot composer control: model scope, privacy, images, cancel/conflicts,
+  recovery, bundled/override/disable/safe mode, compatibility and limits.
 - [`guide/troubleshooting.md`](guide/troubleshooting.md) — safe mode, recovery, diagnostics.
 - [`guide/branding.md`](guide/branding.md) — the logo set, which mark belongs to which product, and
   how the icons are wired into the build.
@@ -54,9 +111,16 @@
   performance, onboarding/updates and packaging.
 - [`architecture/host-protocol.md`](architecture/host-protocol.md) — the main ⇄ Pi host JSONL
   protocol, including the RPC mapping table.
+- [`architecture/review-mode-baseline.md`](architecture/review-mode-baseline.md) — the
+  Command Code stream-cut evidence and probe matrix behind Review Mode provider recovery.
+- [`architecture/prompt-refinement.md`](architecture/prompt-refinement.md) — prompt-refinement
+  operation, bundled/override/disable/safe-mode behavior, independent upgrade/rollback,
+  compatibility matrix, tested versions and honest acceptance limits.
 - [`architecture/extension-ui.md`](architecture/extension-ui.md) — `ExtensionUIContext`
   member-by-member (the parity doc the definition of done calls `extension-parity.md`) and the
   TUI rendering surface.
+- [`architecture/session-parity.md`](architecture/session-parity.md) — the session file format,
+  resume behavior and the parity notes against terminal Pi.
 - [`architecture/source-control.md`](architecture/source-control.md) — the git and checkpoint
   engines, the shadow-repository layout, the private-index recipe, the CAS-retry and
   prune-suffix invariants, restore safety and the safe-mode rule for the extension.
@@ -66,8 +130,8 @@
 - [`architecture/runtime.md`](architecture/runtime.md) — the bundled Node/npm runtime, the
   `pi`/`npm` PATH shims, resolution order and packaging.
 - [`architecture/release-pipeline.md`](architecture/release-pipeline.md) — the tag-driven release
-  workflow, the draft→publish contract, the per-platform asset and manifest matrix, and the
-  macOS ad-hoc signing / manual-update rule.
+  workflow, the draft→publish contract, the per-platform asset and manifest matrix, the macOS
+  ad-hoc signing / manual-update rule and the GitHub Pages deployment.
 - [`architecture/versions.md`](architecture/versions.md) — pinned toolchain and runtime versions,
   and why.
 

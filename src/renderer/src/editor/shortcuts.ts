@@ -21,12 +21,14 @@ export interface EditorKeyEvent {
   defaultPrevented?: boolean;
 }
 
-export type EditorShortcut = "save" | "format";
+export type EditorShortcut = "save" | "format" | "wrap";
 
 /**
  * Save is `Mod-s` (Ctrl on Windows/Linux, Cmd on macOS) with no other
- * modifiers; Format is `Shift+Alt+F`. `Ctrl+Shift+S` is deliberately not save:
- * it is the platform's "Save As" chord and the editor has no such command.
+ * modifiers; Format is `Shift+Alt+F`; Wrap is `Alt+Z`, matching VS Code.
+ * `Ctrl+Shift+S` is deliberately not save: it is the platform's "Save As"
+ * chord and the editor has no such command. Alt+Z is claimed only with Alt
+ * alone, so `Ctrl+Alt+Z` (AltGr on some layouts) stays with the platform.
  */
 export function editorShortcut(event: EditorKeyEvent): EditorShortcut | null {
   if (event.defaultPrevented) return null;
@@ -34,5 +36,6 @@ export function editorShortcut(event: EditorKeyEvent): EditorShortcut | null {
   const mod = event.ctrlKey || event.metaKey;
   if (mod && !event.altKey && !event.shiftKey && key === "s") return "save";
   if (!mod && event.shiftKey && event.altKey && key === "f") return "format";
+  if (!mod && event.altKey && !event.shiftKey && key === "z") return "wrap";
   return null;
 }

@@ -20,14 +20,14 @@ is declared but not yet wired answers
 it** in the message — see “Implementation status” below, which is the current
 truth and supersedes the group table's implications.
 
-| Group         | Methods                                                                                                                                                                                                                   |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| transport     | `host.hello`, `host.ping`, `host.shutdown`, `host.blobs.read`, `host.metrics`                                                                                                                                             |
-| sessions      | `session.create/open/list/resume/fork/clone/delete/rename/exportHtml`                                                                                                                                                     |
-| conversation  | `prompt`, `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                      |
-| state         | `state.get`, `messages.get`, `entries.get`, `tree.get`, `stats.get`, `compact`, `commands.list`, `tools.*`, `model.*`, `thinking.*`                                                                                       |
-| configuration | `settings.*`, `providers.*`, `packages.*`                                                                                                                                                                                 |
-| other         | `oi.respond` (extension UI answers), `oi.state`, `oi.editorText`, `completion.suggest`, `completion.apply` (extension UI + composer bridge), `tui.state`, `tui.resize`, `tui.input` (extension TUI surface), `files.list` |
+| Group         | Methods                                                                                                                                                                                                                                                                                                          |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| transport     | `host.hello`, `host.ping`, `host.shutdown`, `host.blobs.read`, `host.metrics`                                                                                                                                                                                                                                    |
+| sessions      | `session.create/open/list/resume/fork/clone/delete/rename/exportHtml`                                                                                                                                                                                                                                            |
+| conversation  | `prompt`, `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                                                                                                             |
+| state         | `state.get`, `messages.get`, `entries.get`, `tree.get`, `stats.get`, `compact`, `commands.list`, `tools.*`, `model.*`, `thinking.*`                                                                                                                                                                              |
+| configuration | `settings.*`, `providers.*`, `packages.*`                                                                                                                                                                                                                                                                        |
+| other         | `oi.respond` (extension UI answers), `oi.state`, `oi.editorText`, `completion.suggest`, `completion.apply` (extension UI + composer bridge), `tui.state`, `tui.resize`, `tui.input` (extension TUI surface), `files.list`, `text.models`, `text.generate`, `text.cancel` (session-less generation, control host) |
 
 ## Framing rules
 
@@ -38,8 +38,28 @@ truth and supersedes the group table's implications.
   `failed` instead of pretending nothing happened.
 - A result at or above `BLOB_SPILL_THRESHOLD_BYTES` (1 MiB) is written to the
   host's blob cache and replaced by `{"$blob":"<path>","bytes":N}`; read it back
-  with `host.blobs.read`. That method is deliberately exempt from spilling again,
-  and it refuses any path outside the blob directory.
+  with `host.blobs.read`. **Every response consumer must resolve that reference.**
+  Treating the missing field as an empty result is a bug (the 2026-11-05 empty
+  `/resume` browser was exactly that). The renderer does this once, for all
+  `sessions.request` calls, in `src/renderer/src/state/host-response.ts`.
+- `host.blobs.read` is deliberately exempt from spilling again, refuses any path
+  outside the blob directory, and returns **UTF-8-safe byte-range chunks**:
+  `{ path, contents, offset, nextOffset, size, done }`. Pass `offset` (and
+  optionally `maxBytes`, default 2 MiB) and concatenate until `done`; the host
+  never returns a frame above `MAX_FRAME_BYTES`. A legacy host that answers with
+  the whole blob and no `done` is read as a single final chunk.
+- `session.list` is a bounded projection, not the raw `SessionInfo[]`: it accepts
+  `query`, `scope`, `cwd`, `sort`, `namedOnly`, `limit` and `refresh`, filters and
+  sorts in the control host over the full message text, and returns
+  `{ sessions, total, matched, truncated, error }` with no `allMessagesText`. The
+  page stays under the spill threshold; `truncated` tells the browser it is
+  showing the newest subset. **Only the control host serves it**; the session
+  host has no per-project handler, so a request addressed to a session tab fails
+  explicitly instead of silently listing one project. A control host without the
+  catalog port projects the same page from `SessionManager.listAll()` locally.
+  `created`/`modified` are epoch milliseconds on the wire: the host converts the
+  SDK’s `Date` objects before projection, and a missing timestamp is `0` (shown
+  as `—`, never as 1970).
 - An **event** payload over the threshold is spilled _in place_: each oversized
   top-level field (a tool `result`, a message body) becomes a `BlobRef` while the
   event keeps its identity, so the renderer can still render the card and fetch
@@ -69,18 +89,20 @@ truth and supersedes the group table's implications.
 
 ## Supervisor behaviour (`src/main/host-supervisor.ts`)
 
-| Concern        | Behaviour                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| correlation    | `{id}` → pending promise; a response for an unknown id is ignored                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| timeouts       | default 30 s per request, then `HostTimeoutError` (never an infinite hang)                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| crash          | `exit` rejects every in-flight request, emits `crashed`, restarts with backoff `0/500/2000 ms`, then re-runs the handshake. **The supervisor does not resume sessions**; `session-service` owns the JSONL and reopens it on the `ready` status.                                                                                                                                                                                                                                                                   |
-| restart budget | after the backoff table is exhausted the host becomes `failed` and `ready()` rejects                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| ports          | 38617 is the bridge's default; host processes get 38617 for the `office` tab and 38618+ otherwise. The on-demand Connect command passes `38617` explicitly, so a normal tab can own the bridge without a restart.                                                                                                                                                                                                                                                                                                 |
-| host cap       | `maxHosts` is the **memory-derived process ceiling** (`hostProcessCeiling(totalMemory)` = soft target + 2, clamped 4–10), not a capacity policy and not a session-tab limit. Starting one more rejects with a coded `HostLimitError` (`host_limit`) and a message that names host processes. The soft live-host target is enforced by the session service (LRU parking), not here.                                                                                                                                |
-| idle recycling | a non-Office host with no real traffic for `idleTimeoutMs` is stopped and dropped from the supervisor, so the next activation re-spawns it and `session-service` resumes from JSONL. The timeout is **on by default at 15 minutes**; `isPinned(sessionId)` protects the control host, the active tab and the `/health` bridge owner from _idle_ sleep. Before stopping, the supervisor sends `state.get` and skips the recycle when the session is streaming, compacting, retrying or queued.                     |
-| memory         | `host.metrics` is polled (`memoryPollMs`, 15 s); an **idle** host over `maxRssBytes` (1 GB default) is **stopped** (the same recycle path as idle), then the next interaction/ensure spawns and the session service resumes from JSONL. It is never restarted in place. The probe checks `state.get` first. Only the Office host and the `isBridgeOwner` host are exempt (they own port 38617); the active tab is deliberately **not** exempt, because this is the only per-host guard against a leaking session. |
-| logs           | one file per session in `userData/logs/<sessionId>.log`, bounded to the last 200 lines / 64 KB in memory and on disk.                                                                                                                                                                                                                                                                                                                                                                                             |
-| shutdown       | `host.shutdown` and a closed stdin pipe both run one idempotent teardown → `SIGTERM`, all pending requests settled, port released. A failed `start()`/`restart()` handshake terminates the child it spawned.                                                                                                                                                                                                                                                                                                      |
+| Concern          | Behaviour                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| correlation      | `{id}` → pending promise; a response for an unknown id is ignored                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| timeouts         | default 30 s per request, then `HostTimeoutError` (never an infinite hang)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| crash            | `exit` rejects every in-flight request, emits `crashed`, restarts with backoff `0/500/2000 ms`, then re-runs the handshake. **The supervisor does not resume sessions**; `session-service` owns the JSONL and reopens it on the `ready` status.                                                                                                                                                                                                                                                                                                                                                                                            |
+| restart budget   | after the backoff table is exhausted the host becomes `failed` and `ready()` rejects                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| one child per id | `sessionId` is the registry key and the supervisor is its only authority. `start()` for an id with a **live** entry (`starting`/`ready`/`restarting`) rejects with a coded `HostAlreadyRunningError` (`host_already_running`) **before** a port is allocated or a child spawned; an entry in `stopped`/`failed` state is stopped and replaced, so a crashed session still reopens. A rejected `host.shutdown()` still releases the map entry and its port (`try/finally`). `list()`, `capacity()` and `stopAll()` therefore always describe the real children.                                                                             |
+| ports            | 38617 is the bridge's default; host processes get 38617 for the `office` tab and 38618+ otherwise. The on-demand Connect command passes `38617` explicitly, so a normal tab can own the bridge without a restart.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| host cap         | `maxHosts` is the **memory-derived process ceiling** (`hostProcessCeiling(totalMemory)` = soft target + 2, clamped 4–10), not a capacity policy and not a session-tab limit. Starting one more rejects with a coded `HostLimitError` (`host_limit`) and a message that names host processes. The soft live-host target is enforced by the session service (LRU parking), not here. The registry is the unit: `start()` refuses a second live host for one `sessionId`, so `list()`, `capacity()` and `stopAll()` always describe real children.                                                                                            |
+| idle recycling   | a non-Office host with no real traffic for `idleTimeoutMs` is stopped and dropped from the supervisor, so the next activation re-spawns it and `session-service` resumes from JSONL. The timeout is **on by default at 15 minutes**; `isPinned(sessionId)` protects the control host, the active tab and the `/health` bridge owner from _idle_ sleep. Before stopping, the supervisor sends `state.get` and skips the recycle when the session is streaming, compacting, retrying or queued.                                                                                                                                              |
+| memory           | `host.metrics` is polled (`memoryPollMs`, 15 s). A **background idle** host over `maxRssBytes` (1 GB default) is stopped only after two consecutive over-budget samples and a one-minute startup grace period; the next activation/ensure spawns and the session service resumes from JSONL. It is never restarted in place. The probe checks `state.get` first. The active tab, every visible pane, a session linked to an active/visible web tab, the Office host and the `isBridgeOwner` host are protected: an over-budget active host is warned about and left running for a manual Restart. Passive reads never wake a stopped host. |
+| open timings     | `host.metrics` carries the session core's `lastOpen` phases (trust, services, scope, session, bind, reconcile, total) and the supervisor adds `bootMs` (spawn → `host.hello`) to `HostInfo`. Diagnostics renders `boot 2.3 s · open 5.4 s (services 4.6 s …)` per host and the exported bundle repeats it; `HOST_BOOT_BUDGET_MS` / `HOST_OPEN_BUDGET_MS` (3 s each) only colour the row. No new protocol method: the field is optional, so an older host bundle omits it.                                                                                                                                                                  |
+| logs             | one file per session in `userData/logs/<sessionId>.log`, bounded to the last 200 lines / 64 KB in memory and on disk. Every spawn rotates the previous run to `<id>.1.log` (then `.2`, `.3`) instead of truncating it, so a restart loop keeps its evidence.                                                                                                                                                                                                                                                                                                                                                                               |
+| shutdown         | `host.shutdown` and a closed stdin pipe both run one idempotent teardown → `SIGTERM`, all pending requests settled, port released. A failed `start()`/`restart()` handshake terminates the child it spawned.                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 `SpawnedHostProcess`, the spawn function and the filesystem port are all injected,
 so the whole supervisor is unit tested against a scripted fake host
@@ -94,13 +116,13 @@ drives the real bundle when `out/host/index.mjs` has been built.
 | Group             | Methods                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Where                                                                                                                             |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | transport         | `host.hello` (reports `role`), `host.ping`, `host.shutdown`, `host.blobs.read`, `host.metrics` (own RSS/heap/uptime)                                                                                                                                                                                                                                                                                                                                                                                                                            | `src/host/service.ts`                                                                                                             |
-| sessions          | `session.create`, `session.open`, `session.resume`, `session.list`, `session.new`, `session.switch`, `session.clone`, `session.fork`, `session.forkMessages`, `session.rename`, `session.reload`, `session.lastAssistantText`, `session.exportHtml`, `session.exportJsonl`, `session.importJsonl`, `session.changelog`, `session.navigateTree`, `session.setLabel`                                                                                                                                                                              | `src/host/session-core.ts`                                                                                                        |
+| sessions          | `session.create`, `session.open`, `session.resume`, `session.new`, `session.switch`, `session.clone`, `session.fork`, `session.forkMessages`, `session.rename`, `session.reload`, `session.lastAssistantText`, `session.exportHtml`, `session.exportJsonl`, `session.importJsonl`, `session.changelog`, `session.navigateTree`, `session.setLabel`                                                                                                                                                                                              | `src/host/session-core.ts`                                                                                                        |
 | conversation      | `prompt` (images + `streamingBehavior`; optional `promptOrigin` + `ack:"preflight"`), `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                                                                                                                                                                                                                                                                | `src/host/session-core.ts`                                                                                                        |
 | state             | `state.get`, `messages.get`, `entries.get` (`since` cursor), `tree.get`, `stats.get` (`contextUsage`, `tokens`, queue modes), `compact`, `tools.list`, `tools.setActive`, `commands.list`, `commands.complete` (a live command's `getArgumentCompletions`), `commands.run` (direct handler execution; optional `ack:"started"`), `files.list` (workspace listing for `@` completion, rooted at the session's own cwd)                                                                                                                           | `src/host/session-core.ts`                                                                                                        |
 | models & thinking | `model.list`, `model.available`, `model.set`, `model.cycle`, `thinking.levels`, `thinking.set`, `thinking.cycle`                                                                                                                                                                                                                                                                                                                                                                                                                                | `src/host/session-core.ts`                                                                                                        |
 | session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`, `session.abortCompaction`, `session.abortBranchSummary`                                                                                                                                                                                                                                                                                                                                                                                               | `src/host/session-core.ts`                                                                                                        |
 | settings          | `settings.get`, `settings.set`, `settings.raw` (read **or** write a whole scope), `settings.flush`; every response carries **both** scopes, the two file paths + mtimes, `drainErrors` and the project-trust flag. Writes are schema-validated: a named `SettingsManager` setter when Pi has one, otherwise an atomic whole-document edit, always with a backup before the first write                                                                                                                                                          | `src/host/settings.ts` + `src/host/sdk/settings.ts`, in both cores                                                                |
-| control host      | `settings.*`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `packages.*`, `project.inspect`, `project.trust`, `resources.list` (loads a project's resources with no session), `themes.*`, `keybindings.*`                                                                                                                                                                                                                          | `src/host/control-core.ts`                                                                                                        |
+| control host      | `settings.*`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `packages.*`, `project.inspect`, `project.trust`, `resources.list` (loads a project's resources with no session), `themes.*`, `keybindings.*`, `text.models`/`text.generate`/`text.cancel` (one-shot, no session)                                                                                                                                                      | `src/host/control-core.ts`                                                                                                        |
 | extensions hub    | `resources.list` (both cores): extensions/skills/prompts/themes with source, scope, origin, contributed tools/commands/shortcuts/flags, loader diagnostics and live `extension_error` history                                                                                                                                                                                                                                                                                                                                                   | `src/host/resources.ts` (+ `src/host/sdk/resources.ts`)                                                                           |
 | extension UI      | `oi.respond` + `oi.request` events; `oi.state` (the pushed snapshot, also readable on demand), `oi.editorText` (composer mirror), `completion.suggest`/`completion.apply` (host-run extension autocomplete providers). The full `ExtensionUIContext` is bound to every session via `bindSession`                                                                                                                                                                                                                                                | `src/host/extension-ui.ts` + `src/host/sdk/extension-ui.ts` (session host only)                                                   |
 | TUI surface       | `tui.state` (pull the whole surface snapshot), `tui.resize` (the **session column's** measured rows/cols), `tui.input` (raw terminal bytes). The host emulates `TUI` for `ctx.ui.custom()`, resolves overlay geometry and renders `custom`/`header`/`footer`/`widgetsAbove`/`widgetsBelow` to ANSI frames; the renderer converts them to HTML, docks a bottom sheet, floats any other overlay, and forwards DOM keys/wheel                                                                                                                      | `src/host/tui-surface.ts` + `src/host/sdk/tui-surface.ts`, `src/renderer/src/tui/*` (session host only)                           |
@@ -142,6 +164,21 @@ legacy await-the-operation behavior is preserved for other callers.
   (for example `/commit`'s `sendUserMessage`) is tagged too.
   `message_start.promptOrigin` is the only source of the transcript's command
   row; the renderer never infers it.
+- `queue_update` carries a host-added `queueOrigins: { steering, followUp }`
+  annotation, one `"user"` | `"extension"` per entry **in queue order**. The
+  SDK's own arrays stay complete (the snapshot and `isSessionBusyState` are
+  unchanged); the annotation is the renderer's only source of ownership. The
+  host attributes by diffing the SDK queues around a renderer request (`prompt`
+  with `streamingBehavior`, `steer`, `followUp`) and re-emits **one** annotated
+  `queue_update` right after it records the admitted texts, because the SDK's
+  own frame goes out first. The annotation is capability-gated: a session
+  without `getSteeringMessages`/`getFollowUpMessages` sends none, and the
+  renderer then treats every entry as the user's.
+- `clearQueue` answers `{ cleared, dropped }`: `cleared` holds only the user's
+  texts, and `dropped` counts the extension-owned entries the SDK-wide clear
+  discarded (the SDK has no selective clear, so this return is a report, not a
+  filter). `dropped` is absent when the host cannot attribute — the capability
+  gate above — and `cleared` is then the SDK's list unchanged.
 
 ### Packages (plan step 14)
 
@@ -150,6 +187,8 @@ legacy await-the-operation behavior is preserved for other callers.
 normalised source, kind (`npm`/`git`/`path`), scope, installed version, pin
 state and installed path. `packages.install`, `packages.remove` and
 `packages.update` take `{source?, scope, cwd?}` and answer the refreshed list.
+`packages.checkUpdates` takes `{cwd?, force?}` and answers
+`{updates, checkedAt, offline}` — see the update check below.
 
 - **Bare names are normalised to `npm:`** before anything else happens, because
   Pi's package manager treats a bare string as a _local path_ (`isLocalPath`).
@@ -163,6 +202,27 @@ state and installed path. `packages.install`, `packages.remove` and
 - **`packages.progress`** events carry `{operationId, action, phase, source,
 message?, percent?}` (npm reports no percentage, so `percent` is coarse), and
   a successful mutation emits `packages.changed` so every open hub re-reads.
+
+### Package update checks (2026-11-15 update-channels plan)
+
+`packages.checkUpdates` is **read-only**: Pi's own
+`DefaultPackageManager.checkForAvailableUpdates()` shells `npm view <spec>
+version` per unpinned package (10 s timeout, concurrency 4) and `git ls-remote`
+for a floating Git source, so pinned and local sources are skipped. Safe mode
+still answers it — it runs no third-party code; only `packages.install`,
+`packages.remove` and `packages.update` are refused.
+
+- **Answer:** `{updates: [{source, name, kind, scope, latestVersion}], checkedAt,
+offline}`. `latestVersion` is filled only for a floating `npm:name` (where
+  `latest` is what an update installs); a ranged or Git source reports an update
+  with `null` rather than a number that would not be installed.
+- **Cache:** one sweep per project for 60 s, with concurrent callers joining the
+  in-flight promise; `force: true` (Check now) skips the freshness window but
+  never starts a second sweep. Every successful mutation clears the cache.
+- **Offline:** `PI_OFFLINE` short-circuits before npm runs and answers
+  `offline: true`, so the UI says "offline" instead of "up to date".
+- **Failure:** a registry error is a `PackageError` (`offline`/`not_found`/…);
+  the renderer keeps the previous list and shows the reason quietly.
 
 `DefaultPackageManager` lives in `src/host/sdk/packages.ts` (the only module
 that constructs one). The bundled npm is injected as a **runtime-only**
@@ -393,7 +453,80 @@ has no session-state channel, no editor mirror, and cannot evaluate extension
 autocomplete providers), `tui.state`/`tui.resize`/`tui.input` (RPC mode's
 `custom()` returns `undefined`, so it has no terminal to render into or feed
 keys to), `render.request`/`render.markdown` (RPC mode renders tool/message
-components in-process; it has no client that could display ANSI lines).
+components in-process; it has no client that could display ANSI lines),
+`text.models`/`text.generate`/`text.cancel` (RPC mode has no session-less
+one-shot: its only model path is a prompt into a live session).
+
+### Session-less text generation (2026-11-25 commit-AI plan, step 16)
+
+`text.models`, `text.generate` and `text.cancel` are the app's only **session-less**
+model methods. They are served by the **control host only**
+(`src/host/text-generation.ts`, registered in `CONTROL_METHODS`), through the
+`ModelCompletionPort` on `ProviderPort.completion` — Pi's
+`ModelRuntime.completeSimple`, never an `AgentSession`. They exist because the
+commit box needs a message without writing a transcript turn, and `/commit`
+(Workflow) is a session command. They are app-internal — the reason they sit in
+the “no RPC equivalent” list above, by the same rule as `providers.runtimeKey`.
+
+| Method          | Params                                                                              | Result                                                                                    |
+| --------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `text.models`   | `{ cwd?: string \| null }`                                                          | `{ models: ModelChoice[], defaultModel: ModelChoice \| null, defaultAvailable: boolean }` |
+| `text.generate` | `{ requestId, cwd?, model?: { provider, id } \| null, system, prompt, maxTokens? }` | `{ requestId, text, model: ModelChoice, usage?: { input, output } }`                      |
+| `text.cancel`   | `{ requestId }`                                                                     | `{ ok: true }` (idempotent: an unknown or finished id is a no-op, not an error)           |
+
+`ModelChoice` is `{ provider, id, name }`. `requestId` is
+`/^[A-Za-z0-9_-]{1,64}$/` — the pair key for one generate/cancel. A `null`
+`model` means **Default**, which the host resolves from the project's then the
+global `defaultProvider`/`defaultModel`; when that default is not in the
+catalogue it falls back to the first available row, and `text.models` still
+reports the saved ref with `defaultAvailable: false` so the picker can say so.
+
+**Bounds.** `sanitizeTextGenerationRequest` enforces `MAX_SYSTEM_CHARS`
+(4 000), `MAX_PROMPT_CHARS` (120 000) and `MAX_OUTPUT_TOKENS` (2 048, default
+1 024). A violation is `bad_request`, never a silent truncation. A missing port
+answers `not_implemented` — the handlers are always registered, which is what
+keeps the control host's `handlers == CONTROL_METHODS` invariant true.
+
+**Failure codes.** `bad_request`, `not_implemented`, `no_model`,
+`unknown_model`, `aborted`, `timeout`, `provider_error`. Provider failures are
+values, not rejections in the SDK, so the adapter inspects `stopReason`: `error`
+→ `provider_error` (with the provider's `errorMessage`), `aborted` → `aborted`,
+and an empty `text` is refused rather than returned as a "successful" empty
+message. `length` stays a success — the text is real, just cut off — because the
+commit-message cleaner re-caps an over-long subject and body.
+
+**Two clocks.** The host owns a `GENERATION_TIMEOUT_MS = 90_000` abort per
+request, so it can answer `timeout` itself; `session-service`'s
+`REQUEST_TIMEOUT_OVERRIDES` gives `text.generate` 120 s, longer than the host's
+own clock so the typed code wins over a transport refusal.
+
+**Never replayed.** `text.generate` is in neither `PASSIVE_METHODS` nor
+`READ_ONLY_RETRY_METHODS`. Every other retryable method is a read or an
+idempotent state write; a generation is neither — a replay would bill a second
+call and return a second, different message. Cancellation is explicit
+(`text.cancel`), and a dropped frame surfaces as a failure the user can retry.
+
+**Session affinity.** `createCompletion` in `src/host/sdk/providers.ts` mints one
+opaque UUID per control-host process — a default parameter evaluated once, when
+`createSdkProviderPort` builds the port — and passes it as `sessionId` to
+`ModelRuntime.completeSimple`. The id must be non-empty and identical across
+every call from that process: a blank value is replaced rather than forwarded,
+and a fresh id per request would degrade provider routing and prompt-cache
+affinity. This is not an OpenCode-only flag — `sessionId` is the request-level
+conversation id for _every_ provider (`StreamOptions.sessionId`,
+`pi-ai/dist/types.d.ts:139-144`). A normal `AgentSession`, and a `pi` CLI
+session, gets that id from `SessionManager`; the control host has no session,
+hence the explicit value. OpenCode Go and Zen uniquely **require** it as
+`x-opencode-session` and answer HTTP 400 `MissingSessionID` without it; the
+header is emitted only where `isOpenCode()` holds — provider id exactly
+`opencode`/`opencode-go`, or a baseUrl whose hostname is exactly `opencode.ai`
+(`pi-ai/dist/utils/identity.js:61-63,86-92`). The same value also becomes
+`prompt_cache_key` for OpenAI-compatible and Azure endpoints (`api.openai.com`,
+or long cache retention), `x-affinity` and the payload's `promptCacheKey` for
+Mistral, and `x-session-affinity`/`x-session-id` where the model's compat
+enables session-affinity headers. The id is host-owned and stays on the host
+side of the call: the `text.generate` wire shape is unchanged, so no renderer or
+protocol change follows from it.
 
 ### Host build identity and stale recycling (2026-10-24)
 

@@ -31,6 +31,8 @@ import {
   withScopedFirst,
   type ModelCatalogEntry,
 } from "./model-catalog";
+import type { ScopeDiagnosticInfo } from "../../../shared/model-scope";
+import type { DefaultModelProblem } from "../../../shared/model-default";
 
 export interface ModelPickerProps {
   open: boolean;
@@ -45,6 +47,10 @@ export interface ModelPickerProps {
   scoped: readonly string[];
   /** Persisted scope patterns (for the no-scope note). */
   patterns?: readonly string[];
+  /** Resolver warnings for those patterns; rendered instead of swallowed. */
+  diagnostics?: readonly ScopeDiagnosticInfo[];
+  /** The saved default is missing from the catalogue (step 12). */
+  defaultProblem?: DefaultModelProblem | null;
   /** Where model/scope/thinking writes go for this tab. */
   scopeTarget?: "global" | "project";
   /** The model key whose scope write is in flight, if any. */
@@ -65,6 +71,8 @@ export function ModelPicker({
   initialQuery = "",
   scoped,
   patterns = [],
+  diagnostics = [],
+  defaultProblem = null,
   scopeTarget = "global",
   scopeBusyKey = null,
   error = null,
@@ -168,6 +176,30 @@ export function ModelPicker({
           <p role="alert" data-testid="model-picker-error" className="mt-2 text-xs text-danger">
             {error}
           </p>
+        ) : null}
+        {defaultProblem ? (
+          <p
+            role="status"
+            data-testid="model-default-missing"
+            className="mt-2 rounded-sm border border-warn/40 px-2 py-1 text-[11px] text-warn"
+          >
+            {defaultProblem.message}
+          </p>
+        ) : null}
+        {diagnostics.length > 0 ? (
+          <ul
+            data-testid="model-scope-diagnostics"
+            className="mt-2 space-y-1 rounded-sm border border-warn/40 px-2 py-1 text-[11px] text-warn"
+          >
+            {diagnostics.map((diagnostic, index) => (
+              <li key={`${diagnostic.code ?? "warning"}:${index}`}>
+                {diagnostic.message}
+                {diagnostic.pattern ? (
+                  <span className="ml-1 font-mono text-ink-faint">{diagnostic.pattern}</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
         ) : null}
 
         <label className="mt-3 flex items-center gap-2 rounded-sm border border-line px-2 py-1">

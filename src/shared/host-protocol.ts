@@ -9,6 +9,8 @@
  * Both sides share this module: it is the only place that knows the wire shape.
  */
 
+import { JsonlDecoder } from "./jsonl";
+
 export const HOST_PROTOCOL_VERSION = 1;
 
 /** Requests and responses larger than this are refused (blobs are the answer). */
@@ -16,6 +18,13 @@ export const MAX_FRAME_BYTES = 5 * 1024 * 1024;
 
 /** Values at or above this size are spilled to the blob cache instead of the frame. */
 export const BLOB_SPILL_THRESHOLD_BYTES = 1024 * 1024;
+
+/**
+ * Largest chunk `host.blobs.read` returns in one response. It leaves ample
+ * headroom under {@link MAX_FRAME_BYTES}, so even a large spilled response can be
+ * read back without dropping the frame.
+ */
+export const BLOB_CHUNK_BYTES = 2 * 1024 * 1024;
 
 /** Environment variable telling a host where to spill oversized payloads. */
 export const BLOB_DIR_ENV = "PI_DESKTOP_BLOB_DIR";
@@ -67,6 +76,18 @@ export const ROLE_FLAG = "--role";
 export const SAFE_MODE_ENV = "PI_DESKTOP_SAFE_MODE";
 
 /**
+ * Absolute path of the staged Workflow artifact (plan steps 26–27).
+ *
+ * Main resolves the layout once (`resources/extensions/workflow` when packaged,
+ * `resources/` + `out/extensions/` in development) and hands the winner to every
+ * host, so a session runtime and the Extensions hub's control host register
+ * **the same** `builtin:workflow` copy. An absent/empty value means no staged
+ * bundle: the host registers no built-in and reports why, and never falls back
+ * to a developer checkout or an npm install.
+ */
+export const WORKFLOW_BUNDLE_DIR_ENV = "PI_DESKTOP_WORKFLOW_BUNDLE_DIR";
+
+/**
  * Pi's own install-telemetry switch (plan step 23). The app sets `PI_TELEMETRY=0`
  * on every host it spawns unless the user opted in, so an app install never
  * sends the anonymous install/attribution ping by default. It is Pi's variable,
@@ -75,6 +96,51 @@ export const SAFE_MODE_ENV = "PI_DESKTOP_SAFE_MODE";
  * profile terminal Pi also reads.
  */
 export const TELEMETRY_ENV = "PI_TELEMETRY";
+
+/**
+ * The real Pi CLI child agents must run (Workflow plan step 30).
+ *
+ * Workflow's `explore`/review reconnaissance spawn `pi --mode json` themselves.
+ * A host process cannot hand them its own entry point: that entry point runs the
+ * service protocol here, and inheriting {@link SERVICE_ENV} would make the child
+ * a second host instead of a CLI. Main resolves the SDK's own
+ * `dist/bundle/cli.js` and passes it as this variable.
+ */
+export const PI_CLI_ENV = "PI_SUBAGENT_PI_CLI";
+/** Node binary paired with {@link PI_CLI_ENV} (the bundled runtime). */
+export const PI_CLI_NODE_ENV = "PI_SUBAGENT_PI_NODE";
+
+/**
+ * The resolved Workflow entry a child CLI must load (Workflow plan step 30).
+ *
+ * The child's bash gate lives in the Workflow extension, and a fresh CLI process
+ * does not inherit the app's `builtin:workflow` registration. Handing it the
+ * staged artifact and asking for isolation loads exactly one implementation.
+ */
+export const WORKFLOW_EXTENSION_ENV = "PI_SUBAGENT_WORKFLOW_EXTENSION";
+export const WORKFLOW_ISOLATE_ENV = "PI_SUBAGENT_WORKFLOW_ISOLATE";
+
+/**
+ * Names a host must strip from a child CLI's environment.
+ *
+ * Every entry is a Pi Desktop host marker. Inheriting them into a child would
+ * either re-enter service mode or point the child at the app's host bundle —
+ * neither is a Pi session.
+ */
+export const SUBAGENT_ENV_STRIP_ENV = "PI_SUBAGENT_ENV_STRIP";
+
+/** The strip list as it is written into {@link SUBAGENT_ENV_STRIP_ENV}. */
+export function subagentEnvStripList(): string {
+  return [
+    SERVICE_ENV,
+    HOST_ROLE_ENV,
+    SESSION_ID_ENV,
+    HOST_BUILD_ENV,
+    "PI_DESKTOP_HOST_ENTRY",
+    "PI_DESKTOP_TERMINAL_ENTRY",
+    "PI_OFFICE_BRIDGE_PORT",
+  ].join(",");
+}
 
 export type HostRole = "control" | "session";
 
@@ -100,6 +166,8 @@ export type HostResponseFrame =
 export interface HostEventFrame {
   event: string;
   sessionId?: string;
+  /** Monotonic attachment counter; a reload keeps the id but bumps this. */
+  sessionEpoch?: number;
   payload?: unknown;
 }
 
@@ -113,6 +181,31 @@ export interface BlobRef {
   $blob: string;
   bytes: number;
   sha256?: string;
+}
+
+/**
+ * One chunk of a spilled blob. `offset` and `nextOffset` are **byte** offsets;
+ * `contents` always starts and ends on a UTF-8 code-point boundary, so a caller
+ * can simply concatenate the chunks and parse the result.
+ */
+export interface BlobReadResult {
+  path: string;
+  contents: string;
+  offset: number;
+  nextOffset: number;
+  size: number;
+  done: boolean;
+}
+
+/**
+ * A chunked read (or, for an older host, a legacy full read with just
+ * `path`/`contents`). Callers treat a missing `done` as "this was the whole
+ * blob", which keeps the reader compatible across a host rebuild.
+ */
+export function isBlobReadResult(value: unknown): value is BlobReadResult {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.path === "string" && typeof record.contents === "string";
 }
 
 /** Methods a host must understand. Session semantics land in plan step 5. */
@@ -161,6 +254,26 @@ export const HOST_METHODS = [
   // boundary, so the host runs it and returns plain items).
   "commands.run",
   "commands.complete",
+  // Generic extension contributions (orchestrator plan steps 7-8). The host
+  // applies validated envelopes from the extension bus and exposes one
+  // extension-agnostic snapshot plus a command-validated action runner.
+  "contributions.state",
+  "contributions.run",
+  // Related-session host contract (orchestrator plan step 12): a host forwards
+  // an extension's create/open/focus/... request to main as an event, and main
+  // settles the pending idempotent operation with this request.
+  "sessionHost.result",
+  // Composer-transform host contract (prompt-refinement plan step 14). Start
+  // returns a source-bound receipt; status/cancel/applied are idempotent. The
+  // private typed port travels through the in-process rendezvous, never a
+  // prompt or a command string.
+  "composer.transform",
+  "composer.status",
+  "composer.cancel",
+  "composer.applied",
+  // Reconciliation read (prompt-refinement plan step 23): a reloaded renderer
+  // asks for the live operation bound to its tab before starting another.
+  "composer.current",
   "tools.list",
   "tools.setActive",
   "model.list",
@@ -184,10 +297,17 @@ export const HOST_METHODS = [
   "providers.login",
   "providers.logout",
   "providers.setKey",
+  // session-less text generation (commit message): one-shot `completeSimple` on
+  // the control host — no `AgentSession`, no JSONL and no extension. No RPC
+  // equivalent either: RPC has no session-less completion.
+  "text.models",
+  "text.generate",
+  "text.cancel",
   "packages.install",
   "packages.remove",
   "packages.update",
   "packages.list",
+  "packages.checkUpdates",
   // extension UI + files
   "oi.respond",
   // Extension-UI state and the composer bridge (plan step 16). No RPC
@@ -200,6 +320,12 @@ export const HOST_METHODS = [
   // it. Declared explicitly because `isHostMethod` guards the request path.
   "oi.setToolsExpanded",
   "oi.editorText",
+  // The renderer's acknowledgement that it consumed one editor command (plan
+  // step 17). Delivery of `setEditorText`/`pasteToEditor` is one-shot per
+  // renderer attachment, so a reconnected renderer is never handed the same
+  // edit again. Additive: an older host rejects it and the renderer ignores the
+  // rejection.
+  "oi.editorConsumed",
   "completion.suggest",
   "completion.apply",
   // The extension TUI surface (plan step 17). No RPC equivalent: RPC mode's
@@ -305,56 +431,23 @@ export function isBlobRef(value: unknown): value is BlobRef {
 }
 
 /**
- * Splits a byte stream into frames.
+ * Splits a byte stream into Pi host frames.
  *
- * Guards against a single frame exceeding `maxBytes` (a bug or a hostile
- * payload): the oversized line is discarded and reported once, and the decoder
- * resynchronises on the next newline.
+ * The overflow/resync logic lives in the generic `JsonlDecoder` (shared with the
+ * terminal host); this class keeps the host-specific decode and result shape so
+ * existing call sites and tests are unchanged.
  */
 export class JsonlFrameDecoder {
-  private buffer = "";
-  private dropping = false;
-  private readonly maxBytes: number;
+  private readonly decoder: JsonlDecoder<HostFrame>;
 
   constructor(maxBytes: number = MAX_FRAME_BYTES) {
-    this.maxBytes = maxBytes;
+    this.decoder = new JsonlDecoder<HostFrame>(decodeFrame, maxBytes);
   }
 
   /** Feeds a chunk and returns every complete frame it produced. */
   push(chunk: string): { frames: HostFrame[]; overflow: boolean } {
-    this.buffer += chunk;
-    const frames: HostFrame[] = [];
-    let overflow = false;
-
-    for (;;) {
-      const newline = this.buffer.indexOf("\n");
-      if (newline === -1) break;
-      const line = this.buffer.slice(0, newline);
-      this.buffer = this.buffer.slice(newline + 1);
-      if (this.dropping) {
-        this.dropping = false;
-        overflow = true;
-        continue;
-      }
-      if (line.length > this.maxBytes) {
-        overflow = true;
-        continue;
-      }
-      frames.push(...toFrames(decodeFrame(line)));
-    }
-
-    if (this.buffer.length > this.maxBytes) {
-      this.buffer = "";
-      this.dropping = true;
-      overflow = true;
-    }
-
-    return { frames, overflow };
+    return this.decoder.push(chunk);
   }
-}
-
-function toFrames(frame: HostFrame | null): HostFrame[] {
-  return frame === null ? [] : [frame];
 }
 
 /** True when a value cannot be sent as-is inside a frame. */

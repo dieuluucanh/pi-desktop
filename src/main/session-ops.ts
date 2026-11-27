@@ -9,7 +9,8 @@
  * response can never point the trashing at an arbitrary file.
  *
  * Pure (no `electron`), so `tests/main/session-ops.test.ts` can prove the
- * containment rule on every platform's path syntax.
+ * containment rule with the host path flavour; the Windows rules run on the
+ * Windows CI job.
  */
 
 import { isAbsolute, join, relative, resolve } from "node:path";

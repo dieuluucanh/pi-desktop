@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -14,12 +14,15 @@ import {
   SERVICE_ENV,
   SERVICE_FLAG,
   SESSION_ID_ENV,
+  WORKFLOW_BUNDLE_DIR_ENV,
   isHostRole,
   type HostRole,
 } from "../shared/host-protocol";
 import { resolveCheckpointExtension } from "./checkpoint-extension";
+import { resolveWorkflowBuiltin, type WorkflowBuiltinResolution } from "./workflow-builtin";
 import { createControlCore } from "./control-core";
 import { createExtensionRendererRegistry } from "./extension-renderers";
+import { createFooterFacts } from "./footer-facts";
 import { createExtensionUiBridge, createExtensionUiPort } from "./extension-ui";
 import {
   createNodeFileListingIo,
@@ -33,11 +36,14 @@ import { readWorkspaceFile, writeWorkspaceFile } from "../workspace/workspace-fi
 import { inspectProject } from "./project-inspect";
 import { createProjectTrust } from "./project-trust";
 import { createProviderLoginHandlers } from "./provider-login";
-import { PACKAGE_METHODS, PackageError } from "./packages";
+import { PACKAGE_MUTATION_METHODS, PackageError } from "./packages";
 import { SAFE_MODE_PACKAGE_REFUSAL } from "./safe-mode";
 import type { CustomProviderStore } from "./custom-providers";
 import type { ProviderPort } from "./providers";
 import { createSessionCore, type SessionCore } from "./session-core";
+import { createSdkContributionBridge, createSdkEventBus } from "./sdk/contributions";
+import { createSdkComposerTransformHost } from "./sdk/composer-transform";
+import { createSessionCatalog } from "./session-catalog";
 import { createHostService, type HostHandler, type HostService } from "./service";
 import {
   ProjectTrustStore,
@@ -101,10 +107,10 @@ export function classifyInvocation(
   return wantsService ? { mode: "service", args } : { mode: "cli", args };
 }
 
-/** Delegates to the Pi coding agent CLI (the SDK's `main`). */
+/** Delegates to the Pi coding agent CLI (the SDK's `main`), via the SDK boundary. */
 export async function runCli(args: readonly string[]): Promise<void> {
-  const { main } = await import("@earendil-works/pi-coding-agent");
-  await main([...args]);
+  const { runSdkCli } = await import("./sdk/index");
+  await runSdkCli(args);
 }
 
 function flagValue(args: readonly string[], flag: string): string | null {
@@ -143,6 +149,45 @@ function extensionFileExists(target: string): boolean {
   }
 }
 
+/** Any path (directory or file) that exists; injected into the resolver too. */
+function pathExists(target: string): boolean {
+  try {
+    return existsSync(target);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The bundled Workflow builtin for this host process (plan step 27).
+ *
+ * Main resolved the staged directory (packaged `resources/extensions/workflow`
+ * or the development `resources/`/`out/` copies) and passed it as
+ * {@link WORKFLOW_BUNDLE_DIR_ENV}; this host verifies the identity document and
+ * registers `builtin:workflow`. The SDK still owns enable/disable
+ * (`-builtin:workflow`, project trust) and replacement by an installed copy.
+ *
+ * Safe mode resolves to "nothing registered" without reading the disk, and an
+ * absent/invalid artifact is reported rather than replaced by a checkout or a
+ * runtime install.
+ */
+export function resolveHostWorkflowBuiltin(
+  env: Record<string, string | undefined>,
+  dependencies: {
+    safeMode?: boolean;
+    exists?(target: string): boolean;
+    readFile?(target: string): string;
+  } = {},
+): WorkflowBuiltinResolution {
+  const exists = dependencies.exists ?? pathExists;
+  return resolveWorkflowBuiltin({
+    ...(dependencies.safeMode ? { safeMode: true } : {}),
+    bundleDir: env[WORKFLOW_BUNDLE_DIR_ENV]?.trim() || null,
+    exists,
+    readFile: dependencies.readFile ?? ((target) => readFileSync(target, "utf8")),
+  });
+}
+
 function createCore(options: {
   cwd: string;
   agentDir: string;
@@ -151,12 +196,16 @@ function createCore(options: {
   backupDir?: string;
   safeMode?: boolean;
   checkpointsExtensionPath?: string | null;
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
   bindSession?: (session: never, runtime: never) => Promise<void>;
 }): SessionCore {
   const trustStore = new ProjectTrustStore(options.agentDir);
   const settingsIo = createNodeSettingsFileIo();
   const modelsIo = createNodeModelsFileIo();
   const fileListingIo = createNodeFileListingIo();
+  // One shared bus per host process: the runtime loader receives this instance,
+  // so an extension's `pi.events` and the contribution bridge are the same bus.
+  const contributionBus = createSdkEventBus();
   // Profile keybindings (plan step 15): one port for the whole host process.
   const keybindingPort = createSdkKeybindingPort({ agentDir: options.agentDir, io: modelsIo });
 
@@ -168,9 +217,37 @@ function createCore(options: {
     ...(options.checkpointsExtensionPath
       ? { checkpointsExtensionPath: options.checkpointsExtensionPath }
       : {}),
+    ...(options.workflowBuiltin ? { workflowBuiltin: options.workflowBuiltin } : {}),
     ...(options.bindSession ? { bindSession: options.bindSession as never } : {}),
     emit: options.emit,
     trustStore,
+    contributionBus,
+    createContributionBridge: (host) =>
+      createSdkContributionBridge({
+        host,
+        bus: contributionBus,
+        onError: (error) => console.error("[contributions]", error),
+      }),
+    // Source-bound composer operations (prompt-refinement row 14): the SDK
+    // adapter supplies live command provenance, the companion string handler
+    // invocation and the CSPRNG; the host core owns the job/grants/rendezvous.
+    createComposerTransformHost: (options) =>
+      createSdkComposerTransformHost({
+        ...options,
+        clock: {
+          now: () => Date.now(),
+          setTimeout: (callback, ms) => setTimeout(callback, ms),
+          clearTimeout: (handle) => clearTimeout(handle as Parameters<typeof clearTimeout>[0]),
+        },
+        onError: (error) => {
+          options.onError?.(error);
+          console.error("[composer-transform]", error);
+        },
+        log: (line) => {
+          console.error(`[composer-transform] ${line}`);
+          options.log?.(line);
+        },
+      }),
     requiresTrust: (cwd) => hasTrustRequiringProjectResources(cwd),
     // Settings writes use the session's own manager for the session cwd, so a
     // change is visible to this session without a second manager (plan step 12).
@@ -186,7 +263,6 @@ function createCore(options: {
     newSessionManager: (cwd, sessionDir) => SessionManager.create(cwd, sessionDir) as never,
     openSessionManager: (sessionFile, cwd, sessionDir) =>
       SessionManager.open(sessionFile, sessionDir, cwd) as never,
-    listSessions: (cwd) => SessionManager.list(cwd) as Promise<never[]>,
     listFiles: (cwd, options) => listWorkspaceFiles(createNodeFileListingIo(), cwd, options),
     // Workspace file access (plan step 23): one node adapter, rooted at the
     // session cwd by the guard inside `workspace-files.ts`.
@@ -234,8 +310,12 @@ function createCore(options: {
         cwd: request.cwd,
         agentDir: request.agentDir,
         sessionManager: request.sessionManager as never,
+        eventBus: contributionBus,
         ...(request.npmCommand ? { npmCommand: request.npmCommand } : {}),
         ...(request.projectTrusted === undefined ? {} : { projectTrusted: request.projectTrusted }),
+        // Phase timings for the last open (2026-11-07 plan): the adapter owns
+        // services/scope/session, the core owns trust/bind/reconcile.
+        ...(request.onPhase ? { onPhase: request.onPhase } : {}),
       };
       const created = await createSdkSessionRuntime(runtimeRequest);
       return { runtime: created.runtime, session: created.session };
@@ -267,6 +347,7 @@ function createControlHostCore(options: {
   providers: ProviderPort;
   customProviders: CustomProviderStore;
   npmCommand?: readonly string[] | null;
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
 }) {
   const trust = createProjectTrust({
     store: new ProjectTrustStore(options.agentDir),
@@ -275,6 +356,9 @@ function createControlHostCore(options: {
   const projectIo = createNodeProjectIo();
   const modelsIo = createNodeModelsFileIo();
   const fileListingIo = createNodeFileListingIo();
+  // One cache and one host-side search path for the session browser. The full
+  // text stays here; `session.list` only sends the bounded projection.
+  const sessionCatalog = createSessionCatalog({ loadAll: () => listAllSessions() });
 
   return createControlCore({
     // One port; it resolves a `SettingsManager` per project cwd on demand, so a
@@ -288,7 +372,9 @@ function createControlHostCore(options: {
       ...(options.backupDir ? { backupDir: options.backupDir } : {}),
       isProjectTrusted: (cwd) => trust.status(cwd).trusted,
     }),
-    listSessions: () => listAllSessions(),
+    listSessions: () => sessionCatalog.all(),
+    listSessionPage: (query) => sessionCatalog.page(query),
+    disposeCatalog: () => sessionCatalog.dispose(),
     // Renaming a closed session goes through `SessionManager`, the SDK's own
     // writer — the control host still never builds an `AgentSession`.
     renameSession: async (sessionFile, name) => renameStoredSession(sessionFile, name),
@@ -314,7 +400,9 @@ function createControlHostCore(options: {
       cwd: options.cwd,
       isProjectTrusted: (cwd) => trust.status(cwd).trusted,
       ...(options.safeMode ? { safeMode: true } : {}),
+      ...(options.workflowBuiltin ? { workflowBuiltin: options.workflowBuiltin } : {}),
     }),
+    ...(options.workflowBuiltin ? { workflowBuiltin: options.workflowBuiltin } : {}),
     // Profile keybindings and the theme catalogue (plan step 15) work with no
     // session open; the theme port is built per project cwd over a fresh
     // settings manager, exactly as the control settings port does.
@@ -370,8 +458,20 @@ export function runService(
     // The core is built before the service (which owns the frame writer), so the
     // emitter is forwarded through this small indirection.
     const forward = {
-      emit: (_event: string, _payload?: unknown, _sessionId?: string): void => undefined,
+      emit: (
+        _event: string,
+        _payload?: unknown,
+        _sessionId?: string,
+        _sessionEpoch?: number,
+      ): void => undefined,
     };
+    // Filled after the core exists. Extension UI events are process-global, so
+    // without this default every `oi.*` frame would arrive with no session id
+    // and could be mistaken for the replacement session (2026-11-06 loop).
+    let coreIdentity = (): { sessionId: string | null; epoch: number } => ({
+      sessionId: null,
+      epoch: 0,
+    });
 
     // The control host owns the app-wide credential surface, so its provider port
     // is shared by the `providers.*` handlers and the login bridge below.
@@ -428,6 +528,9 @@ export function runService(
         return {};
       }
     };
+    // The footer's git probe is per host process: a watcher is started only
+    // while an extension footer is subscribed, so an idle session costs nothing.
+    const footerGitIo = createNodeProjectIo();
     const bindSession =
       uiPort && tuiSurface
         ? createSdkExtensionBinder({
@@ -435,6 +538,22 @@ export function runService(
             tuiSurface,
             ...(rendererRegistry ? { renderers: rendererRegistry } : {}),
             readKeybindings,
+            // A custom footer gets the real branch/provider facts Pi provides
+            // (row 28): the branch is polled only while a footer is subscribed,
+            // and the provider count follows the live session model runtime.
+            footerFacts: (session, runtime) =>
+              createFooterFacts({
+                cwd: runtime.cwd,
+                io: footerGitIo,
+                availableProviderCount: () => {
+                  const available = session.modelRuntime?.getAvailableSnapshot?.() ?? [];
+                  return new Set(
+                    available
+                      .map((model) => model.provider)
+                      .filter((provider): provider is string => typeof provider === "string"),
+                  ).size;
+                },
+              }),
             emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
           })
         : null;
@@ -452,6 +571,13 @@ export function runService(
     });
     const checkpointExtensionPath = checkpointExtension.path;
 
+    // The bundled Workflow builtin (plan step 27), resolved once per host
+    // process: the session runtime and the Extensions hub's control-host loader
+    // must register the same named builtin, so one resolution feeds both. Main
+    // chose the staged directory (including an explicit override) and safe mode
+    // short-circuits without touching the disk.
+    const workflowBuiltin = resolveHostWorkflowBuiltin(env, { safeMode });
+
     const core =
       providerPort && customProviderStore
         ? createControlHostCore({
@@ -462,6 +588,7 @@ export function runService(
             ...(npmCommand ? { npmCommand } : {}),
             providers: providerPort,
             customProviders: customProviderStore,
+            ...(workflowBuiltin ? { workflowBuiltin } : {}),
           })
         : createCore({
             cwd,
@@ -476,15 +603,20 @@ export function runService(
               : { checkpointsExtensionPath: checkpointExtensionPath }),
             ...(npmCommand ? { npmCommand } : {}),
             ...(bindSession ? { bindSession } : {}),
+            ...(workflowBuiltin ? { workflowBuiltin } : {}),
             emit: (event, payload, sessionId) => forward.emit(event, payload, sessionId),
           });
+
+    if ("identity" in core && typeof core.identity === "function") {
+      coreIdentity = () => core.identity();
+    }
 
     const handlers: Partial<Record<string, HostHandler>> = { ...core.handlers() };
     // Safe mode (plan step 22) is enforced at the composition root: installing or
     // removing a package is the one mutation that could re-introduce third-party
     // code, so every package mutation is refused outright.
     if (safeMode) {
-      for (const method of PACKAGE_METHODS) {
+      for (const method of PACKAGE_MUTATION_METHODS) {
         handlers[method] = async () => {
           throw new PackageError(SAFE_MODE_PACKAGE_REFUSAL, "safe_mode");
         };
@@ -517,6 +649,11 @@ export function runService(
       stdout: process.stdout,
       blobDir,
       handlers,
+      // The control core owns no session, so it reports no open timings.
+      lastOpen: () => {
+        if (!("lastOpenTimings" in core)) return null;
+        return typeof core.lastOpenTimings === "function" ? core.lastOpenTimings() : null;
+      },
       info: {
         sessionId: flagValue(args, "--session") ?? env[SESSION_ID_ENV] ?? null,
         cwd,
@@ -531,6 +668,14 @@ export function runService(
         capabilities: {
           checkpointsExtension: checkpointExtension.source !== null,
           checkpointExtensionSource: checkpointExtension.source,
+          workflowBuiltin: {
+            registered: workflowBuiltin.registered,
+            version: workflowBuiltin.version,
+            source: workflowBuiltin.source,
+            replaceable: workflowBuiltin.replaceable,
+            path: workflowBuiltin.path,
+            disabledBy: workflowBuiltin.disabledBy,
+          },
         },
       },
       onShutdown: () => {
@@ -546,7 +691,15 @@ export function runService(
       },
     });
 
-    forward.emit = (event, payload, sessionId) => service.emit(event, payload, sessionId);
+    forward.emit = (event, payload, sessionId, sessionEpoch) => {
+      const identity = coreIdentity();
+      service.emit(
+        event,
+        payload,
+        sessionId ?? identity.sessionId ?? undefined,
+        sessionEpoch ?? identity.epoch,
+      );
+    };
     service.start();
   });
 }

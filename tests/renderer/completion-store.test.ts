@@ -51,7 +51,7 @@ beforeEach(() => {
     transcripts: {},
     sessionStates: {},
     draftHistory: {},
-    historyIndex: {},
+    historyBrowse: {},
     completionCommands: {},
     completionFiles: {},
     modelCatalog: {},
@@ -102,7 +102,9 @@ describe("runCommandInput", () => {
       .getState()
       .sendPrompt("tab-1", "/review the diff", { mode: "followUp" });
 
-    expect(sent).toBe(true);
+    // The slash command consumed the input; the disposition says so, and its
+    // clear rules are the same as a normal send.
+    expect(sent).toBe("handled-command");
     const prompt = request.mock.calls.find((call) => call[0]?.method === "prompt");
     expect(prompt?.[0]?.params).toMatchObject({
       text: "/review the diff",
@@ -231,7 +233,7 @@ describe("sendPrompt routing", () => {
     const request = stubRequest();
     const sent = await useAppStore.getState().sendPrompt("tab-1", "/new");
 
-    expect(sent).toBe(true);
+    expect(sent).toBe("handled-command");
     expect(request.mock.calls.some((call) => call[0]?.method === "session.new")).toBe(true);
     expect(request.mock.calls.some((call) => call[0]?.method === "prompt")).toBe(false);
   });

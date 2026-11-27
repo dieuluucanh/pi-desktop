@@ -58,18 +58,35 @@ export function createSdkTuiKeybindings(user: Record<string, unknown> = {}): Key
 }
 
 /**
- * A `ReadonlyFooterDataProvider` for an extension footer: the app has no git
- * branch watcher, so the branch is null, while the statuses are the live
- * `ctx.ui.setStatus()` map (plan step 16).
+ * The live facts a custom footer reads (2026-11-22 parity row 28).
+ *
+ * Pi's real `FooterDataProvider` owns a git watcher and a provider count; the
+ * host injects the equivalents so a footer written for terminal Pi renders the
+ * same branch/provider columns instead of empty ones.
+ */
+export interface SdkFooterFacts {
+  gitBranch(): string | null;
+  availableProviderCount(): number;
+  onBranchChange(listener: () => void): () => void;
+  /** Releases the watcher when the surface is re-pointed at a new session. */
+  dispose?(): void;
+}
+
+/**
+ * A `ReadonlyFooterDataProvider` for an extension footer: the statuses are the
+ * live `ctx.ui.setStatus()` map (plan step 16), and the branch/provider count
+ * come from injected facts. Without facts it degrades to `null`/`0` rather than
+ * inventing a branch.
  */
 export function createSdkFooterData(
   port: Pick<ExtensionUiPort, "snapshot">,
+  facts?: SdkFooterFacts,
 ): ReadonlyFooterDataProvider {
   return {
-    getGitBranch: () => null,
+    getGitBranch: () => facts?.gitBranch() ?? null,
     getExtensionStatuses: () => new Map(Object.entries(port.snapshot().statuses)),
-    getAvailableProviderCount: () => 0,
-    onBranchChange: () => () => undefined,
+    getAvailableProviderCount: () => facts?.availableProviderCount() ?? 0,
+    onBranchChange: (listener) => facts?.onBranchChange(listener) ?? (() => undefined),
   };
 }
 

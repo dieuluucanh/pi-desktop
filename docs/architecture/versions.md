@@ -3,33 +3,64 @@
 Recorded 2026-09-19. Every pin is exact in `package.json` except where noted.
 Changing a pin here means changing it there.
 
-| Component                                          | Pin                  | Why                                                                                                                                                                                    |
-| -------------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `electron`                                         | `44.4.3`             | Electron 44 ships Node 24.21.0 / Chromium 152 (plan D3/D22). Electron patch updates within 44.x are safe; a minor bump must be re-checked against the SDK's `engines.node >= 22.19.0`. |
-| `electron-vite`                                    | `5.0.0`              | Latest stable. 6.x was still in beta on 2026-09-19.                                                                                                                                    |
-| `vite`                                             | `^7.3.6`             | `electron-vite@5` peers `vite ^5 \|\| ^6 \|\| ^7`; Vite 8 is not accepted yet.                                                                                                         |
-| `@vitejs/plugin-react`                             | `5.2.0`              | 6.x requires Vite 8.                                                                                                                                                                   |
-| `react` / `react-dom`                              | `19.3.0`             | Latest stable.                                                                                                                                                                         |
-| `@earendil-works/pi-coding-agent`                  | `1.4.0` (exact)      | The SDK contract we build against (`bindExtensions`, `ExtensionUIContext`, `DefaultPackageManager`, exported `main`). See risk R1.                                                     |
-| `@earendil-works/pi-agent-core`, `pi-ai`, `pi-tui` | `1.4.0` (exact)      | Must match the coding agent exactly.                                                                                                                                                   |
-| `typebox`                                          | `1.3.27` (exact)     | Matches the version the coding agent depends on, so extensions get the same runtime.                                                                                                   |
-| `electron-builder`                                 | `26.15.3`            | Packaging (plan step 26): NSIS + portable, dmg/zip, AppImage/deb.                                                                                                                      |
-| `electron-updater`                                 | `6.8.9`              | Auto-update over GitHub Releases (plan step 26). `autoDownload` is off: a check reports, the user chooses.                                                                             |
-| `eslint` / `@eslint/js`                            | `10.11.0` / `10.0.1` | Flat config. `typescript-eslint@8.70.0`, `eslint-plugin-react-hooks@7.1.1` and `eslint-plugin-react-refresh@0.5.7` all accept ESLint 10.                                               |
-| `typescript`                                       | `^5.9.3`             | `typescript-eslint` peers `>=4.8.4 <6.1.0`.                                                                                                                                            |
-| `vitest`                                           | `^4.1.9`             | Existing suite.                                                                                                                                                                        |
-| `@playwright/test`                                 | `1.63.0`             | Electron E2E (plan step 24).                                                                                                                                                           |
+| Component                                          | Pin                  | Why                                                                                                                                                                                                                                     |
+| -------------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `electron`                                         | `44.4.3`             | Electron 44 ships Node 24.21.0 / Chromium 152 (plan D3/D22). Electron patch updates within 44.x are safe; a minor bump must be re-checked against the SDK's `engines.node >= 22.19.0`.                                                  |
+| `electron-vite`                                    | `5.0.0`              | Latest stable. 6.x was still in beta on 2026-09-19.                                                                                                                                                                                     |
+| `vite`                                             | `^7.3.6`             | `electron-vite@5` peers `vite ^5 \|\| ^6 \|\| ^7`; Vite 8 is not accepted yet.                                                                                                                                                          |
+| `@vitejs/plugin-react`                             | `5.2.0`              | 6.x requires Vite 8.                                                                                                                                                                                                                    |
+| `react` / `react-dom`                              | `19.3.0`             | Latest stable.                                                                                                                                                                                                                          |
+| `@earendil-works/pi-coding-agent`                  | `1.5.0` (exact)      | The SDK contract we build against (`bindExtensions`, `ExtensionUIContext`, `DefaultPackageManager`, exported `main`). See risk R1.                                                                                                      |
+| `@earendil-works/pi-agent-core`, `pi-ai`, `pi-tui` | `1.5.0` (exact)      | Must match the coding agent exactly.                                                                                                                                                                                                    |
+| `typebox`                                          | `1.3.27` (exact)     | Matches the version the coding agent depends on, so extensions get the same runtime.                                                                                                                                                    |
+| `electron-builder`                                 | `26.15.3`            | Packaging (plan step 26): NSIS + portable, dmg/zip, AppImage/deb.                                                                                                                                                                       |
+| `node-pty`                                         | `1.1.0` (exact)      | The integrated terminal's only native module. Linux has no upstream prebuild, so releases compile it in a digest-pinned `debian:bullseye` container and gate on **glibc 2.31 / `GLIBCXX_3.4.28`**; see `docs/architecture/terminal.md`. |
+| `electron-updater`                                 | `6.8.9`              | Auto-update over GitHub Releases (plan step 26). `autoDownload` is off: a check reports, the user chooses.                                                                                                                              |
+| `eslint` / `@eslint/js`                            | `10.11.0` / `10.0.1` | Flat config. `typescript-eslint@8.70.0`, `eslint-plugin-react-hooks@7.1.1` and `eslint-plugin-react-refresh@0.5.7` all accept ESLint 10.                                                                                                |
+| `typescript`                                       | `^5.9.3`             | `typescript-eslint` peers `>=4.8.4 <6.1.0`.                                                                                                                                                                                             |
+| `vitest`                                           | `^4.1.9`             | Existing suite.                                                                                                                                                                                                                         |
+| `@playwright/test`                                 | `1.63.0`             | Electron E2E (plan step 24).                                                                                                                                                                                                            |
 
 ## Runtime the app bundles (not an npm dependency)
 
-| Component | Pin                                                                                   | Where                                       |
-| --------- | ------------------------------------------------------------------------------------- | ------------------------------------------- |
-| Node.js   | Node 24 LTS, exact build recorded in `resources/runtime/node.lock.json` (plan step 2) | `resources/runtime/node/<platform>-<arch>/` |
-| npm CLI   | the `npm` shipped inside that Node distribution                                       | invoked as `<bundledNode> <npmCliJs>`       |
+| Component | Pin                                                                                                                                               | Where                                       |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| Node.js   | Node 24 LTS, exact build recorded in `resources/runtime/node.lock.json` (plan step 2); the release workflow pins `setup-node` to the same version | `resources/runtime/node/<platform>-<arch>/` |
+| npm CLI   | the `npm` shipped inside that Node distribution                                                                                                   | invoked as `<bundledNode> <npmCliJs>`       |
 
 The bundled runtime — not Electron's Node — runs every Pi host process and every
 npm install (plan D3). `resources/runtime/` is gitignored; `npm run runtime:fetch`
-populates it.
+populates it. The release workflow's `setup-node` is pinned to the same `24.22.2`;
+`checks.yml` and the site workflow still use the floating `24` major.
+
+## Keeping the Pi agent current
+
+The Pi agent ships with the app: a user updates it by updating Pi Desktop, never
+by editing their profile. Two automations keep that honest without letting a tag
+build mutate its own source:
+
+- **`pi-agent-watch.yml`** runs daily (and on demand). It reads npm's `latest`
+  for `@earendil-works/pi-coding-agent`, derives the family and `typebox` pins
+  from the SDK's own published manifest, and opens a PR when a minor/patch is
+  behind. A major is reported (`major-behind`) and never bumped automatically.
+- **`release.yml` `prepare`** repeats the check. A stale agent is a warning by
+  default; `require_latest_pi=true` on a dispatch makes it a hard failure. A
+  registry error is always a warning: a release must not depend on npm being up.
+
+The bump is mechanical and checked:
+
+```bash
+npm run pi:status     # pinned vs latest, plus the bundled Node vs engines.node
+npm run pi:check      # exit 0 in sync/local-ahead, 1 behind, 2 registry error
+npm run pi:update     # family + typebox + docs/architecture/versions.md
+```
+
+`tests/packaging/pi-pins.test.ts` enforces the contract the automation relies on:
+the four app pins are exact and equal, the lockfile resolves the same versions,
+the SDK's own manifest declares the same family and the same `typebox`, this
+document names those versions, and the bundled Node satisfies the SDK's
+`engines.node`. The agent version is stamped into `resources/build-info.json`
+at pack time and shown in **About & updates** and Diagnostics.
 
 ## Build provenance (not a dependency)
 
@@ -40,6 +71,22 @@ populates it.
 reads it at startup; a missing or malformed file degrades to `unknown` and never
 repairs itself. The app uses the channel to skip automatic update checks for
 local builds (see `docs/architecture/app-shell.md`).
+
+## Public site (independent toolchain)
+
+The public product site lives in `site/` and has its own `package-lock.json`; it is
+not part of the Electron dependency tree. Pins at the first site release:
+
+| Component            | Pin      | Why                                                            |
+| -------------------- | -------- | -------------------------------------------------------------- |
+| `astro`              | `7.4.5`  | Static output, content collections and the Pages build.        |
+| `@astrojs/starlight` | `0.42.8` | Docs layout, Pagefind search, sitemap and accessible defaults. |
+| `@astrojs/sitemap`   | `3.7.4`  | Sitemap generation; exercised against the `/pi-desktop` base.  |
+| Node.js              | 24       | Same runtime as CI; Astro 7 requires Node `>= 22.23.4`.        |
+
+The site build runs in `site/` with `npm ci --prefix site`; the Electron build
+never installs those dependencies. `docs/` remains the single docs source and
+`site/src/content/docs/` is generated and gitignored.
 
 ## Published extension (independent version)
 

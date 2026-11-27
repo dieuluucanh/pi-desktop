@@ -34,6 +34,24 @@ export async function copyText(text: string): Promise<boolean> {
 }
 
 /**
+ * Reads the clipboard as text, returning `""` when the API is missing, the
+ * permission is denied or the window is not focused.
+ *
+ * A paste is a user gesture, so an empty result is the honest "nothing to
+ * paste" answer; a caller must never throw at the user for a clipboard the OS
+ * would not hand over.
+ */
+export async function readClipboardText(): Promise<string> {
+  const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
+  if (!clipboard || typeof clipboard.readText !== "function") return "";
+  try {
+    return await clipboard.readText();
+  } catch {
+    return "";
+  }
+}
+
+/**
  * The pre-Async-Clipboard path. `execCommand` is deprecated but is the only
  * fallback when `navigator.clipboard` is missing or denied, and it is guarded so
  * a test environment without it simply reports failure.

@@ -15,6 +15,7 @@ import { SessionTabStrip } from "./layout/SessionTabStrip";
 import { EditorTabStrip } from "./layout/EditorTabStrip";
 import { handleMenuCommand } from "./menu-actions";
 import { useAppStore, type AppView } from "./state/app-store";
+import { PACKAGE_CHECK_INTERVAL_MS, PACKAGE_CHECK_STARTUP_DELAY_MS } from "../../shared/packages";
 import { createFocusResync } from "./state/focus-resync";
 import { systemThemeName, watchSystemTheme } from "./themes/system-theme";
 import { OnboardingWizard } from "./onboarding/OnboardingWizard";
@@ -36,10 +37,11 @@ import { ExtensionsView } from "./views/ExtensionsView";
 import { WorkspaceView } from "./views/WorkspaceView";
 import { WebNavigationDialog } from "./web/WebNavigationDialog";
 import { WebUrlDialog } from "./web/WebUrlDialog";
-import { MuteNotificationDialog } from "./extension-ui/MuteNotificationDialog";
+import { MuteNotificationDialog } from "./notifications/MuteNotificationDialog";
 import { DiffDialog } from "./rail/DiffDialog";
 import { SettingsView } from "./views/SettingsView";
 import { SkillsView } from "./views/SkillsView";
+import { UpdatesView } from "./views/UpdatesView";
 import { WelcomeView } from "./views/WelcomeView";
 
 /**
@@ -49,9 +51,9 @@ import { WelcomeView } from "./views/WelcomeView";
  * strip (the topmost app row — the OS frame owns the window controls), the
  * active view, status bar, plus the command palette and the toast host. Global
  * shortcuts belong to the Electron menu (step 1) — the renderer only owns
- * palette-local keys, so nothing fires twice. The update offer is a slim
- * conditional row above the tab strip; it costs no height when there is
- * nothing to do (the status bar has no update chip).
+ * palette-local keys, so nothing fires twice. Update attention lives in the
+ * notification bell and the About & updates sidebar dot; the status bar has no
+ * update chip.
  */
 
 const VIEWS: Record<AppView, () => ReactElement> = {
@@ -62,6 +64,7 @@ const VIEWS: Record<AppView, () => ReactElement> = {
   connections: ConnectionsView,
   skills: SkillsView,
   diagnostics: DiagnosticsView,
+  updates: UpdatesView,
 };
 
 export function App() {
@@ -74,6 +77,8 @@ export function App() {
   const loadThemes = useAppStore((state) => state.loadThemes);
   const loadUpdateState = useAppStore((state) => state.loadUpdateState);
   const prefsLoaded = useAppStore((state) => state.prefsLoaded);
+  const autoCheckPackages = useAppStore((state) => state.prefs.packages.autoCheck);
+  const checkPackageUpdates = useAppStore((state) => state.checkPackageUpdates);
   const privacyAcknowledged = useAppStore((state) => state.prefs.privacyAcknowledged);
   const onboardingCompletedAt = useAppStore((state) => state.prefs.onboardingCompletedAt);
   const setInfo = useAppStore((state) => state.setInfo);
@@ -151,7 +156,11 @@ export function App() {
     const offUpdates = api.updates.onState((state) =>
       useAppStore.getState().applyUpdateState(state),
     );
-    const offTabs = api.sessions.onTabs((envelope) => useAppStore.getState().applyTabs(envelope));
+    const offTabs = api.sessions.onTabs((envelope) =>
+      // A push updates facts, never focus: the window moves only when the user
+      // (or an explicit call this renderer made) says so.
+      useAppStore.getState().applyTabs(envelope, { adoptSelection: false }),
+    );
     const offState = api.sessions.onState((envelope) =>
       useAppStore.getState().applySessionState(envelope),
     );
@@ -200,6 +209,25 @@ export function App() {
       window.removeEventListener("unhandledrejection", onRejection);
     };
   }, [loadTabs, setInfo, loadUpdateState]);
+
+  // Extension update checks (plan step 8): one quiet sweep once the window is
+  // interactive, then every six hours. The switch gates only this background
+  // traffic — opening the Extensions page and Check now always work.
+  useEffect(() => {
+    if (!prefsLoaded || !autoCheckPackages || piOffline) return;
+    const first = setTimeout(
+      () => void checkPackageUpdates({ automatic: true }),
+      PACKAGE_CHECK_STARTUP_DELAY_MS,
+    );
+    const repeat = setInterval(
+      () => void checkPackageUpdates({ automatic: true, force: true }),
+      PACKAGE_CHECK_INTERVAL_MS,
+    );
+    return () => {
+      clearTimeout(first);
+      clearInterval(repeat);
+    };
+  }, [prefsLoaded, autoCheckPackages, piOffline, checkPackageUpdates]);
 
   useEffect(() => {
     // A laptop that slept, or a window that was hidden, can miss main's tab
@@ -273,6 +301,13 @@ export function App() {
         <div className="banner banner--error m-3">
           The preload bridge is unavailable (window.pi is missing), so no command can reach the main
           process. This build is broken — reinstall or run from source.
+          {typeof window !== "undefined" && window.location.protocol === "http:" ? (
+            <span className="mt-1 block" data-testid="bridge-missing-hint">
+              This page is Pi Desktop&apos;s own renderer dev server ({window.location.origin}). A
+              browser cannot reach the main process: open the app window, and use your
+              project&apos;s dev-server URL for the project UI.
+            </span>
+          ) : null}
         </div>
       ) : null}
       {safeMode ? (

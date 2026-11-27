@@ -27,7 +27,8 @@ import {
   SourceControlSettingsCard,
 } from "../settings/SourceControlSettings";
 import { NotificationsSettingsCard } from "../settings/NotificationsSettings";
-import { UpdateSettingsCard } from "../settings/UpdateSettingsCard";
+import { EditorSettingsCard } from "../settings/EditorSettings";
+import { TerminalSettingsCard } from "../settings/TerminalSettings";
 import { setSidebarWidth } from "../state/sidebar-width";
 import { ViewShell } from "./ViewShell";
 
@@ -73,14 +74,16 @@ export function SettingsView() {
   const setSetting = useAppStore((state) => state.setSetting);
   const settingsFocus = useAppStore((state) => state.settingsFocus);
   const clearSettingsFocus = useAppStore((state) => state.clearSettingsFocus);
-  const updateCardRef = useRef<HTMLDivElement | null>(null);
+  const terminalCardRef = useRef<HTMLDivElement | null>(null);
+  const notificationsCardRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    // The Help menu routes here (`check-updates` / `view-about`): scroll to the
-    // card and consume the target so a later unrelated Settings visit starts at
-    // the top.
-    if (settingsFocus !== "updates") return;
-    updateCardRef.current?.scrollIntoView?.({ block: "start" });
+    // The Help menu and the terminal profile menu route here: scroll to the
+    // target card, then consume it so a later Settings visit starts at the top.
+    if (!settingsFocus) return;
+    const target =
+      settingsFocus === "notifications" ? notificationsCardRef.current : terminalCardRef.current;
+    target?.scrollIntoView?.({ block: "start" });
     clearSettingsFocus();
   }, [settingsFocus, clearSettingsFocus]);
   const writeRawSettings = useAppStore((state) => state.writeRawSettings);
@@ -266,6 +269,23 @@ export function SettingsView() {
           </div>
         </Row>
         <Row
+          label="Background dialogs"
+          hint="An extension in another tab can ask a question while you work here. Blocking: only a question that waits for you takes the window, and never while you type or a run is streaming; otherwise the tab shows a dot. Never: only the dot."
+        >
+          <div className="flex items-center gap-2" data-testid="dialog-focus-policy">
+            <Switch
+              checked={prefs.dialogs.autoFocus === "blocking"}
+              onCheckedChange={(blocking) =>
+                setPrefs({ dialogs: { autoFocus: blocking ? "blocking" : "never" } })
+              }
+              aria-label="Let a blocking background dialog take the window"
+            />
+            <span className="text-xs text-ink-faint">
+              {prefs.dialogs.autoFocus === "blocking" ? "blocking only" : "never switch"}
+            </span>
+          </div>
+        </Row>
+        <Row
           label="Expanded command prompts"
           hint="Commands such as /commit send a long instruction to the model. Off: the transcript names the command you sent and hides the instruction; Ctrl+O or the row's Show button reveals it."
         >
@@ -323,6 +343,12 @@ export function SettingsView() {
         </Row>
       </section>
 
+      <EditorSettingsCard />
+
+      <div ref={terminalCardRef}>
+        <TerminalSettingsCard />
+      </div>
+
       {/*
         Source control and checkpoints (git-checkpoint plan step 27). Both cards edit
         `prefs` only: main projects the checkpoint keys to
@@ -331,7 +357,9 @@ export function SettingsView() {
       */}
       <SourceControlSettingsCard />
       <CheckpointsSettingsCard />
-      <NotificationsSettingsCard />
+      <div ref={notificationsCardRef}>
+        <NotificationsSettingsCard />
+      </div>
 
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold">Pi settings</h2>
@@ -397,10 +425,6 @@ export function SettingsView() {
           </dd>
         </dl>
       </section>
-
-      <div ref={updateCardRef}>
-        <UpdateSettingsCard />
-      </div>
 
       <Dialog open={rawOpen} onOpenChange={setRawOpen}>
         <DialogContent data-testid="settings-raw-dialog">

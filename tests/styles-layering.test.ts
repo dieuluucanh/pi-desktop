@@ -2,10 +2,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-  parseWorkflowStatus,
-  workflowBadgeClass,
-  workflowBorderClass,
-} from "../src/shared/workflow-mode";
+  CONTRIBUTION_TONE_CLASSES,
+  contributionBorderClass,
+  contributionTextClass,
+} from "../src/renderer/src/session/contribution-tone";
+import { CONTRIBUTION_TONES } from "../src/shared/extension-contributions";
 
 /**
  * `styles.css` cascade-layering guard (2026-10-19).
@@ -71,46 +72,39 @@ describe("styles.css layering", () => {
     }
   });
 
-  it("declares the workflow-mode scan sources", () => {
-    // `border-warn` only exists as a literal in `src/shared/workflow-mode.ts`,
-    // which lives outside the renderer root, so its directory must be scanned.
-    expect(css).toContain('@source "../../../shared"');
-    // And the utility names are pinned explicitly (same order as the function).
-    expect(css).toContain(
-      '@source inline("border-line border-accent border-warn text-accent text-warn text-ink-faint")',
-    );
+  it("keeps the semantic tone table inside the renderer scan root", () => {
+    // The tone literals live in `src/renderer/src/session/contribution-tone.ts`,
+    // under Tailwind's scan root; the inline list is still pinned so a directory
+    // move cannot silently drop a utility again.
+    expect(css).toContain("@source inline(");
   });
 });
 
 /**
- * The workflow-mode border class contract (plan step 3).
+ * The semantic tone class contract (orchestrator plan step 11).
  *
- * `workflowBorderClass` returns Tailwind utility names at runtime. Tailwind only
- * generates a utility if it can see the literal in scanned source, so this test
- * ties the function's return values to the `@source inline(...)` declaration:
- * every class the function can return must be listed, and every listed class
- * must be returned. Adding a fourth mode (or renaming one) fails here instead of
- * silently producing an unstyled border.
+ * `contributionBorderClass`/`contributionTextClass` return Tailwind utilities at
+ * runtime. Tailwind only generates a utility it can see as a literal in scanned
+ * source, so this test ties the table to the `@source inline(...)` declaration:
+ * every class the table can return must be listed, and every listed class must
+ * be returned.
  */
-describe("workflow border class contract", () => {
-  /** Every distinct class `workflowBorderClass` can return for a known mode. */
-  const returned = [
-    workflowBorderClass(parseWorkflowStatus("\u25b6 build")),
-    workflowBorderClass(parseWorkflowStatus("\u23f8 plan")),
-    workflowBorderClass(parseWorkflowStatus("\u25e6 commits:never")),
-    workflowBorderClass(null),
-    workflowBadgeClass(parseWorkflowStatus("\u25b6 build")),
-    workflowBadgeClass(parseWorkflowStatus("\u23f8 plan")),
-    workflowBadgeClass(parseWorkflowStatus("\u25e6 commits:never")),
-    workflowBadgeClass(null),
-  ];
-
-  it("lists exactly the classes the function returns", () => {
+describe("contribution tone class contract", () => {
+  it("lists exactly the classes the tone table returns", () => {
     const declaration = /@source inline\("([^"]+)"\);/.exec(
       stripComments(readFileSync(STYLES_CSS, "utf8")),
     );
     expect(declaration).not.toBeNull();
     const declared = (declaration?.[1] ?? "").split(/\s+/).filter(Boolean);
+    const returned = [
+      ...CONTRIBUTION_TONE_CLASSES,
+      // Null/unknown degrade to the neutral classes, which the table already
+      // contains, so the call results add nothing new.
+      contributionBorderClass(null),
+      contributionTextClass(null),
+      ...CONTRIBUTION_TONES.map((tone) => contributionBorderClass(tone)),
+      ...CONTRIBUTION_TONES.map((tone) => contributionTextClass(tone)),
+    ];
     expect([...new Set(returned)].sort()).toEqual([...new Set(declared)].sort());
   });
 });

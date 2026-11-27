@@ -58,7 +58,7 @@ export function createFileProvider(options: FileProviderOptions): CompletionProv
   };
 }
 
-/** Maps a workspace path to a plain (forced Tab / shell) suggestion. */
+/** Maps a workspace path to a plain forced-Tab suggestion. */
 export function toItem(path: string): CompletionItem {
   return toCompletionItem(path, false);
 }

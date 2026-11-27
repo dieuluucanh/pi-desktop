@@ -28,6 +28,20 @@ function state(overrides: Partial<WebTabState> = {}): WebTabState {
   };
 }
 
+function sessionRecord(id = "s1"): TabRecord {
+  return {
+    id,
+    kind: "session",
+    cwd: "C:/work/app",
+    title: "app",
+    sessionFile: null,
+    status: "idle",
+    createdAt: 1,
+    lastActiveAt: 1,
+    model: null,
+  };
+}
+
 function webRecord(overrides: Partial<TabRecord> = {}): TabRecord {
   return {
     id: "w1",
@@ -94,25 +108,24 @@ describe("openWebTab", () => {
     expect(useAppStore.getState().view).toBe("session");
   });
 
-  it("focuses an existing tab for the same URL instead of opening a second", async () => {
+  it("passes background mode through to main", async () => {
     const handles = installBridge();
-    const existing = webRecord();
+    await useAppStore.getState().openWebTab({ url: "http://localhost:2/review", activate: false });
+
+    expect(handles.webOpened).toEqual([{ url: "http://localhost:2/review", activate: false }]);
+  });
+
+  it("delegates a same-URL open to main, which focuses/reloads instead of duplicating", async () => {
+    const handles = installBridge();
     useAppStore.setState({
-      tabs: [existing, webRecord({ id: "w2", url: "http://localhost:2/" })],
+      tabs: [webRecord(), webRecord({ id: "w2", url: "http://localhost:2/" })],
       activeTabId: "w2",
     });
-    // The fixture's sessions bridge is a stub; activation must echo the tab
-    // table the way main does, or `applyTabs` would clear the active id.
-    const activate = async (tabId: string) => ({
-      tabs: [existing, webRecord({ id: "w2", url: "http://localhost:2/" })],
-      activeTabId: tabId,
-    });
-    (window.pi as unknown as { sessions: { activate: unknown } }).sessions.activate = activate;
 
     await useAppStore.getState().openWebTab({ url: "http://localhost:19432/review" });
 
-    expect(handles.webOpened).toEqual([]);
-    expect(useAppStore.getState().activeTabId).toBe("w1");
+    // Main owns dedupe/activate/reload; the renderer must not short-circuit.
+    expect(handles.webOpened).toEqual([{ url: "http://localhost:19432/review" }]);
   });
 
   it("reports a bridge without a web surface", async () => {
@@ -209,7 +222,12 @@ describe("the manual URL dialog", () => {
 describe("automatic loopback detection (plan step 21)", () => {
   it("opens a review URL that arrives in an extension notification", async () => {
     const handles = installBridge();
-    useAppStore.setState({ tabs: [], activeTabId: null, webTabStates: {}, transcripts: {} });
+    useAppStore.setState({
+      tabs: [sessionRecord()],
+      activeTabId: "s1",
+      webTabStates: {},
+      transcripts: {},
+    });
 
     useAppStore.getState().handleExtensionUiEvent("s1", {
       event: "oi.notify",
@@ -218,14 +236,24 @@ describe("automatic loopback detection (plan step 21)", () => {
 
     await vi.waitFor(() =>
       expect(handles.webOpened).toEqual([
-        { url: "http://127.0.0.1:19432/review/abc", sessionTabId: "s1" },
+        {
+          url: "http://127.0.0.1:19432/review/abc",
+          sessionTabId: "s1",
+          activate: true,
+          reload: true,
+        },
       ]),
     );
   });
 
   it("ignores a notification with no loopback URL", async () => {
     const handles = installBridge();
-    useAppStore.setState({ tabs: [], activeTabId: null, webTabStates: {}, transcripts: {} });
+    useAppStore.setState({
+      tabs: [sessionRecord()],
+      activeTabId: "s1",
+      webTabStates: {},
+      transcripts: {},
+    });
 
     useAppStore.getState().handleExtensionUiEvent("s1", {
       event: "oi.notify",
@@ -272,14 +300,16 @@ describe("automatic loopback detection (plan step 21)", () => {
     });
 
     await vi.waitFor(() =>
-      expect(handles.webOpened).toEqual([{ url: "http://localhost:5173/app", sessionTabId: "s1" }]),
+      expect(handles.webOpened).toEqual([
+        { url: "http://localhost:5173/app", sessionTabId: "s1", activate: false },
+      ]),
     );
   });
 
-  it("does not steal focus for a loopback URL already open", async () => {
+  it("reloads and keeps the focus on an already-open notification review", async () => {
     const handles = installBridge();
     useAppStore.setState({
-      tabs: [webRecord()],
+      tabs: [sessionRecord(), webRecord()],
       activeTabId: "w1",
       webTabStates: { w1: state() },
       transcripts: {},
@@ -290,7 +320,44 @@ describe("automatic loopback detection (plan step 21)", () => {
       payload: { message: "Still at http://localhost:19432/review" },
     });
 
+    await vi.waitFor(() =>
+      expect(handles.webOpened).toEqual([
+        {
+          url: "http://localhost:19432/review",
+          sessionTabId: "s1",
+          activate: true,
+          reload: true,
+        },
+      ]),
+    );
+    expect(handles.webCommands).toEqual([]);
+  });
+
+  it("does not reload or focus an already-open tool-result URL", async () => {
+    const handles = installBridge();
+    useAppStore.setState({
+      tabs: [webRecord()],
+      activeTabId: "w1",
+      webTabStates: { w1: state() },
+      transcripts: {},
+    });
+
+    useAppStore.getState().applySessionEvents({
+      tabId: "s1",
+      seq: 1,
+      events: [
+        {
+          event: "tool_execution_end",
+          payload: {
+            toolCallId: "t1",
+            result: { content: [{ type: "text", text: "open http://localhost:19432/review" }] },
+          },
+        },
+      ],
+    });
+
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(handles.webOpened).toEqual([]);
+    expect(handles.webCommands).toEqual([]);
   });
 });

@@ -88,6 +88,7 @@ describe("where the rail appears", () => {
       "extensions",
       "connections",
       "skills",
+      "updates",
     ] as const) {
       act(() => {
         useAppStore.setState({ view });

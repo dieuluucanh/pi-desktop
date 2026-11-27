@@ -250,6 +250,25 @@ export function languageIdForPath(path: string): LanguageId {
   return EXTENSION_LANGUAGE[extensionOf(path)] ?? "plaintext";
 }
 
+/**
+ * Ids whose files are prose rather than code.
+ *
+ * The editor wraps these by default: a long markdown or plan line should wrap
+ * at the pane width instead of forcing a horizontal scrollbar. `plaintext`
+ * counts because its typical files (notes, `.env`, `Makefile`) are read, not
+ * compiled.
+ */
+const PROSE_LANGUAGES: ReadonlySet<LanguageId> = new Set<LanguageId>([
+  "markdown",
+  "mdx",
+  "plaintext",
+]);
+
+/** True when a language id is prose (wrapped by default under `wordWrap: "auto"`). */
+export function isProseLanguage(languageId: LanguageId): boolean {
+  return PROSE_LANGUAGES.has(languageId);
+}
+
 /** Human label for a language id. */
 export function languageLabel(languageId: LanguageId): string {
   return LANGUAGE_LABELS[languageId];

@@ -14,9 +14,17 @@ export default tseslint.config(
       "coverage/**",
       "node_modules/**",
       "resources/runtime/**",
+      // Staged Workflow bundle (gitignored build output copied verbatim from the
+      // W publisher); its sources are linted in that repository, not here.
+      "resources/extensions/**",
       "test-results/**",
       "playwright-report/**",
       ".pi/**",
+      "site/dist/**",
+      "site/.astro/**",
+      "site/node_modules/**",
+      "site/src/content/docs/**",
+      "site/public/brand/**",
     ],
   },
   js.configs.recommended,
@@ -34,6 +42,12 @@ export default tseslint.config(
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" },
       ],
       "@typescript-eslint/consistent-type-imports": ["error", { fixStyle: "inline-type-imports" }],
+    },
+  },
+  {
+    files: ["site/**/*.{ts,mjs,js}"],
+    languageOptions: {
+      globals: { ...globals.browser, ...globals.node },
     },
   },
   {

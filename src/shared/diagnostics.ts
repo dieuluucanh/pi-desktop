@@ -1,5 +1,5 @@
 import type { HostRole } from "./host-protocol";
-import type { SessionCapacity, StartupReport } from "./performance";
+import type { HostOpenTimings, SessionCapacity, StartupReport } from "./performance";
 
 /**
  * Reliability, recovery and diagnostics — the pure wire model (plan step 22).
@@ -23,7 +23,13 @@ export type IncidentKind =
   | "host_timeout"
   | "host_spawn"
   | "host_failed"
+  // A second start for one host id was refused and the live host adopted
+  // (2026-11-07 host-singleton plan). Self-healing, but it must be visible:
+  // before the supervisor guard this race silently leaked a pinned child.
+  | "host_duplicate_start"
   | "host_stale"
+  | "host_recycled"
+  | "host_restart_loop"
   | "extension_error"
   | "unhandled_rejection"
   | "uncaught_exception"
@@ -150,7 +156,10 @@ const SEVERITY_BY_KIND: Record<IncidentKind, IncidentSeverity> = {
   host_timeout: "error",
   host_spawn: "error",
   host_failed: "error",
+  host_duplicate_start: "warning",
   host_stale: "warning",
+  host_recycled: "warning",
+  host_restart_loop: "warning",
   extension_error: "error",
   unhandled_rejection: "error",
   uncaught_exception: "error",
@@ -208,8 +217,14 @@ export function incidentFix(kind: IncidentKind): string | null {
       return "The host process could not start. Check the runtime in Diagnostics, then restart the tab.";
     case "host_failed":
       return "The host crashed repeatedly and was stopped. Restart it, or launch with --safe-mode to rule out an extension.";
+    case "host_duplicate_start":
+      return "A second host was refused for an id that already had one. Nothing to do: the running host was reused. If this repeats, the caller is racing itself.";
     case "host_stale":
       return "Restart the session tab to load the current host build; history comes back from the JSONL.";
+    case "host_recycled":
+      return "The host was parked or recycled. Activate the session to resume it; Diagnostics shows the exact reason.";
+    case "host_restart_loop":
+      return "The host is restarting repeatedly. Restart the app or open Diagnostics; the log shows the last stop reason.";
     case "extension_error":
       return "Disable the extension in Extensions, or start with --safe-mode, then reload the session.";
     case "offline":
@@ -343,10 +358,59 @@ export interface DiagnosticsHostInfo {
   rssBytes: number | null;
   /** Fingerprint reported by `host.hello`; null for a pre-change host. */
   buildId: string | null;
+  /** The Pi agent version this host reported in `host.hello`. */
+  piVersion: string | null;
   /** True when the running host predates the bundle on disk. */
   stale: boolean;
+  /** Why the host last stopped (idle/RSS/park/manual/restart/crash). */
+  stopReason?: string | null;
+  /** Crash auto-restarts in this process lifetime. */
+  restartCount?: number;
+  /** The last restart reason (`crash`, `manual`, …). */
+  lastRestartReason?: string | null;
+  /** True when a protected host is over its RSS budget but was not recycled. */
+  overMemory?: boolean;
+  /**
+   * Spawn → handshake in ms, or null when the supervisor has not measured it
+   * (2026-11-07 host-singleton plan).
+   */
+  bootMs?: number | null;
+  /**
+   * Phase breakdown of this host's last session open, or null before the first
+   * one / for a host that predates the measurement.
+   */
+  lastOpen?: HostOpenTimings | null;
   /** The tail of the host's own log file, oldest first. */
   logLines: string[];
+}
+
+/**
+ * The terminal host's own state (2026-11-08 linux-terminal plan, step 3).
+ *
+ * A terminal failure has two distinct halves: what the host reported through
+ * `terminal.info` (whether the native module loaded, and each candidate's real
+ * loader error) and what the main-side supervisor saw (exit code, stderr). Both
+ * are needed to explain a package whose `pty.node` cannot be dlopen'd.
+ */
+export interface DiagnosticsTerminalHostInfo {
+  windowId: number;
+  running: boolean;
+  nodePath: string;
+  hostPath: string;
+  /** The last `terminal.info` probe; null before the first terminal request. */
+  pty: {
+    loaded: boolean;
+    path: string | null;
+    error: string | null;
+  } | null;
+  lastExit: { code: number; signal: string; expected: boolean } | null;
+  lastError: string | null;
+  /** `<profile>/logs/terminal.log` — the file a support request should attach. */
+  logFile: string;
+}
+
+export interface DiagnosticsTerminalInfo {
+  hosts: DiagnosticsTerminalHostInfo[];
 }
 
 export interface DiagnosticsAppInfo {
@@ -369,6 +433,8 @@ export interface DiagnosticsAppInfo {
 export interface DiagnosticsRuntimeInfo {
   source: string | null;
   nodeVersion: string | null;
+  /** The bundled Pi agent stamped at pack time (null when unknown). */
+  piVersion: string | null;
   problems: string[];
 }
 
@@ -408,6 +474,8 @@ export interface DiagnosticsSnapshot {
   runtime: DiagnosticsRuntimeInfo;
   paths: DiagnosticsPathsInfo;
   hosts: DiagnosticsHostInfo[];
+  /** One entry per window's terminal host (2026-11-08 linux-terminal plan). */
+  terminal: DiagnosticsTerminalInfo;
   /** Live-host budget and open-tab counts (plan step 24 backpressure). */
   capacity: SessionCapacity;
   /** The per-host memory budget and restart threshold, for the RSS readout. */
@@ -487,8 +555,14 @@ export function incidentHeadline(incident: Incident): string {
       return "The session host could not start";
     case "host_failed":
       return "The session host was stopped after repeated crashes";
+    case "host_duplicate_start":
+      return "A duplicate session host was refused";
     case "host_stale":
       return "The session host is running an older build";
+    case "host_recycled":
+      return "The session host slept to reclaim memory";
+    case "host_restart_loop":
+      return "The session host is restarting repeatedly";
     case "extension_error":
       return "An extension raised an error";
     case "offline":

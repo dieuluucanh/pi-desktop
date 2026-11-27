@@ -18,9 +18,19 @@ import {
   type ResourceInspector,
 } from "./resources";
 import { createThemeHandlers, THEME_METHODS, type ThemePort } from "./themes";
+import { createTextGenerationHandlers, TEXT_GENERATION_METHODS } from "./text-generation";
+import type { WorkflowBuiltinResolution } from "./workflow-builtin";
 import { resolveListedSession, SessionFileError } from "./session-files";
 import { createSettingsHandlers, SETTINGS_METHODS, type SettingsPort } from "./settings";
 import type { HostHandler } from "./service";
+import {
+  parseSessionListQuery,
+  projectSessionListPage,
+  sanitizeSessionList,
+  type SessionListEntry,
+  type SessionListPage,
+  type SessionListQuery,
+} from "../shared/session-browser";
 
 /**
  * The control core (plan step 3, decision D-A3).
@@ -44,11 +54,26 @@ export interface ControlCoreDeps {
   /** Lists every session of the profile (all projects), for the session browser. */
   listSessions(): Promise<unknown[]>;
   /**
+   * Answers `session.list` with a filtered, sorted, bounded page (session
+   * browser fix). The full listing above stays the authority for delete/rename
+   * validation; without this port the control host projects the same page from
+   * `listSessions()` locally — it never returns raw `SessionInfo[]`.
+   */
+  listSessionPage?(query: SessionListQuery): Promise<SessionListPage<SessionListEntry>>;
+  /** Drops any cached session listing (the control host's shutdown path). */
+  disposeCatalog?(): void;
+  /**
    * The Extensions hub's loader source (plan step 13). Optional like the other
    * ports: a control host without it answers `resources.list` with
    * `not_implemented` instead of pretending it has no resources.
    */
   resources?: ResourceInspector;
+  /**
+   * The bundled Workflow builtin (plan step 27), resolved once per host process.
+   * `resources.list` reports its version/source/replacement state next to the
+   * loaded extensions, so the hub describes the same copy sessions load.
+   */
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
   /** The cwd used when the hub does not name a project (the host's own cwd). */
   defaultCwd?: string;
   /**
@@ -106,6 +131,10 @@ export const CONTROL_METHODS: readonly HostMethod[] = [
   // control host never has.
   ...THEME_METHODS,
   ...KEYBINDING_METHODS,
+  // Session-less text generation (2026-11-25 plan, step 16): one-shot
+  // `completeSimple` calls for the commit message. No session, so no
+  // `prompt`/`commands.run` and nothing that touches a JSONL.
+  ...TEXT_GENERATION_METHODS,
 ];
 
 export interface ControlCore {
@@ -124,7 +153,17 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
 
     handlers: () => ({
       ...createSettingsHandlers({ resolvePort: () => deps.settings }).handlers(),
-      "session.list": async () => ({ sessions: await deps.listSessions() }),
+      "session.list": async (params) => {
+        const query = parseSessionListQuery(params);
+        if (deps.listSessionPage) return deps.listSessionPage(query);
+        // A host without a catalog still answers the same projected shape: the
+        // query filters/sorts the rows and the byte budget keeps the page under
+        // the spill threshold. The full text stays here so search is complete.
+        const sessions = sanitizeSessionList(await deps.listSessions(), {
+          maxTextChars: Number.MAX_SAFE_INTEGER,
+        });
+        return projectSessionListPage(sessions, query);
+      },
       // Validation only: the app performs the recoverable delete with the OS
       // trash API, which a host process does not have (see `session-files.ts`).
       "session.delete": async (params) =>
@@ -175,6 +214,7 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
             scope: "control",
             settings,
             source,
+            ...(deps.workflowBuiltin ? { builtin: deps.workflowBuiltin } : {}),
             now: deps.now,
           });
         },
@@ -188,6 +228,13 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
           deps.createThemePort?.(requested ?? deps.defaultCwd ?? "") ?? null,
       }).handlers(),
       ...createKeybindingHandlers({ resolvePort: () => deps.keybindings ?? null }).handlers(),
+      // One-shot generation (2026-11-25 plan, step 16). Registered even when the
+      // provider port is absent: the handlers then answer `not_implemented`,
+      // which keeps `handlers() == CONTROL_METHODS` true for every host shape.
+      ...createTextGenerationHandlers({
+        resolvePort: () => deps.providers?.completion ?? null,
+        settings: deps.settings,
+      }).handlers(),
     }),
 
     dispose: async () => {
@@ -197,6 +244,7 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
       } catch {
         // Intentionally ignored: the write path already surfaces its own errors.
       }
+      deps.disposeCatalog?.();
     },
   };
 }

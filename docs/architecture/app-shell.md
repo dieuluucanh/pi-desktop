@@ -7,22 +7,30 @@ steps must extend it rather than re-invent it.
 
 ```text
 tab strip        session tabs (the topmost app row; the OS frame owns the window
-                 controls) + the "+" action
+                 controls) + New session, New terminal + its profile chevron,
+                 and the grid-layout switcher at the right
 editor tab strip editor tabs in a second row under the session strip; it
                  renders only while at least one file is open
-sidebar          Projects (+ menu: default · new · clone · open folder) ·
-                 Sessions · Views
+sidebar          pinned Projects header (+ menu: default · new · clone ·
+                 open folder · hide) above a scrolling project list and Views
 main area        the active view (welcome | session | settings | extensions |
-                 connections | skills | diagnostics)
+                 connections | skills | diagnostics | updates)
 status bar       active project path · build version · Pi profile · bundled
                  runtime · display zoom · transient hints · notifications
 panel rail       docked at the right edge of a session: an always-visible 44 px
                  menu strip (Source Control · Checkpoints · Documents) beside one
                  resizable panel body; the strip's order is user-adjustable
+working bar      one thin extension row directly above the composer (the old
+                 WorkingRow + ContributionsBar duo): working status/hint, inline
+                 publisher controls, a linked-tab button, the three-dot action
+                 menu and the input-lock marker; it is absent when a tab has
+                 nothing to show
 session footer   one responsive status rail under the composer: pwd (branch) ·
                  tokens/cost/context · model • thinking · extension statuses
-                 (ctx.ui.setStatus) · single-line extension widgets; an extension
-                 ctx.ui.setFooter() replaces the whole footer
+                 (ctx.ui.setStatus) · contribution status/progress rows ·
+                 single-line extension widgets; it wraps inside a bounded rail,
+                 and an extension ctx.ui.setFooter() replaces the whole footer
+                 (so the contribution rows are not injected into it)
 overlays         command palette (Ctrl+K), toast host
 ```
 
@@ -31,6 +39,17 @@ strip, step 10 fills the project section — neither re-lays-out the window. The
 in-app title bar was removed in the 2026-10-31 minimal-session-ui pass; the brand
 mark survives in the welcome/onboarding views and the OS window title is set by
 `app:set-title`.
+
+**Pinned Projects header (2026-11-19).** The sidebar's first row — the Projects
+label, the `+` menu (default · new · clone), open folder and hide sidebar — is
+pinned above the scroller: `layout/Sidebar.tsx` renders
+`projects/ProjectsHeader` as a sibling _before_ the `ScrollArea`, so a long
+project list or the Views items scroll without carrying the header away. This is
+a structural pin, not `position: sticky` (no opaque repaint, `z-index` or fixed
+sticky offset), matching `rail/RightRail.tsx`, whose panel header is likewise
+outside its scroller. The wrapper's `px-3` is the old
+`nav px-2 + projects-section px-1`, and the row's own `px-2` keeps the label and
+icons at their 20px inset; change both paddings together or the header drifts.
 
 **Two tab rows, one workbench (2026-11-02 editor-tabs plan).** Sessions, the
 Office host and web tabs stay in the top strip. File tabs get their own row
@@ -65,7 +84,8 @@ and the panel rail stay global chrome; only the content area splits.
   Tailwind placement literals (`col-start`, `row-start`, `row-span`) so CSS
   auto-placement cannot push a pane into an implicit row. The geometry is unit
   tested without a DOM.
-- **A pane is one `TabRecord`** (`session`, `office`, `web` or `editor`, from any
+- **A pane is one `TabRecord`** (`session`, `office`, `web`, `editor` or
+  `terminal`, from any
   project), rendered by `views/TabSurface.tsx` — the same kind dispatcher the
   solo view uses. `editor-store`, `editor-registry` and the web-tab service are
   keyed by tab id, so **one tab may be visible in one pane only**: assigning a tab
@@ -106,7 +126,10 @@ and the panel rail stay global chrome; only the content area splits.
 
 Entry points: the icon-only layout switcher at the far right of the session strip
 (`layout/GridLayoutMenu.tsx`), View ▸ Layout in the menu, and the command palette.
-The switcher trigger shows the current preset. Its five icons run widest to
+The switcher trigger shows the current preset. To its left sit New Terminal,
+the Terminal profiles chevron (`layout/TerminalProfileMenu.tsx`) and New Session,
+in that order; the chevron opens a one-off terminal with another detected shell
+without changing the default. Its five icons run widest to
 narrowest — four panes at the far left, then the two three-pane shapes, two
 columns, and single at the far right. They have accessible names, not visible
 labels. Each pane has **one controlled
@@ -154,7 +177,9 @@ Actual Size use explicit `Ctrl/Cmd+=`, `Ctrl/Cmd+-` and `Ctrl/Cmd+0`
 accelerators. The Electron zoom roles were removed because `zoomIn` binds
 `Ctrl+Shift+=` on Windows/Linux (`electron#40674`) — the reported "zoom does
 not work". The factor is re-applied on `did-finish-load` because Chromium keeps
-a per-origin zoom map.
+a per-origin zoom map. Layout follows the factor: the transcript column is
+pane-relative, so zooming out shows more content rather than wider side gutters
+(2026-11-15 transcript-width).
 
 **The chrome palette is app-owned and high-contrast (2026-10-31).** The active
 Pi theme still supplies accent and status hues, but the Desktop owns the neutral
@@ -182,21 +207,52 @@ rendered as a footer column instead of its own strip (2026-10-31 UI plan);
 multi-line frames keep Pi's placement. The TUI grid is measured from this column,
 never from the surface's own rendered frame (`src/renderer/src/tui/use-tui-viewport.ts`).
 
-**The workflow mode is shown as text, not just colour.** The composer's textarea
-border reflects the Workflow extension's mode (`Plan` → warn, `Build` → accent),
-decoded from its status text by `src/shared/workflow-mode.ts`; an unrecognised
-value degrades to the neutral border rather than guessing. The desktop names
-exactly the extension's three modes (Default/Plan/Build): the Plannotator
-`reviewing in browser` phrase is a Plan sub-state, so the composer label reads
-the mode — `Plan` — never the sub-state (2026-10-20 startup-tab-cycle plan).
-Because colour alone is not an indicator, the mode is also named in the
-composer's top-right corner, exposed through `role="status"`. Every
-recognised mode has a label, including `Default`; Plan/Build use the same
-`text-warn`/`text-accent` tone as the border, and Default uses the readable
-faint ink. The label renders at every
-window width — it used to be hidden below the `sm` breakpoint — and there is no
-duplicate `mode: …` chip in the footer (2026-10-31 minimal-session-ui).
+**Extension-owned panels are read-only, generic frame strips (2026-11-22).**
+A component-factory widget is drawn from the publisher's ANSI frame only; the
+renderer never parses its content, glyphs or key to infer state. The retired
+Workflow compatibility layer (`src/shared/workflow-mode.ts`,
+`src/shared/workflow-todos.ts`, `ReviewBar`, `TodoPanelBar`) is gone and
+`tests/architecture/no-workflow-adapters.test.ts` keeps it from returning. What
+replaces it is the generic contribution contract: a publisher contributes
+`mode`/`mode-choice`/`progress`/`status`/`action`/`input` rows that
+`src/renderer/src/session/WorkingBar.tsx` renders with no extension name, and
+the composer draws an arbitrary publisher's `composer-control` in a generic
+bottom-right row (`ComposerControls.tsx`, see
+[extension-ui.md](extension-ui.md#composer-transform-contract-frozen-row-13)). An
+action names a registered command that the host re-validates; nothing is
+special-cased for one extension. An older extension that publishes only status
+prose still lands in the footer rail, just without the richer structured
+controls. The extension's own TODO panel — header included — is a read-only
+frame and is neither moved nor re-composed by the app; the session footer is the
+telemetry rail (see below).
 
+**The mode is named in the composer, and its label is the control (2026-11-22).**
+The session’s current mode comes from the generic contribution contract: a
+`kind: "mode"` contribution supplies the label/tone, and an optional `actionRef`
+names a same-owner top-level action that the label activates. Desktop renders
+that as `ComposerModeControl` in the prompt’s top-right corner — a real button
+whose accessible name is “<mode> — <action label>” — and never parses a status
+line or learns an extension name. A publisher without a reference keeps an
+informative, non-interactive label; another publisher’s mode is not consumed by
+this one.
+
+The visible mode follows **published state** only. A click or key activation
+sends `contributions.run`; an acknowledgement (`{ran:true}`, even with an error)
+is not proof of a transition, so the label changes when the next validated
+snapshot arrives, and nothing is retried automatically. A disabled reference
+(current mode, Review ownership, a missing command) stays visible with its
+reason. When the publisher also supplies same-owner `mode-choice` entries the
+label becomes a split control: its right-hand chevron opens an upward list with
+the current mode checked and disabled and the others selectable (the label still
+cycles on click). No choices means no chevron. There is no separate mode-switch
+row and no fallback mode strip when a dialog or docked TUI replaces the
+composer; task/review/handoff/recovery controls remain in the working bar.
+
+Pointer activation keeps the prompt’s focus, draft, selection and caret; Tab on
+the button is normal focus navigation, while Tab in the prompt still reaches a
+registered extension shortcut first (so a publisher’s cycle and its button agree
+by construction). The reserved right padding is measured, not fixed, so long and
+localized labels do not cover the first line of text.
 **The composer says where the cursor is (2026-10-21).** The textarea's caret
 carries the app's accent colour, and the composer's status row spells the
 position out (`Ln 2 · Col 7`) next to the shortcut hints. The offset is the one
@@ -387,20 +443,30 @@ renderer's Tailwind scan root, so `styles.css` also declares them with
   is refused and answered through `WebNavigationDialog`. Security is structural:
   every web tab shares one partition with no preload, `sandbox: true`,
   `contextIsolation: true` and all permissions denied, so `window.pi` never
-  exists in it and it cannot reach the Pi bridge.
+  exists in it and it cannot reach the Pi bridge. A page's `window.close()` is a
+  **request**, not a tab teardown: the adapter installs a `window.close`
+  interceptor at `dom-ready` through `executeJavaScript` and treats a destroyed
+  `webContents` as the fallback, both normalized to `close-requested`; main
+  closes the tab through the session service. The close policy prefers the web
+  tab's `sessionTabId` and falls back to MRU
+  (`src/main/tab-selection.ts`); closing a session also removes its linked
+  review tabs in the same publish. The interceptor adds no preload, Node or
+  `window.pi` surface.
 
 ## Command ownership (no double-firing)
 
-| Surface                                       | Owns                                                                                                                                                                                                                |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Electron menu (`src/main/menu.ts`)            | every global accelerator: `Ctrl+N` new session, `Ctrl+O` open project, `Ctrl+W` close session, `Ctrl+,` settings, `Ctrl+K` palette, `Ctrl+B` sidebar, `Ctrl+Tab` / `Ctrl+Shift+Tab` tab cycling, `Ctrl+/` shortcuts |
-| Renderer (`src/renderer/src/menu-actions.ts`) | the _behaviour_ of each command, dispatched from `app:menu-command`                                                                                                                                                 |
-| Renderer (`CommandPalette`)                   | palette-local keys only (arrow/enter/escape)                                                                                                                                                                        |
+| Surface                                       | Owns                                                                                                                                                                                                                                                                       |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Electron menu (`src/main/menu.ts`)            | every global accelerator: `Ctrl+N` new session, `Ctrl+Shift+T` new terminal, `Ctrl+J` toggle terminal, `Ctrl+O` open project, `Ctrl+W` close session, `Ctrl+,` settings, `Ctrl+K` palette, `Ctrl+B` sidebar, `Ctrl+Tab` / `Ctrl+Shift+Tab` tab cycling, `Ctrl+/` shortcuts |
+| Renderer (`src/renderer/src/menu-actions.ts`) | the _behaviour_ of each command, dispatched from `app:menu-command`                                                                                                                                                                                                        |
+| Renderer (`CommandPalette`)                   | palette-local keys only (arrow/enter/escape)                                                                                                                                                                                                                               |
 
 Menu items never touch windows: they forward a `MenuCommand` (typed in
 `src/shared/ipc.ts`), so the renderer stays the single owner of view state. A
 command whose feature lands later reports a precise hint (`hint` in the store →
-status bar) instead of failing silently.
+status bar) instead of failing silently. While a terminal has focus on
+Windows/Linux, main calls `setIgnoreMenuShortcuts(true)` so shell chords reach
+the PTY; the menu items still work through the menu bar.
 
 ## Theme tokens
 
@@ -492,9 +558,38 @@ The app treats failure as a first-class state rather than a silent no-op:
   with **Restart session**. Diagnostics shows the host build id and a
   `stale build` badge. The renderer's `commands.complete` fallback also converts
   a missing host method into a banner instead of an empty completion menu.
-- **Cancellation.** Abort/clear-queue already restore the queued text; closing a
-  tab mid-run stops its host through the supervisor (a test pins that no host is
-  left behind).
+- **Close is idempotent and startup cancellation is normal.** A session tab is
+  published with its real ID before the asynchronous create/activate lifecycle
+  has completed. Its yellow `starting` chip is therefore a real, intentionally
+  closable tab, not a placeholder; close removes it from the authoritative table
+  and stops its host. Concurrent/repeated close requests for a well-formed real
+  tab ID settle against the same close operation/current table. A lifecycle
+  continuation whose captured tab lifetime was explicitly retired returns
+  `cancelled: { reason: "tab-closed", tabId }` as data (with the current tab
+  envelope), rather than surfacing the host's expected `host_stopped` as a user
+  failure. Passive reads racing that retirement are cancelled only for IDs
+  proven recently closed and only for the allowlisted passive methods; unknown
+  IDs, unsupported methods, live-tab failures and mutations remain errors.
+  Renderer startup work checks cancellation/removal before issuing dependent
+  reads, so a late continuation cannot hydrate or recreate closed-tab state.
+  The real-Electron regression in `tests/e2e/session.spec.ts` gates extension
+  `session_start` on a test-owned loopback response, closes by one × gesture,
+  and checks both survivor selection and the Welcome fallback in one app launch.
+
+  **Diagnosis and limits.** The reproduced startup race confirms this chain:
+  the tab is published while creation is pending; the user's close intentionally
+  removes/stops it, draining shared create/activate work; continuations that do
+  not treat that retirement as cancellation can then issue stale reads or report
+  shutdown as a failure. This explains the fresh `session:create` / `session:activate`
+  `host_stopped` followed by a `session:request` for an unknown tab. It does not
+  establish the original reported `session:close` unknown-tab producer: that
+  exception proves the close arrived after its ID was absent from main's table,
+  but its particular earlier removal or caller sequence remains unproven. Do not
+  infer a double click, extension shutdown, corrupted session or spontaneous
+  host crash from that message. Any request-method attribution must come from
+  captured runtime evidence; the initial unlabelled request is not known to be
+  `messages.get`.
+
 - **Offline.** `isOfflineEnv` mirrors Pi's own `PI_OFFLINE` rule (`1`/`true`/
   `yes`); the value travels in `AppInfo.piOffline` and raises a persistent banner.
   Every user-visible catch path funnels through the store's `noteFailure`, which
@@ -577,6 +672,28 @@ and the renderer all read it, so a budget change is one edit.
 - **Lazy start and pre-warm.** The tab table is restored without spawning any
   host; only the most recently used tab is pre-warmed in the background, and
   safe mode skips even that.
+- **Session-open latency, measured.** A host open is the slowest routine
+  operation in the app (extension discovery plus factories, settings, scope,
+  `session_start`), and it used to be visible only once it crossed the 2 s
+  slow-request threshold. The host now reports the phases of its last open on its
+  own `host.metrics` frame (`lastOpen`: trust, services, scope, session, bind,
+  reconcile, total) and the supervisor adds `bootMs` (spawn → handshake).
+  Diagnostics prints `boot … · open … (services …, bind …)` per host, the
+  exported bundle repeats it, and `HOST_BOOT_BUDGET_MS` / `HOST_OPEN_BUDGET_MS`
+  colour the row. A `skipIf` live test (`tests/host/session-core.sdk.live.test.ts`)
+  opens a real session and prints the same breakdown with loose hang-only
+  ceilings, because wall-clock budgets on a paged machine are not a gate.
+- **One open, one bind, one settings read.** The SDK invokes the
+  `setRebindSession` callback after it replaces a session; `session.new`,
+  `switch`, `fork`, `clone` and `importJsonl` also called `rebind()` themselves,
+  so extension `session_start`, `resources_discover`, the settings reload and the
+  scope resolve ran **twice** per action. Handlers now skip their own call when
+  the runtime already reported the replacement (a counter keeps a runtime that
+  does not report it bound exactly once), and `startSession` no longer reloads
+  settings a third time after the runtime factory read them. The bundled
+  checkpoint extension's 30-day sweep moved off the awaited `session_start`
+  path; `store.ensure(cwd)` is still awaited, because the git-missing notice and
+  the first snapshot depend on it.
 - **Delta coalescing, measured.** `message_update` frames batch for 33 ms or
   1 KB before one IPC push; `sessionService.coalesceStats()` reports batches,
   deltas, flush reason and the largest batch, and a test pins that a 400-delta
@@ -589,17 +706,19 @@ and the renderer all read it, so a budget change is one edit.
   replaced in place so the card keeps its identity, and the renderer fetches the
   body through `host.blobs.read` only when the card is opened.
 - **Per-host memory.** Every host answers `host.metrics` with its own RSS (no
-  OS-specific process query). The supervisor polls it, Diagnostics shows it
-  against the soft budget, and an idle host over the hard threshold (1 GB) is
-  recycled by **stopping** it (the same path as an idle recycle), not by
-  restarting in place. The session service drops a handle that reports
-  `stopped`, so the next interaction spawns a fresh process and resumes from
-  JSONL. The 15-minute time-based idle recycler is **on by default**. The active
-  tab, the control host, an Office host and the bridge owner are protected from
-  _idle_ sleep; the active tab is deliberately **not** exempt from the RSS
-  watchdog (it is the session most likely to hold a large transcript). Only the
-  Office host and the bridge owner are RSS-exempt, because stopping them drops
-  port 38617.
+  OS-specific process query), plus heap/external/array-buffer counters so a large
+  RSS can be attributed. The supervisor polls it and Diagnostics shows it against
+  the soft budget. A **background idle** host over the hard threshold (1 GB) is
+  recycled by **stopping** it, but only after two consecutive over-budget samples
+  and a one-minute startup grace period. The session service drops a handle that
+  reports `stopped`, so the next activation spawns a fresh process and resumes
+  from JSONL. The 15-minute time-based idle recycler is **on by default**. The
+  active tab, every visible pane, the control host, an Office host, the bridge
+  owner and a session linked to an active/visible web tab are protected from
+  **both** idle sleep and the RSS watchdog: an over-budget active host gets a
+  warning and a manual Restart action instead of being killed. Passive reads
+  (`tui.resize`, `messages.get`, `oi.state`, `shortcuts.list`, …) never wake a
+  stopped host; only activation/ensure, a prompt or a lifecycle command does.
 - **Open tabs vs live hosts.** A tab is a resumable JSONL record, not a process,
   so session, Office, web and editor tabs are **unlimited**. The only resource
   budget is live host processes: `liveHostBudget(totalMemory)` reserves 20% of
@@ -607,7 +726,9 @@ and the renderer all read it, so a budget change is one edit.
   service parks the least-recently-used **idle** host (status `stopped` shows as
   "asleep"); if every live session is busy the spawn still proceeds, so a
   session count can never block the user. `hostProcessCeiling(totalMemory)` is
-  the memory-derived process ceiling (`target + 2`, 4–10). A 30-second
+  the memory-derived process ceiling (`target + 2`, 4–10), and the supervisor
+  refuses a second live host for one `sessionId`, so the live count is the real
+  child count rather than a map that could silently drop a process. A 30-second
   main-process tick parks idle hosts when the live count is over target or the
   sum of host RSS is over 50% of physical RAM. Diagnostics shows
   `live/target (ceiling)`, aggregate host RSS/limit, system free/total memory and
@@ -615,11 +736,12 @@ and the renderer all read it, so a budget change is one edit.
   recycling probe `state.get` first, so a streaming turn or a long tool call is
   never stopped mid-work.
 - **Bounded live renderers and caches.** Unlimited web tabs are URL records; at
-  most four `WebContentsView`s stay live (active + three recent), and an evicted
-  view reloads its URL on activation. The renderer keeps at most four hydrated
-  transcripts and a bounded lazy blob cache; closed tabs lose every per-tab
-  cache immediately. These bounds are independent of the tab count, so opening
-  many tabs cannot grow Chromium or the renderer without limit.
+  most six `WebContentsView`s stay live (`MAX_LIVE_WEB_VIEWS`: the active tab
+  plus recent/visible ones), and an evicted view reloads its URL on activation.
+  The renderer keeps at most four hydrated transcripts and a bounded lazy blob
+  cache; closed tabs lose every per-tab cache immediately. These bounds are
+  independent of the tab count, so opening many tabs cannot grow Chromium or
+  the renderer without limit.
 - **Host process lifetime.** A service host shuts down when its stdin pipe
   closes, which is what happens when main exits (including an `electron-vite`
   dev restart). A failed `start()` or `restart()` terminates the child it
@@ -650,22 +772,29 @@ and the renderer all read it, so a budget change is one edit.
 - `tests/host/service.test.ts` — in-place event spilling and `host.metrics`.
 - `tests/renderer/transcript.test.tsx` — 10k virtualization and the lazy blob
   fetch.
-- `tests/shared/workflow-mode.test.ts` — the workflow status decoder: every
-  shipped label, ANSI-wrapped text, progress extraction, a label for every
-  recognised mode (including `Default`), and null-on-unknown degradation
-  (2026-10-19 UI rework).
+- `tests/shared/extension-contributions-view.test.ts` — the generic view model:
+  deterministic ordering, mode-only identity (progress/status never promoted),
+  same-owner `actionRef` resolution and refusal, and round-trip sanitization of
+  mode/input metadata.
 - `tests/styles-layering.test.ts` — the global stylesheet stays inside
   `@layer base` (an unlayered rule beats Tailwind's utilities), and the
-  `@source inline(...)` list matches every class `workflowBorderClass` returns.
+  `@source inline(...)` list matches every class `CONTRIBUTION_TONE_CLASSES`
+  returns.
 - `tests/renderer/session-footer.test.tsx` — the Pi-shaped session footer:
   pwd/branch and the token/cost/context line, `model • thinking`, the
   ANSI-coloured extension status line, and no `mode:` chip (the composer names
   the mode now).
 - `tests/renderer/composer.test.tsx` — Enter vs Shift+Enter, IME safety, the
   one-Send streaming model (Enter steers, Alt+Enter queues a follow-up), the hint
-  row, the workflow mode border/badge (always visible, announced, focus ring does
-  not mask it) and Tab dispatch to a registered extension shortcut before
-  completion.
+  row, the `! shell` placeholder, and the mode control: tone-driven border, a
+  real button with `"<mode> — <action>"` as its name, disabled/pending state,
+  pointer activation that keeps the draft, and a legacy non-interactive label.
+  `mode-cycle-boundary.test.tsx` proves the same path from a published snapshot,
+  and `tests/host/contribution-mode-boundary.test.ts` proves the registry
+  refuses cross-owner/dangling/disabled references.
+- `tests/e2e/composer-mode-cycle.spec.ts` — real Electron geometry/keyboard:
+  click and Tab share the cycle, the draft/caret survive a click, focus is not
+  trapped, and the measured reservation covers the control at 200% zoom.
 - `tests/renderer/session-events.test.ts` — the reducer, including the
   hidden-item boundary: a `display: false` custom message is dropped (live and on
   reload), and the rule never keys on `customType`.
@@ -826,15 +955,33 @@ and safe-mode launches never auto-check; a manual check is still allowed.
 
 Events reduce into `UpdateState` (`src/shared/updates.ts`), whose phases include
 the benign `no-feed` state for an unpublished build/feed. `prefs.updates` carries
-`autoCheck` and the per-version `dismissedVersion`. The renderer shows only a
-compact status-bar chip for available → **Update vX**, downloading → **Updating
-N%** and downloaded → **Restart to update**; a new version re-notifies after a
-dismissal. Every other outcome — up to date, no feed, an error — lives in
-**Settings → About & updates**, with the raw updater text under Technical
-details. `Help → Check for Updates…` opens that card and checks; on Windows and
-Linux `Help → About Pi Desktop` opens the same card, while macOS keeps its native
-About panel. Automatic failures stay silent; a manual failure is a dismissible
-status hint plus the card. There is no full-width update banner.
+`autoCheck`, the toast marker `notifiedVersion` and the row marker
+`dismissedVersion`. An app-owned **offer** is not stored: the renderer derives it
+from `phase`/`version` (`offerNotifications`), so `available`, `downloading` and
+`downloaded` show one row with phase-appropriate copy and **View update**, while
+every other phase shows none. A new version replaces the row instead of stacking;
+`×`/Clear persists `dismissedVersion`, and **Notify me again** in About & updates
+clears it. The **About & updates** sidebar item carries a dot while a version is
+offered/downloading/downloaded. That item is the last product view, below
+Diagnostics; there is no status-bar update chip. Every other outcome — up to
+date, no feed, an error — lives in that view, with the raw updater text under
+Technical details. `Help → Check for Updates…` opens the view and checks; on
+Windows and Linux `Help → About Pi Desktop` opens the same view, while macOS
+keeps its native About panel. Automatic failures stay silent; a manual failure is
+a dismissible status hint plus the view. There is no full-width update banner.
+
+**Notifications.** The status-bar bell always renders and composes two channels.
+The archive holds extension `ctx.ui.notify` **events** (classed as **Errors**,
+**Warnings**, **Informational messages**, plus the app-owned **App updates** and
+**Extension updates**). App-owned **offers** are state, not arrivals: the renderer
+derives them from the live updater and package state, so an applied update clears
+its row automatically. Info is off by default for the bell and toasts, so
+background chatter such as “Server logs ready (local)” stays out of them; the
+transcript always prints extension notifications, as terminal Pi does. The
+popover closes on an outside click or Escape (and the bell toggles it), so there
+is no header `×`; it keeps a per-row `×`, class badges and **Show hidden (N)** for
+archived suppressed rows. Per-message mute rules apply to archive rows only, never
+to offers. Settings → Notifications owns the class switches and the mute rules.
 
 **Packaging.** `electron-builder.yml` targets Windows NSIS + portable, macOS
 dmg/zip on arm64 + x64, and Linux AppImage/deb on x64 + arm64. The bundled
@@ -897,3 +1044,194 @@ renderer kept running but ignored every click (radix-ui/primitives#3317,
 - **One reconcile per focus burst.** Alt+Tab emits both `focus` and
   `visibilitychange`; `createFocusResync` coalesces the burst into one
   `sessions.reconcile()`.
+
+## The composer's revisioned draft (2026-11-22)
+
+The composer's text and image attachments are **tab state**, not component
+state. `src/renderer/src/session/composer-draft.ts` is the pure model and
+`useAppStore().composerDrafts[tabId]` holds one record per live tab.
+
+- **Attachments survive component replacement.** A docked extension dialog, a
+  composer remount or a pane move used to empty the locally owned image list.
+  The record now owns the attachment objects (bytes included) in renderer
+  memory, so a replacement composer renders the same chips; a successful send
+  clears them (`clearDraftImages`).
+- **Binary images never reach disk.** `prefs.drafts` stays the persisted,
+  sanitised text map; the attachment payload only lives in the renderer store.
+  Snapshots (`draftSnapshot`) carry id, name, mime type and byte count — never
+  the base64 data — so a later operation request or log line cannot leak it.
+- **Content revisions are monotonic.** Typing, a mention insertion, a host
+  `setEditorText`/restore, an attachment add/remove and a paste body registered
+  under an unchanged marker all mint the next `revision` from a process-wide
+  clock. Edit-then-revert therefore advances twice: a stale result cannot apply
+  because the text happens to match again. Writing identical content is a no-op.
+- **Selection is separate.** `setDraftSelection` records the caret/range and
+  never touches a revision; moving the caret must not invalidate an operation.
+  `attachmentRevision` changes only when the ordered attachment identity set
+  changes.
+- **One image, one identity.** `nextAttachmentId()` gives every attachment
+  instance its own id, so the same screenshot pasted twice is two chips that can
+  be removed separately; the existing size/mime/downscale limits are unchanged.
+- **Paste semantics are unchanged.** The marker stays in the text and the body
+  stays in `pasteBodies`; `draftSnapshot.expandedText` is the canonical text a
+  send would use. Prompt history, completion and caret behaviour are untouched —
+  the store's single text writer, `setDraft`, still goes through
+  `writeComposerDraft`.
+
+Closing a tab drops its record with the other tab-scoped caches
+(`TAB_SCOPED_RECORDS`). Tests: `tests/renderer/composer-draft.test.ts` (model),
+`tests/renderer/composer-draft-store.test.tsx` (store, remount, duplicates,
+close-tab cleanup, host-failure restore) and the existing composer/completion
+suites.
+
+### Atomic snapshot capture and CAS application (2026-11-22, row 19)
+
+`src/renderer/src/session/composer-draft-operation.ts` is the pure half of a
+composer operation; the store actions `applyDraftCandidate` and
+`replaceDraftWithCandidate` commit its result.
+
+- **The capture is the live draft.** `draftSnapshot` reads the revisioned record
+  and the tab's paste table, so `expandedText` is the canonical body a send
+  would use. The debounced `getEditorText()` mirror is never an operation input.
+  Attachment metadata stays id/name/mime/byte-count; the base64 payload stays in
+  renderer memory.
+- **One candidate, one current base.** An automatic apply passes the captured
+  `revision` + `attachmentRevision`; both are compared against the live record
+  immediately before the write. Typing, a host restore, an attachment
+  add/remove/reorder and an edit-then-revert (ABA) all advance one of them, so
+  the apply is refused as `stale-base` and the newer draft is left alone.
+- **Text and attachments move together.** A successful apply builds one new
+  draft record: the candidate text replaced, every live attachment object kept
+  by identity, a new monotonic revision, and the caret collapsed at the end of
+  the new text. The store writes `prefs.drafts` and `composerDrafts` in one
+  `set`, then flushes preferences immediately (coalescing the typing debounce)
+  and reports the new text to the host editor mirror.
+- **Explicit replace rechecks what the user saw.** After a conflict the
+  candidate stays recoverable; `replaceDraftWithCandidate` takes the revision
+  the confirm dialog displayed and re-checks it against the live draft, so an
+  edit made while the dialog was open still wins.
+- **Applications are idempotent.** Per-tab `composerApplyReceipts` (bounded,
+  newest last) record `{operationId, appliedRevision, disposition}`. A replayed
+  completion/apply for the same operation is refused as `duplicate` (or
+  `already-applied`) without a second write, flush or caret move. A successful
+  apply mints a `composerCaretRequests[tabId]` token that `Composer` honours
+  once, only when the DOM carries exactly the applied text.
+
+Tests: `tests/renderer/composer-draft-operation.test.ts` (pure CAS, receipt
+ledger) and `tests/renderer/composer-draft-apply.test.tsx` (store races, tab
+switch/close, explicit replace, duplicate apply, caret/focus).
+
+### Operation lifecycle across renderer/host boundaries (2026-11-22, row 23)
+
+A refinement is host work, but its observable state is per tab. The renderer
+never infers liveness from a label or a status string; it reconciles typed
+frames and host reads against an explicit binding generation.
+
+- **Reload/activation queries the live operation instead of restarting it.**
+  `composer.current` (additive in `composer-transform-v1`) answers with the one
+  non-terminal operation bound to the caller's session/epoch, or `null`. A
+  renderer that lost its in-memory record (renderer reload, HMR, a remount)
+  adopts it with an unknown base revision, so a later candidate is viewable but
+  is never auto-inserted over the reloaded draft; the user confirms an explicit
+  replace. `composer.transform` also refuses a second live operation for the
+  same binding (`request-conflict`), so a reload cannot start a duplicate
+  provider call.
+- **Every event is fenced.** The reducer compares an optional event `binding`
+  against the operation's captured session/epoch/binding/host generation, and
+  the store drops a frame whose live binding generation no longer matches the
+  record. Tab isolation comes from the per-tab IPC envelope, request ids are
+  host-minted and unguessable, and a response is re-read against the tab and
+  binding after every await.
+- **Applied-but-ack-lost is settled by receipts.** `composer.applied` is
+  idempotent on the host and replayed from a bounded settled map after a lost
+  acknowledgement; the renderer replays its own bounded receipt ledger once per
+  operation/revision. Neither path rewrites the draft a second time, and a
+  reconciliation read that reports `applied` settles the record without
+  candidate text.
+- **Invalidation, never a cached result.** Host restart/crash
+  (`session.recovered`), new/resume/fork/rewind (`session_replaced`), `/reload`,
+  a publisher withdraw/disable, a republished control generation, tab close, app
+  quit and a project trust/policy change all cancel the local operation and
+  invalidate the host job/grant. The candidate text stays viewable for recovery
+  but `canApply` is false; an already applied operation is never rolled back.
+  Renderer draft text and in-memory attachments are preserved whenever their
+  owner (the tab) still exists.
+- **Bounded cleanup.** The host keeps at most 64 settled request ids with a
+  60 s replay window (`composerTransformHostLimits`); `reset()` drops every job
+  and receipt on a restart/rebind, and `invalidate()` cancels jobs but keeps
+  bounded receipts. The renderer keeps one record per tab, a bounded applied
+  receipt ledger per tab, and a bounded (64-entry) receipt-replay memory; a
+  closed tab's operation/receipt/attachment records are dropped while
+  `prefs.drafts` keeps the persisted text.
+
+**Binary attachments do not survive a full app/renderer process loss.** Image
+bytes live only in renderer memory (`composerDrafts[tabId].attachments`); the
+persisted `prefs.drafts` map carries sanitised text only. Restarting the app or
+reloading the renderer therefore restores the text but not the attached images;
+a matching operation's candidate can still be reconciled from the host, but the
+original attachments are gone. Surviving them would require a separate secure
+draft-blob store (encrypted at rest, bounded, owner-scoped); this build
+deliberately has none, so the limitation is stated rather than implied.
+
+Tests: `tests/shared/composer-operation-lifecycle.test.ts` (fencing,
+reconcile/adopt/expire, receipt idempotence, invalidation-as-cancellation),
+`tests/host/composer-transform.test.ts` (current read, single live operation,
+invalidate/reset/dispose, bounded retention) and
+`tests/renderer/composer-operation-lifecycle.test.tsx` (reload adoption, host
+loss, receipt replay, publisher/trust/replacement cancellation, closed-tab
+cleanup).
+
+## One working bar and the footer telemetry rail (2026-11-25)
+
+The session column used to carry two native extension rows: `WorkingRow` (the
+working status + `Esc to cancel`) and `ContributionsBar` (progress/status rows,
+the input state, the linked tab and the first four actions). Review suppressed
+the first one, so the same job had two shapes. They are merged into a single
+`src/renderer/src/session/WorkingBar.tsx`, mounted once immediately above the
+composer (after the above/below-editor widget strips and `RelatedSessionsBar`),
+in every pane:
+
+- **One row, one place.** It shows the extension working message (the default
+  `Working…` + `Esc to cancel` only when the publisher sent no message), the
+  elapsed time, a compact linked-tab button, the publisher's inline controls, a
+  lock marker for a `locked` input contribution, and a `MoreVertical` three-dot
+  menu for grouped/overflow actions. It hides only when none of that exists, and
+  it is not suppressed while input is locked, so Review keeps it. It is not
+  mounted on `stopped`/`crashed`/`failed` tabs (a dead host cannot run an
+  action). `RunStatusRow` remains a separate transient retry/compaction row.
+- **The publisher declares placement.** An action may carry a `group`
+  (`id`/`label`/`order`/`placement` of `inline` or `menu`); ungrouped legacy
+  actions keep the old fallback (first three inline, the rest in the menu). The
+  pure `buildContributionBar()` model decides `inlineActions`, `actionGroups`
+  and `overflowActions` once, and the renderer never re-derives owner rules.
+- **The footer is the telemetry rail.** `status`/`progress` contribution rows
+  moved out of the bar into `SessionFooter`, after the `ctx.ui.setStatus`
+  entries, tone-aware, with `done/total` and the stale marker. The rail grows
+  within `min-h-10 max-h-24` and wraps (`max-w-[72ch]`,
+  `whitespace-pre-wrap`; ANSI statuses pass `AnsiLine`'s opt-in `wrap`), so the
+  child telemetry is readable instead of truncated at 48ch. A custom
+  `ctx.ui.setFooter()` still replaces the whole footer, so the rows are not
+  injected into it.
+- **The TODO panel is untouched.** The extension's own `workflow-todos` widget
+  stays a read-only TUI frame with its own `Child x/x · model · ctx · local
+todos` header; the app adds no progress row and no `Todos n/m` chip above the
+  composer. An idle bar with menu-only actions shows the first group's label
+  (`Todos`) next to the dots.
+- **The mode label is a split control.** A same-owner `mode-choice` list adds a
+  chevron that opens an upward menu (`menuitemradio`, current mode checked and
+  disabled); `mode-choice` has its own slot so it can never become the composer's
+  identity. The whole control is measured, so the textarea clears label and
+  chevron.
+
+Nothing here knows an extension name: the guard
+`tests/architecture/no-workflow-adapters.test.ts` still passes, the contract
+stays additive v1, and the publisher that supplies groups/choices is
+`@dieulc/workflow` 0.15.0 — the staged/pinned bundle in
+`resources/workflow.lock.json` is also 0.15.0, so grouped actions and the mode
+chevron are active in the pinned desktop. The live `/profile use` model switch
+is in unreleased W 0.17.2 work and is not in the pinned 0.15.0 bundle. Tests: `tests/renderer/working-bar.test.tsx`,
+`tests/renderer/session-footer.test.tsx`, `tests/renderer/composer.test.tsx`,
+`tests/renderer/session-view.test.tsx`,
+`tests/shared/extension-contributions-view.test.ts` and
+`docs/architecture/extension-ui.md` (“One working bar, grouped actions and the
+mode menu”).

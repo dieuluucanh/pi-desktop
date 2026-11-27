@@ -33,6 +33,50 @@ Sessions are grouped by project in the sidebar; the group lists the same tabs as
 the top strip (file tabs stay in the editor strip), and a running tab shows a
 status dot.
 
+## Terminal tabs
+
+A terminal tab is a real shell, not a Pi session: no agent, no transcript, and it
+never wakes a host. Use it when you want to drive the shell yourself; the
+composer's `!`/`!!` stays the "the agent should see this" runner.
+
+- **Open one** with **New terminal** in the strip, `Ctrl/Cmd+Shift+T`, or **File
+  → New Terminal**. `Ctrl/Cmd+J` toggles a terminal beside the session.
+- The strip's joined chip opens your **saved default** shell on its left segment;
+  the chevron opens a one-off terminal with another detected profile. The order
+  is New session → New terminal → Grid layout.
+- **Profiles** are detected in the main process: PowerShell 7, Windows PowerShell,
+  Command Prompt, Git Bash and WSL distributions on Windows; `$SHELL` and the
+  POSIX fallbacks elsewhere. **Settings → Terminal** picks the default, a custom
+  absolute path, and the font, cursor, scrollback and copy behaviour. A terminal
+  opened with a one-off profile keeps that shell across a relaunch.
+- **Scrollback survives** tab switches and grid changes — the terminal is moved,
+  not recreated — so a long build log stays where you left it. Shell chords
+  (`Ctrl+C/N/P/W/B/G`, and the rest) go to the shell; only the app's own chords
+  (copy/paste, find, clear, new/toggle/close terminal, tab cycling, palette, font
+  zoom) are intercepted.
+- **Trust still applies.** A terminal in an untrusted project does not spawn; the
+  tab shows the trust notice, and **Retry** after granting trust starts it.
+- It is a **local** shell only. There is no SSH/remote session, no tmux control
+  mode and no docked split panel; those are backlog.
+
+## Related child sessions
+
+An extension can ask the app to open a **related session**: a normal tab in the
+same project, owned by the session that requested it. The tab is a real session
+with the usual tools, editor, input and transcript — not a hidden background
+worker.
+
+- It starts **idle**. The extension writes its assignment metadata before the
+  session starts, and the child's first turn begins only when the parent hands
+  it an authenticated start grant. A tab you open from a link stays idle.
+- Opening the same related session again **focuses** the existing tab; it never
+  starts a second writer for the same JSONL file.
+- Closing the tab ends that child; the parent sees the close and must reconcile
+  the task rather than silently respawning it.
+- The assignment content is ordinary session metadata. You can inspect it from
+  the transcript/session view; the parent's control secret is never placed in
+  the tab, the prompt or the command line.
+
 ## Working with several sessions at once (grid)
 
 The window can show several tabs side by side. The grid replaces only the content
@@ -72,21 +116,58 @@ area — the tab strips, the sidebar and the panel rail stay where they are.
 
 Every visible pane keeps its session awake. Sessions in panes you are not looking
 at still sleep after a long idle period, and wake on the next click or keystroke.
+A background review/web tab does not steal the selection: it opens beside the
+session and keeps that session's host protected while the review is open.
+
+A web tab closes like a browser tab. If the page asks to close (Plannotator's
+auto-close), or you press its `×`, the app returns to the session that opened it
+when that tab is still open; otherwise the most recently active tab wins. Closing
+that session also closes its linked review tabs, while a web tab opened manually
+with **Open URL in Tab…** is independent.
 
 ## Resuming and the session browser
 
-`Ctrl/Cmd+Shift+O` opens the **Sessions** browser, also reachable with `/resume`.
-It lists every session of the profile from Pi’s own index, grouped by project,
-searchable by title or first prompt, newest first.
+Click the **History** button in the session strip (between **New terminal** and the
+layout switcher), press `Ctrl/Cmd+Alt+O`, choose **Sessions…** from the app menu,
+run `/resume`, or click **Browse saved sessions…** in an empty grid pane. The
+browser opens on **This project** (the sessions saved for the folder you are in);
+**All sessions** shows every project in the Pi profile. (`Ctrl/Cmd+Shift+O` is
+**Open Project…**, not Sessions.) Sessions come from Pi’s own index, grouped by
+project, newest first. The row of the session you are in is marked **Current**.
+Each row shows its last activity in your local timezone;
+an unreadable timestamp shows `—` instead of a fake 1970 date. Search runs in the
+control host over the full transcript, not just the visible title: a word from an
+old assistant message still finds its session. The host keeps that text out of
+the UI process and returns a bounded page, so the browser may show “Showing N of
+M matches — narrow the search” on very large profiles. **Refresh** re-reads the
+profile; the host caches the listing for a few seconds while you type.
 
 From there you can:
 
-- **Resume** a session into a new tab (its full history loads);
-- **Continue the most recent** session of a project;
+- **Resume** a session into a new tab (its full history loads). The browser
+  closes as soon as you pick a row, so the tab appears immediately and shows its
+  starting state while Pi reads the history in the background. Picking the
+  **Current** session, or one already open in another tab, closes the browser and
+  returns to that tab instead — one session file never runs two hosts, so its
+  transcript can never be split between tabs;
+- **Continue the most recent** session of a project — the same, once the host has
+  found that project’s newest session (and a return to its tab when that session
+  is the one you are in);
 - **Rename** or **delete** a stored session — deletion goes to the OS trash, is
   validated against Pi’s index in the host and contained to the profile in the
   main process, and is recoverable;
+- **Copy Path** from a tab’s right-click menu, the sidebar `…`, or a row in the
+  browser to put the absolute session JSONL path on the clipboard (the item is
+  disabled until a new session has persisted its first message), ready to paste
+  into the composer;
 - see sessions created by **terminal Pi** — they are the same files.
+
+Picking a session never waits for the host: the dialog closes on the click and the
+new tab reports its own progress. If that resume fails (a deleted file, a crashed
+host), the browser stays closed and the reason appears in the status bar; the tab
+remains in the strip so it can be restarted or closed. Tabs persisted by an older
+build that point at one session file are collapsed to a single tab on the next
+launch, keeping the most recently used one.
 
 ## History tree, fork and clone
 
@@ -112,6 +193,16 @@ Tabs, order and the active tab are stored in app state and restored on launch,
 but **no host is spawned until a tab is activated**. The most recently used tab
 is warmed in the background so the first session is fast.
 
+## Following the transcript
+
+The transcript follows new output as it streams. While the view is on the tail,
+every new message, tool result and streamed delta keeps it there. Scroll up —
+with the wheel, a touch drag or `PageUp`/`Home`/`↑` — and following stops at once,
+leaving you where you are. Scroll back down to the bottom, or press the **Jump to
+latest** pill (`Ctrl+End`), to resume. The pill reads **New messages · jump to
+latest** only when content arrived while you were reading above; if nothing new
+has come in since you scrolled up it stays plain **Jump to latest**.
+
 ## Composer
 
 The composer is a plain text area with Pi’s autocomplete contract:
@@ -121,15 +212,27 @@ The composer is a plain text area with Pi’s autocomplete contract:
   manual resize handle.
 - While the agent is streaming, Enter **steers** the current turn. `Ctrl+Q` /
   `Alt+Enter` queue a **follow-up** instead. Queued messages appear as pending
-  rows above the composer labelled **Steering** / **Follow-up**; `Alt+Up`
-  restores them all into the draft ("restore all"), and a Settings queue-mode
-  change applies to open sessions without a reload.
+  rows above the composer labelled **Steering** / **Follow-up**: the rows list
+  the texts this app queued for you, and `Alt+Up` restores them all into the
+  draft ("restore all"). A turn an extension queued for itself appears as one
+  dim line — like terminal Pi — and is not restored by `Alt+Up` or `Esc`; those
+  actions say when they discard one ("Discarded N queued extension turn(s).").
+  A Settings queue-mode change applies to open sessions without a reload.
 - `!command` runs a shell command in the session folder (streamed into the
   transcript, `Esc` cancels it); `!!command` keeps it out of the model's context.
-  The composer shows a **shell** chip and a `! shell` hint, and completes
-  workspace paths after the command word. Commands are non-interactive: `git
-status`, `git add`, `git push -u origin main` work with configured credentials,
-  but a password/TUI prompt needs a real terminal.
+  The composer shows a **shell** chip and a `! shell` hint. Unlike `/`, `@` and
+  `#`, a shell line has no built-in completion menu (matching terminal Pi); an
+  extension that provides `!` autocomplete still works. Commands are
+  non-interactive: `git status`, `git add`, `git push -u origin main` work with
+  configured credentials, but a password/TUI prompt needs a real terminal.
+- The **mode control** sits in the prompt's top-right corner. It always shows
+  the mode the session is actually in (for example `Plan` or `Orchestrator`),
+  and when the extension supports it, clicking it — or pressing its key, such as
+  `Tab` — advances that extension's mode cycle. Both paths run the same
+  extension-side cycle, so the label cannot disagree with the keyboard; it
+  updates only when the new mode is published, never optimistically. Clicking
+  keeps your draft and caret in the prompt, and the control is reachable with the
+  keyboard. There is no separate row of mode buttons above the composer.
 - A large paste collapses to `[paste #1 +240 lines]`; the body stays in memory
   and is expanded when sent. After a restart the marker says its content is lost
   rather than sending the token.
@@ -143,6 +246,18 @@ status`, `git add`, `git push -u origin main` work with configured credentials,
   interrupted text into the composer — the same recipe terminal Pi uses.
 - Drafts are kept per tab, so switching tabs or restarting the app does not lose
   an unfinished prompt.
+- `↑` recalls prompts already sent in this tab, newest first, once the caret is
+  on the first **displayed** row — a long soft-wrapped prompt moves the caret up
+  one row at a time first; `↓` mirrors this from the last displayed row and
+  returns to the draft (and caret) you had when you started. `Shift+↑` / `Ctrl+↑`
+  keep their native selection/word movement and never recall history. Editing a
+  recalled prompt — or sending it — ends history mode and adopts the visible
+  text, exactly like terminal Pi. History is rebuilt from the session when a tab
+  loads, so it survives an app restart and includes sessions created in terminal
+  Pi; prompts sent in the current run stay on top. A command prompt is recalled
+  as the command you typed when the app knows it. After a compaction only the
+  prompts still in the active context remain (same as terminal Pi), and `!`
+  shell commands are only in the current run.
 - Paste or drop images to attach them; they are downscaled in the renderer and
   passed to the model as inline image content.
 
@@ -168,3 +283,28 @@ status`, `git add`, `git push -u origin main` work with configured credentials,
 
 - [Projects](projects.md) · [Models and thinking](models-and-thinking.md)
 - [Getting started](getting-started.md) · [FAQ](faq.md)
+
+## Extension-contributed related sessions
+
+An extension can ask the host to create or open a **normal** related session
+(a child or sibling tab) with bounded bootstrap entries. The host:
+
+- resolves the owning extension from the command that made the request, not from
+  an owner string in the payload;
+- checks the negotiated capability (`create`/`open`/`focus`/`inspect`/
+  `interrupt`/`close`) before any work starts, and answers `unsupported` when the
+  host cannot do it;
+- writes bootstrap entries before the session runtime is created — they are
+  data, never an automatic turn;
+- reuses the pending or settled answer for a duplicate request id, so a retry or
+  a lost bus message never opens a second child tab;
+- keeps the archive/transcript when a child is closed.
+
+A related tab is an ordinary session: its own extensions, tools, model and
+transcript. Closing the parent does not kill an unrelated tab, and inspecting a
+running child focuses its owner rather than opening a second writer. When the
+host cannot prove ownership, the request is rejected instead of guessed.
+
+The opt-in Workflow Orchestrator uses this path (`/orchestrator`); it remains
+experimental and live orchestration is not released yet. See the workflow
+repository's `docs/orchestrator-live-acceptance.md` for the unrun live checklist.

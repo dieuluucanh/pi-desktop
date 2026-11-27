@@ -85,6 +85,7 @@ describe("menu grammar", () => {
     expect(accelerators["new-session"]).toBe("CmdOrCtrl+N");
     expect(accelerators["check-updates"]).toBeNull();
     expect(accelerators["view-settings"]).toBe("CmdOrCtrl+,");
+    expect(accelerators["view-sessions"]).toBe("CmdOrCtrl+Alt+O");
   });
 });
 

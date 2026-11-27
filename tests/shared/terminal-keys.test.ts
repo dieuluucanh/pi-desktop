@@ -4,6 +4,9 @@ import {
   bracketedPaste,
   domKeyToTerminalData,
   domWheelToTerminalData,
+  isPasteChord,
+  terminalKeyDecision,
+  type TerminalKeyContext,
 } from "../../src/shared/terminal-keys";
 
 /**
@@ -62,6 +65,48 @@ describe("domKeyToTerminalData", () => {
     expect(data.endsWith("\x1b[201~")).toBe(true);
     expect(data).toContain("hi\nthere");
   });
+
+  it("strips embedded paste delimiters so the framing cannot be escaped", () => {
+    const data = bracketedPaste("a\x1b[201~b\x1b[200~c");
+    expect(data).toBe("\x1b[200~abc\x1b[201~");
+  });
+});
+
+describe("isPasteChord", () => {
+  const base = { key: "v" };
+
+  it("accepts Ctrl+V and Ctrl+Shift+V on Windows and Linux", () => {
+    for (const platform of ["win32", "linux"] as const) {
+      expect(isPasteChord({ ...base, ctrlKey: true, platform })).toBe(true);
+      expect(isPasteChord({ ...base, ctrlKey: true, shiftKey: true, platform })).toBe(true);
+    }
+  });
+
+  it("accepts Shift+Insert on Windows and Linux", () => {
+    for (const platform of ["win32", "linux"] as const) {
+      expect(isPasteChord({ key: "Insert", shiftKey: true, platform })).toBe(true);
+      expect(isPasteChord({ key: "Insert", platform })).toBe(false);
+      expect(isPasteChord({ key: "Insert", ctrlKey: true, platform })).toBe(false);
+    }
+  });
+
+  it("rejects the Windows key chord (OS clipboard history)", () => {
+    expect(isPasteChord({ ...base, metaKey: true, platform: "win32" })).toBe(false);
+    expect(isPasteChord({ ...base, metaKey: true, platform: "linux" })).toBe(false);
+  });
+
+  it("uses Cmd+V on macOS and leaves Ctrl+V to the editor", () => {
+    expect(isPasteChord({ ...base, metaKey: true, platform: "darwin" })).toBe(true);
+    expect(isPasteChord({ ...base, ctrlKey: true, platform: "darwin" })).toBe(false);
+    expect(isPasteChord({ ...base, metaKey: true, ctrlKey: true, platform: "darwin" })).toBe(false);
+    expect(isPasteChord({ key: "Insert", shiftKey: true, platform: "darwin" })).toBe(false);
+  });
+
+  it("never treats an Alt chord or another key as paste", () => {
+    expect(isPasteChord({ ...base, altKey: true, ctrlKey: true, platform: "linux" })).toBe(false);
+    expect(isPasteChord({ key: "c", ctrlKey: true, platform: "linux" })).toBe(false);
+    expect(isPasteChord({ key: "V", ctrlKey: true, platform: "linux" })).toBe(true);
+  });
 });
 
 describe("domWheelToTerminalData", () => {
@@ -78,5 +123,192 @@ describe("domWheelToTerminalData", () => {
 
   it("clamps negative pointer cells to the first row/column", () => {
     expect(domWheelToTerminalData({ deltaY: 1, col: -5, row: -5 })).toBe("\x1b[<65;1;1M");
+  });
+});
+
+describe("terminalKeyDecision", () => {
+  const win: TerminalKeyContext = {
+    platform: "win32",
+    hasSelection: false,
+    copyOnSelection: false,
+  };
+  const mac: TerminalKeyContext = { ...win, platform: "darwin" };
+  const decision = (input: Parameters<typeof terminalKeyDecision>[0], context = win) =>
+    terminalKeyDecision(input, context);
+
+  it("sends the shell's own chords to the pty on Windows/Linux", () => {
+    for (const key of ["n", "p", "b", "g", "l", "r", "d", "z", "k", "a", "e"]) {
+      expect(decision({ key, ctrlKey: true })).toEqual({ kind: "pty" });
+    }
+    expect(decision({ key: "Tab" })).toEqual({ kind: "pty" });
+    expect(decision({ key: "Escape" })).toEqual({ kind: "pty" });
+    expect(decision({ key: "b", altKey: true })).toEqual({ kind: "pty" });
+    expect(decision({ key: "[", ctrlKey: true })).toEqual({ kind: "pty" });
+  });
+
+  it("claims only the curated Windows/Linux app chords", () => {
+    expect(decision({ key: "c", ctrlKey: true, shiftKey: true })).toEqual({
+      kind: "app",
+      action: "copy",
+    });
+    expect(decision({ key: "v", ctrlKey: true, shiftKey: true })).toEqual({
+      kind: "app",
+      action: "paste",
+    });
+    expect(decision({ key: "v", ctrlKey: true })).toEqual({ kind: "app", action: "paste" });
+    expect(decision({ key: "Insert", ctrlKey: true })).toEqual({ kind: "app", action: "copy" });
+    expect(decision({ key: "Insert", shiftKey: true })).toEqual({ kind: "app", action: "paste" });
+    expect(decision({ key: "f", ctrlKey: true, shiftKey: true })).toEqual({
+      kind: "app",
+      action: "find",
+    });
+    expect(decision({ key: "p", ctrlKey: true, shiftKey: true })).toEqual({
+      kind: "app",
+      action: "command-palette",
+    });
+    expect(decision({ key: "k", ctrlKey: true, shiftKey: true })).toEqual({
+      kind: "app",
+      action: "clear",
+    });
+    expect(decision({ key: "w", ctrlKey: true })).toEqual({
+      kind: "app",
+      action: "close-terminal",
+    });
+    expect(decision({ key: "Tab", ctrlKey: true })).toEqual({
+      kind: "app",
+      action: "next-tab",
+    });
+    expect(decision({ key: "Tab", ctrlKey: true, shiftKey: true })).toEqual({
+      kind: "app",
+      action: "previous-tab",
+    });
+    expect(decision({ key: "`", ctrlKey: true })).toEqual({
+      kind: "app",
+      action: "toggle-terminal",
+    });
+    expect(decision({ key: "`", ctrlKey: true, shiftKey: true })).toEqual({
+      kind: "app",
+      action: "new-terminal",
+    });
+    expect(decision({ key: "=", ctrlKey: true })).toEqual({ kind: "app", action: "zoom-in" });
+    expect(decision({ key: "-", ctrlKey: true })).toEqual({ kind: "app", action: "zoom-out" });
+    expect(decision({ key: "0", ctrlKey: true })).toEqual({ kind: "app", action: "zoom-reset" });
+  });
+
+  it("copies Ctrl+C only when a selection is there and copyOnSelection is on", () => {
+    expect(decision({ key: "c", ctrlKey: true })).toEqual({ kind: "pty" });
+    expect(decision({ key: "c", ctrlKey: true }, { ...win, hasSelection: true })).toEqual({
+      kind: "pty",
+    });
+    expect(
+      decision({ key: "c", ctrlKey: true }, { ...win, hasSelection: true, copyOnSelection: true }),
+    ).toEqual({ kind: "app", action: "copy" });
+    expect(
+      decision({ key: "c", ctrlKey: true }, { ...win, hasSelection: false, copyOnSelection: true }),
+    ).toEqual({ kind: "pty" });
+  });
+
+  it("leaves Meta chords to the OS on Windows/Linux", () => {
+    expect(decision({ key: "c", metaKey: true })).toEqual({ kind: "ignore" });
+    expect(decision({ key: "n", metaKey: true })).toEqual({ kind: "ignore" });
+  });
+
+  it("uses Cmd for the app chords on macOS", () => {
+    expect(decision({ key: "c", metaKey: true }, mac)).toEqual({ kind: "app", action: "copy" });
+    expect(decision({ key: "v", metaKey: true }, mac)).toEqual({ kind: "app", action: "paste" });
+    expect(decision({ key: "a", metaKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "select-all",
+    });
+    expect(decision({ key: "f", metaKey: true }, mac)).toEqual({ kind: "app", action: "find" });
+    expect(decision({ key: "k", metaKey: true }, mac)).toEqual({ kind: "app", action: "clear" });
+    expect(decision({ key: "w", metaKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "close-terminal",
+    });
+    expect(decision({ key: "`", metaKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "toggle-terminal",
+    });
+    expect(decision({ key: "`", metaKey: true, shiftKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "new-terminal",
+    });
+    expect(decision({ key: "+", metaKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "zoom-in",
+    });
+    expect(decision({ key: "0", metaKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "zoom-reset",
+    });
+    expect(decision({ key: "p", metaKey: true, shiftKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "command-palette",
+    });
+  });
+
+  it("leaves Cmd+N, Cmd+Q and Cmd+Tab with the menu and the OS", () => {
+    expect(decision({ key: "n", metaKey: true }, mac)).toEqual({ kind: "ignore" });
+    expect(decision({ key: "q", metaKey: true }, mac)).toEqual({ kind: "ignore" });
+    expect(decision({ key: "Tab", metaKey: true }, mac)).toEqual({ kind: "ignore" });
+    expect(decision({ key: "p", metaKey: true }, mac)).toEqual({ kind: "ignore" });
+  });
+
+  it("sends Ctrl chords to the shell on macOS, including SIGINT", () => {
+    expect(decision({ key: "c", ctrlKey: true }, mac)).toEqual({ kind: "pty" });
+    expect(decision({ key: "n", ctrlKey: true }, mac)).toEqual({ kind: "pty" });
+    expect(decision({ key: "b", ctrlKey: true }, mac)).toEqual({ kind: "pty" });
+    expect(decision({ key: "Tab", ctrlKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "next-tab",
+    });
+    expect(decision({ key: "c", ctrlKey: true, shiftKey: true }, mac)).toEqual({
+      kind: "app",
+      action: "copy",
+    });
+    expect(decision({ key: "b", altKey: true }, mac)).toEqual({ kind: "pty" });
+  });
+
+  /**
+   * xterm asks the custom handler about keydown, keypress and keyup. Only the
+   * keydown may act: without this rule one Ctrl+V pasted three times (keydown +
+   * keyup through the app, plus the browser's own uncancelled paste).
+   */
+  it("acts only on the keydown of a chord xterm asks about three times", () => {
+    const linux: TerminalKeyContext = { ...win, platform: "linux" };
+    // win32 and linux share the `!mac` branch, but each table is pinned so a
+    // platform-specific regression cannot hide behind the other.
+    const chords: Array<[Parameters<typeof terminalKeyDecision>[0], TerminalKeyContext]> = [
+      [{ key: "v", ctrlKey: true }, win],
+      [{ key: "v", ctrlKey: true, shiftKey: true }, win],
+      [{ key: "Insert", shiftKey: true }, win],
+      [{ key: "w", ctrlKey: true }, win],
+      [{ key: "p", ctrlKey: true, shiftKey: true }, win],
+      [{ key: "Tab", ctrlKey: true }, win],
+      [{ key: "v", ctrlKey: true }, linux],
+      [{ key: "v", ctrlKey: true, shiftKey: true }, linux],
+      [{ key: "Insert", shiftKey: true }, linux],
+      [{ key: "v", metaKey: true }, mac],
+      [{ key: "c", metaKey: true }, mac],
+      [{ key: "a", metaKey: true }, mac],
+    ];
+
+    for (const [input, context] of chords) {
+      expect(terminalKeyDecision({ ...input, type: "keydown" }, context).kind).toBe("app");
+      expect(terminalKeyDecision(input, context).kind).toBe("app"); // omitted type = keydown
+      expect(terminalKeyDecision({ ...input, type: "keypress" }, context)).toEqual({
+        kind: "pty",
+      });
+      expect(terminalKeyDecision({ ...input, type: "keyup" }, context)).toEqual({ kind: "pty" });
+    }
+  });
+
+  it("keeps a non-acting decision on every event type", () => {
+    for (const type of ["keydown", "keypress", "keyup"] as const) {
+      expect(decision({ key: "n", ctrlKey: true, type })).toEqual({ kind: "pty" });
+      expect(decision({ key: "n", metaKey: true, type })).toEqual({ kind: "ignore" });
+      expect(decision({ key: "Escape", type })).toEqual({ kind: "pty" });
+    }
   });
 });

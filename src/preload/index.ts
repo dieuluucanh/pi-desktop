@@ -13,6 +13,7 @@ import {
   type SessionDeleteResult,
   type DiagnosticsSaveResult,
   type SessionsBridge,
+  type TuiBridge,
   type UpdatesBridge,
   type WebBridge,
   type GitBridge,
@@ -22,6 +23,13 @@ import {
   type WindowState,
 } from "../shared/ipc";
 import type { UiPrefs } from "../shared/prefs";
+import type { TerminalBridge, TerminalCreateInput } from "../shared/terminal-ipc";
+import type {
+  TerminalAttachResult,
+  TerminalEventFrame,
+  TerminalInfo,
+} from "../shared/terminal-protocol";
+import type { TerminalProfileSnapshot } from "../shared/terminal-profiles";
 import type { IntegrationsState, OfficeIntegrationRecordPatch } from "../shared/integrations";
 import type {
   CloneProjectInput,
@@ -77,6 +85,7 @@ import type {
 import type {
   GitAction,
   GitActionResult,
+  GitCommitContext,
   GitCommitEntry,
   GitDiff,
   GitDiffRequest,
@@ -126,6 +135,8 @@ const sessions: SessionsBridge = {
     ipcRenderer.invoke(IPC.sessionPromoteOffice, tabId) as Promise<SessionTabsEnvelope>,
   activate: (tabId: string) =>
     ipcRenderer.invoke(IPC.sessionActivate, tabId) as Promise<SessionTabsEnvelope>,
+  ensure: (tabId: string) =>
+    ipcRenderer.invoke(IPC.sessionEnsure, tabId) as Promise<SessionTabsEnvelope>,
   setVisibleTabs: (ids: readonly string[]) =>
     ipcRenderer.invoke(IPC.sessionSetVisible, ids) as Promise<void>,
   deactivate: () => ipcRenderer.invoke(IPC.sessionDeactivate) as Promise<SessionTabsEnvelope>,
@@ -133,6 +144,8 @@ const sessions: SessionsBridge = {
   restore: () => ipcRenderer.invoke(IPC.sessionRestore) as Promise<SessionTabsEnvelope>,
   restart: (tabId: string) =>
     ipcRenderer.invoke(IPC.sessionRestart, tabId) as Promise<SessionTabsEnvelope>,
+  stop: (tabId: string) =>
+    ipcRenderer.invoke(IPC.sessionStop, tabId) as Promise<SessionTabsEnvelope>,
   request: (input: SessionRequestInput) =>
     ipcRenderer.invoke(IPC.sessionRequest, input) as Promise<unknown>,
   deleteSession: (sessionFile: string) =>
@@ -257,6 +270,8 @@ const git: GitBridge = {
     ipcRenderer.invoke(IPC.gitHeadMessage, projectPath) as Promise<string | null>,
   branches: (projectPath: string) =>
     ipcRenderer.invoke(IPC.gitBranches, projectPath) as Promise<string[]>,
+  commitContext: (projectPath: string) =>
+    ipcRenderer.invoke(IPC.gitCommitContext, projectPath) as Promise<GitCommitContext>,
   onSnapshot: (listener: (snapshot: GitSnapshot) => void) =>
     subscribe<GitSnapshot>(IPC.gitPushed, listener),
 };
@@ -341,6 +356,32 @@ const workspace: WorkspaceBridge = {
     >,
 };
 
+const terminal: TerminalBridge = {
+  create: (input: TerminalCreateInput) =>
+    ipcRenderer.invoke(IPC.terminalCreate, input) as ReturnType<TerminalBridge["create"]>,
+  attach: (terminalId: string) =>
+    ipcRenderer.invoke(IPC.terminalAttach, terminalId) as Promise<TerminalAttachResult | null>,
+  write: (terminalId: string, data: string) =>
+    ipcRenderer.invoke(IPC.terminalWrite, { terminalId, data }) as Promise<void>,
+  resize: (terminalId: string, cols: number, rows: number) =>
+    ipcRenderer.invoke(IPC.terminalResize, { terminalId, cols, rows }) as Promise<void>,
+  close: (terminalId: string) =>
+    ipcRenderer.invoke(IPC.terminalClose, terminalId) as Promise<boolean>,
+  ack: (terminalId: string, bytes: number) =>
+    ipcRenderer.send(IPC.terminalAck, { terminalId, bytes }),
+  list: () => ipcRenderer.invoke(IPC.terminalList) as Promise<TerminalInfo[]>,
+  profiles: (force = false) =>
+    ipcRenderer.invoke(IPC.terminalProfiles, force) as Promise<TerminalProfileSnapshot>,
+  setFocus: (focused: boolean) => ipcRenderer.send(IPC.terminalFocus, focused),
+  onEvent: (listener: (frame: TerminalEventFrame) => void) =>
+    subscribe<TerminalEventFrame>(IPC.terminalEvent, listener),
+};
+
+const tui: TuiBridge = {
+  setFocus: (tabId: string, focused: boolean) => ipcRenderer.send(IPC.tuiFocus, { tabId, focused }),
+  onPasteRequest: (listener: (tabId: string) => void) => subscribe<string>(IPC.tuiPaste, listener),
+};
+
 const bridge: PiDesktopBridge = {
   getAppInfo: () => ipcRenderer.invoke(IPC.appInfo) as Promise<AppInfo>,
   openExternal: (url: string) => ipcRenderer.invoke(IPC.openExternal, url) as Promise<boolean>,
@@ -387,6 +428,8 @@ const bridge: PiDesktopBridge = {
     subscribe<MenuCommand>(IPC.appMenuCommand, listener),
   prefs,
   sessions,
+  terminal,
+  tui,
   projects,
   office,
   integrations,

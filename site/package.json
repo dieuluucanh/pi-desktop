@@ -1,0 +1,41 @@
+{
+  "name": "pi-desktop-site",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Public product site and documentation for Pi Desktop",
+  "engines": {
+    "node": ">=22.23.4"
+  },
+  "scripts": {
+    "dev": "node scripts/sync-docs.mjs && node scripts/sync-brand.mjs && astro dev",
+    "sync": "node scripts/sync-docs.mjs && node scripts/sync-brand.mjs",
+    "check": "node scripts/sync-docs.mjs && node scripts/sync-brand.mjs && astro sync && astro check && vitest run --exclude \"tests/build/**\"",
+    "build": "node scripts/sync-docs.mjs && node scripts/sync-brand.mjs && astro build && node scripts/check-links.mjs dist && vitest run tests/build",
+    "og": "node scripts/gen-og.mjs",
+    "test": "vitest run --exclude \"tests/build/**\"",
+    "test:dist": "vitest run tests/build",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "@astrojs/markdown-remark": "7.3.5",
+    "@astrojs/sitemap": "3.7.4",
+    "@astrojs/starlight": "0.42.8",
+    "astro": "7.4.5",
+    "mdast-util-to-string": "4.0.0",
+    "remark-gfm": "4.0.1",
+    "remark-parse": "11.0.0",
+    "remark-stringify": "11.0.0",
+    "sharp": "0.35.5",
+    "unified": "11.0.5",
+    "unist-util-visit": "5.2.0"
+  },
+  "devDependencies": {
+    "@astrojs/check": "0.9.12",
+    "@types/node": "24.19.2",
+    "prettier": "3.9.10",
+    "prettier-plugin-astro": "1.1.2",
+    "typescript": "5.9.3",
+    "vitest": "5.1.0"
+  }
+}

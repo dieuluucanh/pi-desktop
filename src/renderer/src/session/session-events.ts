@@ -1,5 +1,6 @@
 import type { SessionEventEntry } from "../../../shared/session-ipc";
 import { hashPromptText } from "../../../shared/prompt-origin";
+import { readQueueOriginList, type QueueEntryOrigin } from "../../../shared/queue-origin";
 import { parseReviewDecision, type ReviewDecision } from "../../../shared/web-tabs";
 
 /**
@@ -111,9 +112,22 @@ export type TranscriptItem =
   | { kind: "tool"; id: string; tool: TranscriptToolRun }
   | { kind: "notice"; id: string; notice: TranscriptNotice };
 
+/**
+ * One pending message plus who queued it (2026-11-26 queue-bar plan, step 4).
+ *
+ * `origin` comes from the host's `queue_update.queueOrigins` annotation: the SDK
+ * queue stores text only, so an extension's own turn and the user's are
+ * identical on the wire. A missing annotation reads as `"user"` — today's
+ * behaviour — so a legacy host never hides or drops a user's row.
+ */
+export interface QueuedMessage {
+  text: string;
+  origin: QueueEntryOrigin;
+}
+
 export interface TranscriptQueue {
-  steering: string[];
-  followUp: string[];
+  steering: QueuedMessage[];
+  followUp: QueuedMessage[];
 }
 
 export type TranscriptRunStatus =
@@ -146,6 +160,12 @@ export interface TranscriptState {
   /** True once history has been loaded from `messages.get`. */
   hydrated: boolean;
   /**
+   * The session id whose "Session started" row is already in `items`. A host
+   * recycle re-announces the same session; one row per session boundary is the
+   * rule, not one per process (2026-11-06 plan, step 15).
+   */
+  lastStartedSessionId: string | null;
+  /**
    * Every session entry id this transcript knows about (git-checkpoint plan step
    * 25). A checkpoint carries the entry id of the turn it was taken for, and the
    * rail offers *Conversation rewind* only when that id exists here. Collected
@@ -167,6 +187,7 @@ export function createTranscriptState(): TranscriptState {
     usage: null,
     lastSeq: 0,
     hydrated: false,
+    lastStartedSessionId: null,
     entryIds: {},
   };
 }
@@ -627,18 +648,25 @@ const NOTICE_SEVERITY: Record<string, TranscriptNotice["severity"]> = {
   extension_error: "error",
 };
 
-/** True when this transcript already carries the same extension notification. */
-function hasNotificationNotice(
+/**
+ * True when the immediately previous row is the same extension notification.
+ *
+ * Terminal Pi's `showStatus` updates the last status line in place only while
+ * it is still the last chat content; a repeat after any other item appends. A
+ * back-to-back duplicate card adds no information, so warning/error repeats
+ * collapse too (the one deliberate deviation from showWarning/showError).
+ */
+function repeatsLastNotification(
   state: TranscriptState,
   severity: TranscriptNotice["severity"],
   text: string,
 ): boolean {
-  return state.items.some(
-    (item) =>
-      item.kind === "notice" &&
-      item.notice.event === "oi.notify" &&
-      item.notice.severity === severity &&
-      item.notice.text === text,
+  const last = state.items[state.items.length - 1];
+  return (
+    last?.kind === "notice" &&
+    last.notice.event === "oi.notify" &&
+    last.notice.severity === severity &&
+    last.notice.text === text
   );
 }
 
@@ -784,7 +812,13 @@ export function reduceSessionEvents(
         break;
 
       case "agent_settled":
-        next = { ...next, runStartedAt: null };
+        // SDK 1.5.0 adds `aborted`. An aborted settle is a cancelled run: any
+        // tool that never produced `tool_execution_end` must stop spinning,
+        // exactly as it does on an aborted `agent_end`.
+        next = {
+          ...(payload.aborted === true ? sweepUnfinishedTools(next) : next),
+          runStartedAt: null,
+        };
         break;
 
       case "tool_execution_start":
@@ -832,15 +866,20 @@ export function reduceSessionEvents(
         next = applyBashDelta(next, payload);
         break;
 
-      case "queue_update":
+      case "queue_update": {
+        // The SDK sends text only; `queueOrigins` is the host's parallel
+        // annotation (step 3). Pair it positionally, dropping non-string texts
+        // as before so the row count matches the annotation.
+        const origins = asRecord(payload.queueOrigins);
         next = {
           ...next,
           queue: {
-            steering: asStringArray(payload.steering),
-            followUp: asStringArray(payload.followUp),
+            steering: queueRows(asStringArray(payload.steering), origins.steering),
+            followUp: queueRows(asStringArray(payload.followUp), origins.followUp),
           },
         };
         break;
+      }
 
       case "compaction_start":
         next = { ...next, runStatus: { kind: "compacting" } };
@@ -943,12 +982,10 @@ export function reduceSessionEvents(
       case "oi.notify": {
         // Extension command output is chat content in terminal Pi. Keep the
         // full multi-line message; the notification archive/toast path is
-        // handled separately by the store.
+        // handled separately by the store. Only an immediately repeated
+        // identical row collapses; a repeat after other content appends.
         const notice = notificationNotice(payload);
-        // The workflow (and other extensions) can re-emit the same advisory on
-        // every mode switch. Keep one row per distinct message; the history
-        // archive still records every arrival (see app-store).
-        if (notice && !hasNotificationNotice(next, notice.severity, notice.text)) {
+        if (notice && !repeatsLastNotification(next, notice.severity, notice.text)) {
           next = appendNotice(next, "oi.notify", notice.severity, notice.text);
         }
         break;
@@ -970,6 +1007,20 @@ export function reduceSessionEvents(
       default: {
         const severity = NOTICE_SEVERITY[entry.event];
         if (severity) {
+          if (entry.event === "session_started") {
+            const sessionId = asString(payload.sessionId);
+            // Same session, announced again (resume/reload/recycle): keep the
+            // first row. A new session id is a real boundary and gets its own.
+            if (sessionId.length > 0 && sessionId === next.lastStartedSessionId) break;
+            next = appendNotice(
+              next,
+              entry.event,
+              severity,
+              NOTICE_TEXT[entry.event] ?? entry.event,
+            );
+            if (sessionId.length > 0) next = { ...next, lastStartedSessionId: sessionId };
+            break;
+          }
           next = appendNotice(
             next,
             entry.event,
@@ -989,6 +1040,16 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+/**
+ * Pairs queued texts with their host annotation, positionally. Every text gets a
+ * `QueuedMessage`; a short, absent or malformed annotation leaves the tail (or
+ * the whole list) as `"user"`, the fail-open default.
+ */
+function queueRows(texts: readonly string[], origins: unknown): QueuedMessage[] {
+  const list = readQueueOriginList(origins, texts.length);
+  return texts.map((text, index) => ({ text, origin: list[index] ?? "user" }));
 }
 
 /** Text of a tool result/partial payload (`{content:[{type:"text",text}]}`). */

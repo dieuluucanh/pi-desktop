@@ -54,7 +54,7 @@ resource. The window shows a safe-mode banner.
   `xattr -dr com.apple.quarantine "/Applications/Pi Desktop.app"`.
 - **There is no “Restart & install” for updates.** Deliberate: Squirrel.Mac
   rejects an update whose code-signing identity differs from the running app, and
-  these builds are ad-hoc signed. **Settings → About & updates** says **Manual
+  these builds are ad-hoc signed. **About & updates** says **Manual
   updates** and links to the Releases page; download the new `.dmg`.
 
 ## A session looks idle/asleep after a long break
@@ -72,9 +72,39 @@ resource. The window shows a safe-mode banner.
 - **A tab that says `asleep`** has no running host. Clicking it, focusing the
   composer or typing wakes it; you do not need the Start session link.
 - The time-based 15-minute idle recycler is **on by default**; only inactive
-  tabs sleep (the active tab, the control host and the bridge owner are protected
-  from _idle_ sleep). The 1 GB RSS guardrail still applies to the active tab.
-  Both show up in the host log and Diagnostics.
+  tabs sleep. The active tab, visible panes, the control host, the bridge owner
+  and a session linked to an active/visible review tab are protected from idle
+  sleep and from the 1 GB RSS guardrail. An active host over 1 GB shows a memory
+  warning with a **Restart** action; it is not killed automatically. Background
+  hosts are recycled only after two consecutive over-budget samples and a
+  one-minute startup grace period. Both reasons show in the host log and
+  Diagnostics.
+- **A session that keeps reconnecting** (the badge alternates `starting` and
+  `ready`, and the footer statuses reload) is not fixed by typing harder. Passive
+  reads no longer wake a stopped host; activate the tab to resume it. If it
+  repeats, open **Diagnostics** — the host log and the `host_restart_loop`
+  incident name the stop reason, and the previous run is kept in `logs/<tab>.1.log`.
+
+## The Sessions browser is empty
+
+- **A large profile used to look empty.** Host responses at or above 1 MiB are
+  spilled to a blob cache and replaced by `{$blob, bytes}`. Older builds read the
+  missing `sessions` field as an empty profile, so `/resume` showed nothing even
+  though the files existed. Current builds read the blob back in chunks, project
+  the list in the host and show an error instead of a silent empty state — update
+  if you still see this.
+- **Check the control host log.** Open **Diagnostics → Hosts** and look at the
+  control host (or `logs/control.log`). A healthy large list has no “frame
+  exceeded the size limit” and no `session.list` timeout. The first open can take
+  a moment while Pi reads every session JSONL; later searches use the short cache.
+- **Search covers the full transcript**, so a match can appear on a row whose
+  title does not contain the word. Typing is debounced by ~150 ms; wait for
+  “Searching…” to clear.
+- **The history still shows old data after an update.** The control host is
+  long-lived and pinned, like a session host; a renderer reload does not restart
+  it. Restart the app after rebuilding `out/host` so it runs the new
+  `session.list` (scope filtering, real timestamps). Diagnostics marks a host
+  whose bundle is older than the app as `stale build`.
 
 ## The app's memory keeps growing, or a Pi terminal gets slow
 
@@ -106,13 +136,90 @@ resource. The window shows a safe-mode banner.
 
 - `!command` and `!!command` are executed by the host through the same Bash Pi
   uses; they are not an interactive terminal. Commands that need a password, an
-  editor or another TTY prompt belong in a real terminal. `git push` works when
+  editor or another TTY prompt belong in the **integrated terminal**
+  (`New terminal` in the strip, `Ctrl/Cmd+Shift+T`, or `Ctrl/Cmd+J` to toggle).
+  `git push` works when
   git's credential helper or SSH agent is already configured.
+- The integrated terminal does not spawn in an untrusted project. The tab shows a
+  trust notice; grant trust and press **Retry**, or set the project to `never`
+  and use an external terminal. If a terminal tab shows an exit banner, the
+  shell process group is already gone — close the tab and open a new one; the
+  app kills the whole tree (POSIX process group / `taskkill /T`) so no shell
+  survives it.
 - A session host older than the app can fail with a `_bashAbortControllers` /
   `_bashAbortController` message. Restart the session tab or the app; current
   builds call the SDK method with its session receiver.
 - `!` needs Bash on `PATH` (Git Bash on Windows). If Bash or `git` is missing,
   the app reports it rather than hanging. `Esc` cancels a running command.
+- A project tool that starts its own `node` through `cmd` (for example
+  `npm run dev` → turbo → `pnpm.cmd`) can fail with **“The system cannot find the
+  path specified”** before any project code runs. That was the old Windows
+  `node.cmd` shim, which used the batch file's `%~dp0` even when cmd had started
+  it by bare name; the shim now locates itself and the real `node.exe` is on
+  `PATH`. Update Pi Desktop, or run `npm run runtime:shims` in a development
+  tree. On 0.6.0 and earlier the stopgap is adding `PI_DESKTOP_NODE` to turbo's
+  `globalPassThroughEnv`. `npm run doctor` prints the runtime and shim paths.
+
+## The terminal does not start on Linux
+
+- **`the terminal host exited (1) during "terminal.open"`** and
+  `Failed to load native module: pty.node` in the log. The packaged `node-pty`
+  binary could not be loaded by the bundled Node. Open **Diagnostics →
+  Terminal**: it names the loader error and the log file
+  (`logs/terminal.log` under the agent profile). The tab's **Details** disclosure
+  has the same
+  report, and **Copy details** puts it on the clipboard for an issue.
+- **`version 'GLIBC_2.xx' not found`** means the binary was built on a newer
+  distribution than yours. Releases from the next patch build against
+  **glibc 2.31 / `GLIBCXX_3.4.28`** (Debian 11 / Ubuntu 20.04), so every
+  supported Mint/Ubuntu/Debian release loads it. To check a package:
+
+  ```bash
+  ldd "<app>/resources/app.asar.unpacked/node_modules/node-pty/prebuilds/linux-x64/pty.node"
+  ```
+
+  A `not found` line is the bug; no output beyond the library list is healthy.
+
+- **Workaround until the patch ships** — build node-pty on your own machine and
+  copy it over the packaged file, then run the extracted app:
+
+  ```bash
+  mkdir -p /tmp/pty && cd /tmp/pty && npm init -y && npm install node-pty@1.1.0
+  cd /tmp && /path/Pi-Desktop-0.11.0-linux-x86_64-appimage.AppImage --appimage-extract
+  cp /tmp/pty/node_modules/node-pty/build/Release/pty.node \
+     /tmp/squashfs-root/resources/app.asar.unpacked/node_modules/node-pty/build/Release/
+  /tmp/squashfs-root/AppRun
+  ```
+
+  On npm 12+, run the install with `--allow-scripts=node-pty` or check that
+  `build/Release/pty.node` exists before copying.
+
+- The **AppImage and the `.deb` carry the same binary**, so both are fixed by
+  the same release. The `.deb` does not self-update; reinstall it.
+
+## A localhost URL shows Pi Desktop instead of my app
+
+A project's dev server prints a URL, the browser opens it, and the page is Pi
+Desktop — usually with **The preload bridge is unavailable (window.pi is
+missing)**.
+
+- **Cause.** Older Pi Desktop builds served their own renderer on
+  `localhost:5173`, Vite's default. A project Vite that also uses 5173 either
+  falls back to 5174 or binds the other loopback address (`127.0.0.1` while the
+  app held `::1`), so `http://localhost:5173` can be the app, not the project.
+  A renderer served outside Electron has no preload bridge, so that banner is
+  all it can show.
+- **Find out which server owns the port.** `netstat -ano | findstr :5173`
+  (Windows) or `lsof -nP -iTCP:5173 -sTCP:LISTEN` (macOS, Linux), then
+  `curl -s http://127.0.0.1:5173/ | grep -i "<title>"`: `Pi Desktop` is the app;
+  anything else is the project. `npm run doctor` prints the app's own dev-server
+  address and whether it is free.
+- **Fix.** Update Pi Desktop: the renderer dev server is
+  `http://127.0.0.1:5273` and never takes 5173. If a stale process holds a port,
+  stop it (`taskkill /PID <pid> /T /F` on Windows, `kill <pid>` elsewhere). To run
+  the app elsewhere, set `PI_DESKTOP_RENDERER_PORT=5274` for `npm run dev`. For
+  the project, enable `strictPort: true` in its Vite config (or give it a
+  distinct `VITE_PORT`) so a taken port fails loudly instead of drifting.
 
 ## Slash-command suggestions stopped working after a host edit
 
@@ -163,6 +270,66 @@ visible while main still rejects the call.
 - **A custom gateway lost its API key after an edit** — leave the key field
   blank to keep the stored value; typing a value replaces it. Deleting a gateway
   with the button removes the whole entry, key included.
+- **Command Code: `Stream ended without finish_reason`** — the gateway closed a long
+  streaming response before sending a terminal `finish_reason`. Pi's OpenAI-compatible
+  parser treats that as a fatal provider error; Review Mode retries the same long
+  request and can hand the plan over unreviewed. Lowering the reviewer's thinking
+  level may shorten the request, but it is not a reliable fix.
+
+  Use the maintained provider and migrate the saved model references:
+
+  ```sh
+  pi install npm:pi-commandcode-provider
+  # then, in Pi:
+  /profile retarget-provider command-code commandcode          # dry run
+  /profile retarget-provider command-code commandcode --apply
+  ```
+
+  Verify a Command Code model in `/model`, then remove the old hand-written
+  `command-code` entry from `models.json`. If the failure still recurs on a different
+  provider, switch the reviewer (`/profile use …` or `/role set reviewer …`) and retry
+  `/review`; `/review status` names the model and the last provider error. In the
+  live-switch contract the live review line also names the reviewer model, and a
+  refused switch warns with both the current and target model names while the
+  round keeps running; that contract is active only after the new bundle is
+  released and pinned, not with the currently pinned 0.15.0 bundle. See
+  [Review Mode provider baseline](../architecture/review-mode-baseline.md).
+
+- **Manual `/review` shows no “Reviewing” status** — fixed: an extension-owned
+  round on an idle tab now renders one review row below the todo panel, with the
+  same hint-complete line terminal Pi paints (`🔍 Reviewing plan… · ESC or
+/review pause to pause · /review abort to stop`), and forwards Escape, so it
+  pauses exactly like an automatic round.
+- **The composer refuses my prompt during a review** — that is the isolated Review
+  mode (`@dieulc/workflow` 0.11.0+): prose and `!` shell commands are refused while
+  the reviewer owns the turn, with a hint and your draft kept. Use the **Review**
+  row (Pause/Resume/Abort), `/review pause`, `/review resume`, `/review abort`, or
+  change model/profile. Approve or annotate in the review tab to hand the plan
+  back. With an older workflow extension the row falls back to the canonical line
+  (the commands and phase are still named), so the controls remain available.
+- **A review opened the system browser instead of an app tab** — only desktop
+  hosts set `PLANNOTATOR_BROWSER=none`. If you launched a session from a terminal
+  Pi process, that process keeps its own browser behaviour; the desktop tab's
+  **Open in browser** button is the deliberate escape hatch in the other direction.
+- **The Review row has no Open review tab button** — the linked loopback tab was
+  closed, or the page is not a loopback URL. `/review abort` still hands the plan
+  over, and **Open in browser** in the tab chrome (or the notification row) can
+  reopen it.
+- **Review round 2+ does not reopen Plannotator** — fixed: a new round or manual
+  `/review` supersedes an older browser gate, stale browser decisions are
+  discarded, and the full review correlation is persisted. After a reload the
+  extension asks Plannotator `review-status`; `/review status` names a pending
+  browser handoff and its URL.
+- **Esc does not stop the run during a review** — that is deliberate. Escape is
+  sent to the session's extension handlers first (the same path terminal Pi uses),
+  and Review Mode pauses the round instead of aborting it: the review row shows
+  `⏸ Review paused — /review resume to continue, /review abort to stop`. A second
+  Esc stays paused. Use `/review resume` to continue, or `/review abort` to end
+  the round and hand the author's plan over. Outside a review, Esc still stops the
+  run as before. If you remapped `app.interrupt` in `keybindings.json` to a chord
+  with no terminal encoding (anything but Escape and the byte-encodable chords),
+  the key is not forwarded and simply stops the run.
+
 - **Proxy** — set `httpProxy` in Settings → Network; every host inherits it.
 
 ## Disk and permission problems
@@ -197,6 +364,15 @@ the first write per run.
 - `/reload` reloads a live session and shows what changed; **Reload runtime** in
   the hub does the same with no session open.
 - Pin a known-good version from the package list if an update broke something.
+- **No update badge for a package** — a pinned source is skipped by the check by
+  design (unpin to follow latest), and a Git or ranged source has no single
+  target version to name. Press **Check now** if the list looks stale.
+- **A badge does not clear after updating** — npm’s registry can lag a publish
+  by a few seconds; press **Check now**. The update itself already changed the
+  installed version (the list and the `installed …` badge are authoritative).
+- **An update does not take effect in a running session** — sessions load the
+  version they started with; use **Reload runtime** in the Extensions hub (or
+  restart the session).
 - **Cannot copy text from an extension panel** — select the text and press
   <kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Cmd</kbd>+<kbd>C</kbd>, or use the panel's
   **Copy** button, or right-click → **Copy**. A selection is copied instead of
@@ -221,11 +397,12 @@ the first write per run.
 
 ## Updates
 
-`Help → Check for Updates…` opens **Settings → About & updates** and runs a
-check. A released build checks once after launch; the status bar shows a small
-**Update vX** chip when a version is available, or **Restart to update** after a
-download. All outcomes live in the card: up to date, downloading, ready, error,
-and **no published release**.
+`Help → Check for Updates…` opens **About & updates** (sidebar, below
+Diagnostics) and runs a check. A released build checks once after launch; a
+version is offered as a bell notification with a **View update** action, and the
+About & updates sidebar item shows a dot until you install or the build is up to
+date. All outcomes live in that view: up to date, downloading, ready, error, and
+**no published release**. There is no status-bar update chip.
 
 A locally built package (stamped `local` in `resources/build-info.json`) does not
 auto-check; a manual check only tells you whether a published release exists. A
@@ -245,25 +422,83 @@ Diagnostics → Save         redacted support bundle (no credentials)
 The bundle runs `redactSecrets` over the whole document, so it is safe to attach
 to an issue.
 
-## Known limitations in v0.5.0
+## Known limitations in v0.11.0
 
 Every known limitation is recorded with the release notes:
-[`docs/releases/v0.5.0.md`](../releases/v0.5.0.md). The short version:
+[`docs/releases/v0.11.0.md`](../releases/v0.11.0.md). The short version:
 
 - **Unsigned builds** — SmartScreen/Gatekeeper warn on first launch; signing is
   deferred ([backlog](../product/backlog.md)).
 - **macOS and Linux are beta** — built and structurally verified in CI, but no
   real macOS launch and no fresh Linux desktop install have been exercised by a
   person for this release. Windows is the verified target.
+- **The live Review line needs the matching extension** — Review/progress/mode
+  now arrive through the generic contribution contract, so the desktop draws a
+  publisher's own row instead of parsing a Review sub-state. `@dieulc/workflow`
+  0.13.0 publishes it; with an older extension the row falls back to a plain
+  generic status when one is supplied and the review-specific controls are
+  absent. Commands, composer (including the Refine prompt control) and controls
+  keep working.
+- **Extension dialogs diverge from terminal Pi in two deliberate places** —
+  Ctrl+C in an input/editor stays copy rather than cancel, and confirm needs a
+  focused button for Enter rather than answering the highlighted “Yes”. Both
+  protect a desktop text field or a permission prompt from a stray key.
+- **The wheel policy is a gesture heuristic** — a same-direction burst within
+  180 ms is one PageUp/PageDown, and a zoom chord or horizontal wheel is
+  swallowed. A trackpad that emits slower events pages more than once; the
+  normal screen and programs that report the wheel keep xterm's own behaviour.
+- **Paste into an extension frame is text only** — image and file paste still
+  have no path there; use the native composer for attachments. A page or
+  extension that expects a DOM paste event will not see one.
+- **A page can still bypass the close interceptor** — a page that saved a
+  native `window.close` reference is handled by the `destroyed` fallback, but a
+  page that keeps the view alive without closing it at all cannot be detected.
+  Closing a review tab returns to its linked session, which can collapse a split
+  grid when no pane holds that session (the normal strip-tab rule).
+- **Extension update checks are registry-based** — they need the network, pause
+  under `PI_OFFLINE`, and can lag a fresh publish by a few seconds. A pinned
+  package is skipped by design, and a Git or ranged source has no single target
+  version to name.
+- **An updated package takes effect on the next session** — a running session
+  keeps the code it loaded until **Reload runtime** (or a restart).
+- **The bundled Pi agent is not user-updatable** — it moves with Pi Desktop. A
+  stale agent is a release-pipeline warning by default, not a blocked tag, and a
+  major is never taken automatically.
 - **macOS updates are manual** — an ad-hoc signature cannot satisfy Squirrel.Mac,
   so the app links to the release instead of offering an in-place install.
 - **The updater** is verified against its policy and a fake port, not a live
   GitHub Release feed.
+- **The terminal is local only** — one shell per tab, no SSH/remote session, no
+  tmux control mode and no docked split panel; it does not spawn in an untrusted
+  project until you grant trust. The Linux native backend is built for
+  **glibc 2.31 / `GLIBCXX_3.4.28`**; a package built on a newer runner is a
+  release bug (v0.8.0 shipped one, fixed in v0.8.1 — see
+  [the Linux terminal entry](#the-terminal-does-not-start-on-linux)).
+- **Prompt-history measurement needs a measurable line box** — a soft-wrapped
+  prompt walks its displayed rows only when the composer has a numeric line
+  height and layout. A hidden composer, `line-height: normal` or a browser without
+  `Range` geometry falls back to the logical-line gate (the pre-v0.10.1
+  behaviour); the session E2E test fails if that style contract breaks.
+- **Transcript find cannot mark across a soft break** — a query spanning a line
+  break is counted but a single `<mark>` cannot span the rendered `<br>`; copy
+  still uses the raw message text.
+- **Informational notifications are hidden in the bell by default** — that
+  switch now scopes to the bell and toasts only; the transcript always shows
+  the text. Hidden bell rows are never lost: **Show hidden (N)** recovers them.
+- **The update offer is in-app only** — the bell row, its toast and the
+  About & updates dot are the whole surface; there is no OS notification, and
+  dismissing the row keeps the dot until the offer is installed or replaced.
+  Per-message mute rules apply to archive rows, never to offers.
 - **Verified structurally, not on a live machine:** provider OAuth flows,
   extension TUI/renderer fidelity in the packaged app, the Office wizard and
   bridge end to end, the Plannotator round trip, web-tab isolation on a _loaded_
   page, crash/timeout banners, safe mode against a genuinely broken extension,
-  and the 60 fps / RSS numbers.
+  the terminal inside a packaged build on a real desktop (CI now opens a real PTY
+  from the packaged app on every platform, including inside Debian 11), and the
+  60 fps / RSS numbers. Review Mode's manual provider matrix, the extension-dialog
+  walkthrough against the real folder policy, the Review-line cross-version
+  matrix, the todo-panel eleven-case matrix and the Plannotator auto-close matrix
+  were not re-walked for this release.
 - **Upstream:** Pi's own `settings.json` and session-JSONL writes are not
   crash-atomic; the app's own profile writes are (`fsync` + rename).
 - **Deferred features** are listed in [`../product/backlog.md`](../product/backlog.md).
@@ -274,5 +509,5 @@ useful issue.
 ## Related
 
 - [FAQ](faq.md) · [Getting started](getting-started.md)
-- [Release notes v0.5.0](../releases/v0.5.0.md) · [Backlog](../product/backlog.md)
+- [Release notes v0.11.0](../releases/v0.11.0.md) · [Backlog](../product/backlog.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)

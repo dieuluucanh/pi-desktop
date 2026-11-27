@@ -20,10 +20,29 @@ packaging. `npm run doctor` probes the runtime, profile, extensions, bridge, git
 and Office state on the current machine.
 
 `npm run dev` starts `vite build --watch` for the host bundle and
-`electron-vite dev` together through `scripts/dev.mjs`. The app compares the
-running host's build id with the bundle on disk and recycles an idle stale host
-before the next request, so editing `src/host/**` takes effect without a manual
-restart. `npm run build:host` remains the one-shot build.
+`electron-vite dev` together through `scripts/dev.mjs`. The renderer dev server
+is `http://127.0.0.1:5273`, deliberately not Vite's default 5173, which every
+project dev server takes; `PI_DESKTOP_RENDERER_PORT` moves it when needed. The
+app compares the running host's build id with the bundle on disk and recycles an
+idle stale host before the next request, so editing `src/host/**` takes effect
+without a manual restart. `npm run build:host` remains the one-shot build.
+
+## Project settings
+
+`.pi/settings.json` is **not committed** here. Pi and Pi Desktop load it as
+project-scope configuration, and its presence makes the folder trust-requiring
+on first open. The Workflow extension's policy commands and “Always allow”
+dialogs write machine-specific grants into it (absolute `readPolicy.allowedPaths`
+/ `writePolicy.allowedPaths`, sometimes `writePolicy.mode: "allow"`), so a
+committed copy would leak a contributor's paths and weaken every clone. The
+app's **Use project settings** toggle can also empty the file, so tracking it
+would churn.
+
+Copy `.pi/settings.example.json` to `.pi/settings.json` when you need portable
+project defaults, and keep grants in the global profile. Do not add absolute
+paths, `writePolicy.mode: "allow"` or `commitPolicy` release workarounds to a
+committed project file. Shared, curated project settings are tracked as backlog
+B23.
 
 ## Gates
 
@@ -86,7 +105,7 @@ runtime, builds, regenerates the host shims, runs `runtime:verify` and produces
 the installers under `release/`. Windows NSIS + portable is the primary
 artefact; macOS and Linux are beta. `electron-builder.yml` writes the artefacts,
 and the tag-driven `release.yml` publishes them to GitHub Releases, which is also
-the `electron-updater` feed. Artefacts are unsigned in v0.5.0; signing is
+the `electron-updater` feed. Artefacts are unsigned in v0.11.0; signing is
 backlog. Mac builds are ad-hoc signed and report manual updates (Squirrel.Mac
 rejects an ad-hoc update). The `afterPack` hook prunes `resources/runtime` to
 the platform/arch being packaged, so an installer never carries another
@@ -106,6 +125,9 @@ All three platforms are built and published by
 its own OS, asserts the finished artefacts, and uploads the installers plus their
 `latest*.yml` manifests to a **draft** Release that is published only once all
 three succeed. A `workflow_dispatch` run with `publish: false` is the dry run.
+The pipeline retries transient download failures at two layers, caches verified
+upstream artifacts and documents the rerun-vs-new-patch decision in
+[Network resilience](docs/architecture/release-pipeline.md#network-resilience).
 The mechanics — and how to cut the next release — are in
 [the release pipeline](docs/architecture/release-pipeline.md).
 
@@ -125,6 +147,19 @@ release. It runs the full gate, builds and verifies the tarball, commits only th
 package manifest/changelog, publishes with npm, then tags and pushes. A stale
 installed copy in a profile is updated with `pi update --extensions`.
 
+The bundled **Pi agent** moves with the release pipeline, not at runtime:
+
+```bash
+npm run pi:status   # pinned vs npm latest, plus the bundled Node vs engines.node
+npm run pi:check    # exit 0 in sync/local-ahead, 1 behind, 2 registry error
+npm run pi:update   # family + typebox + docs/architecture/versions.md
+```
+
+`pi-agent-watch.yml` runs `pi:update` daily and opens a PR for a minor/patch (a
+major is reported, never taken). The release `prepare` job repeats the check and
+warns when the agent is stale; `require_latest_pi=true` makes that fatal. The
+release notes should name the bundled agent version.
+
 To build Linux locally on a Linux machine (or WSL):
 
 ```bash
@@ -135,6 +170,26 @@ npm run runtime:fetch -- --platform linux-arm64   # only for arm64 artefacts
 npm run runtime:verify
 npx electron-builder --linux --x64 --publish never  # add --arm64 for arm64
 ```
+
+## Public site
+
+The product site lives in `site/` (Astro + Starlight) with its own
+`site/package-lock.json`. It is deployed by `.github/workflows/pages.yml` to
+GitHub Pages. The Markdown in `docs/` is the source of truth; the generated files
+under `site/src/content/docs/` are gitignored and must not be edited.
+
+```bash
+npm ci --prefix site
+npm run site:dev          # sync docs/brand, then Astro dev
+npm run site:sync         # regenerate docs and brand assets once
+npm run site:check        # sync, astro check and site unit tests
+npm run site:build        # build, link-check, built-output tests
+npm run site:screenshots  # rebuild the app and capture the six landing images
+```
+
+`site:` changes are also gated by the `site` job in `.github/workflows/checks.yml`,
+which does not install Electron. Keep the site package's dependencies exact-pinned
+and do not add analytics or third-party runtime scripts.
 
 ## Security
 

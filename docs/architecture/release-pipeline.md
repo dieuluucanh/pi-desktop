@@ -39,7 +39,7 @@ uploaded. A partially uploaded draft is invisible to end users; a half-uploaded 
 release would break updates for everyone until it was fixed.
 
 ```text
-prepare   gh release create <tag> --draft --verify-tag --notes-file docs/releases/v0.5.0.md
+prepare   gh release create <tag> --draft --verify-tag --notes-file docs/releases/v0.11.0.md
 windows   build → verify → gh release upload *.exe *.blockmap latest.yml --clobber
 linux     build → verify → gh release upload *.AppImage *.deb latest-linux*.yml --clobber
 macos     build → verify → gh release upload *.dmg *.zip latest-mac.yml --clobber
@@ -50,21 +50,97 @@ publish   gh release edit <tag> --draft=false --latest
 `needs: [prepare, windows, linux, macos]` on the publish job is the whole safety
 property: a failed or cancelled platform means the release stays a draft.
 
+## Network resilience
+
+A release performs several kinds of network work: `npm ci` (registry tarballs and,
+on both Linux jobs, a `node-pty` → `node-gyp` Node-headers download because the
+package ships no Linux prebuild), `runtime:fetch` (nodejs.org), electron-builder
+(the Electron zip plus its builder tools), `gh release create/upload/edit`, and
+the anonymous `curl` feed checks. The v0.8.0 run failed because electron-builder's
+downloader retries a GitHub 504 only for about 12 seconds: `app-builder-lib` wraps
+`@electron/get@3.1.0` (which uses `got@11.8.6`) in
+`retry({ retries: 3, interval: 2000, backoff: 2000 })` — 2 s, 4 s, 6 s — and all
+four runners exhausted that window together.
+
+The workflow now has two retry layers and a verified cache:
+
+- `scripts/package-retry.sh` runs electron-builder three times with 60 s and
+  120 s waits, removing `release/` between attempts.
+- `scripts/retry.sh` does the same for `npm ci`, `gh release upload` and
+  `gh release create`. The `publish` job has no checkout, so its
+  `gh release edit` retry is an inline function rather than a script call.
+- `scripts/fetch-retry.mjs` retries `runtime:fetch` and `--update-lock` on
+  408/425/429/5xx and network errors, honours `Retry-After`, and enforces a
+  per-attempt request timeout. The timeout covers the request/headers; the
+  caller streams the body under the job timeout.
+- The publish job re-checks each manifest and each ranged installer GET five
+  times before failing, and every `curl` has a connect/overall timeout.
+
+Release jobs also pin `setup-node` to `24.22.2`, matching
+`resources/runtime/node.lock.json`, so the build is reproducible.
+
+`DEBUG=@electron/get:*` is set on each package step, so the log names the
+cache decision and the URL instead of a bare `Response code 504`. An
+`if: failure()` step prints the cache sizes and the partially built `release/`
+tree.
+
+### Install scripts
+
+npm 12 defaults `allowScripts` to **off** and blocks dependency install scripts,
+including the implicit `node-gyp` build for a package with a `binding.gyp`.
+`package.json` therefore carries a version-pinned approval for `node-pty`
+(`"node-pty@1.1.0": true`), and `tests/packaging/native-install.test.ts` fails
+when a bump forgets the review. Approve the minimum with
+`npm approve-scripts --allow-scripts-pending` (never `--all`), and keep the
+`node scripts/check-native-terminal.mjs` step in `checks.yml`: it loads the
+module right after `npm ci`, so a policy change is a red job rather than a
+Linux package whose terminal cannot start.
+
+### Caching
+
+Each build job restores and saves `actions/cache` entries for:
+
+- `${{ runner.temp }}/electron-cache` — electron-builder's Electron zips,
+  selected explicitly with `-c.electronDownload.cache=...`;
+- `${{ runner.temp }}/electron-builder-cache` — `ELECTRON_BUILDER_CACHE`, the
+  NSIS / winCodeSign / AppImage / fpm / 7zip tools.
+
+Only successful jobs save the cache (`if: success()`), and the key carries a
+`release-v1-` segment: bump it to discard a bad cache without changing a
+dependency. This is deliberately not the `setup-node` npm cache: `node_modules`,
+`~/.npm` and the dependency tree are never restored. The cached entries are the
+Electron zips and builder-tool archives that electron-builder verifies against
+`SHASUMS256.txt` and its hardcoded tool checksums; a tampered archive fails
+verification rather than reaching an installer. node-gyp headers are not cached
+because the workflow cannot independently verify them; `npm ci` is retried
+instead. The release workflow runs on tags and `main` only, and a pull request
+cannot write the base-branch cache. The cache is best-effort: a cold tag cache
+still has both retry layers.
+
+### Timeouts
+
+A stalled download used to consume the six-hour job default. The jobs now time
+out at 10 minutes for `prepare`, 60 for Windows/Linux, 90 for macOS and 15 for
+`publish`; a stuck request fails while the log still has the attempt banners.
+
 ## Per-platform build contract
 
 Each job builds on its own OS and asserts the finished artefacts, not the build log.
 
-| Platform | Runner                    | Artefacts                                                                            | Manifests                                    |
-| -------- | ------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------- |
-| Windows  | `windows-latest` (bash)   | `Pi-Desktop-<v>-win-x64-setup.exe`, `…-setup.exe.blockmap`, `…-win-x64-portable.exe` | `latest.yml`                                 |
-| Linux    | `ubuntu-latest`           | `…-linux-x86_64-appimage.AppImage`, `…-linux-amd64-deb.deb`, and the `arm64` pair    | `latest-linux.yml`, `latest-linux-arm64.yml` |
-| macOS    | `macos-latest` (arm64 M1) | `…-mac-arm64.dmg`, `…-mac-x64.dmg`, `…-mac-arm64.zip`, `…-mac-x64.zip`               | `latest-mac.yml`                             |
+| Platform | Runner                                           | Artefacts                                                                            | Manifests                                    |
+| -------- | ------------------------------------------------ | ------------------------------------------------------------------------------------ | -------------------------------------------- |
+| Windows  | `windows-latest` (bash)                          | `Pi-Desktop-<v>-win-x64-setup.exe`, `…-setup.exe.blockmap`, `…-win-x64-portable.exe` | `latest.yml`                                 |
+| Linux    | `ubuntu-24.04` (x64), `ubuntu-24.04-arm` (arm64) | `…-linux-x86_64-appimage.AppImage`, `…-linux-amd64-deb.deb`, and the `arm64` pair    | `latest-linux.yml`, `latest-linux-arm64.yml` |
+| macOS    | `macos-latest` (arm64 M1)                        | `…-mac-arm64.dmg`, `…-mac-x64.dmg`, `…-mac-arm64.zip`, `…-mac-x64.zip`               | `latest-mac.yml`                             |
 
 `${os}` renders as `win`/`linux`/`mac` and `${arch}` as `x64`, `x86_64`, `amd64` or
 `arm64` depending on the target, which is why `scripts/release-assets.mjs` encodes the
 literal names instead of globbing for extensions. It runs in every job and fails when an
 artefact is missing or when a manifest names a file that is not there — the two failures
-that look like success until an installed app tries to update.
+that look like success until an installed app tries to update. The Linux job passes
+`--arch <x64|arm64>` because the matrix builds one architecture per job: the guard then
+expects only that arch's AppImage, deb and `latest-linux*.yml`, and omitting the flag
+asks for both (what a local `npm run package:linux` produces).
 
 Runtime fetching order matters in the Linux and macOS jobs: `runtime:fetch` writes
 `resources/runtime/bin` for the **last** `--platform` it is given, and `runtime:verify`
@@ -73,8 +149,10 @@ the host architecture last.
 
 ### Windows
 
-`npm run package:win` fetches the win32-x64 runtime, builds, regenerates the host shims,
-runs `runtime:verify`, then produces NSIS + portable. The job asserts that
+The release job runs `npm run build`, `runtime:fetch -- --platform win32-x64` and
+`runtime:verify` as separate steps, then packages with electron-builder. Splitting them
+means a transient-download retry never rebuilds the app or refetches the runtime;
+`npm run package:win` remains the local one-shot equivalent. The job asserts that
 `release/win-unpacked/resources/runtime/node` holds **exactly** `win32-x64` (the
 `afterPack` prune), that `app-update.yml` names the GitHub provider, and that
 `build-info.json` reports `channel: "release"` and the expected version.
@@ -105,7 +183,15 @@ signature, so the job requires:
   `env -i PATH=/usr/bin:/bin`, and the bundled
   `runtime/node/darwin-arm64/bin/node --version` — this is what proves the
   `app.asar.unpacked` paths survive packaging;
-- `build-info.json` to report `channel: "release"` and `macSigning: "adhoc"`.
+- `build-info.json` to report `channel: "release"` and `macSigning: "adhoc"`;
+- the packaged `node-pty` tree to carry the idempotent helper-path patch, and its
+  `spawn-helper` to exist, be executable and be signed.
+
+The PTY smoke opens a real shell from the **arm64** bundle. The runner is arm64, so the
+x64 bundle only runs when Rosetta is installed; the job exercises it when
+`arch -x86_64 /usr/bin/true` succeeds, and otherwise records the skip in the summary
+after asserting the x64 helper, its mode, its signature and the packaged patch. A
+hosted runner does not install Rosetta, so plan on the structural path there.
 
 A 15-second launch of the packaged `.app` is recorded in the run summary with
 `continue-on-error`, because a macOS runner may have no GUI session. It is evidence, not
@@ -138,12 +224,58 @@ changes anything outside `release.yml`, the workflow secrets and `PI_MAC_SIGNING
 gh workflow run release.yml --ref <branch> -f publish=false
 ```
 
-Same builds, same assertions, no release. Each job uploads its installers and manifests
-as a workflow artifact (`windows-<v>`, `linux-<v>`, `macos-<v>`), which is how a new
-platform is validated before anything is published. Artifact storage is free on a public
-repository; they still expire, so download what you need.
+Run this on the exact commit that will be tagged **before** pushing the tag. Same
+builds, same assertions, no release. Each job uploads its installers and manifests as a
+workflow artifact (`windows-<v>`, `linux-<arch>-<v>`, `macos-<v>`), which is how a new
+platform is validated before anything is published. In the log, check the
+`actions/cache/restore` and `save` lines, the `@electron/get:*` URL lines and the
+`attempt N/3` package banners. Artifact storage is free on a public repository; they
+still expire, so download what you need.
+
+## Product site
+
+The public site is `https://dieuluucanh.github.io/pi-desktop/`. It lives in
+`site/` (Astro + Starlight, its own `package-lock.json`) and is deployed by
+`.github/workflows/pages.yml` on a push to `main` and by `workflow_dispatch`.
+There is deliberately no `release: published` trigger: the release workflow
+publishes with the repository `GITHUB_TOKEN`, and GitHub suppresses workflow runs
+for events generated by that token. The version bump and
+`docs/releases/<tag>.md` are merged to `main` before the tag, so the `main`
+deploy already carries the release content.
+
+The site's installer buttons link directly at the versioned release assets
+(`…/releases/download/v<version>/Pi-Desktop-<version>-<suffix>`), so they download
+without JavaScript. A small client script then makes one anonymous request to the
+public Releases API and applies the newest **published** release. It never treats
+an older release as an upgrade: if `releases/latest` is behind the version the
+page was built for (the normal window between the Pages deploy and the release
+publish), the buttons keep the newest installer that actually exists and the
+status line says `Latest published v<old> · v<new> is publishing`. That
+behind-build answer is deliberately not cached, so the next load after `publish`
+switches to the new release; a release at or ahead of the build is cached for ten
+minutes. If the request fails, the static build links stay. The site is built
+from `main` before the tag is pushed, so in that window the newest version's links
+can briefly 404 for visitors without JavaScript; with JavaScript the page offers
+the previous published installer and names the pending version instead of
+silently presenting it as latest. Release asset names are **not** renamed for the
+site — they are part of the updater manifests and the release guard. The site
+build checks every internal link and anchor against the GitHub Pages base path.
+
+One-time setup: Settings → Pages → Source = **GitHub Actions**. The site build
+regenerates docs from `docs/`; never edit generated content under
+`site/src/content/docs/`.
 
 ## Cutting the next release
+
+Before bumping the app version, check the agent the build will bundle:
+
+- `npm run pi:status` prints the pinned Pi agent against npm's `latest`. If it is
+  behind, merge the daily `pi-agent-watch` PR (or run `npm run pi:update`) before
+  writing the notes. A major release is reported, never taken automatically.
+- `prepare` repeats the check and **warns** by default. Pass
+  `require_latest_pi=true` to the dispatch to make a stale agent a hard failure.
+  An unreadable npm registry is always a warning: a release must not depend on
+  npm being up.
 
 1. Bump `package.json` (`npm version <v> --no-git-tag-version`) and the lockfile.
 2. Write `docs/releases/v<v>.md` — it becomes the release body. `tests/packaging/release.test.ts`
@@ -151,13 +283,26 @@ repository; they still expire, so download what you need.
 beta`, `Upstream` and `Verified structurally, not on a live machine`; update the guide,
    README, docs index, backlog and traceability with the same version.
 3. Run the gates, merge to `main`, push.
-4. Dry-run the workflow on the branch if anything in the pipeline or a platform changed.
+4. Dry-run the release commit before tagging:
+   `gh workflow run release.yml --ref main -f publish=false`. Confirm the cache
+   restore/save, the `@electron/get:*` URL lines and the `attempt N/3` package
+   banners. This is the only step that exercises the complete pipeline before a tag.
 5. `git tag -a v<v> -m "Pi Desktop v<v>" && git push origin v<v>`.
 6. Watch the run: `prepare` creates the draft, three builds upload, `publish` flips it and
-   verifies the feed anonymously. A failure after the tag is a **new patch release**, never
-   a moved tag.
+   verifies the feed anonymously. If a build fails on an upstream 5xx, a timeout or a
+   truncated download, run `gh run rerun <id> --failed`: the draft is reused and uploads
+   are `--clobber`. If the failure is deterministic (a wrong command, archive name or
+   platform config), land the fix and cut a **new patch release**; never move the tag.
+   Delete the stale draft when a new patch supersedes it and keep the old tag as history.
 7. Install from the published URL on each platform you can reach and record what you did
    not verify.
+8. Confirm `https://api.github.com/repos/dieuluucanh/pi-desktop/releases/latest` returns
+   the new tag first, then the site shows the new version and its release-notes page, and the
+   primary download resolves to the new installer. If the release run is still uploading, the
+   site intentionally keeps the previous published installer and says `v<new> is publishing`;
+   that is not a site failure. If the site lags after `releases/latest` has advanced (for example
+   a tag was cut from a commit that never reached `main`), run the Pages `workflow_dispatch`
+   and investigate why.
 
 ## Failure modes this pipeline is built against
 
@@ -171,4 +316,89 @@ beta`, `Upstream` and `Verified structurally, not on a live machine`; update the
 | Wrong runtime in a package               | `afterPack` prune + per-package runtime assertion                        |
 | Broken mac signature                     | `codesign --verify` + the `damaged` check                                |
 | Feed not actually public                 | anonymous `curl` in the publish job, no token                            |
+| Upstream 5xx during a download           | two retry layers (`package-retry.sh`, `retry.sh`, `fetchWithRetry`)      |
+| Stalled download                         | per-request timeouts + 10/60/90/15-minute job timeouts                   |
+| npm registry 5xx                         | npm fetch retries + `scripts/retry.sh 3 30 -- npm ci`                    |
+| Upload or publish API 5xx                | `scripts/retry.sh` with `--clobber`; inline publish retry                |
+| Retry budget exhausted                   | the job fails and the release stays a draft; rerun or cut a new patch    |
+| Cache poisoning                          | checksum-verified upstream archives; no `node_modules`/npm cache; tags   |
+| Tag cache miss                           | best-effort cache; both retry layers still run                           |
 | Two releases racing                      | `concurrency: release-<ref>`, `cancel-in-progress: false`                |
+
+### The bundled Pi agent (2026-11-15 update-channels plan)
+
+- **A stale agent does not block a release by default.** `prepare` prints the
+  bundled and latest versions in the job summary and annotates a warning; the
+  build proceeds. `require_latest_pi=true` is the opt-in hard gate.
+- **A registry failure never blocks a release.** If `npm view` cannot answer,
+  `prepare` says the check is inconclusive and continues.
+- **The bump happens before the tag.** `pi-agent-watch.yml` opens a PR when a
+  minor/patch is published; the tag build always installs the committed lockfile.
+
+## Native terminal (`node-pty`)
+
+`node-pty` 1.x is N-API, so a binary is ABI-stable across the bundled Node 24
+and Electron; `electron-builder.yml` sets `npmRebuild: false` so packaging never
+replaces it. `afterPack` prunes the module to the target platform/arch and
+**fails the package** when no usable binary survives, when `out/host/terminal.mjs`
+is missing, when a Linux tree still carries `build/Release/pty.node`, or when the
+ELF needs more than the support floor.
+
+`node-pty@1.1.0` ships prebuilds only for macOS and Windows. Linux has none, so
+each Linux job runs `npm run pty:linux -- --arch ${{ matrix.arch }}`, which
+compiles in a pinned `debian:bullseye` container (glibc 2.31, GCC 10 →
+`GLIBCXX_3.4.28`) and writes
+`node_modules/node-pty/prebuilds/linux-<arch>/pty.node` plus `BUILD-INFO.json`
+(node-pty version, Node, image digest, measured floor). `build/` is deleted
+because node-pty's loader prefers it over `prebuilds/`.
+
+The runners are pinned (`ubuntu-24.04`, `ubuntu-24.04-arm`). `ubuntu-latest` had
+moved to a 26.04-era glibc (2.42), and the v0.8.0 AppImage shipped a binary that
+could not load on Linux Mint 22 (2.39). The image digest is resolved before the
+build, so `BUILD-INFO.json` names exactly what compiled it.
+
+The container build is deliberately self-contained, because the first dry run of
+this release failed on both points:
+
+- Debian 11 has left security support, so `deb.debian.org` still serves the
+  `bullseye-security` index while its pool 404s. The script rewrites
+  `/etc/apt/sources.list` to `archive.debian.org` with `check-valid-until=no`.
+- The image has no system Node and the module is compiled from a `/tmp` copy,
+  so the bundled Node goes on `PATH` and the workspace `node_modules` on
+  `NODE_PATH` (`binding.gyp` requires `node-addon-api`).
+
+`afterPack` also **fails a macOS package** whose `prebuilds/darwin-<arch>/`
+lacks an executable `spawn-helper`: node-pty execs it to allocate the PTY, the
+npm tarball stores it `0644`, and a broken one only surfaces as
+`posix_spawnp failed` on the first terminal open.
+
+The same helper exposed a second defect: node-pty 1.1.0 rewrites `app.asar` to
+`app.asar.unpacked` unconditionally, so a module that already lives under
+`app.asar.unpacked` resolves `app.asar.unpacked.unpacked/spawn-helper` and every
+macOS spawn fails. `afterPack` patches the packaged `lib/unixTerminal.js` to make
+that rewrite idempotent (mirroring [node-pty #924](https://github.com/microsoft/node-pty/pull/924))
+and throws when the upstream source no longer matches, so a dependency bump
+re-opens the decision instead of silently shipping it.
+
+Verification, in order:
+
+- `readelf --version-info` in `afterPack` rejects a binary above the floor;
+- the `.deb` listing must contain the pinned prebuild and `terminal.mjs`, and no
+  `build/Release/pty.node`;
+- `scripts/verify-packaged-terminal.mjs` opens a real PTY from the unpacked app,
+  the `.deb` and the AppImage, then runs once more inside `debian:bullseye` with
+  the app's own bundled Node — the only place where "it loads on the runner"
+  cannot hide a floor mismatch. On macOS it requires the packaged
+  `spawn-helper` to exist and be executable first, and a spawn failure names the
+  shell, the cwd and the helper's mode instead of only the opaque
+  `posix_spawnp failed`.
+
+The `linux.target` entries in `electron-builder.yml` deliberately carry **no**
+`arch` list: a pinned list overrides `--x64`/`--arm64`, so each job would package
+both architectures and `afterPack` would fail on the one whose runtime the job
+did not fetch. The publish job still gates on `[prepare, windows, linux, macos]`
+because the matrix aggregates under `linux`.
+
+npm 12 blocks dependency install scripts by default, including implicit node-gyp
+builds; see [Install scripts](#install-scripts) for the pinned `allowScripts`
+approval.

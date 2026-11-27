@@ -11,6 +11,7 @@ import {
   parseScopePattern,
   scopeKeyOf,
   scopeKeys,
+  scopePatternFor,
   scopeStarKeys,
   scopeWriteTarget,
   toggleScopeKey,
@@ -250,6 +251,35 @@ describe("model scope helpers", () => {
     });
   });
 
+  describe("scopePatternFor (2026-11-06 plan, step 10)", () => {
+    it("writes an exact ref and a thinking suffix the parser reads back", () => {
+      expect(scopePatternFor("a", "one")).toEqual({ ok: true, pattern: "a/one" });
+      expect(scopePatternFor("a", "one", "high")).toEqual({ ok: true, pattern: "a/one:high" });
+    });
+
+    it("refuses an id whose colon Pi would read as a thinking level", () => {
+      // The exact ref from the 2026-11-06 host logs.
+      expect(scopePatternFor("synthetic", "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017")).toEqual({
+        ok: false,
+        reason: "unrepresentable",
+      });
+    });
+
+    it("a star click on an unrepresentable id writes nothing and reports it", () => {
+      const id = "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017";
+      const result = nextScopePatterns({
+        baseScoped: [scoped("a", "one")],
+        preserved: [],
+        provider: "synthetic",
+        id,
+        enabled: true,
+      });
+
+      expect(result.patterns).toEqual(["a/one"]);
+      expect(result.rejected).toEqual([{ ref: `synthetic/${id}`, pattern: `synthetic/${id}` }]);
+    });
+  });
+
   describe("nextScopePatterns", () => {
     it("disabling one model materialises the rest of the live scope", () => {
       expect(
@@ -259,7 +289,7 @@ describe("model scope helpers", () => {
           provider: "a",
           id: "one",
           enabled: false,
-        }),
+        }).patterns,
       ).toEqual(["b/two"]);
     });
 
@@ -271,7 +301,7 @@ describe("model scope helpers", () => {
           provider: "c",
           id: "three",
           enabled: true,
-        }),
+        }).patterns,
       ).toEqual(["a/one:high", "c/three"]);
     });
 
@@ -283,7 +313,7 @@ describe("model scope helpers", () => {
           provider: "a",
           id: "one",
           enabled: false,
-        }),
+        }).patterns,
       ).toEqual(["offline/*", "gone/model"]);
     });
 
@@ -295,7 +325,7 @@ describe("model scope helpers", () => {
           provider: "a",
           id: "one",
           enabled: false,
-        }),
+        }).patterns,
       ).toBeUndefined();
     });
 
@@ -307,7 +337,7 @@ describe("model scope helpers", () => {
           provider: "a",
           id: "one",
           enabled: false,
-        }),
+        }).patterns,
       ).toEqual(["offline/*"]);
     });
 
@@ -319,7 +349,7 @@ describe("model scope helpers", () => {
           provider: "b",
           id: "two",
           enabled: true,
-        }),
+        }).patterns,
       ).toEqual(["a/one", "b/two"]);
     });
 
@@ -331,7 +361,7 @@ describe("model scope helpers", () => {
           provider: "b",
           id: "two",
           enabled: true,
-        }),
+        }).patterns,
       ).toEqual(["a/one", "b/two"]);
     });
 
@@ -343,7 +373,7 @@ describe("model scope helpers", () => {
           provider: "b",
           id: "two",
           enabled: false,
-        }),
+        }).patterns,
       ).toEqual(["a/one"]);
     });
   });

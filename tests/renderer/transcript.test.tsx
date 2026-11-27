@@ -10,9 +10,13 @@ import {
   type TranscriptItem,
 } from "../../src/renderer/src/session/session-events";
 import { installBridge } from "./fixtures";
+import { withVirtualizedGeometry } from "./fixtures/virtualizer-geometry";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
-import { TRANSCRIPT_10K_ITEMS } from "../../src/shared/performance";
+import {
+  TRANSCRIPT_10K_ITEMS,
+  TRANSCRIPT_VIRTUALIZE_THRESHOLD,
+} from "../../src/shared/performance";
 
 /**
  * Transcript rendering (plan step 5). The fixture below drives the *real*
@@ -126,6 +130,62 @@ describe("transcript rendering", () => {
     expect(screen.getByText("todo")).toBeInTheDocument();
   });
 
+  it("keeps an inline code span inside its sentence", () => {
+    // The user-reported regression: `never` used to become a block-level <pre>
+    // inside this paragraph, splitting the sentence across three lines.
+    const items = reduceSessionEvents(createTranscriptState(), [
+      { event: "message_start", payload: { message: { role: "assistant" } } },
+      {
+        event: "message_end",
+        payload: {
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: "Executed the plan and left every change uncommitted (commit policy `never`).",
+              },
+            ],
+          },
+        },
+      },
+    ]).items;
+
+    const { container } = render(<Transcript items={items} />);
+
+    expect(container.querySelectorAll("[data-testid='transcript-row'] pre")).toHaveLength(0);
+    expect(container.querySelector("p code")?.textContent).toBe("never");
+    expect(container.querySelector("p")?.textContent).toBe(
+      "Executed the plan and left every change uncommitted (commit policy never).",
+    );
+  });
+
+  it("keeps a fenced block's DOM node across an unrelated re-render", () => {
+    // 2026-11-07 transcript-highlight-stability: expanding a tool card, clicking
+    // a row or a focus re-sync re-renders the transcript. The block's `pre` must
+    // be the same node, otherwise `CodeBlock` remounts and the colours flash.
+    const items = reduceSessionEvents(createTranscriptState(), [
+      { event: "message_start", payload: { message: { role: "assistant" } } },
+      {
+        event: "message_end",
+        payload: {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Example:\n\n```bash\n# keep me\necho hi\n```" }],
+          },
+        },
+      },
+    ]).items;
+
+    const view = render(<Transcript items={items} toolsExpanded={false} />);
+    const pre = view.container.querySelector("[data-testid='transcript-row'] pre");
+    expect(pre).not.toBeNull();
+
+    view.rerender(<Transcript items={[...items]} toolsExpanded={true} />);
+
+    expect(view.container.querySelector("[data-testid='transcript-row'] pre")).toBe(pre);
+  });
+
   it("shows a diff for an edit tool and marks a failing tool", async () => {
     const user = userEvent.setup();
     const { container } = render(<Transcript items={fixtureItems()} />);
@@ -156,6 +216,20 @@ describe("transcript rendering", () => {
       const item = row.firstElementChild as HTMLElement | null;
       expect(item?.className ?? "").not.toMatch(/\bmy-\d/);
     }
+  });
+
+  it("fills the pane instead of capping the content column", () => {
+    // Display zoom scales CSS px, so a zoomed-out window grows the pane while a
+    // fixed `ch`/`rem` measure stays put — that is what left blank gutters on
+    // both sides (2026-11-15 transcript-width). The column therefore takes the
+    // pane width; only the scroller's own `px-4` gutter insets it, so the
+    // scrollbar and the find/jump chrome stay pane-wide.
+    const { container } = render(<Transcript items={fixtureItems()} />);
+
+    const content = container.querySelector("[data-testid='transcript-content']");
+    expect(content?.className).toContain("w-full");
+    expect(content?.className).not.toContain("mx-auto");
+    expect(content?.className ?? "").not.toMatch(/\bmax-w-/);
   });
 
   it("names the speaker on a user turn", () => {
@@ -344,8 +418,49 @@ describe("transcript rendering", () => {
     const spacer = list.firstElementChild as HTMLElement | null;
     expect(spacer).not.toBeNull();
     expect(Number.parseInt(spacer?.style.height ?? "0", 10)).toBeGreaterThan(100_000);
+    // The virtualized path fills the pane exactly like the plain list: no fixed
+    // measure, no centering (2026-11-15 transcript-width).
+    const content = screen.getByTestId("transcript-content");
+    expect(content.className).toContain("w-full");
+    expect(content.className).not.toContain("mx-auto");
+    expect(content.className).not.toMatch(/\bmax-w-/);
     // A row far outside the window never mounts, however large the session is.
     expect(container.textContent).not.toContain("notice 9999");
+  });
+
+  it("switches branches exactly at the shared virtualization threshold", () => {
+    // The threshold used to be a local `50` in `Transcript.tsx` beside the shared
+    // `TRANSCRIPT_VIRTUALIZE_THRESHOLD`; one constant now decides both branches
+    // (2026-11-25 plan step 3).
+    const items = (count: number): TranscriptItem[] =>
+      Array.from({ length: count }, (_, index) => ({
+        kind: "notice",
+        id: `threshold-${index}`,
+        notice: {
+          id: `threshold-n-${index}`,
+          severity: "info",
+          event: "notice",
+          text: `notice ${index}`,
+        },
+      }));
+
+    const plain = render(<Transcript items={items(TRANSCRIPT_VIRTUALIZE_THRESHOLD - 1)} />);
+    expect(plain.container.querySelectorAll("[data-row-index]")).toHaveLength(
+      TRANSCRIPT_VIRTUALIZE_THRESHOLD - 1,
+    );
+    expect(plain.container.querySelector("[data-index]")).toBeNull();
+    // Browser scroll anchoring never competes with the follow pin (step 3).
+    expect(screen.getByTestId("transcript").style.overflowAnchor).toBe("none");
+    plain.unmount();
+
+    withVirtualizedGeometry(() => {
+      const virtualized = render(<Transcript items={items(TRANSCRIPT_VIRTUALIZE_THRESHOLD + 1)} />);
+      expect(virtualized.container.querySelector("[data-row-index]")).toBeNull();
+      const rows = virtualized.container.querySelectorAll("[data-index]");
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows[0]?.className).toContain("absolute");
+      expect(screen.getByTestId("transcript").style.overflowAnchor).toBe("none");
+    });
   });
 });
 
@@ -542,6 +657,106 @@ describe("extension renderers", () => {
     render(<Transcript items={items} tabId={RENDER_TAB} />);
 
     expect(screen.queryByText(/PLAN MODE ACTIVE/)).not.toBeInTheDocument();
+  });
+});
+
+describe("terminal line semantics (2026-11-14 transcript-line-parity)", () => {
+  const PROFILE_SAMPLE = [
+    "Model Profiles (named role-model combinations):",
+    "  Active: ⚡ Opencode-Deepseek-V4.1-Flash · default: Opencode-Deepseek-V4.1-Flash",
+    "",
+    "  ⚡ Opencode-Deepseek-V4.1-Flash (● active, ★ default)",
+    "     planner: opencode-go/deepseek-v4.1-flash (high)",
+    "     reviewer: opencode-go/deepseek-v4.1-flash (high)",
+  ].join("\n");
+
+  it("keeps every line of a /profile notice", () => {
+    // Terminal Pi prints info notices; the bell's info class is off by default,
+    // but the transcript must not be (2026-11-15 command-output parity).
+    useAppStore.setState({ prefs: { ...DEFAULT_PREFS } });
+    const items = itemsOf([
+      {
+        event: "oi.notify",
+        payload: { id: "n-profile", message: PROFILE_SAMPLE, type: "info", at: 1 },
+      },
+    ]);
+    render(<Transcript items={items} />);
+
+    const text = screen.getByTestId("transcript-notice-text");
+    expect(text.className).toContain("whitespace-pre-wrap");
+    expect(text.className).toContain("break-words");
+    expect(text.textContent).toBe(PROFILE_SAMPLE);
+    expect(screen.getByText("info")).toBeInTheDocument();
+  });
+
+  it("prints a /folder-policy status notice with default prefs", () => {
+    const FOLDER_POLICY_SAMPLE = [
+      "Folder policy: cwd (default settings)",
+      "  outside: ask; grantScope: project; templates: allow",
+      "  base: C:/repo",
+      "  unverifiable writes: not prompted (use /write-policy ask for strictness)",
+      "  sensitive: 12 default, 0 extra, 0 exemption(s)",
+      "  excluded: 0 rule(s)",
+      "Global: C:/Users/lenovo/.pi/agent/settings.json",
+      "Project: C:/repo/.pi/settings.json",
+      "Usage: /folder-policy repo|cwd|parent|any [global|project]",
+    ].join("\n");
+    useAppStore.setState({ prefs: { ...DEFAULT_PREFS } });
+    const items = itemsOf([
+      {
+        event: "oi.notify",
+        payload: { id: "n-folder", message: FOLDER_POLICY_SAMPLE, type: "info", at: 2 },
+      },
+    ]);
+    render(<Transcript items={items} />);
+
+    const text = screen.getByTestId("transcript-notice-text");
+    expect(text.className).toContain("whitespace-pre-wrap");
+    expect(text.textContent).toBe(FOLDER_POLICY_SAMPLE);
+  });
+
+  it("puts each completed workflow TODO on its own line", async () => {
+    installBridge();
+    stubRender(async (method) =>
+      method === "render.request" ? { rendered: false, width: 40, lines: [] } : {},
+    );
+    const items = itemsOf([
+      {
+        event: "entry_appended",
+        payload: {
+          entry: {
+            type: "custom_message",
+            id: "c-complete",
+            customType: "workflow-complete",
+            content: "**Build Complete! ✓**\n\n~~1. first~~\n~~2. second~~\n~~3. third~~",
+          },
+        },
+      },
+    ]);
+    const { container } = render(<Transcript items={items} tabId={RENDER_TAB} />);
+
+    await waitFor(() => expect(container.querySelectorAll("del")).toHaveLength(3));
+    expect([...container.querySelectorAll("del")].map((element) => element.textContent)).toEqual([
+      "1. first",
+      "2. second",
+      "3. third",
+    ]);
+    expect(container.querySelectorAll("p br")).toHaveLength(2);
+  });
+
+  it("keeps a single newline in assistant prose", () => {
+    const items = itemsOf([
+      { event: "message_start", payload: { message: { role: "assistant" } } },
+      {
+        event: "message_end",
+        payload: { message: { role: "assistant", content: "First line\nSecond line" } },
+      },
+    ]);
+    const { container } = render(<Transcript items={items} />);
+
+    expect(container.querySelectorAll("p br")).toHaveLength(1);
+    expect(container.textContent).toContain("First line");
+    expect(container.textContent).toContain("Second line");
   });
 });
 

@@ -15,6 +15,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { stopChild } from "./dev-stop.mjs";
 
 const isWindows = process.platform === "win32";
 const npm = isWindows ? "npm.cmd" : "npm";
@@ -29,9 +30,11 @@ let stopping = false;
 function stop(code) {
   if (stopping) return;
   stopping = true;
-  for (const child of children) {
-    if (child.exitCode === null && !child.killed) child.kill();
-  }
+  // On Windows the child is cmd.exe; kill its whole tree so the Vite/Electron
+  // descendants cannot keep the renderer dev port after this process exits.
+  for (const child of children) stopChild(child, process.platform);
+  // A wedged descendant must not keep `npm run dev` alive after the tree kill.
+  setTimeout(() => process.exit(code), 2_000).unref();
   process.exitCode = code;
 }
 

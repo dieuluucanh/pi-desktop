@@ -59,18 +59,22 @@ describe("electron-builder config (plan step 26)", () => {
     expect(builderYaml).toMatch(/arch:\s*\[arm64,\s*x64\]/);
     expect(builderYaml).toMatch(/target:\s*AppImage/);
     expect(builderYaml).toMatch(/target:\s*deb/);
-    // Linux is the one platform that also ships arm64, so its targets carry
-    // their own arch lists (the beta artefacts are built per arch in CI).
-    expect(builderYaml).toMatch(/target:\s*AppImage\s*\n\s+arch:\s*\[x64,\s*arm64\]/);
-    expect(builderYaml).toMatch(/target:\s*deb\s*\n\s+arch:\s*\[x64,\s*arm64\]/);
+    // Linux is built per arch by the release matrix, which passes `--x64` or
+    // `--arm64` on the CLI. A pinned `arch` list on these targets overrides that
+    // flag: electron-builder then packages both architectures and `afterPack`
+    // fails on the one whose runtime the job did not fetch. `package:linux`
+    // passes both flags for a local dual-arch build instead.
+    expect(builderYaml).not.toMatch(/target:\s*(?:AppImage|deb)\s*\n\s+arch:/);
   });
 
-  it("ships the bundled runtime and the Office manifest outside the asar", () => {
-    // Both are read by absolute path at runtime, so they cannot live in the asar.
+  it("ships the bundled runtime, the Office manifest and the Workflow bundle outside the asar", () => {
+    // All three are read by absolute path at runtime, so they cannot live in the asar.
     expect(builderYaml).toMatch(/from:\s*resources\/runtime/);
     expect(builderYaml).toMatch(/from:\s*resources\/office/);
+    expect(builderYaml).toMatch(/from:\s*resources\/extensions/);
     expect(builderYaml).toMatch(/to:\s*runtime/);
     expect(builderYaml).toMatch(/to:\s*office/);
+    expect(builderYaml).toMatch(/to:\s*extensions/);
   });
 
   it("names a brand icon for every platform it targets, and ships them to the app", () => {
@@ -105,6 +109,9 @@ describe("electron-builder config (plan step 26)", () => {
     const unpacked = block("asarUnpack");
     expect(unpacked).toContain('"**/node_modules/**"');
     expect(unpacked).toContain("resources/runtime/**");
+    // node-pty is N-API: a rebuild would replace the prebuild the bundled Node
+    // loads, so packaging must never run one.
+    expect(builderYaml).toMatch(/npmRebuild:\s*false/);
     // A narrower list must not creep back in as a replacement.
     expect(unpacked).not.toContain('"**/node_modules/@earendil-works/**"');
   });

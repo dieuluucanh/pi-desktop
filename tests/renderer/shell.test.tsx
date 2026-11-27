@@ -36,7 +36,13 @@ describe("app shell", () => {
     expect((await screen.findAllByRole("button", { name: /new session/i })).length).toBeGreaterThan(
       0,
     );
-    for (const label of ["Settings", "Extensions", "Connections", "Diagnostics"]) {
+    for (const label of [
+      "Settings",
+      "Extensions",
+      "Connections",
+      "Diagnostics",
+      "About & updates",
+    ]) {
       expect(
         screen.getAllByRole("button", { name: new RegExp(label, "i") }).length,
       ).toBeGreaterThan(0);

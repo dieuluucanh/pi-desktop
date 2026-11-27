@@ -1,24 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Cpu } from "lucide-react";
 import { Composer } from "../session/Composer";
+import { ComposerOperationPanel } from "../session/ComposerOperationPanel";
+import { RelatedSessionsBar } from "../session/RelatedSessionsBar";
+import { WorkingBar } from "../session/WorkingBar";
+import { StartingBanner } from "../session/StartingBanner";
 import { SessionFooter } from "../session/SessionFooter";
 import { Transcript } from "../session/Transcript";
 import { Button } from "../ui/button";
+import { MultilineText } from "../ui/multiline-text";
 import { WelcomeView } from "./WelcomeView";
 import { useAppStore } from "../state/app-store";
+import { selectDefaultModelProblem } from "../state/selectors";
 import { WidgetStrip } from "../extension-ui/WidgetStrip";
 import { ExtensionDialogDock } from "../extension-ui/ExtensionDialog";
-import { WorkingRow } from "../extension-ui/WorkingRow";
 import { RunStatusRow } from "../session/RunStatusRow";
 import { TuiCellProbe, TuiSlotFrame, TuiSurface } from "../tui/TuiSurface";
 import { TuiWidgetStrip, TuiWidgetInline } from "../tui/TuiWidgetStrip";
-import { splitSingleLineFrames } from "../../../shared/tui-surface";
+import { splitSingleLineFrames, type TuiSurfaceLayer } from "../../../shared/tui-surface";
 import { isDockedOverlay } from "../tui/tui-geometry";
 import { useTuiViewport } from "../tui/use-tui-viewport";
 import { createCommandProvider } from "../completion/command-source";
 import { createDocumentProvider } from "../completion/document-source";
 import { createFileProvider } from "../completion/file-source";
-import { createShellProvider } from "../completion/shell-source";
 import { documentMentionsForHost } from "../../../shared/office-documents";
 import { createCompletionProvider } from "../completion/stack";
 import type { CompletionItem, CompletionSuggestions } from "../completion/types";
@@ -27,10 +31,24 @@ import { ModelPicker } from "../session/ModelPicker";
 import { ThinkingPicker } from "../session/ThinkingPicker";
 import { ThinkingLevelIcon } from "../session/ThinkingLevelIcon";
 import { thinkingLevelTitle } from "../../../shared/thinking";
+import type { ScopeDiagnosticInfo } from "../../../shared/model-scope";
 import { contextUsageOf, modelKeyOf, thinkingLevelsOf } from "../session/model-catalog";
 import { sameFolder } from "../../../shared/rail-scope";
 import type { WorkspaceEntryKind } from "../../../shared/workspace";
 import { isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
+import {
+  buildContributionBar,
+  contributionInputLocked,
+  EMPTY_CONTRIBUTION_SNAPSHOT,
+} from "../../../shared/extension-contributions-view";
+import { EMPTY_EXTENSION_WORKING } from "../../../shared/extension-ui";
+import {
+  EMPTY_COMPOSER_TAB_OPERATION_STATE,
+  deriveComposerOperation,
+  projectComposerControls,
+} from "../../../shared/composer-operation";
+import { composerControlKey } from "../session/composer-controls-model";
+import { isLoopbackUrl } from "../../../shared/web-tabs";
 
 /**
  * Session view (plan step 5).
@@ -44,6 +62,7 @@ import { isWorkspaceDrag, readWorkspaceDrop } from "../files/workspace-drag";
 
 /** Stable empty scope for a tab whose scope has not loaded yet. */
 const EMPTY_SCOPE: readonly string[] = [];
+const EMPTY_DIAGNOSTICS: readonly ScopeDiagnosticInfo[] = [];
 
 /**
  * The `#` completion source.
@@ -85,9 +104,49 @@ export function SessionView({ tabId }: { tabId: string }) {
   const transcripts = useAppStore((state) => state.transcripts);
   const ensureSession = useAppStore((state) => state.ensureSession);
   const restartTab = useAppStore((state) => state.restartTab);
+  const cancelSession = useAppStore((state) => state.cancelSession);
   const hydrateTranscript = useAppStore((state) => state.hydrateTranscript);
   const sendPrompt = useAppStore((state) => state.sendPrompt);
   const stopRun = useAppStore((state) => state.stopRun);
+  const interruptRun = useAppStore((state) => state.interruptRun);
+  const contributionSnapshots = useAppStore((state) => state.contributions);
+  const runContributionAction = useAppStore((state) => state.runContributionAction);
+  const relatedArchive = useAppStore((state) => state.relatedArchive);
+  const openArchivedRelatedSession = useAppStore((state) => state.openArchivedRelatedSession);
+  const contributionSnapshot = contributionSnapshots[tabId];
+  // One generic badge (mode, else progress, else status) and one generic input
+  // state. Neither depends on an extension name, glyph or status text.
+  const contributionBar = useMemo(
+    () => buildContributionBar(contributionSnapshot ?? EMPTY_CONTRIBUTION_SNAPSHOT),
+    [contributionSnapshot],
+  );
+  // One generic presentation: a single mode identity (composer corner), its
+  // resolved same-owner activation, and the remaining rows/actions. Neither
+  // depends on an extension name, glyph or status text.
+  const contributionMode = contributionBar.mode;
+  const contributionModeAction = contributionBar.modeAction;
+  const inputLocked = contributionInputLocked(contributionSnapshot);
+  // Generic composer controls (2026-11-22 prompt-refinement plan step 21). The
+  // projection is never stored: a withdrawn or republished control is seen on
+  // the next render, and a disabled one still renders its reason. Arming comes
+  // from the typed operation state, never from a status string.
+  const composerOperationRecord = useAppStore((state) => state.composerOperations[tabId]);
+  const composerControlProjection = useMemo(
+    () => projectComposerControls(contributionSnapshot),
+    [contributionSnapshot],
+  );
+  const composerOperation = useMemo(
+    () =>
+      deriveComposerOperation({
+        ...(composerOperationRecord ?? EMPTY_COMPOSER_TAB_OPERATION_STATE),
+        projection: composerControlProjection,
+      }),
+    [composerOperationRecord, composerControlProjection],
+  );
+  const activateTab = useAppStore((state) => state.activateTab);
+  const cancelComposerOperation = useAppStore((state) => state.cancelComposerOperation);
+  const composerOperationOwnsStop = useAppStore((state) => state.composerOperationOwnsStop);
+  const replaceComposerCandidate = useAppStore((state) => state.replaceComposerCandidate);
   const clearQueue = useAppStore((state) => state.clearQueue);
   const restoreQueue = useAppStore((state) => state.restoreQueue);
   const setDraft = useAppStore((state) => state.setDraft);
@@ -118,7 +177,16 @@ export function SessionView({ tabId }: { tabId: string }) {
   const scopedPatterns = useAppStore((state) => state.modelScopePatterns[tabId]);
   const scopeTarget = useAppStore((state) => state.modelScopeTarget[tabId]);
   const scopeBusyKey = useAppStore((state) => state.modelScopeBusy[tabId] ?? null);
+  const scopeDiagnostics = useAppStore(
+    (state) => state.modelScopeDiagnostics[tabId] ?? EMPTY_DIAGNOSTICS,
+  );
+  const defaultModelIssue = useAppStore(selectDefaultModelProblem);
   const extensionUi = useAppStore((state) => state.extensionUi[tabId]);
+  // An extension can own long-running work while the parent tab is idle. That
+  // is still "busy" for Escape, even though `tab.status` stays idle; the
+  // generic contribution bar owns the controls in that state.
+  const extensionWorking = extensionUi?.working;
+  const extensionBusy = extensionWorking?.message != null && extensionWorking.visible !== false;
   const extensionDialogs = useAppStore((state) => state.extensionDialogs);
   const toolsExpandedState = useAppStore((state) => state.toolsExpanded[tabId]);
   const toggleToolsExpanded = useAppStore((state) => state.toggleToolsExpanded);
@@ -132,15 +200,19 @@ export function SessionView({ tabId }: { tabId: string }) {
   const extensionApplyCompletion = useAppStore((state) => state.extensionApplyCompletion);
   // Extension shortcuts (plan step 15) drive the composer's Tab mode cycle; the
   // store loads them per tab (step 7), so both the list and the invoker are here.
-  const shortcuts = useAppStore((state) => state.shortcuts);
+  const shortcutState = useAppStore((state) => state.shortcutStates[tabId]);
   const loadShortcuts = useAppStore((state) => state.loadShortcuts);
   const invokeShortcut = useAppStore((state) => state.invokeShortcut);
   const tuiSurface = useAppStore((state) => state.tuiSurfaces[tabId]);
+  // A successful draft apply asks the composer for focus/caret (plan step 19).
+  const composerCaretRequest = useAppStore((state) => state.composerCaretRequests[tabId]);
   // Only the count drove a section header; the strip's badges now come from the
   // snapshot and the checkpoint store directly.
   const [composerFocusToken, setComposerFocusToken] = useState(0);
   const [surfaceFocusToken, setSurfaceFocusToken] = useState(0);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  /** The one explicit wake per mounted pane; status changes never re-trigger it. */
+  const ensuredPaneRef = useRef<string | null>(null);
 
   /**
    * The completion stack for this tab (plan step 7): commands from the host's
@@ -160,7 +232,6 @@ export function SessionView({ tabId }: { tabId: string }) {
             completeAppCommandArguments(tabId, request.name, request.prefix),
         }),
         file: createFileProvider({ loadFiles: () => loadFiles(tabId) }),
-        shell: createShellProvider({ loadFiles: () => loadFiles(tabId) }),
         document: createDocumentProvider(documentMentionSource(tabId)),
         extension: {
           suggest: (request) => extensionCompletion(tabId, request),
@@ -204,6 +275,14 @@ export function SessionView({ tabId }: { tabId: string }) {
 
   const active = tabs.find((tab) => tab.id === tabId) ?? null;
   const activeId = active?.id ?? null;
+  // A loopback web tab can be linked to this session (a review page, a local
+  // UI). Generic: the bar offers one button when the input is owned elsewhere.
+  const linkedWebTabId = active
+    ? (tabs.find(
+        (tab) =>
+          tab.kind === "web" && tab.sessionTabId === active.id && isLoopbackUrl(tab.url ?? null),
+      )?.id ?? null)
+    : null;
   const [mentionRequest, setMentionRequest] = useState<{
     id: number;
     tabId: string;
@@ -249,12 +328,23 @@ export function SessionView({ tabId }: { tabId: string }) {
   // the host resumes. Cheap when the list is already loaded (the store's
   // idempotence guard returns early without a request).
   useEffect(() => {
-    // Only the focused pane owns the global shortcut list; a background pane
-    // refreshes it the moment it gains focus.
-    if (activeId !== null && activeId === focusedTabId && active?.kind === "session") {
-      void loadShortcuts();
+    // Each pane lists its own session: two panes can register different keys, so
+    // a background pane must not inherit (or overwrite) the focused one's list.
+    if (activeId !== null && active?.kind === "session") {
+      void loadShortcuts({ tabId: activeId });
     }
-  }, [activeId, focusedTabId, active?.kind, active?.status, loadShortcuts]);
+  }, [activeId, active?.kind, active?.status, loadShortcuts]);
+
+  // Mounting a pane is the gesture that may wake a stopped host. This replaces
+  // the old accidental wake through `tui.resize`: the viewport effect still
+  // reports while the host is live, but a status change can no longer spawn a
+  // host that was just recycled (2026-11-06 Strata loop).
+  useEffect(() => {
+    if (!activeId || active?.kind === "web") return;
+    if (ensuredPaneRef.current === activeId) return;
+    ensuredPaneRef.current = activeId;
+    if (active?.status === "stopped") void ensureSession(activeId);
+  }, [activeId, active?.kind, active?.status, ensureSession]);
 
   // Git polling and the checkpoint timeline are seeded by `ProjectRail` (the
   // rail follows the selected project, not this tab — 2026-10-30 plan), so the
@@ -282,16 +372,62 @@ export function SessionView({ tabId }: { tabId: string }) {
   // full-width overlay (the workflow questionnaire) is a bottom sheet, so it is
   // docked in flow as well: the transcript shrinks and stays scrollable instead
   // of being covered by a popup. Any other overlay floats inside this column.
-  const dockedOverlay = Boolean(
-    tuiSurface?.custom && tuiSurface.overlay && isDockedOverlay(tuiSurface.bounds, viewport),
-  );
-  const tuiOwnsComposer = Boolean(tuiSurface?.custom && (!tuiSurface.overlay || dockedOverlay));
-  const floatingOverlay = Boolean(tuiSurface?.custom && tuiSurface.overlay && !dockedOverlay);
+  // Every mounted extension surface, bottom-to-top. A host that predates the
+  // stack still sends only `custom`; the legacy view falls back to it so an old
+  // host keeps rendering exactly one surface (2026-11-22 parity row 28).
+  const surfaceLayers: TuiSurfaceLayer[] =
+    tuiSurface && tuiSurface.layers.length > 0
+      ? tuiSurface.layers
+      : tuiSurface?.custom
+        ? [
+            {
+              id: "legacy",
+              overlay: tuiSurface.overlay,
+              bounds: tuiSurface.bounds,
+              focused: tuiSurface.focus === "custom",
+              frame: tuiSurface.custom,
+            },
+          ]
+        : [];
+  const topSurfaceLayer = surfaceLayers.at(-1) ?? null;
+  // A bottom sheet is docked in flow; a base (non-overlay) custom is docked
+  // underneath a floating overlay. Only the docked layer takes the composer.
+  const dockLayer =
+    topSurfaceLayer &&
+    (!topSurfaceLayer.overlay || isDockedOverlay(topSurfaceLayer.bounds, viewport))
+      ? topSurfaceLayer
+      : (surfaceLayers.find((layer) => !layer.overlay) ?? null);
+  const floatLayers = surfaceLayers.filter((layer) => layer !== dockLayer && layer.overlay);
+  const tuiOwnsComposer = dockLayer !== null;
+  const floatingOverlay = floatLayers.length > 0;
+  const paneFocused = active.id === focusedTabId;
   // A docked/float surface owns the keyboard while it is up. Clicking the
   // transcript must give the keys back to it, never to the hidden (or inert)
   // composer — otherwise Tab/arrow keys silently stop reaching the extension.
   const surfaceOwnsKeyboard = tuiOwnsComposer || floatingOverlay || dialog !== null;
   const composerUnavailable = surfaceOwnsKeyboard;
+  // A dead host cannot run a contribution command. The bar is not mounted at
+  // all on these tabs, so a stale click has nothing to dispatch into (plan step
+  // 6); `idle`/`starting`/`running` keep the bar.
+  const barHostDead =
+    active.status === "stopped" || active.status === "crashed" || active.status === "failed";
+
+  /**
+   * A working-bar action runs in the host, then hands the keys back to whatever
+   * owned them before the click. The bar's buttons sit outside the composer, so
+   * this uses the same rule as the transcript: a dialog or docked/floating TUI
+   * keeps keyboard ownership (`surfaceFocusToken`, which the dialog dock and
+   * the docked surface already consume), otherwise the composer takes it back.
+   * A questionnaire or dialog must never lose focus to a bar button.
+   */
+  const runBarAction = async (ownerId: string, id: string): Promise<boolean> => {
+    try {
+      return await runContributionAction(active.id, ownerId, id);
+    } finally {
+      if (surfaceOwnsKeyboard) setSurfaceFocusToken((token) => token + 1);
+      else setComposerFocusToken((token) => token + 1);
+    }
+  };
 
   const resetDrop = (): void => {
     dropDepth.current = 0;
@@ -379,14 +515,34 @@ export function SessionView({ tabId }: { tabId: string }) {
         </div>
       ) : null}
 
+      {active.status === "starting" && !active.error ? (
+        <StartingBanner key={active.id} onCancel={() => void cancelSession(active.id)} />
+      ) : null}
+
+      {active.memoryOverBudget && active.status !== "crashed" && active.status !== "failed" ? (
+        <div
+          data-testid="session-memory-warning"
+          className="banner banner--warn mx-4 mt-2 flex items-start justify-between gap-3"
+          role="status"
+        >
+          <span>
+            This session is using more than the 1 GB host memory budget. It is protected from
+            automatic recycling while you are viewing it; restart it to free memory.
+          </span>
+          <Button size="sm" variant="secondary" onClick={() => void restartTab(active.id)}>
+            Restart
+          </Button>
+        </div>
+      ) : null}
+
       {active.error || active.status === "crashed" || active.status === "failed" ? (
         <div className="banner banner--error mx-4 mt-2 flex items-start justify-between gap-3">
-          <span>
+          <MultilineText className="min-w-0">
             {active.error ??
               (active.status === "crashed"
                 ? "The session host crashed. History is on disk and returns after a restart."
                 : "The session host was stopped after repeated failures.")}
-          </span>
+          </MultilineText>
           <Button size="sm" variant="secondary" onClick={() => void restartTab(active.id)}>
             Restart
           </Button>
@@ -454,20 +610,6 @@ export function SessionView({ tabId }: { tabId: string }) {
               }}
             />
           ) : null}
-          {active.status === "running" ? (
-            <WorkingRow
-              working={
-                extensionUi?.working ?? {
-                  message: null,
-                  visible: null,
-                  frames: null,
-                  intervalMs: null,
-                }
-              }
-              startedAt={transcript?.runStartedAt ?? null}
-              showCancelHint
-            />
-          ) : null}
           {tuiSurface?.header ? (
             <TuiSlotFrame
               frame={tuiSurface.header}
@@ -476,29 +618,74 @@ export function SessionView({ tabId }: { tabId: string }) {
           ) : null}
           <WidgetStrip tabId={active.id} placement="aboveEditor" />
           <TuiWidgetStrip frames={tuiSurface?.widgetsAbove ?? []} placement="aboveEditor" />
+          <RelatedSessionsBar
+            active={active}
+            tabs={tabs}
+            archive={relatedArchive}
+            onActivate={(id) => void activateTab(id)}
+            onOpenArchived={(entry) => void openArchivedRelatedSession(entry)}
+          />
+          {/* The single native working bar (one row, plan step 6). It is not
+              suppressed while input is locked: Review must show its own bar,
+              and the lock is drawn from `model.inputs`. */}
+          {barHostDead ? null : (
+            <WorkingBar
+              working={extensionUi?.working ?? EMPTY_EXTENSION_WORKING}
+              running={active.status === "running"}
+              startedAt={transcript?.runStartedAt ?? null}
+              model={contributionBar}
+              linkedTab={
+                inputLocked && linkedWebTabId
+                  ? {
+                      label: "Open linked tab",
+                      onOpen: () => void activateTab(linkedWebTabId),
+                    }
+                  : null
+              }
+              onRunAction={runBarAction}
+            />
+          )}
           {dialog ? (
             <ExtensionDialogDock
               dialog={dialog}
               maxHeight={viewport.rows * viewport.cell.height}
               focusToken={surfaceFocusToken}
+              active={active.id === focusedTabId}
             />
-          ) : tuiOwnsComposer && tuiSurface ? (
+          ) : tuiOwnsComposer && tuiSurface && dockLayer ? (
             <TuiSurface
               tabId={active.id}
               snapshot={tuiSurface}
+              layer={dockLayer}
               cell={viewport.cell}
               grid={{ rows: viewport.rows, cols: viewport.cols }}
               variant="dock"
               focusToken={surfaceFocusToken}
+              active={paneFocused}
             />
           ) : (
             <div className="contents" inert={floatingOverlay || undefined}>
+              <ComposerOperationPanel
+                operation={composerOperation}
+                onCancel={() => void cancelComposerOperation(active.id)}
+                onReplace={() =>
+                  void replaceComposerCandidate(active.id).then((outcome) => {
+                    if (!outcome || outcome.status === "applied") return;
+                    setHint(
+                      outcome.reason === "stale-base"
+                        ? "Your draft changed again — review it and replace once more if you still want the refined text."
+                        : "The refined prompt could not replace the draft; it is still available to view and copy.",
+                    );
+                  })
+                }
+              />
               <Composer
                 tabId={active.id}
                 running={active.status === "running"}
                 enabled={active.status !== "crashed" && active.status !== "failed"}
                 sleeping={active.status === "stopped"}
                 focusToken={composerFocusToken}
+                caretRequest={composerCaretRequest ?? null}
                 onWake={() => void ensureSession(active.id)}
                 toolsSlot={
                   <>
@@ -541,10 +728,42 @@ export function SessionView({ tabId }: { tabId: string }) {
                 onMentionHandled={(id) =>
                   setMentionRequest((current) => (current?.id === id ? null : current))
                 }
-                workflowStatus={extensionUi?.statuses?.workflow ?? null}
-                extensionShortcuts={shortcuts.shortcuts}
-                onInvokeShortcut={(key) => void invokeShortcut(key)}
-                onRequestShortcuts={() => void loadShortcuts()}
+                contributionMode={contributionMode}
+                contributionModeAction={contributionModeAction}
+                contributionModeChoices={contributionBar.modeChoices}
+                onRunContributionMode={(ownerId, id) => runContributionAction(tabId, ownerId, id)}
+                composerControls={composerControlProjection.controls}
+                composerControlArmedKeys={composerOperation.armed.map((control) =>
+                  composerControlKey(control),
+                )}
+                composerControlBusy={
+                  composerOperation.isRunning ||
+                  composerOperation.isAwaitingInput ||
+                  composerOperation.hasCandidate
+                }
+                composerControlConflict={
+                  composerOperation.isConflict
+                    ? (composerOperation.conflict?.message ?? null)
+                    : null
+                }
+                onActivateComposerControl={async (control) => {
+                  // Explicit toggle-off cancels/disarms (parity plan row 22): a
+                  // live refinement is stopped first so the arm cannot flip off
+                  // while the host keeps working. Other cancellation (Esc) leaves
+                  // the toggle armed for a retry.
+                  const key = composerControlKey(control);
+                  const armedNow = composerOperation.armed.some(
+                    (entry) => composerControlKey(entry) === key,
+                  );
+                  if (armedNow && composerOperationOwnsStop(tabId)) {
+                    await cancelComposerOperation(tabId);
+                  }
+                  return runContributionAction(tabId, control.ownerId, control.actionRef);
+                }}
+                inputLocked={inputLocked}
+                extensionShortcuts={shortcutState?.shortcuts.shortcuts ?? []}
+                onInvokeShortcut={(key) => void invokeShortcut(key, active.id)}
+                onRequestShortcuts={() => void loadShortcuts({ tabId: active.id })}
                 onDraftChange={(text) => setDraft(active.id, text)}
                 onSend={async (text, images, options) => {
                   const mode = options?.followUp ? "followUp" : "steer";
@@ -566,9 +785,21 @@ export function SessionView({ tabId }: { tabId: string }) {
                 }}
                 completion={completion}
                 onStop={() => void stopRun(active.id)}
+                // Escape goes through the extension first (plan step 24): a
+                // running review pauses instead of aborting. A manual review
+                // runs on an idle tab, so `escapeActive` forwards too. A live
+                // composer refinement on an otherwise idle tab also owns Esc
+                // (parity plan row 22), so it must arm the same path.
+                onEscape={() => void interruptRun(active.id)}
+                escapeActive={
+                  extensionBusy ||
+                  inputLocked ||
+                  composerOperation.isRunning ||
+                  composerOperation.isAwaitingInput
+                }
                 onClearQueue={() => void clearQueue(active.id)}
                 onRestoreQueue={() => void restoreQueue(active.id)}
-                onHistoryStep={(direction) => historyStep(active.id, direction)}
+                onHistoryStep={(direction, caret) => historyStep(active.id, direction, caret)}
               />
             </div>
           )}
@@ -623,18 +854,27 @@ export function SessionView({ tabId }: { tabId: string }) {
                     : null,
               }}
               statuses={extensionUi?.statuses}
+              // Status/progress rows moved out of the native bar (plan step 6):
+              // the footer is the telemetry rail. A custom `setFooter()`
+              // replacement keeps its own presentation (see SessionFooter).
+              contributionRows={[...contributionBar.statusRows, ...contributionBar.progressRows]}
             />
           )}
-          {floatingOverlay && tuiSurface ? (
-            <TuiSurface
-              tabId={active.id}
-              snapshot={tuiSurface}
-              cell={viewport.cell}
-              grid={{ rows: viewport.rows, cols: viewport.cols }}
-              variant="float"
-              focusToken={surfaceFocusToken}
-            />
-          ) : null}
+          {tuiSurface
+            ? floatLayers.map((layer) => (
+                <TuiSurface
+                  key={layer.id}
+                  tabId={active.id}
+                  snapshot={tuiSurface}
+                  layer={layer}
+                  cell={viewport.cell}
+                  grid={{ rows: viewport.rows, cols: viewport.cols }}
+                  variant="float"
+                  focusToken={surfaceFocusToken}
+                  active={paneFocused}
+                />
+              ))
+            : null}
         </div>
       </div>
 
@@ -647,6 +887,8 @@ export function SessionView({ tabId }: { tabId: string }) {
         initialQuery={pickerSearch}
         scoped={scopedModels ?? EMPTY_SCOPE}
         patterns={scopedPatterns ?? EMPTY_SCOPE}
+        diagnostics={scopeDiagnostics}
+        defaultProblem={defaultModelIssue}
         scopeTarget={scopeTarget ?? "global"}
         scopeBusyKey={scopeBusyKey}
         error={pickerError}

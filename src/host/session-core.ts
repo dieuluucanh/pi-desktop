@@ -15,6 +15,7 @@ import {
 import type { ScopeDiagnosticInfo, ScopeSnapshot } from "../shared/model-scope";
 import type { ExtensionRuntimeErrorSummary } from "../shared/resources";
 import type { SettingsScope } from "../shared/settings-schema";
+import type { HostOpenTimings } from "../shared/performance";
 import {
   eventToFrame,
   sessionSnapshot,
@@ -27,8 +28,32 @@ import {
   type TrustAnswer,
   type TrustStoreLike,
 } from "./project-trust";
-import { createCommandHandlers, type CommandRunner } from "./commands";
+import { createCommandHandlers, runCommand, type CommandRunner } from "./commands";
+import {
+  createContributionHost,
+  type ContributionBridge,
+  type ContributionBus,
+  type ContributionHost,
+} from "./contributions";
+import {
+  type ComposerTransformControlPort,
+  type ComposerTransformHost,
+} from "./composer-transform";
+import { COMPOSER_CONTROL_KIND as COMPOSER_CONTROL_CONTRIBUTION_KIND } from "../shared/composer-transform";
+import {
+  createSessionHostBridge,
+  type RelatedSessionOwner,
+  type SessionHostBridge,
+} from "./related-sessions";
+import {
+  RELATED_SESSION_VERSION,
+  validateBootstrapEntries,
+  type RelatedSessionCapabilities,
+  type SessionBootstrapEntry,
+} from "../shared/related-sessions";
+import { isTrustAnswer } from "../shared/projects";
 import { createPromptOriginTracker } from "./prompt-origin";
+import { createQueueOriginTracker, type QueueKind } from "./queue-origin";
 import { createSettingsHandlers, SettingsError, type SettingsPort } from "./settings";
 import { createShortcutHandlers, ShortcutError, type ShortcutRunner } from "./shortcuts";
 import { createThemeHandlers, type ThemePort } from "./themes";
@@ -38,6 +63,7 @@ import {
   type KeybindingPort,
 } from "./keybindings";
 import { buildResourcesSnapshot } from "./resources";
+import type { WorkflowBuiltinResolution } from "./workflow-builtin";
 import type { FileListing } from "../workspace/file-listing";
 import type { WorkspaceReadResult } from "../workspace/workspace-files";
 import type { HostHandler } from "./service";
@@ -59,9 +85,13 @@ export interface ClearedQueue {
   followUp?: readonly string[];
 }
 
-/** One row of the session browser (passed through from the SDK's listing). */
-export interface SessionListEntry {
-  [key: string]: unknown;
+/**
+ * The host's `clearQueue` answer: the user's cleared texts plus how many
+ * extension-owned turns the SDK's all-or-nothing clear discarded.
+ */
+export interface ClearQueueResult {
+  cleared: ClearedQueue | null;
+  dropped: number;
 }
 
 /**
@@ -192,6 +222,12 @@ export interface SessionManagerLike {
 export interface SessionManagerHandle {
   /** Persists the session (the SDK writes the v3 JSONL header) and names it. */
   appendSessionInfo?(name: string): string;
+  /**
+   * Writes one entry to the JSONL before the runtime is created. Used for the
+   * bounded related-session bootstrap, which must be visible to extensions on
+   * their `session_start` (never as a turn trigger).
+   */
+  appendMessage?(message: unknown): string;
   getSessionFile?(): string | undefined;
   /** Session tree access for `entries.get` / `tree.get` / `session.forkMessages`. */
   getEntries?(): readonly unknown[];
@@ -296,6 +332,12 @@ export interface SessionRuntimeRequest {
   agentDir: string;
   sessionManager: SessionManagerHandle;
   npmCommand?: readonly string[] | null;
+  /**
+   * The shared extension event bus (`pi.events`), supplied by the composition
+   * root from `src/host/sdk`. Passing it into the runtime loader is what makes
+   * an extension's `pi.events` the same instance the contribution bridge uses.
+   */
+  eventBus?: ContributionBus | null;
   /** Safe mode (plan step 22): load no third-party extensions/skills/prompts/themes. */
   safeMode?: boolean;
   /** Whether the project is trusted, so its `.pi/settings.json` may be read. */
@@ -305,6 +347,34 @@ export interface SessionRuntimeRequest {
    * composition root resolves it next to the host bundle; safe mode ignores it.
    */
   checkpointsExtensionPath?: string | null;
+  /**
+   * The bundled Workflow copy as `builtin:workflow` (plan step 27). The runtime
+   * adapter turns a registered resolution into the loader's `extensionFactories`;
+   * the SDK then owns enable/disable (`-builtin:workflow`, trust, safe mode) and
+   * replacement by an installed copy.
+   */
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
+  /**
+   * Sub-phase timings this request wants reported (2026-11-07 plan). Passed
+   * through to the SDK adapter, which owns `services`/`scope`/`session`.
+   */
+  onPhase?: (phase: "services" | "scope" | "session", ms: number) => void;
+}
+
+/**
+ * The SDK-free ports the composition root needs to build the composer-transform
+ * host. Registrations and the command runner are getters because a rebind can
+ * replace the live extension runner.
+ */
+export interface ComposerTransformFactoryOptions {
+  bus?: ContributionBus | null;
+  controls: ComposerTransformControlPort;
+  registrations(): readonly unknown[];
+  commands(): CommandRunner | null;
+  binding(): { sessionId: string | null; epoch: number };
+  emit(event: string, payload?: unknown, sessionId?: string): void;
+  onError(error: unknown): void;
+  log(line: string): void;
 }
 
 export interface SessionCoreDeps {
@@ -316,6 +386,12 @@ export interface SessionCoreDeps {
   safeMode?: boolean;
   /** The bundled checkpoint extension (git-checkpoint plan step 24). Safe mode wins. */
   checkpointsExtensionPath?: string | null;
+  /**
+   * The bundled Workflow builtin (plan step 27), resolved once per host process.
+   * Used for the runtime request *and* for `resources.list`, so the Extensions
+   * hub reports the same copy/version the session registered.
+   */
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
   /** Creates the SDK runtime (see `src/host/sdk/index.ts`). */
   createRuntime(
     request: SessionRuntimeRequest,
@@ -326,8 +402,6 @@ export interface SessionCoreDeps {
   newSessionManager?(cwd: string, sessionDir?: string): SessionManagerHandle;
   trustStore?: TrustStoreLike;
   requiresTrust?(cwd: string): boolean;
-  /** Session browser listing (plan step 11 surfaces it). */
-  listSessions?(cwd: string): Promise<SessionListEntry[]>;
   /**
    * Workspace files for `@` completion (plan step 7). The root is this host's
    * own cwd, never a renderer-supplied path, so the listing cannot escape the
@@ -360,6 +434,28 @@ export interface SessionCoreDeps {
    * not live on the session itself.
    */
   bindSession?(session: HostSession, runtime: RuntimeLike): Promise<void>;
+  /**
+   * The shared extension event bus (`pi.events`) for this host process. The
+   * composition root supplies the same instance it hands the runtime loader, so
+   * extension publications and the contribution bridge meet on one bus.
+   */
+  contributionBus?: ContributionBus | null;
+  /**
+   * Wires the generic contribution registry to the extension event bus
+   * (orchestrator plan step 8). Null/absent means no native contributions: the
+   * registry still answers `contributions.state` with an empty, supported
+   * snapshot, so a renderer never falls back to parsing extension status text.
+   */
+  createContributionBridge?(host: ContributionHost): ContributionBridge | null;
+  /**
+   * Composer-transform operation host (prompt-refinement row 14). The
+   * composition root supplies the SDK ports from `src/host/sdk/composer-transform.ts`;
+   * the core stays SDK-free. Absent means this host advertises no
+   * composer-transform capability and the renderer keeps the text fallback.
+   */
+  createComposerTransformHost?(
+    options: ComposerTransformFactoryOptions,
+  ): ComposerTransformHost | null;
   /**
    * Observes extension-driven model/thinking selections (workflow `/profile`,
    * role switches). Pi announces `model_select` only on the extension runner,
@@ -430,6 +526,14 @@ export interface SessionCore {
   handlers(): Partial<Record<HostMethod, HostHandler>>;
   snapshot(): SessionSnapshot;
   session(): HostSession | null;
+  /** Current session identity for event fencing (id + attachment epoch). */
+  identity(): { sessionId: string | null; epoch: number };
+  /**
+   * Phase breakdown of the last `session.create`/`session.resume` in this
+   * process, or null before the first (2026-11-07 plan). Optional: the control
+   * core has no session to open.
+   */
+  lastOpenTimings?(): HostOpenTimings | null;
   cwd(): string;
   dispose(): Promise<void>;
 }
@@ -462,6 +566,8 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
   let cwd = deps.cwd;
   let session: HostSession | null = null;
+  /** Monotonic per-host attachment counter; a reload keeps the id but bumps this. */
+  let sessionEpoch = 0;
   let runtime: RuntimeLike | null = null;
   let manager: SessionManagerHandle | null = null;
   let unsubscribe: (() => void) | null = null;
@@ -471,6 +577,359 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   // Pairs each accepted prompt/command with the user message it produces, so
   // the renderer can name the command instead of showing its expanded body.
   const promptOrigins = createPromptOriginTracker();
+  // Pairs each queued text with who queued it, from a before/after queue diff.
+  const queueOrigins = createQueueOriginTracker();
+
+  /**
+   * Generic extension contributions (orchestrator plan step 8). One registry
+   * per host process: it accepts validated envelopes from any extension, and
+   * `contributions.run` executes an action through the live command runner so
+   * the host validates provenance, availability and the command itself.
+   */
+  const contributionHost = createContributionHost({
+    emit: (event, payload) => deps.emit(event, payload, session?.sessionId ?? undefined),
+    runCommand: async (name, args) => {
+      const runner = liveCommandRunner();
+      if (!runner) return { ran: false, error: "no live extension command runner" };
+      const result = await runCommand(runner, name, args, (report) =>
+        deps.emit("extension_error", report, session?.sessionId ?? undefined),
+      );
+      return {
+        ran: result.ran,
+        ...(result.error === undefined ? {} : { error: result.error }),
+      };
+    },
+  });
+  let contributionBridge: ContributionBridge | null = null;
+  /**
+   * Related-session bridge (orchestrator step 12). Ownership is derived from a
+   * registered command's SDK source info, so `sourceBound` is honest: without a
+   * command runner this capability is false and every request fails closed.
+   */
+  let relatedBridge: SessionHostBridge | null = null;
+
+  /**
+   * Host-minted capability grants for related-session requests. A grant is
+   * bound to one registered command + session + epoch and expires; it is what
+   * separates "this command exists" from "this extension was handed
+   * authority". Delivered to the extension's companion `<command>-bridge`
+   * command on bind, never persisted and never written to a prompt.
+   */
+  let relatedEpoch = 0;
+  let grantSeq = 0;
+  const issuedGrants = new Map<
+    string,
+    {
+      ownerCommand: string;
+      sessionId: string;
+      epoch: number;
+      expiresAt: number;
+    }
+  >();
+  const sessionIdOf = (): string => session?.sessionId ?? "session";
+
+  const mintGrant = (ownerCommand: string) => {
+    grantSeq += 1;
+    const token = `grant-${Date.now().toString(36)}-${grantSeq}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+    const at = Date.now();
+    const grant = {
+      version: 1 as const,
+      token,
+      ownerCommand,
+      sessionId: sessionIdOf(),
+      epoch: relatedEpoch,
+      issuedAt: at,
+      expiresAt: at + 5 * 60_000,
+    };
+    issuedGrants.set(token, {
+      ownerCommand,
+      sessionId: grant.sessionId,
+      epoch: grant.epoch,
+      expiresAt: grant.expiresAt,
+    });
+    return grant;
+  };
+
+  const acceptGrant = (input: {
+    raw: unknown;
+    ownerCommand: string;
+    sessionId: string;
+    epoch: number;
+  }): { ok: true } | { ok: false; error: string } => {
+    const raw = input.raw as
+      { token?: unknown; ownerCommand?: unknown; sessionId?: unknown; epoch?: unknown } | undefined;
+    const token = typeof raw?.token === "string" ? raw.token : "";
+    if (!token) return { ok: false, error: "the request has no capability grant" };
+    const known = issuedGrants.get(token);
+    if (!known) {
+      return { ok: false, error: "the capability grant was not issued by this host" };
+    }
+    if (Date.now() >= known.expiresAt) {
+      issuedGrants.delete(token);
+      return { ok: false, error: "the capability grant expired" };
+    }
+    // The grant's OWN claims must match the record the host minted AND the live
+    // request: a token cannot be re-labelled to another owner/session/epoch.
+    if (raw?.ownerCommand !== known.ownerCommand || known.ownerCommand !== input.ownerCommand) {
+      return { ok: false, error: "the capability grant belongs to another extension" };
+    }
+    if (raw?.sessionId !== known.sessionId || known.sessionId !== input.sessionId) {
+      return { ok: false, error: "the capability grant belongs to another session" };
+    }
+    if (raw?.epoch !== known.epoch || known.epoch !== input.epoch) {
+      return { ok: false, error: "the capability grant is from a previous host epoch" };
+    }
+    return { ok: true };
+  };
+
+  const relatedCapabilities = (): RelatedSessionCapabilities => {
+    const commands = session?.extensionRunner?.getRegisteredCommands;
+    const sourceBound = typeof commands === "function";
+    return {
+      version: RELATED_SESSION_VERSION,
+      create: true,
+      open: true,
+      focus: true,
+      inspect: true,
+      interrupt: true,
+      close: true,
+      separateWindow: true,
+      bootstrapBeforeStart: true,
+      sourceBound,
+      label: "Pi Desktop",
+      ...(sourceBound
+        ? {}
+        : { reason: "the live session exposes no registered-command source info" }),
+    };
+  };
+
+  const resolveRelatedOwner = (ownerCommand: string): RelatedSessionOwner | null => {
+    const list = session?.extensionRunner?.getRegisteredCommands?.() ?? [];
+    for (const raw of list) {
+      const command = asRecord(raw);
+      if (command.name !== ownerCommand) continue;
+      const info = asRecord(command.sourceInfo);
+      const path = typeof info.path === "string" ? info.path : "";
+      const source = typeof info.source === "string" ? info.source : "";
+      const key = path.length > 0 ? path : source.length > 0 ? `package:${source}` : "";
+      if (key.length === 0) return null;
+      return { key, ...(source.length > 0 ? { label: source } : {}) };
+    }
+    return null;
+  };
+
+  const bindRelatedSessions = (): void => {
+    // A rebind invalidates every grant minted for the previous binding: a
+    // captured token must not authorize a request in the new epoch.
+    relatedEpoch += 1;
+    relatedBridge?.dispose();
+    relatedBridge = null;
+    if (!deps.contributionBus) return;
+    relatedBridge = createSessionHostBridge({
+      bus: deps.contributionBus,
+      capabilities: relatedCapabilities,
+      clock: {
+        now: clock,
+        setTimeout: (callback, ms) => setTimeout(callback, ms),
+        clearTimeout: (handle) => clearTimeout(handle as Parameters<typeof clearTimeout>[0]),
+      },
+      resolveOwner: resolveRelatedOwner,
+      grants: { accept: acceptGrant },
+      sessionId: sessionIdOf,
+      epoch: () => relatedEpoch,
+      forward: (request, owner) => {
+        deps.emit(
+          "host:relatedSession.request",
+          {
+            ...request,
+            ownerKey: owner.key,
+            ...(owner.label === undefined ? {} : { ownerLabel: owner.label }),
+          },
+          session?.sessionId ?? undefined,
+        );
+      },
+      onError: (error) => recordRuntimeError(error),
+    });
+    relatedBridge.announce();
+    void deliverRelatedGrants();
+  };
+
+  /**
+   * Hand each extension a grant through its registered companion command.
+   *
+   * Convention: an extension that wants privileged related-session operations
+   * registers `<ownerCommand>-bridge`; the host invokes it with the JSON grant.
+   * Only code reachable from that registration learns the token, so a payload's
+   * self-declared owner can never authorize an operation. A missing companion
+   * is not an error: that extension simply stays unsupported.
+   */
+  const deliverRelatedGrants = async (): Promise<void> => {
+    const runner = liveCommandRunner();
+    if (!runner) return;
+    const names = new Set(
+      (session?.extensionRunner?.getRegisteredCommands?.() ?? [])
+        .map((entry) => (entry as { name?: unknown }).name)
+        .filter((name): name is string => typeof name === "string"),
+    );
+    for (const ownerCommand of names) {
+      if (!names.has(`${ownerCommand}-bridge`)) continue;
+      const grant = mintGrant(ownerCommand);
+      try {
+        await runCommand(runner, `${ownerCommand}-bridge`, JSON.stringify(grant), (report) =>
+          deps.emit("extension_error", report, session?.sessionId ?? undefined),
+        );
+      } catch (error) {
+        recordRuntimeError(error);
+      }
+    }
+  };
+
+  const liveCommandRunner = (): CommandRunner | null => {
+    const runner = session?.extensionRunner;
+    if (!runner) return null;
+    return deps.wrapCommandRunner?.(runner) ?? null;
+  };
+
+  /**
+   * Composer-transform host (prompt-refinement row 14). Built lazily so a
+   * control/status call before the first session simply reports no capability,
+   * and rebuilt state is reset on every bind. The control port re-reads the
+   * contribution registry, so a renderer can never invent an owner, action or
+   * revision; the adapter re-resolves live command provenance.
+   */
+  let composerTransform: ComposerTransformHost | null | undefined;
+  const composerControls: ComposerTransformControlPort = {
+    resolve({ ownerId, controlId, contributionRevision }) {
+      const entry = contributionHost.entry(ownerId);
+      if (!entry) {
+        return {
+          ok: false,
+          error: { code: "foreign-action", message: `no contribution owner ${ownerId}` },
+        };
+      }
+      if (entry.revision !== contributionRevision) {
+        return {
+          ok: false,
+          error: {
+            code: "stale-revision",
+            message: `the published revision is ${entry.revision}, not ${contributionRevision}`,
+          },
+        };
+      }
+      const control = entry.contributions.find(
+        (contribution) =>
+          contribution.kind === COMPOSER_CONTROL_CONTRIBUTION_KIND && contribution.id === controlId,
+      );
+      if (!control || control.kind !== COMPOSER_CONTROL_CONTRIBUTION_KIND) {
+        return {
+          ok: false,
+          error: { code: "unresolved-action", message: `no composer control ${controlId}` },
+        };
+      }
+      const actions = entry.contributions.flatMap((contribution) =>
+        contribution.kind === "action"
+          ? [
+              {
+                ownerId,
+                id: contribution.id,
+                kind: contribution.kind,
+                label: contribution.label,
+                command: contribution.command,
+              },
+            ]
+          : [],
+      );
+      return { ok: true, control, actions };
+    },
+  };
+
+  const ensureComposerTransform = (): ComposerTransformHost | null => {
+    if (composerTransform !== undefined) return composerTransform;
+    if (!deps.createComposerTransformHost) {
+      composerTransform = null;
+      return null;
+    }
+    composerTransform = deps.createComposerTransformHost({
+      ...(deps.contributionBus ? { bus: deps.contributionBus } : {}),
+      controls: composerControls,
+      registrations: () => session?.extensionRunner?.getRegisteredCommands?.() ?? [],
+      commands: () => liveCommandRunner(),
+      binding: () => ({ sessionId: session?.sessionId ?? null, epoch: sessionEpoch }),
+      emit: (event, payload, eventSessionId) =>
+        deps.emit(event, payload, eventSessionId ?? session?.sessionId ?? undefined),
+      onError: (error) => recordRuntimeError(error),
+      log: (line) =>
+        deps.emit("composer_transform.diagnostic", { line }, session?.sessionId ?? undefined),
+    });
+    return composerTransform;
+  };
+
+  /**
+   * The four protocol methods stay reachable in every host. Without the SDK
+   * adapter they answer `not_implemented` honestly instead of disappearing from
+   * the allowlist.
+   */
+  const composerTransformHandlers = (): Partial<Record<HostMethod, HostHandler>> => {
+    const host = ensureComposerTransform();
+    if (host) return host.handlers();
+    const unavailable = (): never => {
+      throw new SessionCoreError(
+        "composer transform is not available in this host",
+        "not_implemented",
+      );
+    };
+    return {
+      "composer.transform": unavailable,
+      "composer.status": unavailable,
+      "composer.current": unavailable,
+      "composer.cancel": unavailable,
+      "composer.applied": unavailable,
+    };
+  };
+
+  /**
+   * Rebind the contribution bridge for the session that is now live. A previous
+   * generation is reset first, so a reload can never leave an actionable stale
+   * button; `announce()` is what makes extensions publish at all.
+   */
+  const bindContributions = (): void => {
+    try {
+      contributionBridge?.dispose();
+    } catch {
+      /* teardown is best-effort */
+    }
+    contributionBridge = null;
+    try {
+      contributionHost.reset();
+    } catch {
+      /* a gone renderer must not break a bind */
+    }
+    // A rebind invalidates every composer operation/grant/listener from the
+    // previous session generation before the new one is announced. The host
+    // keeps its bounded settled receipts so a lost apply acknowledgement can
+    // still replay, but no old job or grant can deliver a cached result.
+    try {
+      ensureComposerTransform()?.invalidate("the session binding changed");
+    } catch {
+      /* best-effort teardown */
+    }
+    try {
+      ensureComposerTransform()?.reset();
+    } catch {
+      /* best-effort teardown */
+    }
+    if (!deps.createContributionBridge) return;
+    try {
+      contributionBridge = deps.createContributionBridge(contributionHost);
+      contributionBridge?.announce();
+      ensureComposerTransform()?.announce();
+    } catch (error) {
+      recordRuntimeError(error);
+      contributionBridge = null;
+    }
+  };
 
   /**
    * Bounded `extension_error` history for the Extensions hub (plan step 13). Pi
@@ -510,6 +969,55 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   let settingsPortManager: SettingsLike | null = null;
   let settingsPortCwd: string | null = null;
   let scopeFingerprint: string | null = null;
+  /**
+   * The open currently being measured and the last one that finished
+   * (2026-11-07 host-singleton plan). The host reports the result through
+   * `host.metrics`, so Diagnostics can say *which* leg of an open is slow
+   * instead of only logging a total once it crosses two seconds.
+   */
+  let activeOpen: {
+    startedAt: number;
+    trustMs: number;
+    servicesMs: number;
+    scopeMs: number;
+    sessionMs: number;
+    bindMs: number;
+    reconcileMs: number;
+  } | null = null;
+  let lastOpen: HostOpenTimings | null = null;
+  const clock = (): number => deps.now?.() ?? Date.now();
+  const beginOpen = (): void => {
+    activeOpen = {
+      startedAt: clock(),
+      trustMs: 0,
+      servicesMs: 0,
+      scopeMs: 0,
+      sessionMs: 0,
+      bindMs: 0,
+      reconcileMs: 0,
+    };
+  };
+  const recordOpenPhase = (phase: "services" | "scope" | "session", ms: number): void => {
+    if (!activeOpen) return;
+    if (phase === "services") activeOpen.servicesMs = ms;
+    else if (phase === "scope") activeOpen.scopeMs = ms;
+    else activeOpen.sessionMs = ms;
+  };
+  const finishOpen = (): void => {
+    if (!activeOpen) return;
+    const at = clock();
+    lastOpen = {
+      totalMs: at - activeOpen.startedAt,
+      trustMs: activeOpen.trustMs,
+      servicesMs: activeOpen.servicesMs,
+      scopeMs: activeOpen.scopeMs,
+      sessionMs: activeOpen.sessionMs,
+      bindMs: activeOpen.bindMs,
+      reconcileMs: activeOpen.reconcileMs,
+      at,
+    };
+    activeOpen = null;
+  };
   const resolveSettingsPort = (): SettingsPort | null => {
     if (!deps.createSettingsPort) return null;
     if (!settingsPort || settingsPortManager !== settingsManager || settingsPortCwd !== cwd) {
@@ -722,12 +1230,102 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     return origin === null ? event : { ...event, promptOrigin: origin };
   };
 
+  /**
+   * The capability gate: attribution needs *both* SDK queue getters. Without
+   * them the host never annotates and never filters — a legacy host keeps the
+   * renderer's `"user"` default and the SDK's cleared list unchanged.
+   */
+  const hasQueueGetters = (current: SessionStateLike): boolean =>
+    typeof current.getSteeringMessages === "function" &&
+    typeof current.getFollowUpMessages === "function";
+
+  /** Reads both SDK queues, keeping only string entries; `null` closes the gate. */
+  const readQueue = (
+    current: SessionStateLike,
+  ): { steering: string[]; followUp: string[] } | null => {
+    if (!hasQueueGetters(current)) return null;
+    try {
+      const steering = current.getSteeringMessages?.() ?? [];
+      const followUp = current.getFollowUpMessages?.() ?? [];
+      return {
+        steering: steering.filter((text): text is string => typeof text === "string"),
+        followUp: followUp.filter((text): text is string => typeof text === "string"),
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  /** Multiset difference: the texts in `after` not already present in `before`. */
+  const addedTexts = (before: readonly string[], after: readonly string[]): string[] => {
+    const remaining = new Map<string, number>();
+    for (const text of before) remaining.set(text, (remaining.get(text) ?? 0) + 1);
+    const added: string[] = [];
+    for (const text of after) {
+      const count = remaining.get(text) ?? 0;
+      if (count > 0) remaining.set(text, count - 1);
+      else added.push(text);
+    }
+    return added;
+  };
+
+  /**
+   * Records the texts a renderer request newly admitted into `kind`'s queue and
+   * re-emits one annotated `queue_update`.
+   *
+   * The SDK emits its own unannotated `queue_update` before this claim exists,
+   * so this single re-emit corrects it. Main preserves frame order, so the
+   * renderer's final state is annotated.
+   */
+  const claimQueueDelta = (
+    current: HostSession,
+    kind: QueueKind,
+    before: { steering: string[]; followUp: string[] } | null,
+  ): void => {
+    if (before === null) return;
+    const now = readQueue(current);
+    if (now === null) return;
+    const added = addedTexts(before[kind], now[kind]);
+    if (added.length === 0) return;
+    queueOrigins.claim(kind, added);
+    deps.emit(
+      "queue_update",
+      {
+        steering: now.steering,
+        followUp: now.followUp,
+        queueOrigins: queueOrigins.classify(now.steering, now.followUp),
+      },
+      current.sessionId ?? undefined,
+    );
+  };
+
+  /**
+   * Annotates an SDK `queue_update` with per-entry origins. The SDK arrays stay
+   * untouched (the snapshot and `isSessionBusyState` need them complete); with
+   * the gate closed the frame stays unannotated, which the renderer reads as
+   * `"user"` — today's behaviour.
+   */
+  const withQueueOrigins = (
+    current: HostSession,
+    event: { type: string; [key: string]: unknown },
+  ): { type: string; [key: string]: unknown } => {
+    if (event.type !== "queue_update" || !hasQueueGetters(current)) return event;
+    const steering = Array.isArray(event.steering) ? (event.steering as readonly string[]) : [];
+    const followUp = Array.isArray(event.followUp) ? (event.followUp as readonly string[]) : [];
+    return { ...event, queueOrigins: queueOrigins.classify(steering, followUp) };
+  };
+
   const attach = (next: HostSession): void => {
     unsubscribe?.();
     unsubscribeErrors?.();
     unsubscribeModelChanges?.();
     promptOrigins.reset();
+    queueOrigins.reset();
     session = next;
+    sessionEpoch += 1;
+    // The Extensions hub reads this list; errors from the outgoing runner must
+    // not be attributed to the replacement session.
+    runtimeErrors.length = 0;
     unsubscribeErrors = next.extensionRunner?.onError?.(recordRuntimeError) ?? null;
     // A broken observer must not prevent the session from opening; the state
     // still refreshes on the ordinary SDK events above.
@@ -737,24 +1335,74 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       unsubscribeModelChanges = null;
     }
     const listener = (event: { type: string; [key: string]: unknown }): void => {
-      const enriched = withPromptOrigin(withEntryRenderability(next, event));
+      const enriched = withQueueOrigins(
+        next,
+        withPromptOrigin(withEntryRenderability(next, event)),
+      );
       const frame = eventToFrame(enriched);
       deps.emit(frame.event, frame.payload, next.sessionId ?? undefined);
       if (event.type === "agent_settled") promptOrigins.settle();
+      // Queue claims are deliberately not settled here: an aborted/settled run
+      // leaves the SDK queues populated, so queued entries keep their owner.
       if (STATE_EVENTS.has(event.type)) emitState();
     };
     unsubscribe = next.subscribe ? next.subscribe(listener) : null;
   };
 
+  /**
+   * How many times `rebind()` actually ran.
+   *
+   * The SDK invokes the callback registered with `setRebindSession()` after it
+   * replaces the session, and the lifecycle handlers below used to call it a
+   * second time. One `session.new`/`switch`/`fork`/`clone`/`import` therefore ran
+   * the whole bind twice — extension `session_start`, `resources_discover`, a
+   * settings reload and a second scope resolve — which doubled the slowest part
+   * of those actions (2026-11-07 plan). The counter lets a handler skip its own
+   * call when the runtime already did it, and still bind exactly once on a
+   * runtime that does not report back.
+   */
+  let rebindCount = 0;
+
+  const rebindIfRuntimeSkipped = async (before: number): Promise<void> => {
+    if (rebindCount === before) await rebind();
+  };
+
   const rebind = async (): Promise<void> => {
     if (!runtime) return;
+    rebindCount += 1;
     attach(runtime.session);
     settingsManager = runtime.services?.settingsManager ?? settingsManager;
+    const bindStartedAt = clock();
     await deps.bindSession?.(runtime.session, runtime);
+    if (activeOpen) activeOpen.bindMs = clock() - bindStartedAt;
+    bindContributions();
+    bindRelatedSessions();
     scopeFingerprint = null;
+    const reconcileStartedAt = clock();
     await reconcileModelScope({ reload: true });
+    if (activeOpen) activeOpen.reconcileMs = clock() - reconcileStartedAt;
     deps.emit("session_replaced", snapshot(), runtime.session.sessionId ?? undefined);
     emitState();
+  };
+
+  /**
+   * Session replacement is one transition at a time.
+   *
+   * Main coalesces opens per tab, but a host can still receive two lifecycle
+   * requests from different callers (an explicit resume plus a repair path, or
+   * an extension command mid-restart). Running `runtime.switchSession` twice
+   * concurrently replaces the session under one caller and invalidates the
+   * extension runner it is about to use. Serializing here makes the second call
+   * wait for the first and observe its snapshot, instead of replacing again.
+   */
+  let sessionTransition: Promise<void> = Promise.resolve();
+  const serializeSessionTransition = <T>(run: () => Promise<T>): Promise<T> => {
+    const next = sessionTransition.then(run, run);
+    sessionTransition = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
   };
 
   const snapshot = (): SessionSnapshot => {
@@ -799,12 +1447,26 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     cwd: string;
     sessionManager: SessionManagerHandle;
     trustAnswer?: TrustAnswer;
+    /**
+     * Why this session exists, carried to the renderer so a routine host
+     * recycle (`resume`) is not announced as a new conversation (2026-11-06
+     * plan, step 15).
+     */
+    reason?: "new" | "open" | "resume" | "reload";
     /** Per-project default applied only to a brand-new session (plan step 10). */
     model?: string;
     /** Per-project default thinking level for a brand-new session. */
     thinking?: string;
+    /**
+     * Bounded entries written before `session_start` (orchestrator step 12).
+     * They are data only: opening the session must never run a turn.
+     */
+    bootstrap?: SessionBootstrapEntry[];
   }): Promise<SessionSnapshot> => {
+    beginOpen();
+    const trustStartedAt = clock();
     const status = trust.status(options.cwd);
+    if (activeOpen) activeOpen.trustMs = clock() - trustStartedAt;
     if (status.needsPrompt && !options.trustAnswer) {
       deps.emit("project_trust", status, undefined);
       throw new SessionCoreError(
@@ -816,16 +1478,32 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     cwd = options.cwd;
     manager = options.sessionManager;
+    if (options.bootstrap && options.bootstrap.length > 0) {
+      if (typeof options.sessionManager.appendMessage === "function") {
+        for (const entry of options.bootstrap) {
+          options.sessionManager.appendMessage({
+            role: "custom",
+            customType: entry.customType,
+            content: entry.content,
+            display: entry.display === true,
+            timestamp: clock(),
+          });
+        }
+      }
+    }
     const created = await deps.createRuntime({
       cwd,
       agentDir: deps.agentDir,
       sessionManager: options.sessionManager,
       npmCommand: deps.npmCommand,
-      projectTrusted: trust.status(cwd).trusted,
+      projectTrusted: status.trusted,
+      ...(deps.contributionBus ? { eventBus: deps.contributionBus } : {}),
       ...(deps.safeMode ? { safeMode: true } : {}),
       ...(deps.checkpointsExtensionPath
         ? { checkpointsExtensionPath: deps.checkpointsExtensionPath }
         : {}),
+      ...(deps.workflowBuiltin ? { workflowBuiltin: deps.workflowBuiltin } : {}),
+      onPhase: recordOpenPhase,
     });
     runtime = created.runtime;
     settingsManager = created.runtime.services?.settingsManager ?? null;
@@ -837,11 +1515,32 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     if (options.thinking) {
       created.session.setThinkingLevel?.(options.thinking, { persist: false });
     }
+    const bindStartedAt = clock();
     await deps.bindSession?.(created.session, created.runtime);
+    if (activeOpen) activeOpen.bindMs = clock() - bindStartedAt;
+    bindContributions();
+    bindRelatedSessions();
     scopeFingerprint = null;
-    await reconcileModelScope({ reload: true });
+    const reconcileStartedAt = clock();
+    // The runtime factory has just built `SettingsManager` from disk and
+    // `resourceLoader.reload()` re-read it, so a third read here bought nothing
+    // (2026-11-07 plan). `reload: true` stays on `rebind()`, where it is the only
+    // read.
+    await reconcileModelScope({ reload: false });
+    if (activeOpen) activeOpen.reconcileMs = clock() - reconcileStartedAt;
+    finishOpen();
 
-    deps.emit("session_started", snapshot(), created.session.sessionId ?? undefined);
+    deps.emit(
+      "session_started",
+      {
+        ...snapshot(),
+        // Additive: the transcript dedupes on (sessionId) and the service drops a
+        // routine `resume`, so nine recycles of one session read as one start.
+        reason: options.reason ?? "new",
+        sessionId: created.session.sessionId ?? null,
+      },
+      created.session.sessionId ?? undefined,
+    );
     emitState();
     return snapshot();
   };
@@ -851,25 +1550,29 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const input = asRecord(params);
       const targetCwd =
         typeof input.cwd === "string" && input.cwd.length > 0 ? input.cwd : deps.cwd;
-      const trustAnswer =
-        input.trust === "trust" || input.trust === "never" || input.trust === "session"
-          ? (input.trust as TrustAnswer)
-          : undefined;
+      const trustAnswer = isTrustAnswer(input.trust) ? input.trust : undefined;
       const model =
         typeof input.model === "string" && input.model.length > 0 ? input.model : undefined;
       const thinking =
         typeof input.thinking === "string" && input.thinking.length > 0
           ? input.thinking
           : undefined;
+      const bootstrap =
+        input.bootstrap === undefined ? undefined : validateBootstrapEntries(input.bootstrap);
+      if (bootstrap && !bootstrap.ok) {
+        throw new SessionCoreError(bootstrap.error, "bad_request");
+      }
       const sessionManager = deps.newSessionManager
         ? deps.newSessionManager(targetCwd, deps.sessionDir)
         : {};
       return startSession({
         cwd: targetCwd,
         sessionManager,
+        reason: "new",
         ...(trustAnswer ? { trustAnswer } : {}),
         ...(model ? { model } : {}),
         ...(thinking ? { thinking } : {}),
+        ...(bootstrap?.ok && bootstrap.value.length > 0 ? { bootstrap: bootstrap.value } : {}),
       });
     },
 
@@ -879,22 +1582,31 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       return startSession({
         cwd: typeof input.cwd === "string" && input.cwd.length > 0 ? input.cwd : deps.cwd,
         sessionManager: openManager(deps, sessionFile, cwd),
+        reason: "open",
       });
     },
 
     "session.resume": async (params) => {
       const input = asRecord(params);
       if (runtime?.switchSession && typeof input.sessionFile === "string") {
+        // The SDK rebuilds the whole runtime here (services + extensions +
+        // bind), so the switch gets its own measurement window.
+        beginOpen();
         await runtime.switchSession(input.sessionFile);
+        finishOpen();
         return snapshot();
       }
       const sessionFile = requireString(input.sessionFile ?? input.path, "sessionFile");
-      return startSession({ cwd, sessionManager: openManager(deps, sessionFile, cwd) });
-    },
-
-    "session.list": async () => {
-      if (!deps.listSessions) return { sessions: [] };
-      return { sessions: await deps.listSessions(cwd) };
+      // A restarted host has a fresh in-memory trust store. The service re-sends
+      // the tab's answer (a "session" grant does not survive process death on
+      // its own), so resume must accept it exactly like create.
+      const trustAnswer = isTrustAnswer(input.trust) ? input.trust : undefined;
+      return startSession({
+        cwd,
+        sessionManager: openManager(deps, sessionFile, cwd),
+        reason: "resume",
+        ...(trustAnswer ? { trustAnswer } : {}),
+      });
     },
 
     "session.fork": async (params) => {
@@ -902,10 +1614,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const entryId = requireString(input.entryId ?? input.id, "entryId");
       if (!runtime?.fork)
         throw new SessionCoreError("fork is not supported by this runtime", "unsupported");
+      const rebuiltAt = rebindCount;
       const result = await runtime.fork(entryId, {
         position: input.position === "before" ? "before" : "at",
       });
-      await rebind();
+      await rebindIfRuntimeSkipped(rebuiltAt);
       return {
         ...snapshot(),
         cancelled: result.cancelled,
@@ -968,6 +1681,15 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       if (input.ack !== undefined && input.ack !== "preflight") {
         throw new SessionCoreError('ack must be "preflight" when provided', "bad_request");
       }
+      // Attribution window: only a streaming prompt with an explicit behavior
+      // queues, so only that combination needs a pre-call snapshot.
+      const queueKind: QueueKind | null =
+        current.isStreaming === true && behavior !== undefined
+          ? behavior === "steer"
+            ? "steering"
+            : "followUp"
+          : null;
+      const queueBefore = queueKind === null ? null : readQueue(current);
       // A new prompt while idle supersedes any dispatch that never produced a
       // user message (a notify-only command); queued follow-ups are streaming
       // and are therefore never dropped here.
@@ -989,6 +1711,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
           const finish = (disposition: string): void => {
             if (settled) return;
             settled = true;
+            // Nothing is claimed before the call, so a `started`/`handled`
+            // disposition cannot leave a stale entry behind.
+            if (disposition === "queued" && queueKind !== null) {
+              claimQueueDelta(current, queueKind, queueBefore);
+            }
             resolve({ ...snapshot(), disposition });
           };
           options.preflightResult = (disposition: string) => finish(disposition);
@@ -1024,6 +1751,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       }
       try {
         await current.prompt(text, Object.keys(options).length > 0 ? options : undefined);
+        if (queueKind !== null) claimQueueDelta(current, queueKind, queueBefore);
         return snapshot();
       } catch (error) {
         promptOrigins.forget(pending);
@@ -1035,7 +1763,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const current = ensure();
       const text = requireString(asRecord(params).text, "text");
       if (!current.steer) throw new SessionCoreError("steering is not supported", "unsupported");
+      const before = readQueue(current);
       await current.steer(text, undefined, { source: "rpc" });
+      claimQueueDelta(current, "steering", before);
       return { queued: true };
     },
 
@@ -1044,7 +1774,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const text = requireString(asRecord(params).text, "text");
       if (!current.followUp)
         throw new SessionCoreError("follow-up is not supported", "unsupported");
+      const before = readQueue(current);
       await current.followUp(text, undefined, { source: "rpc" });
+      claimQueueDelta(current, "followUp", before);
       return { queued: true };
     },
 
@@ -1055,9 +1787,41 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     },
 
     clearQueue: () => {
-      const cleared = ensure().clearQueue?.() ?? null;
+      const current = ensure();
+      // The SDK empties both arrays and emits its own empty `queue_update`
+      // before returning, and the tracker prunes on absence — so classify the
+      // pre-clear snapshot, then reset after clearing.
+      const before = readQueue(current);
+      const origins =
+        before === null ? null : queueOrigins.classify(before.steering, before.followUp);
+      const cleared = current.clearQueue?.() ?? null;
+      queueOrigins.reset();
       emitState();
-      return { cleared };
+      if (cleared === null) return { cleared: null, dropped: 0 };
+      // Gate closed: never filter what cannot be attributed. The SDK's cleared
+      // list passes through unchanged; an absent `dropped` reads as 0.
+      if (origins === null) return { cleared };
+      // The SDK call still clears everything (there is no selective API), so
+      // this return is a report, not a filter. The dropped extension turn is
+      // why the renderer shows a hint (plan step 7).
+      const steering: string[] = [];
+      const followUp: string[] = [];
+      let dropped = 0;
+      const keepUserTexts = (
+        texts: readonly string[] | undefined,
+        originList: readonly string[] | undefined,
+        into: string[],
+      ): void => {
+        if (texts === undefined) return;
+        texts.forEach((text, index) => {
+          // An entry beyond the snapshot (a length mismatch) reads as user.
+          if (originList?.[index] === "extension") dropped += 1;
+          else into.push(text);
+        });
+      };
+      keepUserTexts(cleared.steering, origins.steering, steering);
+      keepUserTexts(cleared.followUp, origins.followUp, followUp);
+      return { cleared: { steering, followUp }, dropped };
     },
 
     "state.get": () => snapshot(),
@@ -1112,6 +1876,20 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     "commands.list": () => ({ commands: collectCommands(ensure()) }),
 
+    // Generic extension contributions (orchestrator plan step 8): a renderer
+    // reads one snapshot and runs an action by (owner, contribution id).
+    ...contributionHost.handlers(),
+    // Source-bound composer operations (prompt-refinement row 14). The handlers
+    // are the frozen allowlist above; every one re-checks the live binding.
+    ...composerTransformHandlers(),
+    // Main settles a host-forwarded related-session operation here. The bridge
+    // is per bind; before the first bind there is nothing to settle.
+    "sessionHost.result": (params) =>
+      relatedBridge?.settle(params) ?? {
+        accepted: false,
+        reason: "no related-session bridge is bound",
+      },
+
     // The Extensions hub (plan step 13): what this session actually loaded, with
     // provenance, contributions and errors. A session host answers from its live
     // resource loader + extension runner, so the data is the running truth.
@@ -1127,6 +1905,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
           themes: session?.resourceLoader?.getThemes?.(),
         },
         runtimeErrors,
+        ...(deps.workflowBuiltin ? { builtin: deps.workflowBuiltin } : {}),
         now: deps.now,
       }),
 
@@ -1236,10 +2015,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         throw new SessionCoreError("starting a new session is not supported", "unsupported");
       }
       const parent = asRecord(params).parentSession;
+      const rebuiltAt = rebindCount;
       const result = await runtime.newSession(
         typeof parent === "string" && parent.length > 0 ? { parentSession: parent } : undefined,
       );
-      await rebind();
+      await rebindIfRuntimeSkipped(rebuiltAt);
       return { ...snapshot(), cancelled: result.cancelled };
     },
 
@@ -1249,8 +2029,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       if (!runtime?.switchSession) {
         throw new SessionCoreError("switching sessions is not supported", "unsupported");
       }
+      const rebuiltAt = rebindCount;
       const result = await runtime.switchSession(sessionFile);
-      await rebind();
+      await rebindIfRuntimeSkipped(rebuiltAt);
       return { ...snapshot(), cancelled: result.cancelled };
     },
 
@@ -1268,12 +2049,14 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         if (!leafId) {
           throw new SessionCoreError("this session has no entry to clone from", "no_leaf");
         }
+        const rebuiltAt = rebindCount;
         const forked = await runtime.fork(leafId, { position: "at" });
-        await rebind();
+        await rebindIfRuntimeSkipped(rebuiltAt);
         return { ...snapshot(), cancelled: forked.cancelled };
       }
+      const rebuiltAt = rebindCount;
       const result = await runtime.clone();
-      await rebind();
+      await rebindIfRuntimeSkipped(rebuiltAt);
       return { ...snapshot(), cancelled: result.cancelled };
     },
 
@@ -1311,8 +2094,9 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const cwdOverride =
         typeof input.cwd === "string" && input.cwd.length > 0 ? input.cwd : undefined;
       try {
+        const rebuiltAt = rebindCount;
         const result = await runtime.importFromJsonl(path, cwdOverride);
-        await rebind();
+        await rebindIfRuntimeSkipped(rebuiltAt);
         return { ...snapshot(), cancelled: result.cancelled };
       } catch (error) {
         // Pi's two documented import failures need actionable text: the renderer
@@ -1858,13 +2642,57 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     },
   };
 
+  // These handlers replace the runtime/session or rebuild its extension runner.
+  // The wrapper is applied here rather than in every handler body so a future
+  // lifecycle method is covered by adding one id to this list.
+  const SESSION_TRANSITION_METHODS = [
+    "session.create",
+    "session.open",
+    "session.resume",
+    "session.new",
+    "session.switch",
+    "session.clone",
+    "session.fork",
+    "session.reload",
+    "session.importJsonl",
+    "session.navigateTree",
+  ] as const;
+  for (const method of SESSION_TRANSITION_METHODS) {
+    const handler = handlers[method];
+    if (!handler) continue;
+    handlers[method] = (params, context) =>
+      serializeSessionTransition(() => Promise.resolve().then(() => handler(params, context)));
+  }
+
   return {
     handlers: () => handlers,
     snapshot,
     session: () => session,
+    identity: () => ({ sessionId: session?.sessionId ?? null, epoch: sessionEpoch }),
+    lastOpenTimings: () => lastOpen,
     cwd: () => cwd,
     dispose: async () => {
       promptOrigins.reset();
+      queueOrigins.reset();
+      try {
+        contributionBridge?.dispose();
+      } catch {
+        /* teardown is best-effort */
+      }
+      contributionBridge = null;
+      relatedBridge?.dispose();
+      relatedBridge = null;
+      try {
+        composerTransform?.dispose();
+      } catch {
+        /* teardown is best-effort */
+      }
+      composerTransform = null;
+      try {
+        contributionHost.reset();
+      } catch {
+        /* a gone renderer must not break dispose */
+      }
       unsubscribe?.();
       unsubscribe = null;
       unsubscribeErrors?.();

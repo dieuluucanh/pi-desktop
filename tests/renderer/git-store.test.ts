@@ -429,6 +429,27 @@ describe("diff viewer", () => {
     useAppStore.getState().closeGitDiff();
     expect(useAppStore.getState().gitDiff).toBeNull();
   });
+
+  it("clears the diff when the read fails", async () => {
+    installBridge();
+    const bridge = (
+      window as unknown as { pi?: { git: { diff: (...args: unknown[]) => Promise<unknown> } } }
+    ).pi;
+    if (!bridge) throw new Error("expected the fake preload bridge");
+    const spy = vi.spyOn(bridge.git, "diff").mockRejectedValueOnce(new Error("boom"));
+    try {
+      await useAppStore.getState().openGitDiff(PROJECT, { path: "src/a.ts" });
+    } finally {
+      spy.mockRestore();
+    }
+
+    const state = useAppStore.getState();
+    // Clearing `gitDiff` is also how the dialog closes; the failure is visible
+    // in the rail's hint/error line instead of as another file's content.
+    expect(state.gitDiff).toBeNull();
+    expect(state.gitDiffLoading).toBe(false);
+    expect(state.hint).toMatch(/boom/);
+  });
 });
 
 describe("commit log", () => {

@@ -31,6 +31,12 @@ export const MAX_DIFF_BYTES = 2_000_000;
 export const MAX_DIFF_FILES = 200;
 /** Largest commit message the app will send. */
 export const MAX_COMMIT_MESSAGE = 20_000;
+/** Largest staged context the app will hand to a commit-message model. */
+export const MAX_COMMIT_CONTEXT_BYTES = 60_000;
+/** Most files one commit context will describe. */
+export const MAX_COMMIT_CONTEXT_FILES = 200;
+/** Most recent commit subjects offered to the model as a style hint. */
+export const MAX_RECENT_COMMIT_SUBJECTS = 8;
 /** Longest accepted branch name (git's own practical limit is far below this). */
 export const MAX_BRANCH_NAME = 200;
 /** Longest path accepted from the renderer, in characters. */
@@ -44,6 +50,8 @@ export type GitUnavailableReason =
   | "git_missing"
   /** The folder exists but is not inside a work tree. */
   | "not_a_repo"
+  /** git did not answer within its budget (a very large tree, a lock, a stalled process). */
+  | "timeout"
   /** The folder (or an ancestor) is a bare repository. */
   | "bare_repo"
   /** The folder does not exist or cannot be read. */
@@ -233,6 +241,43 @@ export interface GitDiffRequest {
   staged?: boolean;
   /** Read a commit (against its first parent) instead of a working-tree diff. */
   commit?: string;
+  /**
+   * Read a work-tree file that is not in the index. Requires `path`, and is
+   * incompatible with `staged`/`commit`: there is no index side to compare.
+   */
+  untracked?: boolean;
+}
+
+/* ---------------------------------------------------------- commit context */
+
+/**
+ * The bounded input for an AI commit message (2026-11-25 plan, step 14).
+ *
+ * This is a contract type only: the git engine fills it in (step 15), the
+ * prompt builder in `./commit-message` consumes it, and the renderer never
+ * assembles one itself. The bounds are what keep a 700 KB staged diff from
+ * becoming a 175 k-token request; `truncated` must always be truthful, because
+ * the prompt says so to the model.
+ */
+export interface GitCommitContext {
+  /** The folder the staged changes were read from (absolute). */
+  projectPath: string;
+  /** Branch name, or null when HEAD is detached. */
+  branch: string | null;
+  /** `git diff --cached --stat` output, or "" when nothing is staged. */
+  stat: string;
+  /** Bounded unified patch, or "" when nothing is staged. */
+  patch: string;
+  /** True when the patch exceeded {@link MAX_COMMIT_CONTEXT_BYTES} and was cut. */
+  truncated: boolean;
+  /** Files the index differs by (0 when nothing is staged). */
+  files: number;
+  /** Lines added by the staged change. */
+  insertions: number;
+  /** Lines removed by the staged change. */
+  deletions: number;
+  /** Up to {@link MAX_RECENT_COMMIT_SUBJECTS} subjects, newest first. */
+  recentSubjects: string[];
 }
 
 /** One page of the commit log, as the rail asks for it. */
@@ -548,6 +593,8 @@ export function gitUnavailableMessage(reason: GitUnavailableReason): string {
       return "Git is not installed, or it is not on this app's PATH.";
     case "not_a_repo":
       return "This folder is not a git repository.";
+    case "timeout":
+      return "Git did not answer in time. The repository may be very large; try again, or use a terminal.";
     case "bare_repo":
       return "This folder is a bare repository, so it has no working tree to show.";
     case "no_folder":
@@ -803,6 +850,18 @@ export function parseGitDiffRequest(value: unknown): GitDiffRequest {
     if (!isFullSha(record.commit)) throw new Error("git: commit must be a full sha");
     request.commit = record.commit;
   }
+  if (record.untracked !== undefined) {
+    if (typeof record.untracked !== "boolean") {
+      throw new Error("git: untracked must be a boolean");
+    }
+    if (record.untracked) {
+      if (request.path === undefined) throw new Error("git: an untracked diff needs a path");
+      if (request.staged === true || request.commit !== undefined) {
+        throw new Error("git: an untracked diff is a working-tree read");
+      }
+    }
+    request.untracked = record.untracked;
+  }
   return request;
 }
 
@@ -950,6 +1009,7 @@ const UNAVAILABLE_REASONS: readonly GitUnavailableReason[] = [
   "bare_repo",
   "no_folder",
   "operation_in_progress",
+  "timeout",
 ];
 
 /** Coerces an untrusted snapshot (a pushed IPC payload or a test fixture). */

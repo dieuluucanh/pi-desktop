@@ -5,10 +5,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   BUILD_INFO_FILE,
+  assertTerminalBundle,
   buildChannelFromEnv,
   buildInfoDocument,
   macSigningFromEnv,
   pruneForeignRuntimes,
+  readPiAgentVersion,
   writeBuildInfo,
 } from "../../scripts/electron-builder-after-pack.mjs";
 import { BUILD_INFO_FILE as SHARED_BUILD_INFO_FILE } from "../../src/shared/build-info";
@@ -64,6 +66,19 @@ describe("afterPack runtime pruning", () => {
   });
 });
 
+describe("afterPack terminal artifact", () => {
+  it("requires the terminal host bundle inside the asar-unpacked tree", () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-terminal-bundle-"));
+    roots.push(root);
+    const bundle = join(root, "app.asar.unpacked", "out", "host", "terminal.mjs");
+
+    expect(() => assertTerminalBundle(root)).toThrow(/terminal host bundle is missing/);
+    mkdirSync(join(bundle, ".."), { recursive: true });
+    writeFileSync(bundle, "export {};\n");
+    expect(assertTerminalBundle(root)).toBe(bundle);
+  });
+});
+
 describe("afterPack build provenance", () => {
   it("uses the same file name as the app-side reader", () => {
     expect(BUILD_INFO_FILE).toBe(SHARED_BUILD_INFO_FILE);
@@ -93,6 +108,7 @@ describe("afterPack build provenance", () => {
         builtAt: "2026-11-01T00:00:00.000Z",
         platform: "darwin",
         macSigning: "adhoc",
+        piVersion: "1.5.0",
       }),
     ).toEqual({
       channel: "release",
@@ -100,8 +116,11 @@ describe("afterPack build provenance", () => {
       commit: "abc123",
       builtAt: "2026-11-01T00:00:00.000Z",
       macSigning: "adhoc",
+      piVersion: "1.5.0",
     });
     expect(buildInfoDocument({ channel: "nightly" }).channel).toBe("unknown");
+    // Missing is metadata, not a guess.
+    expect(buildInfoDocument({}).piVersion).toBeNull();
 
     const target = writeBuildInfo(root, {
       version: "0.3.0",
@@ -116,11 +135,33 @@ describe("afterPack build provenance", () => {
       commit: null,
       builtAt: "2026-11-01T00:00:00.000Z",
       macSigning: "none",
+      piVersion: null,
     });
   });
 
+  it("reads the bundled agent version from the installed SDK", () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-agent-version-"));
+    roots.push(root);
+    const sdkDir = join(root, "node_modules", "@earendil-works", "pi-coding-agent");
+    mkdirSync(sdkDir, { recursive: true });
+    writeFileSync(join(sdkDir, "package.json"), JSON.stringify({ version: "1.5.0" }), "utf8");
+
+    expect(readPiAgentVersion(root)).toBe("1.5.0");
+    // A missing manifest is metadata, never a packaging failure.
+    expect(readPiAgentVersion(join(root, "missing"))).toBeNull();
+
+    writeFileSync(join(sdkDir, "package.json"), "{not json", "utf8");
+    expect(readPiAgentVersion(root)).toBeNull();
+  });
+
   it("records a macOS signing kind only for a darwin target", () => {
-    const base = { version: "0.5.0", channel: "release", commit: null, builtAt: null };
+    const base = {
+      version: "0.5.0",
+      channel: "release",
+      commit: null,
+      builtAt: null,
+      piVersion: "1.6.0",
+    };
     // The app turns `macSigning` into the update gate, so a Windows/Linux
     // package must never look like a signed mac build.
     expect(buildInfoDocument({ ...base, platform: "win32", macSigning: "adhoc" })).toEqual({

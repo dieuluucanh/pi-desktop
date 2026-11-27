@@ -22,6 +22,7 @@ const GO_TARGETS: readonly GoTarget[] = [
   { view: "connections", label: "Connections (providers & keys)" },
   { view: "skills", label: "Skills, themes & keybindings" },
   { view: "diagnostics", label: "Diagnostics" },
+  { view: "updates", label: "About & updates" },
 ];
 
 export function CommandPalette() {
@@ -97,6 +98,15 @@ export function CommandPalette() {
                 onSelect={() => run(newSessionAction)}
               />
               <PaletteItem
+                label="New terminal"
+                shortcut="Ctrl+Shift+T"
+                onSelect={() => run(() => void useAppStore.getState().createSessionTab("terminal"))}
+              />
+              <PaletteItem
+                label="Terminal: select default profile…"
+                onSelect={() => run(() => useAppStore.getState().openTerminalSettings())}
+              />
+              <PaletteItem
                 label="Open project…"
                 shortcut="Ctrl+O"
                 onSelect={() => run(() => void openProjectAction())}
@@ -129,7 +139,7 @@ export function CommandPalette() {
               />
               <PaletteItem
                 label="Browse sessions…"
-                shortcut="Ctrl+Shift+O"
+                shortcut="Ctrl+Alt+O"
                 onSelect={() => run(() => void openSessionBrowser())}
               />
               <PaletteItem

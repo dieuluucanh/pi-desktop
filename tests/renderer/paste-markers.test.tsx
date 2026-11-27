@@ -101,11 +101,11 @@ describe("composer paste", () => {
         draft=""
         queue={{ steering: [], followUp: [] }}
         onDraftChange={onDraftChange}
-        onSend={async () => true}
+        onSend={async () => "sent"}
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onHistoryStep={() => null}
+        onHistoryStep={() => ({ kind: "none" })}
       />,
     );
     const box = screen.getByLabelText("Prompt");
@@ -126,11 +126,11 @@ describe("composer paste", () => {
         draft=""
         queue={{ steering: [], followUp: [] }}
         onDraftChange={onDraftChange}
-        onSend={async () => true}
+        onSend={async () => "sent"}
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onHistoryStep={() => null}
+        onHistoryStep={() => ({ kind: "none" })}
       />,
     );
     fireEvent.paste(screen.getByLabelText("Prompt"), {
@@ -150,11 +150,11 @@ describe("composer paste", () => {
         draft={draft}
         queue={{ steering: [], followUp: [] }}
         onDraftChange={onDraftChange}
-        onSend={async () => true}
+        onSend={async () => "sent"}
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onHistoryStep={() => null}
+        onHistoryStep={() => ({ kind: "none" })}
       />,
     );
     const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
@@ -174,11 +174,11 @@ describe("composer paste", () => {
         draft="[paste #2 +200 lines]"
         queue={{ steering: [], followUp: [] }}
         onDraftChange={() => undefined}
-        onSend={async () => true}
+        onSend={async () => "sent"}
         onStop={() => undefined}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onHistoryStep={() => null}
+        onHistoryStep={() => ({ kind: "none" })}
       />,
     );
     expect(screen.getByTestId("paste-content-lost")).toHaveTextContent("#2");

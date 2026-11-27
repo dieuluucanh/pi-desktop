@@ -75,6 +75,10 @@ answer you chose, so you never have to retype a prompt.
 | Project extensions/packages                          | `<project>/.pi/npm`, `.pi/…`     |
 | Saved project document while the toggle is off       | `app-state.json` (snapshot)      |
 
+A project's `.pi/settings.json` is ordinary project configuration: it can be
+shared with the repository in general, but its presence makes the folder
+trust-requiring on first open.
+
 ## Related
 
 - [Sessions and tabs](sessions-and-tabs.md) · [Settings](settings.md)

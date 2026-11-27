@@ -1,4 +1,7 @@
 import type { AppInfo, PiDesktopBridge, WebTabOpenInput } from "../../src/shared/ipc";
+import type { CreateTabInput } from "../../src/shared/session-ipc";
+import type { TerminalCreateInput } from "../../src/shared/terminal-ipc";
+import type { TerminalProfileSnapshot } from "../../src/shared/terminal-profiles";
 import { HOST_METHODS } from "../../src/shared/host-protocol";
 import type { DiagnosticsSnapshot } from "../../src/shared/diagnostics";
 import type {
@@ -18,6 +21,7 @@ import {
   emptyGitSnapshot,
   type GitAction,
   type GitActionResult,
+  type GitCommitContext,
   type GitCommitEntry,
   type GitDiff,
   type GitSnapshot,
@@ -50,6 +54,7 @@ export function appInfoFixture(overrides: Partial<AppInfo> = {}): AppInfo {
     buildVersion: null,
     buildCommit: null,
     builtAt: null,
+    piVersion: null,
     safeMode: false,
     piOffline: false,
     userDataDir: "C:\\state",
@@ -120,6 +125,21 @@ export function documentsViewFixture(
   };
 }
 
+/** A zeroed commit context for the fixture's git fake. */
+function emptyGitCommitContext(projectPath: string): GitCommitContext {
+  return {
+    projectPath,
+    branch: null,
+    stat: "",
+    patch: "",
+    truncated: false,
+    files: 0,
+    insertions: 0,
+    deletions: 0,
+    recentSubjects: [],
+  };
+}
+
 export interface BridgeOptions {
   appInfo?: Partial<AppInfo>;
   prefs?: Partial<UiPrefs>;
@@ -143,6 +163,15 @@ export interface BridgeOptions {
   /** Folder checkpoints (git-checkpoint plan step 21). */
   checkpoints?: CheckpointState;
   checkpointsAction?: CheckpointActionResult;
+  /** Shell profiles the terminal bridge reports. */
+  terminalProfiles?: TerminalProfileSnapshot;
+  /** The staged diff `git.commitContext` answers with (defaults to empty). */
+  gitCommitContext?: GitCommitContext;
+  /**
+   * Answers a `sessions.request` host call other than the default
+   * `session.list`. Every call is recorded on {@link BridgeHandles.hostRequests}.
+   */
+  hostRequest?: (input: { tabId: string; method: string; params?: unknown }) => unknown;
 }
 
 export interface BridgeHandles {
@@ -157,6 +186,15 @@ export interface BridgeHandles {
   updateCalls: string[];
   /** Every git bridge call, in order, with its payload. */
   gitCalls: Array<{ kind: string; projectPath: string; payload?: unknown }>;
+  /** Every terminal:create request, in order. */
+  terminalCalls: TerminalCreateInput[];
+  /** Every `tui.setFocus` ping, in order. */
+  tuiFocusCalls: Array<{ tabId: string; focused: boolean }>;
+  emitTuiPaste(tabId: string): void;
+  /** Every session:create request, in order. */
+  sessionCreateCalls: CreateTabInput[];
+  /** Every `sessions.request` host call, in order, with its params. */
+  hostRequests: Array<{ tabId: string; method: string; params?: unknown }>;
   checkpointCalls: Array<{ kind: string; projectPath: string; payload?: unknown }>;
   emitCheckpointState: (state: CheckpointState) => void;
   emitWebState(state: WebTabState): void;
@@ -194,6 +232,16 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
 
   const gitListeners = new Set<(snapshot: GitSnapshot) => void>();
   const gitCalls: Array<{ kind: string; projectPath: string; payload?: unknown }> = [];
+  const terminalCalls: TerminalCreateInput[] = [];
+  const tuiFocusCalls: Array<{ tabId: string; focused: boolean }> = [];
+  const tuiPasteListeners = new Set<(tabId: string) => void>();
+  const sessionCreateCalls: CreateTabInput[] = [];
+  const hostRequests: Array<{ tabId: string; method: string; params?: unknown }> = [];
+  const terminalProfiles: TerminalProfileSnapshot = options.terminalProfiles ?? {
+    profiles: [],
+    defaultProfileId: null,
+    problems: [],
+  };
   const checkpointCalls: Array<{ kind: string; projectPath: string; payload?: unknown }> = [];
   const checkpointListeners = new Set<(state: CheckpointState) => void>();
   const checkpointValue: CheckpointState =
@@ -231,6 +279,30 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
     relaunch: async () => true,
     onWindowState: () => () => undefined,
     onMenuCommand: () => () => undefined,
+    terminal: {
+      create: async (input) => {
+        terminalCalls.push(input);
+        return { kind: "unavailable", message: "unused", profiles: [] };
+      },
+      attach: async () => null,
+      write: async () => undefined,
+      resize: async () => undefined,
+      close: async () => false,
+      ack: () => undefined,
+      list: async () => [],
+      profiles: async () => terminalProfiles,
+      setFocus: () => undefined,
+      onEvent: () => () => undefined,
+    },
+    tui: {
+      setFocus: (tabId, focused) => {
+        tuiFocusCalls.push({ tabId, focused });
+      },
+      onPasteRequest: (listener) => {
+        tuiPasteListeners.add(listener);
+        return () => tuiPasteListeners.delete(listener);
+      },
+    },
     prefs: {
       get: async () => ({ ...prefs }),
       set: async (patch) => {
@@ -240,7 +312,10 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
     },
     sessions: {
       list: async () => ({ tabs: [], activeTabId: null }),
-      create: async () => ({ tabs: [], activeTabId: null }),
+      create: async (input) => {
+        sessionCreateCalls.push(input);
+        return { tabs: [], activeTabId: null };
+      },
       close: async () => ({ tabs: [], activeTabId: null }),
       closeAll: async (kind) => ({
         tabs: useAppStore.getState().tabs.filter((tab) => tab.kind !== kind || tab.pinned === true),
@@ -286,6 +361,11 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
         tabs: useAppStore.getState().tabs,
         activeTabId: tabId,
       }),
+      // Liveness only: never moves the selection in the fake either.
+      ensure: async () => ({
+        tabs: useAppStore.getState().tabs,
+        activeTabId: useAppStore.getState().activeTabId,
+      }),
       deactivate: async () => ({ tabs: useAppStore.getState().tabs, activeTabId: null }),
       // Advisory pinning hint (2026-11-03 grid plan): recorded so a test can
       // assert what the renderer told main was on screen.
@@ -295,7 +375,14 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
       reconcile: async () => ({ tabs: [], activeTabId: null }),
       restore: async () => ({ tabs: [], activeTabId: null }),
       restart: async () => ({ tabs: [], activeTabId: null }),
-      request: async () => ({}),
+      stop: async () => ({ tabs: [], activeTabId: null }),
+      request: async (input: { tabId: string; method: string; params?: unknown }) => {
+        hostRequests.push(input);
+        if (input.method === "session.list") {
+          return { sessions: [], total: 0, matched: 0, truncated: false, error: null };
+        }
+        return options.hostRequest?.(input) ?? {};
+      },
       deleteSession: async (sessionFile: string) => ({ ok: true, path: sessionFile }),
       onEvent: () => () => undefined,
       onState: () => () => undefined,
@@ -506,6 +593,10 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
         gitCalls.push({ kind: "branches", projectPath });
         return gitBranches;
       },
+      commitContext: async (projectPath) => {
+        gitCalls.push({ kind: "commit-context", projectPath });
+        return { ...(options.gitCommitContext ?? emptyGitCommitContext(projectPath)), projectPath };
+      },
       onSnapshot: (listener) => {
         gitListeners.add(listener);
         return () => gitListeners.delete(listener);
@@ -602,6 +693,14 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
   return {
     bridge,
     prefs,
+    terminalCalls,
+    tuiFocusCalls,
+    /** Pushes a menu/context-menu Paste to the focused extension frame. */
+    emitTuiPaste: (tabId: string) => {
+      for (const listener of tuiPasteListeners) listener(tabId);
+    },
+    sessionCreateCalls,
+    hostRequests,
     gitCalls,
     emitGitSnapshot: (snapshot: GitSnapshot) => {
       for (const listener of gitListeners) listener(snapshot);
@@ -656,6 +755,7 @@ function diagnosticsSnapshot(info: AppInfo): DiagnosticsSnapshot {
     runtime: {
       source: info.runtimeSource,
       nodeVersion: info.runtimeNodeVersion,
+      piVersion: info.piVersion,
       problems: info.runtimeProblems,
     },
     paths: {
@@ -670,6 +770,7 @@ function diagnosticsSnapshot(info: AppInfo): DiagnosticsSnapshot {
       appStateFile: info.appStateFile,
     },
     hosts: [],
+    terminal: { hosts: [] },
     capacity: {
       liveHosts: 0,
       targetHosts: 6,

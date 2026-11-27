@@ -64,13 +64,45 @@ beforeEach(() => {
 });
 
 describe("SettingsView", () => {
-  it("reveals the About & updates card when Settings is focused there", async () => {
+  it("no longer renders the About & updates panel", () => {
     stubRequest();
-    useAppStore.setState({ settingsFocus: "updates" });
     render(<SettingsView />);
 
-    expect(screen.getByTestId("settings-updates")).toBeInTheDocument();
+    // The view moved to its own sidebar destination (2026-11-08 plan).
+    expect(screen.queryByTestId("updates-panel")).toBeNull();
+  });
+
+  it("reveals the Notifications card when Settings is focused there", async () => {
+    stubRequest();
+    useAppStore.setState({ settingsFocus: "notifications" });
+    render(<SettingsView />);
+
+    expect(screen.getByTestId("settings-notifications")).toBeInTheDocument();
     await waitFor(() => expect(useAppStore.getState().settingsFocus).toBeNull());
+  });
+
+  it("reveals the Terminal card when Settings is focused there", async () => {
+    stubRequest();
+    useAppStore.setState({ settingsFocus: "terminal" });
+    render(<SettingsView />);
+
+    expect(screen.getByTestId("settings-terminal")).toBeInTheDocument();
+    await waitFor(() => expect(useAppStore.getState().settingsFocus).toBeNull());
+  });
+
+  it("renders the Editor card after App preferences and before Terminal", () => {
+    stubRequest();
+    render(<SettingsView />);
+
+    const appPreferences = screen.getByTestId("app-preferences");
+    const editor = screen.getByTestId("settings-editor");
+    const terminal = screen.getByTestId("settings-terminal");
+    expect(appPreferences.compareDocumentPosition(editor) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(editor.compareDocumentPosition(terminal) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
   });
 
   it("renders every schema group with its fields", async () => {
@@ -79,6 +111,7 @@ describe("SettingsView", () => {
 
     expect(screen.getByTestId("view-scroll")).toHaveClass("overflow-y-auto");
     expect(screen.getByTestId("view-content")).toHaveClass("max-w-4xl");
+    expect(screen.getByTestId("settings-terminal")).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByTestId("settings-group-compaction")).toBeInTheDocument(),
     );

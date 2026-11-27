@@ -45,4 +45,16 @@ describe("editorShortcut", () => {
     expect(editorShortcut(key({ key: "o", ctrlKey: true }))).toBeNull();
     expect(editorShortcut(key({ ctrlKey: true, defaultPrevented: true }))).toBeNull();
   });
+
+  it("maps Alt+Z to wrap like VS Code", () => {
+    expect(editorShortcut(key({ key: "z", altKey: true }))).toBe("wrap");
+    expect(editorShortcut(key({ key: "Z", altKey: true }))).toBe("wrap");
+  });
+
+  it("does not claim Alt+Z with another modifier held", () => {
+    expect(editorShortcut(key({ key: "z", altKey: true, ctrlKey: true }))).toBeNull();
+    expect(editorShortcut(key({ key: "z", altKey: true, metaKey: true }))).toBeNull();
+    expect(editorShortcut(key({ key: "z", altKey: true, shiftKey: true }))).toBeNull();
+    expect(editorShortcut(key({ key: "z" }))).toBeNull();
+  });
 });

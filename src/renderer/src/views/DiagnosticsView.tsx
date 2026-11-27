@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import type { DiagnosticsExport, Incident } from "../../../shared/diagnostics";
+import type { DiagnosticsExport, DiagnosticsHostInfo, Incident } from "../../../shared/diagnostics";
 import { formatBytes, formatDuration } from "../../../shared/performance";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { copyText } from "../ui/clipboard";
 import { useAppStore } from "../state/app-store";
 import { ViewShell } from "./ViewShell";
 
@@ -24,6 +25,26 @@ function toneFor(severity: Incident["severity"]): "neutral" | "warn" | "danger" 
 
 function formatTime(at: number): string {
   return new Date(at).toLocaleTimeString();
+}
+
+/**
+ * Boot and last-open timing for one host (2026-11-07 host-singleton plan).
+ *
+ * A session open is the slowest routine operation in the app, and it used to be
+ * visible only once it crossed the 2 s slow-request threshold. Showing `boot`
+ * (spawn → hello) separately from `open` (create/resume) is what tells a slow
+ * cold start apart from a slow extension stack.
+ */
+function hostTiming(host: DiagnosticsHostInfo): string {
+  const parts: string[] = [];
+  if (typeof host.bootMs === "number") parts.push(`boot ${formatDuration(host.bootMs)}`);
+  if (host.lastOpen) {
+    const open = host.lastOpen;
+    parts.push(
+      `open ${formatDuration(open.totalMs)} (services ${formatDuration(open.servicesMs)}, bind ${formatDuration(open.bindMs)})`,
+    );
+  }
+  return parts.join(" · ");
 }
 
 export function DiagnosticsView() {
@@ -60,6 +81,24 @@ export function DiagnosticsView() {
     } finally {
       setBusy(false);
     }
+  }, []);
+
+  /** One host's request/stop timeline, ready for an issue or a diff (step 16). */
+  const copyTimeline = useCallback(async (host: DiagnosticsHostInfo) => {
+    const text = host.logLines.join("");
+    if (text.length === 0) return;
+    try {
+      await navigator.clipboard?.writeText(text);
+      setNotice(`Copied ${text.length} characters from ${host.tabId}.`);
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, []);
+
+  /** The terminal log path is what a bug report needs; copy it, not the log. */
+  const copyTerminalLog = useCallback(async (file: string) => {
+    const copied = await copyText(file);
+    setNotice(copied ? `Copied ${file}` : "Could not copy the log path.");
   }, []);
 
   const saveBundle = useCallback(async () => {
@@ -159,6 +198,10 @@ export function DiagnosticsView() {
               <div className="contents">
                 <dt>Runtime node</dt>
                 <dd>{snapshot.runtime.nodeVersion ?? "unavailable"}</dd>
+              </div>
+              <div className="contents">
+                <dt>Pi agent</dt>
+                <dd>{snapshot.runtime.piVersion ?? "unavailable"}</dd>
               </div>
               <div className="contents">
                 <dt>Pi profile</dt>
@@ -282,11 +325,101 @@ export function DiagnosticsView() {
                   <span className="truncate text-xs text-ink-muted" title={host.cwd}>
                     {host.cwd}
                   </span>
-                  {host.logLines.length > 0 ? (
-                    <pre className="max-h-40 overflow-auto rounded bg-surface-sunken p-2 text-[11px] leading-4">
-                      {host.logLines.slice(-12).join("")}
-                    </pre>
+                  {hostTiming(host) ? (
+                    <span className="text-xs text-ink-muted" data-testid="diagnostics-host-timing">
+                      {hostTiming(host)}
+                    </span>
                   ) : null}
+                  {host.logLines.length > 0 ? (
+                    <div className="flex flex-col gap-1">
+                      <pre className="max-h-40 overflow-auto rounded bg-surface-sunken p-2 text-[11px] leading-4">
+                        {host.logLines.slice(-12).join("")}
+                      </pre>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        data-testid="diagnostics-copy-timeline"
+                        onClick={() => void copyTimeline(host)}
+                      >
+                        Copy timeline
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+              ))
+            )}
+          </section>
+
+          {/*
+            The integrated terminal is a separate host process with one native
+            dependency (`node-pty`). A package whose `pty.node` cannot load is
+            invisible in the session host cards, so this card reports the
+            probe, the last exit and the log file to attach to a bug report.
+          */}
+          <section className="card flex flex-col gap-3" data-testid="diagnostics-terminal">
+            <h2 className="text-sm font-semibold">Terminal</h2>
+            <p className="text-xs text-ink-muted">
+              The integrated terminal runs in its own host process. “node-pty loaded” means the
+              native backend is available; “node-pty unavailable” names the loader error (for
+              example a `GLIBC` version the packaged binary needs).
+            </p>
+            {(snapshot.terminal?.hosts ?? []).length === 0 ? (
+              <p className="text-sm text-ink-muted">
+                No terminal host has started yet. Open a terminal tab to start one.
+              </p>
+            ) : (
+              (snapshot.terminal?.hosts ?? []).map((terminal) => (
+                <div
+                  key={terminal.windowId}
+                  className="flex flex-col gap-1 border-t border-line pt-2"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge
+                      tone={
+                        terminal.pty === null ? "neutral" : terminal.pty.loaded ? "ok" : "danger"
+                      }
+                    >
+                      {terminal.pty === null
+                        ? "not probed"
+                        : terminal.pty.loaded
+                          ? "node-pty loaded"
+                          : "node-pty unavailable"}
+                    </Badge>
+                    <span className="text-xs text-ink-muted">
+                      window {terminal.windowId} · host {terminal.running ? "running" : "stopped"} ·
+                      node {terminal.nodePath || "?"}
+                    </span>
+                  </div>
+                  {terminal.pty?.error ? (
+                    <span className="whitespace-pre-wrap break-words text-xs text-danger">
+                      {terminal.pty.error}
+                    </span>
+                  ) : null}
+                  {terminal.lastExit ? (
+                    <span className="text-xs text-ink-muted">
+                      Last exit {terminal.lastExit.code}
+                      {terminal.lastExit.signal ? ` (${terminal.lastExit.signal})` : ""}
+                      {terminal.lastExit.expected ? " during shutdown" : ""}
+                    </span>
+                  ) : null}
+                  {terminal.lastError ? (
+                    <span className="whitespace-pre-wrap break-words text-xs text-danger">
+                      {terminal.lastError}
+                    </span>
+                  ) : null}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="truncate text-xs text-ink-muted" title={terminal.logFile}>
+                      log: {terminal.logFile}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      data-testid="diagnostics-copy-terminal-log"
+                      onClick={() => void copyTerminalLog(terminal.logFile)}
+                    >
+                      Copy log path
+                    </Button>
+                  </div>
                 </div>
               ))
             )}

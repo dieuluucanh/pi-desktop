@@ -72,7 +72,7 @@ describe("release guard (plan step 27)", () => {
 
   it("records the deferred backlog explicitly", () => {
     for (const item of [
-      "In-app terminal tab",
+      "Bottom terminal panel, split panes",
       "Native Plan/Review workspace",
       "SQLite session index",
       "i18n",

@@ -41,6 +41,16 @@ describe("keepHostAlive", () => {
     expect(keepHostAlive("tab-behind", state)).toBe(false);
   });
 
+  it("protects the session that owns an active or visible web tab", () => {
+    const state = {
+      activeSessionId: "tab-web",
+      linkedSessionIds: new Set(["tab-session"]),
+      bridgeOwnerSessionId: null,
+    };
+    expect(keepHostAlive("tab-session", state)).toBe(true);
+    expect(keepHostAlive("tab-other", state)).toBe(false);
+  });
+
   it("accepts the visible set as an array as well as a Set", () => {
     const state = {
       activeSessionId: null,

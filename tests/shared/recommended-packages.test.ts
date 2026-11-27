@@ -9,9 +9,10 @@ import {
 import { PI_OFFICE_BRIDGE } from "../../src/shared/office";
 
 /**
- * The recommended set (plan step 13). The list is checked in, so the one name
- * this repo can prove — the Office bridge — is pinned here; everything else is
- * an npm source that the package manager must resolve at install time.
+ * The recommended set. The list is checked in, so the exact ordered id list and
+ * the one name this repo can prove — the Office bridge — are pinned here;
+ * everything else is an npm source that the package manager must resolve at
+ * install time.
  */
 
 describe("recommended packages", () => {
@@ -32,6 +33,39 @@ describe("recommended packages", () => {
     }
   });
 
+  it("pins the exact set, in the order the UI renders", () => {
+    expect(RECOMMENDED_PACKAGES.map((entry) => entry.id)).toEqual([
+      "dieulc-autocompact",
+      "pi-office-bridge",
+      "plannotator",
+      "pi-lens",
+      "pi-memory",
+      "pi-web-access",
+    ]);
+  });
+
+  it("does not offer Workflow, which the app already ships as builtin:workflow", () => {
+    // Plan step 27: a recommended npm install of the extension the app bundles
+    // would be a duplicate default. The package manager below the cards still
+    // installs an explicit npm/git/profile override for anyone who wants it.
+    expect(RECOMMENDED_PACKAGES.map((entry) => entry.name)).not.toContain("@dieulc/workflow");
+    expect(RECOMMENDED_PACKAGES.map((entry) => entry.source)).not.toContain("npm:@dieulc/workflow");
+  });
+
+  it("does not recommend packages that were dropped from the set", () => {
+    const names = RECOMMENDED_PACKAGES.map((entry) => entry.name);
+    expect(names).not.toContain("@dieulc/server-logs");
+    expect(names).not.toContain("pi-commandcode-provider");
+  });
+
+  it("keeps every card renderable: a chip label and a description", () => {
+    for (const entry of RECOMMENDED_PACKAGES) {
+      expect(entry.provides.trim()).not.toBe("");
+      expect(entry.provides.length).toBeLessThanOrEqual(24);
+      expect(entry.description.trim()).not.toBe("");
+    }
+  });
+
   it("points gallery discovery at pi.dev without pretending to install", () => {
     expect(PACKAGE_GALLERY_URL).toBe("https://pi.dev/packages");
   });
@@ -48,10 +82,10 @@ describe("packageNameOf", () => {
 
 describe("isRecommendedInstalled", () => {
   it("matches a configured package regardless of prefix or version", () => {
-    const workflow = RECOMMENDED_PACKAGES.find((entry) => entry.id === "dieulc-workflow");
-    if (!workflow) throw new Error("fixture drift");
-    expect(isRecommendedInstalled(workflow, [])).toBe(false);
-    expect(isRecommendedInstalled(workflow, ["npm:@dieulc/workflow@0.3.0"])).toBe(true);
-    expect(isRecommendedInstalled(workflow, ["@dieulc/other"])).toBe(false);
+    const lens = RECOMMENDED_PACKAGES.find((entry) => entry.id === "pi-lens");
+    if (!lens) throw new Error("fixture drift");
+    expect(isRecommendedInstalled(lens, [])).toBe(false);
+    expect(isRecommendedInstalled(lens, ["npm:pi-lens@0.3.0"])).toBe(true);
+    expect(isRecommendedInstalled(lens, ["some-other-package"])).toBe(false);
   });
 });

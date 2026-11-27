@@ -16,11 +16,16 @@
  *   failed operation can then carry the npm output tail.
  * - **A failure is a `PackageError`.** The adapter classifies it and appends the
  *   captured output, so the UI can show something actionable.
+ * - **A check is read-only.** `checkForAvailableUpdates` is Pi's own sweep (pinned
+ *   and local sources skipped, 10 s per `npm view`, concurrency 4); this adapter
+ *   only maps its answer. An offline profile returns before npm is spawned.
  *
  * One manager (and one `SettingsManager`) is cached per project folder, so a
  * project's `.pi/settings.json` is the one Pi reads and writes.
  */
 
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +33,7 @@ import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-codin
 import {
   classifyPackageFailure,
   PackageError,
+  type PackageCheckResult,
   type PackageOperationProgress,
   type PackagePort,
   type PackageProgressSink,
@@ -37,7 +43,10 @@ import {
   tryParsePackageSource,
   type PackageSourceKind,
   type PackageSummary,
+  type PackageUpdateSummary,
 } from "../../shared/packages";
+import { isOfflineEnv } from "../../shared/diagnostics";
+import { compareVersions } from "../../shared/updates";
 
 /** The npm CLI the capture shim should run (absolute path to `npm-cli.js`). */
 export const NPM_CAPTURE_CLI_ENV = "PI_DESKTOP_NPM_CLI";
@@ -90,12 +99,29 @@ export interface ConfiguredPackageLike {
   installedPath?: string;
 }
 
+/**
+ * The SDK's `PackageUpdate` (not exported at the package root), mirrored so the
+ * adapter stays inside the structural boundary. `type` is what the SDK checked,
+ * and the check has already skipped pinned and local sources.
+ */
+export interface PackageUpdateLike {
+  source: string;
+  displayName: string;
+  type: "npm" | "git";
+  scope: "user" | "project";
+}
+
 /** The slice of `DefaultPackageManager` this adapter uses. */
 export interface PackageManagerLike {
   installAndPersist(source: string, options?: { local?: boolean }): Promise<void>;
   removeAndPersist(source: string, options?: { local?: boolean }): Promise<boolean>;
   update(source?: string): Promise<void>;
   listConfiguredPackages(): ConfiguredPackageLike[];
+  /**
+   * Pi's own available-update sweep (10 s per `npm view`, concurrency 4, pinned
+   * and local sources skipped, `[]` when the profile is offline).
+   */
+  checkForAvailableUpdates(): Promise<PackageUpdateLike[]>;
   getInstalledPath(source: string, scope: "user" | "project"): string | undefined;
   setProgressCallback(callback: ((event: PackageManagerProgress) => void) | undefined): void;
 }
@@ -121,11 +147,98 @@ export interface SdkPackageOptions {
   createSettingsManager?: (cwd: string) => SettingsManager;
   /** Injected for tests: reads a package's installed version. */
   readVersion?: (installedPath: string) => Promise<string | null>;
+  /**
+   * Injected for tests / a runtime without npm: the version `npm view <name>
+   * version` would report. `null` disables the enrichment entirely.
+   */
+  readLatestVersion?: (name: string) => Promise<string | null>;
   now?: () => number;
 }
 
 /** How much of the captured npm output a failure carries. */
 export const MAX_NPM_OUTPUT_CHARS = 4_000;
+
+/** Per-`npm view` budget for the display-version lookup. */
+export const LATEST_VERSION_TIMEOUT_MS = 10_000;
+/** How many display-version lookups may run at once. */
+export const LATEST_VERSION_CONCURRENCY = 3;
+
+/**
+ * The version a bare `npm:<name>` would install, from npm's `latest` answer.
+ *
+ * `npm view <name> version --json` prints a string when only one version
+ * matches and an array when several do; both are handled. Anything unexpected
+ * (a non-semver tag, a parse failure) becomes `null` rather than a guess.
+ */
+export function parseNpmVersionOutput(output: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(output);
+    if (typeof parsed === "string") return parsed.trim().length > 0 ? parsed.trim() : null;
+    if (!Array.isArray(parsed)) return null;
+    let highest: string | null = null;
+    for (const entry of parsed) {
+      if (typeof entry !== "string" || entry.trim().length === 0) continue;
+      if (highest === null || compareVersions(entry, highest) > 0) highest = entry;
+    }
+    return highest;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Builds the display-version reader from the bundled npm command.
+ *
+ * A runtime that was never fetched (`npmCommand` empty) returns `null`: the
+ * check still works, it just cannot name a target version.
+ */
+export function createNpmLatestVersionReader(
+  npmCommand: readonly string[] | null | undefined,
+): ((name: string) => Promise<string | null>) | null {
+  if (!npmCommand || npmCommand.length < 2) return null;
+  const [nodePath, npmCli] = npmCommand;
+  if (!nodePath || !npmCli) return null;
+  const run = promisify(execFile);
+  return async (name: string): Promise<string | null> => {
+    try {
+      const { stdout } = await run(nodePath, [npmCli, "view", name, "version", "--json"], {
+        timeout: LATEST_VERSION_TIMEOUT_MS,
+        windowsHide: true,
+        maxBuffer: 1_000_000,
+      });
+      return parseNpmVersionOutput(stdout);
+    } catch {
+      // A private package, a tag we cannot resolve, a timeout: no number is a
+      // valid answer, and it must never fail the whole sweep.
+      return null;
+    }
+  };
+}
+
+/** Runs `run` over `items` with a bounded number of concurrent workers. */
+async function mapLimit<T>(
+  items: readonly T[],
+  limit: number,
+  run: (item: T) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  let next = 0;
+  const workers: Array<Promise<void>> = [];
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  for (let index = 0; index < workerCount; index += 1) {
+    workers.push(
+      (async (): Promise<void> => {
+        while (next < items.length) {
+          const current = next;
+          next += 1;
+          const item = items[current];
+          if (item !== undefined) await run(item);
+        }
+      })(),
+    );
+  }
+  await Promise.all(workers);
+}
 
 /** Applies the bundled-npm runtime override to a manager; never persisted. */
 export function applyNpmOverride(
@@ -185,6 +298,8 @@ export function createSdkPackagePort(options: SdkPackageOptions): PackagePort {
         return null;
       }
     });
+  const readLatestVersion =
+    options.readLatestVersion ?? createNpmLatestVersionReader(options.npmCommand ?? null);
 
   const override = npmOverrideCommand(options.npmCommand ?? null);
   if (override && options.npmCommand?.[1]) {
@@ -295,6 +410,50 @@ export function createSdkPackagePort(options: SdkPackageOptions): PackagePort {
         if (summary) summaries.push(summary);
       }
       return summaries;
+    },
+    async checkUpdates(cwd: string | null): Promise<PackageCheckResult> {
+      // The SDK's predicate and `isOfflineEnv` agree (`1`/`true`/`yes`).
+      // Short-circuit so the UI's "offline" copy can never sit next to a real
+      // sweep, and so an offline profile spawns no npm process at all.
+      if (isOfflineEnv(process.env.PI_OFFLINE)) return { updates: [], offline: true };
+      const { manager } = contextFor(cwd);
+      let found: PackageUpdateLike[];
+      try {
+        found = await manager.checkForAvailableUpdates();
+      } catch (error) {
+        throw packageFailure(error, null, classifyPackageFailure);
+      }
+      const updates: PackageUpdateSummary[] = [];
+      /** Indices whose source floats on npm, so `latest` is what would install. */
+      const floating: Array<{ index: number; name: string }> = [];
+      for (const entry of found) {
+        const parsed = tryParsePackageSource(entry.source);
+        // A source the SDK checked but our parser refuses must not reach the hub:
+        // the UI could neither name it nor route an update back to the manager.
+        if (!parsed || parsed.kind === "path") continue;
+        if (parsed.kind === "npm" && parsed.version === null && readLatestVersion) {
+          floating.push({ index: updates.length, name: parsed.name });
+        }
+        updates.push({
+          source: parsed.source,
+          name: entry.displayName || parsed.name,
+          kind: entry.type === "git" ? "git" : "npm",
+          scope: entry.scope,
+          // Filled below only where npm's `latest` is what an update installs.
+          latestVersion: null,
+        });
+      }
+      if (readLatestVersion && floating.length > 0) {
+        await mapLimit(floating, LATEST_VERSION_CONCURRENCY, async ({ index, name }) => {
+          // The default reader already swallows its failures; catching here too
+          // keeps the invariant for an injected reader: naming a version is a
+          // nicety, never a reason for the sweep to fail.
+          const latest = await readLatestVersion(name).catch(() => null);
+          const current = updates[index];
+          if (latest && current) updates[index] = { ...current, latestVersion: latest };
+        });
+      }
+      return { updates, offline: false };
     },
     async install(source, target: PackageTarget, onProgress): Promise<void> {
       const { manager } = contextFor(target.cwd);

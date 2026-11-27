@@ -5,6 +5,7 @@ import { OnboardingWizard } from "../../src/renderer/src/onboarding/OnboardingWi
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import type { ProviderSummary } from "../../src/shared/providers";
+import { RECOMMENDED_PACKAGES } from "../../src/shared/recommended-packages";
 import { installBridge } from "./fixtures";
 
 /**
@@ -99,6 +100,30 @@ describe("OnboardingWizard (plan step 26)", () => {
     render(<OnboardingWizard />);
     // A configured provider no longer offers a sign-in button.
     expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+  });
+
+  it("lists every recommended extension and reflects an install", () => {
+    useAppStore.setState({
+      onboardingStep: "extensions",
+      settings: { global: { packages: ["npm:pi-memory"] }, project: {} },
+    });
+    render(<OnboardingWizard />);
+
+    expect(screen.getByText("Recommended extensions")).toBeInTheDocument();
+    const list = screen.getByTestId("onboarding-recommended");
+    const rows = [...list.querySelectorAll("li")];
+    expect(rows).toHaveLength(RECOMMENDED_PACKAGES.length);
+
+    // One row per entry, in the declared order, with a source the user can read.
+    for (const [index, entry] of RECOMMENDED_PACKAGES.entries()) {
+      expect(rows[index]).toHaveTextContent(entry.name);
+    }
+
+    // The package already in the settings offers no Install button.
+    expect(screen.getAllByRole("button", { name: "Install" })).toHaveLength(
+      RECOMMENDED_PACKAGES.length - 1,
+    );
+    expect(list).toHaveTextContent("Installed");
   });
 
   it("completes and starts a session from the last step", async () => {

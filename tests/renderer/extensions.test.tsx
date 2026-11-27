@@ -237,16 +237,26 @@ describe("extensions view", () => {
 
   it("shows the recommended set and detects an existing install", () => {
     useAppStore.setState({
-      settings: { global: { packages: [`npm:${RECOMMENDED_PACKAGES[1]?.name}`] }, project: {} },
+      settings: { global: { packages: ["npm:pi-lens"] }, project: {} },
     });
-    render(<ExtensionsView />);
+    const { container } = render(<ExtensionsView />);
+
+    // One card per recommended entry, in the order the list declares.
+    const cards = [...container.querySelectorAll('[data-testid^="recommended-"]')];
+    expect(cards).toHaveLength(RECOMMENDED_PACKAGES.length);
+    expect(cards.map((card) => card.getAttribute("data-testid"))).toEqual(
+      RECOMMENDED_PACKAGES.map((entry) => `recommended-${entry.id}`),
+    );
+
     expect(screen.getByTestId("recommended-pi-office-bridge")).toBeInTheDocument();
     expect(screen.getByText("@dieulc/pi-office-bridge")).toBeInTheDocument();
     expect(screen.getByText("pinned in repo")).toBeInTheDocument();
-    // The second entry is reported as installed from the packages setting.
-    expect(screen.getByTestId(`recommended-${RECOMMENDED_PACKAGES[1]?.id}`)).toHaveTextContent(
-      "Installed",
-    );
+    expect(screen.getByTestId("recommended-pi-memory")).toBeInTheDocument();
+    expect(screen.getByTestId("recommended-pi-web-access")).toBeInTheDocument();
+
+    // A newly recommended entry is reported as installed from the packages setting.
+    expect(screen.getByTestId("recommended-pi-lens")).toHaveTextContent("Installed");
+    expect(screen.getByTestId("recommended-pi-office-bridge")).not.toHaveTextContent("Installed");
   });
 
   it("links to the package gallery without installing anything", () => {

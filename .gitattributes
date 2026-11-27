@@ -1,0 +1,9 @@
+# The lock records a sha256 of the exact manifest bytes.
+resources/office/manifest.prod.xml text eol=lf
+
+# Vitest's inlined module runner cannot strip a hashbang followed by CRLF and
+# CI's Windows checkout is CRLF; keep these modules byte-identical.
+scripts/*.mjs text eol=lf
+
+# Bash cannot run a CRLF script.
+*.sh text eol=lf

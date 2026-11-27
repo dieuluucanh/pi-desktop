@@ -11,6 +11,7 @@
  */
 
 import { projectNameOf } from "./projects";
+import { normalizeSessionFile } from "./session-file";
 
 /** One session as the browser shows it (a projection of Pi's `SessionInfo`). */
 export interface SessionSummary {
@@ -21,12 +22,21 @@ export interface SessionSummary {
   cwd: string;
   /** The user's display name from `session_info` entries, when present. */
   name: string | null;
-  /** Epoch milliseconds; Pi historically serialises these as ISO strings. */
+  /**
+   * Epoch milliseconds. Pi's `SessionInfo` carries `Date` objects; this module
+   * converts them (and the ISO strings older payloads use) to epoch ms.
+   */
   created: number;
   modified: number;
   messageCount: number;
   firstMessage: string;
   allMessagesText: string;
+  /**
+   * A display title computed in the host from the full row (including
+   * `firstMessage`). The wire projection carries this instead of the message
+   * text, so a large profile cannot spill its listing onto the blob path.
+   */
+  title?: string;
   /** The session this one was forked/cloned from, when Pi recorded it. */
   parentSessionPath: string | null;
 }
@@ -41,25 +51,39 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
-function clampText(value: unknown): string {
-  return typeof value === "string" ? value.slice(0, MAX_SESSION_TEXT) : "";
+function clampText(value: unknown, maxChars: number = MAX_SESSION_TEXT): string {
+  return typeof value === "string" ? value.slice(0, maxChars) : "";
 }
 
-/** Parses a Pi timestamp, accepting an ISO string or an epoch number. */
+/** Options for the sanitizers; the host keeps full text for search, the wire clamps it. */
+export interface SanitizeSessionOptions {
+  /** Maximum characters retained from `firstMessage` / `allMessagesText`. */
+  maxTextChars?: number;
+}
+
+/** Parses a Pi timestamp, accepting a `Date`, an ISO string or an epoch number. */
 function toEpoch(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) && time > 0 ? time : 0;
+  }
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
   if (typeof value === "string" && value.length > 0) {
     const parsed = Date.parse(value);
-    if (Number.isFinite(parsed)) return parsed;
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
   return 0;
 }
 
 /** Coerces one untrusted session entry, or null when it cannot be identified. */
-export function sanitizeSessionSummary(value: unknown): SessionSummary | null {
+export function sanitizeSessionSummary(
+  value: unknown,
+  options: SanitizeSessionOptions = {},
+): SessionSummary | null {
   const record = asRecord(value);
   const path = typeof record.path === "string" && record.path.length > 0 ? record.path : null;
   if (!path) return null;
+  const maxTextChars = options.maxTextChars ?? MAX_SESSION_TEXT;
   const id = typeof record.id === "string" && record.id.length > 0 ? record.id : path;
   return {
     path,
@@ -72,8 +96,11 @@ export function sanitizeSessionSummary(value: unknown): SessionSummary | null {
       typeof record.messageCount === "number" && Number.isFinite(record.messageCount)
         ? Math.max(0, Math.floor(record.messageCount))
         : 0,
-    firstMessage: clampText(record.firstMessage),
-    allMessagesText: clampText(record.allMessagesText),
+    firstMessage: clampText(record.firstMessage, maxTextChars),
+    allMessagesText: clampText(record.allMessagesText, maxTextChars),
+    ...(typeof record.title === "string" && record.title.trim().length > 0
+      ? { title: clampText(record.title, maxTextChars) }
+      : {}),
     parentSessionPath:
       typeof record.parentSessionPath === "string" && record.parentSessionPath.length > 0
         ? record.parentSessionPath
@@ -82,12 +109,15 @@ export function sanitizeSessionSummary(value: unknown): SessionSummary | null {
 }
 
 /** Sanitizes Pi's whole listing, dropping duplicates and unusable rows. */
-export function sanitizeSessionList(value: unknown): SessionSummary[] {
+export function sanitizeSessionList(
+  value: unknown,
+  options: SanitizeSessionOptions = {},
+): SessionSummary[] {
   const input = Array.isArray(value) ? value : [];
   const sessions: SessionSummary[] = [];
   const seen = new Set<string>();
   for (const entry of input) {
-    const session = sanitizeSessionSummary(entry);
+    const session = sanitizeSessionSummary(entry, options);
     if (!session || seen.has(session.path)) continue;
     seen.add(session.path);
     sessions.push(session);
@@ -101,8 +131,12 @@ export function sortSessionsByRecency(sessions: readonly SessionSummary[]): Sess
   return [...sessions].sort((left, right) => right.modified - left.modified);
 }
 
-/** The title the browser shows: an explicit name, else the first user message. */
+/** The title the browser shows: a host-computed title, an explicit name, else the first user message. */
 export function sessionDisplayTitle(session: SessionSummary): string {
+  const provided = session.title?.trim();
+  if (provided && provided.length > 0) {
+    return provided.length > 90 ? `${provided.slice(0, 89)}…` : provided;
+  }
   if (session.name) return session.name;
   const first = session.firstMessage.trim().split(/\r?\n/)[0]?.trim() ?? "";
   if (first.length > 0) return first.length > 90 ? `${first.slice(0, 89)}…` : first;
@@ -114,6 +148,28 @@ export function sessionDisplayTitle(session: SessionSummary): string {
 
 function shortId(id: string): string {
   return id.length > 8 ? id.slice(0, 8) : id;
+}
+
+/** The one-line “last activity” label; an unknown timestamp is never shown as 1970. */
+export function formatSessionTime(epoch: number, locale?: string): string {
+  if (!Number.isFinite(epoch) || epoch <= 0) return "—";
+  const date = new Date(epoch);
+  if (Number.isNaN(date.getTime())) return "—";
+  try {
+    return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(
+      date,
+    );
+  } catch {
+    // An unknown locale must not make a session row unrenderable.
+    return date.toLocaleString();
+  }
+}
+
+/** The tooltip for {@link formatSessionTime}: the full ISO timestamp, or empty. */
+export function formatSessionTimeTitle(epoch: number): string {
+  if (!Number.isFinite(epoch) || epoch <= 0) return "";
+  const date = new Date(epoch);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
 }
 
 /**
@@ -266,6 +322,21 @@ export function sortSessionsThreaded(sessions: readonly SessionSummary[]): Sessi
   );
 }
 
+/**
+ * A session's project identity, as Pi wrote it in the JSONL header. Delegates to
+ * the session-file rule so a cwd and the file opened in it can never disagree
+ * about separators or Windows case.
+ */
+export function normalizeSessionProjectPath(value: string): string {
+  return normalizeSessionFile(value);
+}
+
+/** True when two session cwds identify the same project (empty never matches). */
+export function sameSessionProject(left: string, right: string): boolean {
+  if (left.length === 0 || right.length === 0) return false;
+  return normalizeSessionProjectPath(left) === normalizeSessionProjectPath(right);
+}
+
 /** The full browser pipeline: filter (scope/query/named) then order. */
 export function listSessions(
   sessions: readonly SessionSummary[],
@@ -276,7 +347,7 @@ export function listSessions(
   const scope = options.scope ?? "all";
   const cwd = options.cwd ?? null;
   const filtered = sessions.filter((session) => {
-    if (scope === "current" && (cwd === null || session.cwd !== cwd)) return false;
+    if (scope === "current" && !sameSessionProject(session.cwd, cwd ?? "")) return false;
     if (options.namedOnly === true && !session.name) return false;
     return matchesParsedQuery(session, parsed);
   });
@@ -303,6 +374,211 @@ export function filterSessions(
   return listSessions(sessions, { query }).sessions;
 }
 
+// ---------------------------------------------------------------------------
+// Host-projected session list (the wire shape behind `session.list`)
+// ---------------------------------------------------------------------------
+
+/**
+ * How many rows the host may return. The browser keeps the same working-set
+ * bound as {@link MAX_SESSION_SUMMARIES}, but the byte budget below usually
+ * stops earlier on very large profiles.
+ */
+export const MAX_SESSION_LIST_ROWS = MAX_SESSION_SUMMARIES;
+
+/**
+ * Hard budget for one projected page. It stays well below
+ * `BLOB_SPILL_THRESHOLD_BYTES` (1 MiB) so `session.list` never takes the blob
+ * path, no matter how much text the profile holds.
+ */
+export const MAX_SESSION_LIST_BYTES = 768 * 1024;
+
+/** The host-side query accepted by `session.list`. */
+export interface SessionListQuery extends SessionListOptions {
+  /** Page size; clamped to {@link MAX_SESSION_LIST_ROWS}. */
+  limit?: number;
+  /** Bypass the control host's short catalog cache. */
+  refresh?: boolean;
+}
+
+/**
+ * One row on the wire. Deliberately smaller than {@link SessionSummary}: the
+ * host keeps `firstMessage`, `allMessagesText` and `parentSessionPath` so the
+ * payload does not grow with the size of the transcripts.
+ */
+export interface SessionListEntry {
+  path: string;
+  id: string;
+  cwd: string;
+  name: string | null;
+  created: number;
+  modified: number;
+  messageCount: number;
+  /** Already shortened by `sessionDisplayTitle` in the host. */
+  title: string;
+}
+
+/** A bounded, filtered page of sessions. */
+export interface SessionListPage<T = SessionSummary> {
+  sessions: T[];
+  /** Every session in the profile (before filtering). */
+  total: number;
+  /** Sessions matching the query/scope filters (before the page cap). */
+  matched: number;
+  /** Rows were dropped by the row/byte budget. */
+  truncated: boolean;
+  /** A query parse error (invalid `re:`), or null. */
+  error: string | null;
+}
+
+function utf8Bytes(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+function clampSessionListLimit(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return MAX_SESSION_LIST_ROWS;
+  return Math.min(Math.max(1, Math.floor(value)), MAX_SESSION_LIST_ROWS);
+}
+
+function toCount(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+  return Math.floor(value);
+}
+
+/** The single row the host sends for one session. */
+export function projectSessionListEntry(session: SessionSummary): SessionListEntry {
+  const title = sessionDisplayTitle(session);
+  return {
+    path: session.path,
+    id: session.id,
+    cwd: session.cwd,
+    // A `session_info` name is user text; keep one row from blowing the budget.
+    name: session.name === null ? null : session.name.slice(0, 120),
+    created: session.created,
+    modified: session.modified,
+    messageCount: session.messageCount,
+    // A long `session_info` name is user text, so bound it like the first line.
+    title: title.length > 90 ? `${title.slice(0, 89)}…` : title,
+  };
+}
+
+/**
+ * Filters/sorts the full listing in the host and projects a bounded page.
+ *
+ * Search runs over the full {@link SessionSummary} (including
+ * `allMessagesText`), so a term deep in an old transcript is still found even
+ * though the text never crosses the transport. Rows are added newest-first
+ * until the row limit or the byte budget, whichever comes first.
+ */
+export function projectSessionListPage(
+  all: readonly SessionSummary[],
+  query: SessionListQuery = {},
+): SessionListPage<SessionListEntry> {
+  const total = all.length;
+  const limit = clampSessionListLimit(query.limit);
+  const { sessions: filtered, error } = listSessions(all, query);
+  if (error) {
+    return { sessions: [], total, matched: 0, truncated: false, error };
+  }
+
+  const sessions: SessionListEntry[] = [];
+  let bytes = 0;
+  for (const session of filtered.slice(0, limit)) {
+    const entry = projectSessionListEntry(session);
+    const size = utf8Bytes(JSON.stringify(entry)) + 1;
+    // Always keep at least one row; after that the budget wins.
+    if (sessions.length > 0 && bytes + size > MAX_SESSION_LIST_BYTES) break;
+    sessions.push(entry);
+    bytes += size;
+  }
+
+  return {
+    sessions,
+    total,
+    matched: filtered.length,
+    truncated: sessions.length < filtered.length,
+    error: null,
+  };
+}
+
+/** Parses untrusted `session.list` params; every field is optional. */
+export function parseSessionListQuery(value: unknown): SessionListQuery {
+  const record = asRecord(value);
+  const query =
+    typeof record.query === "string" ? record.query.slice(0, MAX_SESSION_TEXT) : undefined;
+  const cwd = typeof record.cwd === "string" && record.cwd.length > 0 ? record.cwd : null;
+  const sort: SessionSort =
+    record.sort === "threaded" || record.sort === "relevance" ? record.sort : "recent";
+  const limit = toCount(record.limit);
+  return {
+    ...(query === undefined ? {} : { query }),
+    scope: record.scope === "current" ? "current" : "all",
+    cwd,
+    sort,
+    namedOnly: record.namedOnly === true,
+    ...(limit === null ? {} : { limit: clampSessionListLimit(limit) }),
+    ...(record.refresh === true ? { refresh: true } : {}),
+  };
+}
+
+/**
+ * The query as the browser composes it and the store records it. Defaults are
+ * filled in, `cwd` only exists for the current-project scope, and `refresh` is
+ * not part of the identity (it is a one-shot instruction, not a filter).
+ */
+export function normalizeSessionListQuery(query: SessionListQuery = {}): SessionListQuery {
+  const scope: SessionScope = query.scope === "current" ? "current" : "all";
+  const limit = toCount(query.limit);
+  return {
+    query: query.query ?? "",
+    scope,
+    cwd: scope === "current" ? (query.cwd ?? null) : null,
+    sort: query.sort === "threaded" || query.sort === "relevance" ? query.sort : "recent",
+    namedOnly: query.namedOnly === true,
+    ...(limit === null ? {} : { limit: clampSessionListLimit(limit) }),
+  };
+}
+
+/** True when two queries would produce the same page (refresh ignored). */
+export function sameSessionListQuery(
+  left: SessionListQuery,
+  right: SessionListQuery | null,
+): boolean {
+  if (!right) return false;
+  const a = normalizeSessionListQuery(left);
+  const b = normalizeSessionListQuery(right);
+  return (
+    a.query === b.query &&
+    a.scope === b.scope &&
+    a.cwd === b.cwd &&
+    a.sort === b.sort &&
+    a.namedOnly === b.namedOnly &&
+    a.limit === b.limit
+  );
+}
+
+/**
+ * Parses an untrusted `session.list` response into the renderer's shape.
+ *
+ * Unlike `sanitizeSessionList`, this **throws** when `sessions` is not an
+ * array. That is deliberate: a spilled `{ $blob }` response used to be
+ * sanitized into `[]` and shown as an innocent empty profile. A malformed page
+ * must surface instead.
+ */
+export function parseSessionListPage(value: unknown): SessionListPage {
+  const record = asRecord(value);
+  if (!Array.isArray(record.sessions)) {
+    throw new Error("The host returned an unreadable session list.");
+  }
+  const sessions = sanitizeSessionList(record.sessions);
+  return {
+    sessions,
+    total: toCount(record.total) ?? sessions.length,
+    matched: toCount(record.matched) ?? sessions.length,
+    truncated: record.truncated === true,
+    error: typeof record.error === "string" && record.error.length > 0 ? record.error : null,
+  };
+}
+
 /** One project's sessions, newest first. */
 export interface SessionGroup {
   /** The session cwd shared by the group (`""` for legacy sessions). */
@@ -316,15 +592,15 @@ export interface SessionGroup {
 
 /** Groups by project, newest project first (by its most recent session). */
 export function groupSessionsByProject(sessions: readonly SessionSummary[]): SessionGroup[] {
-  const byCwd = new Map<string, SessionSummary[]>();
+  const byCwd = new Map<string, { cwd: string; sessions: SessionSummary[] }>();
   for (const session of sessions) {
-    const key = session.cwd.length > 0 ? session.cwd : "";
-    const list = byCwd.get(key) ?? [];
-    list.push(session);
-    byCwd.set(key, list);
+    const key = normalizeSessionProjectPath(session.cwd);
+    const group = byCwd.get(key) ?? { cwd: session.cwd, sessions: [] };
+    group.sessions.push(session);
+    byCwd.set(key, group);
   }
   const groups: SessionGroup[] = [];
-  for (const [cwd, list] of byCwd) {
+  for (const { cwd, sessions: list } of byCwd.values()) {
     const ordered = sortSessionsByRecency(list);
     groups.push({
       cwd,
@@ -334,19 +610,6 @@ export function groupSessionsByProject(sessions: readonly SessionSummary[]): Ses
     });
   }
   return groups.sort((left, right) => (right.latest?.modified ?? 0) - (left.latest?.modified ?? 0));
-}
-
-/** The most recent session started in `cwd`, or null when there is none. */
-export function mostRecentSessionForProject(
-  sessions: readonly SessionSummary[],
-  cwd: string,
-): SessionSummary | null {
-  let best: SessionSummary | null = null;
-  for (const session of sessions) {
-    if (session.cwd !== cwd) continue;
-    if (!best || session.modified > best.modified) best = session;
-  }
-  return best;
 }
 
 // ---------------------------------------------------------------------------

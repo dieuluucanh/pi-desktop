@@ -68,6 +68,12 @@ export interface PendingEditorClose {
 
 interface EditorStore {
   meta: Record<string, EditorMeta>;
+  /**
+   * Per-tab view override (plan step 11). The persisted pref is the default;
+   * an override is session-scoped and only lives as long as the tab does.
+   * `null` in the setter deletes the entry, so the tab follows the prefs again.
+   */
+  wrapOverride: Record<string, boolean>;
   /** The tab a close prompt is waiting on, or null. */
   pendingClose: PendingEditorClose | null;
   requestClose(tabId: string): void;
@@ -87,6 +93,7 @@ interface EditorStore {
     position: { line: number; column: number; selectionLength: number },
   ): void;
   setText(tabId: string, text: string): void;
+  setWrapOverride(tabId: string, value: boolean | null): void;
   scheduleBackup(tabId: string): void;
   flushBackups(): Promise<void>;
   checkExternalChange(tabId: string): Promise<void>;
@@ -154,8 +161,35 @@ function buildEditorMeta(
   };
 }
 
+/** Sets or clears one per-tab override without mutating the current map. */
+function withOverride(
+  overrides: Record<string, boolean>,
+  tabId: string,
+  value: boolean | null,
+): Record<string, boolean> {
+  if (value === null) {
+    if (!(tabId in overrides)) return overrides;
+    const next = { ...overrides };
+    delete next[tabId];
+    return next;
+  }
+  if (overrides[tabId] === value) return overrides;
+  return { ...overrides, [tabId]: value };
+}
+
+/** The wrap override map without one tab: the cleanup half of `discard`. */
+function withoutWrapOverride(
+  state: Pick<EditorStore, "wrapOverride">,
+  tabId: string,
+): Pick<EditorStore, "wrapOverride"> {
+  return {
+    wrapOverride: withOverride(state.wrapOverride, tabId, null),
+  };
+}
+
 export const useEditorStore = create<EditorStore>((set, get) => ({
   meta: {},
+  wrapOverride: {},
   pendingClose: null,
 
   requestClose(tabId) {
@@ -537,7 +571,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     set((state) => {
       const next = { ...state.meta };
       delete next[tabId];
-      return { meta: next };
+      return { meta: next, ...withoutWrapOverride(state, tabId) };
     });
   },
 
@@ -563,7 +597,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   async prune(openTabIds) {
-    for (const tabId of Object.keys(get().meta)) {
+    // The wrap override is cleaned through `discard`, so an override on a tab
+    // that never loaded (no metadata yet) must still be collected here.
+    const stale = new Set<string>();
+    for (const tabId of Object.keys(get().meta)) stale.add(tabId);
+    for (const tabId of Object.keys(get().wrapOverride)) stale.add(tabId);
+    for (const tabId of stale) {
       if (!openTabIds.has(tabId)) await get().discard(tabId);
     }
   },
@@ -586,6 +625,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     setBufferText(tabId, text);
     get().setDirty(tabId, true);
     get().scheduleBackup(tabId);
+  },
+
+  setWrapOverride(tabId, value) {
+    set((state) => ({ wrapOverride: withOverride(state.wrapOverride, tabId, value) }));
   },
 
   scheduleBackup(tabId) {

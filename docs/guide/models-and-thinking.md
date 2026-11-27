@@ -32,10 +32,59 @@ in your scope: Pi’s own startup resolution prefers the first `enabledModels`
 entry over a saved default, and the extension applies its record on
 `session_start` for a new session. `/profile use` and `/role set` in that
 extension save their model the same way, so the most recent model, profile or
-role choice wins.
+role choice wins; the live-switch contract below describes which _running_
+session models are applied at the same time.
 
 Switching models mid-session records a `model_change` entry in the session file,
 so resuming restores the same model.
+
+## `/profile use` live switching
+
+**Activation:** this contract is the W 0.17.2 live-switch work, which is
+unreleased and unpublished. Step 11 did not re-pin the desktop, so
+`resources/workflow.lock.json` and the desktop bundle are still 0.15.0 and the
+behaviour below is **not active in the desktop yet**. It becomes active only
+after 0.17.2 is released and the desktop re-pins it; before then the pinned
+0.15.0 bundle still applies a profile/role choice to new sessions and to the
+already-shipped reviewer model status, not to every live owner.
+
+Once activated, `/profile use <name>` (including Save & activate in the picker,
+and `/role set` where it applies a profile) switches the models that currently
+own each session:
+
+- **Plan** — the parent session switches to the effective `planner`.
+- **Build** — the parent session switches to the effective `builder`.
+- **Orchestrator** — the parent switches to the effective `orchestrator` and the
+  live Build child switches to the effective `builder`.
+- **Review** — the reviewer child switches to the effective `reviewer` while a
+  round is running, paused or at the Plannotator handoff. A warm but idle
+  retained reviewer session switches too, so the next round does not restart on
+  the old model. The parent also switches to the effective `planner`. An
+  in-flight provider request finishes on the old model and the next request uses
+  the new one; a running round is never aborted to force the switch. On a cold
+  start the round's start snapshot resolves the live profile, so there is no
+  pending model to apply after the round begins.
+- **Default** — there is no mode owner, so the current chat model stays as it is.
+  `/profile use none` keeps it too and says so rather than claiming a switch;
+  in the other modes it re-applies the base role (reviewer, builder or
+  orchestrator) model.
+
+The **parent and reviewer are separate owners**: a profile that changes only the
+reviewer changes the reviewer's model, and a failure for one owner warns with
+both the current and target model names without cancelling the others. An
+already-on-target owner reports no change. Every attempted switch appends a
+durable `workflow-model-switch` transcript entry with its scope, `from`/`to`
+models, result and error when present; repeated entries with the same
+`(scope, from, to)` are deduplicated except for failures. The reviewer's result
+also appears on the live review line, and `/review status` keeps its single model
+row rather than printing the model twice.
+
+**Child-local scope.** In an Orchestrator child tab, `/profile use <name>`
+switches only that child's `builder` model and appends its
+`workflow-model-switch` entry in the child's own transcript. It never writes the
+user's global default profile or model. A parent-initiated child switch is
+reported in the parent's transcript instead; there is no child→parent channel,
+so a child-local choice lasts until the parent next activates a profile or role.
 
 ## Model scope
 
@@ -69,6 +118,35 @@ from the project panel (the Settings switch and **Edit JSON…**).
 
 `/scoped-models` opens the same picker (Pi’s terminal command name); the star
 remains the only persisted scope state.
+
+### Model ids, scope patterns and the saved default
+
+Three rules explain most “the wrong model started” reports, so they are stated
+here for anyone editing this area:
+
+1. **A model id may contain a colon.** The synthetic gateway uses `hf:` ids such
+   as `hf:deepseek-ai/DeepSeek-V4.1-Flash-1017`.
+2. **Pi reads a scope pattern from its last colon.** `provider/id:level` is
+   parsed by splitting at the last `:`; if the tail is not a thinking level, Pi
+   keeps the whole string as an id and fails to match it. A colon-bearing id
+   therefore cannot be written as a scope pattern — writing one produces
+   `Invalid thinking level … in pattern …` and silently drops the model from the
+   scope. The app never writes such a pattern: it goes through one rule
+   (`scopePatternFor` in `src/shared/model-scope.ts`), refuses the write, and
+   shows the resolver warning in the picker instead of swallowing it.
+3. **A saved default that does not resolve is a silent fallback, so the app says
+   it out loud.** For a brand-new session Pi prefers the **first scoped model**,
+   then `defaultProvider`/`defaultModel` if the catalogue resolves it, then the
+   first available model. When the catalogue does not contain the saved id (for
+   example before the provider’s live model list has loaded, or after a provider
+   renames a snapshot), the session starts somewhere the user never chose. The
+   picker then shows “Saved default model … is not in the catalogue”, Diagnostics
+   records one incident, and picking a model replaces the default. The app never
+   rewrites `defaultModel` behind the user’s back.
+
+If a provider publishes a new snapshot id, declare it in the profile’s model
+list (`models.ts`) so the offline/startup fallback agrees with the live list; the
+app itself never edits that catalogue.
 
 ## Thinking level
 

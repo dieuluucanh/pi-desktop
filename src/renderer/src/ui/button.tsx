@@ -19,6 +19,9 @@ const buttonVariants = cva(
         danger: "border-danger/60 text-danger hover:bg-danger/10",
       },
       size: {
+        // `xs` is the one-line working-bar/control size: no wrapping, no
+        // vertical padding that would break the thin row.
+        xs: "h-6 px-2 text-[11px]",
         sm: "h-7 px-2.5 text-xs",
         md: "h-9 px-3 text-sm",
         icon: "h-8 w-8",

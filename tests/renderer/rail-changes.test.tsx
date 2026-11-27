@@ -1,7 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChangesSection } from "../../src/renderer/src/rail/ChangesSection";
+import { useEditorStore } from "../../src/renderer/src/editor/editor-store";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { emptyGitSnapshot, type GitFileEntry, type GitSnapshot } from "../../src/shared/git";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
@@ -78,6 +79,17 @@ function persistedCollapsed(): { staged: boolean; changed: boolean; stashes: boo
 }
 
 let handles: ReturnType<typeof installBridge>;
+
+/**
+ * The accessible names of the buttons inside one row, in DOM order. Every action
+ * here is icon-only, so its `aria-label` *is* its name; the path button's name is
+ * its visible text.
+ */
+function buttonNames(row: HTMLElement): (string | undefined)[] {
+  return within(row)
+    .getAllByRole("button")
+    .map((button) => button.getAttribute("aria-label") ?? button.textContent?.trim());
+}
 
 /**
  * The last *mutating* call the UI dispatched. A successful action is followed by
@@ -184,35 +196,82 @@ describe("per-file actions", () => {
     });
   });
 
-  it("opens the working-tree diff for a tracked file", async () => {
+  it("opens the diff from the clickable path", async () => {
     seed(snapshot({ changed: [file("src/a.ts")] }));
     render(<ChangesSection projectPath={PROJECT} />);
 
-    await userEvent.click(screen.getByRole("button", { name: "Show diff for src/a.ts" }));
+    await userEvent.click(screen.getByTestId("change-path-src/a.ts"));
 
-    expect(handles.gitCalls.at(-1)).toEqual({
-      kind: "diff",
-      projectPath: PROJECT,
-      payload: { path: "src/a.ts", staged: false },
-    });
+    expect(handles.gitCalls.at(-1)?.payload).toEqual({ path: "src/a.ts" });
   });
 
-  it("opens the staged diff from the staged group", async () => {
+  it("opens the staged diff from a staged row's path", async () => {
     seed(snapshot({ staged: [file("src/a.ts", { staged: true, unstaged: false })] }));
     render(<ChangesSection projectPath={PROJECT} />);
 
-    await userEvent.click(screen.getByRole("button", { name: "Show diff for src/a.ts" }));
+    await userEvent.click(screen.getByTestId("change-path-src/a.ts"));
 
-    expect(handles.gitCalls.at(-1)?.payload).toEqual({
-      path: "src/a.ts",
-      staged: true,
-    });
+    expect(handles.gitCalls.at(-1)?.payload).toEqual({ path: "src/a.ts", staged: true });
   });
 
-  it("does not offer a diff for an untracked file", () => {
-    seed(snapshot({ changed: [file("new.ts", { status: "untracked" })] }));
+  it("opens the work-tree file in an editor tab", async () => {
+    const spy = vi.spyOn(useEditorStore.getState(), "openFileTab").mockResolvedValue(true);
+    try {
+      seed(snapshot({ changed: [file("src/a.ts")] }));
+      render(<ChangesSection projectPath={PROJECT} />);
+
+      await userEvent.click(screen.getByRole("button", { name: "Open src/a.ts" }));
+
+      expect(spy).toHaveBeenCalledWith(PROJECT, "src/a.ts");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("does not offer Open file for a deleted path", () => {
+    seed(snapshot({ changed: [file("gone.ts", { status: "deleted" })] }));
     render(<ChangesSection projectPath={PROJECT} />);
-    expect(screen.queryByRole("button", { name: "Show diff for new.ts" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open gone.ts" })).not.toBeInTheDocument();
+  });
+
+  it("offers the path plus Open and Unstage on a staged row", () => {
+    seed(snapshot({ staged: [file("src/a.ts", { staged: true, unstaged: false })] }));
+    render(<ChangesSection projectPath={PROJECT} />);
+
+    const row = screen.getByTestId("change-row-src/a.ts");
+    // The path is the row's diff target, *_not* a second icon beside it: the
+    // cluster is exactly Open file + Stage/Unstage (+ Discard when unstaged).
+    expect(buttonNames(row)).toEqual(["src/a.ts", "Open src/a.ts", "Unstage src/a.ts"]);
+    expect(within(row).queryByRole("button", { name: /^Show diff/ })).not.toBeInTheDocument();
+  });
+
+  it("offers the path plus Open, Stage and Discard on an unstaged row", () => {
+    seed(snapshot({ changed: [file("src/a.ts")] }));
+    render(<ChangesSection projectPath={PROJECT} />);
+
+    const row = screen.getByTestId("change-row-src/a.ts");
+    expect(buttonNames(row)).toEqual([
+      "src/a.ts",
+      "Open src/a.ts",
+      "Stage src/a.ts",
+      "Discard changes in src/a.ts",
+    ]);
+    expect(within(row).queryByRole("button", { name: /^Show diff/ })).not.toBeInTheDocument();
+  });
+
+  it("orders the changed rows by path", () => {
+    seed(snapshot({ changed: [file("b.ts"), file("a.ts"), file("f10.ts"), file("f2.ts")] }));
+    render(<ChangesSection projectPath={PROJECT} />);
+
+    const rows = screen
+      .getAllByTestId(/^change-row-/)
+      .map((row) => row.getAttribute("data-testid"));
+    expect(rows).toEqual([
+      "change-row-a.ts",
+      "change-row-b.ts",
+      "change-row-f2.ts",
+      "change-row-f10.ts",
+    ]);
   });
 
   it("does not offer a discard on a staged-only row", () => {
@@ -358,6 +417,17 @@ describe("empty states", () => {
     render(<ChangesSection projectPath={PROJECT} />);
     expect(screen.getByTestId("changes-empty")).toHaveTextContent("Git is busy");
     expect(screen.getByTestId("changes-empty")).toHaveTextContent(/rebase/);
+  });
+
+  it("explains a git timeout without offering init", () => {
+    seed({
+      ...emptyGitSnapshot(PROJECT, "timeout"),
+      message: "git did not answer within 10 s.",
+    });
+    render(<ChangesSection projectPath={PROJECT} />);
+    expect(screen.getByTestId("changes-empty")).toHaveTextContent("Git did not answer");
+    expect(screen.getByTestId("changes-empty")).toHaveTextContent(/did not answer within 10 s/);
+    expect(screen.queryByRole("button", { name: "Initialize repository" })).not.toBeInTheDocument();
   });
 
   it("explains a missing folder", () => {

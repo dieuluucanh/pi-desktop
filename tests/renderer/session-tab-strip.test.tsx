@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionTabStrip } from "../../src/renderer/src/layout/SessionTabStrip";
 import { useEditorStore } from "../../src/renderer/src/editor/editor-store";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
@@ -35,6 +35,7 @@ beforeEach(() => {
     tabs: [],
     activeTabId: null,
     hint: null,
+    sessionBrowserOpen: false,
   });
 });
 
@@ -48,5 +49,31 @@ describe("SessionTabStrip", () => {
     expect(screen.getAllByRole("tab")).toHaveLength(12);
     expect(screen.getByTestId("tab-tab-11")).toBeInTheDocument();
     expect(screen.getByRole("tablist", { name: "Session tabs" })).toBeInTheDocument();
+  });
+
+  it("puts a Session history button between terminal and grid layout", () => {
+    render(<SessionTabStrip />);
+    const labels = screen.getAllByRole("button").map((button) => button.getAttribute("aria-label"));
+    const history = labels.indexOf("Session history");
+    expect(history).toBeGreaterThan(labels.indexOf("New terminal"));
+    expect(history).toBeLessThan(labels.indexOf("Grid layout"));
+  });
+
+  it("opens the session history dialog from the strip", async () => {
+    const { bridge } = installBridge();
+    const request = vi.fn(async () => ({
+      sessions: [],
+      total: 0,
+      matched: 0,
+      truncated: false,
+      error: null,
+    }));
+    (bridge.sessions as unknown as { request: unknown }).request = request;
+    render(<SessionTabStrip />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Session history" }));
+
+    await waitFor(() => expect(useAppStore.getState().sessionBrowserOpen).toBe(true));
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: "session.list" }));
   });
 });

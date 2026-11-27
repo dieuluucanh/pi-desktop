@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -37,9 +37,9 @@ function fakeIo(): FakeIo {
 
   const children = (directory: string): string[] => {
     const base = key(directory);
-    const prefix = `${base}\\`;
+    const prefix = `${base}${sep}`;
     return [...nodes.keys(), ...links.keys()]
-      .filter((path) => path.startsWith(prefix) && !path.slice(prefix.length).includes("\\"))
+      .filter((path) => path.startsWith(prefix) && !path.slice(prefix.length).includes(sep))
       .map((path) => path.slice(prefix.length));
   };
 
@@ -56,10 +56,10 @@ function fakeIo(): FakeIo {
   const removeTree = (target: string): void => {
     const base = key(target);
     for (const path of [...nodes.keys()]) {
-      if (path === base || path.startsWith(`${base}\\`)) nodes.delete(path);
+      if (path === base || path.startsWith(`${base}${sep}`)) nodes.delete(path);
     }
     for (const path of [...links.keys()]) {
-      if (path === base || path.startsWith(`${base}\\`)) links.delete(path);
+      if (path === base || path.startsWith(`${base}${sep}`)) links.delete(path);
     }
   };
 
@@ -173,7 +173,7 @@ function fakeIo(): FakeIo {
       const sourceKey = key(source);
       const targetKey = key(target);
       if (nodes.has(targetKey) || links.has(targetKey)) throw new Error("exists");
-      const prefix = `${sourceKey}\\`;
+      const prefix = `${sourceKey}${sep}`;
       for (const path of [...nodes.keys()]) {
         if (path !== sourceKey && !path.startsWith(prefix)) continue;
         const suffix = path.slice(sourceKey.length);

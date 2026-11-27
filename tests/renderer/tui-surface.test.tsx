@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TuiSlotFrame, TuiSurface } from "../../src/renderer/src/tui/TuiSurface";
@@ -347,6 +347,141 @@ describe("TuiSurface", () => {
   });
 });
 
+describe("paste into an extension frame", () => {
+  function stubClipboardText(text: string): ReturnType<typeof vi.fn> {
+    const readText = vi.fn(async () => text);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText, writeText: vi.fn(async () => undefined) },
+    });
+    return readText;
+  }
+
+  function tuiWrites(request: ReturnType<typeof stubRequest>): string[] {
+    return request.mock.calls
+      .map(([input]) => input as { method?: string; params?: { data?: string } })
+      .filter((input) => input.method === "tui.input")
+      .map((input) => input.params?.data ?? "");
+  }
+
+  async function withPlatform(platform: string, run: () => Promise<void>): Promise<void> {
+    const original = navigator.platform;
+    Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
+    try {
+      await run();
+    } finally {
+      Object.defineProperty(navigator, "platform", { configurable: true, value: original });
+    }
+  }
+
+  it("turns Ctrl+V into one bracketed paste instead of a ^V byte", async () => {
+    stubClipboardText("hello\nworld");
+    const request = stubRequest(async () => ({ ok: true }));
+    render(dock(customFrame()));
+
+    fireEvent.keyDown(screen.getByLabelText("Extension input"), { key: "v", ctrlKey: true });
+
+    await waitFor(() => expect(tuiWrites(request)).toEqual(["\x1b[200~hello\nworld\x1b[201~"]));
+  });
+
+  it("uses Cmd+V on macOS and leaves Win+V to the OS", async () => {
+    stubClipboardText("mac text");
+    const request = stubRequest(async () => ({ ok: true }));
+    render(dock(customFrame()));
+    const input = screen.getByLabelText("Extension input");
+
+    await withPlatform("MacIntel", async () => {
+      fireEvent.keyDown(input, { key: "v", metaKey: true });
+      await waitFor(() => expect(tuiWrites(request)).toEqual(["\x1b[200~mac text\x1b[201~"]));
+    });
+
+    request.mockClear();
+    await withPlatform("Win32", async () => {
+      fireEvent.keyDown(input, { key: "v", metaKey: true });
+      // Give a late clipboard read a chance to write before asserting absence.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(tuiWrites(request)).toEqual([]);
+    });
+  });
+
+  it("accepts Shift+Insert on Windows/Linux", async () => {
+    stubClipboardText("insert text");
+    const request = stubRequest(async () => ({ ok: true }));
+    render(dock(customFrame()));
+
+    fireEvent.keyDown(screen.getByLabelText("Extension input"), { key: "Insert", shiftKey: true });
+
+    await waitFor(() => expect(tuiWrites(request)).toEqual(["\x1b[200~insert text\x1b[201~"]));
+  });
+
+  it("writes once when a keydown and a native paste carry the same text", async () => {
+    stubClipboardText("same text");
+    const request = stubRequest(async () => ({ ok: true }));
+    render(dock(customFrame()));
+    const input = screen.getByLabelText("Extension input");
+
+    fireEvent.keyDown(input, { key: "v", ctrlKey: true });
+    fireEvent.paste(input, { clipboardData: { getData: () => "same text" } });
+
+    await waitFor(() => expect(tuiWrites(request)).toEqual(["\x1b[200~same text\x1b[201~"]));
+  });
+
+  it("keeps two deliberate pastes apart", async () => {
+    stubClipboardText("one");
+    const request = stubRequest(async () => ({ ok: true }));
+    render(dock(customFrame()));
+    const input = screen.getByLabelText("Extension input");
+
+    fireEvent.keyDown(input, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(tuiWrites(request)).toHaveLength(1));
+
+    stubClipboardText("two");
+    fireEvent.keyDown(input, { key: "v", ctrlKey: true });
+    await waitFor(() =>
+      expect(tuiWrites(request)).toEqual(["\x1b[200~one\x1b[201~", "\x1b[200~two\x1b[201~"]),
+    );
+  });
+
+  it("pastes when main asks for this tab and ignores another tab", async () => {
+    const bridge = installBridge();
+    stubClipboardText("menu text");
+    const request = stubRequest(async () => ({ ok: true }));
+    render(dock(customFrame()));
+
+    bridge.emitTuiPaste("another-tab");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(tuiWrites(request)).toEqual([]);
+
+    bridge.emitTuiPaste(TAB);
+    await waitFor(() => expect(tuiWrites(request)).toEqual(["\x1b[200~menu text\x1b[201~"]));
+  });
+
+  it("sends nothing when the clipboard read is empty", async () => {
+    stubClipboardText("");
+    const request = stubRequest(async () => ({ ok: true }));
+    render(dock(customFrame()));
+
+    fireEvent.keyDown(screen.getByLabelText("Extension input"), { key: "v", ctrlKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(tuiWrites(request)).toEqual([]);
+  });
+
+  it("reports keyboard ownership and clears it on blur/unmount", async () => {
+    const bridge = installBridge();
+    const { unmount } = render(dock(customFrame()));
+    const input = screen.getByLabelText("Extension input");
+
+    fireEvent.focus(input);
+    expect(bridge.tuiFocusCalls.at(-1)).toEqual({ tabId: TAB, focused: true });
+
+    fireEvent.blur(input);
+    expect(bridge.tuiFocusCalls.at(-1)).toEqual({ tabId: TAB, focused: false });
+
+    unmount();
+    expect(bridge.tuiFocusCalls.at(-1)).toEqual({ tabId: TAB, focused: false });
+  });
+});
+
 describe("TuiSlotFrame", () => {
   it("renders a read-only frame", () => {
     render(
@@ -354,5 +489,43 @@ describe("TuiSlotFrame", () => {
     );
     expect(screen.getByText("footer")).toBeInTheDocument();
     expect(document.querySelector("[data-tui-slot]")).toBeTruthy();
+  });
+});
+
+describe("pane focus ownership (row 28)", () => {
+  it("does not autofocus or report keyboard ownership for a background pane's surface", () => {
+    const setFocus = vi.spyOn(window.pi!.tui!, "setFocus").mockImplementation(() => undefined);
+    const outside = document.createElement("input");
+    document.body.appendChild(outside);
+    outside.focus();
+
+    render(
+      <TuiSurface
+        tabId={TAB}
+        snapshot={customFrame()}
+        cell={CELL}
+        grid={GRID}
+        variant="dock"
+        active={false}
+      />,
+    );
+    expect(document.activeElement).toBe(outside);
+    expect(setFocus).not.toHaveBeenCalledWith(TAB, true);
+    outside.remove();
+  });
+
+  it("focuses the surface when its pane is the focused one", () => {
+    const { container } = render(
+      <TuiSurface
+        tabId={TAB}
+        snapshot={customFrame()}
+        cell={CELL}
+        grid={GRID}
+        variant="dock"
+        active
+      />,
+    );
+    const surface = container.querySelector("[data-tui-surface='dock']");
+    expect(document.activeElement).toBe(surface);
   });
 });

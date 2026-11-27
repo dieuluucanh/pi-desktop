@@ -22,6 +22,12 @@ export interface ContextMenuState {
   canCopy: boolean;
   canPaste: boolean;
   canSelectAll: boolean;
+  /**
+   * The extension TUI tab that owns the keyboard, when one does. Its frame is a
+   * non-editable `div`, so `webContents.paste()` cannot reach it: the menu then
+   * offers Paste and the click sends a paste request to the renderer instead.
+   */
+  tuiTabId?: string | null;
 }
 
 export interface ContextMenuActions {
@@ -35,15 +41,16 @@ export interface ContextMenuActions {
 
 /**
  * Builds the menu for one right-click. A non-editable target with no selection
- * returns an empty template, so the caller can skip `popup` rather than showing
- * an empty menu.
+ * and no extension frame returns an empty template, so the caller can skip
+ * `popup` rather than showing an empty menu.
  */
 export function contextMenuTemplate(
   state: ContextMenuState,
   actions: ContextMenuActions,
 ): MenuItemConstructorOptions[] {
   const hasSelection = state.selectionText.length > 0;
-  if (!state.isEditable && !hasSelection) return [];
+  const tui = Boolean(state.tuiTabId);
+  if (!state.isEditable && !hasSelection && !tui) return [];
 
   const items: MenuItemConstructorOptions[] = [];
   if (state.isEditable) {
@@ -73,6 +80,10 @@ export function contextMenuTemplate(
         click: actions.selectAll,
       },
     );
+  } else if (tui) {
+    // The frame is not editable, so the native paste command is a no-op; the
+    // click sends a paste request to the renderer that owns the frame.
+    items.push({ id: "paste", label: "Paste", enabled: true, click: actions.paste });
   }
   return items;
 }

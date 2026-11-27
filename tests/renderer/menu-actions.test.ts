@@ -138,6 +138,7 @@ describe("handleMenuCommand", () => {
       ["view-connections", "connections"],
       ["view-skills", "skills"],
       ["view-diagnostics", "diagnostics"],
+      ["view-updates", "updates"],
     ];
     for (const [command, view] of cases) {
       handleMenuCommand(command);
@@ -145,14 +146,14 @@ describe("handleMenuCommand", () => {
     }
   });
 
-  it("routes Help's update and About items at the About & updates card", () => {
+  it("routes Help's update and About items to the About & updates view", () => {
     handleMenuCommand("view-about");
-    expect(useAppStore.getState().view).toBe("settings");
-    expect(useAppStore.getState().settingsFocus).toBe("updates");
+    expect(useAppStore.getState().view).toBe("updates");
+    expect(useAppStore.getState().settingsFocus).toBeNull();
 
     handleMenuCommand("check-updates");
-    expect(useAppStore.getState().view).toBe("settings");
-    expect(useAppStore.getState().settingsFocus).toBe("updates");
+    expect(useAppStore.getState().view).toBe("updates");
+    expect(useAppStore.getState().settingsFocus).toBeNull();
   });
 
   it("routes the Integrations menu item at the Extensions hub's Integrations card", () => {

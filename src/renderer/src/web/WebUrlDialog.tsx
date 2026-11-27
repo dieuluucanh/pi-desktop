@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { useAppStore } from "../state/app-store";
-import { isLoopbackUrl, sanitizeWebUrl } from "../../../shared/web-tabs";
+import { isLoopbackUrl, isSameOriginUrl, sanitizeWebUrl } from "../../../shared/web-tabs";
 
 /**
  * The manual "Open URL in a tab…" action (plan step 21) — the escape hatch when
@@ -16,6 +16,9 @@ export function WebUrlDialog() {
   const [value, setValue] = useState("");
 
   if (!open) return null;
+
+  const candidate = sanitizeWebUrl(value.trim());
+  const isAppOrigin = candidate !== null && isSameOriginUrl(candidate, window.location.origin);
 
   const submit = (): void => {
     const url = sanitizeWebUrl(value.trim());
@@ -57,6 +60,12 @@ export function WebUrlDialog() {
           {value.trim().length > 0 && !isLoopbackUrl(value.trim()) ? (
             <p className="text-[11px] text-ink-faint">
               That is not a loopback address; it will still open in a tab.
+            </p>
+          ) : null}
+          {isAppOrigin ? (
+            <p className="text-[11px] text-ink-faint" data-testid="web-url-self-origin">
+              That is Pi Desktop&apos;s own dev server. Your project&apos;s dev server is on a
+              different port.
             </p>
           ) : null}
           <div className="flex justify-end gap-2">

@@ -25,22 +25,32 @@ import {
   sanitizeBranchName,
   type GitAction,
   type GitActionResult,
+  type GitCommitContext,
   type GitCommitEntry,
   type GitDiff,
   type GitLogRequest,
   type GitOperationError,
   type GitSnapshot,
+  type GitUnavailableReason,
 } from "../shared/git";
-import { applyHunkPatch, readDiff, type DiffRequest } from "./diff";
+import {
+  applyHunkPatch,
+  DiffParseError,
+  readCommitContext,
+  readDiff,
+  type DiffRequest,
+} from "./diff";
 import { initRepository, readRepo, type ReadRepoOptions } from "./repo";
 import {
   GIT_NETWORK_TIMEOUT_MS,
+  GIT_STATUS_READ_TIMEOUT_MS,
   GIT_STATUS_TIMEOUT_MS,
   GIT_WRITE_TIMEOUT_MS,
   type GitResult,
   type GitRunner,
 } from "./runner";
 import { readStashes, readStatus } from "./status";
+import { untrackedDiff, type UntrackedRead } from "./untracked";
 
 /** Moves a file to the OS trash (never a bare delete). */
 export interface TrashPort {
@@ -54,6 +64,11 @@ export interface GitServiceDeps {
   pathKind?: ReadRepoOptions["pathKind"];
   /** Moves a discarded untracked file somewhere recoverable. */
   trash?: TrashPort;
+  /**
+   * Reads one untracked work-tree file for the full-file diff. Injected so the
+   * engine never touches the filesystem; main passes the workspace reader.
+   */
+  readUntrackedFile?: (root: string, path: string) => Promise<UntrackedRead>;
   /**
    * Called immediately before a destructive action (discard, branch switch),
    * so the checkpoint service can take a `pre-op` snapshot. A throw aborts the
@@ -85,6 +100,12 @@ export interface GitService {
   action(projectPath: string, action: GitAction): Promise<GitActionResult>;
   /** The branches a checkout menu can offer. */
   branches(projectPath: string): Promise<{ local: string[]; current: string | null }>;
+  /**
+   * The bounded staged-diff input for an AI commit message. A folder that is not
+   * a repository resolves to a zeroed context with `branch: null`; nothing is
+   * staged resolves to a zeroed `stat`/`patch` with the recent subjects intact.
+   */
+  commitContext(projectPath: string): Promise<GitCommitContext>;
   /** Drops every memoised snapshot (after a config change or a resume). */
   clearCache(): void;
 }
@@ -148,7 +169,9 @@ export function createGitService(deps: GitServiceDeps): GitService {
 
     const root = repo.repo.root;
     // `status` is the only read that must succeed; stashes are a nicety.
-    const status = await readStatus(deps.runner, root, { timeoutMs: GIT_STATUS_TIMEOUT_MS });
+    const status = await readStatus(deps.runner, root, {
+      timeoutMs: GIT_STATUS_READ_TIMEOUT_MS,
+    });
     if (!status.ok) {
       // A repository that `rev-parse` accepted but `status` refused (a lock, a
       // half-written index) is reported as unavailable with git's own words.
@@ -159,11 +182,27 @@ export function createGitService(deps: GitServiceDeps): GitService {
         timedOut: status.timedOut,
         durationMs: status.durationMs,
       });
+      // A timeout is not "not a repository": the folder was accepted by
+      // `rev-parse`. Reporting it as one would also offer the rail's Initialize
+      // button, which is the wrong action for a repository that merely ran slow.
+      const reason: GitUnavailableReason =
+        error.code === "git_missing"
+          ? "git_missing"
+          : error.code === "timeout"
+            ? "timeout"
+            : "not_a_repo";
+      const budgetSeconds = Math.max(1, Math.round(GIT_STATUS_READ_TIMEOUT_MS / 1000));
+      const message =
+        error.code === "timeout"
+          ? `git did not answer within ${budgetSeconds} s. The folder may be very large, or another git process may be holding the index. Try again, or use a terminal for this repository.`
+          : error.fix
+            ? `${error.message} ${error.fix}`
+            : error.message;
       return {
         projectPath,
         available: false,
-        reason: error.code === "git_missing" ? "git_missing" : "not_a_repo",
-        message: error.fix ? `${error.message} ${error.fix}` : error.message,
+        reason,
+        message,
         staged: [],
         changed: [],
         truncated: false,
@@ -246,7 +285,9 @@ export function createGitService(deps: GitServiceDeps): GitService {
 
   /** The paths an action may touch: exactly what the last status reported. */
   const knownPaths = async (root: string): Promise<Set<string>> => {
-    const status = await readStatus(deps.runner, root, { timeoutMs: GIT_STATUS_TIMEOUT_MS });
+    const status = await readStatus(deps.runner, root, {
+      timeoutMs: GIT_STATUS_READ_TIMEOUT_MS,
+    });
     const paths = new Set<string>();
     for (const entry of [...status.staged, ...status.changed]) paths.add(entry.path);
     return paths;
@@ -574,6 +615,16 @@ export function createGitService(deps: GitServiceDeps): GitService {
       if (!repo.available || !repo.repo) {
         return { scope: "working" as const, files: [], tooLarge: false, truncated: false };
       }
+      if (request.untracked) {
+        if (!request.path) throw new DiffParseError("git: an untracked diff needs a path");
+        if (!deps.readUntrackedFile) {
+          throw new DiffParseError("Untracked files cannot be read here.");
+        }
+        return untrackedDiff(
+          request.path,
+          await deps.readUntrackedFile(repo.repo.root, request.path),
+        );
+      }
       return readDiff(deps.runner, repo.repo.root, request);
     },
 
@@ -614,6 +665,27 @@ export function createGitService(deps: GitServiceDeps): GitService {
         };
       }
       return runExclusive(repo.repo.root, () => dispatch(repo.repo?.root ?? projectPath, action));
+    },
+
+    async commitContext(projectPath) {
+      const repo = await readRepo(deps.runner, projectPath, {
+        ...(deps.pathKind ? { pathKind: deps.pathKind } : {}),
+      });
+      if (!repo.available || !repo.repo) {
+        return {
+          projectPath,
+          branch: null,
+          stat: "",
+          patch: "",
+          truncated: false,
+          files: 0,
+          insertions: 0,
+          deletions: 0,
+          recentSubjects: [],
+        };
+      }
+      const context = await readCommitContext(deps.runner, repo.repo.root);
+      return { projectPath, branch: repo.repo.branch ?? null, ...context };
     },
 
     async branches(projectPath) {

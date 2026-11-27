@@ -1,9 +1,12 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Activity, Blocks, Plug, Settings as SettingsIcon, Sparkles } from "lucide-react";
+import { Activity, Blocks, Info, Plug, Settings as SettingsIcon, Sparkles } from "lucide-react";
 import { clampSidebarWidth } from "../../../shared/prefs";
+import { isUpdateOfferPhase } from "../../../shared/notifications";
+import { describeUpdate } from "../../../shared/updates";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { ProjectsSection } from "../projects/ProjectsSection";
+import { ProjectsHeader } from "../projects/ProjectsHeader";
 import { useAppStore, type AppView } from "../state/app-store";
 import { setSidebarWidth } from "../state/sidebar-width";
 
@@ -15,6 +18,14 @@ import { setSidebarWidth } from "../state/sidebar-width";
  * The old New session / Open project… buttons were removed in the
  * minimal-session-ui plan: the tab strip owns New session, and the Projects
  * header owns both the + project menu and the open-folder icon.
+ *
+ * **The Projects header is pinned (2026-11-19).** It is rendered as a sibling
+ * *above* the `ScrollArea`, not inside it, so scrolling the project list or the
+ * Views section never carries it away. This mirrors `rail/RightRail.tsx`, whose
+ * panel header is likewise outside its scroller, and avoids the `position:
+ * sticky` contract (opaque repaint, z-index, a fixed offset) entirely. The
+ * wrapper's `px-3` is the old `nav px-2 + projects-section px-1`, so the row
+ * keeps its 20px inset; its `pb-1` is the old gap between header and list.
  */
 
 interface NavItem {
@@ -30,13 +41,43 @@ const VIEW_ITEMS: readonly NavItem[] = [
   { view: "connections", label: "Connections", icon: Plug },
   { view: "skills", label: "Skills & themes", icon: Sparkles },
   { view: "diagnostics", label: "Diagnostics", icon: Activity },
+  { view: "updates", label: "About & updates", icon: Info },
 ];
 
 export function Sidebar() {
   const view = useAppStore((state) => state.view);
+  const update = useAppStore((state) => state.update);
+  const packageUpdates = useAppStore((state) => state.packageUpdates);
   const collapsed = useAppStore((state) => state.prefs.sidebarCollapsed);
   const width = useAppStore((state) => state.prefs.sidebarWidth);
   const setView = useAppStore((state) => state.setView);
+  const updateSign =
+    update && isUpdateOfferPhase(update.phase)
+      ? {
+          title: describeUpdate(update),
+          label:
+            update.phase === "downloaded"
+              ? "Restart to update"
+              : update.phase === "downloading"
+                ? "Update downloading"
+                : "Update available",
+          dot:
+            update.phase === "downloaded"
+              ? "bg-ok"
+              : update.phase === "downloading"
+                ? "bg-info"
+                : "bg-accent",
+        }
+      : null;
+  const packageSign =
+    packageUpdates.length > 0
+      ? {
+          title: `${packageUpdates.length} extension update${
+            packageUpdates.length === 1 ? "" : "s"
+          } available`,
+          label: "Extension updates available",
+        }
+      : null;
   // Mirrors RightRail's width drag: local state follows the pointer; one
   // preference write on release. The ref survives the pointerup batch.
   const [dragWidth, setDragWidth] = useState<number | null>(null);
@@ -99,28 +140,55 @@ export function Sidebar() {
           }
         }}
       />
-      <ScrollArea className="min-h-0 flex-1">
-        <nav className="flex flex-col gap-1 px-2 pb-4">
-          <ProjectsSection />
+      <nav className="flex min-h-0 flex-1 flex-col">
+        {/* Pinned: outside the scroller on purpose, so a long project list
+            cannot take the Projects actions away. See the file comment. */}
+        <div className="shrink-0 px-3 pb-1 pt-3">
+          <ProjectsHeader />
+        </div>
+        <ScrollArea className="min-h-0 flex-1" data-testid="sidebar-scroll">
+          <div className="flex flex-col gap-1 px-2 pb-4">
+            <ProjectsSection />
 
-          <SectionLabel>Views</SectionLabel>
-          {VIEW_ITEMS.map((item) => (
-            <Button
-              key={item.view}
-              variant={view === item.view ? "secondary" : "ghost"}
-              className="justify-start"
-              onClick={() => setView(item.view)}
-              aria-current={view === item.view}
-            >
-              <item.icon className="size-4" aria-hidden />
-              <span className="flex-1 text-left">{item.label}</span>
-              {item.shortcut ? (
-                <span className="text-[11px] text-ink-faint">{item.shortcut}</span>
-              ) : null}
-            </Button>
-          ))}
-        </nav>
-      </ScrollArea>
+            <SectionLabel>Views</SectionLabel>
+            {VIEW_ITEMS.map((item) => (
+              <Button
+                key={item.view}
+                variant={view === item.view ? "secondary" : "ghost"}
+                className="justify-start"
+                onClick={() => setView(item.view)}
+                aria-current={view === item.view}
+              >
+                <item.icon className="size-4" aria-hidden />
+                <span className="flex-1 text-left">{item.label}</span>
+                {item.view === "updates" && updateSign ? (
+                  <span className="flex items-center" title={updateSign.title}>
+                    <span className="sr-only">{updateSign.label}</span>
+                    <span
+                      data-testid="nav-update-badge"
+                      className={`size-1.5 rounded-full ${updateSign.dot}`}
+                      aria-hidden
+                    />
+                  </span>
+                ) : null}
+                {item.view === "extensions" && packageSign ? (
+                  <span className="flex items-center" title={packageSign.title}>
+                    <span className="sr-only">{packageSign.label}</span>
+                    <span
+                      data-testid="nav-package-update-badge"
+                      className="size-1.5 rounded-full bg-accent"
+                      aria-hidden
+                    />
+                  </span>
+                ) : null}
+                {item.shortcut ? (
+                  <span className="text-[11px] text-ink-faint">{item.shortcut}</span>
+                ) : null}
+              </Button>
+            ))}
+          </div>
+        </ScrollArea>
+      </nav>
     </aside>
   );
 }

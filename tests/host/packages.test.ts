@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   classifyPackageFailure,
   createPackageHandlers,
+  isPackageMutationMethod,
   PACKAGE_METHODS,
+  PACKAGE_MUTATION_METHODS,
   PackageError,
   toPackageError,
   UPDATE_ALL_SOURCE,
@@ -11,10 +13,13 @@ import {
 } from "../../src/host/packages";
 import {
   PACKAGES_CHANGED_EVENT,
+  PACKAGE_CHECK_CACHE_MS,
   PACKAGE_PROGRESS_EVENT,
   type PackageProgressEvent,
   type PackageScope,
   type PackageSummary,
+  type PackageUpdatesSnapshot,
+  type PackageUpdateSummary,
 } from "../../src/shared/packages";
 import type { HostMethod } from "../../src/shared/host-protocol";
 
@@ -58,6 +63,7 @@ function fakePort(overrides: Partial<PackagePort> = {}): { port: PackagePort } &
     };
   const port: PackagePort = {
     list: async () => [summary("npm:installed-pkg")],
+    checkUpdates: async () => ({ updates: [], offline: false }),
     install: async (source: string, target, onProgress?: PackageProgressSink) => {
       record("install")(source, target.scope);
       onProgress?.({ action: "install", phase: "start", source, message: `Installing ${source}…` });
@@ -367,9 +373,226 @@ describe("package handlers", () => {
     expect(fake.events.some((event) => event.event === PACKAGES_CHANGED_EVENT)).toBe(false);
   });
 
-  it("declares the four protocol methods and nothing more", () => {
+  it("declares every protocol method and nothing more", () => {
     const handlers = createPackageHandlers({ resolvePort: () => null });
     expect(Object.keys(handlers.handlers()).sort()).toEqual([...PACKAGE_METHODS].sort());
     expect(vi.isMockFunction(handlers.handlers)).toBe(false);
+  });
+
+  it("keeps a read-only check allowed while safe mode refuses the mutations", () => {
+    expect(PACKAGE_METHODS).toContain("packages.checkUpdates");
+    expect(PACKAGE_MUTATION_METHODS).toEqual([
+      "packages.install",
+      "packages.remove",
+      "packages.update",
+    ]);
+    expect(isPackageMutationMethod("packages.checkUpdates")).toBe(false);
+    expect(isPackageMutationMethod("packages.list")).toBe(false);
+    for (const method of PACKAGE_MUTATION_METHODS) {
+      expect(isPackageMutationMethod(method)).toBe(true);
+      expect(PACKAGE_METHODS).toContain(method);
+    }
+  });
+});
+
+function outdated(
+  source = "npm:installed-pkg",
+  latestVersion: string | null = "2.0.0",
+  scope: PackageScope = "user",
+): PackageUpdateSummary {
+  return {
+    source,
+    name: source.replace(/^npm:/, ""),
+    kind: "npm",
+    scope,
+    latestVersion,
+  };
+}
+
+describe("package update checks", () => {
+  it("answers a snapshot with the check timestamp and the port's updates", async () => {
+    const fake = fakePort({
+      checkUpdates: async () => ({ updates: [outdated()], offline: false }),
+    });
+    const handlers = createPackageHandlers({
+      resolvePort: () => fake.port,
+      now: () => 1_700_000_000_000,
+    });
+    const result = (await call(
+      handlers,
+      "packages.checkUpdates",
+      { cwd: PROJECT },
+      fake,
+    )) as PackageUpdatesSnapshot;
+    expect(result).toEqual({
+      updates: [outdated()],
+      checkedAt: 1_700_000_000_000,
+      offline: false,
+    });
+  });
+
+  it("serves the cache inside the window, re-sweeps when stale, and force skips it", async () => {
+    const start = 1_700_000_000_000;
+    let clock = start;
+    let calls = 0;
+    const fake = fakePort({
+      checkUpdates: async () => {
+        calls += 1;
+        return { updates: [outdated()], offline: false };
+      },
+    });
+    const handlers = createPackageHandlers({ resolvePort: () => fake.port, now: () => clock });
+
+    await call(handlers, "packages.checkUpdates", { cwd: PROJECT }, fake);
+    clock = start + PACKAGE_CHECK_CACHE_MS - 1;
+    await call(handlers, "packages.checkUpdates", { cwd: PROJECT }, fake);
+    expect(calls).toBe(1);
+
+    clock = start + PACKAGE_CHECK_CACHE_MS;
+    await call(handlers, "packages.checkUpdates", { cwd: PROJECT }, fake);
+    expect(calls).toBe(2);
+
+    clock = start + PACKAGE_CHECK_CACHE_MS + 1;
+    await call(handlers, "packages.checkUpdates", { cwd: PROJECT, force: true }, fake);
+    expect(calls).toBe(3);
+  });
+
+  it("keeps separate caches per project folder", async () => {
+    let calls = 0;
+    const fake = fakePort({
+      checkUpdates: async () => {
+        calls += 1;
+        return { updates: [], offline: false };
+      },
+    });
+    const handlers = createPackageHandlers({ resolvePort: () => fake.port });
+    await call(handlers, "packages.checkUpdates", { cwd: PROJECT }, fake);
+    await call(handlers, "packages.checkUpdates", { cwd: "C:/work/other" }, fake);
+    expect(calls).toBe(2);
+  });
+
+  it("joins an in-flight sweep instead of starting a second", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const fake = fakePort({
+      checkUpdates: async () => {
+        calls += 1;
+        await gate;
+        return { updates: [outdated()], offline: false };
+      },
+    });
+    const handlers = createPackageHandlers({ resolvePort: () => fake.port });
+    const first = call(handlers, "packages.checkUpdates", { cwd: PROJECT }, fake);
+    const second = call(handlers, "packages.checkUpdates", { cwd: PROJECT }, fake);
+    // Let both requests reach the handler before the sweep answers.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toBe(1);
+    release();
+    expect(await first).toEqual(await second);
+  });
+
+  it("invalidates the cache after a successful mutation and keeps it after a failed one", async () => {
+    let calls = 0;
+    const fake = fakePort({
+      checkUpdates: async () => {
+        calls += 1;
+        return { updates: [outdated()], offline: false };
+      },
+    });
+    const handlers = createPackageHandlers({ resolvePort: () => fake.port });
+
+    await call(handlers, "packages.checkUpdates", { cwd: PROJECT }, fake);
+    await call(
+      handlers,
+      "packages.install",
+      { source: "npm:foo", scope: "user", consent: CONSENT },
+      fake,
+    );
+    await call(handlers, "packages.checkUpdates", { cwd: PROJECT }, fake);
+    expect(calls).toBe(2);
+
+    const failing = fakePort({
+      install: async () => {
+        throw new Error("npm ERR! code E401");
+      },
+      checkUpdates: async () => {
+        calls += 1;
+        return { updates: [outdated()], offline: false };
+      },
+    });
+    const failingHandlers = createPackageHandlers({ resolvePort: () => failing.port });
+    await call(failingHandlers, "packages.checkUpdates", { cwd: PROJECT }, failing);
+    await expect(
+      call(
+        failingHandlers,
+        "packages.install",
+        { source: "npm:foo", scope: "user", consent: CONSENT },
+        failing,
+      ),
+    ).rejects.toMatchObject({ code: "auth" });
+    await call(failingHandlers, "packages.checkUpdates", { cwd: PROJECT }, failing);
+    expect(calls).toBe(3);
+  });
+
+  it("does not cache a sweep a mutation overtook", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const fake = fakePort({
+      checkUpdates: async () => {
+        calls += 1;
+        await gate;
+        return { updates: [outdated()], offline: false };
+      },
+    });
+    const handlers = createPackageHandlers({ resolvePort: () => fake.port });
+    const pending = call(handlers, "packages.checkUpdates", { cwd: PROJECT }, fake);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await call(
+      handlers,
+      "packages.install",
+      { source: "npm:foo", scope: "user", consent: CONSENT },
+      fake,
+    );
+    release();
+    await pending;
+    await call(handlers, "packages.checkUpdates", { cwd: PROJECT }, fake);
+    expect(calls).toBe(2);
+  });
+
+  it("passes the offline flag through", async () => {
+    const fake = fakePort({ checkUpdates: async () => ({ updates: [], offline: true }) });
+    const handlers = createPackageHandlers({ resolvePort: () => fake.port });
+    expect(await call(handlers, "packages.checkUpdates", {}, fake)).toMatchObject({
+      offline: true,
+      updates: [],
+    });
+  });
+
+  it("keeps a classified refusal and classifies a raw failure", async () => {
+    const refusing = fakePort({
+      checkUpdates: async () => {
+        throw new PackageError("packages are not available", "not_implemented");
+      },
+    });
+    const handlers = createPackageHandlers({ resolvePort: () => refusing.port });
+    await expect(call(handlers, "packages.checkUpdates", {}, refusing)).rejects.toMatchObject({
+      code: "not_implemented",
+    });
+
+    const offline = fakePort({
+      checkUpdates: async () => {
+        throw new Error("npm ERR! code ENOTFOUND");
+      },
+    });
+    const offlineHandlers = createPackageHandlers({ resolvePort: () => offline.port });
+    await expect(call(offlineHandlers, "packages.checkUpdates", {}, offline)).rejects.toMatchObject(
+      { code: "offline" },
+    );
   });
 });

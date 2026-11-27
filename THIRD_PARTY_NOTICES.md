@@ -9,7 +9,7 @@ for the licenses themselves.
 
 | Component | Version                                          | License      |
 | --------- | ------------------------------------------------ | ------------ |
-| Node.js   | 24.21.0 (per `resources/runtime/node.lock.json`) | MIT          |
+| Node.js   | 24.22.2 (per `resources/runtime/node.lock.json`) | MIT          |
 | npm CLI   | the `npm` shipped in that Node distribution      | Artistic-2.0 |
 
 The runtime is fetched at build time by `npm run runtime:fetch`; it is not

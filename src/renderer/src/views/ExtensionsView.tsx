@@ -76,15 +76,23 @@ export function ExtensionsView() {
 
   const [query, setQuery] = useState("");
   const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
-  const extensionsFocus = useAppStore((state) => state.extensionsFocus);
+  // Annotated so the (large) store's inferred type cannot narrow this union in
+  // an editor whose language service has a stale snapshot.
+  const extensionsFocus: "integrations" | "packages" | null = useAppStore(
+    (state) => state.extensionsFocus,
+  );
   const clearExtensionsFocus = useAppStore((state) => state.clearExtensionsFocus);
+  const checkPackageUpdates = useAppStore((state) => state.checkPackageUpdates);
   const integrationsRef = useRef<HTMLElement | null>(null);
+  const packagesRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    // The Integrations menu item routes here (plan step 19): the hub opens on
-    // the card rather than at the top of an unrelated list.
-    if (extensionsFocus !== "integrations") return;
-    integrationsRef.current?.scrollIntoView?.({ block: "start" });
+    // One effect for both entry points: the Integrations menu item (plan step 19)
+    // and an extension-update notification (plan step 6) each name a section to
+    // reveal. Looking the ref up avoids a second near-identical effect.
+    if (!extensionsFocus) return;
+    const sections = { integrations: integrationsRef, packages: packagesRef } as const;
+    sections[extensionsFocus]?.current?.scrollIntoView?.({ block: "start" });
     clearExtensionsFocus();
   }, [extensionsFocus, clearExtensionsFocus]);
 
@@ -92,7 +100,11 @@ export function ExtensionsView() {
     void loadSettings();
     void loadResources();
     void useAppStore.getState().loadPackages();
-  }, [loadSettings, loadResources]);
+    // Opening the page is an explicit visit, so it checks even when the
+    // background switch is off (D5). The host's 60 s cache dedupes it against a
+    // startup sweep.
+    void checkPackageUpdates();
+  }, [loadSettings, loadResources, checkPackageUpdates]);
 
   const installedPackages = useMemo(() => {
     const scopes = settings ?? { global: {}, project: {} };
@@ -290,7 +302,9 @@ export function ExtensionsView() {
         </section>
       ) : null}
 
-      <PackagesSection />
+      <div ref={packagesRef}>
+        <PackagesSection />
+      </div>
 
       <RecommendedSection
         packages={installedPackages}
@@ -332,9 +346,14 @@ function ResourceRow({
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
           <span className="truncate text-xs font-medium text-ink">{resource.name}</span>
+          {resource.builtin ? (
+            <Badge tone="accent">
+              built-in{resource.builtin.version ? ` ${resource.builtin.version}` : ""}
+            </Badge>
+          ) : null}
           <Badge tone="neutral">{resource.scope}</Badge>
           <Badge tone="neutral">{resource.origin}</Badge>
-          {resource.source && resource.source !== "unknown" ? (
+          {resource.source && resource.source !== "unknown" && !resource.builtin ? (
             <span className="truncate font-mono text-[10px] text-ink-faint">{resource.source}</span>
           ) : null}
           {!resource.enabled ? <Badge tone="warn">disabled</Badge> : null}

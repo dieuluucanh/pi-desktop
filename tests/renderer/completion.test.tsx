@@ -6,12 +6,14 @@ import { Composer } from "../../src/renderer/src/session/Composer";
 import { createCompletionProvider } from "../../src/renderer/src/completion/stack";
 import { createCommandProvider } from "../../src/renderer/src/completion/command-source";
 import { createFileProvider } from "../../src/renderer/src/completion/file-source";
-import type {
-  CompletionItem,
-  CompletionProvider,
-  CompletionResult,
-  CompletionSuggestions,
+import {
+  type CompletionItem,
+  type CompletionProvider,
+  type CompletionProviderFactory,
+  type CompletionResult,
+  type CompletionSuggestions,
 } from "../../src/renderer/src/completion/types";
+import type { ComposerSendDisposition } from "../../src/renderer/src/session/composer-send";
 
 /**
  * The completion overlay inside the composer (plan step 7): `/` opens a list,
@@ -55,7 +57,10 @@ function renderComposer(
     provider?: CompletionProvider;
     draft?: string;
     running?: boolean;
-    onSend?: (text: string, sendOptions?: { preferredSource?: string }) => Promise<boolean>;
+    onSend?: (
+      text: string,
+      sendOptions?: { preferredSource?: string },
+    ) => Promise<ComposerSendDisposition>;
     apply?: (
       item: CompletionItem,
       suggestions: CompletionSuggestions,
@@ -64,8 +69,11 @@ function renderComposer(
   } = {},
 ) {
   const onSend = vi.fn(
-    async (text: string, _images: unknown[], sendOptions?: { preferredSource?: string }) =>
-      options.onSend ? options.onSend(text, sendOptions) : true,
+    async (
+      text: string,
+      _images: readonly unknown[],
+      sendOptions?: { preferredSource?: string },
+    ) => (options.onSend ? options.onSend(text, sendOptions) : "sent"),
   );
   const onStop = vi.fn();
   const onDraftChange = vi.fn();
@@ -88,7 +96,7 @@ function renderComposer(
         onStop={onStop}
         onClearQueue={() => undefined}
         onRestoreQueue={() => undefined}
-        onHistoryStep={() => null}
+        onHistoryStep={() => ({ kind: "none" })}
         completion={{
           provider: options.provider ?? fakeProvider(),
           ...(options.apply ? { apply: options.apply } : {}),
@@ -240,6 +248,69 @@ describe("the real engine behind the composer", () => {
     await user.keyboard("{Tab}");
     await waitFor(() => expect(box.value).toBe("/profile use "));
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("keeps ! and !! shell lines free of built-in completion", async () => {
+    const user = userEvent.setup();
+    const loadFiles = vi.fn(async () => ({ files: ["src/app.ts"] }));
+    const provider = createCompletionProvider({ file: createFileProvider({ loadFiles }) });
+    renderComposer({ provider });
+
+    const box = screen.getByLabelText("Prompt") as HTMLTextAreaElement;
+    await user.click(box);
+    await user.type(box, "!git add src");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(screen.queryByTestId("completion-overlay")).toBeNull();
+
+    // Tab must still reach extension shortcuts, but it must not revive a
+    // built-in file list on a shell line.
+    await user.keyboard("{Tab}");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(screen.queryByTestId("completion-overlay")).toBeNull();
+
+    await user.clear(box);
+    await user.type(box, "!!git status");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(screen.queryByTestId("completion-overlay")).toBeNull();
+    expect(loadFiles).not.toHaveBeenCalled();
+  });
+
+  it("still opens an extension-provided ! menu", async () => {
+    const user = userEvent.setup();
+    const shellExtension: CompletionProviderFactory = (current) => ({
+      ...current,
+      async getSuggestions(lines, line, col, options) {
+        if ((lines[line] ?? "").slice(0, col).startsWith("!")) {
+          return {
+            items: [{ value: "!ping", label: "!ping", source: "extension" }],
+            prefix: "!",
+          };
+        }
+        return current.getSuggestions(lines, line, col, options);
+      },
+    });
+    const provider = createCompletionProvider({ extensionFactories: [shellExtension] });
+    renderComposer({ provider });
+
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("!");
+
+    const overlay = await screen.findByTestId("completion-overlay");
+    expect(overlay.textContent).toContain("!ping");
+  });
+
+  it("still opens file completion on @ in an ordinary prompt", async () => {
+    const user = userEvent.setup();
+    const loadFiles = vi.fn(async () => ({ files: ["src/app.ts"] }));
+    const provider = createCompletionProvider({ file: createFileProvider({ loadFiles }) });
+    renderComposer({ provider });
+
+    await user.click(screen.getByLabelText("Prompt"));
+    await user.keyboard("@src");
+
+    const overlay = await screen.findByTestId("completion-overlay");
+    expect(overlay.textContent).toContain("src/app.ts");
+    expect(loadFiles).toHaveBeenCalled();
   });
 
   it("drives commands and files through the same composer", async () => {

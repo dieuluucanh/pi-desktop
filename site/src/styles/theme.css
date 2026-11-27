@@ -1,0 +1,900 @@
+/* Brand tokens for the public site. The palette is documented in
+   assets/README.md; no component invents a colour outside these values.
+
+   Semantic tokens live on `:root` (light values, also the no-JS default) and are
+   overridden by `:root[data-theme="dark"]`. Every foreground/background pair is
+   asserted in `tests/theme-contrast.test.ts`, so keep each token on its own line
+   as a literal value (hex, or an rgb()/shadow for decorative fills that the test
+   skips). Starlight's own variables are mapped onto the semantic layer; site
+   components must not read `--sl-color-gray-*` directly. */
+:root {
+  /* Brand palette */
+  --pi-parchment: #fdfbf3;
+  --pi-deep-blue: #0a3d9c;
+  --pi-blue: #0b4da6;
+  --pi-gold: #d9a00a;
+  --pi-ink: #14213d;
+  --pi-muted: #5c6478;
+  --pi-hairline: #d8d2c2;
+  --pi-card: #fffdf7;
+
+  /* Semantic layer — light */
+  --pi-bg: #fdfbf3;
+  --pi-text: #14213d;
+  --pi-text-muted: #5c6478;
+  --pi-card-bg: #fffdf7;
+  --pi-border: #d8d2c2;
+  --pi-link: #082f78;
+  --pi-link-hover: #0a3d9c;
+  --pi-nav-bg: #f7f2e4;
+  --pi-nav-link: #4a5265;
+  --pi-nav-link-hover: #082f78;
+  --pi-nav-active: #082f78;
+  --pi-nav-active-underline: #a97c00;
+  --pi-button-secondary-fg: #14213d;
+  --pi-button-secondary-border: #d8d2c2;
+  --pi-button-secondary-fg-hover: #082f78;
+  --pi-button-secondary-border-hover: #0a3d9c;
+  --pi-focus-ring: #0a3d9c;
+  --pi-highlight-border: #b8860b;
+  --pi-highlight-ring: rgb(217 160 10 / 22%);
+  --pi-warning-border: #a97c00;
+  --pi-theme-active-bg: #dfe8f8;
+  --pi-theme-icon: #5c6478;
+  --pi-window-strong: #0a3d9c;
+  --pi-window-fill: rgb(20 33 61 / 8%);
+  --pi-window-accent-fill: rgb(10 61 156 / 12%);
+  --pi-window-strong-fill: rgb(20 33 61 / 10%);
+  --pi-shadow: 0 18px 50px rgb(20 33 61 / 10%);
+
+  /* Theme-invariant semantic tokens */
+  --pi-button-primary-bg: #0a3d9c;
+  --pi-button-primary-bg-hover: #0b4da6;
+  --pi-button-primary-fg: #ffffff;
+  --pi-gold-bg: #d9a00a;
+  --pi-gold-fg: #14213d;
+
+  /* Starlight mapping (theme-independent: the semantic tokens change per theme) */
+  --sl-color-bg: var(--pi-bg);
+  --sl-color-bg-nav: var(--pi-nav-bg);
+  --sl-color-text: var(--pi-text);
+  --sl-color-hairline: var(--pi-border);
+  --sl-color-accent-low: #dfe8f8;
+  --sl-color-accent: var(--pi-deep-blue);
+  --sl-color-accent-high: #082f78;
+}
+
+:root[data-theme="dark"] {
+  --pi-bg: #0d1526;
+  --pi-text: #f1f4fb;
+  --pi-text-muted: #c0c3cc;
+  --pi-card-bg: #111c31;
+  --pi-border: #26324a;
+  --pi-link: #d6e4ff;
+  --pi-link-hover: #ffffff;
+  --pi-nav-bg: #101b30;
+  --pi-nav-link: #c0c3cc;
+  --pi-nav-link-hover: #ffffff;
+  --pi-nav-active: #d6e4ff;
+  --pi-nav-active-underline: #d9a00a;
+  --pi-button-secondary-fg: #f1f4fb;
+  --pi-button-secondary-border: #26324a;
+  --pi-button-secondary-fg-hover: #d6e4ff;
+  --pi-button-secondary-border-hover: #8fb3ff;
+  --pi-focus-ring: #d9a00a;
+  --pi-highlight-border: #d9a00a;
+  --pi-highlight-ring: rgb(217 160 10 / 30%);
+  --pi-warning-border: #d9a00a;
+  --pi-theme-active-bg: #12224a;
+  --pi-theme-icon: #c0c3cc;
+  --pi-window-strong: #8fb3ff;
+  --pi-window-fill: rgb(214 228 255 / 8%);
+  --pi-window-accent-fill: rgb(143 179 255 / 14%);
+  --pi-window-strong-fill: rgb(214 228 255 / 10%);
+  --pi-shadow: 0 18px 50px rgb(0 0 0 / 25%);
+
+  --sl-color-accent-low: #12224a;
+  --sl-color-accent: #8fb3ff;
+  --sl-color-accent-high: #d6e4ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .pi-button:hover {
+    transform: none;
+  }
+}
+
+/* The splash page's frontmatter title is required by Starlight but the hero
+   owns the visible title. Hide only the generated title panel on the landing. */
+body:has(.pi-landing) .content-panel:has(> .sl-container > h1#_top) {
+  display: none;
+}
+
+/* The landing page uses Starlight's splash template; these are shared landing
+   primitives rather than a second design system. */
+.pi-landing {
+  margin-inline: auto;
+  max-width: 76rem;
+  padding-inline: 1rem;
+}
+
+/* Starlight's markdown flow adds margin-top to adjacent non-inline siblings.
+   Our grid/flex containers use gap for spacing, so reset it there; otherwise
+   the first card or trust item sits 1rem higher than its neighbours. */
+.pi-hero > *,
+.pi-trust > *,
+.pi-grid > *,
+.pi-download-grid > *,
+.pi-gallery > *,
+.pi-faq > *,
+.pi-profile > *,
+.pi-closing > *,
+.pi-download-card__head > *,
+.pi-download-card__alternates > * {
+  margin-top: 0;
+}
+
+.pi-kicker,
+.pi-eyebrow {
+  color: var(--pi-link);
+  font-size: var(--sl-text-xs, 0.75rem);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  margin: 0 0 0.5rem;
+  text-transform: uppercase;
+}
+
+.pi-hero {
+  overflow: hidden;
+  padding: 4.5rem 0 3rem;
+  /* The glow is the banner background; keep the copy off its left/right edges. */
+  padding-inline: clamp(1.25rem, 4vw, 3rem);
+  position: relative;
+}
+
+.pi-hero__glow {
+  background:
+    radial-gradient(circle at 70% 20%, rgb(217 160 10 / 18%), transparent 45%),
+    radial-gradient(circle at 20% 10%, rgb(11 77 166 / 14%), transparent 50%);
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.pi-hero__inner {
+  position: relative;
+}
+
+.pi-hero h1 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(2.5rem, 7vw, 5.25rem);
+  letter-spacing: -0.03em;
+  line-height: 1.02;
+  margin: 0;
+  max-width: 15ch;
+}
+
+.pi-hero__lede {
+  color: var(--pi-text-muted);
+  font-size: clamp(1rem, 2vw, 1.25rem);
+  line-height: 1.6;
+  margin: 1.25rem 0 0;
+  max-width: 48rem;
+}
+
+.pi-hero__note {
+  color: var(--pi-text-muted);
+  font-size: var(--sl-text-sm, 0.875rem);
+  margin: 1rem 0 0;
+}
+
+.pi-hero__meta {
+  color: var(--pi-text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--sl-text-sm, 0.875rem);
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+}
+
+.pi-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.75rem;
+}
+
+.pi-button {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  display: inline-flex;
+  font-weight: 700;
+  gap: 0.4rem;
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: 0.7rem 1.15rem;
+  text-decoration: none;
+  transition:
+    transform 120ms ease,
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.pi-button:hover {
+  transform: translateY(-1px);
+}
+
+.pi-button--primary {
+  background: var(--pi-button-primary-bg);
+  color: var(--pi-button-primary-fg);
+}
+
+.pi-button--primary:hover {
+  background: var(--pi-button-primary-bg-hover);
+  color: var(--pi-button-primary-fg);
+}
+
+.pi-button--secondary {
+  background: transparent;
+  border-color: var(--pi-button-secondary-border);
+  color: var(--pi-button-secondary-fg);
+}
+
+.pi-button--secondary:hover {
+  border-color: var(--pi-button-secondary-border-hover);
+  color: var(--pi-button-secondary-fg-hover);
+}
+
+.pi-button:focus-visible,
+.pi-text-link:focus-visible,
+.pi-download-card__alternates a:focus-visible,
+.pi-faq summary:focus-visible {
+  border-radius: 0.35rem;
+  outline: 2px solid var(--pi-focus-ring);
+  outline-offset: 2px;
+}
+
+.pi-section {
+  border-top: 1px solid var(--pi-border);
+  padding: 3.5rem 0;
+}
+
+.pi-section h2 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(1.8rem, 4vw, 2.8rem);
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  margin: 0;
+}
+
+.pi-section__lede,
+.pi-section__more {
+  color: var(--pi-text-muted);
+  line-height: 1.65;
+  max-width: 52rem;
+}
+
+.pi-section__more {
+  margin-top: 1.25rem;
+}
+
+/* Prose links only: never recolour a `.pi-button`, which owns its foreground. */
+.pi-text-link,
+.pi-section :where(p, li, td) a:not(.pi-button) {
+  color: var(--pi-link);
+}
+
+.pi-text-link:hover,
+.pi-section :where(p, li, td) a:not(.pi-button):hover {
+  color: var(--pi-link-hover);
+}
+
+.pi-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 2rem;
+}
+
+/* Share the tallest card across every row so the first row cannot be taller
+   than the rest. Single-column mobile keeps natural card heights. */
+@media (min-width: 40.0625rem) {
+  .pi-grid {
+    grid-auto-rows: 1fr;
+  }
+}
+
+.pi-grid--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.pi-card,
+.pi-download-card {
+  background: var(--pi-card-bg);
+  border: 1px solid var(--pi-border);
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+}
+
+.pi-card h3,
+.pi-download-card h3 {
+  font-size: 1.05rem;
+  margin: 0 0 0.5rem;
+}
+
+.pi-card p,
+.pi-download-card p {
+  color: var(--pi-text-muted);
+  line-height: 1.55;
+  margin: 0.35rem 0 0;
+}
+
+.pi-warning {
+  border-left: 3px solid var(--pi-warning-border);
+  padding-left: 0.7rem;
+}
+
+.pi-profile {
+  align-items: center;
+  display: grid;
+  gap: 2rem;
+  grid-template-columns: 1.2fr 1fr;
+}
+
+.pi-profile__diagram {
+  background: var(--pi-card-bg);
+  border: 1px solid var(--pi-border);
+  border-radius: 0.75rem;
+  box-shadow: var(--pi-shadow);
+  color: var(--pi-text);
+  font-size: var(--sl-text-sm, 0.875rem);
+  line-height: 1.65;
+  margin: 0;
+  overflow-x: auto;
+  padding: 1.25rem;
+}
+
+.pi-download-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 2rem;
+}
+
+.pi-download-card__head {
+  align-items: center;
+  display: flex;
+  gap: 0.6rem;
+  justify-content: space-between;
+}
+
+.pi-download-card__head h3 {
+  margin: 0;
+}
+
+.pi-download-card__badges {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+
+.pi-download-card__arch {
+  font-size: var(--sl-text-xs, 0.75rem);
+}
+
+.pi-badge {
+  border: 1px solid var(--pi-border);
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 0.18rem 0.5rem;
+  text-transform: uppercase;
+}
+
+.pi-badge--gold {
+  background: var(--pi-gold-bg);
+  border-color: transparent;
+  color: var(--pi-gold-fg);
+}
+
+.pi-platform-flag {
+  display: none;
+}
+
+.pi-download-card__cta {
+  margin: 0.8rem 0 0;
+  width: 100%;
+}
+
+.pi-download-card__alternates {
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--sl-text-sm, 0.875rem);
+  gap: 0.4rem 1rem;
+  list-style: none;
+  margin: 0.8rem 0 0;
+  padding: 0;
+}
+
+.pi-download-card__note {
+  font-size: var(--sl-text-xs, 0.75rem);
+}
+
+/* The detected platform is the middle card on a three-column grid and the first
+   card below that, with a gold ring the visitor can see at a glance. */
+html[data-detected-os="windows"] .pi-platform-grid > [data-platform="windows"],
+html[data-detected-os="macos"] .pi-platform-grid > [data-platform="macos"],
+html[data-detected-os="linux"] .pi-platform-grid > [data-platform="linux"] {
+  border-color: var(--pi-highlight-border);
+  box-shadow:
+    0 0 0 4px var(--pi-highlight-ring),
+    var(--pi-shadow);
+}
+
+html[data-detected-os="windows"] .pi-platform-grid > [data-platform="windows"] .pi-platform-flag,
+html[data-detected-os="macos"] .pi-platform-grid > [data-platform="macos"] .pi-platform-flag,
+html[data-detected-os="linux"] .pi-platform-grid > [data-platform="linux"] .pi-platform-flag {
+  display: inline-block;
+}
+
+@media (min-width: 58.0625rem) {
+  html[data-detected-os="windows"] .pi-platform-grid > [data-platform="macos"],
+  html[data-detected-os="macos"] .pi-platform-grid > [data-platform="windows"],
+  html[data-detected-os="linux"] .pi-platform-grid > [data-platform="windows"] {
+    order: 1;
+  }
+
+  html[data-detected-os="windows"] .pi-platform-grid > [data-platform="linux"],
+  html[data-detected-os="macos"] .pi-platform-grid > [data-platform="linux"],
+  html[data-detected-os="linux"] .pi-platform-grid > [data-platform="macos"] {
+    order: 3;
+  }
+
+  html[data-detected-os="windows"] .pi-platform-grid > [data-platform="windows"],
+  html[data-detected-os="macos"] .pi-platform-grid > [data-platform="macos"],
+  html[data-detected-os="linux"] .pi-platform-grid > [data-platform="linux"] {
+    order: 2;
+  }
+}
+
+@media (max-width: 58rem) {
+  html[data-detected-os="windows"] .pi-platform-grid > [data-platform="windows"],
+  html[data-detected-os="macos"] .pi-platform-grid > [data-platform="macos"],
+  html[data-detected-os="linux"] .pi-platform-grid > [data-platform="linux"] {
+    order: -1;
+  }
+}
+
+.pi-download__fine {
+  color: var(--pi-text-muted);
+  font-size: var(--sl-text-sm, 0.875rem);
+  margin-top: 1.25rem;
+}
+
+.pi-table-wrap {
+  margin-top: 1.5rem;
+  overflow-x: auto;
+}
+
+.pi-table-wrap table {
+  border-collapse: collapse;
+  min-width: 36rem;
+  width: 100%;
+}
+
+.pi-table-wrap th,
+.pi-table-wrap td {
+  border-bottom: 1px solid var(--pi-border);
+  padding: 0.65rem 0.75rem;
+  text-align: left;
+}
+
+.pi-table-wrap th {
+  font-size: var(--sl-text-sm, 0.875rem);
+  text-transform: uppercase;
+}
+
+.pi-faq {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 1.5rem;
+  max-width: 52rem;
+}
+
+.pi-faq details {
+  background: var(--pi-card-bg);
+  border: 1px solid var(--pi-border);
+  border-radius: 0.5rem;
+  padding: 0.8rem 1rem;
+}
+
+.pi-faq summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.pi-faq p {
+  color: var(--pi-text-muted);
+  line-height: 1.6;
+}
+
+.pi-closing {
+  align-items: center;
+  background: linear-gradient(120deg, rgb(10 61 156 / 8%), rgb(217 160 10 / 12%));
+  border: 1px solid var(--pi-border);
+  border-radius: 1rem;
+  display: grid;
+  gap: 1.5rem;
+  grid-template-columns: 1fr auto;
+  margin: 2rem 0 4rem;
+  padding: 2rem;
+}
+
+.pi-closing h2 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(1.6rem, 3vw, 2.4rem);
+  margin: 0;
+}
+
+.pi-closing p {
+  color: var(--pi-text-muted);
+  margin: 0.5rem 0 0;
+}
+
+.pi-closing .pi-actions {
+  margin-top: 0;
+}
+
+.pi-gallery {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 2rem;
+}
+
+.pi-gallery__item {
+  margin: 0;
+}
+
+.pi-gallery__item img {
+  border: 1px solid var(--pi-border);
+  border-radius: 0.65rem;
+  box-shadow: var(--pi-shadow);
+  display: block;
+  height: auto;
+  width: 100%;
+}
+
+.pi-gallery__item figcaption {
+  color: var(--pi-text-muted);
+  font-size: var(--sl-text-sm, 0.875rem);
+  margin-top: 0.45rem;
+}
+
+.pi-window {
+  background: var(--pi-card-bg);
+  border: 1px solid var(--pi-border);
+  border-radius: 0.9rem;
+  box-shadow: var(--pi-shadow);
+  margin-top: 2rem;
+  overflow: hidden;
+}
+
+.pi-window__bar {
+  align-items: center;
+  background: var(--pi-nav-bg);
+  border-bottom: 1px solid var(--pi-border);
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.6rem 0.8rem;
+}
+
+.pi-window__dot {
+  background: var(--pi-border);
+  border-radius: 999px;
+  height: 0.6rem;
+  width: 0.6rem;
+}
+
+.pi-window__title {
+  color: var(--pi-text-muted);
+  font-size: 0.72rem;
+  margin-left: 0.5rem;
+}
+
+.pi-window__body {
+  display: grid;
+  grid-template-columns: 12rem 1fr;
+  min-height: 22rem;
+}
+
+.pi-window__sidebar {
+  border-right: 1px solid var(--pi-border);
+  display: grid;
+  gap: 0.6rem;
+  padding: 1rem;
+}
+
+.pi-window__line {
+  background: var(--pi-border);
+  border-radius: 999px;
+  height: 0.55rem;
+  width: 85%;
+}
+
+.pi-window__line--strong {
+  background: var(--pi-window-strong);
+  width: 65%;
+}
+
+.pi-window__line--short {
+  width: 55%;
+}
+
+.pi-window__main {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-width: 0;
+}
+
+.pi-window__tabs {
+  border-bottom: 1px solid var(--pi-border);
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.7rem;
+}
+
+.pi-window__tabs span {
+  background: var(--pi-window-fill);
+  border-radius: 0.3rem;
+  height: 1.4rem;
+  width: 6rem;
+}
+
+.pi-window__chat {
+  display: grid;
+  gap: 0.6rem;
+  padding: 1.25rem;
+}
+
+.pi-window__bubble {
+  background: var(--pi-window-fill);
+  border-radius: 0.5rem;
+  height: 2.3rem;
+  width: 60%;
+}
+
+.pi-window__bubble--wide {
+  background: var(--pi-window-accent-fill);
+  height: 4rem;
+  width: 90%;
+}
+
+.pi-window__bubble--code {
+  background: var(--pi-window-strong-fill);
+  height: 5rem;
+  width: 78%;
+}
+
+.pi-window__bubble--short {
+  height: 1.6rem;
+  width: 35%;
+}
+
+/* The product nav is the second row of Starlight's fixed header. Growing
+   `--sl-nav-height` keeps Starlight's own offsets (main frame, sidebar top,
+   mobile TOC, anchor scroll padding) correct; only the two values that centre
+   inside the bar need pinning. Verified against @astrojs/starlight 0.42.8. */
+:root {
+  --pi-nav-bar-height: 3.5rem;
+  --pi-site-nav-height: 2.25rem;
+  --sl-nav-height: calc(var(--pi-nav-bar-height) + var(--pi-site-nav-height));
+}
+
+/* Starlight raises the bar from 3.5rem to 4rem at 50em (props.css). */
+@media (min-width: 50em) {
+  :root {
+    --pi-nav-bar-height: 4rem;
+  }
+}
+
+header.header {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+header.header > .header {
+  flex: 0 0 var(--pi-nav-bar-height);
+  height: var(--pi-nav-bar-height);
+  padding: var(--sl-nav-pad-y) var(--sl-nav-pad-x);
+}
+
+[data-has-sidebar] header.header > .header {
+  padding-inline-end: calc(var(--sl-nav-gap) + var(--sl-nav-pad-x) + var(--sl-menu-button-size));
+}
+
+@media (min-width: 50em) {
+  [data-has-sidebar] header.header > .header {
+    padding-inline-end: var(--sl-nav-pad-x);
+  }
+}
+
+.site-title {
+  --pi-logo-size: calc(var(--pi-nav-bar-height) - 2 * var(--sl-nav-pad-y));
+  height: var(--pi-logo-size);
+}
+
+/* Starlight sizes the logo against --sl-nav-height, which includes the second
+   product-nav row. That makes the image taller than the 4rem bar and the title
+   wrapper clips its top and bottom. Override only the height; Starlight's
+   width/max-width/object-fit declarations still apply because this file is
+   unlayered. */
+.site-title img {
+  height: var(--pi-logo-size);
+}
+
+.sl-menu-button {
+  top: calc((var(--pi-nav-bar-height) - var(--sl-menu-button-size)) / 2);
+}
+
+/* Starlight 0.42.8 puts search in the flexible middle grid column and the theme
+   group in the right column. Keep that column order: right-align search inside
+   its column so it sits immediately left of the theme icons, which stay at the
+   far right. */
+@media (min-width: 50em) {
+  header.header > .header > div:has(> site-search) {
+    justify-self: end;
+    min-width: 0;
+    width: min(22rem, 34vw);
+  }
+}
+
+.pi-site-nav {
+  background: var(--pi-nav-bg);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  width: 100%;
+}
+
+.pi-site-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.pi-site-nav__inner {
+  align-items: center;
+  display: flex;
+  gap: 0.4rem 1.2rem;
+  height: 100%;
+  margin: 0 auto;
+  max-width: 76rem;
+  padding: 0 1rem;
+  white-space: nowrap;
+}
+
+.pi-site-nav a {
+  align-items: center;
+  border-bottom: 2px solid transparent;
+  color: var(--pi-nav-link);
+  display: inline-flex;
+  font-size: var(--sl-text-sm, 0.875rem);
+  gap: 0.3rem;
+  height: 100%;
+  text-decoration: none;
+}
+
+.pi-site-nav a:hover {
+  color: var(--pi-nav-link-hover);
+}
+
+.pi-site-nav a[aria-current] {
+  border-bottom-color: var(--pi-nav-active-underline);
+  color: var(--pi-nav-active);
+}
+
+.pi-site-nav a:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--pi-focus-ring);
+  outline: none;
+}
+
+.pi-site-nav__external {
+  flex: 0 0 auto;
+}
+
+.pi-theme-select {
+  align-items: center;
+  display: flex;
+  gap: 0.15rem;
+}
+
+.pi-theme-select__button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0.45rem;
+  color: var(--pi-theme-icon);
+  cursor: pointer;
+  display: inline-flex;
+  height: 2rem;
+  justify-content: center;
+  padding: 0;
+  width: 2rem;
+}
+
+.pi-theme-select__button:hover {
+  color: var(--pi-nav-link-hover);
+}
+
+.pi-theme-select__button[aria-pressed="true"] {
+  background: var(--pi-theme-active-bg);
+  box-shadow: inset 0 0 0 1px var(--pi-focus-ring);
+  color: var(--pi-text);
+}
+
+.pi-theme-select__button:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--pi-focus-ring);
+  outline: none;
+}
+
+@media (max-width: 40rem) {
+  .pi-site-nav__inner {
+    gap: 0.4rem 0.9rem;
+    padding-inline: 0.75rem;
+  }
+}
+
+@media print {
+  .pi-site-nav {
+    display: none;
+  }
+}
+
+@media (max-width: 58rem) {
+  .pi-grid,
+  .pi-grid--three,
+  .pi-download-grid,
+  .pi-gallery {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .pi-profile,
+  .pi-closing {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 40rem) {
+  .pi-grid,
+  .pi-grid--three,
+  .pi-download-grid,
+  .pi-gallery {
+    grid-template-columns: 1fr;
+  }
+  .pi-hero {
+    padding-top: 2.5rem;
+  }
+  .pi-window__body {
+    grid-template-columns: 1fr;
+  }
+  .pi-window__sidebar {
+    display: none;
+  }
+}

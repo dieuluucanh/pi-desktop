@@ -6,11 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   applyNpmOverride,
+  createNpmLatestVersionReader,
   createSdkPackagePort,
   npmOverrideCommand,
   NPM_CAPTURE_CLI_ENV,
   NPM_CAPTURE_LOG_ENV,
   NPM_CAPTURE_SHIM,
+  parseNpmVersionOutput,
   tailNpmOutput,
   type PackageManagerLike,
   type PackageManagerProgress,
@@ -142,6 +144,7 @@ function fakeManager(overrides: Partial<PackageManagerLike> = {}): FakeManager {
     },
     update: async (source) => record("update")(source),
     listConfiguredPackages: () => [],
+    checkForAvailableUpdates: async () => [],
     getInstalledPath: () => undefined,
     setProgressCallback: (callback) => {
       // The real manager emits progress while an operation runs; the fake emits a
@@ -305,5 +308,209 @@ describe("package failure decoration", () => {
       code: "consent_required",
     });
     expect(vi.isMockFunction(port.install)).toBe(false);
+  });
+});
+
+describe("createSdkPackagePort update checks", () => {
+  it("maps Pi's updates, normalises the source and drops what it cannot route", async () => {
+    const fake = fakeManager({
+      checkForAvailableUpdates: async () => [
+        { source: "foo", displayName: "foo", type: "npm", scope: "user" },
+        {
+          source: "git:github.com/owner/repo",
+          displayName: "owner/repo",
+          type: "git",
+          scope: "project",
+        },
+        { source: "npm:../../evil", displayName: "evil", type: "npm", scope: "user" },
+        { source: "./local-extension", displayName: "local", type: "npm", scope: "user" },
+      ],
+    });
+    const port = fakePort(fake);
+
+    expect(await port.checkUpdates(null)).toEqual({
+      offline: false,
+      updates: [
+        { source: "npm:foo", name: "foo", kind: "npm", scope: "user", latestVersion: null },
+        {
+          source: "git:github.com/owner/repo",
+          name: "owner/repo",
+          kind: "git",
+          scope: "project",
+          latestVersion: null,
+        },
+      ],
+    });
+  });
+
+  it("falls back to the parsed name when Pi reports no display name", async () => {
+    const fake = fakeManager({
+      checkForAvailableUpdates: async () => [
+        { source: "@scope/name", displayName: "", type: "npm", scope: "user" },
+      ],
+    });
+    expect((await fakePort(fake).checkUpdates(null)).updates[0]).toMatchObject({
+      source: "npm:@scope/name",
+      name: "@scope/name",
+    });
+  });
+
+  it("checks the project's own context", async () => {
+    const fake = fakeManager();
+    let seenCwd: string | null = null;
+    const port = createSdkPackagePort({
+      agentDir,
+      defaultCwd: projectDir,
+      npmCommand: null,
+      createSettingsManager: () => SettingsManager.inMemory(),
+      createManager: (options) => {
+        seenCwd = options.cwd;
+        return fake.manager;
+      },
+    });
+    await port.checkUpdates(projectDir);
+    expect(seenCwd).toBe(projectDir);
+  });
+
+  it("reports offline before asking the manager", async () => {
+    const previous = process.env.PI_OFFLINE;
+    process.env.PI_OFFLINE = "1";
+    let asked = false;
+    try {
+      const fake = fakeManager({
+        checkForAvailableUpdates: async () => {
+          asked = true;
+          return [];
+        },
+      });
+      expect(await fakePort(fake).checkUpdates(null)).toEqual({ updates: [], offline: true });
+      expect(asked).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.PI_OFFLINE;
+      else process.env.PI_OFFLINE = previous;
+    }
+  });
+
+  it("classifies a sweep failure with a hint", async () => {
+    const fake = fakeManager({
+      checkForAvailableUpdates: async () => {
+        throw new Error("npm ERR! code ENOTFOUND");
+      },
+    });
+    await expect(fakePort(fake).checkUpdates(null)).rejects.toMatchObject({
+      code: "offline",
+      message: expect.stringContaining("Hint:"),
+    });
+  });
+});
+
+describe("the display-version enrichment", () => {
+  function portWith(
+    fake: FakeManager,
+    readLatestVersion: (name: string) => Promise<string | null>,
+  ) {
+    return createSdkPackagePort({
+      agentDir,
+      defaultCwd: projectDir,
+      npmCommand: null,
+      createSettingsManager: () => SettingsManager.inMemory(),
+      createManager: () => fake.manager,
+      readVersion: async () => null,
+      readLatestVersion,
+    });
+  }
+
+  const sources = [
+    {
+      source: "npm:floating",
+      displayName: "floating",
+      type: "npm" as const,
+      scope: "user" as const,
+    },
+    {
+      source: "npm:pinned@1.2.3",
+      displayName: "pinned",
+      type: "npm" as const,
+      scope: "user" as const,
+    },
+    {
+      source: "npm:ranged@^1.2.0",
+      displayName: "ranged",
+      type: "npm" as const,
+      scope: "user" as const,
+    },
+    {
+      source: "git:github.com/owner/repo",
+      displayName: "owner/repo",
+      type: "git" as const,
+      scope: "user" as const,
+    },
+  ];
+
+  it("names the target only for a floating npm source", async () => {
+    const fake = fakeManager({ checkForAvailableUpdates: async () => sources });
+    const asked: string[] = [];
+    const port = portWith(fake, async (name) => {
+      asked.push(name);
+      return "9.9.9";
+    });
+
+    const result = await port.checkUpdates(null);
+    expect(asked).toEqual(["floating"]);
+    expect(result.updates.map((entry) => [entry.name, entry.latestVersion])).toEqual([
+      ["floating", "9.9.9"],
+      ["pinned", null],
+      ["ranged", null],
+      ["owner/repo", null],
+    ]);
+  });
+
+  it("keeps the entry, without a number, when the lookup fails", async () => {
+    const fake = fakeManager({
+      checkForAvailableUpdates: async () => [sources[0]!],
+    });
+    const port = portWith(fake, async () => {
+      throw new Error("npm ERR! code E404");
+    });
+    expect((await port.checkUpdates(null)).updates).toEqual([
+      expect.objectContaining({ name: "floating", latestVersion: null }),
+    ]);
+  });
+
+  it("does nothing when no reader can be built (no bundled npm)", async () => {
+    const fake = fakeManager({ checkForAvailableUpdates: async () => [sources[0]!] });
+    expect((await fakePort(fake).checkUpdates(null)).updates[0]?.latestVersion).toBeNull();
+  });
+
+  it("parses npm's string, array and garbage answers", () => {
+    expect(parseNpmVersionOutput('"1.2.3"')).toBe("1.2.3");
+    expect(parseNpmVersionOutput('["1.2.3","1.10.0","1.9.9"]')).toBe("1.10.0");
+    expect(parseNpmVersionOutput("[]")).toBeNull();
+    expect(parseNpmVersionOutput("null")).toBeNull();
+    expect(parseNpmVersionOutput("not json")).toBeNull();
+    expect(parseNpmVersionOutput('"  "')).toBeNull();
+  });
+
+  it("builds a reader only from a complete npm command", () => {
+    expect(createNpmLatestVersionReader(null)).toBeNull();
+    expect(createNpmLatestVersionReader([])).toBeNull();
+    expect(createNpmLatestVersionReader(["/runtime/node"])).toBeNull();
+    expect(createNpmLatestVersionReader(["/runtime/node", "/runtime/npm-cli.js"])).toBeTypeOf(
+      "function",
+    );
+  });
+
+  it("runs the configured npm CLI and reports its answer", async () => {
+    const fakeCli = join(root, "fake-version-cli.js");
+    await writeFile(fakeCli, 'process.stdout.write(JSON.stringify("2.5.0"));', "utf8");
+    const read = createNpmLatestVersionReader([process.execPath, fakeCli]);
+    expect(await read?.("anything")).toBe("2.5.0");
+  });
+
+  it("answers null when the CLI fails", async () => {
+    const fakeCli = join(root, "failing-version-cli.js");
+    await writeFile(fakeCli, "process.exit(7);", "utf8");
+    const read = createNpmLatestVersionReader([process.execPath, fakeCli]);
+    expect(await read?.("anything")).toBeNull();
   });
 });

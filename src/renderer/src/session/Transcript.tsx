@@ -1,10 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { diffLines } from "diff";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { copyText, hasSelectionWithin } from "../ui/clipboard";
+import { copyText } from "../ui/clipboard";
 import { cn } from "../ui/cn";
+import { MultilineText } from "../ui/multiline-text";
 import { Markdown } from "./Markdown";
 import { HighlightText } from "./Highlight";
 import { FindPatternContext } from "./find-context";
@@ -14,11 +23,12 @@ import { ExtensionBlock } from "./ExtensionBlock";
 import { OfficeToolCard } from "./OfficeToolCard";
 import { isOfficeTool, officeToolSummary } from "./office-tool-card";
 import { useMarkdownTransform } from "./useMarkdownTransform";
+import { useStickToBottom } from "./use-stick-to-bottom";
 import { useAppStore } from "../state/app-store";
 import { matchesBinding } from "../shortcuts/dom-keys";
-import { isNotificationMuted } from "../../../shared/notifications";
 import { resolveDesktopKeymap } from "../../../shared/desktop-keymap";
 import { isBlobRef } from "../../../shared/host-protocol";
+import { TRANSCRIPT_VIRTUALIZE_THRESHOLD } from "../../../shared/performance";
 import type { OfficeDocumentPane } from "../../../shared/office-documents";
 import {
   imagesOfPartial,
@@ -323,22 +333,19 @@ function NoticeView({
   onAbort?: () => void;
   running?: boolean;
 }) {
-  const notifications = useAppStore((state) => state.prefs.notifications);
-  // A muted extension notification stays in the history archive, but it must
-  // not take a row in the transcript. The hook runs before this early return.
-  if (
-    notice.event === "oi.notify" &&
-    isNotificationMuted({ message: notice.text, type: notice.severity }, notifications)
-  ) {
-    return null;
-  }
+  // `ctx.ui.notify` is chat content in terminal Pi: showStatus / showWarning /
+  // showError append to the chat. Notification classes and mute rules are
+  // bell/toast policy, never transcript policy — a class switch must not hide
+  // command output. `MultilineText` keeps the source lines verbatim.
   const tone =
     notice.severity === "error" ? "danger" : notice.severity === "warning" ? "warn" : "neutral";
   return (
     <div className="flex items-start gap-3 rounded-sm border border-line bg-surface px-3 py-2 text-xs">
       <Badge tone={tone}>{notice.severity}</Badge>
       <div className="flex-1">
-        <div>{<HighlightText text={notice.text} />}</div>
+        <MultilineText data-testid="transcript-notice-text">
+          <HighlightText text={notice.text} />
+        </MultilineText>
         {notice.detail ? (
           <pre className="mt-1 whitespace-pre-wrap font-mono text-[11px] text-ink-faint">
             <HighlightText text={notice.detail} />
@@ -694,13 +701,6 @@ export function TranscriptEmptyState({
   );
 }
 
-/**
- * Below this many items the transcript renders plainly: virtualizing five
- * messages costs more than it saves, and a plain list is what tests and small
- * sessions exercise. The 10k-item acceptance path still virtualizes.
- */
-export const VIRTUALIZE_THRESHOLD = 50;
-
 export function Transcript({
   items,
   tabId,
@@ -739,13 +739,6 @@ export function Transcript({
    */
   followPaused?: boolean;
 }) {
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const contentRef = useRef<HTMLDivElement | null>(null);
-  // The ref is the source of truth for the scroll effect (no re-render lag);
-  // the state only drives the "jump to latest" pill.
-  const stickToBottom = useRef(true);
-  const [atBottom, setAtBottom] = useState(true);
-  const [hasNews, setHasNews] = useState(false);
   const toolCardIds = useMemo(
     () => new Set(items.flatMap((item) => (item.kind === "tool" ? [item.tool.toolCallId] : []))),
     [items],
@@ -770,43 +763,12 @@ export function Transcript({
     return ids;
   }, [items, defaultPromptExpanded, promptOverrides]);
 
-  const virtualizer = useVirtualizer({
-    count: items.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => 96,
-    overscan: 8,
-  });
-
-  const scrollToBottom = useCallback(
-    (behavior: ScrollBehavior = "auto", options?: { force?: boolean }) => {
-      const node = scrollRef.current;
-      if (!node) return;
-      // A live selection belongs to the user. Auto-follow must not move the
-      // viewport out from under a drag-select while a response streams; the
-      // pill and Ctrl+End are the explicit ways to force it (2026-10-30 copy
-      // plan).
-      if (!options?.force && hasSelectionWithin(node)) {
-        setAtBottom(false);
-        setHasNews(true);
-        return;
-      }
-      if (typeof node.scrollTo === "function") {
-        node.scrollTo({ top: node.scrollHeight, behavior });
-      } else {
-        node.scrollTop = node.scrollHeight;
-      }
-      stickToBottom.current = true;
-      setAtBottom(true);
-      setHasNews(false);
-    },
-    [],
-  );
-
   /**
    * A size signature of the last item's streamed text. Streaming deltas grow the
-   * content without adding an item, so the old item-count effect never fired
-   * (plan step 10); this covers the no-`ResizeObserver` path (jsdom, old hosts)
-   * deterministically.
+   * content without adding an item, so the item-count effect never fired (plan
+   * step 10); this covers the no-`ResizeObserver` path (jsdom, old hosts)
+   * deterministically. The follow hook takes it as its content signal, so the
+   * hook stays free of transcript item types.
    */
   const streamSize = useMemo(() => {
     const last = items[items.length - 1];
@@ -824,49 +786,48 @@ export function Transcript({
     return last.notice.text.length;
   }, [items]);
 
-  const lastLength = useRef(items.length);
-  useEffect(() => {
-    if (items.length === lastLength.current) return;
-    lastLength.current = items.length;
-    if (stickToBottom.current && !followPaused) scrollToBottom();
-  }, [items.length, followPaused, scrollToBottom]);
+  // The whole scroll model lives in the hook (2026-11-25 plan step 1). The
+  // virtualizer must be built before the hook because its total size is the
+  // hook's `contentSize` signal (plan step 3), so the scroller element is shared
+  // by two refs: the hook's (pin + listeners) and this one (geometry). React
+  // attaches both through `attachScroller` below.
+  const scrollElementRef = useRef<HTMLDivElement | null>(null);
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollElementRef.current,
+    estimateSize: () => 96,
+    overscan: 8,
+  });
 
-  // Follow streamed growth while pinned. Scrolling up detaches; the pill is the
-  // only way back (terminal's fullscreen view behaves the same).
-  useEffect(() => {
-    if (!stickToBottom.current) {
-      // New content arrived while the user is reading above: offer the pill.
-      setHasNews(true);
-      return;
-    }
-    if (followPaused) return;
-    scrollToBottom();
-  }, [streamSize, followPaused, scrollToBottom]);
-
-  // Layout growth (an image decoding, a Mermaid block settling) does not change
-  // text length, so observe the content box where the platform supports it.
-  useEffect(() => {
-    const content = contentRef.current;
-    if (!content) return;
-    if (typeof ResizeObserver === "undefined") return;
-    let frame: number | null = null;
-    const observer = new ResizeObserver(() => {
-      if (!stickToBottom.current) {
-        setHasNews(true);
-        return;
-      }
-      if (followPaused || frame !== null) return;
-      frame = requestAnimationFrame(() => {
-        frame = null;
-        scrollToBottom();
-      });
+  const { scrollRef, contentRef, atBottom, hasNews, scrollToBottom, detachForJump, isPinned } =
+    useStickToBottom({
+      itemCount: items.length,
+      contentSignature: streamSize,
+      // An estimated row height settling changes the total size without changing
+      // any text: the browser then keeps growing the spacer, so this is a content
+      // change for the pin exactly like `streamSize` (plan step 3).
+      contentSize: virtualizer.getTotalSize(),
+      paused: followPaused,
     });
-    observer.observe(content);
-    return () => {
-      if (frame !== null) cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
-  }, [followPaused, scrollToBottom]);
+
+  // One DOM node, two refs: the hook's scroller and the virtualizer's measured
+  // element are the same element.
+  const attachScroller = useCallback(
+    (node: HTMLDivElement | null): void => {
+      scrollElementRef.current = node;
+      scrollRef.current = node;
+    },
+    [scrollRef],
+  );
+
+  // While pinned the hook owns the scroll; while unpinned TanStack keeps the
+  // reader's place when a row above is measured (plan step 3). `@tanstack/
+  // virtual-core` 3.17 exposes this as an instance property, not a
+  // `useVirtualizer` option, and it is asked at measure time — after the commit
+  // that carried `isPinned` — so a layout effect is early enough.
+  useLayoutEffect(() => {
+    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => !isPinned();
+  }, [virtualizer, isPinned]);
 
   // `Ctrl+End` is terminal Pi's jump-to-bottom; it must never steal the chord
   // from a native editor (where it means "end of document").
@@ -942,9 +903,13 @@ export function Transcript({
     if (!activeItemId) return;
     const index = items.findIndex((item) => item.id === activeItemId);
     if (index < 0) return;
+    // A search jump is not a user gesture, so tell the follow engine first:
+    // otherwise the pin that was in flight would fight the jump (2026-11-25
+    // transcript follow plan step 2).
+    detachForJump();
     // Virtualized rows have no DOM node when off screen, so the virtualizer owns
     // the jump; the plain list scrolls the rendered row into view.
-    if (items.length > VIRTUALIZE_THRESHOLD) {
+    if (items.length > TRANSCRIPT_VIRTUALIZE_THRESHOLD) {
       virtualizer.scrollToIndex(index, { align: "center" });
       return;
     }
@@ -984,13 +949,6 @@ export function Transcript({
     return <TranscriptEmptyState {...empty} />;
   }
 
-  const trackScroll = (element: HTMLDivElement): void => {
-    const bottom = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
-    stickToBottom.current = bottom;
-    setAtBottom(bottom);
-    if (bottom) setHasNews(false);
-  };
-
   const pill =
     !atBottom && items.length > 0 ? (
       <button
@@ -1029,18 +987,30 @@ export function Transcript({
     );
   };
 
-  if (items.length <= VIRTUALIZE_THRESHOLD) {
+  if (items.length <= TRANSCRIPT_VIRTUALIZE_THRESHOLD) {
     return (
       <FindPatternContext.Provider value={findOpen ? find.pattern : null}>
         <div className="relative h-full">
           {findBar}
           <div
-            ref={scrollRef}
+            ref={attachScroller}
             className="h-full overflow-y-auto px-4 py-3"
-            onScroll={(event) => trackScroll(event.currentTarget)}
             data-testid="transcript"
+            // Browser scroll anchoring would re-anchor the viewport to a row
+            // while the pin is moving it, so the two fight and the tail is
+            // lost. The hook owns the scroll position (plan step 3).
+            style={{ overflowAnchor: "none" }}
           >
-            <div ref={contentRef}>
+            <div
+              ref={contentRef}
+              data-testid="transcript-content"
+              // The column takes the pane width (minus this scroller's `px-4`).
+              // Any fixed measure (`ch`, `rem`, px) is absolute in CSS px, so a
+              // zoomed-out window would grow the pane and leave side gutters;
+              // display zoom must change how much content fits, not the margin
+              // (2026-11-15 transcript-width).
+              className="w-full"
+            >
               {items.map((item, index) => (
                 <div key={item.id} data-row-index={index} data-item-id={item.id}>
                   <TranscriptRow>{row(item)}</TranscriptRow>
@@ -1059,12 +1029,21 @@ export function Transcript({
       <div className="relative h-full">
         {findBar}
         <div
-          ref={scrollRef}
+          ref={attachScroller}
           className="h-full overflow-y-auto px-4 py-3"
-          onScroll={(event) => trackScroll(event.currentTarget)}
           data-testid="transcript"
+          // Same invariant as the plain path: the pin owns the scroll position,
+          // never the browser's scroll anchoring (plan step 3).
+          style={{ overflowAnchor: "none" }}
         >
-          <div ref={contentRef} className="relative" style={{ height: virtualizer.getTotalSize() }}>
+          <div
+            ref={contentRef}
+            data-testid="transcript-content"
+            // Same invariant as the plain path above: the column is the pane
+            // width, never a fixed measure (2026-11-15 transcript-width).
+            className="relative w-full"
+            style={{ height: virtualizer.getTotalSize() }}
+          >
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const item = items[virtualRow.index];
               if (!item) return null;

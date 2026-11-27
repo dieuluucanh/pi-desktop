@@ -38,7 +38,17 @@ export interface WebViewNavigationRequest {
 
 /** Normalized events the service consumes (never Electron's own signatures). */
 export type WebViewEvent =
-  "loading" | "loaded" | "navigated" | "title" | "favicon" | "failed" | "navigation-request";
+  | "loading"
+  | "loaded"
+  | "navigated"
+  | "title"
+  | "favicon"
+  | "failed"
+  | "navigation-request"
+  // The page called window.close() (the browser-like close request).
+  | "close-requested"
+  // The webContents is gone (the page closed itself or the view was torn down).
+  | "destroyed";
 
 /** The slice of `WebContentsView`'s webContents the service drives. */
 export interface WebViewContentsLike {
@@ -52,6 +62,8 @@ export interface WebViewContentsLike {
   reload(): void;
   stop(): void;
   setZoomFactor(factor: number): void;
+  /** Optional so the manager policy can land before the Electron adapter. */
+  isDestroyed?(): boolean;
 }
 
 /** The slice of `WebContentsView` the service drives. */
@@ -74,6 +86,11 @@ export interface WebTabManagerDeps {
   emitState: (state: WebTabState) => void;
   /** Asks the renderer what to do about a navigation the app did not author. */
   emitNavigationRequest: (request: WebNavigationRequest) => void;
+  /**
+   * Closes the tab after the page asked to close itself. Optional so the policy
+   * can land before the main wiring; unknown tabs are the caller's concern.
+   */
+  requestClose?: (tabId: string) => void;
   now?: () => number;
 }
 
@@ -105,6 +122,10 @@ interface ManagedView {
   bounds: { x: number; y: number; width: number; height: number };
   visible: boolean;
   detach: Array<() => void>;
+  /** The webContents is gone; never project through it again. */
+  gone: boolean;
+  /** The page already asked to close this tab; request it once. */
+  closeRequested: boolean;
 }
 
 function isString(value: unknown): value is string {
@@ -131,7 +152,15 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
   let activeTabId: string | null = null;
 
   const project = (managed: ManagedView): WebTabState => {
-    const url = sanitizeWebUrl(managed.view.webContents.getURL()) ?? managed.state.url;
+    if (managed.gone) return managed.state;
+    const contents = managed.view.webContents;
+    let raw = "";
+    try {
+      if (contents.isDestroyed?.() !== true) raw = contents.getURL();
+    } catch {
+      // A view that died between events keeps its last projected state.
+    }
+    const url = sanitizeWebUrl(raw) ?? managed.state.url;
     return { ...managed.state, url };
   };
 
@@ -219,6 +248,19 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
         onNavigation(managed, request);
       }
     });
+    on("close-requested", () => {
+      if (managed.closeRequested) return;
+      managed.closeRequested = true;
+      try {
+        deps.requestClose?.(managed.tabId);
+      } catch {
+        // A close callback must never break the manager; the user can still
+        // close the tab from the strip.
+      }
+    });
+    on("destroyed", () => {
+      managed.gone = true;
+    });
   };
 
   const create = (tab: TabRecord & { url: string }): ManagedView => {
@@ -235,6 +277,8 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
       // evicted because eviction only takes hidden views.
       visible: false,
       detach: [],
+      gone: false,
+      closeRequested: false,
     };
     parkedStates.delete(tab.id);
     attach(managed);
@@ -268,14 +312,38 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
 
       // Close views whose tab is gone or is no longer a web tab. A closed tab
       // must not leave a parked state behind forever.
+      const goneIds = new Set<string>();
       for (const managed of [...views.values()]) {
         if (!webTabs.has(managed.tabId)) {
           teardown(managed);
           parkedStates.delete(managed.tabId);
         }
       }
+      // A page that closed itself left a dead view. Tear it down now, and keep
+      // it out of this pass's creation list while the close request lands: a
+      // tab-table update may still carry the tab for a frame.
+      for (const managed of [...views.values()]) {
+        if (!managed.gone) continue;
+        goneIds.add(managed.tabId);
+        teardown(managed);
+      }
       for (const tabId of [...parkedStates.keys()]) {
         if (!webTabs.has(tabId)) parkedStates.delete(tabId);
+      }
+
+      // The tab table is the authority for a web tab's owner: a reused review
+      // URL can be re-pointed to a new session. Live views emit the change;
+      // parked states are updated in place for the next creation.
+      for (const tab of webTabs.values()) {
+        const link = tab.sessionTabId ?? null;
+        const managed = views.get(tab.id);
+        if (managed && managed.state.sessionTabId !== link) {
+          update(managed, { sessionTabId: link });
+        }
+        const parked = parkedStates.get(tab.id);
+        if (parked && parked.sessionTabId !== link) {
+          parkedStates.set(tab.id, { ...parked, sessionTabId: link });
+        }
       }
 
       activeTabId =
@@ -308,7 +376,7 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
       // The active tab always gets a view. If the limit is reached, park the
       // least-recently-active hidden view first (never a visible or active tab).
       const activeTab = activeTabId ? webTabs.get(activeTabId) : undefined;
-      if (activeTab && !views.has(activeTab.id)) {
+      if (activeTab && !views.has(activeTab.id) && !goneIds.has(activeTab.id)) {
         while (views.size >= MAX_LIVE_WEB_VIEWS && evictHidden()) {
           // keep evicting until there is a slot or nothing else can go
         }
@@ -317,7 +385,7 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
 
       // Restore/open other web tabs only while there is a slot, newest first.
       const candidates = [...webTabs.values()]
-        .filter((tab) => !views.has(tab.id))
+        .filter((tab) => !views.has(tab.id) && !goneIds.has(tab.id))
         .sort((left, right) => right.lastActiveAt - left.lastActiveAt);
       for (const tab of candidates) {
         if (views.size >= MAX_LIVE_WEB_VIEWS) break;
@@ -337,7 +405,7 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
 
     setBounds(tabId, bounds) {
       const managed = views.get(tabId);
-      if (!managed) return;
+      if (!managed || managed.gone) return;
       const parsed = sanitizeWebTabBounds(bounds);
       if (!parsed) return;
       managed.bounds = { x: parsed.x, y: parsed.y, width: parsed.width, height: parsed.height };
@@ -348,7 +416,7 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
 
     command(tabId, command) {
       const managed = views.get(tabId);
-      if (!managed) return;
+      if (!managed || managed.gone) return;
       const parsed: WebCommand | null = parseWebCommand(command);
       if (!parsed) return;
       const contents = managed.view.webContents;
@@ -381,7 +449,7 @@ export function createWebTabManager(deps: WebTabManagerDeps): WebTabManager {
     navigate(tabId, url) {
       const managed = views.get(tabId);
       const target = sanitizeWebUrl(url);
-      if (!managed || !target) return false;
+      if (!managed || managed.gone || !target) return false;
       void managed.view.webContents.loadURL(target);
       update(managed, { url: target, status: "loading", error: null });
       return true;

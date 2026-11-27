@@ -28,7 +28,14 @@ import {
   type CheckpointConfig,
 } from "./checkpoints";
 import { DEFAULT_ZOOM, clampZoomFactor } from "./zoom";
+import { MAX_PACKAGE_UPDATE_SIGNATURE } from "./packages";
 import { sanitizeThemeColorPrefs, type ThemeColorPrefs } from "./themes";
+import {
+  DEFAULT_TERMINAL_PREFS,
+  mergeTerminalPrefs,
+  sanitizeTerminalPrefs,
+  type TerminalPrefs,
+} from "./terminal-prefs";
 import {
   DEFAULT_EDITOR_PREFS,
   mergeEditorPrefs,
@@ -47,6 +54,12 @@ import {
   sanitizeUpdatePrefs,
   type UpdatePrefs,
 } from "./updates";
+import {
+  DEFAULT_COMMIT_MESSAGE_PREFS,
+  mergeCommitMessagePrefs,
+  sanitizeCommitMessagePrefs,
+  type CommitMessagePrefs,
+} from "./commit-prefs";
 
 export const PREF_KEYS = [
   "theme",
@@ -66,15 +79,101 @@ export const PREF_KEYS = [
   "promptOrigins",
   "rail",
   "editor",
+  "terminal",
   "explorer",
+  "commitMessage",
   "checkpoints",
   "updates",
+  "packages",
+  "dialogs",
   "grid",
 ] as const;
 
 export type PrefKey = (typeof PREF_KEYS)[number];
 
 export type ThemeSetting = "dark" | "light" | "system";
+
+/**
+ * How a background tab's extension dialog may take the window (2026-11-06
+ * tab-switch plan).
+ *
+ * `blocking` focuses the owning tab only when the dialog waits for the user and
+ * the user is not typing or watching a run; `never` only badges the tab. The
+ * active tab answers a *background* tab's question, so silently moving the
+ * window is never the right default.
+ */
+export type DialogFocusPolicy = "blocking" | "never";
+
+export interface DialogPrefs {
+  autoFocus: DialogFocusPolicy;
+}
+
+export const DEFAULT_DIALOG_PREFS: DialogPrefs = { autoFocus: "blocking" };
+
+/** Unknown/missing values keep the conservative default. */
+export function sanitizeDialogPrefs(input: unknown): DialogPrefs {
+  const source = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  return { autoFocus: source.autoFocus === "never" ? "never" : "blocking" };
+}
+
+/**
+ * Extension update checks (plan step 5).
+ *
+ * `autoCheck` gates only the *background* sweep (after launch and every six
+ * hours); opening the Extensions page or pressing Check now always checks.
+ *
+ * The two markers are fingerprints of an update *set*, not a version, because an
+ * extension update is a set (see `packageUpdateSignature`). They record two
+ * different facts: `notifiedSignature` is the set whose toast has already been
+ * announced (so a relaunch does not toast again), and `dismissedSignature` is
+ * the set whose bell row the user removed with `×`/Clear. Neither is a row
+ * cache: the row itself is derived from the live set, so a new set raises it and
+ * an applied update removes it.
+ */
+export interface PackageCheckPrefs {
+  autoCheck: boolean;
+  notifiedSignature: string | null;
+  dismissedSignature: string | null;
+}
+
+export const DEFAULT_PACKAGE_CHECK_PREFS: PackageCheckPrefs = {
+  autoCheck: true,
+  notifiedSignature: null,
+  dismissedSignature: null,
+};
+
+/** The same bound for every persisted update-set fingerprint. */
+function boundedPackageSignature(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0
+    ? value.slice(0, MAX_PACKAGE_UPDATE_SIGNATURE)
+    : null;
+}
+
+/** Rebuilds from defaults: an older app-state.json has no `packages` block. */
+export function sanitizePackageCheckPrefs(input: unknown): PackageCheckPrefs {
+  const source =
+    input && typeof input === "object" && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : {};
+  return {
+    autoCheck:
+      typeof source.autoCheck === "boolean"
+        ? source.autoCheck
+        : DEFAULT_PACKAGE_CHECK_PREFS.autoCheck,
+    notifiedSignature: boundedPackageSignature(source.notifiedSignature),
+    // Absent in an older app-state.json: no set has been dismissed yet.
+    dismissedSignature: boundedPackageSignature(source.dismissedSignature),
+  };
+}
+
+/** A partial patch keeps the other key: turning checks off must not forget the marker. */
+export function mergePackageCheckPrefs(
+  current: PackageCheckPrefs,
+  patch: unknown,
+): PackageCheckPrefs {
+  const source = patch && typeof patch === "object" && !Array.isArray(patch) ? patch : {};
+  return sanitizePackageCheckPrefs({ ...current, ...(source as Record<string, unknown>) });
+}
 
 export interface UiPrefs {
   theme: ThemeSetting;
@@ -136,11 +235,15 @@ export interface UiPrefs {
    */
   desktopKeybindings: DesktopKeybindings;
   /**
-   * Muted extension notifications (`ctx.ui.notify`). The archive keeps every
-   * arrival; these rules only hide a matching notification from the transcript
-   * and suppress its toast until the user unmutes it (2026-10-31 UI plan).
+   * Notification classes and per-message mute rules (`ctx.ui.notify`). Classes
+   * are the coarse on/off switch (Info starts off); rules silence individual
+   * messages. The archive keeps every arrival, and either switch only hides it
+   * from the bell, toast and transcript until it is restored (2026-11-08 plan;
+   * rules from the 2026-10-31 UI plan).
    */
   notifications: NotificationPrefs;
+  /** How a background tab's extension dialog may take the window. */
+  dialogs: DialogPrefs;
   /**
    * Whether the transcript shows the expanded body of a command prompt — a
    * prompt template, a `/skill:*` command, or a user message injected by an
@@ -165,8 +268,19 @@ export interface UiPrefs {
   rail: RailPrefs;
   /** Desktop editor preferences (font, wrap, format-on-save, formatters). */
   editor: EditorPrefs;
+  /**
+   * Integrated-terminal preferences (2026-11-05 terminal plan): font, scrollback,
+   * cursor, shell profile and the two shell-behaviour switches. These are app
+   * preferences; Pi's `shellPath` stays the agent's, never the terminal's.
+   */
+  terminal: TerminalPrefs;
   /** File-explorer view preferences (hidden/ignored visibility, sort order). */
   explorer: ExplorerPrefs;
+  /**
+   * The model that writes AI commit messages (2026-11-25 plan step 17).
+   * `null` means Default: the project's then the global saved default.
+   */
+  commitMessage: CommitMessagePrefs;
   /**
    * Folder checkpoints (git-checkpoint plan D19): **the** source of the
    * checkpoint settings. Main projects this object to
@@ -178,11 +292,17 @@ export interface UiPrefs {
   checkpoints: CheckpointConfig;
   /**
    * The updater's app preferences: whether the background check runs after
-   * launch, and the offered version whose status-bar chip was dismissed. The
-   * build channel and support gate decide whether `autoCheck` can take effect;
-   * see `src/shared/updates.ts`.
+   * launch, and the version whose notification the bell has already announced.
+   * The build channel and support gate decide whether `autoCheck` can take
+   * effect; see `src/shared/updates.ts`.
    */
   updates: UpdatePrefs;
+  /**
+   * Extension update checks (plan step 5): the background switch and the update
+   * set the bell has already announced. Separate from `updates` because the two
+   * channels have different cadences and different mute semantics.
+   */
+  packages: PackageCheckPrefs;
   /**
    * The session view grid (2026-11-03 plan): which preset shape the content area
    * shows and which tab each pane holds. `panes` is indexed by pane and padded
@@ -213,20 +333,28 @@ export const DEFAULT_PREFS: UiPrefs = {
   profileMode: DEFAULT_PROFILE_MODE,
   onboardingCompletedAt: null,
   desktopKeybindings: {},
-  // A fresh array so a caller mutating one prefs value cannot mutate the
-  // module-level default.
-  notifications: { ...DEFAULT_NOTIFICATION_PREFS, muted: [] },
+  // A fresh array and a fresh classes object so a caller mutating one prefs
+  // value cannot mutate the module-level default.
+  notifications: {
+    ...DEFAULT_NOTIFICATION_PREFS,
+    classes: { ...DEFAULT_NOTIFICATION_PREFS.classes },
+    muted: [],
+  },
+  dialogs: { ...DEFAULT_DIALOG_PREFS },
   showExpandedPrompts: false,
   promptOrigins: {},
   // A fresh object *and* a fresh order array (not the shared default) so a
   // caller mutating one prefs value cannot mutate the module-level default.
   rail: { ...DEFAULT_RAIL_PREFS, order: [...DEFAULT_RAIL_PREFS.order] },
   editor: { ...DEFAULT_EDITOR_PREFS, formatters: {} },
+  terminal: { ...DEFAULT_TERMINAL_PREFS },
   explorer: { ...DEFAULT_EXPLORER_PREFS },
+  commitMessage: { ...DEFAULT_COMMIT_MESSAGE_PREFS },
   // A fresh object for the same reason as `rail`: a caller mutating one prefs
   // value must not mutate the module-level default (nor the shared config).
   checkpoints: { ...DEFAULT_CHECKPOINT_CONFIG, exclude: [] },
   updates: { ...DEFAULT_UPDATE_PREFS },
+  packages: { ...DEFAULT_PACKAGE_CHECK_PREFS },
   // A fresh `panes` array for the same reason as `rail.order`: the shared
   // default's slot must never be mutated by a caller. `lastMultiLayout` keeps the
   // last split when the user selects Single.
@@ -296,6 +424,7 @@ export function sanitizePrefs(input: unknown): UiPrefs {
         : null,
     desktopKeybindings: sanitizeDesktopKeybindings(source.desktopKeybindings),
     notifications: sanitizeNotificationPrefs(source.notifications),
+    dialogs: sanitizeDialogPrefs(source.dialogs),
     // Missing means off: a fresh app-state.json must not reveal command
     // prompts by omission (the plan's default).
     showExpandedPrompts:
@@ -307,7 +436,13 @@ export function sanitizePrefs(input: unknown): UiPrefs {
     // New in 2026-11: an older app-state.json has neither block; the sanitizer
     // supplies the defaults, so no version bump is needed.
     editor: sanitizeEditorPrefs(source.editor),
+    // New in 2026-11: an older app-state.json has no block; the sanitizer
+    // supplies the defaults, so no version bump is needed.
+    terminal: sanitizeTerminalPrefs(source.terminal),
     explorer: sanitizeExplorerPrefs(source.explorer),
+    // New in 2026-11: an older app-state.json has no block, so Default (null)
+    // is the answer rather than a migration.
+    commitMessage: sanitizeCommitMessagePrefs(source.commitMessage),
     // Checkpoints are **on by default** (D14); the caps are what make that
     // defensible, so an older app-state.json without the key gets the defaults
     // rather than an off switch it never asked for. Unknown keys are dropped by
@@ -316,6 +451,9 @@ export function sanitizePrefs(input: unknown): UiPrefs {
     // Automatic update checks are on by default; the build channel/support gate
     // still decide whether they can run (local and dev builds stay off).
     updates: sanitizeUpdatePrefs(source.updates),
+    // Extension update checks are on by default too; the switch gates only the
+    // background sweep, and an older app-state.json gets the defaults.
+    packages: sanitizePackageCheckPrefs(source.packages),
     // The session view grid: which preset is on screen and which tab each pane
     // holds. An older app-state.json has no block; the sanitizer supplies the
     // single-pane default, so no migration is needed.
@@ -335,6 +473,16 @@ export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
     "editor" in source ? mergeEditorPrefs(current.editor, source.editor) : current.editor;
   const explorer =
     "explorer" in source ? mergeExplorerPrefs(current.explorer, source.explorer) : current.explorer;
+  // The commit-message block is nested one level (`{ model }`), so a patch that
+  // names only the model must keep the rest of the block (the sanitizer decides).
+  const commitMessage =
+    "commitMessage" in source
+      ? mergeCommitMessagePrefs(current.commitMessage, source.commitMessage)
+      : current.commitMessage;
+  // Every terminal preference is flat, so a patch that names only the font must
+  // keep the chosen profile and shell path.
+  const terminal =
+    "terminal" in source ? mergeTerminalPrefs(current.terminal, source.terminal) : current.terminal;
   // `checkpoints` is flat, but it must not lose keys present in the patch's
   // absence: a `{ checkpoints: { enabled: false } }` patch keeps the retention
   // values the user set earlier. The sanitizer fills the rest.
@@ -342,17 +490,30 @@ export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
     "checkpoints" in source
       ? sanitizeCheckpointConfig({ ...current.checkpoints, ...asRecord(source.checkpoints) })
       : current.checkpoints;
-  // The mute list is nested too: a patch that only mentions `notifications`
-  // must not let the sanitizer replace the current rules with an empty list
-  // unless it actually supplied a `muted` array.
+  // Both notification blocks are nested: a class patch must keep the other
+  // classes and the mute list, and a mute patch must keep the classes.
+  const notificationPatch = asRecord(source.notifications);
   const notifications =
     "notifications" in source
-      ? sanitizeNotificationPrefs({ ...current.notifications, ...asRecord(source.notifications) })
+      ? sanitizeNotificationPrefs({
+          ...current.notifications,
+          ...notificationPatch,
+          classes: {
+            ...current.notifications.classes,
+            ...asRecord(notificationPatch.classes),
+          },
+        })
       : current.notifications;
   // The updater prefs are nested too: turning automatic checks off must not
   // drop a per-version dismissal.
   const updates =
     "updates" in source ? mergeUpdatePrefs(current.updates, source.updates) : current.updates;
+  // The package-check prefs are nested as well: turning automatic checks off
+  // must keep the marker that stops a dismissed update set from re-raising.
+  const packages =
+    "packages" in source
+      ? mergePackageCheckPrefs(current.packages, source.packages)
+      : current.packages;
   // `grid.panes` is a list, so a patch that names only the layout must keep the
   // assignments (and vice versa); `mergeGridPrefs` owns that rule.
   const grid = "grid" in source ? mergeGridPrefs(current.grid, source.grid) : current.grid;
@@ -361,10 +522,13 @@ export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
     ...source,
     rail,
     editor,
+    terminal,
     explorer,
+    commitMessage,
     checkpoints,
     notifications,
     updates,
+    packages,
     grid,
   });
 }

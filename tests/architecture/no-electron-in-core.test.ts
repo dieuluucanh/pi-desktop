@@ -29,6 +29,7 @@ const CORE_DIRS = [
 const CORE_FILES = [
   "src/main/host-build.ts",
   "src/main/session-service.ts",
+  "src/main/tab-selection.ts",
   "src/main/diagnostics-service.ts",
   "src/main/security.ts",
   "src/main/branding.ts",

@@ -55,6 +55,13 @@ export interface GitRunner {
 
 /** Read-only queries are capped tight; a slow repo must not freeze the rail. */
 export const GIT_STATUS_TIMEOUT_MS = 2_000;
+/**
+ * `git status` is the one read that may legitimately exceed a probe's budget:
+ * `--untracked-files=all` walks every untracked file, so a large tree can take
+ * seconds even on a healthy repository. The rail still bounds it, and a timeout
+ * is reported honestly (see `GitUnavailableReason: "timeout"`).
+ */
+export const GIT_STATUS_READ_TIMEOUT_MS = 10_000;
 /** Local writes (add, commit, checkout) are allowed a little longer. */
 export const GIT_WRITE_TIMEOUT_MS = 10_000;
 /** Network operations get the longest budget, but still a budget. */

@@ -133,3 +133,51 @@ test("collapses and reopens the sidebar from the header and tab strip", async ()
   await show.click();
   await expect(window.getByLabel("Navigation")).toBeVisible();
 });
+
+test("keeps the Projects header pinned while the sidebar list scrolls", async () => {
+  // `MAX_PROJECTS` is 30 (`shared/projects`) and 30 collapsed rows are taller
+  // than the 860px window, so the sidebar's scroller really scrolls. The header
+  // is pinned *outside* that scroller (2026-11-19 sidebar plan), which only a
+  // real layout can verify: jsdom has no scroll geometry, so its renderer test
+  // asserts the DOM structure instead.
+  const projects = Array.from({ length: 30 }, (_, index) => {
+    const name = `project-${String(index + 1).padStart(2, "0")}`;
+    return {
+      path: `C:\\work\\${name}`,
+      name,
+      addedAt: index + 1,
+      lastOpenedAt: index + 1,
+    };
+  });
+  launched = await launchApp({ settings: { theme: "dark" }, appState: { projects } });
+  const { window } = launched;
+
+  const header = window.getByTestId("projects-header");
+  const viewport = window
+    .getByTestId("sidebar-scroll")
+    .locator("[data-radix-scroll-area-viewport]");
+
+  // The list has rendered once its last project row is there. Assert on text,
+  // not `toBeVisible()`: a row scrolled out of the viewport is still rendered,
+  // and `getByRole` names match by substring (`project-30` would also match
+  // "Expand project-30").
+  await expect(window.getByTestId("projects-section")).toContainText("project-30");
+  await expect(header).toBeVisible();
+  const before = await header.boundingBox();
+  expect(before).not.toBeNull();
+  expect(await viewport.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(
+    true,
+  );
+
+  const scrolledTo = await viewport.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    return element.scrollTop;
+  });
+  expect(scrolledTo).toBeGreaterThan(0);
+
+  const after = await header.boundingBox();
+  expect(after).not.toBeNull();
+  if (!before || !after) throw new Error("the Projects header has no box");
+  expect(Math.abs(after.y - before.y)).toBeLessThanOrEqual(1);
+  await expect(header).toBeVisible();
+});
