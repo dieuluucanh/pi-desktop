@@ -1,10 +1,10 @@
 /**
  * Settings → Editor (2026-11-25 editor plan, step 12).
  *
- * The persisted defaults for the file editor: content font size, the wrap
- * vocabulary (`auto`/`always`/`never`), the width vocabulary
- * (`auto`/`full`/`compact`) and the compact column measure. Per-tab overrides
- * live in the editor toolbar and never write these preferences.
+ * The persisted defaults for the file editor: content font size and the wrap
+ * vocabulary (`auto`/`always`/`never`). The editor always fills the pane, so
+ * there is no width preference. Per-tab overrides live in the editor toolbar
+ * and never write these preferences.
  *
  * Every write goes through `setEditorPrefs`, which merges with the shared
  * sanitizer, clamps the numeric fields and resolves after main has applied the
@@ -15,11 +15,8 @@ import { useState } from "react";
 import {
   DEFAULT_EDITOR_FONT_SIZE,
   MAX_EDITOR_FONT_SIZE,
-  MAX_EDITOR_WIDTH_COLUMNS,
   MIN_EDITOR_FONT_SIZE,
-  MIN_EDITOR_WIDTH_COLUMNS,
   type EditorPrefs,
-  type EditorWidth,
   type EditorWordWrap,
 } from "../../../shared/editor-prefs";
 import { useAppStore } from "../state/app-store";
@@ -54,19 +51,10 @@ export function EditorSettingsCard(): React.JSX.Element {
   });
   const fontSizeText = draftText(fontSizeDraft, committedFontSize);
 
-  const committedColumns = String(prefs.widthColumns);
-  const [columnsDraft, setColumnsDraft] = useState<Draft>({
-    committed: committedColumns,
-    text: committedColumns,
-  });
-  const columnsText = draftText(columnsDraft, committedColumns);
-
   const [error, setError] = useState<string | null>(null);
 
   const setFontSizeText = (text: string): void =>
     setFontSizeDraft({ committed: committedFontSize, text });
-  const setColumnsText = (text: string): void =>
-    setColumnsDraft({ committed: committedColumns, text });
 
   const save = (patch: Partial<EditorPrefs>): void => {
     setError(null);
@@ -86,24 +74,13 @@ export function EditorSettingsCard(): React.JSX.Element {
     save({ fontSize: next });
   };
 
-  const commitColumns = (raw: string): void => {
-    const value = Number(raw.trim());
-    if (!Number.isFinite(value)) {
-      setColumnsText(String(prefs.widthColumns));
-      return;
-    }
-    const next = clamp(value, MIN_EDITOR_WIDTH_COLUMNS, MAX_EDITOR_WIDTH_COLUMNS);
-    setColumnsText(String(next));
-    save({ widthColumns: next });
-  };
-
   return (
     <section className="card flex flex-col gap-4" data-testid="settings-editor">
       <div>
         <h2 className="text-sm font-semibold">Editor</h2>
         <p className="text-xs text-ink-muted">
-          Defaults for the file editor. A per-tab control in the editor toolbar can override wrap
-          and width for the file you are reading.
+          Defaults for the file editor. A per-tab control in the editor toolbar can override
+          wrapping for the file you are reading.
         </p>
       </div>
 
@@ -147,45 +124,6 @@ export function EditorSettingsCard(): React.JSX.Element {
           <option value="always">Always</option>
           <option value="never">Never</option>
         </select>
-      </SettingsRow>
-
-      <SettingsRow
-        label="Default width"
-        hint="Auto uses the compact column for prose and the full pane for code."
-      >
-        <select
-          aria-label="Default editor width"
-          className={INPUT_CLASS}
-          value={prefs.width}
-          onChange={(event) => save({ width: event.target.value as EditorWidth })}
-        >
-          <option value="auto">Auto (prose)</option>
-          <option value="full">Full</option>
-          <option value="compact">Compact</option>
-        </select>
-      </SettingsRow>
-
-      <SettingsRow label="Reading column" hint="The centred compact column, in characters.">
-        <div className="flex flex-wrap items-center gap-2">
-          <input
-            type="number"
-            aria-label="Reading column width"
-            className={`${INPUT_CLASS} w-24`}
-            min={MIN_EDITOR_WIDTH_COLUMNS}
-            max={MAX_EDITOR_WIDTH_COLUMNS}
-            value={columnsText}
-            onChange={(event) => setColumnsText(event.target.value)}
-            onBlur={(event) => commitColumns(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") event.currentTarget.blur();
-            }}
-          />
-          <span className="text-xs text-ink-faint">{prefs.widthColumns} characters</span>
-        </div>
-        <p className="text-xs text-ink-faint">
-          Compact wraps at the column, so it never shows a horizontal scrollbar. A per-tab toggle in
-          the editor toolbar overrides both defaults.
-        </p>
       </SettingsRow>
 
       {error ? <p className="text-xs text-danger">{error}</p> : null}

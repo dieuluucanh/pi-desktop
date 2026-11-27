@@ -86,14 +86,10 @@ theme:
 - **Font size** — 11–20 px for the editor content.
 - **Default wrap** — `Auto (prose)` wraps Markdown, MDX and plain text while
   leaving code unwrapped; `Always` and `Never` are unconditional.
-- **Default width** — `Auto (prose)` uses the compact reading column for prose
-  and the full pane for code; `Full` and `Compact` force one measure.
-- **Reading column** — the compact column width in characters (60–200, default
-  100). Compact always wraps, so it never shows a horizontal scrollbar.
 
-The editor toolbar overrides wrap and width for the current tab only (Wrap
-button / <kbd>Alt</kbd>+<kbd>Z</kbd> and the Full/Compact width button); the
-override clears when the tab closes and does not change these defaults.
+The editor toolbar's Wrap button (<kbd>Alt</kbd>+<kbd>Z</kbd>) overrides
+wrapping for the current tab only; the override clears when the tab closes and
+does not change these defaults.
 
 ## Preferences that are _not_ Pi settings
 

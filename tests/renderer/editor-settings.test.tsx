@@ -13,8 +13,6 @@ beforeEach(() => {
     ...DEFAULT_PREFS.editor,
     fontSize: 16,
     wordWrap: "always" as const,
-    width: "compact" as const,
-    widthColumns: 140,
   };
   handles = installBridge({ prefs: { editor } });
   useAppStore.setState({
@@ -30,12 +28,11 @@ describe("EditorSettingsCard", () => {
     expect(screen.getByTestId("settings-editor")).toBeInTheDocument();
     expect(screen.getByLabelText("Editor font size")).toHaveValue(16);
     expect(screen.getByLabelText("Default word wrap")).toHaveValue("always");
-    expect(screen.getByLabelText("Default editor width")).toHaveValue("compact");
-    expect(screen.getByLabelText("Reading column width")).toHaveValue(140);
-    expect(screen.getByText(/never shows a horizontal scrollbar/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Default editor width")).toBeNull();
+    expect(screen.queryByLabelText("Reading column width")).toBeNull();
   });
 
-  it("writes font size, wrap, width and column through prefs.set", async () => {
+  it("writes font size and wrap through prefs.set", async () => {
     const set = vi.spyOn(window.pi.prefs, "set");
     render(<EditorSettingsCard />);
 
@@ -54,38 +51,7 @@ describe("EditorSettingsCard", () => {
         editor: expect.objectContaining({ wordWrap: "never" }),
       }),
     );
-
-    await userEvent.selectOptions(screen.getByLabelText("Default editor width"), "full");
-    await waitFor(() =>
-      expect(set).toHaveBeenCalledWith({
-        editor: expect.objectContaining({ width: "full" }),
-      }),
-    );
-
-    const columns = screen.getByLabelText("Reading column width");
-    fireEvent.change(columns, { target: { value: "150" } });
-    fireEvent.blur(columns);
-    await waitFor(() =>
-      expect(set).toHaveBeenCalledWith({
-        editor: expect.objectContaining({ widthColumns: 150 }),
-      }),
-    );
-    await waitFor(() => expect(handles.prefs.editor.widthColumns).toBe(150));
-  });
-
-  it("clamps the reading column to 60..200", async () => {
-    render(<EditorSettingsCard />);
-    const columns = screen.getByLabelText("Reading column width");
-
-    fireEvent.change(columns, { target: { value: "10" } });
-    fireEvent.blur(columns);
-    await waitFor(() => expect(useAppStore.getState().prefs.editor.widthColumns).toBe(60));
-    expect(handles.prefs.editor.widthColumns).toBe(60);
-
-    fireEvent.change(columns, { target: { value: "500" } });
-    fireEvent.blur(columns);
-    await waitFor(() => expect(useAppStore.getState().prefs.editor.widthColumns).toBe(200));
-    expect(handles.prefs.editor.widthColumns).toBe(200);
+    await waitFor(() => expect(handles.prefs.editor.wordWrap).toBe("never"));
   });
 
   it("shows an error line when the write rejects", async () => {

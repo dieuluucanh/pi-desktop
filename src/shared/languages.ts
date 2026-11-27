@@ -253,9 +253,10 @@ export function languageIdForPath(path: string): LanguageId {
 /**
  * Ids whose files are prose rather than code.
  *
- * The editor wraps and centres these by default: a long markdown or plan line
- * should not force a horizontal scrollbar. `plaintext` counts because its
- * typical files (notes, `.env`, `Makefile`) are read, not compiled.
+ * The editor wraps these by default: a long markdown or plan line should wrap
+ * at the pane width instead of forcing a horizontal scrollbar. `plaintext`
+ * counts because its typical files (notes, `.env`, `Makefile`) are read, not
+ * compiled.
  */
 const PROSE_LANGUAGES: ReadonlySet<LanguageId> = new Set<LanguageId>([
   "markdown",
@@ -263,7 +264,7 @@ const PROSE_LANGUAGES: ReadonlySet<LanguageId> = new Set<LanguageId>([
   "plaintext",
 ]);
 
-/** True when a language id is prose (wrap and compact measure are the defaults). */
+/** True when a language id is prose (wrapped by default under `wordWrap: "auto"`). */
 export function isProseLanguage(languageId: LanguageId): boolean {
   return PROSE_LANGUAGES.has(languageId);
 }

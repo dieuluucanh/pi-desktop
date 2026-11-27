@@ -1,7 +1,7 @@
 import { useEffect } from "react";
-import { Maximize2, Minimize2, Save, Wand2, WrapText } from "lucide-react";
+import { Save, Wand2, WrapText } from "lucide-react";
 
-import { effectiveEditorWidth, shouldWrap } from "../../../shared/editor-prefs";
+import { effectiveWordWrap } from "../../../shared/editor-prefs";
 import { isEditorTab, type TabRecord } from "../../../shared/session-ipc";
 import { getBuffer } from "../editor/buffer-registry";
 import { CodeMirrorEditor } from "../editor/CodeMirrorEditor";
@@ -23,20 +23,17 @@ export function EditorTabView({ tab }: { tab: TabRecord }): React.JSX.Element {
   const save = useEditorStore((state) => state.save);
   const format = useEditorStore((state) => state.format);
   const checkExternal = useEditorStore((state) => state.checkExternalChange);
-  // One selector for the whole block: the derived wrap/measure rules need the
-  // enum, the width and the column together.
+  // One selector for the whole block: the derived wrap rule needs the enum and
+  // the prefs together.
   const editorPrefs = useAppStore((state) => state.prefs.editor);
   const fontSize = editorPrefs.fontSize;
   const languageId = meta?.languageId ?? "plaintext";
-  // Compact always wraps (see `shouldWrap`), so the measure and the wrap flag
-  // are resolved from the same language + prefs pair. A per-tab override is
-  // session-scoped (never written to prefs) and wins over that resolution.
+  // The wrap flag is resolved from the language + prefs pair. A per-tab
+  // override is session-scoped (never written to prefs) and wins over that
+  // resolution.
   const wrapOverride = useEditorStore((state) => state.wrapOverride[tab.id]);
-  const compactOverride = useEditorStore((state) => state.compactOverride[tab.id]);
   const setWrapOverride = useEditorStore((state) => state.setWrapOverride);
-  const setCompactOverride = useEditorStore((state) => state.setCompactOverride);
-  const effectiveWrap = wrapOverride ?? shouldWrap(languageId, editorPrefs);
-  const compact = compactOverride ?? effectiveEditorWidth(languageId, editorPrefs) === "compact";
+  const effectiveWrap = wrapOverride ?? effectiveWordWrap(languageId, editorPrefs);
   // A grid can mount several editors; only the focused pane takes the caret.
   const activeTabId = useAppStore((state) => state.activeTabId);
   const buffer = getBuffer(tab.id);
@@ -112,21 +109,6 @@ export function EditorTabView({ tab }: { tab: TabRecord }): React.JSX.Element {
           <WrapText className="size-3" aria-hidden />
         </Button>
         <Button
-          size="icon-sm"
-          variant="ghost"
-          aria-label={compact ? "Use full width" : "Use compact width"}
-          aria-pressed={compact}
-          title={compact ? "Use full width" : "Use compact width"}
-          onClick={() => setCompactOverride(tab.id, !compact)}
-          data-testid="editor-width"
-        >
-          {compact ? (
-            <Maximize2 className="size-3" aria-hidden />
-          ) : (
-            <Minimize2 className="size-3" aria-hidden />
-          )}
-        </Button>
-        <Button
           size="sm"
           variant="ghost"
           className="h-6 px-2"
@@ -182,8 +164,6 @@ export function EditorTabView({ tab }: { tab: TabRecord }): React.JSX.Element {
             readOnly={!canEdit}
             fontSize={fontSize}
             wordWrap={effectiveWrap}
-            measure={compact ? "compact" : "full"}
-            widthColumns={editorPrefs.widthColumns}
             tabSize={2}
             autoFocus={tab.id === activeTabId}
           />

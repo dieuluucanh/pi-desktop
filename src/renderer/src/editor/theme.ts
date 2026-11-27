@@ -71,21 +71,6 @@ export function editorTheme(fontSize: number): ReturnType<typeof EditorView.them
   );
 }
 
-/**
- * The compact reading measure: a centred column of `widthColumns` characters.
- *
- * It is only installed while the measure compartment says `compact`, and it
- * hides horizontal overflow because compact always wraps (`shouldWrap` in
- * `shared/editor-prefs`). The class rule keeps the theme inert if it is ever
- * mounted on its own.
- */
-export function editorMeasureTheme(widthColumns: number): ReturnType<typeof EditorView.theme> {
-  return EditorView.theme({
-    "&.cm-measure-compact": { maxWidth: `${widthColumns}ch`, margin: "0 auto" },
-    ".cm-scroller": { overflowX: "hidden" },
-  });
-}
-
 export const editorHighlightStyle = HighlightStyle.define([
   { tag: [t.keyword, t.modifier, t.operatorKeyword], color: "var(--color-accent)" },
   { tag: [t.string, t.special(t.string)], color: "var(--color-ok)" },

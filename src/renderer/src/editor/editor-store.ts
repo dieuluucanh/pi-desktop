@@ -69,12 +69,11 @@ export interface PendingEditorClose {
 interface EditorStore {
   meta: Record<string, EditorMeta>;
   /**
-   * Per-tab view overrides (plan step 11). The persisted pref is the default;
+   * Per-tab view override (plan step 11). The persisted pref is the default;
    * an override is session-scoped and only lives as long as the tab does.
    * `null` in the setter deletes the entry, so the tab follows the prefs again.
    */
   wrapOverride: Record<string, boolean>;
-  compactOverride: Record<string, boolean>;
   /** The tab a close prompt is waiting on, or null. */
   pendingClose: PendingEditorClose | null;
   requestClose(tabId: string): void;
@@ -95,7 +94,6 @@ interface EditorStore {
   ): void;
   setText(tabId: string, text: string): void;
   setWrapOverride(tabId: string, value: boolean | null): void;
-  setCompactOverride(tabId: string, value: boolean | null): void;
   scheduleBackup(tabId: string): void;
   flushBackups(): Promise<void>;
   checkExternalChange(tabId: string): Promise<void>;
@@ -179,21 +177,19 @@ function withOverride(
   return { ...overrides, [tabId]: value };
 }
 
-/** Both override maps without one tab: the cleanup half of `discard`. */
-function withoutOverrides(
-  state: Pick<EditorStore, "wrapOverride" | "compactOverride">,
+/** The wrap override map without one tab: the cleanup half of `discard`. */
+function withoutWrapOverride(
+  state: Pick<EditorStore, "wrapOverride">,
   tabId: string,
-): Pick<EditorStore, "wrapOverride" | "compactOverride"> {
+): Pick<EditorStore, "wrapOverride"> {
   return {
     wrapOverride: withOverride(state.wrapOverride, tabId, null),
-    compactOverride: withOverride(state.compactOverride, tabId, null),
   };
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
   meta: {},
   wrapOverride: {},
-  compactOverride: {},
   pendingClose: null,
 
   requestClose(tabId) {
@@ -575,7 +571,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     set((state) => {
       const next = { ...state.meta };
       delete next[tabId];
-      return { meta: next, ...withoutOverrides(state, tabId) };
+      return { meta: next, ...withoutWrapOverride(state, tabId) };
     });
   },
 
@@ -601,12 +597,11 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   async prune(openTabIds) {
-    // The override maps are cleaned through `discard`, so an override on a tab
+    // The wrap override is cleaned through `discard`, so an override on a tab
     // that never loaded (no metadata yet) must still be collected here.
     const stale = new Set<string>();
     for (const tabId of Object.keys(get().meta)) stale.add(tabId);
     for (const tabId of Object.keys(get().wrapOverride)) stale.add(tabId);
-    for (const tabId of Object.keys(get().compactOverride)) stale.add(tabId);
     for (const tabId of stale) {
       if (!openTabIds.has(tabId)) await get().discard(tabId);
     }
@@ -634,10 +629,6 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   setWrapOverride(tabId, value) {
     set((state) => ({ wrapOverride: withOverride(state.wrapOverride, tabId, value) }));
-  },
-
-  setCompactOverride(tabId, value) {
-    set((state) => ({ compactOverride: withOverride(state.compactOverride, tabId, value) }));
   },
 
   scheduleBackup(tabId) {
