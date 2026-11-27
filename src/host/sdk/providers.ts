@@ -17,12 +17,15 @@
  * Connections view shows.
  */
 
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { AuthInteraction, AuthPrompt } from "@earendil-works/pi-ai";
 import {
   MAX_API_KEY_LENGTH,
   ProviderError,
+  type ModelCompletionInput,
+  type ModelCompletionPort,
   type ProviderAuthInteraction,
   type ProviderAuthStatus,
   type ProviderDescriptor,
@@ -103,6 +106,71 @@ export function completionResultFromMessage(message: CompletionMessageLike): {
 
 function toChoice(model: { provider: string; id: string; name: string }): ModelChoice {
   return { provider: model.provider, id: model.id, name: model.name };
+}
+
+/** The `ModelRuntime` members one-shot completion needs (kept structural). */
+export interface CompletionRuntimeLike {
+  getModel(
+    provider: string,
+    id: string,
+  ): { provider: string; id: string; name: string } | undefined;
+  completeSimple(
+    model: { provider: string; id: string; name: string },
+    context: {
+      systemPrompt: string;
+      messages: { role: "user"; content: string; timestamp: number }[];
+    },
+    options: { signal: AbortSignal; maxTokens: number; sessionId: string },
+  ): Promise<CompletionMessageLike>;
+}
+
+/**
+ * Builds the one-shot `complete` implementation over a lazily resolved runtime.
+ *
+ * **Session invariant.** This is the only place one-shot completion builds
+ * request options, and pi-ai reads the request-level conversation id from
+ * `options.sessionId` (`ModelRuntime.prepareRequest` → the provider's header and
+ * payload builders). The id must therefore be non-empty — an empty one is
+ * dropped, which is what makes OpenCode Go/Zen answer HTTP 400
+ * `MissingSessionID` — and identical across calls, otherwise provider routing
+ * and prompt-cache affinity degrade. One id per port (the default parameter is
+ * evaluated once at `createSdkProviderPort` time) gives the whole control-host
+ * process a stable conversation.
+ *
+ * The `x-opencode-session` header is only emitted when pi-ai's `isOpenCode()`
+ * holds: provider id exactly `opencode`/`opencode-go`, or a baseUrl whose
+ * hostname is exactly `opencode.ai`. A model missing from the vendored catalogue
+ * must therefore resolve through an entry that keeps one of those identities —
+ * a `models.json` overlay or the refreshed `models-store.json` — or it gets a
+ * valid id and no header.
+ */
+export function createCompletion(
+  getRuntime: () => Promise<CompletionRuntimeLike>,
+  sessionId: string = randomUUID(),
+): ModelCompletionPort["complete"] {
+  // A blank id would silently drop the header/payload field, so fall back to a
+  // freshly minted one instead of forwarding it.
+  const conversationId = sessionId.trim().length > 0 ? sessionId : randomUUID();
+
+  return async (input: ModelCompletionInput) => {
+    const runtime = await getRuntime();
+    const model = runtime.getModel(input.model.provider, input.model.id);
+    if (!model) {
+      throw new ProviderError(
+        `unknown model ${input.model.provider}/${input.model.id}`,
+        "unknown_model",
+      );
+    }
+    const message = await runtime.completeSimple(
+      model,
+      {
+        systemPrompt: input.system,
+        messages: [{ role: "user", content: input.prompt, timestamp: Date.now() }],
+      },
+      { signal: input.signal, maxTokens: input.maxTokens, sessionId: conversationId },
+    );
+    return completionResultFromMessage(message);
+  };
 }
 
 /**
@@ -256,25 +324,7 @@ export function createSdkProviderPort(options: SdkProviderPortOptions): Provider
         }
       },
 
-      complete: async (input) => {
-        const modelRuntime = await ensure();
-        const model = modelRuntime.getModel(input.model.provider, input.model.id);
-        if (!model) {
-          throw new ProviderError(
-            `unknown model ${input.model.provider}/${input.model.id}`,
-            "unknown_model",
-          );
-        }
-        const message = await modelRuntime.completeSimple(
-          model,
-          {
-            systemPrompt: input.system,
-            messages: [{ role: "user", content: input.prompt, timestamp: Date.now() }],
-          },
-          { signal: input.signal, maxTokens: input.maxTokens },
-        );
-        return completionResultFromMessage(message);
-      },
+      complete: createCompletion(ensure),
     },
 
     envHas: (name: string): boolean => {

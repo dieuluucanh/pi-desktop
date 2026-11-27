@@ -506,6 +506,28 @@ idempotent state write; a generation is neither — a replay would bill a second
 call and return a second, different message. Cancellation is explicit
 (`text.cancel`), and a dropped frame surfaces as a failure the user can retry.
 
+**Session affinity.** `createCompletion` in `src/host/sdk/providers.ts` mints one
+opaque UUID per control-host process — a default parameter evaluated once, when
+`createSdkProviderPort` builds the port — and passes it as `sessionId` to
+`ModelRuntime.completeSimple`. The id must be non-empty and identical across
+every call from that process: a blank value is replaced rather than forwarded,
+and a fresh id per request would degrade provider routing and prompt-cache
+affinity. This is not an OpenCode-only flag — `sessionId` is the request-level
+conversation id for _every_ provider (`StreamOptions.sessionId`,
+`pi-ai/dist/types.d.ts:139-144`). A normal `AgentSession`, and a `pi` CLI
+session, gets that id from `SessionManager`; the control host has no session,
+hence the explicit value. OpenCode Go and Zen uniquely **require** it as
+`x-opencode-session` and answer HTTP 400 `MissingSessionID` without it; the
+header is emitted only where `isOpenCode()` holds — provider id exactly
+`opencode`/`opencode-go`, or a baseUrl whose hostname is exactly `opencode.ai`
+(`pi-ai/dist/utils/identity.js:61-63,86-92`). The same value also becomes
+`prompt_cache_key` for OpenAI-compatible and Azure endpoints (`api.openai.com`,
+or long cache retention), `x-affinity` and the payload's `promptCacheKey` for
+Mistral, and `x-session-affinity`/`x-session-id` where the model's compat
+enables session-affinity headers. The id is host-owned and stays on the host
+side of the call: the `text.generate` wire shape is unchanged, so no renderer or
+protocol change follows from it.
+
 ### Host build identity and stale recycling (2026-10-24)
 
 A host is a long-lived child process, so it keeps running the

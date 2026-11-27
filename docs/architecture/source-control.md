@@ -509,6 +509,15 @@ actually answered and the success toast names it.
 cancel. `text.generate` is deliberately absent from `PASSIVE_METHODS` and
 `READ_ONLY_RETRY_METHODS`: a dropped frame must never start a second model call.
 
+**A stable conversation id, no session.** The session-less call still carries a
+host-owned conversation id — one opaque UUID minted per control-host process by
+`createCompletion` in `src/host/sdk/providers.ts`, the single minter — so provider
+request routing and prompt caching work as they do for a real session. OpenCode
+Go and Zen require it as `x-opencode-session`, which pi-ai derives from that id,
+and answer HTTP 400 `MissingSessionID` without it; a normal `AgentSession`, and a
+`pi` CLI session, gets its id from `SessionManager`. Nothing is written: no
+session file, no JSONL, no transcript turn.
+
 The result is a **draft in the composer**, cleaned by `cleanCommitMessage`
 (fences, labels and quotes stripped, subject capped at 72 characters, body at 6
 lines). Only the user's Commit click commits, and a non-empty draft is replaced

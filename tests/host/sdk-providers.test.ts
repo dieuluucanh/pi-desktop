@@ -14,12 +14,18 @@ import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { collectProviders, ProviderError } from "../../src/host/providers";
+import {
+  collectProviders,
+  ProviderError,
+  type ModelCompletionInput,
+} from "../../src/host/providers";
 import {
   completionResultFromMessage,
+  createCompletion,
   createSdkProviderPort,
   keyOnlyInteraction,
   type CompletionMessageLike,
+  type CompletionRuntimeLike,
 } from "../../src/host/sdk/providers";
 
 const SECRET = "sk-test-provider-secret-value";
@@ -251,5 +257,162 @@ describe("completionResultFromMessage", () => {
     ).toThrow(
       expect.objectContaining({ code: "provider_error", message: "the model returned no text" }),
     );
+  });
+});
+
+/**
+ * The one-shot completion factory (plan step 2).
+ *
+ * pi-ai reads the request-level conversation id from `options.sessionId`, and an
+ * empty one is dropped — which is what made OpenCode Go/Zen answer HTTP 400
+ * `MissingSessionID`. So the port must always send a non-empty, stable token and
+ * never branch on the provider itself (whether a header/body field is emitted is
+ * pi-ai's decision). A recording runtime keeps this test off the network and off
+ * a real `ModelRuntime`.
+ */
+describe("createCompletion", () => {
+  interface CompletionCall {
+    model: { provider: string; id: string; name: string };
+    context: {
+      systemPrompt: string;
+      messages: { role: "user"; content: string; timestamp: number }[];
+    };
+    options: { signal: AbortSignal; maxTokens: number; sessionId: string };
+  }
+
+  function recordingRuntime(knownModel = true): {
+    runtime: CompletionRuntimeLike;
+    calls: CompletionCall[];
+  } {
+    const calls: CompletionCall[] = [];
+    const runtime: CompletionRuntimeLike = {
+      getModel: (provider, id) => (knownModel ? { provider, id, name: "Test Model" } : undefined),
+      completeSimple: async (model, context, options) => {
+        calls.push({ model, context, options });
+        return {
+          content: [{ type: "text", text: "feat: add a thing" }],
+          stopReason: "stop",
+          usage: { input: 1, output: 1 },
+        };
+      },
+    };
+    return { runtime, calls };
+  }
+
+  function input(overrides: Partial<ModelCompletionInput> = {}): ModelCompletionInput {
+    return {
+      model: { provider: "deepseek", id: "deepseek-v4.1-flash" },
+      system: "You write commit messages.",
+      prompt: "diff --git a/x b/x\n+one line",
+      maxTokens: 64,
+      signal: new AbortController().signal,
+      ...overrides,
+    };
+  }
+
+  function onlyCall(calls: CompletionCall[]): CompletionCall {
+    expect(calls).toHaveLength(1);
+    const [call] = calls;
+    if (!call) throw new Error("no completion call was recorded");
+    return call;
+  }
+
+  const TOKEN = /^[A-Za-z0-9._-]+$/;
+
+  it("sends a non-empty conversation id and the same one on every call", async () => {
+    const { runtime, calls } = recordingRuntime();
+    const complete = createCompletion(async () => runtime);
+
+    await complete(input());
+    await complete(input());
+
+    expect(calls).toHaveLength(2);
+    const ids = calls.map((call) => call.options.sessionId);
+    for (const id of ids) {
+      expect(id.length).toBeGreaterThan(0);
+      expect(id).toMatch(TOKEN);
+    }
+    expect(ids[0]).toBe(ids[1]);
+  });
+
+  it("passes an injected conversation id verbatim", async () => {
+    const { runtime, calls } = recordingRuntime();
+    const complete = createCompletion(async () => runtime, "conversation-1");
+
+    await complete(input());
+
+    expect(onlyCall(calls).options.sessionId).toBe("conversation-1");
+  });
+
+  it("falls back to a generated id when the injected one is blank", async () => {
+    for (const blank of ["", "   "]) {
+      const { runtime, calls } = recordingRuntime();
+      const complete = createCompletion(async () => runtime, blank);
+
+      await complete(input());
+
+      const id = onlyCall(calls).options.sessionId;
+      expect(id.length).toBeGreaterThan(0);
+      expect(id).toMatch(TOKEN);
+      expect(id).not.toBe(blank);
+    }
+  });
+
+  it("forwards the system prompt, the single user message and maxTokens unchanged", async () => {
+    const { runtime, calls } = recordingRuntime();
+    const complete = createCompletion(async () => runtime);
+    const request = input();
+
+    await complete(request);
+
+    const call = onlyCall(calls);
+    expect(call.context.systemPrompt).toBe("You write commit messages.");
+    expect(call.context.messages).toHaveLength(1);
+    expect(call.context.messages[0]).toMatchObject({
+      role: "user",
+      content: "diff --git a/x b/x\n+one line",
+    });
+    expect(call.options.maxTokens).toBe(64);
+    expect(call.options.signal).toBe(request.signal);
+    expect(call.model).toEqual({
+      provider: "deepseek",
+      id: "deepseek-v4.1-flash",
+      name: "Test Model",
+    });
+  });
+
+  it("sends the conversation id for a non-OpenCode model ref too", async () => {
+    const { runtime, calls } = recordingRuntime();
+    const complete = createCompletion(async () => runtime, "conversation-2");
+
+    await complete(
+      input({ model: { provider: "command-code", id: "deepseek/deepseek-v4.1-flash" } }),
+    );
+
+    const call = onlyCall(calls);
+    expect(call.model).toEqual({
+      provider: "command-code",
+      id: "deepseek/deepseek-v4.1-flash",
+      name: "Test Model",
+    });
+    // Only pi-ai decides whether a header/body field is emitted; the adapter
+    // never drops the id based on the provider.
+    expect(call.options.sessionId).toBe("conversation-2");
+  });
+
+  it("throws unknown_model without calling completeSimple for an unknown model", async () => {
+    const { runtime, calls } = recordingRuntime(false);
+    const complete = createCompletion(async () => runtime);
+
+    let thrown: unknown;
+    try {
+      await complete(input());
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ProviderError);
+    expect(thrown).toMatchObject({ code: "unknown_model" });
+    expect(calls).toHaveLength(0);
   });
 });
