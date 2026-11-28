@@ -247,6 +247,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Stage and verify the Workflow bundle
+        run: |
+          set -euo pipefail
+          npm run workflow:stage
+          npm run workflow:verify -- --offline --require-dev
+
       - name: Fetch the bundled runtime
         run: npm run runtime:fetch -- --platform win32-x64
 
@@ -264,6 +270,9 @@ jobs:
           bash scripts/package-retry.sh npx electron-builder \
             --win --x64 --publish never \
             -c.electronDownload.cache="$ELECTRON_CACHE"
+
+      - name: Verify the packaged Workflow bundle
+        run: npm run workflow:package:verify -- --dir release/win-unpacked
 
       - name: Inspect the failed package attempt
         if: failure()
@@ -390,6 +399,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Stage and verify the Workflow bundle
+        run: |
+          set -euo pipefail
+          npm run workflow:stage
+          npm run workflow:verify -- --offline --require-dev
+
       # Fetch order matters: `runtime:fetch` writes `resources/runtime/bin` for
       # the *last* `--platform` it was given, and `runtime:verify` executes that
       # shim. Foreign arm64 first (no shims), host x64 last.
@@ -427,6 +442,15 @@ jobs:
           bash scripts/package-retry.sh npx electron-builder \
             --linux --${{ matrix.arch }} --publish never \
             -c.electronDownload.cache="$ELECTRON_CACHE"
+
+      - name: Verify the packaged Workflow bundle
+        run: |
+          set -euo pipefail
+          app_dir="$(
+            find release -maxdepth 1 -type d -name 'linux*-unpacked' | head -n 1
+          )"
+          test -n "$app_dir"
+          npm run workflow:package:verify -- --dir "$app_dir"
 
       - name: Inspect the failed package attempt
         if: failure()
@@ -620,6 +644,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Stage and verify the Workflow bundle
+        run: |
+          set -euo pipefail
+          npm run workflow:stage
+          npm run workflow:verify -- --offline --require-dev
+
       # Same ordering rule as linux: foreign x64 first without shims, host arm64
       # last so `resources/runtime/bin` points at a runtime this host can run.
       - name: Fetch the bundled runtimes
@@ -641,6 +671,16 @@ jobs:
             --mac --arm64 --x64 --publish never \
             -c.mac.identity=- \
             -c.electronDownload.cache="$ELECTRON_CACHE"
+
+      - name: Verify the packaged Workflow bundle
+        run: |
+          set -euo pipefail
+          for app in \
+            "release/mac-arm64/Pi Desktop.app" \
+            "release/mac/Pi Desktop.app"; do
+            npm run workflow:package:verify \
+              --resources "$app/Contents/Resources"
+          done
 
       - name: Inspect the failed package attempt
         if: failure()

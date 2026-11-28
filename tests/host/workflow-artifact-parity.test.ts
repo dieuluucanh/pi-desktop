@@ -37,6 +37,12 @@ import { afterEach, describe, expect, it } from "vitest";
 const ARTIFACT_DIR = join(process.cwd(), "out", "extensions", "workflow");
 const ARTIFACT_ENTRY = join(ARTIFACT_DIR, "index.ts");
 
+if (process.env.PI_REQUIRE_WORKFLOW_BUNDLE === "1" && !existsSync(ARTIFACT_ENTRY)) {
+  throw new Error(
+    `PI_REQUIRE_WORKFLOW_BUNDLE=1 but ${ARTIFACT_ENTRY} is missing; run npm run workflow:stage.`,
+  );
+}
+
 // ── Fake ExtensionAPI ─────────────────────────────────────────────────
 
 interface RegisteredCommand {

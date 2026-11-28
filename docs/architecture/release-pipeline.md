@@ -39,7 +39,7 @@ uploaded. A partially uploaded draft is invisible to end users; a half-uploaded 
 release would break updates for everyone until it was fixed.
 
 ```text
-prepare   gh release create <tag> --draft --verify-tag --notes-file docs/releases/v0.11.0.md
+prepare   gh release create <tag> --draft --verify-tag --notes-file docs/releases/v0.12.0.md
 windows   build → verify → gh release upload *.exe *.blockmap latest.yml --clobber
 linux     build → verify → gh release upload *.AppImage *.deb latest-linux*.yml --clobber
 macos     build → verify → gh release upload *.dmg *.zip latest-mac.yml --clobber
@@ -49,6 +49,19 @@ publish   gh release edit <tag> --draft=false --latest
 
 `needs: [prepare, windows, linux, macos]` on the publish job is the whole safety
 property: a failed or cancelled platform means the release stays a draft.
+
+## Bundled Workflow staging
+
+`resources/extensions/*` is gitignored and is not present in a clean checkout.
+Every build stages the pinned Workflow tarball after the host build:
+
+- `checks.yml` runs `npm run workflow:stage` and
+  `npm run workflow:verify -- --offline --require-dev` after `build:host`, and
+  sets `PI_REQUIRE_WORKFLOW_BUNDLE=1` so the parity suite fails rather than
+  skips when the bundle is missing.
+- `release.yml` runs the same stage/verify pair after `npm run build` in the
+  Windows, Linux and macOS jobs, then `npm run workflow:package:verify` against
+  each packaged app so an installer that lost the bundle fails before upload.
 
 ## Network resilience
 
