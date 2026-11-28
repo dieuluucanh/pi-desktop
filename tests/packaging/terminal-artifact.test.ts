@@ -159,9 +159,10 @@ describe("checks workflow", () => {
     // failure; the env is scoped to the test step on purpose.
     expect(checksWorkflow).toContain("npm run build:host");
     expect(checksWorkflow).toContain("check-native-terminal.mjs");
-    expect(checksWorkflow).toMatch(
-      /Unit \+ integration tests\n\s+env:\n\s+PI_REQUIRE_TERMINAL_HOST: "1"\n\s+run: npm test/,
-    );
+    expect(checksWorkflow).toContain('PI_REQUIRE_TERMINAL_HOST: "1"');
+    expect(checksWorkflow).toContain('PI_REQUIRE_WORKFLOW_BUNDLE: "1"');
+    expect(checksWorkflow).toContain("Unit + integration tests");
+    expect(checksWorkflow).toContain("run: npm test");
     // The release's container build is exercised on every PR, not only at tag
     // time.
     expect(checksWorkflow).toContain("npm run pty:linux -- --arch x64 --force");
