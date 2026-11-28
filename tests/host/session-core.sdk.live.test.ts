@@ -182,7 +182,6 @@ describe("session core against the real SDK", () => {
     );
     expect(first!.totalMs).toBeLessThan(120_000);
     expect(second!.totalMs).toBeLessThan(120_000);
-
   }, 180_000);
 
   it("switches model mid-session, records a model_change entry, and resumes with it", async (ctx) => {

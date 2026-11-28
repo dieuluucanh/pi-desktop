@@ -14,6 +14,11 @@
 
 ## Release notes
 
+- [`releases/v0.12.0.md`](releases/v0.12.0.md) — v0.12.0 release notes (managed file
+  attachments and document extraction, the generic extension contribution contract and
+  related sessions, the experimental Orchestrator, one working bar and mode cycle, prompt
+  refinement, editor/rail/commit AI, Pi 1.7.0 and Workflow 0.17.5), install table, known
+  limitations and verification status.
 - [`releases/v0.11.0.md`](releases/v0.11.0.md) — v0.11.0 release notes (extension
   dialogs that own the keyboard, one extension-owned Review line below the todo panel, the
   native Workflow todo bar, terminal wheel paging and questionnaire paste, web tabs that

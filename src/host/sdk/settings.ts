@@ -107,10 +107,8 @@ const GLOBAL_SETTERS: Record<string, NamedSetter> = {
   "compaction.enabled": (manager, value) => manager.setCompactionEnabled(asBoolean(value)),
   "retry.enabled": (manager, value) => manager.setRetryEnabled(asBoolean(value)),
   hideThinkingBlock: (manager, value) => manager.setHideThinkingBlock(asBoolean(value)),
-  "notices.cacheMisses": (manager, value) =>
-    manager.setNotice("cacheMisses", asBoolean(value)),
-  "notices.cacheWarming": (manager, value) =>
-    manager.setNotice("cacheWarming", asBoolean(value)),
+  "notices.cacheMisses": (manager, value) => manager.setNotice("cacheMisses", asBoolean(value)),
+  "notices.cacheWarming": (manager, value) => manager.setNotice("cacheWarming", asBoolean(value)),
   "notices.compactionCosts": (manager, value) =>
     manager.setNotice("compactionCosts", asBoolean(value)),
   "notices.reasoningDrops": (manager, value) =>

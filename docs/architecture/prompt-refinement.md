@@ -124,11 +124,11 @@ send a message, a mismatch degrades text-only rather than blocking the composer.
 
 ## 5. Tested versions
 
-`@dieulc/workflow` **0.13.0** against the Pi SDK **1.5.0** (Desktop's exact pin;
-`tests/packaging/pi-pins.test.ts` enforces the family equality). The structured
-grant-only bootstrap + private rendezvous handshake is proven against unmodified
-SDK 1.5, and the shared fixture is byte-identical between W and D (both suites
-assert the same SHA-256).
+`@dieulc/workflow` **0.17.5** against the Pi SDK **1.7.0** (Desktop's exact pin;
+`tests/packaging/pi-pins.test.ts` enforces the family equality). The automated
+contract suite covers the structured grant-only bootstrap and the shared fixture
+is byte-identical between W and D (both suites assert the same SHA-256); a live
+provider/turn walkthrough was not re-run for this release.
 
 Automated evidence is enumerated in
 [`refinement-acceptance-2026-11-24.md`](refinement-acceptance-2026-11-24.md) and

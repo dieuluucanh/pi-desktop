@@ -1,6 +1,6 @@
 # Session parity contract
 
-**Last updated:** 2026-11-15 · **Terminal reference:** `@earendil-works/pi-coding-agent` 1.5.0 · **Plan:** `.pi/plans/2026-10-26-pi-desktop-session-parity.md` · `.pi/plans/2026-11-14-transcript-line-parity.md` · `.pi/plans/2026-11-15-transcript-full-width.md` · `.pi/plans/2026-11-15-extension-command-output-parity.md`
+**Last updated:** 2026-11-28 · **Terminal reference:** `@earendil-works/pi-coding-agent` 1.7.0 · **Plan:** `.pi/plans/2026-10-26-pi-desktop-session-parity.md` · `.pi/plans/2026-11-14-transcript-line-parity.md` · `.pi/plans/2026-11-15-transcript-full-width.md` · `.pi/plans/2026-11-15-extension-command-output-parity.md`
 
 **Status:** Phase A–F (steps 1–24) shipped. **Phase G (steps 25–28, updates) is deferred whole**, as the plan permits; `/bug` writes a local zip and does not upload to Radius.
 
@@ -148,7 +148,7 @@ drift from the terminal.
     parity: `Alt+Up`, stop and `clear queue` hand back only the user's texts and
     say how many extension turns the SDK-wide clear discarded.
 
-## Gap matrix (terminal 1.5.0 → desktop)
+## Gap matrix (terminal 1.7.0 → desktop)
 
 | Area                     | Terminal                                     | Desktop before this work                                                                                    | Owning step |
 | ------------------------ | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ----------- |

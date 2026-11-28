@@ -224,8 +224,8 @@ describe("checkout references", () => {
     expect(
       findCheckoutReferences(files, () => "// C:\\Users\\RUNNER~1\\tmp\nconst ok = 1;\n"),
     ).toEqual([]);
-    expect(
-      findCheckoutReferences(files, () => 'const path = "C:\\Users\\x";\n'),
-    ).toEqual([{ file: "a.ts", needle: "C:\\Users\\" }]);
+    expect(findCheckoutReferences(files, () => 'const path = "C:\\Users\\x";\n')).toEqual([
+      { file: "a.ts", needle: "C:\\Users\\" },
+    ]);
   });
 });

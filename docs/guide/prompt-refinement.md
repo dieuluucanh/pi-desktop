@@ -113,7 +113,7 @@ before.
 | Old desktop / old extension | Additive fallback: text/status only, `attachmentAware: false`              |
 | Apply                       | CAS on the exact draft revision + idempotent receipt                       |
 
-**Tested:** `@dieulc/workflow` 0.13.0 with Pi SDK 1.5.0. **Not proven here:**
+**Pinned:** `@dieulc/workflow` 0.17.5 with Pi SDK 1.7.0. **Not proven here:**
 semantic _quality_ is a human-reviewed property, not a guarantee; a live-model
 quality sample, Playwright composer E2E and real Terminal keyboard acceptance are
 recorded as NOT RUN rather than inferred from unit tests. See

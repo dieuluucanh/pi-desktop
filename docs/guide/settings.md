@@ -104,7 +104,7 @@ behaviour:
   (`prefs.zoomFactor`; View → Zoom In / Zoom Out / Actual Size, or
   <kbd>Ctrl/Cmd</kbd>+<kbd>=</kbd> / <kbd>-</kbd> / <kbd>0</kbd>);
 - sidebar layout and per-tab drafts;
-- telemetry opt-in (`PI_TELEMETRY=0` unless enabled);
+- no install-telemetry setting (Pi 1.7.0 removed it);
 - the Pi profile choice (shared vs app-private);
 - `externalEditor` is a Pi setting, but the launcher that spawns the editor is
   app-side.

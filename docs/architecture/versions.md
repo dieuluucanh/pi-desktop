@@ -1,6 +1,6 @@
 # Pinned versions
 
-Recorded 2026-09-19. Every pin is exact in `package.json` except where noted.
+Recorded 2026-11-28. Every pin is exact in `package.json` except where noted.
 Changing a pin here means changing it there.
 
 | Component                                          | Pin                  | Why                                                                                                                                                                                                                                     |

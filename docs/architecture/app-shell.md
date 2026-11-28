@@ -648,11 +648,9 @@ The trust boundaries are declared in code and asserted by tests, not by prose:
   a reply — `providers.*` returns status summaries only — and no IPC channel is
   named for auth or credentials. The diagnostics bundle runs through
   `redactSecrets`.
-- **Telemetry.** Off by default. The supervisor spawns every host with
-  `PI_TELEMETRY=0` unless the user opts in on the first-run privacy screen
-  (`UiPrefs.telemetryEnabled`). Pi's own `isInstallTelemetryEnabled` prefers that
-  variable over the shared `settings.json`, so the guarantee holds without
-  rewriting the profile terminal Pi also reads.
+- **Telemetry.** Pi 1.7.0 removed its install telemetry and the `PI_TELEMETRY`
+  switch. The app no longer stores an install-telemetry preference or injects
+  that variable; the first-run screen is a local-data notice.
 - **Extension trust.** Extensions are not sandboxed — they run with the user's
   privileges, as in terminal Pi. The Extensions hub carries a **“What can
   extensions do?”** page that says so, next to the gates the app does provide
@@ -814,10 +812,10 @@ and the renderer all read it, so a budget change is one edit.
   validation and the `unsupported` answer without a workspace port.
 - `tests/packages/security.test.ts` — traversal-shaped npm sources are refused by
   both parsers, and the npm-root manifest only ever carries a plain name/version.
-- `tests/main/host-supervisor.test.ts` — every host gets `PI_TELEMETRY=0` unless
-  the user opted in, and the preference is read at each spawn (plan step 23).
+- `tests/main/host-supervisor.test.ts` — no host receives `PI_TELEMETRY`
+  (Pi 1.7.0 removed it).
 - `tests/renderer/privacy-dialog.test.tsx` — the first-run screen appears once,
-  defaults telemetry off, and only an explicit opt-in turns it on.
+  shows the local-data notice, and records the Continue acknowledgement.
 - `tests/renderer/extension-capabilities.test.tsx` — the extension trust page
   states the privilege model and the gates.
 - `tests/main/host-supervisor.test.ts` / `tests/main/session-service.test.ts` —
