@@ -4,7 +4,7 @@
   "note": "Baseline for the resources and host surface that make up an ordinary Desktop Build session. Steps 7-13 replace Workflow-specific adapters; these values must not drift silently.",
   "sdk": {
     "package": "@earendil-works/pi-coding-agent",
-    "version": "1.5.0"
+    "version": "1.7.0"
   },
   "safeModeLoaderOptions": {
     "noExtensions": true,

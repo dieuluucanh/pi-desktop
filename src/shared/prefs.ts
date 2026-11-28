@@ -71,7 +71,6 @@ export const PREF_KEYS = [
   "sidebarWidth",
   "drafts",
   "attachmentDraftIds",
-  "telemetryEnabled",
   "privacyAcknowledged",
   "profileMode",
   "onboardingCompletedAt",
@@ -210,13 +209,6 @@ export interface UiPrefs {
   /** Stable app-owned attachment draft identities; bearer grants and file bytes stay transient. */
   attachmentDraftIds: Record<string, string>;
   /**
-   * Pi's install telemetry (plan step 23). **Off by default**: every host is
-   * spawned with `PI_TELEMETRY=0` unless this is true, so the app never sends an
-   * install/attribution ping the user did not opt into. It is an app preference
-   * on purpose — turning it on must not rewrite Pi's shared `settings.json`.
-   */
-  telemetryEnabled: boolean;
-  /**
    * Whether the first-run privacy screen has been answered (plan step 23). Until
    * it is, the app shows the opt-in prompt; telemetry stays off regardless.
    */
@@ -333,7 +325,6 @@ export const DEFAULT_PREFS: UiPrefs = {
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   drafts: {},
   attachmentDraftIds: {},
-  telemetryEnabled: false,
   privacyAcknowledged: false,
   profileMode: DEFAULT_PROFILE_MODE,
   onboardingCompletedAt: null,
@@ -435,8 +426,6 @@ export function sanitizePrefs(input: unknown): UiPrefs {
     attachmentDraftIds: sanitizeAttachmentDraftIds(source.attachmentDraftIds),
     // A missing value is off: an older app-state.json (or a fresh profile) must
     // never opt the user into telemetry by omission.
-    telemetryEnabled:
-      typeof source.telemetryEnabled === "boolean" ? source.telemetryEnabled : false,
     privacyAcknowledged:
       typeof source.privacyAcknowledged === "boolean" ? source.privacyAcknowledged : false,
     profileMode: sanitizeProfileMode(source.profileMode),

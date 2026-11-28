@@ -48,7 +48,6 @@ describe("sanitizePrefs", () => {
         "showExpandedPrompts",
         "sidebarCollapsed",
         "sidebarWidth",
-        "telemetryEnabled",
         "terminal",
         "theme",
         "themeColors",
@@ -165,17 +164,10 @@ describe("sanitizePrefs", () => {
     });
   });
 
-  it("defaults telemetry off and the privacy screen unanswered (plan step 23)", () => {
-    // An older app-state.json has neither key; both must fall back to "off" and
-    // "not yet answered" rather than opting the user in by omission.
-    expect(sanitizePrefs({ theme: "light" }).telemetryEnabled).toBe(false);
+  it("defaults the privacy screen to unanswered (plan step 23)", () => {
     expect(sanitizePrefs({ theme: "light" }).privacyAcknowledged).toBe(false);
-    expect(sanitizePrefs({ telemetryEnabled: "yes" }).telemetryEnabled).toBe(false);
     expect(sanitizePrefs({ privacyAcknowledged: 1 }).privacyAcknowledged).toBe(false);
-    expect(sanitizePrefs({ telemetryEnabled: true, privacyAcknowledged: true })).toMatchObject({
-      telemetryEnabled: true,
-      privacyAcknowledged: true,
-    });
+    expect(sanitizePrefs({ privacyAcknowledged: true }).privacyAcknowledged).toBe(true);
   });
 
   it("sanitizes the display zoom to a supported level", () => {

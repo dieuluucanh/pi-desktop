@@ -7,9 +7,9 @@ import { DEFAULT_PREFS } from "../../src/shared/prefs";
 import { installBridge } from "./fixtures";
 
 /**
- * The first-run privacy screen (plan step 23). The dialog must appear only until
- * it has been answered, must default telemetry **off**, and turning it on must
- * be an explicit action that is persisted as an app preference.
+ * The first-run privacy notice (plan step 23). Pi 1.7.0 removed install
+ * telemetry, so the dialog is a one-time local-data notice with a Continue
+ * acknowledgement; there is no telemetry switch or preference.
  */
 
 function reset(prefs: Partial<typeof DEFAULT_PREFS> = {}) {
@@ -29,50 +29,27 @@ describe("privacy dialog", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(screen.getByText(/your data stays on this machine/i)).toBeInTheDocument();
     expect(screen.getByText(/sends no usage data of its own/i)).toBeInTheDocument();
+    expect(screen.getByText(/pi 1\.7\.0 removed its install telemetry/i)).toBeInTheDocument();
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
   });
 
-  it("defaults the telemetry switch to off", () => {
-    render(<PrivacyDialog />);
-    expect(
-      screen.getByRole("switch", { name: /share anonymous install telemetry/i }),
-    ).toHaveAttribute("aria-checked", "false");
-  });
-
-  it("keeps telemetry off when the user declines", async () => {
+  it("acknowledges the notice with Continue", async () => {
     const handles = reset();
     render(<PrivacyDialog />);
 
-    await userEvent.click(screen.getByRole("button", { name: /keep telemetry off/i }));
+    await userEvent.click(screen.getByRole("button", { name: /continue/i }));
 
     await waitFor(() => {
       expect(useAppStore.getState().prefs.privacyAcknowledged).toBe(true);
     });
-    expect(useAppStore.getState().prefs.telemetryEnabled).toBe(false);
     await waitFor(() => {
       expect(handles.prefs.privacyAcknowledged).toBe(true);
-      expect(handles.prefs.telemetryEnabled).toBe(false);
     });
-    // Acknowledged: the dialog does not render again.
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("enables telemetry only through an explicit opt-in", async () => {
-    const handles = reset();
-    render(<PrivacyDialog />);
-
-    await userEvent.click(
-      screen.getByRole("switch", { name: /share anonymous install telemetry/i }),
-    );
-    await userEvent.click(screen.getByRole("button", { name: /allow and continue/i }));
-
-    await waitFor(() => {
-      expect(handles.prefs.telemetryEnabled).toBe(true);
-      expect(handles.prefs.privacyAcknowledged).toBe(true);
-    });
-  });
-
   it("stays hidden when the app has already recorded an answer", () => {
-    reset({ privacyAcknowledged: true, telemetryEnabled: true });
+    reset({ privacyAcknowledged: true });
     render(<PrivacyDialog />);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });

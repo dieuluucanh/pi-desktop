@@ -36,7 +36,7 @@ import type { HostHandler } from "./service";
 
 /** The component surface Pi's components implement (a structural `Component`). */
 export interface SurfaceComponent {
-  render(width: number): string[];
+  render(width: number): readonly string[];
   handleInput?(data: string): void;
   invalidate?(): void;
   dispose?(): void;

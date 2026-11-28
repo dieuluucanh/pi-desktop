@@ -88,16 +88,6 @@ export const SAFE_MODE_ENV = "PI_DESKTOP_SAFE_MODE";
 export const WORKFLOW_BUNDLE_DIR_ENV = "PI_DESKTOP_WORKFLOW_BUNDLE_DIR";
 
 /**
- * Pi's own install-telemetry switch (plan step 23). The app sets `PI_TELEMETRY=0`
- * on every host it spawns unless the user opted in, so an app install never
- * sends the anonymous install/attribution ping by default. It is Pi's variable,
- * not an app-private one: `isInstallTelemetryEnabled` in the SDK prefers it over
- * the shared `settings.json`, so the guarantee holds without rewriting the
- * profile terminal Pi also reads.
- */
-export const TELEMETRY_ENV = "PI_TELEMETRY";
-
-/**
  * The real Pi CLI child agents must run (Workflow plan step 30).
  *
  * Workflow's `explore`/review reconnaissance spawn `pi --mode json` themselves.

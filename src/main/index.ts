@@ -213,13 +213,6 @@ const safeMode = isSafeMode();
  */
 const startup = createStartupMetrics();
 
-/**
- * Pi's install telemetry (plan step 23). Off until the user opts in on the
- * privacy screen; the supervisor reads this at each spawn and passes
- * `PI_TELEMETRY` accordingly, so an app install never sends a ping by default.
- */
-let telemetryEnabled = false;
-
 // Electron's own state directory can be redirected from the environment. The E2E
 // harness needs a guaranteed-private userData (a Chromium switch after the app
 // path is not reliably honoured), and it doubles as profile isolation later.
@@ -526,8 +519,6 @@ const hosts = runtime.nodePath
       ...(workflowBundle.ok && workflowBundle.entryPath
         ? { workflowBundleEntry: workflowBundle.entryPath }
         : {}),
-      // Install telemetry (plan step 23): off unless the user opted in.
-      telemetryEnabled: () => telemetryEnabled,
       // The running host reports this id in `host.hello`; a later rebuild makes
       // it differ from the file on disk (2026-10-24 stale-host plan).
       hostBuildId,
@@ -2170,9 +2161,6 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(async () => {
     startup.markAppReady();
-    // Load the persisted preferences once before any host can spawn, so the
-    // telemetry flag is correct for the first session (plan step 23).
-    telemetryEnabled = (await appState.read()).prefs.telemetryEnabled;
 
     // One-time default-off pass: snapshot/empty any existing project settings
     // document before the first session can read it. A failure is logged and
@@ -2406,9 +2394,6 @@ if (!app.requestSingleInstanceLock()) {
         get: async () => (await appState.read()).prefs,
         set: async (patch) => {
           const prefs = await appState.updatePrefs(patch);
-          // A telemetry change applies to hosts spawned from now on; a running
-          // session keeps its environment until it restarts.
-          telemetryEnabled = prefs.telemetryEnabled;
           // Terminal preferences are read synchronously when a shell spawns.
           terminalPrefs = prefs.terminal;
           // A desktop-keymap edit rebuilds the menu so its accelerators match

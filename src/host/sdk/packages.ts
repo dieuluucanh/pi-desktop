@@ -86,7 +86,7 @@ export function npmOverrideCommand(npmCommand: readonly string[] | null): string
 
 /** The SDK progress callback shape (structural, so a fake manager is trivial). */
 export interface PackageManagerProgress {
-  type: "start" | "progress" | "complete" | "error";
+  type: "start" | "progress" | "result" | "complete" | "error";
   action: "install" | "remove" | "update" | "clone" | "pull";
   source: string;
   message?: string;
@@ -369,7 +369,7 @@ export function createSdkPackagePort(options: SdkPackageOptions): PackagePort {
     const sink = (event: PackageManagerProgress): void => {
       const progress: PackageOperationProgress = {
         action: event.action,
-        phase: event.type,
+        phase: event.type === "result" ? "progress" : event.type,
         source: event.source,
         ...(event.message ? { message: event.message } : {}),
       };

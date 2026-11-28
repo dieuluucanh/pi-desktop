@@ -14,7 +14,6 @@ import {
   PI_CLI_NODE_ENV,
   SAFE_MODE_ENV,
   SUBAGENT_ENV_STRIP_ENV,
-  TELEMETRY_ENV,
   WORKFLOW_BUNDLE_DIR_ENV,
   WORKFLOW_EXTENSION_ENV,
   WORKFLOW_ISOLATE_ENV,
@@ -314,13 +313,6 @@ export interface HostSupervisorOptions {
    * explicitly; isolation keeps an installed copy from loading a second one.
    */
   workflowBundleEntry?: string | null;
-  /**
-   * Pi's install telemetry (plan step 23). Evaluated at each spawn and passed as
-   * `PI_TELEMETRY`, so it can follow a live preference change without restarting
-   * the app. Defaults to **off**: a host that was not explicitly opted in sends
-   * no install/attribution ping. A boolean or a getter are both accepted.
-   */
-  telemetryEnabled?: boolean | (() => boolean);
 }
 
 export interface HostSupervisor {
@@ -707,10 +699,6 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       this.stopping = false;
       this.spawnedAt = now();
       this.stopMetricsPolling();
-      const telemetry =
-        typeof options.telemetryEnabled === "function"
-          ? options.telemetryEnabled()
-          : options.telemetryEnabled === true;
       const env = composeChildEnv({
         baseEnv: options.env ?? process.env,
         platform: process.platform,
@@ -739,7 +727,6 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
                 [WORKFLOW_ISOLATE_ENV]: "1",
               }
             : {}),
-          [TELEMETRY_ENV]: telemetry ? "1" : "0",
           [BLOB_DIR_ENV]: options.blobDir,
           [SERVICE_ENV]: "service",
           PI_CODING_AGENT_DIR: options.profileDir,

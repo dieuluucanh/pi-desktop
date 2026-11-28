@@ -107,7 +107,14 @@ const GLOBAL_SETTERS: Record<string, NamedSetter> = {
   "compaction.enabled": (manager, value) => manager.setCompactionEnabled(asBoolean(value)),
   "retry.enabled": (manager, value) => manager.setRetryEnabled(asBoolean(value)),
   hideThinkingBlock: (manager, value) => manager.setHideThinkingBlock(asBoolean(value)),
-  showCacheMissNotices: (manager, value) => manager.setShowCacheMissNotices(asBoolean(value)),
+  "notices.cacheMisses": (manager, value) =>
+    manager.setNotice("cacheMisses", asBoolean(value)),
+  "notices.cacheWarming": (manager, value) =>
+    manager.setNotice("cacheWarming", asBoolean(value)),
+  "notices.compactionCosts": (manager, value) =>
+    manager.setNotice("compactionCosts", asBoolean(value)),
+  "notices.reasoningDrops": (manager, value) =>
+    manager.setNotice("reasoningDrops", asBoolean(value)),
   shellPath: (manager, value) =>
     manager.setShellPath(value === undefined ? undefined : asString(value)),
   quietStartup: (manager, value) => manager.setQuietStartup(asBoolean(value)),
@@ -118,7 +125,6 @@ const GLOBAL_SETTERS: Record<string, NamedSetter> = {
   npmCommand: (manager, value) =>
     manager.setNpmCommand(value === undefined ? undefined : asStringArray(value)),
   collapseChangelog: (manager, value) => manager.setCollapseChangelog(asBoolean(value)),
-  enableInstallTelemetry: (manager, value) => manager.setEnableInstallTelemetry(asBoolean(value)),
   // The SDK generates `trackingId` on opt-in, which a raw file write would skip.
   enableAnalytics: (manager, value) => manager.setEnableAnalytics(asBoolean(value)),
   packages: (manager, value) => manager.setPackages(value as PackageSource[]),

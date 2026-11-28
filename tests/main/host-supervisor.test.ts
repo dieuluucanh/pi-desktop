@@ -149,7 +149,6 @@ function harness(
     workflowBundleEntry?: string | null;
     env?: Record<string, string | undefined>;
     safeMode?: boolean;
-    telemetryEnabled?: boolean | (() => boolean);
     /** The staged Workflow directory main resolved (plan step 27). */
     workflowBundleDir?: string | null;
     hostBuildId?: () => string | null;
@@ -211,7 +210,6 @@ function harness(
       ? {}
       : { memoryOverBudgetSamples: options.memoryOverBudgetSamples }),
     safeMode: options.safeMode ?? false,
-    telemetryEnabled: options.telemetryEnabled ?? false,
     ...(options.workflowBundleDir ? { workflowBundleDir: options.workflowBundleDir } : {}),
     ...(options.hostBuildId ? { hostBuildId: options.hostBuildId } : {}),
     ...(options.isPinned ? { isPinned: options.isPinned } : {}),
@@ -1103,25 +1101,10 @@ describe("host supervisor reliability (plan step 22)", () => {
     expect(without.spawnCalls[0]?.env).not.toHaveProperty("PI_DESKTOP_WORKFLOW_BUNDLE_DIR");
   });
 
-  it("forces Pi's install telemetry off unless the user opted in", async () => {
-    const off = harness();
-    await off.supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
-    expect(off.spawnCalls[0]?.env.PI_TELEMETRY).toBe("0");
-
-    const on = harness({ telemetryEnabled: true });
-    await on.supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
-    expect(on.spawnCalls[0]?.env.PI_TELEMETRY).toBe("1");
-  });
-
-  it("reads the telemetry preference at each spawn, so a change applies live", async () => {
-    let enabled = false;
-    const { supervisor, spawnCalls } = harness({ telemetryEnabled: () => enabled });
-    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
-    expect(spawnCalls[0]?.env.PI_TELEMETRY).toBe("0");
-
-    enabled = true;
-    await supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
-    expect(spawnCalls[1]?.env.PI_TELEMETRY).toBe("1");
+  it("does not inject Pi's removed install-telemetry variable", async () => {
+    const host = harness();
+    await host.supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(host.spawnCalls[0]?.env).not.toHaveProperty("PI_TELEMETRY");
   });
 });
 
