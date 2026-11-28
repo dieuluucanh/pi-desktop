@@ -130,9 +130,7 @@ export function rendererWindowOptions(
       ...(attachmentsAvailable === undefined
         ? {}
         : {
-            additionalArguments: [
-              `--pi-desktop-attachments=${attachmentsAvailable ? "1" : "0"}`,
-            ],
+            additionalArguments: [`--pi-desktop-attachments=${attachmentsAvailable ? "1" : "0"}`],
           }),
     },
     ...(branding?.icon ? { icon: branding.icon } : {}),

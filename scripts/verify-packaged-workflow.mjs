@@ -697,9 +697,8 @@ export async function runChecks(options) {
       },
     );
 
-    const expectedPiVersion = JSON.parse(
-      readFileSync(join(DEFAULT_ROOT, "package.json"), "utf8"),
-    ).dependencies?.["@earendil-works/pi-coding-agent"];
+    const expectedPiVersion = JSON.parse(readFileSync(join(DEFAULT_ROOT, "package.json"), "utf8"))
+      .dependencies?.["@earendil-works/pi-coding-agent"];
 
     await record(
       "child-cli-launch",

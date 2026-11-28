@@ -614,94 +614,97 @@ describe("old host (no composer-transform): the real artifact refines without ex
   it.skipIf(process.platform !== "linux")(
     "inspects a real file, asks the fixture question and returns the fixture candidate",
     async () => {
-    const scenario = FIXTURE.cases.inspectAskCandidate;
-    const question = scenario.questions![0]!;
-    // The real questionnaire view resolves this `QuestionnaireResult` shape
-    // through `ctx.ui.custom`; the fake dialog returns the same contract.
-    const sampleAnswer = {
-      answers: [
-        {
-          question: question.prompt,
-          ...(question.header ? { header: question.header } : {}),
-          answer: question.answer,
-          wasCustom: false,
-          index: 0,
+      const scenario = FIXTURE.cases.inspectAskCandidate;
+      const question = scenario.questions![0]!;
+      // The real questionnaire view resolves this `QuestionnaireResult` shape
+      // through `ctx.ui.custom`; the fake dialog returns the same contract.
+      const sampleAnswer = {
+        answers: [
+          {
+            question: question.prompt,
+            ...(question.header ? { header: question.header } : {}),
+            answer: question.answer,
+            wasCustom: false,
+            index: 0,
+          },
+        ],
+        cancelled: false,
+      };
+      const toolResults: string[] = [];
+      const booted = await boot({
+        customAnswers: [sampleAnswer],
+        script: async (session) => {
+          for (const step of scenario.inspection ?? []) {
+            const result = await session.call(step.tool, step.args);
+            const text = (result.content ?? []).map((block) => block?.text ?? "").join("\n");
+            toolResults.push(text);
+            expect(text).toContain(String(step.expectContains ?? ""));
+          }
+          for (const item of scenario.questions ?? []) {
+            const result = await session.call("prompt_ask", {
+              questions: [
+                {
+                  prompt: item.prompt,
+                  ...(item.header ? { header: item.header } : {}),
+                  ...(item.context ? { context: item.context } : {}),
+                  options: item.options.map((option) => ({
+                    label: option.label,
+                    ...(option.recommended ? { recommended: true } : {}),
+                  })),
+                },
+              ],
+            });
+            const text = (result.content ?? []).map((block) => block?.text ?? "").join("\n");
+            toolResults.push(text);
+            expect(text).toContain(item.answer);
+          }
+          await session.call("prompt_submit", scenario.submission!);
         },
-      ],
-      cancelled: false,
-    };
-    const toolResults: string[] = [];
-    const booted = await boot({
-      customAnswers: [sampleAnswer],
-      script: async (session) => {
-        for (const step of scenario.inspection ?? []) {
-          const result = await session.call(step.tool, step.args);
-          const text = (result.content ?? []).map((block) => block?.text ?? "").join("\n");
-          toolResults.push(text);
-          expect(text).toContain(String(step.expectContains ?? ""));
-        }
-        for (const item of scenario.questions ?? []) {
-          const result = await session.call("prompt_ask", {
-            questions: [
-              {
-                prompt: item.prompt,
-                ...(item.header ? { header: item.header } : {}),
-                ...(item.context ? { context: item.context } : {}),
-                options: item.options.map((option) => ({
-                  label: option.label,
-                  ...(option.recommended ? { recommended: true } : {}),
-                })),
-              },
-            ],
-          });
-          const text = (result.content ?? []).map((block) => block?.text ?? "").join("\n");
-          toolResults.push(text);
-          expect(text).toContain(item.answer);
-        }
-        await session.call("prompt_submit", scenario.submission!);
-      },
-    });
-    try {
-      writeProjectFiles(booted.cwd, scenario.projectFiles ?? []);
-      // The literal prompt is the live composer draft, exactly as `/prompt`
-      // receives it from Terminal.
-      booted.ui.state.editorText = scenario.draftText;
-      await booted.run("prompt", scenario.draftText);
-      await waitFor(
-        () => booted.ui.editorTexts.at(-1) === scenario.expect.candidateText,
-        "candidate in the composer",
-      );
-      expect(booted.ui.editorTexts.at(-1)).toBe(scenario.expect.candidateText);
-      expect(
-        toolResults.some((text) => text.includes(String(scenario.inspection?.[0]?.expectContains))),
-      ).toBe(true);
-      expect(toolResults.some((text) => text.includes(question.answer))).toBe(true);
-      // Negative execution: the composer text is the only mutation.
-      const counters = scenario.expect.zeroUntilHumanSend as Record<string, number>;
-      expect(counters).toEqual({
-        parentProviderTurns: 0,
-        taskWrites: 0,
-        planFiles: 0,
-        commitAuthorizations: 0,
-        childLaunches: 0,
       });
-      expect(booted.pi.sent).toHaveLength(0);
-      expect(counters.parentProviderTurns).toBe(0);
-      expect(counters.taskWrites).toBe(0);
-      expect(counters.planFiles).toBe(0);
-      expect(counters.commitAuthorizations).toBe(0);
-      expect(counters.childLaunches).toBe(0);
-      expect(booted.relatedRequests).toHaveLength(0);
-      expect(booted.sessions.length).toBe(1);
-      // The draft stays editable; a later human Send is a separate action.
-      const edited = `${booted.ui.editorTexts.at(-1)}\n\nPlease also keep the acceptance criteria.`;
-      booted.pi.sendUserMessage(edited);
-      expect(booted.pi.sent).toHaveLength(1);
-      expect(booted.pi.sent[0]).toBe(edited);
-    } finally {
-      booted.cleanup();
-    }
-  });
+      try {
+        writeProjectFiles(booted.cwd, scenario.projectFiles ?? []);
+        // The literal prompt is the live composer draft, exactly as `/prompt`
+        // receives it from Terminal.
+        booted.ui.state.editorText = scenario.draftText;
+        await booted.run("prompt", scenario.draftText);
+        await waitFor(
+          () => booted.ui.editorTexts.at(-1) === scenario.expect.candidateText,
+          "candidate in the composer",
+        );
+        expect(booted.ui.editorTexts.at(-1)).toBe(scenario.expect.candidateText);
+        expect(
+          toolResults.some((text) =>
+            text.includes(String(scenario.inspection?.[0]?.expectContains)),
+          ),
+        ).toBe(true);
+        expect(toolResults.some((text) => text.includes(question.answer))).toBe(true);
+        // Negative execution: the composer text is the only mutation.
+        const counters = scenario.expect.zeroUntilHumanSend as Record<string, number>;
+        expect(counters).toEqual({
+          parentProviderTurns: 0,
+          taskWrites: 0,
+          planFiles: 0,
+          commitAuthorizations: 0,
+          childLaunches: 0,
+        });
+        expect(booted.pi.sent).toHaveLength(0);
+        expect(counters.parentProviderTurns).toBe(0);
+        expect(counters.taskWrites).toBe(0);
+        expect(counters.planFiles).toBe(0);
+        expect(counters.commitAuthorizations).toBe(0);
+        expect(counters.childLaunches).toBe(0);
+        expect(booted.relatedRequests).toHaveLength(0);
+        expect(booted.sessions.length).toBe(1);
+        // The draft stays editable; a later human Send is a separate action.
+        const edited = `${booted.ui.editorTexts.at(-1)}\n\nPlease also keep the acceptance criteria.`;
+        booted.pi.sendUserMessage(edited);
+        expect(booted.pi.sent).toHaveLength(1);
+        expect(booted.pi.sent[0]).toBe(edited);
+      } finally {
+        booted.cleanup();
+      }
+    },
+  );
 });
 
 // ── New host: real published control + real registered commands ──────

@@ -1259,9 +1259,9 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
         await booted.pi.emit("turn_start", {}, booted.ui.ctx);
         await vi.waitFor(
           () =>
-            expect(
-              booted.pi.entries.some((entry) => entry.type === "workflow-checkpoint"),
-            ).toBe(true),
+            expect(booted.pi.entries.some((entry) => entry.type === "workflow-checkpoint")).toBe(
+              true,
+            ),
           { timeout: 10_000 },
         );
 
