@@ -96,7 +96,7 @@ test("@smoke the built renderer carries the strict CSP and no Node globals", asy
   expect(globals.process).toBe("undefined");
 });
 
-test("@smoke the first run asks about telemetry and defaults it off", async () => {
+test("@smoke the first run shows the local-data notice", async () => {
   // No seeded acknowledgement or onboarding completion: the real first launch.
   launched = await launchApp({
     prefs: { privacyAcknowledged: false, onboardingCompletedAt: null },
@@ -104,10 +104,12 @@ test("@smoke the first run asks about telemetry and defaults it off", async () =
   const { window } = launched;
 
   await expect(window.getByText(/your data stays on this machine/i)).toBeVisible();
-  const telemetry = window.getByRole("switch", { name: /share anonymous install telemetry/i });
-  await expect(telemetry).toHaveAttribute("aria-checked", "false");
+  await expect(window.getByText(/pi 1\.7\.0 removed its install telemetry/i)).toBeVisible();
+  await expect(
+    window.getByRole("switch", { name: /share anonymous install telemetry/i }),
+  ).toHaveCount(0);
 
-  await window.getByRole("button", { name: /keep telemetry off/i }).click();
+  await window.getByRole("button", { name: /continue/i }).click();
 
   // The privacy screen is done and the first-run setup wizard follows it
   // (plan step 26); skipping it reaches the shell.

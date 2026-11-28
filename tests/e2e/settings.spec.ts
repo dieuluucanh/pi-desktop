@@ -75,21 +75,12 @@ test("@smoke round-trips the display zoom across a restart", async () => {
   await expect.poll(() => current.zoomPercent(), { timeout: 15_000 }).toBe(100);
 });
 
-test("round-trips the telemetry opt-in and defaults it off", async () => {
+test("does not expose a telemetry opt-in after Pi 1.7", async () => {
   app = await launchFakeApp();
   await openSettings(app);
 
-  const telemetry = app.window.getByRole("switch", {
-    name: /share anonymous install telemetry/i,
-  });
-  await expect(telemetry).toHaveAttribute("aria-checked", "false");
-
-  await telemetry.click();
-  await expect(telemetry).toHaveAttribute("aria-checked", "true");
-
-  await app.relaunch();
-  await openSettings(app);
+  await expect(app.window.getByTestId("privacy-telemetry")).toHaveCount(0);
   await expect(
     app.window.getByRole("switch", { name: /share anonymous install telemetry/i }),
-  ).toHaveAttribute("aria-checked", "true");
+  ).toHaveCount(0);
 });

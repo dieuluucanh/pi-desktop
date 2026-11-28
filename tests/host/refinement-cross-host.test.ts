@@ -664,7 +664,10 @@ describe("old host (no composer-transform): the real artifact refines without ex
       // receives it from Terminal.
       booted.ui.state.editorText = scenario.draftText;
       await booted.run("prompt", scenario.draftText);
-      await waitFor(() => booted.ui.editorTexts.length > 0, "candidate in the composer");
+      await waitFor(
+        () => booted.ui.editorTexts.at(-1) === scenario.expect.candidateText,
+        "candidate in the composer",
+      );
       expect(booted.ui.editorTexts.at(-1)).toBe(scenario.expect.candidateText);
       expect(
         toolResults.some((text) => text.includes(String(scenario.inspection?.[0]?.expectContains))),
