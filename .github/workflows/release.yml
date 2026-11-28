@@ -678,7 +678,7 @@ jobs:
           for app in \
             "release/mac-arm64/Pi Desktop.app" \
             "release/mac/Pi Desktop.app"; do
-            npm run workflow:package:verify \
+            npm run workflow:package:verify -- \
               --resources "$app/Contents/Resources"
           done
 

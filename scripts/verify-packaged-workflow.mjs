@@ -697,6 +697,10 @@ export async function runChecks(options) {
       },
     );
 
+    const expectedPiVersion = JSON.parse(
+      readFileSync(join(DEFAULT_ROOT, "package.json"), "utf8"),
+    ).dependencies?.["@earendil-works/pi-coding-agent"];
+
     await record(
       "child-cli-launch",
       "the packaged Pi CLI runs under the bundled Node",
@@ -729,7 +733,7 @@ export async function runChecks(options) {
           failures,
         );
         expect(
-          /1\.5\.\d+/.test(version.output),
+          typeof expectedPiVersion === "string" && version.output.includes(expectedPiVersion),
           `unexpected --version output: ${version.output.trim()}`,
           failures,
         );
