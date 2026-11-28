@@ -70,12 +70,11 @@ test("editor fills the pane for prose and code", async () => {
 
   for (const name of ["notes.md", "app.ts"]) {
     await openViaQuickOpen(name);
-    const { pane } = await readLayout();
-    // The removed column capped at widthColumns ch (100ch is roughly 0.72-0.78k
-    // px at the default 13 px mono font). The pane must stay wider than that
-    // cap, otherwise this guard could not tell the fixed build from the buggy
-    // one.
-    expect(pane).toBeGreaterThan(800);
+    // The rail can finish opening after the quick-open; retry the width once
+    // the layout has settled instead of racing the first measurement.
+    await expect
+      .poll(async () => (await readLayout()).pane, { timeout: 10_000 })
+      .toBeGreaterThan(800);
 
     await expect
       .poll(

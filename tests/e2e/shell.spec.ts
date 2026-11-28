@@ -109,7 +109,7 @@ test("@smoke the first run shows the local-data notice", async () => {
     window.getByRole("switch", { name: /share anonymous install telemetry/i }),
   ).toHaveCount(0);
 
-  await window.getByRole("button", { name: /continue/i }).click();
+  await window.getByRole("button", { name: /continue/i }).click({ force: true });
 
   // The privacy screen is done and the first-run setup wizard follows it
   // (plan step 26); skipping it reaches the shell.

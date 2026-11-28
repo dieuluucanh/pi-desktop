@@ -167,19 +167,26 @@ async function markerFor(target: FakeApp, url: string): Promise<unknown> {
 
 /** Runs an expression in the tab's page and tolerates the page dying mid-script. */
 async function callPageClose(target: FakeApp, url: string, expression: string): Promise<string> {
-  return target.app.evaluate(
-    ({ webContents }, input) => {
-      const contents = webContents
-        .getAllWebContents()
-        .find((entry) => !entry.isDestroyed() && entry.getURL() === input.url);
-      if (!contents) return "missing";
-      return contents.executeJavaScript(input.expression).then(
-        () => "ok",
-        () => "destroyed",
-      );
-    },
-    { url, expression },
-  );
+  // The tab chrome can paint before the WebContents finishes loading, so retry
+  // until the URL is actually attached instead of reporting a false "missing".
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const result = await target.app.evaluate(
+      ({ webContents }, input) => {
+        const contents = webContents
+          .getAllWebContents()
+          .find((entry) => !entry.isDestroyed() && entry.getURL() === input.url);
+        if (!contents) return "missing";
+        return contents.executeJavaScript(input.expression).then(
+          () => "ok",
+          () => "destroyed",
+        );
+      },
+      { url, expression },
+    );
+    if (result !== "missing") return result;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return "missing";
 }
 
 test("@smoke opens a loopback URL in an in-app tab", async () => {
