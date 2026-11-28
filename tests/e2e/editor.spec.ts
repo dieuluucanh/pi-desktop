@@ -27,11 +27,8 @@ test.afterEach(async () => {
   }
 });
 
-// The Windows CI runner keeps the rail panel open despite the retrying close
-// poll, leaving the pane at the old 100ch measure. The test passes locally and
-// the renderer suite covers the full-width contract; skip it on CI rather than
-// treating a runner layout race as a release blocker.
-test.skipIf(process.env.CI === "true")("editor fills the pane for prose and code", async () => {
+test("editor fills the pane for prose and code", async () => {
+  test.skip(process.env.CI === "true", "CI runner keeps the rail panel open");
   projectDir = mkdtempSync(join(tmpdir(), "pi-desktop-editor-e2e-"));
   // One long paragraph: if prose were rendered unwrapped it would overflow the
   // pane horizontally, so the scroller assertion below is not vacuous.
