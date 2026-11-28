@@ -38,6 +38,15 @@ test("editor fills the pane for prose and code", async () => {
   const current = (app = await launchFakeApp({ projectDir }));
   const window = current.window;
 
+  async function collapseRailPanel(): Promise<void> {
+    const panel = window.getByTestId("rail-panel");
+    await panel.waitFor({ state: "visible", timeout: 2_000 }).catch(() => undefined);
+    if ((await panel.count()) === 0) return;
+    const collapse = window.getByRole("button", { name: "Collapse panel" });
+    if ((await collapse.count()) > 0) await collapse.click();
+    await expect(panel).toHaveCount(0, { timeout: 5_000 });
+  }
+
   // Any open rail panel (Explorer, or the Documents panel that can auto-open
   // at startup) narrows the pane to ~648 px, below the old 100ch measure,
   // which would make the width equality poll pass on the buggy build too.
@@ -70,8 +79,9 @@ test("editor fills the pane for prose and code", async () => {
 
   for (const name of ["notes.md", "app.ts"]) {
     await openViaQuickOpen(name);
-    // The rail can finish opening after the quick-open; retry the width once
-    // the layout has settled instead of racing the first measurement.
+    // Quick-open can re-open the rail on a fresh CI profile; collapse it before
+    // measuring, then retry the width once the layout has settled.
+    await collapseRailPanel();
     await expect
       .poll(async () => (await readLayout()).pane, { timeout: 10_000 })
       .toBeGreaterThan(800);
