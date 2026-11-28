@@ -13,6 +13,7 @@ import {
   removePackageFromSettings,
   removePackageSource,
   upsertPackageSource,
+  writeSettingsDocument,
 } from "../../src/main/packages/settings";
 
 const AGENT_DIR = path.join("C:", "agent");
@@ -97,6 +98,25 @@ describe("readSettingsDocument", () => {
   it("rejects a non-object root", async () => {
     const fs = createMemoryFsPort({ files: { [SETTINGS]: "[1,2,3]" } });
     await expect(readSettingsDocument(fs, SETTINGS)).rejects.toBeInstanceOf(SettingsParseError);
+  });
+});
+
+describe("writeSettingsDocument", () => {
+  it("leaves valid JSON when two writes overlap", async () => {
+    // Regression: both writes used `${filePath}.${pid}.tmp`, so the first rename
+    // moved the temp file out from under the second (ENOENT on Windows).
+    const fs = createMemoryFsPort();
+
+    await Promise.all([
+      writeSettingsDocument(fs, SETTINGS, { theme: "dark" }),
+      writeSettingsDocument(fs, SETTINGS, { theme: "light" }),
+    ]);
+
+    const written = await fs.readTextFile(SETTINGS);
+    expect(written).not.toBeNull();
+    expect(() => JSON.parse(written ?? "")).not.toThrow();
+    expect(["dark", "light"]).toContain((JSON.parse(written ?? "{}") as { theme?: string }).theme);
+    expect([...fs.files.keys()].some((key) => key.includes(".tmp"))).toBe(false);
   });
 });
 

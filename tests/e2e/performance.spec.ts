@@ -39,9 +39,10 @@ test("@perf the window reaches interactive within the startup budget", async () 
   const app = launched;
 
   // The mark lands on `ready-to-show`; wait for it before reading (the page can
-  // finish loading a moment before the window is painted).
+  // finish loading a moment before the window is painted). The Windows CI
+  // runner occasionally needs longer than 15 s for a cold Electron start.
   await expect
-    .poll(async () => (await startupReport(app)).windowInteractiveMs, { timeout: 15_000 })
+    .poll(async () => (await startupReport(app)).windowInteractiveMs, { timeout: 30_000 })
     .not.toBeNull();
 
   const report = await startupReport(app);

@@ -125,6 +125,13 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
   try {
     window = await app.firstWindow({ timeout: 30_000 });
     await window.waitForLoadState("domcontentloaded", { timeout: 20_000 });
+    // `use.actionTimeout` in playwright.config.ts never reaches an Electron page
+    // (the Electron app builds its own context, outside Playwright's browser
+    // launcher), so the core 30 s default still capped every click and a slow
+    // Windows renderer surfaced as a click timeout. Lift it here, once, rather
+    // than sprinkling explicit timeouts through the specs. Assertions keep their
+    // own budgets, so a genuinely missing element still fails.
+    window.setDefaultTimeout(60_000);
   } catch (cause) {
     const detail = output.join("").trim();
     await app.close().catch(() => undefined);

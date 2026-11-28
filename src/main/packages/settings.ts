@@ -145,13 +145,28 @@ export function serializeSettingsDocument(doc: SettingsDocument): string {
   return `${JSON.stringify(doc, null, 2)}\n`;
 }
 
+let tempWriteSequence = 0;
+
+/**
+ * One temp path per write.
+ *
+ * Two concurrent writers sharing `${filePath}.${pid}.tmp` race: the first
+ * `rename` moves the temp file away and the second fails with ENOENT. The
+ * sequence suffix keeps each in-flight write independent, while the pid keeps
+ * paths distinct across processes.
+ */
+function nextTempPath(filePath: string): string {
+  tempWriteSequence += 1;
+  return `${filePath}.${process.pid}.${tempWriteSequence}.tmp`;
+}
+
 /** Atomic write: temp file + rename, so a crash cannot truncate settings.json. */
 export async function writeSettingsDocument(
   fs: FsPort,
   filePath: string,
   doc: SettingsDocument,
 ): Promise<void> {
-  const tempPath = `${filePath}.${process.pid}.tmp`;
+  const tempPath = nextTempPath(filePath);
   await fs.writeTextFile(tempPath, serializeSettingsDocument(doc));
   await fs.rename(tempPath, filePath);
 }
