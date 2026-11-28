@@ -1569,6 +1569,7 @@ function createWindow(): BrowserWindow {
     rendererWindowOptions(
       join(currentDir, "../preload/index.cjs"),
       process.platform === "darwin" ? undefined : { icon: branding.ico },
+      attachmentAvailability.available,
     ),
   );
 

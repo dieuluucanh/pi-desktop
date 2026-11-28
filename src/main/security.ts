@@ -70,6 +70,8 @@ export interface SecureWebPreferences {
   spellcheck: false;
   preload?: string;
   partition?: string;
+  /** Renderer-process arguments; used to carry the trusted attachment gate. */
+  additionalArguments?: string[];
 }
 
 export const SECURE_WEB_PREFERENCES: SecureWebPreferences = {
@@ -112,6 +114,7 @@ export interface RendererWindowOptions {
 export function rendererWindowOptions(
   preloadPath: string,
   branding?: { icon?: string },
+  attachmentsAvailable?: boolean,
 ): RendererWindowOptions {
   return {
     width: 1280,
@@ -122,7 +125,16 @@ export function rendererWindowOptions(
     backgroundColor: "#0f1115",
     title: "Pi Desktop",
     autoHideMenuBar: true,
-    webPreferences: rendererWebPreferences(preloadPath),
+    webPreferences: {
+      ...rendererWebPreferences(preloadPath),
+      ...(attachmentsAvailable === undefined
+        ? {}
+        : {
+            additionalArguments: [
+              `--pi-desktop-attachments=${attachmentsAvailable ? "1" : "0"}`,
+            ],
+          }),
+    },
     ...(branding?.icon ? { icon: branding.icon } : {}),
   };
 }

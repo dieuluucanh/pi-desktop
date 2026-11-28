@@ -133,6 +133,9 @@ function subscribe<T>(channel: string, listener: (payload: T) => void): () => vo
   };
 }
 
+const attachmentsEnabled =
+  Array.isArray(process.argv) && process.argv.includes("--pi-desktop-attachments=1");
+
 const attachments: AttachmentsBridge = {
   openDraft: (tabId, draftId) =>
     ipcRenderer.invoke(IPC.attachmentsOpenDraft, tabId, draftId) as Promise<AttachmentDraftGrant>,
@@ -505,7 +508,9 @@ const bridge: PiDesktopBridge = {
     subscribe<MenuCommand>(IPC.appMenuCommand, listener),
   prefs,
   sessions,
-  attachments,
+  // The trusted main-process gate decides whether the managed attachment
+  // bridge exists at all; an off build falls back to the legacy image composer.
+  attachments: attachmentsEnabled ? attachments : undefined,
   terminal,
   tui,
   projects,

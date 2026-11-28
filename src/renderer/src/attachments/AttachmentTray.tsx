@@ -373,7 +373,7 @@ export function AttachmentTray({
   return (
     <section
       className="mb-2 flex flex-col gap-2 rounded-sm border border-line bg-surface p-2"
-      data-testid="attachment-tray"
+      data-testid="attachments"
       aria-label="File attachments"
     >
       <div className="flex min-w-0 items-center justify-between gap-2">

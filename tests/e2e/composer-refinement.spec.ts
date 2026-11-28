@@ -316,7 +316,10 @@ let logDir: string | undefined;
 /** Temp project dirs a test created itself (the two-pane launch seeds two). */
 const extraTempDirs: string[] = [];
 
-test.afterEach(async ({ page: _page }, testInfo) => {
+// Playwright requires an object pattern; this one intentionally requests no
+// fixture (the default `page` fixture would launch Chromium).
+// eslint-disable-next-line no-empty-pattern
+test.afterEach(async ({}, testInfo) => {
   // A failed refinement assertion is nearly always explained by what the
   // publisher observed, so keep that evidence in the Playwright report.
   if (testInfo.status !== testInfo.expectedStatus && logDir) {
@@ -374,6 +377,10 @@ async function launchRefinement(
       env: {
         FIXTURE_COMPOSER_LOG: logPath,
         FIXTURE_SCENARIO: scenario,
+        // This spec predates managed attachments and exercises the legacy
+        // composer image path that the refinement transform consumes. The
+        // dedicated attachments spec enables the managed path explicitly.
+        PI_DESKTOP_ATTACHMENTS: "0",
         ...(releasePath === undefined ? {} : { FIXTURE_RELEASE_FILE: releasePath }),
         ...(options.extraEnv ?? {}),
       },

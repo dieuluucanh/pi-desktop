@@ -72,6 +72,15 @@ describe("app window preferences", () => {
     expect(options.webPreferences.preload).toBe("/app/preload/index.cjs");
   });
 
+  it("passes the trusted attachment gate to the preload", () => {
+    expect(
+      rendererWindowOptions("/p.cjs", undefined, false).webPreferences.additionalArguments,
+    ).toEqual(["--pi-desktop-attachments=0"]);
+    expect(
+      rendererWindowOptions("/p.cjs", undefined, true).webPreferences.additionalArguments,
+    ).toEqual(["--pi-desktop-attachments=1"]);
+  });
+
   it("does not mutate the shared secure base", () => {
     rendererWebPreferences("/somewhere/preload.cjs");
     expect(SECURE_WEB_PREFERENCES).not.toHaveProperty("preload");

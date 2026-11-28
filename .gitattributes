@@ -7,3 +7,6 @@ scripts/*.mjs text eol=lf
 
 # Bash cannot run a CRLF script.
 *.sh text eol=lf
+
+# Byte-pinned cross-host fixtures: tests hash the exact file bytes.
+tests/shared/fixtures/*.json -text

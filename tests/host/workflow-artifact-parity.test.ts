@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 /**
  * Command / mode / config / policy parity against the **actual staged artifact**
@@ -1252,7 +1252,13 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
           booted.ui.ctx,
         );
         await booted.pi.emit("turn_start", {}, booted.ui.ctx);
-        expect(booted.pi.entries.some((entry) => entry.type === "workflow-checkpoint")).toBe(true);
+        await vi.waitFor(
+          () =>
+            expect(
+              booted.pi.entries.some((entry) => entry.type === "workflow-checkpoint"),
+            ).toBe(true),
+          { timeout: 10_000 },
+        );
 
         // Dirty the tree after the checkpoint was taken.
         writeFileSync(join(booted.cwd, "tracked.txt"), "dirty\n");
