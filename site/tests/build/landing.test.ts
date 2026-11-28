@@ -41,6 +41,10 @@ describe("landing page", () => {
     }
     expect(html).toContain("Projects and sessions");
     expect(html).toContain("Git and checkpoints");
+    expect(html).toContain("Pi for Office");
+    expect(html).toContain("Excel dashboards");
+    expect(html).toContain("Workflow, built in");
+    expect(html).toContain("Review mode");
     expect(html).toContain("SmartScreen");
     expect(html).toContain("Open Anyway");
     expect(html).toContain("sudo apt install");

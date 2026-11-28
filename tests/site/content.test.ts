@@ -24,9 +24,20 @@ describe("public site content", () => {
     expect(profile).toContain("same profile as terminal Pi");
     expect(profile).toContain("never rewrites");
     const features = read("site/src/components/landing/FeatureGrid.astro");
-    for (const phrase of ["Projects and sessions", "Files and editor", "Providers and models", "Git and checkpoints", "Pi for Office, optionally"]) {
+    for (const phrase of [
+      "Projects and sessions",
+      "Files and editor",
+      "Providers and models",
+      "Git and checkpoints",
+      "Pi for Office",
+      "Workflow, built in",
+      "Excel dashboards",
+      "financial models",
+      "PowerPoint slide decks",
+    ]) {
       expect(features).toContain(phrase);
     }
+    expect(features).not.toContain("Commands and context");
   });
 
   it("uses the current installer names and the macOS/Windows warnings", () => {
